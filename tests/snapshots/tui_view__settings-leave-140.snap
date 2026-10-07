@@ -1,0 +1,44 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ ◆ navai  /ws/refactor-parser  —  /config                                      ● 1 unsaved  /cfg/navai/config.json · /cfg/navai/models.json 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                     │                                                                                  │                                   
+ SETTINGS            │  Gateways  models.json → providers                                               │ FOCUSED                           
+                     │  Gateway catalogue. Read-only here; edit in models.json.                         │ gateways.omniroute.base_url       
+▌1 Gateways          │                                                                                  │                                   
+ omniroute           │                                                                                  │ Gateway catalogue. Read-only      
+                     │  omniroute  edit in models.json                                                  │ here; edit in models.json.        
+ 2 Layers            │▌   base_url            http://localhost:20128/v1                      read-only  │                                   
+ reflex · instinct · │    api_key_env         OMNIROUTE_API_KEY                                         │ type    read-only                 
+ meta · cognition    │    key_source          environment                                               │ saved   http://localhost:20128/…  
+ 3 Agents            │    catalog_format      omniroute                                                 │                                   
+ build               │    connect_timeout_ms  5000                                                      │ PENDING · 1                       
+                     │    request_timeout_ms  600000                                                    │ tui.theme                         
+ 4 Permissions       │                                                                                  │ - ayu-dark                        
+ automatic review on │                                                                                  │ + nord-dark                       
+                     │               ┌ Leave Settings ────────────────────────────────────────────────┐ │ [ctrl+s] write  [ctrl+z] revert   
+ 5 Subagents         │               │                                                                │ │                                   
+ max 4 per session   │               │  1 unsaved changes. Leave Settings?                            │ │ ▌ Written for every client: TUI,  
+                     │               │                                                                │ │ WebUI and VS Code. A /models      
+ 6 Appearance ●1     │               │  [w] write · [d] discard · [esc] stay                          │ │ pick in a session stays in that   
+ Nord Dark           │               │                                                                │ │ session and never writes here.    
+                     │               └────────────────────────────────────────────────────────────────┘ │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+ 1…6 section         │                                                                                  │                                   
+ tab next section    │                                                                                  │                                   
+ esc back to session │                                                                                  │                                   
+                     │                                                                                  │                                   
+                                                                                                                                            
+ w write · d discard · esc stay

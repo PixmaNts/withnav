@@ -13,6 +13,11 @@ pub struct Command {
 }
 pub const CATALOG: &[Command] = &[
     Command {
+        name: "/config",
+        description: "edit settings in config.json",
+        args_hint: "",
+    },
+    Command {
         name: "/new",
         description: "new conversation in a new tab",
         args_hint: "[agent]",
@@ -150,6 +155,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("alt+c", "continue a subagent out of steps"),
     ("f2", "switch this conversation's model"),
     ("ctrl+n (in models)", "open that model in a new tab"),
+    ("ctrl+f (in models)", "add / remove the model as a favorite"),
     ("f1", "help"),
     ("tab", "build / plan (empty message)"),
     ("shift+tab", "switch focus"),
@@ -314,6 +320,7 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
             Mode::Interrupt => Mode::NextTurn,
         }),
         "/theme" => Action::OpenOverlay(Overlay::Themes),
+        "/config" => Action::OpenConfig,
         "/help" => Action::OpenOverlay(Overlay::Help),
         "/quit" => Action::Quit,
         _ => return None,

@@ -4,6 +4,50 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+Navai gets a browser interface and a Settings screen in every client. `navai web` opens the chat in
+your browser; Settings lets you choose the model of each layer and agent, permissions, subagent
+limits and the theme from the browser, the terminal (`/config`) or VS Code, all writing the same
+`config.json`. No configuration change is needed to upgrade from 0.5.1.
+
+### Added
+
+- **Settings in VS Code.** "Navai: Open Settings" (or the gear in the Cognition view) opens a
+  Navai Settings tab laid out like VS Code's own settings editor: the same sections, saved at once
+  to `config.json`, with a filter for modified settings and a link to the extension's own
+  `navai.*` settings. It still opens when the model or agent list cannot load, offers Open Folder
+  when no folder is open, and Retry when the language server is not running.
+- **Settings in the terminal.** `/config` (or the palette) opens Settings in the TUI: gateways
+  (read-only, `t` tests the connection), the model of each layer and agent and its variant, the
+  default agent, automatic review and scratch directories, subagent limits and watchdogs, and the
+  theme. Changes wait until ctrl+s, which writes them to `config.json` one by one; if the file
+  changed elsewhere it reloads and keeps your unsent changes. Leaving with unsaved changes asks
+  write, discard or stay.
+- **Settings in the browser.** In `navai web`, the gear in the top bar (or "Open settings" in the
+  command palette) opens Settings: gateways (read-only, with a connection test), the model of each
+  layer and agent and its variant, the default agent, automatic review and scratch directories,
+  subagent limits and watchdogs, and the theme. Each change is checked against the catalogue and
+  written to `config.json` at once; a change made elsewhere in the meantime is reloaded instead of
+  overwritten. Layer models apply after restarting Navai, the rest to new sessions and subagents.
+  API keys are never shown, only where they come from.
+- **Favorite models.** In both model pickers, Ctrl+F (or the star in VS Code) marks a model as a
+  favorite; favorites are listed first in an always-open section. The terminal and VS Code keep
+  separate lists.
+- **A chat in your browser.** `navai web` starts Navai on a private local address, prints a link
+  and opens it. The page lets you chat in any of the workspaces you pass with `--workspace`
+  (repeatable; the current directory by default) and in the others you have worked in before; each
+  one shows its git branch and whether it has changes, and a workspace's intent record
+  (`.navigator/intent.md`) can be read. Use `--port` to choose the port and `--no-open` to print the
+  link without opening it. The link carries a secret that is new on every run and only works on
+  this computer; press Ctrl-C to stop.
+
+### Fixed
+
+- **Two Navai windows no longer undo each other's settings.** The terminal's theme and favorites
+  saves and every Settings change now take a lock on `config.json`, so a save from one window cannot
+  silently put back a value another window has just written.
+
 ## [0.5.1] - 2026-10-06
 
 ### Fixed

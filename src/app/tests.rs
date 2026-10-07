@@ -45,6 +45,7 @@ async fn typed_watchdog_pause_exits_yielded_even_with_yes_and_notice_renders() {
         bearer_token: None,
         history_db: tmp.path().join("history.db"),
         rules_roots: Default::default(),
+        web: None,
     })
     .unwrap();
     assert_eq!(
@@ -95,7 +96,7 @@ fn read_prompt_prefers_literal() {
 fn cli_lists_its_subcommands() {
     let cmd = Cli::command();
     let names: Vec<_> = cmd.get_subcommands().map(|s| s.get_name()).collect();
-    for expected in ["run", "serve", "auth", "tui"] {
+    for expected in ["run", "serve", "auth", "tui", "web"] {
         assert!(names.contains(&expected), "missing subcommand: {expected}");
     }
 }
@@ -127,6 +128,45 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
     .is_err());
     let help = Cli::command().render_long_help().to_string();
     assert!(help.contains("tui"));
+}
+
+#[test]
+fn web_flags_parse() {
+    let cli = Cli::try_parse_from([
+        "navai",
+        "web",
+        "--workspace",
+        "/tmp/a",
+        "--workspace",
+        "/tmp/b",
+        "--models",
+        "m.json",
+        "--port",
+        "7399",
+        "--no-open",
+    ])
+    .expect("parses");
+    let Commands::Web(args) = cli.command else {
+        panic!("not the web command");
+    };
+    assert_eq!(
+        args.workspaces,
+        [PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
+    );
+    assert_eq!(args.models, Some(PathBuf::from("m.json")));
+    assert_eq!(args.port, 7399);
+    assert!(args.no_open);
+
+    let Commands::Web(defaults) = Cli::try_parse_from(["navai", "web"])
+        .expect("parses")
+        .command
+    else {
+        panic!("not the web command");
+    };
+    assert!(defaults.workspaces.is_empty());
+    assert_eq!(defaults.port, 0);
+    assert!(!defaults.no_open);
+    assert!(Cli::try_parse_from(["navai", "web", "--port", "70000"]).is_err());
 }
 
 #[test]

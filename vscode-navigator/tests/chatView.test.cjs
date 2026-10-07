@@ -22,6 +22,11 @@ Module._load = function (id, ...args) {
   if (id === "vscode") return vscode;
   return originalLoad.call(this, id, ...args);
 };
+/** A stand-in for `ExtensionContext.globalState`. */
+function memento(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return { get: (key, fallback) => (values.has(key) ? values.get(key) : fallback), update: async (key, value) => { values.set(key, value); }, keys: () => [...values.keys()] };
+}
 const { registerChatView } = require("../out/tests/chatView.js");
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
@@ -372,7 +377,7 @@ test('round2 model override inherit uses its model default, assignment null stay
   send('/variant inherit');await tick();assert.equal(b.state.selection.model,'gw/B');assert.equal(b.state.selection.variant,'low');assert.match(dom.window.document.querySelector('.topbar').title,/model source: override.*variant source: model_default/);
   await b.refreshAssignments();assert.equal(b.state.selection.variant,'low');
 });
-function fullChat(t) {
+function fullChat(t, globalState = memento()) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');
   const fs = require('node:fs');
@@ -383,7 +388,7 @@ function fullChat(t) {
   const panels=[];
   const dom = new JSDOM(chatHtml('n','chat.js','chat.css','resource:'), { runScripts: 'outside-only' });
   t.after(() => dom.window.close());
-  registerChatView({ extensionUri: 'extension' }, b);
+  registerChatView({ extensionUri: 'extension', globalState }, b);
   provider.resolveWebviewView({ webview: { cspSource: 'test', asWebviewUri: value => value,
     postMessage(data) { dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data })); },
     onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
@@ -549,7 +554,7 @@ test("R1 skill confirms permission cancellation before submission without editor
   Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { throw new Error("No editor context for skills"); } });
   const backend = { isReadOnly: () => false, captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => true,
     runComposerCommand: async () => { assert.equal(confirms, 1); submitted++; return false; } };
-  registerChatView({ extensionUri: "extension" }, backend);
+  registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
   provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
   receive({ type: "send", text: "/skill review check", generation: 2, includeContext: true });
   await new Promise(resolve => setImmediate(resolve));
@@ -571,7 +576,7 @@ test("host routes slash commands before editor context or permission confirmatio
     runComposerCommand: async (text, generation) => { command = { text, generation }; return false; },
     hasOpenPermissions: () => { throw new Error("Commands do not cancel permissions"); },
   };
-  registerChatView({ extensionUri: "extension" }, backend);
+  registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
   provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
   receive({ type: "send", text: "/context", includeContext: true, generation: 2 });
   await Promise.resolve(); await Promise.resolve();
@@ -595,7 +600,7 @@ test("late-created and recreated views receive current session identity before r
     subscribe: () => () => {},
     cancelPermissionReads: () => { cancelled++; },
   };
-  registerChatView({ extensionUri: "extension" }, backend);
+  registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
   for (let i = 0; i < 2; i++) {
     const messages = [];
     let receive;
@@ -615,4 +620,49 @@ test("late-created and recreated views receive current session identity before r
     dispose();
   }
   assert.equal(cancelled, 2);
+});
+
+test("favorite models: the host stores them in globalState, shares them with every view and ignores bad input", async () => {
+  const state = memento({ "navai.favoriteModels": ["kept/model", 7, null] });
+  const backend = { currentGeneration: () => 1, currentConversationId: () => "S", subscribe: () => () => {}, currentContext: () => undefined,
+    publishSubagents() {}, publishCompaction() {}, refreshAssignments: async () => {}, refreshCommands: async () => {}, resumePermissionReads() {}, cancelPermissionReads() {}, history: () => [] };
+  registerChatView({ extensionUri: "extension", globalState: state }, backend);
+  const open = () => {
+    const messages = []; let receive;
+    provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage(m) { messages.push(m); }, onDidReceiveMessage(l) { receive = l; return noopDisposable(); } }, onDidDispose() {} });
+    return { messages, receive, favorites: () => messages.filter(m => m.type === "favorites") };
+  };
+  const first = open(); const second = open();
+  first.receive({ type: "ready" });
+  assert.deepEqual(first.favorites().at(-1), { type: "favorites", items: ["kept/model"], generation: 1 }, "non-strings are dropped on read");
+  first.receive({ type: "toggleFavorite", name: "gw/a", generation: 1 });
+  assert.deepEqual(state.get("navai.favoriteModels"), ["kept/model", "gw/a"]);
+  assert.deepEqual(first.favorites().at(-1).items, ["kept/model", "gw/a"]);
+  assert.deepEqual(second.favorites().at(-1).items, ["kept/model", "gw/a"], "another view sees the change");
+  first.receive({ type: "toggleFavorite", name: "kept/model", generation: 1 });
+  assert.deepEqual(state.get("navai.favoriteModels"), ["gw/a"]);
+  first.receive({ type: "toggleFavorite", name: 5, generation: 1 });
+  first.receive({ type: "toggleFavorite", name: "", generation: 1 });
+  first.receive({ type: "toggleFavorite", name: "x".repeat(1000), generation: 1 });
+  first.receive({ type: "toggleFavorite", name: "gw/b", generation: 99 });
+  assert.deepEqual(state.get("navai.favoriteModels"), ["gw/a"], "bad names and stale generations change nothing");
+  second.receive({ type: "ready" });
+  assert.deepEqual(second.favorites().at(-1).items, ["gw/a"], "a recreated view starts from the stored list");
+});
+
+test("favorite models reach a subagent panel too", async t => {
+  const state = memento({ "navai.favoriteModels": ["gw/a"] });
+  const { b, event, dom, tick, panels } = fullChat(t, state);
+  b.state.session = "P"; b.scheduleChildRead = () => {};
+  event("subagent.spawned", { parent_session_id: "P", child_session_id: "C", agent: "plan", goal: "work" });
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ parent_session_id: "P", promptable: false, child_status: "done", agent: "plan" })));
+  dom.window.document.querySelector(".child-open").click(); await tick(); await tick();
+  assert.equal(panels.length, 1);
+  await tick();
+  const seen = [];
+  const original = panels[0].panel.webview.postMessage;
+  panels[0].panel.webview.postMessage = data => { seen.push(data); original(data); };
+  panels[0].send({ type: "ready", generation: b.currentGeneration() });
+  assert.deepEqual(seen.find(m => m.type === "favorites")?.items, ["gw/a"]);
+  panels[0].panel.dispose();
 });

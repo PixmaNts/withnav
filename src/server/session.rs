@@ -16,6 +16,7 @@ pub use super::config::{HttpConfig, ServerConfig};
 pub struct AppState {
     service: Service,
     pub http: Arc<HttpConfig>,
+    pub(super) settings_write: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -37,6 +38,7 @@ impl AppState {
         Ok(Self {
             service: Service::with_hooks(session, hooks)?,
             http: Arc::new(http),
+            settings_write: Arc::default(),
         })
     }
 }

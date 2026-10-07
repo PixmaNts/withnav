@@ -328,7 +328,8 @@ _Avoid_: hook, event (too generic)
 
 **Pipeline**:
 The editable chain that turns a trigger into an action: the questions the instinct asks, and the
-branches that read the answers.
+branches that read the answers. Today it is one flat batch of questions followed by ordered
+branches; a staged, conditional version is a flow (below).
 _Avoid_: workflow, graph, rules
 
 **Question**:
@@ -349,6 +350,42 @@ _Avoid_: outcome, effect
 Running a recorded history of triggers through a different pipeline to see which actions it would
 have chosen, compared against the driver's verdicts.
 _Avoid_: backtest, simulation
+
+## Flows
+
+Planned for 0.6, not shipped; see [ADR 0012](docs/adr/0012-extractable-system-one-flows.md).
+
+**Flow**:
+A staged set of instinct questions where an earlier answer can choose which question runs next, ending in an action. It has no loops. The existing pipeline is the flat, single-batch case.
+_Avoid_: workflow, automation, subagent (a subagent is a child session, not a flow)
+
+**Flow definition**:
+The definition of a flow with the inputs each step may read. Graph and text are two views of it. Once validated and activated, a version is immutable; an unsaved or saved draft is still being edited.
+_Avoid_: flow file (the file is where it is stored), script
+
+**Flow run**:
+One evaluation of a flow definition for one event, within explicit call, input and time limits; it ends in a proposed action and a trace.
+_Avoid_: execution, job
+
+**Draft**:
+A flow definition being edited and not running, unsaved in the studio or saved to its file. Neither editing nor saving it changes what is active; only explicit activation does.
+_Avoid_: pending
+
+**Active version**:
+The flow definition currently producing actions for one workspace. Activation is explicit; the previous active version is kept for rollback.
+_Avoid_: deployed, published, live
+
+**Observation**:
+Evaluating a flow on real events, possibly calling the instinct, without applying any action or changing any production state.
+_Avoid_: shadow mode, dry run
+
+**Replay** (flows):
+Re-running recorded answers through a flow definition without calling any model. It is comparable only when the rendered requests, model and variant, and selected inputs match what the definition would send now.
+_Avoid_: re-evaluation (that calls the model again)
+
+**Workspace trust**:
+One explicit driver decision that lets a workspace's own flow definitions read the context they declare. It activates nothing and grants no tool permission or model destination.
+_Avoid_: permission, approval
 
 ## Context budget
 

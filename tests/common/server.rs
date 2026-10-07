@@ -76,6 +76,7 @@ pub struct TestServerConfig {
     variants: Option<Value>,
     default_variant: Option<String>,
     omniroute: bool,
+    web: Option<navai::server::WebConfig>,
 }
 
 impl TestServerConfig {
@@ -106,6 +107,7 @@ impl TestServerConfig {
             variants: None,
             default_variant: None,
             omniroute: false,
+            web: None,
         }
     }
 
@@ -161,6 +163,12 @@ impl TestServerConfig {
     /// A `default_variant` on an alias with no `variants` of its own.
     pub fn default_variant(mut self, name: &str) -> Self {
         self.default_variant = Some(name.to_string());
+        self
+    }
+
+    /// Serves the browser client's files too, as `navai web` does, with these launch workspaces.
+    pub fn web(mut self, launch_workspaces: Vec<PathBuf>) -> Self {
+        self.web = Some(navai::server::WebConfig { launch_workspaces });
         self
     }
 
@@ -266,6 +274,7 @@ impl TestServerConfig {
                 .unwrap_or_else(|| self.root.join("history.db")),
             data_dir: self.root.join("data"),
             rules_roots: self.rules_roots.clone(),
+            web: self.web.clone(),
         }
     }
 

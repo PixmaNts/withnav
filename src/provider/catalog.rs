@@ -21,6 +21,53 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const TTL: u64 = 86_400;
+
+/// Explicit connectivity probe: no catalogue or cache files are written, and errors contain no upstream body.
+pub async fn test_gateway(
+    name: &str,
+    provider: &super::config::ProviderConfig,
+    key: String,
+) -> serde_json::Value {
+    let start = Instant::now();
+    let clients = ClientCache::default();
+    let result = async {
+        let client = ModelClient::for_catalog(name, provider, key, &clients)?;
+        client
+            .get_json(
+                "models",
+                Duration::from_millis(provider.connect_timeout_ms.max(1)),
+                &CancellationToken::new(),
+            )
+            .await
+    }
+    .await;
+    let (ok, status, count, error) = match result {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(Vec::len))
+        {
+            Some(count) => (true, Some(200), Some(count), None),
+            None => (
+                false,
+                Some(200),
+                None,
+                Some("invalid model list".to_owned()),
+            ),
+        },
+        Err(ProviderError::Api { status, .. }) => (
+            false,
+            (status != 0).then_some(status),
+            None,
+            Some(if status == 0 {
+                "request failed".into()
+            } else {
+                format!("HTTP {status}")
+            }),
+        ),
+        Err(_) => (false, None, None, Some("connection failed".to_owned())),
+    };
+    serde_json::json!({"ok":ok,"status":status,"latency_ms":start.elapsed().as_millis(),"model_count":count,"error":error})
+}
 /// Version 2 added the effort tiers. A version 1 file still holds valid
 /// limits: it is read as a fallback (tiers unknown) and refreshed at once to
 /// learn the tiers.

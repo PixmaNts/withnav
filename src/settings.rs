@@ -1,6 +1,8 @@
 //! User settings in `<config_dir>/config.json`: a JSON object whose keys belong to the clients
 //! that read them (`tui` for the terminal client). Saving keeps every key it does not know, so
 //! clients of different versions can share the file.
+//! Cooperating writers use `update` and a stable advisory lock. Manual edits by other programs
+//! are outside this guarantee; PUT revision checks still detect edits made before its read.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -42,6 +44,47 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Reads a dotted settings key without dropping unknown sibling keys.
+    pub fn get_dotted(&self, key: &str) -> Option<&Value> {
+        let mut parts = key.split('.');
+        let mut value = self.root.get(parts.next()?)?;
+        for part in parts {
+            value = value.get(part)?;
+        }
+        Some(value)
+    }
+
+    /// Null removes just the selected key; writes preserve unrelated objects.
+    pub fn set_dotted(&mut self, key: &str, value: Value) {
+        fn set(map: &mut Map<String, Value>, parts: &[&str], value: Value) {
+            if parts.len() == 1 {
+                if value.is_null() {
+                    map.remove(parts[0]);
+                } else {
+                    map.insert(parts[0].into(), value);
+                }
+                return;
+            }
+            if value.is_null() && !map.contains_key(parts[0]) {
+                return;
+            }
+            let child = map
+                .entry(parts[0])
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !child.is_object() {
+                if value.is_null() {
+                    return;
+                }
+                *child = Value::Object(Map::new());
+            }
+            set(
+                child.as_object_mut().expect("object created above"),
+                &parts[1..],
+                value,
+            );
+        }
+        set(&mut self.root, &key.split('.').collect::<Vec<_>>(), value);
+    }
     /// Assignment-mode detection from the same parsed object as its typed getters.
     pub fn has_assignment_configuration(&self) -> bool {
         self.root.contains_key("agents") || self.root.contains_key("default_agent")
@@ -131,6 +174,21 @@ impl Settings {
         self.root.get("tui")?.get("theme")?.as_str()
     }
 
+    /// The models the terminal client marked as favorites, `tui.favorite_models`. Entries that
+    /// are not strings are ignored.
+    pub fn tui_favorite_models(&self) -> Vec<String> {
+        self.root
+            .get("tui")
+            .and_then(|tui| tui.get("favorite_models"))
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// `subagents.max_concurrent`: how many children one session may have at
     /// once (starting, running or waiting for an answer). Absent means
     /// [`DEFAULT_MAX_SUBAGENTS`]; anything but an integer from 1 to
@@ -167,6 +225,27 @@ impl Settings {
             tui.insert("theme".into(), Value::String(id.into()));
         }
     }
+
+    /// Stores the favorite models; an empty list removes the key. Other `tui` keys stay.
+    pub fn set_tui_favorite_models(&mut self, names: &[String]) {
+        let tui = self
+            .root
+            .entry("tui")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !tui.is_object() {
+            *tui = Value::Object(Map::new());
+        }
+        if let Value::Object(tui) = tui {
+            if names.is_empty() {
+                tui.remove("favorite_models");
+            } else {
+                tui.insert(
+                    "favorite_models".into(),
+                    Value::Array(names.iter().cloned().map(Value::String).collect()),
+                );
+            }
+        }
+    }
 }
 
 fn private_scratch_root(runtime: Option<&Path>, home: &Path) -> PathBuf {
@@ -193,14 +272,28 @@ pub fn path(config_dir: &Path) -> PathBuf {
 
 /// Reads the settings; a missing file gives the defaults.
 pub fn load(config_dir: &Path) -> Result<Settings, SettingsError> {
+    load_with_revision(config_dir).map(|(settings, _)| settings)
+}
+
+/// Parse and fingerprint exactly the same snapshot of the file.
+pub fn load_with_revision(config_dir: &Path) -> Result<(Settings, String), SettingsError> {
     let path = path(config_dir);
-    let text = match std::fs::read_to_string(&path) {
+    let bytes = match std::fs::read(&path) {
         Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Settings::default(), "absent".into()))
+        }
         Err(source) => return Err(SettingsError::Read { path, source }),
     };
-    match serde_json::from_str::<Value>(&text) {
-        Ok(Value::Object(root)) => Ok(Settings { root }),
+    let revision = format!(
+        "fnv:{:016x}",
+        bytes
+            .iter()
+            .fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b))
+                .wrapping_mul(0x100000001b3))
+    );
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(root)) => Ok((Settings { root }, revision)),
         Ok(_) => Err(SettingsError::Parse {
             path,
             reason: "the top level is not an object".into(),
@@ -235,16 +328,92 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
     Ok(())
 }
 
+/// Reads, edits and writes the settings while holding an exclusive advisory lock on
+/// `config.json.lock`, so two Navai processes (a TUI saving its theme, a WebUI saving a
+/// setting) cannot lose each other's changes. `edit` gets the settings and the revision of the
+/// bytes they were parsed from; an error from it leaves the file untouched. Programs that edit
+/// `config.json` without taking the lock are outside this guarantee.
+pub fn update<T, E: From<SettingsError>>(
+    config_dir: &Path,
+    edit: impl FnOnce(&mut Settings, &str) -> Result<T, E>,
+) -> Result<T, E> {
+    let lock_path = config_dir.join("config.json.lock");
+    let error = |source| SettingsError::Write {
+        path: lock_path.clone(),
+        source,
+    };
+    std::fs::create_dir_all(config_dir)
+        .map_err(error)
+        .map_err(E::from)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(error)
+        .map_err(E::from)?;
+    let _lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, e)| error(std::io::Error::from(e)))
+        .map_err(E::from)?;
+    let (mut settings, revision) = load_with_revision(config_dir).map_err(E::from)?;
+    let result = edit(&mut settings, &revision)?;
+    save(config_dir, &settings).map_err(E::from)?;
+    Ok(result)
+}
+
 /// Saves the terminal client's theme. An unreadable file is left untouched rather than replaced.
 pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> {
-    let mut settings = load(config_dir)?;
-    settings.set_tui_theme(id);
-    save(config_dir, &settings)
+    update(config_dir, |settings, _| {
+        settings.set_tui_theme(id);
+        Ok(())
+    })
+}
+
+/// Saves the terminal client's favorite models. An unreadable file is left untouched.
+pub fn save_tui_favorite_models(config_dir: &Path, names: &[String]) -> Result<(), SettingsError> {
+    update(config_dir, |settings, _| {
+        settings.set_tui_favorite_models(names);
+        Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_revision_matches_parsed_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        save_tui_theme(dir.path(), "nord-dark").unwrap();
+        let (snapshot, revision) = load_with_revision(dir.path()).unwrap();
+        save_tui_theme(dir.path(), "ayu-light").unwrap();
+        assert_eq!(snapshot.tui_theme(), Some("nord-dark"));
+        assert_ne!(revision, load_with_revision(dir.path()).unwrap().1);
+    }
+    #[test]
+    fn concurrent_updates_preserve_keys_despite_stale_views() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            for key in ["first", "second"] {
+                let barrier = barrier.clone();
+                let path = dir.path();
+                scope.spawn(move || {
+                    let stale = load(path).unwrap();
+                    assert!(stale.get_dotted(key).is_none());
+                    barrier.wait();
+                    update::<_, SettingsError>(path, |settings, _| {
+                        settings.set_dotted(key, Value::Bool(true));
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.get_dotted("first"), Some(&Value::Bool(true)));
+        assert_eq!(settings.get_dotted("second"), Some(&Value::Bool(true)));
+    }
     #[test]
     fn assignment_mode_uses_captured_settings_not_replaced_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -401,7 +570,8 @@ mod tests {
         assert_eq!(raw["tui"]["sidebar"], false);
         assert_eq!(raw["n"], 3);
         let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(leftovers.len(), 1, "no temporary file is left behind");
+        assert_eq!(leftovers.len(), 2, "only config and its stable lock remain");
+        assert!(dir.path().join("config.json.lock").is_file());
     }
 
     #[test]
@@ -448,6 +618,49 @@ mod tests {
             .root
             .insert("subagents".into(), serde_json::json!({ "other": 1 }));
         assert_eq!(settings.subagents_max_concurrent(), Ok(4));
+    }
+
+    #[test]
+    fn favorite_models_round_trip_and_keep_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            path(dir.path()),
+            r#"{"editor":{"font":"mono"},"tui":{"theme":"ayu-dark","sidebar":false},"n":3}"#,
+        )
+        .unwrap();
+        assert!(load(dir.path()).unwrap().tui_favorite_models().is_empty());
+        let names = vec!["a/one".to_string(), "b/two".to_string()];
+        save_tui_favorite_models(dir.path(), &names).unwrap();
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.tui_favorite_models(), names);
+        assert_eq!(settings.tui_theme(), Some("ayu-dark"));
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+        assert_eq!(raw["editor"]["font"], "mono");
+        assert_eq!(raw["tui"]["sidebar"], false);
+        assert_eq!(raw["n"], 3);
+        // Saving the theme afterwards keeps the favorites; an empty list drops the key only.
+        save_tui_theme(dir.path(), "nord-dark").unwrap();
+        assert_eq!(load(dir.path()).unwrap().tui_favorite_models(), names);
+        save_tui_favorite_models(dir.path(), &[]).unwrap();
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+        assert!(raw["tui"].get("favorite_models").is_none());
+        assert_eq!(raw["tui"]["theme"], "nord-dark");
+    }
+
+    #[test]
+    fn malformed_favorite_models_are_ignored_not_fatal() {
+        let mut settings = Settings::default();
+        settings.root.insert(
+            "tui".into(),
+            serde_json::json!({"favorite_models": ["ok", 3, null, "also"]}),
+        );
+        assert_eq!(settings.tui_favorite_models(), ["ok", "also"]);
+        settings
+            .root
+            .insert("tui".into(), serde_json::json!({"favorite_models": "x"}));
+        assert!(settings.tui_favorite_models().is_empty());
     }
 
     #[test]

@@ -26,8 +26,8 @@ navai-lsp   (one process, two channels: ADR 0006)
 ```
 
 A second binary, `navai` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
-`run` (one task in a terminal), `serve` (the session server alone), `auth`, and `tui` (the terminal
-chat client, below). `navai run` exits 3 when permission is required and 130 when interrupted.
+`run` (one task in a terminal), `serve` (the session server alone), `auth`, `tui` (the terminal
+chat client, below) and `web` (the browser chat client, below). `navai run` exits 3 when permission is required and 130 when interrupted.
 
 ## Modules
 
@@ -41,7 +41,8 @@ Dependencies point down this list. A module never imports one above it.
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
-| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
+| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, `GET /v1/workspaces`, `GET /v1/intent` | session state, the model layers |
+| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -87,8 +88,8 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
 | `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar and right column shown); data only |
-| `git.rs` | the workspace's branch and changed files: `read` runs `git status` (with a timeout, never on the reducer), `parse` reads its output; `None` outside a repository |
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
+| `config.rs` | Settings HTTP wire types and data-only editing state: six ordered sections, rows, summaries, filtering, staged changes, sequential revision-carrying writes, stale reload and validation errors. `State.config` owns it; `UiState.screen == Screen::Config` routes to Settings instead of the session transcript. `UiState.settings_target` gives the shared model picker its settings key, API filter and title. No server/settings internals or rendering. |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
 | `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
@@ -113,7 +114,29 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
-| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. |
+| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. `ctrl+f` marks a favorite; favorites (`tui.favorite_models` in `config.json`) are listed first in an always-open section that is also kept in each model's group. |
+
+### The browser client (`navai web`)
+
+`navai web` (`src/app/web.rs`) starts the same private in-process server as `navai tui`
+(`src/app/embedded.rs`: preflight on every `--workspace`, loopback only, a per-process bearer token,
+graceful stop), prints `Navai WebUI: http://127.0.0.1:<port>/#token=<token>`, opens it with
+`xdg-open`/`open` unless `--no-open`, and runs until Ctrl-C. The token rides in the URL fragment, so the
+browser never sends it to a server; the page keeps it and sends it as a bearer header.
+
+The single-page app lives in `webui/`; its build output `webui/dist/` is committed and embedded in the
+binary with `include_dir`, so `cargo build` needs no Node. The files are served by `server/web.rs` only
+when `ServerConfig.web` is set (`navai web` alone; `serve`, the terminal client and the language server
+leave it `None` and answer only the API): `GET /` and any non-`/v1/` path return the file in `dist/`,
+else `index.html`. Those paths and `/v1/health` need no token; every other `/v1/*` route still does,
+and an unknown `/v1/` path is a 404, never the page. HTML carries a strict Content-Security-Policy,
+`nosniff` and `no-referrer`.
+
+Two read endpoints serve the page, both behind the token: `GET /v1/workspaces` lists the launch
+workspaces (kept in `WebConfig`, argument order, `launched:true`) and then the workspaces of the
+history store (`HistoryStore::workspaces`: top-level conversations only, directories that no longer
+exist skipped), each with its git branch and change count; `GET /v1/intent?workspace=` returns the
+parsed `.navigator/intent.md`.
 
 ## Data flows
 
@@ -466,6 +489,14 @@ the later 0.6 scope, not this contract.
 
 ## Where new code goes
 
+- Settings HTTP edits live in `server/settings.rs`: shared `settings::update` locks a stable sidecar
+  across snapshot read, revision comparison, mutation and atomic save. `server/settings/editor.rs` owns
+  editable keys, defaults and scalar validation; `provider/assignments.rs` checks proposed model
+  API and offered variants without runtime fallback. Unknown config keys and siblings survive.
+  `restart` means after Navai restarts (conservative for layers). `new_sessions` means next use:
+  new sessions, model/agent switches or newly started subagents; running turns keep their values.
+  `live` means the changing client applies it at once; other open clients on their next start.
+
 - Canonical identity parsing belongs in `provider/model_name.rs` (`ModelName`), assignment and
   default-agent validation in `provider/assignments.rs`, and shared lower-layer construction in
   `provider/layers.rs`. Do not put these policies in clients or duplicate them in navigator bootstrap.
@@ -550,6 +581,8 @@ the later 0.6 scope, not this contract.
   required, 130 interrupted.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Behaviour that should be tunable goes in the pipeline (TOML and prompts), not in Rust (ADR 0005).
+- The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
+- A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `tui`.
 - `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do

@@ -2,7 +2,7 @@
   "name": "navai",
   "displayName": "Navai",
   "description": "Pair-programming navigator: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "publisher": "pixmants",
   "private": true,
   "engines": {
@@ -36,6 +36,12 @@
     },
     "commands": [
       {
+        "command": "navai.openSettings",
+        "title": "Open Settings",
+        "category": "Navai",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "navai.focusChat",
         "title": "Focus Cognition Chat",
         "category": "Navai"
@@ -61,6 +67,15 @@
         "category": "Navai"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "navai.openSettings",
+          "when": "view == navai.chat",
+          "group": "navigation"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "navai.markUseful",

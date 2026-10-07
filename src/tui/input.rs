@@ -84,6 +84,9 @@ pub fn route_key(
     if matches!(key.kind, KeyEventKind::Release) {
         return None;
     }
+    if ui.screen == super::config::Screen::Config && ui.overlay.is_none() {
+        return config_key(key, state);
+    }
     if ui.child_confirm.is_some() {
         return match key.code {
             KeyCode::Enter | KeyCode::Char('y') => Some(Action::ConfirmChildControl),
@@ -117,6 +120,7 @@ pub fn route_key(
                     return None;
                 }
                 ui.overlay = None;
+                ui.settings_target = None;
                 return Some(Action::CloseOverlay);
             }
             KeyCode::Up => *selected = selected.saturating_sub(1),
@@ -139,12 +143,44 @@ pub fn route_key(
             KeyCode::Char('n')
                 if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
+                if ui.settings_target.is_some() {
+                    return None;
+                }
                 let name = names.get(*selected)?.clone();
-                if name.starts_with("group:") {
+                if name.starts_with("group:") || name.starts_with(super::catalog::SECTION_PREFIX) {
                     return None;
                 }
                 variant_step(state, ui, VariantPick::NewConversation(name));
                 return None;
+            }
+            // ctrl+f in the model list: the highlighted model becomes a favorite, or stops being
+            // one. A heading does nothing. The highlight stays on the same model: on its row in
+            // the Favorites section if it is still there, else on its row in its group.
+            KeyCode::Char('f')
+                if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let at = *selected;
+                let rows = super::catalog::rows(&state.catalog, ui);
+                let (name, was_favorite_row) = match rows.get(at)? {
+                    super::catalog::Row::Model(m) => (m.name.clone(), false),
+                    super::catalog::Row::Favorite(m) => (m.name.clone(), true),
+                    _ => return None,
+                };
+                drop(rows);
+                if !ui.favorite_models.remove(&name) {
+                    ui.favorite_models.insert(name.clone());
+                }
+                let after = super::catalog::rows(&state.catalog, ui);
+                let position = after
+                    .iter()
+                    .position(|r| r.key() == name && r.is_favorite_row() == was_favorite_row)
+                    .or_else(|| after.iter().position(|r| r.key() == name));
+                let count = after.len();
+                let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
+                *selected = position.unwrap_or(0).min(count.saturating_sub(1));
+                return Some(Action::SaveFavoriteModels(
+                    ui.favorite_models.iter().cloned().collect(),
+                ));
             }
             // alt+a: fold every group, or unfold them all; the selection stays on its row, or
             // moves to the gateway header that held it.
@@ -159,19 +195,29 @@ pub fn route_key(
                         gateway = Some(format!("group:{key}"));
                     }
                     if i == at {
-                        before = Some((row.key(), gateway.clone()));
+                        before = Some((row.key(), row.is_favorite_row(), gateway.clone()));
                     }
                 }
                 super::catalog::toggle_all(&state.catalog, ui);
-                let after = overlay_names(overlay, state, ui);
-                let found = before.and_then(|(name, header)| {
+                let after = super::catalog::rows(&state.catalog, ui);
+                let found = before.and_then(|(name, favorite, header)| {
                     after
                         .iter()
-                        .position(|n| *n == name)
-                        .or_else(|| header.and_then(|h| after.iter().position(|n| *n == h)))
+                        .position(|r| r.key() == name && r.is_favorite_row() == favorite)
+                        .or_else(|| header.and_then(|h| after.iter().position(|r| r.key() == h)))
                 });
+                let count = after.len();
                 let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
-                *selected = found.unwrap_or(0).min(after.len().saturating_sub(1));
+                *selected = found.unwrap_or(0).min(count.saturating_sub(1));
+                return None;
+            }
+            // The Favorites heading has no fold: these keys do nothing on it.
+            KeyCode::Enter | KeyCode::Left | KeyCode::Right
+                if overlay == Overlay::Models
+                    && names
+                        .get(*selected)
+                        .is_some_and(|n| n.starts_with(super::catalog::SECTION_PREFIX)) =>
+            {
                 return None;
             }
             KeyCode::Enter | KeyCode::Left | KeyCode::Right
@@ -195,6 +241,9 @@ pub fn route_key(
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
+                    Overlay::Models if ui.settings_target.is_some() => {
+                        Action::Config(super::config::ConfigAction::PickModel(name.clone()))
+                    }
                     Overlay::Agents => Action::PickAgent(name.clone()),
                     Overlay::Skills => {
                         editor.set_text(&format!("/skill {name} "));
@@ -429,6 +478,66 @@ pub fn route_key(
 /// A key while the palette follows the editor. Every printable key and backspace edit the line;
 /// the palette then closes when the line is no longer a command name being typed (a space or an
 /// argument after it, a name no row starts with, `//`, an empty line), leaving the line for enter.
+fn config_key(key: KeyEvent, state: &State) -> Option<Action> {
+    use super::config::{ConfigAction as C, LeaveChoice, Section};
+    let config = &state.config;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let action = if config.leave_prompt {
+        match key.code {
+            KeyCode::Char('w') => C::ResolveLeave(LeaveChoice::Write),
+            KeyCode::Char('d') => C::ResolveLeave(LeaveChoice::Discard),
+            KeyCode::Esc | KeyCode::Char('s') => C::ResolveLeave(LeaveChoice::Stay),
+            _ => return None,
+        }
+    } else if let Some(text) = &config.list_editor {
+        match key.code {
+            KeyCode::Esc => C::CancelList,
+            KeyCode::Enter => C::ListText(format!("{text}\n")),
+            KeyCode::Char('s') if ctrl => C::CommitList,
+            KeyCode::Backspace => {
+                let mut text = text.clone();
+                text.pop();
+                C::ListText(text)
+            }
+            KeyCode::Char(c) if !ctrl => C::ListText(format!("{text}{c}")),
+            _ => return None,
+        }
+    } else if config.filtering {
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc => C::FilterDone,
+            KeyCode::Backspace => {
+                let mut text = config.filter.clone();
+                text.pop();
+                C::Filter(text)
+            }
+            KeyCode::Char(c) if !ctrl => C::Filter(format!("{}{c}", config.filter)),
+            _ => return None,
+        }
+    } else {
+        match key.code {
+            KeyCode::Char('s') if ctrl => C::Write,
+            KeyCode::Char('z') if ctrl => C::Revert,
+            KeyCode::Char(c @ '1'..='6') if !ctrl => {
+                C::Jump(Section::ALL[(c as u8 - b'1') as usize])
+            }
+            KeyCode::BackTab => C::CycleSection(-1),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => C::CycleSection(-1),
+            KeyCode::Tab => C::CycleSection(1),
+            KeyCode::Up => C::Move(-1),
+            KeyCode::Down => C::Move(1),
+            KeyCode::Left => C::Step(-1),
+            KeyCode::Right => C::Step(1),
+            KeyCode::Char(' ') => C::Toggle,
+            KeyCode::Enter => C::Edit,
+            KeyCode::Char('/') => C::StartFilter,
+            KeyCode::Char('t') => C::TestGateway,
+            KeyCode::Esc => C::Leave,
+            _ => return None,
+        }
+    };
+    Some(Action::Config(action))
+}
+
 fn typed_palette_key(
     key: KeyEvent,
     state: &State,
@@ -692,6 +801,21 @@ pub fn route_paste(
     ui: &mut UiState,
     editor: &mut Editor,
 ) -> Option<Action> {
+    if ui.screen == super::config::Screen::Config && ui.overlay.is_none() {
+        use super::config::ConfigAction;
+        if let Some(draft) = &state.config.list_editor {
+            return Some(Action::Config(ConfigAction::ListText(format!(
+                "{draft}{text}"
+            ))));
+        }
+        if state.config.filtering {
+            return Some(Action::Config(ConfigAction::Filter(format!(
+                "{}{text}",
+                state.config.filter
+            ))));
+        }
+        return None;
+    }
     if state.read_only() {
         return None;
     }

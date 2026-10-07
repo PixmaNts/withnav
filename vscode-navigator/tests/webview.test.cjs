@@ -148,12 +148,12 @@ test('model picker levels: gateway 0, provider 1, model 2, direct models 1, no r
   const {dom,d,rows}=modelPicker(hierarchy);
   assert.deepEqual(rows(),[
     {text:'direct',level:'0',kind:'group',label:'direct, gateway'},
-    {text:'direct/solo',level:'1',kind:'option',label:null},
+    {text:'direct/solo',level:'1',kind:'option',label:'direct/solo'},
     {text:'omniroute',level:'0',kind:'group',label:'omniroute, gateway'},
     {text:'cc',level:'1',kind:'group',label:'cc, provider in omniroute'},
-    {text:'omniroute/cc/claude-opus',level:'2',kind:'option',label:null},
+    {text:'omniroute/cc/claude-opus',level:'2',kind:'option',label:'omniroute/cc/claude-opus'},
     {text:'kimi',level:'1',kind:'group',label:'kimi, provider in omniroute'},
-    {text:'omniroute/kimi/k2',level:'2',kind:'option',label:null},
+    {text:'omniroute/kimi/k2',level:'2',kind:'option',label:'omniroute/kimi/k2'},
   ]);
   const sheet=[...d.styleSheets].flatMap(s=>[...s.cssRules]).map(r=>r.cssText).join('\n');
   assert.match(sheet,/--picker-indent: 12px/);assert.match(sheet,/\[data-level="1"\][^}]*margin-left: var\(--picker-indent\)/);assert.match(sheet,/\[data-level="2"\][^}]*margin-left: calc\(2 \* var\(--picker-indent\)\)/);
@@ -189,7 +189,128 @@ test('model picker alt+a folds every group, then unfolds them all',()=>{
 test('model picker long canonical names stay whole in the title and wrap inside the indented row',()=>{
   const long='omniroute/cc/'+'very-long-model-name-'.repeat(8);
   const {dom,d}=modelPicker([{name:long,gateway:'omniroute',provider_group:'cc',upstream_id:long.slice(10)}]);
-  const option=d.querySelector('#picker-options [role=option]');assert.equal(option.title,long);assert.equal(option.querySelector('strong').textContent,long);assert.equal(option.dataset.level,'2');
+  const option=d.querySelector('#picker-options [role=option]');assert.equal(option.title,long);assert.equal(option.getAttribute('aria-label'),long);assert.equal(option.querySelector('strong').textContent,long.slice('omniroute/cc/'.length));assert.equal(option.dataset.level,'2');
   assert.equal(dom.window.getComputedStyle(option.querySelector('strong')).overflowWrap,'anywhere');
+  dom.window.close();
+});
+
+const ctrlF=(dom,target)=>{const e=new dom.window.KeyboardEvent('keydown',{key:'f',code:'KeyF',ctrlKey:true,bubbles:true,cancelable:true});target.dispatchEvent(e);return e;};
+const optionTitles=d=>[...d.querySelectorAll('#picker-options [role=option]')].map(o=>o.title);
+test('favorites section: first, unfoldable, starred, hidden when empty and filtered by search',()=>{
+  const {dom,d,receive,rows,type}=modelPicker(hierarchy);
+  assert(!d.querySelector('.picker-section'),'no favorites, no section');
+  assert.equal(rows()[0].text,'direct');
+  d.querySelector('#command-palette').hidden=true;
+  receive({type:'favorites',items:['omniroute/kimi/k2','direct/solo','gone/model']});
+  d.querySelector('#model').focus();dom.window.document.querySelector('#model').dispatchEvent(new dom.window.MouseEvent('mousedown',{bubbles:true,cancelable:true}));
+  const heading=d.querySelector('#picker-options > .picker-section');
+  assert.equal(heading.tagName,'H3');assert.equal(heading.textContent,'Favorites');assert.equal(heading.getAttribute('aria-label'),'Favorites, always open');
+  assert.equal(heading,d.querySelector('#picker-options').firstElementChild,'first');
+  assert.equal(heading.querySelector('button'),null,'no fold control');
+  assert.equal(heading.hasAttribute('aria-expanded'),false);
+  const titles=optionTitles(d);
+  assert.deepEqual(titles.slice(0,2),['direct/solo','omniroute/kimi/k2'],'sorted by name, unknown ones hidden');
+  assert.equal(titles.filter(t=>t==='direct/solo').length,2,'also kept in its group');
+  assert(!titles.includes('gone/model'));
+  const ids=[...d.querySelectorAll('#picker-options [role=option]')].map(o=>o.id);assert.equal(new Set(ids).size,ids.length);
+  assert.equal(ids[0],'command-option-0');
+  const stars=[...d.querySelectorAll('.favorite-toggle')];
+  assert.equal(stars.length,titles.length,'a star on every model row');
+  assert.deepEqual(stars.map(s=>s.getAttribute('aria-pressed')),titles.map(t=>String(['direct/solo','omniroute/kimi/k2'].includes(t))));
+  assert.equal(stars[0].getAttribute('aria-label'),'Remove from favorites');
+  assert.equal(stars.find(s=>s.getAttribute('aria-pressed')==='false').getAttribute('aria-label'),'Add to favorites');
+  assert.match(d.querySelector('#command-palette .picker-count').textContent,/Ctrl\+F favorite/);
+  // Alt+A folds every group; the section stays.
+  const search=d.querySelector('#command-palette .picker-search');search.focus();
+  search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
+  assert.deepEqual(optionTitles(d),['direct/solo','omniroute/kimi/k2']);
+  assert.deepEqual([...d.querySelectorAll('#picker-options .picker-group')].map(g=>g.getAttribute('aria-expanded')),['false','false']);
+  // Search shows only the matching favorites; none matching hides the heading.
+  type('k2');
+  assert.deepEqual(optionTitles(d).slice(0,2),['omniroute/kimi/k2','omniroute/kimi/k2']);
+  assert.equal(d.querySelectorAll('.picker-section').length,1);
+  search.value='cc';search.dispatchEvent(new dom.window.Event('input'));
+  assert(!d.querySelector('.picker-section'));assert.deepEqual(optionTitles(d),['omniroute/cc/claude-opus']);
+  dom.window.close();
+});
+test('favorites: ctrl+f posts toggleFavorite for the highlighted model, keeps the highlight and heals when the last one goes',()=>{
+  const {dom,d,posts,receive,key}=modelPicker(hierarchy);
+  const search=d.querySelector('#command-palette .picker-search');search.focus();
+  const active=()=>d.getElementById(search.getAttribute('aria-activedescendant')).title;
+  key('ArrowDown');assert.equal(active(),'omniroute/cc/claude-opus');
+  const before=posts.length;const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,true);
+  assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'toggleFavorite',name:'omniroute/cc/claude-opus',generation:1});assert.equal(posts.length,before+1);
+  assert.equal(d.querySelector('.picker-section'),null,'nothing changes until the host answers');
+  receive({type:'favorites',items:['omniroute/cc/claude-opus']});
+  assert(d.querySelector('.picker-section'));assert.equal(active(),'omniroute/cc/claude-opus','highlight stays on the same model');
+  assert.equal(search.getAttribute('aria-activedescendant'),'command-option-2','its row in its group');
+  // Toggled from the section row: removing the last favorite hides the section and keeps a valid row.
+  key('ArrowUp');key('ArrowUp');
+  assert.equal(search.getAttribute('aria-activedescendant'),'command-option-0');assert.equal(active(),'omniroute/cc/claude-opus','the section row');
+  ctrlF(dom,search);assert.equal(posts.at(-1).name,'omniroute/cc/claude-opus');
+  receive({type:'favorites',items:[]});
+  assert(!d.querySelector('.picker-section'));
+  assert.equal(active(),'omniroute/cc/claude-opus');
+  assert(d.getElementById(search.getAttribute('aria-activedescendant')));
+  // ctrl+f never posts selectModel and Enter on a favorite row picks the model.
+  receive({type:'favorites',items:['direct/solo']});
+  key('ArrowUp');
+  assert.equal(search.getAttribute('aria-activedescendant'),'command-option-0');
+  key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'direct/solo',generation:1});
+  dom.window.close();
+});
+test('favorites: the star toggles with the mouse without choosing the model and ctrl+f is ignored outside the model picker',()=>{
+  const {dom,d,posts,receive}=modelPicker(hierarchy);
+  const star=d.querySelector('#picker-options .favorite-toggle');
+  const before=posts.length;star.click();
+  assert.equal(posts.length,before+1);assert.equal(posts.at(-1).type,'toggleFavorite');assert.equal(posts.at(-1).name,'direct/solo');
+  assert(!posts.some(p=>p.type==='selectModel'));assert.equal(d.querySelector('#command-palette').hidden,false,'picker stays open');
+  assert.equal(star.tagName,'BUTTON');assert.equal(star.getAttribute('aria-label'),'Add to favorites');
+  receive({type:'favorites',items:['direct/solo']});
+  assert.equal(d.querySelector('#picker-options .favorite-toggle').getAttribute('aria-label'),'Remove from favorites');
+  // Another picker kind has no stars and ignores ctrl+f.
+  receive({type:'commandPicker',kind:'variant',items:[{name:'low',description:''}]});
+  assert.equal(d.querySelectorAll('.favorite-toggle').length,0);
+  const search=d.querySelector('#command-palette .picker-search');const n=posts.length;
+  const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(posts.length,n);
+  dom.window.close();
+});
+test('favorites: the first-50 cut applies to the groups only and option ids stay aligned with rows',()=>{
+  const many=Array.from({length:80},(_,i)=>({name:`gw/m${String(i).padStart(2,'0')}`,gateway:'gw',provider_group:'gw',upstream_id:`m${i}`}));
+  const {dom,d,posts,receive,key}=modelPicker(many);
+  receive({type:'favorites',items:['gw/m70','gw/m05']});
+  d.querySelector('#command-palette').hidden=true;
+  d.querySelector('#model').dispatchEvent(new dom.window.MouseEvent('mousedown',{bubbles:true,cancelable:true}));
+  const titles=optionTitles(d);
+  assert.deepEqual(titles.slice(0,2),['gw/m05','gw/m70']);assert.equal(titles.length,2+50);
+  const search=d.querySelector('#command-palette .picker-search');search.focus();
+  key('ArrowDown');key('ArrowDown');key('Enter');
+  assert.equal(posts.at(-1).name,titles[2],'enter picks the row that is highlighted');
+  dom.window.close();
+});
+
+test('model rows inside a group show the short name; favorites show the full name; title and accessible name stay canonical',()=>{
+  const {dom,d,receive}=modelPicker(hierarchy);
+  const visible=()=>[...d.querySelectorAll('#picker-options [role=option]')].map(o=>[o.querySelector('strong').textContent,o.title,o.getAttribute('aria-label')]);
+  assert.deepEqual(visible(),[
+    ['solo','direct/solo','direct/solo'],
+    ['claude-opus','omniroute/cc/claude-opus','omniroute/cc/claude-opus'],
+    ['k2','omniroute/kimi/k2','omniroute/kimi/k2'],
+  ]);
+  receive({type:'favorites',items:['omniroute/kimi/k2']});
+  assert.deepEqual(visible(),[
+    ['omniroute/kimi/k2','omniroute/kimi/k2',null],
+    ['solo','direct/solo','direct/solo'],
+    ['claude-opus','omniroute/cc/claude-opus','omniroute/cc/claude-opus'],
+    ['k2','omniroute/kimi/k2','omniroute/kimi/k2'],
+  ]);
+  // Search still matches the canonical name.
+  const search=d.querySelector('#command-palette .picker-search');search.value='omniroute/kimi';search.dispatchEvent(new dom.window.Event('input'));
+  assert.deepEqual(visible().map(v=>v[1]),['omniroute/kimi/k2','omniroute/kimi/k2']);
+  dom.window.close();
+});
+test('a model whose name does not start with its gateway/provider keeps its full name in a group',()=>{
+  const {dom,d}=modelPicker([{name:'odd/name',gateway:'omniroute',provider_group:'cc',upstream_id:'x'},{name:'omniroute/cc/',gateway:'omniroute',provider_group:'cc',upstream_id:'y'}]);
+  assert.deepEqual([...d.querySelectorAll('#picker-options [role=option] strong')].map(e=>e.textContent),['odd/name','omniroute/cc/']);
   dom.window.close();
 });

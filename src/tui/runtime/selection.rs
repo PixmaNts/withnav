@@ -17,7 +17,10 @@ pub(super) struct Selection {
 
 impl Runtime {
     pub(super) fn selection_key(&mut self, key: KeyEvent) -> bool {
-        if self.ui.overlay.is_some() || self.ui.child_confirm.is_some() {
+        if self.ui.screen != crate::tui::config::Screen::Session
+            || self.ui.overlay.is_some()
+            || self.ui.child_confirm.is_some()
+        {
             return false;
         }
         let shortcut = key.code == KeyCode::Char('c')

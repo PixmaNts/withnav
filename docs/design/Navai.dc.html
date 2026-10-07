@@ -16,7 +16,7 @@
 <div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
 <div style="min-width:1120px">
   <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px">
-    <div style="display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600"><i class="ph ph-compass" style="color:var(--ac);font-size:22px"></i>Navigator</div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600"><i class="ph ph-compass" style="color:var(--ac);font-size:22px"></i>Navai</div>
     <div style="display:flex;gap:4px">
       <sc-for list="{{ surfaces }}" as="s" hint-placeholder-count="3"><button onClick="{{ s.click }}" style="background:{{ s.bg }};color:{{ s.fg }};border:1px solid {{ s.bd }};border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;display:flex;gap:6px;align-items:center"><i class="{{ s.icon }}"></i>{{ s.label }}</button></sc-for>
     </div>
@@ -31,7 +31,7 @@
 <sc-if value="{{ isTui }}" hint-placeholder-val="{{ true }}">
 <div class="mono" style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:180px minmax(0,1fr) 290px;grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden;font-size:12.5px;line-height:1.55">
   <div style="grid-column:1/4;display:flex;gap:16px;padding:6px 14px;border-bottom:1px solid var(--bd);background:var(--pn);color:var(--mu)">
-    <span style="color:var(--ac)">◆ navigator</span><span>~/dev/rust-agent</span><span>develop ●3</span>
+    <span style="color:var(--ac)">◆ navai</span><span>~/dev/rust-agent</span><span>develop ●3</span>
     <span style="margin-left:auto;color:{{ modeColor }}">▌{{ modeName }}</span><span>cognition · {{ cogModel }} · {{ cogVariant }} · 41k/200k</span>
   </div>
   <div style="border-right:1px solid var(--bd);background:var(--pn);padding:10px 0;overflow:auto;display:flex;flex-direction:column;gap:2px">
@@ -223,7 +223,7 @@
 <sc-if value="{{ isWeb }}" hint-placeholder-val="{{ false }}">
 <div style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:240px minmax(0,1fr) 360px;grid-template-rows:auto minmax(0,1fr);overflow:hidden">
   <div style="grid-column:1/4;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn)">
-    <span style="display:flex;gap:6px;align-items:center;font-weight:600"><i class="ph ph-compass" style="color:var(--ac)"></i>Navigator</span>
+    <span style="display:flex;gap:6px;align-items:center;font-weight:600"><i class="ph ph-compass" style="color:var(--ac)"></i>Navai</span>
     <span style="color:var(--mu)">{{ wsName }} / {{ webCrumb }}</span>
     <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
       <span style="color:var(--mu);font-size:12px">Agent</span><button onClick="{{ setBuild }}" style="{{ segBuild }}">build</button><button onClick="{{ setPlan }}" style="{{ segPlan }}">plan</button>

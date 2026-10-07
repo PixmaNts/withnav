@@ -35,6 +35,9 @@ use super::{
 /// The generation an event is tagged with: the tab it belongs to.
 pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
+        ClientEvent::ConfigLoaded { generation, .. }
+        | ClientEvent::ConfigWritten { generation, .. }
+        | ClientEvent::GatewayTested { generation, .. } => generation,
         ClientEvent::Agents { generation, .. } | ClientEvent::Layers { generation, .. } => {
             generation
         }
@@ -326,6 +329,9 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
             | ClientEvent::Sessions { .. }
             | ClientEvent::Commands { .. }
             | ClientEvent::SettingsNotSaved { .. }
+            | ClientEvent::ConfigLoaded { .. }
+            | ClientEvent::ConfigWritten { .. }
+            | ClientEvent::GatewayTested { .. }
     );
     if shared {
         return apply(s, e, false);
@@ -352,6 +358,21 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
+        ClientEvent::ConfigLoaded {
+            request, result, ..
+        } => effects.extend(crate::tui::config::loaded(&mut s.config, request, result)),
+        ClientEvent::ConfigWritten {
+            key, value, result, ..
+        } => effects.extend(crate::tui::config::written(
+            &mut s.config,
+            key,
+            value,
+            result,
+        )),
+        ClientEvent::GatewayTested { name, result, .. } => {
+            s.config.testing_gateway = None;
+            s.config.gateway_tests.insert(name, result);
+        }
         ClientEvent::ChildEnvelope {
             child_session_id,
             envelope,

@@ -8,6 +8,14 @@
 //!   Session definitions are pinned for live sessions; base assignments project current config.
 //!   Missing authoritative saved model/variant provenance returns a diagnostic, never inferred override sources.
 //! - `GET  /v1/models?workspace=` -> canonical catalog entries and `default_agent`
+//! - `GET /v1/settings?workspace=` -> `{revision,paths,fields,gateways}`; no keys or header values.
+//! - `PUT /v1/settings?workspace=` accepts `{revision,key,value}`; null removes, stale revisions
+//!   return 409 reason `stale`, invalid choices 400 reason `invalid`. Writes are serialized and atomic.
+//!   `restart`: after Navai restarts (conservative for layers). `new_sessions`: next use, including
+//!   new sessions, model/agent switches and newly started subagents; running turns keep their values.
+//!   `live`: changing client applies at once; other open clients on their next start.
+//! - `POST /v1/gateways/{name}/test?workspace=` -> `{ok,status,latency_ms,model_count,error}`;
+//!   probes `/models` without writing the catalogue or returning upstream secrets.
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, variant, current_seq}`
@@ -31,6 +39,13 @@
 //!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"driver"}`.
 //!   If the consuming turn's pinned agent disables skills, the whole command is refused before
 //!   transcript mutation; `command.result` carries its command id as operation id and correlation.
+//! - `GET  /v1/workspaces`    -> `{workspaces:[{path,name,launched,session_count,updated_at?,branch?,dirty?}]}`:
+//!   the workspaces `navai web` was started with (`launched:true`, argument order), then the
+//!   history's other workspaces that still exist, newest activity first; child sessions are not counted.
+//! - `GET  /v1/intent?workspace=<abs path>` -> `{exists,intent,plan,decisions,active_spec,raw}`
+//!   from `.navigator/intent.md` (nullable strings; 400 without an absolute `workspace`)
+//! - Every other path, only when started by `navai web` (`ServerConfig.web`): the embedded browser
+//!   client's files, `index.html` for unknown non-`/v1/` paths; no token needed, unknown `/v1/` paths stay 404.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
 //!   (a command that cannot run is 200 with `ok:false` and an `error`; the same
@@ -130,11 +145,17 @@ pub struct StopAccepted {
 /// `tower::ServiceExt::oneshot`.
 pub fn app(state: AppState) -> Router {
     let token = state.http.bearer_token.clone();
-    Router::new()
+    let web = state.http.web.is_some();
+    let router = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/models", get(list_models))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
+        .route(
+            "/v1/settings",
+            get(super::settings::get).put(super::settings::put),
+        )
+        .route("/v1/gateways/{name}/test", post(super::settings::test))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
@@ -149,35 +170,45 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/sessions/{id}/context", get(get_context))
         .route("/v1/sessions/{id}/skills", get(get_skills))
+        .route("/v1/workspaces", get(crate::server::web::list_workspaces))
+        .route("/v1/intent", get(crate::server::web::get_intent))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
         )
-        .with_state(state)
-        .layer(axum::middleware::from_fn(
-            move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
-                let token = token.clone();
-                async move {
-                    if request.uri().path() != "/v1/health" {
-                        if let Some(token) = token {
-                            use axum::http::header::AUTHORIZATION;
-                            let expected = format!("Bearer {token}");
-                            if request
-                                .headers()
-                                .get(AUTHORIZATION)
-                                .and_then(|v| v.to_str().ok())
-                                != Some(&expected)
-                            {
-                                return StatusCode::UNAUTHORIZED.into_response();
-                            }
+        .with_state(state);
+    let router = if web {
+        router.fallback(crate::server::web::serve_asset)
+    } else {
+        router
+    };
+    router.layer(axum::middleware::from_fn(
+        move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+            let token = token.clone();
+            async move {
+                let path = request.uri().path();
+                let public =
+                    path == "/v1/health" || (web && crate::server::web::is_public_asset_path(path));
+                if !public {
+                    if let Some(token) = token {
+                        use axum::http::header::AUTHORIZATION;
+                        let expected = format!("Bearer {token}");
+                        if request
+                            .headers()
+                            .get(AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            != Some(&expected)
+                        {
+                            return StatusCode::UNAUTHORIZED.into_response();
                         }
                     }
-                    next.run(request).await
                 }
-            },
-        ))
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 /// Loopback bind + graceful shutdown (SIGINT/SIGTERM -> every active session
@@ -1084,6 +1115,7 @@ mod tests {
             history_db: dir.path().join("history.db"),
             data_dir: dir.path().join("data"),
             rules_roots: Default::default(),
+            web: None,
         })
         .expect("state over a temp database");
         (dir, state)

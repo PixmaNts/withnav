@@ -2785,6 +2785,10 @@ impl Service {
                         let result = sequencer.commit_acked(event, Box::new(move |envelope| Box::pin(async move {
                             #[cfg(debug_assertions)]
                             {
+                                // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
+                                // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
+                                // name until the minimum moves past the rename.
+                                #[allow(deprecated)]
                                 let previous = failure_countdown.fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |n| {
                                     if n == usize::MAX { Some(n) } else { n.checked_sub(1) }
                                 });

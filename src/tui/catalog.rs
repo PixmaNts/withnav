@@ -13,14 +13,29 @@ pub enum Row<'a> {
         level: u8,
     },
     Model(&'a ModelEntry),
+    /// The "Favorites" heading: always open, never folded.
+    Section {
+        label: &'static str,
+    },
+    /// A favorite model listed in the Favorites section, ahead of its place in its group.
+    Favorite(&'a ModelEntry),
 }
+
+/// Key of the Favorites heading; its prefix tells it from a foldable `group:` row.
+pub const SECTION_PREFIX: &str = "section:";
 
 impl Row<'_> {
     pub fn key(&self) -> String {
         match self {
             Self::Group { key, .. } => format!("group:{key}"),
-            Self::Model(model) => model.name.clone(),
+            Self::Model(model) | Self::Favorite(model) => model.name.clone(),
+            Self::Section { .. } => format!("{SECTION_PREFIX}favorites"),
         }
+    }
+
+    /// Whether this row sits in the Favorites section (as opposed to its model's group).
+    pub fn is_favorite_row(&self) -> bool {
+        matches!(self, Self::Favorite(_))
     }
 
     /// Visual depth in the picker: gateway 0, provider 1, model 2, or 1 for a model of a
@@ -28,10 +43,32 @@ impl Row<'_> {
     pub fn level(&self) -> u8 {
         match self {
             Self::Group { level, .. } => *level,
+            Self::Section { .. } => 0,
+            Self::Favorite(_) => 1,
             Self::Model(model) if model.provider_group == model.gateway => 1,
             Self::Model(_) => 2,
         }
     }
+}
+
+/// The model's name inside its group: the canonical name without the `gateway/provider_group/`
+/// prefix the group headers already show (`gateway/` for a direct gateway, whose provider group is
+/// the gateway itself). The full name when the prefix does not match.
+pub fn short_name(model: &ModelEntry) -> &str {
+    let rest = if model.provider_group == model.gateway {
+        model
+            .name
+            .strip_prefix(model.gateway.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+    } else {
+        model
+            .name
+            .strip_prefix(model.gateway.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+            .and_then(|rest| rest.strip_prefix(model.provider_group.as_str()))
+            .and_then(|rest| rest.strip_prefix('/'))
+    };
+    rest.filter(|rest| !rest.is_empty()).unwrap_or(&model.name)
 }
 
 /// Folds every gateway and provider group, or unfolds them all when every group is already
@@ -53,7 +90,14 @@ pub fn toggle_all(catalog: &[ModelEntry], ui: &mut UiState) {
         ui.collapsed_models.clear();
         return;
     }
-    for model in catalog.iter().filter(|m| m.api == ApiKind::Chat) {
+    for model in catalog.iter().filter(|m| {
+        m.api
+            == ui
+                .settings_target
+                .as_ref()
+                .map(|t| t.api)
+                .unwrap_or(ApiKind::Chat)
+    }) {
         ui.collapsed_models.insert(model.gateway.clone());
         if model.provider_group != model.gateway {
             ui.collapsed_models
@@ -62,12 +106,20 @@ pub fn toggle_all(catalog: &[ModelEntry], ui: &mut UiState) {
     }
 }
 
-/// The view and keyboard routing share exactly the same rows. Search opens every group.
+/// The view and keyboard routing share exactly the same rows. Search opens every group. Favorite
+/// models come first, in a section that is always open and also shown while searching.
 pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
     let filter = ui.filter.to_lowercase();
     let mut groups: BTreeMap<&str, BTreeMap<&str, Vec<&ModelEntry>>> = BTreeMap::new();
     for model in catalog {
-        if model.api == ApiKind::Chat && model.name.to_lowercase().contains(&filter) {
+        if model.api
+            == ui
+                .settings_target
+                .as_ref()
+                .map(|t| t.api)
+                .unwrap_or(ApiKind::Chat)
+            && model.name.to_lowercase().contains(&filter)
+        {
             groups
                 .entry(&model.gateway)
                 .or_default()
@@ -77,6 +129,24 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
         }
     }
     let mut rows = vec![];
+    let mut favorites: Vec<&ModelEntry> = catalog
+        .iter()
+        .filter(|m| {
+            m.api
+                == ui
+                    .settings_target
+                    .as_ref()
+                    .map(|t| t.api)
+                    .unwrap_or(ApiKind::Chat)
+                && ui.favorite_models.contains(&m.name)
+                && m.name.to_lowercase().contains(&filter)
+        })
+        .collect();
+    favorites.sort_by(|a, b| a.name.cmp(&b.name));
+    if !favorites.is_empty() {
+        rows.push(Row::Section { label: "Favorites" });
+        rows.extend(favorites.into_iter().map(Row::Favorite));
+    }
     for (gateway, providers) in groups {
         let collapsed = filter.is_empty() && ui.collapsed_models.contains(gateway);
         rows.push(Row::Group {
@@ -108,4 +178,47 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, gateway: &str, group: &str) -> ModelEntry {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "gateway": gateway, "provider_group": group,
+            "upstream_id": "x", "api": "chat"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn short_name_drops_the_gateway_and_provider_the_headers_show() {
+        let model = entry("omniroute/agy/claude-opus", "omniroute", "agy");
+        assert_eq!(short_name(&model), "claude-opus");
+        // A model id may itself contain slashes.
+        let model = entry("omniroute/agy/vendor/claude", "omniroute", "agy");
+        assert_eq!(short_name(&model), "vendor/claude");
+    }
+
+    #[test]
+    fn short_name_of_a_direct_gateway_drops_only_the_gateway() {
+        let model = entry("direct/solo", "direct", "direct");
+        assert_eq!(short_name(&model), "solo");
+    }
+
+    #[test]
+    fn short_name_falls_back_to_the_full_name_when_the_prefix_does_not_match() {
+        for (name, gateway, group) in [
+            ("other/agy/claude", "omniroute", "agy"),
+            ("omniroute/zzz/claude", "omniroute", "agy"),
+            ("omniroute/agyclaude", "omniroute", "agy"),
+            ("omniroute/agy/", "omniroute", "agy"),
+            ("direct", "direct", "direct"),
+            ("directx/solo", "direct", "direct"),
+        ] {
+            let model = entry(name, gateway, group);
+            assert_eq!(short_name(&model), name, "{name}");
+        }
+    }
 }

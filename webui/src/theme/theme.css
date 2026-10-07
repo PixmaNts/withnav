@@ -1,0 +1,82 @@
+/* Design tokens: same role names in every theme (docs/design/README.md). */
+:root,
+[data-theme="ayu-dark"] {
+  --bg: #0b0e14;
+  --pn: #0f131a;
+  --sf: #151a23;
+  --bd: #232a36;
+  --tx: #bfbdb6;
+  --mu: #7b8494;
+  --ac: #e6b450;
+  --at: #e6b450;
+  --acfg: #0b0e14;
+  --gr: #aad94c;
+  --rd: #f07178;
+  --bl: #59c2ff;
+  --pu: #d2a6ff;
+  --or: #ff8f40;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --backdrop: rgba(0, 0, 0, 0.4);
+}
+[data-theme="ayu-light"] {
+  --bg: #fcfcfc;
+  --pn: #f3f4f5;
+  --sf: #ffffff;
+  --bd: #dfe2e6;
+  --tx: #4a5058;
+  --mu: #6e7781;
+  --ac: #ffaa33;
+  --at: #a35f00;
+  --acfg: #1f2328;
+  --gr: #5c8a00;
+  --rd: #d94f4f;
+  --bl: #1a7bbf;
+  --pu: #8052b8;
+  --or: #c25d00;
+  --shadow: rgba(30, 35, 45, 0.16);
+  --backdrop: rgba(20, 24, 30, 0.28);
+}
+[data-theme="nord-dark"] {
+  --bg: #2e3440;
+  --pn: #292e39;
+  --sf: #3b4252;
+  --bd: #434c5e;
+  --tx: #d8dee9;
+  --mu: #8f9bb3;
+  --ac: #88c0d0;
+  --at: #88c0d0;
+  --acfg: #2e3440;
+  --gr: #a3be8c;
+  --rd: #bf616a;
+  --bl: #81a1c1;
+  --pu: #b48ead;
+  --or: #d08770;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --backdrop: rgba(0, 0, 0, 0.4);
+}
+[data-theme="nord-light"] {
+  --bg: #eceff4;
+  --pn: #e5e9f0;
+  --sf: #ffffff;
+  --bd: #d0d7e3;
+  --tx: #2e3440;
+  --mu: #586174;
+  --ac: #5e81ac;
+  --at: #3f6591;
+  --acfg: #eceff4;
+  --gr: #4f7a3c;
+  --rd: #b0424d;
+  --bl: #3f6591;
+  --pu: #7d5a78;
+  --or: #a85a3f;
+  --shadow: rgba(46, 52, 64, 0.16);
+  --backdrop: rgba(46, 52, 64, 0.28);
+}
+
+:root {
+  /* Selected / active backgrounds: accent at 14–16 % over transparent. */
+  --tint: color-mix(in srgb, var(--ac) 16%, transparent);
+  --tint-strong: color-mix(in srgb, var(--ac) 18%, transparent);
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}

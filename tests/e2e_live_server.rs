@@ -61,6 +61,7 @@ async fn live_server_edit_and_test_through_the_bus() {
         history_db: root.join("history.db"),
         data_dir: root.join("data"),
         rules_roots: Default::default(),
+        web: None,
     };
     let state = AppState::new(config).expect("state");
     let (addr, server_task) = spawn_server(state).await;

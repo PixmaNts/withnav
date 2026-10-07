@@ -35,6 +35,35 @@ impl HistoryStore {
         blocking(move || list_sync(&path, &workspace)).await
     }
 
+    /// Every workspace with at least one top-level conversation, with its
+    /// conversation count and latest `updated_at`; no particular order.
+    pub async fn workspaces(&self) -> Result<Vec<super::WorkspaceSummary>, String> {
+        let path = Arc::clone(&self.path);
+        blocking(move || {
+            with_read_tx(&path, |tx| {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT s.workspace, COUNT(*), MAX(s.updated_at) FROM sessions s
+                         WHERE NOT EXISTS (SELECT 1 FROM child_links c WHERE c.child_id = s.id)
+                         GROUP BY s.workspace",
+                    )
+                    .map_err(|e| format!("prepare: {e}"))?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok(super::WorkspaceSummary {
+                            workspace: row.get(0)?,
+                            session_count: row.get::<_, i64>(1)?.max(0) as u64,
+                            updated_at: row.get(2)?,
+                        })
+                    })
+                    .map_err(|e| format!("query: {e}"))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("row: {e}"))
+            })
+        })
+        .await
+    }
+
     /// Metadata of one session, without events or transcript.
     pub async fn meta(&self, id: Ulid) -> Result<Option<StoredSession>, String> {
         let path = Arc::clone(&self.path);

@@ -220,7 +220,7 @@ pub struct Tab {
     pub pause_token: Option<crate::bus::event::PauseToken>,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
-    pub git: Option<super::git::GitStatus>,
+    pub git: Option<crate::workspace::git::GitStatus>,
     /// A read of the git state is running; `git_again` asks for one more when it returns.
     pub git_reading: bool,
     pub git_again: bool,
@@ -387,6 +387,7 @@ impl ChildStatus {
 /// the active tab through `Deref`, so code that handles one conversation stays as it was.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    pub config: super::config::ConfigState,
     pub models_request: u64,
     pub layers_request: u64,
     pub layers: Vec<super::protocol::LayerEntry>,
@@ -411,6 +412,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            config: Default::default(),
             models_request: 0,
             layers_request: 0,
             layers: vec![],
@@ -534,7 +536,13 @@ pub enum Focus {
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
+    /// Screen routing: `Config` replaces the session transcript; overlays remain shared.
+    pub screen: super::config::Screen,
+    pub settings_target: Option<super::config::SettingsTarget>,
     pub collapsed_models: std::collections::HashSet<String>,
+    /// Models the driver marked as favorites, saved in the settings. Kept even when a model is
+    /// no longer in the catalogue; the picker only lists those it knows.
+    pub favorite_models: std::collections::BTreeSet<String>,
     pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
     pub child_confirm_token: Option<crate::bus::event::PauseToken>,
     pub focus: Focus,

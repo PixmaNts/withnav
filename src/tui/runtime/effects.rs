@@ -47,15 +47,34 @@ pub struct Executor {
     tx: mpsc::Sender<ClientEvent>,
     streams: Vec<ActiveStream>,
     request: u64,
+    saves: mpsc::UnboundedSender<Box<dyn FnOnce() -> Option<ClientEvent> + Send>>,
+    /// [`SAVE_WAIT`]; tests shorten it.
+    save_wait: std::time::Duration,
 }
 
 impl Executor {
     pub fn new(client: Client, tx: mpsc::Sender<ClientEvent>) -> Self {
+        let (saves, mut pending) =
+            mpsc::unbounded_channel::<Box<dyn FnOnce() -> Option<ClientEvent> + Send>>();
+        let events = tx.clone();
+        tokio::spawn(async move {
+            while let Some(save) = pending.recv().await {
+                match tokio::task::spawn_blocking(save).await {
+                    Ok(Some(event)) => {
+                        let _ = events.send(event).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => tracing::warn!("settings save worker failed: {error}"),
+                }
+            }
+        });
         Self {
             client,
             tx,
             streams: Vec::new(),
             request: 0,
+            saves,
+            save_wait: SAVE_WAIT,
         }
     }
 
@@ -96,6 +115,22 @@ impl Executor {
         self.tx.clone()
     }
 
+    #[cfg(test)]
+    pub async fn flush_saves(&self) {
+        self.save_barrier().unwrap().await.unwrap();
+    }
+
+    fn save_barrier(&self) -> Result<tokio::sync::oneshot::Receiver<()>, String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.saves
+            .send(Box::new(move || {
+                let _ = tx.send(());
+                None
+            }))
+            .map_err(|_| "settings save worker stopped".to_string())?;
+        Ok(rx)
+    }
+
     pub fn has_stream(&self) -> bool {
         !self.streams.is_empty()
     }
@@ -108,6 +143,63 @@ impl Executor {
     pub fn execute(&mut self, effect: Effect, ctx: &Context, editor: &mut Editor) -> Flow {
         let generation = ctx.generation.clone();
         match effect {
+            Effect::FetchConfig(request) => {
+                let barrier = self.save_barrier();
+                let deadline = self.save_wait;
+                let client = self.client.clone();
+                let workspace = ctx.workspace.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = match wait_for_saves(barrier, deadline).await {
+                        Ok(()) => client.settings(&workspace).await,
+                        Err(error) => Err(error),
+                    };
+                    let _ = tx
+                        .send(ClientEvent::ConfigLoaded {
+                            generation,
+                            request,
+                            result,
+                        })
+                        .await;
+                });
+            }
+            Effect::WriteConfig(request) => {
+                let barrier = self.save_barrier();
+                let deadline = self.save_wait;
+                let client = self.client.clone();
+                let workspace = ctx.workspace.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = match wait_for_saves(barrier, deadline).await {
+                        Ok(()) => client.write_setting(&workspace, &request).await,
+                        Err(error) => Err(crate::tui::config::SettingsError::Other(error)),
+                    };
+                    let _ = tx
+                        .send(ClientEvent::ConfigWritten {
+                            generation,
+                            key: request.key,
+                            value: request.value,
+                            result,
+                        })
+                        .await;
+                });
+            }
+            Effect::TestGateway(name) => {
+                let client = self.client.clone();
+                let workspace = ctx.workspace.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = client.test_gateway(&workspace, &name).await;
+                    let _ = tx
+                        .send(ClientEvent::GatewayTested {
+                            generation,
+                            name,
+                            result,
+                        })
+                        .await;
+                });
+            }
+            Effect::ApplyConfigTheme(_) | Effect::LeaveConfig => {}
             Effect::UnwatchChild(child_session_id) => {
                 self.streams.retain(|s| {
                     let gone = s.child_session_id.as_ref() == Some(&child_session_id);
@@ -398,22 +490,42 @@ impl Executor {
             }
             Effect::SetEditor { text, revision } => editor.restore(&text, revision),
             Effect::SaveTheme(theme) => {
-                // A few bytes written once per pick: done inline. A failure is shown, not fatal:
+                // Saves run off-loop in pick order. A failure is shown, not fatal:
                 // the theme stays in effect and picking it again retries the save.
                 if let Some(dir) = &ctx.config_dir {
-                    if let Err(err) = crate::settings::save_tui_theme(dir, theme.id()) {
-                        tracing::warn!("cannot save the theme: {err}");
-                        let message = format!(
+                    let dir = dir.clone();
+                    let _ = self.saves.send(Box::new(move || {
+                        if let Err(err) = crate::settings::save_tui_theme(&dir, theme.id()) {
+                            tracing::warn!("cannot save the theme: {err}");
+                            let message = format!(
                             "could not confirm theme {} was saved; pick it again to retry: {err}",
                             theme.name()
                         );
-                        self.spawn_event(async move {
-                            ClientEvent::SettingsNotSaved {
+                            return Some(ClientEvent::SettingsNotSaved {
                                 generation,
                                 message,
-                            }
-                        });
-                    }
+                            });
+                        }
+                        None
+                    }));
+                }
+            }
+            Effect::SaveFavoriteModels(names) => {
+                // Same ordered off-loop worker as the theme; a failure is shown, the list in
+                // memory stays and the next toggle saves it again.
+                if let Some(dir) = &ctx.config_dir {
+                    let dir = dir.clone();
+                    let _ = self.saves.send(Box::new(move || {
+                        if let Err(err) = crate::settings::save_tui_favorite_models(&dir, &names) {
+                            tracing::warn!("cannot save the favorite models: {err}");
+                            let message = format!("could not save the favorite models: {err}");
+                            return Some(ClientEvent::SettingsNotSaved {
+                                generation,
+                                message,
+                            });
+                        }
+                        None
+                    }));
                 }
             }
             Effect::ReadGit => {
@@ -421,7 +533,7 @@ impl Executor {
                 self.spawn_event(async move {
                     ClientEvent::Git {
                         generation,
-                        status: crate::tui::git::read(&workspace).await,
+                        status: crate::workspace::git::read(&workspace).await,
                     }
                 });
             }
@@ -507,6 +619,245 @@ impl Executor {
 impl Drop for Executor {
     fn drop(&mut self) {
         self.cancel_streams();
+    }
+}
+
+/// How long a Settings request waits for theme or favorites saves queued before it. Such a save
+/// can itself wait on `config.json.lock` held by another Navai process; past this the request
+/// fails like any unreachable server (staged changes kept, ctrl+s retries) instead of leaving
+/// `/config` loading or writing forever. It never goes ahead without the barrier: that would let
+/// an older queued theme land after a newer `/config` write.
+const SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn wait_for_saves(
+    barrier: Result<tokio::sync::oneshot::Receiver<()>, String>,
+    deadline: std::time::Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(deadline, barrier?).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("settings save worker stopped".to_string()),
+        Err(_) => Err(format!(
+            "an earlier theme or favorites save is still waiting for config.json after {} s; \
+             try again",
+            deadline.as_secs()
+        )),
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use crate::tui::{config::WriteRequest, theme::ThemeId};
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn queued_theme_save_precedes_settings_get_and_put_value_is_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved_dir = dir.path().to_path_buf();
+        let (observed, mut requests) = mpsc::unbounded_channel();
+        let app = axum::Router::new().route(
+            "/v1/settings",
+            axum::routing::get({
+                let dir = saved_dir.clone();
+                let observed = observed.clone();
+                move || {
+                    let dir = dir.clone();
+                    let observed = observed.clone();
+                    async move {
+                        let theme = crate::settings::load(&dir).unwrap().tui_theme().map(str::to_owned);
+                        observed.send(("GET", theme)).unwrap();
+                        axum::Json(json!({"revision":"read", "paths":{"config":"config.json","models":null,"agents":[]},"fields":[],"gateways":[]}))
+                    }
+                }
+            }).put({
+                let dir = saved_dir.clone();
+                move |axum::Json(request): axum::Json<serde_json::Value>| {
+                    let dir = dir.clone();
+                    let observed = observed.clone();
+                    async move {
+                        let theme = crate::settings::load(&dir).unwrap().tui_theme().map(str::to_owned);
+                        observed.send(("PUT", theme)).unwrap();
+                        crate::settings::save_tui_theme(&dir, request["value"].as_str().unwrap()).unwrap();
+                        axum::Json(json!({"revision":"written", "paths":{"config":"config.json","models":null,"agents":[]},"fields":[],"gateways":[]}))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (tx, mut events) = mpsc::channel(10);
+        let mut executor = Executor::new(Client::new(url, None), tx);
+        let ctx = Context {
+            generation: Generation(0),
+            session_id: None,
+            workspace: "/ws".into(),
+            config_dir: Some(saved_dir.clone()),
+        };
+        let mut editor = Editor::default();
+        for (effect, method, old_theme) in [
+            (Effect::FetchConfig(1), "GET", ThemeId::AyuLight),
+            (
+                Effect::WriteConfig(WriteRequest {
+                    revision: "read".into(),
+                    key: "tui.theme".into(),
+                    value: json!("nord-dark"),
+                }),
+                "PUT",
+                ThemeId::NordLight,
+            ),
+        ] {
+            let (release, blocked) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            executor
+                .saves
+                .send(Box::new(move || {
+                    started.send(()).unwrap();
+                    blocked.recv().unwrap();
+                    None
+                }))
+                .unwrap();
+            ready.await.unwrap();
+            executor.execute(Effect::SaveTheme(old_theme), &ctx, &mut editor);
+            executor.execute(effect, &ctx, &mut editor);
+            let premature_request =
+                tokio::time::timeout(Duration::from_millis(50), requests.recv()).await;
+            release.send(()).unwrap();
+            assert!(
+                premature_request.is_err(),
+                "HTTP must wait for queued saves"
+            );
+            let (actual_method, theme) =
+                tokio::time::timeout(Duration::from_secs(10), requests.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(actual_method, method);
+            assert_eq!(theme.as_deref(), Some(old_theme.id()));
+            let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            match event {
+                ClientEvent::ConfigLoaded {
+                    request: 1,
+                    result: Ok(_),
+                    ..
+                } if method == "GET" => {}
+                ClientEvent::ConfigWritten { result: Ok(_), .. } if method == "PUT" => {}
+                other => panic!("unexpected settings result: {other:?}"),
+            }
+        }
+        executor.flush_saves().await;
+        assert_eq!(
+            crate::settings::load(&saved_dir).unwrap().tui_theme(),
+            Some("nord-dark")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn blocked_save_worker_fails_settings_requests_in_bounded_time_then_retry_works() {
+        let (observed, mut requests) = mpsc::unbounded_channel::<&'static str>();
+        let body = json!({"revision":"r", "paths":{"config":"config.json","models":null,"agents":[]},"fields":[],"gateways":[]});
+        let app = axum::Router::new().route(
+            "/v1/settings",
+            axum::routing::get({
+                let observed = observed.clone();
+                let body = body.clone();
+                move || {
+                    observed.send("GET").unwrap();
+                    let body = body.clone();
+                    async move { axum::Json(body) }
+                }
+            })
+            .put({
+                let observed = observed.clone();
+                move || {
+                    observed.send("PUT").unwrap();
+                    let body = body.clone();
+                    async move { axum::Json(body) }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (tx, mut events) = mpsc::channel(10);
+        let mut executor = Executor::new(Client::new(url, None), tx);
+        executor.save_wait = Duration::from_millis(100);
+        let ctx = Context {
+            generation: Generation(0),
+            session_id: None,
+            workspace: "/ws".into(),
+            config_dir: None,
+        };
+        let mut editor = Editor::default();
+        async fn next_event(events: &mut mpsc::Receiver<ClientEvent>) -> ClientEvent {
+            tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await
+                .expect("a settings result arrives in bounded time")
+                .unwrap()
+        }
+
+        // A save stuck behind config.json.lock held by another process.
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        executor
+            .saves
+            .send(Box::new(move || {
+                started.send(()).unwrap();
+                blocked.recv().unwrap();
+                None
+            }))
+            .unwrap();
+        ready.await.unwrap();
+
+        executor.execute(Effect::FetchConfig(1), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigLoaded {
+                request: 1,
+                result: Err(error),
+                ..
+            } => assert!(error.contains("still waiting"), "{error}"),
+            other => panic!("expected a bounded load failure, got {other:?}"),
+        }
+        let write = WriteRequest {
+            revision: "r".into(),
+            key: "tui.theme".into(),
+            value: json!("nord-dark"),
+        };
+        executor.execute(Effect::WriteConfig(write.clone()), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigWritten { result: Err(_), .. } => {}
+            other => panic!("expected a bounded write failure, got {other:?}"),
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "no HTTP request may pass the barrier while an earlier save is pending"
+        );
+
+        // Once the earlier save finishes, the same requests go through.
+        release.send(()).unwrap();
+        executor.flush_saves().await;
+        executor.execute(Effect::FetchConfig(2), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigLoaded {
+                request: 2,
+                result: Ok(_),
+                ..
+            } => {}
+            other => panic!("expected the retried load to succeed, got {other:?}"),
+        }
+        executor.execute(Effect::WriteConfig(write), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigWritten { result: Ok(_), .. } => {}
+            other => panic!("expected the retried write to succeed, got {other:?}"),
+        }
+        assert_eq!(requests.recv().await, Some("GET"));
+        assert_eq!(requests.recv().await, Some("PUT"));
+        server.abort();
     }
 }
 

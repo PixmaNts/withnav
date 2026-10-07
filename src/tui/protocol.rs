@@ -292,6 +292,22 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    ConfigLoaded {
+        generation: Generation,
+        request: u64,
+        result: Result<super::config::SettingsBody, String>,
+    },
+    ConfigWritten {
+        generation: Generation,
+        key: String,
+        value: serde_json::Value,
+        result: Result<super::config::SettingsBody, super::config::SettingsError>,
+    },
+    GatewayTested {
+        generation: Generation,
+        name: String,
+        result: Result<super::config::GatewayTest, String>,
+    },
     Agents {
         generation: Generation,
         workspace: String,
@@ -404,7 +420,7 @@ pub enum ClientEvent {
     /// The workspace's git state was read; `None` when it is not a repository.
     Git {
         generation: Generation,
-        status: Option<crate::tui::git::GitStatus>,
+        status: Option<crate::workspace::git::GitStatus>,
     },
     /// Saving the user settings failed; the change still applies until the client quits.
     SettingsNotSaved {
@@ -421,6 +437,8 @@ pub enum Mode {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    OpenConfig,
+    Config(super::config::ConfigAction),
     PickAgent(String),
     Submit(String),
     OpenOverlay(Overlay),
@@ -445,6 +463,8 @@ pub enum Action {
     PreviewTheme(crate::tui::theme::ThemeId),
     /// Keeps this theme and saves it in the settings.
     PickTheme(crate::tui::theme::ThemeId),
+    /// Saves the favorite models (already updated in the UI state) in the settings.
+    SaveFavoriteModels(Vec<String>),
     /// Submit with the editor revision the text was read at; `Submit(t)` is `SubmitAt { t, 0 }`.
     SubmitAt {
         text: String,
@@ -499,6 +519,11 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    FetchConfig(u64),
+    WriteConfig(super::config::WriteRequest),
+    TestGateway(String),
+    ApplyConfigTheme(crate::tui::theme::ThemeId),
+    LeaveConfig,
     FetchAgents(Option<String>),
     FetchLayers,
     FetchSkills(String),
@@ -554,6 +579,8 @@ pub enum Effect {
     Quit,
     /// Writes the theme id to the user settings.
     SaveTheme(crate::tui::theme::ThemeId),
+    /// Writes the favorite model names to the user settings.
+    SaveFavoriteModels(Vec<String>),
     /// Reads the workspace's git state in the background; it comes back as `ClientEvent::Git`.
     ReadGit,
     /// Clears the editor if it still holds the text sent at `revision`.

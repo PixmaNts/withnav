@@ -1,6 +1,6 @@
 ---
 source: tests/tui_view.rs
-assertion_line: 319
+assertion_line: 323
 expression: snapshot
 ---
  Conversations       │ ◆ navai  ~/dev/project               ▌build  cognition · assigned · — / 200k 
@@ -8,10 +8,10 @@ expression: snapshot
 ▌  build · idle      │                                                                              
                      │                                                                              
                      │                                                                              
-                     │                                                                              
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
-            │▌/new [agent]          new conversation in a new tab                      │            
+            │▌/config               edit settings in config.json                       │            
+            │ /new [agent]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
             │ /model [model_id]     switch this conversation's model                   │            
             │ /skills               choose a skill to load for your next message       │            

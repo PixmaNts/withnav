@@ -74,6 +74,11 @@ impl Runtime {
                 .as_deref()
                 .map(saved_theme)
                 .unwrap_or_default(),
+            favorite_models: options
+                .config_dir
+                .as_deref()
+                .map(saved_favorite_models)
+                .unwrap_or_default(),
             ..UiState::default()
         };
         Self {
@@ -274,6 +279,17 @@ impl Runtime {
             config_dir: self.config_dir.clone(),
         };
         for effect in effects {
+            match &effect {
+                Effect::ApplyConfigTheme(theme) => {
+                    self.ui.theme = *theme;
+                    continue;
+                }
+                Effect::LeaveConfig => {
+                    self.ui.screen = crate::tui::config::Screen::Session;
+                    continue;
+                }
+                _ => {}
+            }
             if let Effect::ShowVariants { current } = &effect {
                 // A screen change, not I/O: it needs the `UiState` the reducer's `update` lacks.
                 reducer::show_variants(&self.state, &mut self.ui, current.as_deref());
@@ -335,6 +351,17 @@ pub fn saved_theme(config_dir: &std::path::Path) -> ThemeId {
             tracing::warn!("unknown theme {id:?} in the settings, using the default theme");
             ThemeId::default()
         }),
+    }
+}
+
+/// The favorite models saved in `config_dir`; none when the file is missing or unreadable.
+pub fn saved_favorite_models(config_dir: &std::path::Path) -> std::collections::BTreeSet<String> {
+    match crate::settings::load(config_dir) {
+        Ok(settings) => settings.tui_favorite_models().into_iter().collect(),
+        Err(err) => {
+            tracing::warn!("cannot read the settings, no favorite models: {err}");
+            Default::default()
+        }
     }
 }
 

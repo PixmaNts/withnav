@@ -214,6 +214,10 @@ impl ActorInbox {
         for cmd in std::mem::take(&mut self.commands) {
             if cmd.from_driver() {
                 if let Some(count) = &self.queued_driver {
+                    // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
+                    // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
+                    // name until the minimum moves past the rename.
+                    #[allow(deprecated)]
                     let _ = count.fetch_update(
                         std::sync::atomic::Ordering::AcqRel,
                         std::sync::atomic::Ordering::Acquire,

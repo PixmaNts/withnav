@@ -2,7 +2,7 @@
 pub mod catalog;
 pub mod client;
 pub mod commands;
-pub mod git;
+pub mod config;
 pub mod input;
 pub mod protocol;
 pub mod reducer;

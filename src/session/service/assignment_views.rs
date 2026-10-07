@@ -911,6 +911,7 @@ mod tests {
             history_db: root.path().join("history.db"),
             data_dir: root.path().join("data"),
             rules_roots: Default::default(),
+            web: None,
         })
         .unwrap();
         (root, state)

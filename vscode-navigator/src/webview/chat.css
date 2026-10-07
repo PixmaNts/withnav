@@ -8,6 +8,13 @@
 .picker-group::before { content: "▾ "; }
 .picker-group[aria-expanded="false"]::before { content: "▸ "; }
 .command-option strong { overflow-wrap: anywhere; }
+/* Favorites: a heading that never folds, and a star on every model option. */
+.picker-section { margin: 0; padding: 6px 8px; font-weight: 600; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.picker-section::before { content: "★ "; }
+.command-option { position: relative; }
+.favorite-toggle { position: absolute; top: 4px; right: 6px; background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; }
+.favorite-toggle[aria-pressed="true"] { color: var(--vscode-charts-yellow, var(--vscode-list-highlightForeground)); }
+#picker-options .command-option strong { padding-right: 22px; }
 .picker-search { display: block; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; border-radius: 3px; }
 .picker-count, .picker-empty { padding: 5px 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
 .conv-row[aria-selected="true"] { background: var(--vscode-list-hoverBackground); }

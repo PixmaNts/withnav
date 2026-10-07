@@ -1966,6 +1966,8 @@ mod tests {
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
+                origin: Default::default(),
+                flow_regates: 0,
                 requires_driver: false,
                 permission_gate: None,
                 id: request_id,

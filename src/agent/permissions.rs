@@ -62,8 +62,24 @@ impl std::fmt::Display for Scope {
 }
 
 /// A gated call waiting for a decision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RequestOrigin {
+    #[default]
+    Ordinary,
+    Flow {
+        flow: String,
+        run_id: String,
+    },
+}
+
+/// A gated call waiting for a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequest {
+    #[serde(default)]
+    pub origin: RequestOrigin,
+    #[serde(default)]
+    pub flow_regates: usize,
     #[serde(default)]
     pub requires_driver: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,6 +106,8 @@ impl PermissionRequest {
             Scope::Origin(origin) => format!("`{}` reaches {origin}", call.name),
         };
         Self {
+            origin: RequestOrigin::Ordinary,
+            flow_regates: 0,
             requires_driver: false,
             permission_gate: None,
             id: Ulid::new(),

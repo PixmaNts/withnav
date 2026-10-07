@@ -51,6 +51,7 @@ pub struct BypassState {
 }
 
 pub struct AgentActor {
+    pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
     pub driver_request_inherited: bool,
     pub protected_config_spelling: Option<std::path::PathBuf>,
@@ -195,6 +196,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            tool_flows: None,
             driver_request_inherited: false,
             protected_config_spelling: None,
             protected_config_unresolved: false,

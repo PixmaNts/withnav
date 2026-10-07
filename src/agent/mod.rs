@@ -3,6 +3,7 @@ pub mod boundary;
 pub mod compaction;
 pub mod context;
 pub mod definitions;
+pub mod flow_hook;
 pub mod guard;
 pub mod instructions;
 pub mod permission_gate;

@@ -739,6 +739,8 @@ mod tests {
         actor.state = AgentState::Yielded;
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
+                origin: Default::default(),
+                flow_regates: 0,
                 requires_driver: false,
                 permission_gate: None,
                 id: Ulid::new(),

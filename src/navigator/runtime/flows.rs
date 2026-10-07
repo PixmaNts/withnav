@@ -110,6 +110,18 @@ impl FlowEffects for EditorEffects {
     }
 }
 
+fn owns_trigger(store: &crate::flows::store::FlowStore, event: TriggerKind) -> bool {
+    // Reload before eligibility: a newly enabled flow must own its very next editor event.
+    store.refresh();
+    let trusted = store.trusted();
+    store.snapshot().values().any(|f| {
+        let header = &f.compiled.definition().flow;
+        header.enabled
+            && header.on == event.as_str()
+            && (f.location != crate::flows::store::Location::Workspace || trusted)
+    })
+}
+
 impl Runtime {
     /// Returns true once an eligible flow owns the trigger, including skips/failures.
     pub(super) async fn evaluate_flows(self: &Arc<Self>, uri: &str, event: TriggerKind) -> bool {
@@ -122,13 +134,7 @@ impl Runtime {
             delivered: AtomicBool::new(false),
         });
         let flows = factory(effects.clone());
-        let trusted = flows.store.trusted();
-        if !flows.store.snapshot().values().any(|f| {
-            let header = &f.compiled.definition().flow;
-            header.enabled
-                && header.on == event.as_str()
-                && (f.location != crate::flows::store::Location::Workspace || trusted)
-        }) {
+        if !owns_trigger(&flows.store, event) {
             return false;
         }
         let Some(mut ctx) = self.gather(uri, event, tokio::time::Instant::now()).await else {
@@ -306,6 +312,35 @@ mod tests {
         store::{Content, FlowStore, Location},
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn editor_eligibility_observes_independent_host_reload_on_next_event() {
+        let root = tempfile::tempdir().unwrap();
+        let a = crate::flows::host::Host::new(
+            root.path().join("config"),
+            root.path().join("data"),
+            None,
+        );
+        let b = crate::flows::host::Host::new(a.config.clone(), a.data.clone(), None);
+        let writer = a.store(root.path().into());
+        let editor = b.store(root.path().into());
+        assert!(!owns_trigger(&editor, TriggerKind::Diagnostics));
+        writer
+            .save(
+                "editor-diagnostics",
+                Location::Global,
+                None,
+                Content::Toml {
+                    toml: "[flow]\nversion=1\nname='editor-diagnostics'\non='diagnostics'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='test'\n".into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        writer.reload().unwrap();
+        assert!(!editor.snapshot().contains_key("editor-diagnostics"));
+        // No intervening evaluation or other editor event refreshes B's snapshot.
+        assert!(owns_trigger(&editor, TriggerKind::Diagnostics));
+    }
 
     #[tokio::test]
     async fn editor_wake_and_inject_note_use_the_typed_flow_poster_not_message_admission() {

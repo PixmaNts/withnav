@@ -20,9 +20,16 @@ impl NavaiDecisionClient {
         )?;
         let identity = ClientIdentity {
             model: assignment.name.to_string(),
-            variant: assignment.variant,
+            variant: assignment.variant.clone(),
         };
-        let client = crate::provider::layers::instinct(models, config, cache)?;
+        let resolved = assignment.resolved;
+        let client = crate::provider::systemone::SystemOneClient::new(
+            &resolved.provider_name,
+            &resolved.provider,
+            &resolved.model,
+            config,
+            cache,
+        )?;
         Ok(Self { client, identity })
     }
 }

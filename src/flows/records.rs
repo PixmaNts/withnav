@@ -21,7 +21,7 @@ impl Records {
         }
     }
     pub fn read(&self) -> std::io::Result<Vec<RunRecord>> {
-        let dir = match Directory::open(&self.path, false) {
+        let dir = match Directory::private(&self.path, false) {
             Ok(d) => d,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
             Err(e) => return Err(e),
@@ -67,7 +67,7 @@ impl Records {
             }
             bytes = bytes.saturating_sub(lines.remove(0).len() + 1);
         }
-        Directory::open(&self.path, true)?
+        Directory::private(&self.path, true)?
             .write("runs.jsonl", format!("{}\n", lines.join("\n")).as_bytes())
     }
 }

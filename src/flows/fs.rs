@@ -16,6 +16,16 @@ fn io(error: nix::errno::Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(error as i32)
 }
 impl Directory {
+    pub fn private(path: &Path, create: bool) -> std::io::Result<Self> {
+        let dir = Self::open(path, create)?;
+        let stat = fstat(&dir.0).map_err(io)?;
+        if stat.st_mode & 0o077 != 0 {
+            return Err(std::io::Error::other(
+                "private directory permissions required",
+            ));
+        }
+        Ok(dir)
+    }
     pub fn open(path: &Path, create: bool) -> std::io::Result<Self> {
         if !path.is_absolute() {
             return Err(std::io::Error::other("absolute directory required"));
@@ -91,13 +101,15 @@ impl Directory {
     }
     pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
         valid_name(name)?;
-        if let Ok(fd) = openat(
+        match openat(
             &self.0,
             name,
             OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
             Mode::empty(),
         ) {
-            check(&fd, false)?;
+            Ok(fd) => check(&fd, false)?,
+            Err(nix::errno::Errno::ENOENT) => {}
+            Err(e) => return Err(io(e)),
         }
         let temporary = format!(".flow-{}", ulid::Ulid::new());
         let fd = openat(

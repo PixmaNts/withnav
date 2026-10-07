@@ -24,6 +24,110 @@ pub struct ToolCallContextLike {
     pub agent: String,
     pub workspace: PathBuf,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Fake;
+    impl DecisionClient for Fake {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/instinct".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            _: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async { Err(DecisionError::ProviderError) })
+        }
+    }
+    struct Notices(std::sync::atomic::AtomicUsize);
+    impl FlowEffects for Notices {
+        fn effect<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a ProposedAction,
+            _: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<(), ApplyError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn instinct_unavailable(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn text(name: &str, action: &str) -> String {
+        format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\nnote='{name}'\n")
+    }
+    #[tokio::test]
+    async fn deny_wins_over_ask_and_outage_is_not_repeated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        for (name, action) in [("ask", "ask_driver"), ("deny", "deny")] {
+            store
+                .save(
+                    name,
+                    Location::Global,
+                    None,
+                    super::super::store::Content::Toml {
+                        toml: text(name, action),
+                        templates: BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+        }
+        store.reload().unwrap();
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), effects.clone());
+        let ctx = ToolCallContextLike {
+            call_id: "x".into(),
+            tool: "write".into(),
+            args: json!({}),
+            agent: "build".into(),
+            workspace: dir.path().into(),
+        };
+        assert!(matches!(
+            runtime
+                .tool_pre_call(ctx.clone(), CancellationToken::new())
+                .await,
+            VerdictLike::Deny { .. }
+        ));
+        for name in ["ask", "deny"] {
+            let d = store.get(name, Location::Global).unwrap();
+            store.delete(name, Location::Global, &d.revision).unwrap();
+        }
+        let toml="[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n";
+        store
+            .save(
+                "decision",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: toml.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                runtime
+                    .tool_pre_call(ctx.clone(), CancellationToken::new())
+                    .await,
+                VerdictLike::AskDriver { .. }
+            ));
+        }
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerdictLike {
     NoObjection,
@@ -55,7 +159,7 @@ impl FlowEffects for NoEffects {
         _: &'a ProposedAction,
         _: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<(), ApplyError>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Err(ApplyError("flow effects are not connected".into())) })
     }
 }
 #[derive(Default, Clone)]
@@ -158,6 +262,7 @@ impl FlowRuntime {
             let outage = self.outage.clone();
             let name = name.clone();
             let records = self.records.clone();
+            let is_blocking = header.blocking;
             let future = async move {
                 let mut outcome = run(
                     &flow.compiled,
@@ -181,7 +286,7 @@ impl FlowRuntime {
                 {
                     effects.instinct_unavailable();
                 }
-                if !cancel.is_cancelled() {
+                if !is_blocking && !cancel.is_cancelled() {
                     let actions = match &outcome.result {
                         RunResult::Success { actions } => actions,
                         RunResult::Failure {
@@ -220,7 +325,7 @@ impl FlowRuntime {
                     }
                     outcome.trace.application = report;
                 }
-                if let Some(records) = records {
+                if let Some(records) = records.filter(|_| !is_blocking) {
                     if records.append(&outcome.trace).is_err() {
                         tracing::warn!("private flow capture failed");
                     }
@@ -270,6 +375,57 @@ impl FlowRuntime {
                 }
             }
         };
+        for outcome in &mut outcomes {
+            if !cancel.is_cancelled() {
+                let actions = match &outcome.result {
+                    RunResult::Success { actions } => actions,
+                    RunResult::Failure {
+                        fallback_actions, ..
+                    } => fallback_actions,
+                    RunResult::Skipped => continue,
+                };
+                let mut report = ApplyReport {
+                    status: "applied".into(),
+                    actions: vec![],
+                };
+                for action in actions.iter().filter(|a| {
+                    catalogue()
+                        .action(&a.action)
+                        .is_some_and(|s| s.kind == ActionKind::Effect)
+                }) {
+                    let result = if action.action == "log" {
+                        Ok(())
+                    } else {
+                        self.effects
+                            .effect(
+                                &outcome.trace.flow_name,
+                                &outcome.trace.run_id,
+                                action,
+                                &cancel,
+                            )
+                            .await
+                    };
+                    let status = if result.is_ok() {
+                        "applied"
+                    } else {
+                        report.status = "failed".into();
+                        "failed"
+                    };
+                    report.actions.push(AppliedAction {
+                        node_id: action.node_id.clone(),
+                        action: action.action.clone(),
+                        status: status.into(),
+                        message: result.err().map(|_| "effect application failed".into()),
+                    });
+                }
+                outcome.trace.application = report;
+            }
+            if let Some(records) = &self.records {
+                if records.append(&outcome.trace).is_err() {
+                    tracing::warn!("private flow capture failed");
+                }
+            }
+        }
         (verdict, handles)
     }
     pub async fn tool_pre_call(

@@ -1,28 +1,54 @@
 import { CaretDown, CaretRight, Folder, FolderPlus, Plus, ArrowsInLineVertical, ArrowsOutLineVertical } from "@phosphor-icons/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useSessions, useWorkspaces } from "../api/queries";
+import { api } from "../api/client";
+import { workspacesChanged, useSessions, useWorkspaces } from "../api/queries";
 import type { SessionListEntry, WorkspaceEntry } from "../api/types";
 import { sessionTitle } from "../lib/compose";
 import { dayLabel, plural, shortPath } from "../lib/format";
 import type { Route } from "../router";
 import type { useWorkspaceExpansion } from "../lib/workspaceExpansion";
+import { WorkspaceMenu, type RemoveRequest } from "./WorkspaceActions";
 
 interface Props {
   route: Route;
   navigate: (next: Partial<Route>) => void;
   expansion: ReturnType<typeof useWorkspaceExpansion>;
+  onRemove?: (request: RemoveRequest) => void;
 }
 
-export function Sidebar({ route, navigate, expansion }: Props) {
+/** The listed workspaces, plus a row for one opened by path that the server does not list yet. */
+export function sidebarWorkspaces(listed: WorkspaceEntry[], current: string | null): WorkspaceEntry[] {
+  if (!current || listed.some((w) => w.path === current)) return listed;
+  return [...listed, { path: current, name: current.split("/").filter(Boolean).pop() ?? current, launched: false, session_count: 0, updated_at: null, branch: null, dirty: null }];
+}
+
+export function Sidebar({ route, navigate, expansion, onRemove }: Props) {
+  const qc = useQueryClient();
   const workspaces = useWorkspaces();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
-  const listed = workspaces.data ?? [];
-  // A workspace opened by path (not yet known to the server) still gets a row.
-  const all: WorkspaceEntry[] =
-    route.workspace && !listed.some((w) => w.path === route.workspace)
-      ? [...listed, { path: route.workspace, name: route.workspace.split("/").filter(Boolean).pop() ?? route.workspace, launched: false, session_count: 0, updated_at: null, branch: null, dirty: null }]
-      : listed;
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const all = sidebarWorkspaces(workspaces.data ?? [], route.workspace);
+
+  const openFolder = async (value: string) => {
+    setOpening(true);
+    setOpenError(null);
+    try {
+      // A folder removed from the list earlier comes back when it is opened again.
+      await api.unhideWorkspace(value);
+    } catch (e) {
+      setOpenError(`This folder cannot be opened: ${e instanceof Error ? e.message : String(e)}`);
+      setOpening(false);
+      return;
+    }
+    setOpening(false);
+    setAdding(false);
+    setPath("");
+    navigate({ workspace: value, session: null, subagent: null });
+    void workspacesChanged(qc);
+  };
 
   return (
     <nav className="sidebar" aria-label="Workspaces">
@@ -31,7 +57,7 @@ export function Sidebar({ route, navigate, expansion }: Props) {
         <div className="side-actions">
           <button type="button" className="icon-btn" aria-label="Collapse all workspaces" title="Collapse all workspaces" onClick={expansion.collapseAll}><ArrowsInLineVertical size={14} /></button>
           <button type="button" className="icon-btn" aria-label="Expand all workspaces" title="Expand all workspaces" onClick={() => expansion.expandAll(all.map((w) => w.path))}><ArrowsOutLineVertical size={14} /></button>
-        <button type="button" className="icon-btn" aria-label="Open a folder" title="Open a folder" onClick={() => setAdding(!adding)}>
+        <button type="button" className="icon-btn" aria-label="Open a folder" title="Open a folder" onClick={() => (setAdding(!adding), setOpenError(null))}>
           <FolderPlus size={14} />
         </button>
         </div>
@@ -42,28 +68,34 @@ export function Sidebar({ route, navigate, expansion }: Props) {
           onSubmit={(e) => {
             e.preventDefault();
             const value = path.trim();
-            if (!value.startsWith("/")) return;
-            setAdding(false);
-            setPath("");
-            navigate({ workspace: value.replace(/\/+$/, ""), session: null, subagent: null });
+            if (!value.startsWith("/")) {
+              setOpenError("Type an absolute path, starting with /.");
+              return;
+            }
+            void openFolder(value.replace(/(.)\/+$/, "$1"));
           }}
         >
-          <input autoFocus className="mono" placeholder="/absolute/path" aria-label="Absolute path of a folder" value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setAdding(false)} />
-          <button type="submit" className="btn">
+          <input autoFocus className="mono" placeholder="/absolute/path" aria-label="Absolute path of a folder" aria-invalid={openError ? true : undefined} value={path} onChange={(e) => (setPath(e.target.value), setOpenError(null))} onKeyDown={(e) => e.key === "Escape" && setAdding(false)} />
+          <button type="submit" className="btn" disabled={opening}>
             Open
           </button>
         </form>
       )}
+      {adding && openError && (
+        <div className="side-error" role="alert">
+          {openError}
+        </div>
+      )}
       {workspaces.isError && <div className="side-empty">The workspace list is not available from this server.</div>}
       {workspaces.isSuccess && !all.length && <div className="side-empty">No workspace yet. Open a folder with the button above.</div>}
       {all.map((w) => (
-        <WorkspaceRow key={w.path} ws={w} route={route} navigate={navigate} expanded={expansion.expanded.has(w.path)} setOpen={(open) => expansion.setOpen(w.path, open)} />
+        <WorkspaceRow key={w.path} ws={w} route={route} navigate={navigate} expanded={expansion.expanded.has(w.path)} setOpen={(open) => expansion.setOpen(w.path, open)} onRemove={onRemove} />
       ))}
     </nav>
   );
 }
 
-export function WorkspaceRow({ ws, route, navigate, expanded, setOpen }: { ws: WorkspaceEntry; route: Route; navigate: Props["navigate"]; expanded: boolean; setOpen: (open: boolean) => void }) {
+export function WorkspaceRow({ ws, route, navigate, expanded, setOpen, onRemove }: { ws: WorkspaceEntry; route: Route; navigate: Props["navigate"]; expanded: boolean; setOpen: (open: boolean) => void; onRemove?: Props["onRemove"] }) {
   const current = route.workspace === ws.path;
   const sessions = useSessions(expanded ? ws.path : null);
   const rows = sessions.data ?? [];
@@ -94,6 +126,7 @@ export function WorkspaceRow({ ws, route, navigate, expanded, setOpen }: { ws: W
         <span className="name">{ws.name}</span>
         <span className="count">{count}</span>
         </button>
+        {onRemove && <WorkspaceMenu ws={ws} count={count} onRemove={onRemove} />}
       </div>
       {expanded && (
         <>

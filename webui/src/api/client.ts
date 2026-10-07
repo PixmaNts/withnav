@@ -1,4 +1,4 @@
-import { get, post, put, q } from "./http";
+import { del, get, post, put, q } from "./http";
 import type {
   AgentsBody,
   CommandInfo,
@@ -18,6 +18,13 @@ import type {
 
 export const api = {
   workspaces: () => get<{ workspaces: WorkspaceEntry[] }>("/v1/workspaces").then((b) => b.workspaces ?? []),
+  /** Hide a folder from the list; its sessions are kept. */
+  hideWorkspace: (path: string) => del<void>(`/v1/workspaces?path=${q(path)}`),
+  /** Delete every session of a folder (with their subagents), then hide it. */
+  deleteWorkspaceSessions: (path: string) =>
+    del<{ deleted: number }>(`/v1/workspaces?path=${q(path)}&sessions=delete`),
+  /** Show a hidden folder again; harmless on one that is not hidden. */
+  unhideWorkspace: (path: string) => post<void>(`/v1/workspaces?path=${q(path)}`),
   sessions: (workspace: string) =>
     get<{ sessions: SessionListEntry[] }>(`/v1/sessions?workspace=${q(workspace)}`).then((b) => b.sessions ?? []),
   session: (id: string) => get<SessionSummary>(`/v1/sessions/${q(id)}`),

@@ -9,7 +9,8 @@ import { CommandPalette, type PaletteCommand, type PalettePage } from "./compone
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { RightPanel, type PanelTab } from "./components/RightPanel";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, sidebarWorkspaces } from "./components/Sidebar";
+import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./components/WorkspaceActions";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
@@ -78,6 +79,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const qc = useQueryClient();
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
+  const [removing, setRemoving] = useState<RemoveRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
   const workspace = route.workspace;
   const expansion = useWorkspaceExpansion(workspace);
@@ -88,6 +90,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const sessions = useSessions(workspace);
   const commands = useCommands();
   const sessionRow = sessions.data?.find((s) => s.id === route.session);
+  const sidebarList = useMemo(() => sidebarWorkspaces(workspaces.data ?? [], workspace), [workspaces.data, workspace]);
+  // The open workspace as the server lists it; one opened by path but not listed yet has nothing to remove.
+  const currentWs = workspaces.data?.find((w) => w.path === workspace);
   const title = route.session ? sessionTitle(sessionRow?.title) : "New session";
   const childRow = route.subagent ? sessions.data?.find((s) => s.id === route.subagent) : undefined;
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
@@ -168,6 +173,19 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         disabled: hasSession ? undefined : "Skills are listed once the session has started",
         page: skillsPage,
       },
+      ...(currentWs
+        ? [
+            { id: "ws-hide", group: "Workspace", label: `Remove ${currentWs.name} from list`, hint: "", disabled: launchedReason(currentWs), run: () => setRemoving({ ws: currentWs, kind: "hide", count: currentWs.session_count }) },
+            {
+              id: "ws-delete",
+              group: "Workspace",
+              label: `Delete sessions of ${currentWs.name}…`,
+              hint: "",
+              disabled: launchedReason(currentWs) ?? (currentWs.session_count ? undefined : "This folder has no session to delete."),
+              run: () => setRemoving({ ws: currentWs, kind: "delete", count: currentWs.session_count }),
+            },
+          ]
+        : []),
       { id: "theme", group: "View", label: "Theme…", hint: "", page: themePage },
       { id: "collapse-workspaces", group: "View", label: "Collapse all workspaces", hint: "", run: expansion.collapseAll },
       { id: "expand-workspaces", group: "View", label: "Expand all workspaces", hint: "", run: expandAllWorkspaces },
@@ -186,11 +204,11 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         run: () => (c.args_hint.startsWith("<") ? composer.current?.fill(`/${c.name} `) : void runServer(c.name, "")),
       });
     }
-    const order = ["Agent", "Session", "Extensions", "View"];
+    const order = ["Agent", "Session", "Workspace", "Extensions", "View"];
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, expansion.collapseAll, expandAllWorkspaces]);
+  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, expansion.collapseAll, expandAllWorkspaces, currentWs]);
 
   const runServer = async (name: string, args: string) => {
     if (!route.session) {
@@ -301,7 +319,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         </div>
       </header>
 
-      <Sidebar route={route} navigate={navigate} expansion={expansion} />
+      <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />
 
       {route.subagent && route.session ? (
         <main className="main">
@@ -342,6 +360,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}
+      {removing && <RemoveWorkspaceDialog request={removing} workspaces={sidebarList} route={route} navigate={navigate} onClose={() => setRemoving(null)} />}
     </div>
   );
 }

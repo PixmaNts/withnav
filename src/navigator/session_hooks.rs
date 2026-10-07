@@ -159,9 +159,7 @@ impl SessionHooks for NavigatorHooks {
         feed.register_flow_poster(
             id,
             Arc::new(move |text, flow, run_id, wake| {
-                sender
-                    .queue_flow_note(text, flow, run_id, wake)
-                    .map_err(|error| error.to_string())
+                sender.queue_flow_note_report(text, flow, run_id, wake)
             }),
         );
         let incarnations = self.incarnations.clone();

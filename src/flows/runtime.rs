@@ -678,17 +678,15 @@ impl FlowRuntime {
                                 .effect(&name, &outcome.trace.run_id, action, &cancel)
                                 .await
                         };
-                        let status = if result.is_ok() {
-                            "applied"
-                        } else {
+                        let (status, message) = application_status(&result);
+                        if status == "failed" {
                             report.status = "failed".into();
-                            "failed"
-                        };
+                        }
                         report.actions.push(AppliedAction {
                             node_id: action.node_id.clone(),
                             action: action.action.clone(),
                             status: status.into(),
-                            message: result.err().map(|_| "effect application failed".into()),
+                            message,
                         });
                     }
                     outcome.trace.application = report;
@@ -771,17 +769,15 @@ impl FlowRuntime {
                             )
                             .await
                     };
-                    let status = if result.is_ok() {
-                        "applied"
-                    } else {
+                    let (status, message) = application_status(&result);
+                    if status == "failed" {
                         report.status = "failed".into();
-                        "failed"
-                    };
+                    }
                     report.actions.push(AppliedAction {
                         node_id: action.node_id.clone(),
                         action: action.action.clone(),
                         status: status.into(),
-                        message: result.err().map(|_| "effect application failed".into()),
+                        message,
                     });
                 }
                 outcome.trace.application = report;
@@ -892,5 +888,39 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
                 }
             }
         })
+    }
+}
+
+/// How one applied effect is recorded. A wake held back by the session's flow-wake cooldown
+/// was deliberately not delivered: it is `suppressed`, not a failure, so health counters do not
+/// report a working flow as broken and the Studio shows why nothing happened.
+fn application_status(result: &Result<(), ApplyError>) -> (&'static str, Option<String>) {
+    match result {
+        Ok(()) => ("applied", None),
+        Err(ApplyError(reason)) if reason == WAKE_COOLDOWN => {
+            ("suppressed", Some(WAKE_COOLDOWN.to_owned()))
+        }
+        Err(_) => ("failed", Some("effect application failed".to_owned())),
+    }
+}
+
+/// The error text the session and editor effect adapters return for a cooled-down wake.
+pub(crate) const WAKE_COOLDOWN: &str = "wake cooldown";
+
+#[cfg(test)]
+mod application_status_tests {
+    use super::*;
+
+    #[test]
+    fn a_cooled_down_wake_is_suppressed_not_failed() {
+        assert_eq!(application_status(&Ok(())), ("applied", None));
+        assert_eq!(
+            application_status(&Err(ApplyError(WAKE_COOLDOWN.into()))),
+            ("suppressed", Some(WAKE_COOLDOWN.to_owned()))
+        );
+        assert_eq!(
+            application_status(&Err(ApplyError("session stopped".into()))).0,
+            "failed"
+        );
     }
 }

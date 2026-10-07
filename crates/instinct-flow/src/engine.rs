@@ -8,6 +8,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputValue {
     pub value: Option<serde_json::Value>,
     pub cut: bool,

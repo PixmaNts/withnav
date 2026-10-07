@@ -249,3 +249,22 @@ impl Catalogue {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn asymmetric_permissions_and_duplicate_names_are_rejected() {
+        let mut catalogue: Catalogue =
+            serde_json::from_str(include_str!("../tests/fixtures/catalogue.json")).unwrap();
+        catalogue.validate().unwrap();
+        catalogue.triggers[0].allowed_actions.clear();
+        assert!(catalogue.validate().is_err());
+        let action = catalogue.actions[0].clone();
+        catalogue.actions.push(action);
+        assert!(catalogue
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|d| d.code == "schema"));
+    }
+}

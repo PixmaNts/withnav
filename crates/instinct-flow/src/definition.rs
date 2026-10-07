@@ -248,3 +248,19 @@ impl Definition {
         crate::validation::validate(self, catalogue, capabilities, templates)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn optional_defaults_normalize_and_null_constants_are_not_serialized() {
+        let mut definition=Definition::parse("[flow]\nversion=1\nname='sample'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='sample'\n").unwrap();
+        assert!(definition.flow.enabled);
+        assert!(!definition.flow.blocking);
+        assert_eq!(
+            Definition::parse(&definition.to_toml().unwrap()).unwrap(),
+            definition
+        );
+        definition.constants.insert("NULL".into(), Value::Null);
+        assert!(definition.to_toml().is_err());
+    }
+}

@@ -4,6 +4,61 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-07
+
+Navai gets a bypass mode: one session can skip ordinary permission prompts, from the terminal,
+VS Code, the browser or `navai run --yes`, while Navai's own configuration, credentials and keys
+still ask you. The browser sidebar can now collapse every workspace and hide one, the transcript
+uses one column, VS Code's panel uses theme colours, and two permission gaps are closed. No
+configuration change is needed to upgrade from 0.6.0.
+
+### Added
+
+- **Bypass ordinary permission prompts for one session.** Turn it on with `/bypass on`, `navai run
+  --yes`, or `POST /v1/sessions/{id}/bypass`: `write`, `edit`, `bash` and `fetch` calls that would
+  have asked run once instead, after the usual reviews, and the result says `approved_by: bypass`. A
+  request already waiting is answered too. Requests for Navai's own configuration, credentials and
+  keys still ask you, and `navai run --yes` stops with exit code 3 on one. It is off for every new
+  or resumed session, never saved, and a session's subagents follow it. It is not a sandbox: `bash`
+  keeps its access to your machine.
+- **Bypass in the terminal.** Alt+P (or `/bypass on` / `/bypass off`) turns bypass on or off for the
+  open session. While it is on, `⚠ bypass` stays in the header and next to the tab, and each change
+  appears in the conversation. Protected requests still ask.
+- **Bypass in VS Code.** "Navai: Toggle Bypass Permissions" (or the button in the Cognition panel
+  header) turns bypass on for the open session, after a confirmation the first time. While it is on,
+  a warning badge stays in the header, and each change appears in the conversation.
+- **Bypass in the browser.** The "Bypass" button next to build/plan (or the command palette) turns
+  bypass on or off for the open session. While it is on, a warning badge stays on the session in the
+  sidebar and in the breadcrumb, and each change appears in the conversation. Protected requests
+  still ask.
+- **Remove a workspace from the browser list.** The `…` menu of a workspace (or the command palette,
+  for the open one) offers **Remove from list**, which keeps its sessions, and **Delete workspace
+  sessions…**, which deletes every session of that folder with its subagents after you confirm the
+  count. A removed folder stays out of the list after a restart and comes back when you open it
+  again with "Open a folder" or start a session there. Folders passed to `navai web` on the command
+  line stay in the list while that server runs.
+
+### Changed
+
+- VS Code's Cognition panel uses theme colours to distinguish build and plan, tools, Navigator
+  wakes, subagents and permission outcomes; Settings highlights saved changes in the same style.
+
+### Fixed
+
+- Responses no longer stop midway when a model gateway sends `null` instead of an empty list of tool
+  calls or response choices.
+- **Browser transcripts use one column.** Driver messages and cognition replies share the full
+  width, with bylines and a quiet Driver accent instead of right-aligned chat bubbles.
+- **Every workspace can collapse in the browser sidebar.** Carets expand without switching
+  workspaces, names navigate without reopening collapsed rows, and the browser remembers which
+  folders are expanded. Collapse all and Expand all are also available in the command palette.
+- **Network commands always get a review.** A bash call that runs `curl`, `wget`, `ssh`, `scp`,
+  `sftp`, `rsync`, `nc`, `ncat` or `socat` is now treated as reaching outside the project, so it
+  always goes to permission review instead of possibly running unreviewed.
+- **A symlinked folder no longer slips past the Markdown exception.** Writing a `.md` file through a
+  folder that is a link (for example `notes/` pointing elsewhere) now asks like any other write
+  outside its real place; before, only a link on the file itself was caught.
+
 ## [0.6.0] - 2026-10-07
 
 Navai gets a browser interface and a Settings screen in every client. `navai web` opens the chat in

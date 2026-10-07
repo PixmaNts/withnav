@@ -246,6 +246,10 @@ type Ack = oneshot::Sender<Result<(), String>>;
 
 /// What the writer thread accepts.
 enum Write {
+    WorkspaceVisibility {
+        path: String,
+        hidden: bool,
+    },
     MarkArchive {
         id: Ulid,
         reason: String,
@@ -634,6 +638,52 @@ impl HistoryStore {
             let mut stmt = conn.prepare("SELECT child_id FROM child_links WHERE parent_id=?1 ORDER BY created_at, child_id").map_err(|e| e.to_string())?;
             let rows = stmt.query_map([parent.to_string()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
             rows.map(|row| row.map_err(|e| e.to_string())?.parse().map_err(|e| format!("child id: {e}"))).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    /// Persists visibility for a canonical workspace path.
+    pub async fn set_workspace_hidden(&self, path: &Path, hidden: bool) -> Result<(), String> {
+        self.acked(Write::WorkspaceVisibility {
+            path: path.to_string_lossy().into_owned(),
+            hidden,
+        })
+        .await
+    }
+
+    /// Canonical paths hidden by the driver, shared by every server using this history.
+    pub async fn hidden_workspaces(&self) -> Result<std::collections::HashSet<PathBuf>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn
+                .prepare("SELECT path FROM hidden_workspaces")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.map(|row| row.map(PathBuf::from).map_err(|e| e.to_string()))
+                .collect()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    /// Root sessions matching a canonical directory, including alternate stored spellings.
+    pub async fn workspace_session_ids(&self, workspace: &Path) -> Result<Vec<Ulid>, String> {
+        let path = self.path.clone();
+        let workspace = workspace.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id, workspace FROM sessions s WHERE NOT EXISTS (SELECT 1 FROM child_links c WHERE c.child_id=s.id)").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+            let mut ids = Vec::new();
+            for row in rows {
+                let (id, stored) = row.map_err(|e| e.to_string())?;
+                if std::fs::canonicalize(stored).ok().as_ref() == Some(&workspace) {
+                    ids.push(id.parse().map_err(|e| format!("session id: {e}"))?);
+                }
+            }
+            Ok(ids)
         }).await.map_err(|e| e.to_string())?
     }
 
@@ -1131,6 +1181,17 @@ impl HistoryStore {
         self.enqueue(Write::AppendEvent { id, envelope });
     }
 
+    /// Appends one durable envelope like [`HistoryStore::append_event`] and
+    /// waits for ITS transaction: the result is that append's own outcome,
+    /// not the store's sticky first failure.
+    pub async fn append_event_acked(
+        &self,
+        id: Ulid,
+        envelope: EventEnvelope,
+    ) -> Result<(), String> {
+        self.acked(Write::AppendEvent { id, envelope }).await
+    }
+
     /// Snapshots the actor transcript after a turn end (also bumps
     /// `updated_at`; `last_seq` is owned by `append_event`). Fire-and-forget:
     /// a failure surfaces at the next [`HistoryStore::flush`].
@@ -1475,6 +1536,22 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     provenance
                 ],
             )?;
+            if let Ok(path) = std::fs::canonicalize(&workspace) {
+                tx.execute(
+                    "DELETE FROM hidden_workspaces WHERE path=?1",
+                    [path.to_string_lossy().as_ref()],
+                )?;
+            }
+        }
+        Write::WorkspaceVisibility { path, hidden } => {
+            if hidden {
+                tx.execute(
+                    "INSERT OR REPLACE INTO hidden_workspaces (path, hidden_at) VALUES (?1, ?2)",
+                    params![path, now_rfc3339()],
+                )?;
+            } else {
+                tx.execute("DELETE FROM hidden_workspaces WHERE path=?1", [path])?;
+            }
         }
         Write::SetVariant {
             id,
@@ -1690,7 +1767,11 @@ fn migrate(path: &Path) -> Result<(), String> {
     let conn = Connection::open(path).map_err(|e| format!("open: {e}"))?;
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS sessions (
+        "CREATE TABLE IF NOT EXISTS hidden_workspaces (
+            path TEXT PRIMARY KEY,
+            hidden_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             workspace TEXT NOT NULL,
             model TEXT NOT NULL,
@@ -2957,6 +3038,33 @@ mod tests {
     // Then the first flush names the cause, and every later flush keeps
     //      reporting the same failure: the history has a hole that no later
     //      flush may hide
+    #[tokio::test]
+    async fn acked_append_reports_its_own_outcome_not_the_poison() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", false)
+            .await
+            .expect("record");
+        store.append_event(Ulid::new(), envelope(0, EventKind::SessionStart));
+        store
+            .flush()
+            .await
+            .expect_err("poisoned by an unknown session");
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .expect("its own append committed");
+        store
+            .flush()
+            .await
+            .expect_err("the poison is still reported");
+        store
+            .append_event_acked(Ulid::new(), envelope(1, EventKind::SessionStart))
+            .await
+            .expect_err("its own failure is reported");
+    }
+
     #[tokio::test]
     async fn failed_append_poison_survives_multiple_flushes() {
         let (dir, store) = temp_store();

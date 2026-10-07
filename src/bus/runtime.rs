@@ -9,6 +9,7 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
+pub mod bypass;
 mod compact;
 mod deferred;
 mod delivery;
@@ -43,9 +44,7 @@ use ulid::Ulid;
 use crate::agent::actor::{AgentActor, AgentState};
 use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
 use crate::agent::permissions::PermissionDecision;
-use crate::agent::run_loop::{
-    continue_run, resolve_permission, run_agent, AgentEvent, ResolveError, RunOutcome,
-};
+use crate::agent::run_loop::{continue_run, run_agent, AgentEvent, ResolveError, RunOutcome};
 use crate::bus::event::{
     AgentStateChanged, AgentYield, EventKind, PermissionResolution, PermissionResolved, TaskDone,
     TaskStatus, ToolPostCall, ToolPreCall, ToolSource, TurnEnd, TurnEndOutcome, TurnError,
@@ -100,10 +99,19 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
+    /// Serializes bypass changes and child starts below this root, so a
+    /// child created while the setting changes reads one value or the other
+    /// and is then given every later change.
+    pub bypass_gate: tokio::sync::Mutex<()>,
     #[cfg(debug_assertions)]
     pub(crate) driver_task_probe: Mutex<Option<String>>,
     #[cfg(test)]
     policy_pin_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    /// Parks the runtime after a permission request was published and
+    /// before the bypass recheck of that request.
+    #[cfg(test)]
+    arrival_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
     pub watchdog_goal: Mutex<String>,
     pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
@@ -310,6 +318,11 @@ impl RuntimeStatus {
             return true;
         }
         false
+    }
+
+    /// Whether an answer already holds the waiting request.
+    pub fn permission_claimed(&self) -> bool {
+        self.permission_slot().claimed
     }
 
     /// Gives a claim back, for an answer the runtime did not take.
@@ -806,6 +819,8 @@ pub fn spawn_with_completion(
     completion: Option<CompletionHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
+    let mut actor = actor;
+    actor.bypass = status.bypass.clone();
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -938,6 +953,7 @@ async fn runtime_loop(
                 // Between turns: run it now, publish its result, then answer.
                 match control {
                     Control::Steer => {
+
                         if actor.has_pending() || status.progress_parked()
                             || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
                         actor.transcript = status.steering.apply(actor.transcript.clone());
@@ -953,6 +969,7 @@ async fn runtime_loop(
                         if status.awaiting_fresh_driver.load(std::sync::atomic::Ordering::Acquire) || status.watchdog.root_hold().is_some() { continue; }
                         Some(Inbound::Continue)
                     },
+                    Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, Some((&actor, &inbox))).await; continue; }
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::DeliverySteer => { delivery_waiting=true; continue; }
                     Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
@@ -1024,7 +1041,11 @@ async fn runtime_loop(
 
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
-        let resume: Option<(Ulid, PermissionDecision)> = match inbound {
+        let resume: Option<(
+            Ulid,
+            PermissionDecision,
+            crate::agent::permissions::PermissionOrigin,
+        )> = match inbound {
             Inbound::Continue => {
                 let (transcript, _) = status.steering.claim_replacements(actor.transcript.clone());
                 actor.transcript = transcript;
@@ -1106,14 +1127,15 @@ async fn runtime_loop(
                     &request.tool,
                     answer.decision,
                 );
-                publish_resolved(
+                publish_resolved_with_origin(
                     &sequencer,
                     active_task_id,
                     &request,
                     PermissionResolution::from(&decision),
+                    answer.origin,
                 );
                 let _ = answer.reply.send(Ok(()));
-                Some((answer.request_id, decision))
+                Some((answer.request_id, decision, answer.origin))
             }
         };
         *status
@@ -1174,9 +1196,15 @@ async fn runtime_loop(
             let turn_fut = async {
                 let first = match resume {
                     None => run_agent(&mut actor, &mut observe).await,
-                    Some((request_id, decision)) => {
-                        match resolve_permission(&mut actor, request_id, decision, &mut observe)
-                            .await
+                    Some((request_id, decision, origin)) => {
+                        match crate::agent::run_loop::resolve_permission_with_origin(
+                            &mut actor,
+                            request_id,
+                            decision,
+                            origin,
+                            &mut observe,
+                        )
+                        .await
                         {
                             Ok(outcome) => Ok(outcome),
                             Err(ResolveError::Agent(err)) => Err(err),
@@ -1202,6 +1230,7 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, None).await; }
                             Control::Steer => {}
                             Control::Interrupt(id) => {
                                 if !status.steering.has_interrupt(id) { continue; }
@@ -1417,6 +1446,15 @@ async fn runtime_loop(
                     None,
                 );
                 emit_agent_state(&mut turn, "yielded");
+                #[cfg(test)]
+                {
+                    let barrier = status.arrival_barrier.lock().unwrap().clone();
+                    if let Some((reached, release)) = barrier {
+                        reached.notify_one();
+                        release.notified().await;
+                    }
+                }
+                status.resolve_pending_bypass(&actor, &inbox);
             }
             Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
                 if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
@@ -1632,6 +1670,22 @@ pub(crate) fn publish_resolved(
     request: &crate::agent::permissions::PermissionRequest,
     resolution: PermissionResolution,
 ) {
+    publish_resolved_with_origin(
+        sequencer,
+        task_id,
+        request,
+        resolution,
+        crate::agent::permissions::PermissionOrigin::Driver,
+    );
+}
+
+fn publish_resolved_with_origin(
+    sequencer: &Sequencer,
+    task_id: Option<Ulid>,
+    request: &crate::agent::permissions::PermissionRequest,
+    resolution: PermissionResolution,
+    origin: crate::agent::permissions::PermissionOrigin,
+) {
     let mut candidate = Candidate::new(
         EventKind::PermissionResolved,
         to_value(&PermissionResolved {
@@ -1641,6 +1695,9 @@ pub(crate) fn publish_resolved(
             resolution,
         }),
     );
+    if origin == crate::agent::permissions::PermissionOrigin::Bypass {
+        candidate.payload["approved_by"] = serde_json::json!("bypass");
+    }
     if let Some(task) = task_id {
         candidate = candidate.with_correlation_id(task);
     }
@@ -1697,6 +1754,7 @@ fn permission_requested(
         agent: request.agent.clone(),
         reason: request.reason.clone(),
     });
+    payload["requires_driver"] = serde_json::json!(request.requires_driver);
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
             request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"driver","reason":request.reason,"truncated":false}));
@@ -1908,6 +1966,7 @@ mod tests {
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
+                requires_driver: false,
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),
@@ -1952,6 +2011,7 @@ mod tests {
         let (reply, response) = tokio::sync::oneshot::channel();
         answers
             .send(crate::bus::inbox::PermissionAnswer {
+                origin: crate::agent::permissions::PermissionOrigin::Driver,
                 request_id,
                 decision: PermissionDecision::Deny {
                     message: "no".into(),
@@ -2261,6 +2321,145 @@ mod tests {
         let actor = task.await.unwrap();
         assert_eq!(actor.watchdog_steps_left, Some(7));
         assert!(actor.transcript.iter().any(|message| matches!(message,crate::provider::openai::ChatMessage::User { content,.. } if content.contains("accepted guidance"))));
+    }
+
+    // Given bypass turned on after a request was published and before the
+    //       runtime looked at it again
+    // Then the arrival recheck resolves that request once, as bypass
+    #[tokio::test]
+    async fn a_request_published_just_before_bypass_is_resolved_by_the_arrival_recheck() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let agents = Arc::new(Agents::builtin());
+        let build = agents.get("build").unwrap().clone();
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents, build,
+        )));
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *status.arrival_barrier.lock().unwrap() = Some((reached.clone(), release.clone()));
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor(server.url.clone(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "run echo")).await.unwrap();
+        reached.notified().await;
+        // The request is out and bypass was off when it was asked; now it is on.
+        *status.bypass.lock().unwrap() = crate::agent::actor::BypassState {
+            enabled: true,
+            seq: 1,
+        };
+        release.notify_one();
+        let mut resolved = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), live.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if event.kind == "permission.resolved" {
+                resolved.push(event.clone());
+            }
+            if event.kind == "task.done" {
+                break;
+            }
+        }
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].payload["approved_by"], "bypass");
+        assert_eq!(resolved[0].payload["resolution"], "allow_once");
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    // Given a driver answer that claimed the waiting request
+    // When bypass is turned on before the runtime reads that answer
+    // Then the request is resolved once, by the driver, without a bypass mark
+    #[tokio::test]
+    async fn a_driver_answer_admitted_before_bypass_keeps_its_claim_and_provenance() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let agents = Arc::new(Agents::builtin());
+        let build = agents.get("build").unwrap().clone();
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents, build,
+        )));
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *status.arrival_barrier.lock().unwrap() = Some((reached.clone(), release.clone()));
+        let (tx, inbox) = ActorInbox::channel();
+        let inbox_answers = inbox.permission_sender();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor(server.url.clone(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "run echo")).await.unwrap();
+        reached.notified().await;
+        let request_id = status.pending_permission().expect("request waits");
+        // The driver claims first and its answer is queued; then bypass turns on.
+        assert!(status.claim_permission(request_id));
+        let (reply, accepted) = tokio::sync::oneshot::channel();
+        inbox_answers
+            .try_send(crate::bus::inbox::PermissionAnswer {
+                origin: crate::agent::permissions::PermissionOrigin::Driver,
+                request_id,
+                decision: PermissionDecision::AllowOnce,
+                reply,
+            })
+            .unwrap();
+        *status.bypass.lock().unwrap() = crate::agent::actor::BypassState {
+            enabled: true,
+            seq: 1,
+        };
+        release.notify_one();
+        assert!(accepted.await.unwrap().is_ok());
+        let mut resolved = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), live.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if event.kind == "permission.resolved" {
+                resolved.push(event.clone());
+            }
+            if event.kind == "task.done" {
+                break;
+            }
+        }
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].payload.get("approved_by").is_none());
+        assert_eq!(resolved[0].payload["resolution"], "allow_once");
+        cancel.cancel();
+        task.await.unwrap();
     }
 
     #[tokio::test]

@@ -3,12 +3,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
-import { keys, useCommands, useSessions, useSettings } from "./api/queries";
+import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
+import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { RightPanel, type PanelTab } from "./components/RightPanel";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, sidebarWorkspaces } from "./components/Sidebar";
+import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./components/WorkspaceActions";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
@@ -77,16 +79,25 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const qc = useQueryClient();
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
+  const [removing, setRemoving] = useState<RemoveRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
   const workspace = route.workspace;
+  const expansion = useWorkspaceExpansion(workspace);
+  const workspaces = useWorkspaces();
+  const expandAllWorkspaces = useCallback(() => expansion.expandAll([...new Set([...(workspaces.data ?? []).map((w) => w.path), ...(workspace ? [workspace] : [])])]), [expansion.expandAll, workspaces.data, workspace]);
   const onCreated = useCallback((id: string) => navigate({ session: id, subagent: null }, true), [navigate]);
   const chat = useChat(workspace, route.session, onCreated);
   const sessions = useSessions(workspace);
   const commands = useCommands();
   const sessionRow = sessions.data?.find((s) => s.id === route.session);
+  const sidebarList = useMemo(() => sidebarWorkspaces(workspaces.data ?? [], workspace), [workspaces.data, workspace]);
+  // The open workspace as the server lists it; one opened by path but not listed yet has nothing to remove.
+  const currentWs = workspaces.data?.find((w) => w.path === workspace);
   const title = route.session ? sessionTitle(sessionRow?.title) : "New session";
   const childRow = route.subagent ? sessions.data?.find((s) => s.id === route.subagent) : undefined;
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
+  const bypass = route.subagent ? childRow?.bypass === true : chat.bypass;
+  const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
 
   useEffect(() => {
     document.title = route.session ? `${title} · Navai` : "Navai";
@@ -127,6 +138,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     const hasSession = !!route.session;
     const children = Object.values(chat.view.children);
     const items: PaletteCommand[] = [
+      { id: "bypass", group: "Session", label: `Turn bypass ${bypass ? "off" : "on"}`, description: "Bypass ordinary permission prompts; protected requests still ask", hint: "", disabled: bypassReason, run: () => void chat.setBypass(!bypass) },
       { id: "agent", group: "Agent", label: `Switch agent to ${otherAgent}`, hint: "tab", run: toggleAgent, disabled: workspace ? undefined : "Choose a workspace first" },
       { id: "model", group: "Agent", label: "Model for this session…", hint: "/model", run: () => setOverlay("models"), disabled: workspace ? undefined : "Choose a workspace first" },
       {
@@ -164,11 +176,26 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         disabled: hasSession ? undefined : "Skills are listed once the session has started",
         page: skillsPage,
       },
+      ...(currentWs
+        ? [
+            { id: "ws-hide", group: "Workspace", label: `Remove ${currentWs.name} from list`, hint: "", disabled: launchedReason(currentWs), run: () => setRemoving({ ws: currentWs, kind: "hide", count: currentWs.session_count }) },
+            {
+              id: "ws-delete",
+              group: "Workspace",
+              label: `Delete sessions of ${currentWs.name}…`,
+              hint: "",
+              disabled: launchedReason(currentWs) ?? (currentWs.session_count ? undefined : "This folder has no session to delete."),
+              run: () => setRemoving({ ws: currentWs, kind: "delete", count: currentWs.session_count }),
+            },
+          ]
+        : []),
       { id: "theme", group: "View", label: "Theme…", hint: "", page: themePage },
+      { id: "collapse-workspaces", group: "View", label: "Collapse all workspaces", hint: "", run: expansion.collapseAll },
+      { id: "expand-workspaces", group: "View", label: "Expand all workspaces", hint: "", run: expandAllWorkspaces },
       { id: "settings", group: "View", label: "Open settings", hint: "", run: openSettings, disabled: workspace ? undefined : "Choose a workspace first" },
     ];
     // The server's commands, minus the ones above already cover.
-    const covered = new Set(["model", "new", "agent", "stop"]);
+    const covered = new Set(["model", "new", "agent", "stop", "bypass"]);
     for (const c of commands.data ?? []) {
       if (covered.has(c.name)) continue;
       items.push({
@@ -180,13 +207,18 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         run: () => (c.args_hint.startsWith("<") ? composer.current?.fill(`/${c.name} `) : void runServer(c.name, "")),
       });
     }
-    const order = ["Agent", "Session", "Extensions", "View"];
+    const order = ["Agent", "Session", "Workspace", "Extensions", "View"];
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings]);
+  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, expansion.collapseAll, expandAllWorkspaces, currentWs]);
 
   const runServer = async (name: string, args: string) => {
+    if (name === "bypass" && ["on", "off"].includes(args.trim())) {
+      if (bypassReason) { chat.setError(bypassReason); return; }
+      await chat.setBypass(args.trim() === "on");
+      return;
+    }
     if (!route.session) {
       chat.setError("Send a first message to start the session, then run commands.");
       return;
@@ -269,6 +301,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <WifiSlash size={13} aria-hidden /> {connection}
           </span>
         )}
+        {bypass && <span className="bypass-badge" title="Bypass ordinary permission prompts; protected requests still ask">⚠ bypass</span>}
         <div className="topbar-right">
           <span className="muted" style={{ fontSize: 12 }}>
             Agent
@@ -286,6 +319,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
               {id}
             </button>
           ))}
+          <button type="button" className="bypass-toggle" aria-pressed={bypass} disabled={!!bypassReason} title={bypassReason ?? "Bypass ordinary permission prompts; protected requests still ask"} onClick={() => void chat.setBypass(!bypass)}>
+            ⚠ Bypass {bypass ? "ON" : "OFF"}
+          </button>
           <button type="button" className="icon-btn st-gear" onClick={openSettings} disabled={!workspace} aria-label="Settings" title={workspace ? "Settings" : "Choose a workspace first"}>
             <GearSix size={16} />
           </button>
@@ -293,9 +329,10 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             {modKey("K")}
           </button>
         </div>
+        {bypass && <span className="bypass-warning" role="status">Bypass ordinary permission prompts; protected requests still ask</span>}
       </header>
 
-      <Sidebar route={route} navigate={navigate} />
+      <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />
 
       {route.subagent && route.session ? (
         <main className="main">
@@ -336,6 +373,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}
+      {removing && <RemoveWorkspaceDialog request={removing} workspaces={sidebarList} route={route} navigate={navigate} onClose={() => setRemoving(null)} />}
     </div>
   );
 }

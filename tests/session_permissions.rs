@@ -15,8 +15,8 @@ use navai::server::{app, AppState};
 mod common;
 use common::server::{request_json, TestServerConfig};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body, text_chunk,
-    tool_call_chunk, CapturingProvider,
+    http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
+    text_chunk, tool_call_chunk, CapturingProvider,
 };
 
 struct Env {
@@ -255,6 +255,115 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(status, StatusCode::NOT_FOUND, "unknown session");
     let (status, _) = answer(&router2, id2, &request2, json!({"decision": "maybe"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "not a decision");
+}
+
+fn authenticated_router(state: navai::server::AppState) -> axum::Router {
+    app(state).layer(axum::middleware::from_fn(
+        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+            request
+                .headers_mut()
+                .insert("authorization", "Bearer test-token".parse().unwrap());
+            next.run(request).await
+        },
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
+    let env = env();
+    let target = env.ws.join("bypass.txt");
+    let provider = provider(vec![one_write("bypass-write", &target), done("written")]).await;
+    let state = config(&env, &provider).bearer_token("test-token").state();
+    let router = authenticated_router(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write the file").await;
+    wait_events(&state, id, "permission.requested", 1).await;
+    for _ in 0..2 {
+        let (status, body) = request_json(
+            &router,
+            "POST",
+            &format!("/v1/sessions/{id}/bypass"),
+            Some(&json!({"enabled":true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    wait_events(&state, id, "task.done", 1).await;
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "from bypass-write"
+    );
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["approved_by"], "bypass");
+    let posts = events(&state, id, "tool.post_call").await;
+    assert_eq!(posts.len(), 1);
+    assert!(serde_json::to_string(&posts[0].payload)
+        .unwrap()
+        .contains("bypass"));
+    state.close_session(id).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bypass_leaves_pending_sensitive_request_open() {
+    let env = env();
+    let target = env.ws.join("auth.json");
+    let provider = provider(vec![one_write("protected-write", &target)]).await;
+    let state = config(&env, &provider).bearer_token("test-token").state();
+    let router = authenticated_router(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write credentials").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    assert_eq!(requested[0].payload["requires_driver"], true);
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/bypass"),
+        Some(&json!({"enabled":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(events(&state, id, "permission.resolved").await.is_empty());
+    assert!(!target.exists());
+    state.close_session(id).await.unwrap();
+    assert!(!target.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
+    let env = env();
+    let target = env.ws.join("driver.txt");
+    let provider = provider(vec![one_write("driver-write", &target), done("written")]).await;
+    let state = config(&env, &provider).bearer_token("test-token").state();
+    let router = authenticated_router(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write the file").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    let (status, body) = answer(
+        &router,
+        id,
+        &request_id(&requested[0]),
+        json!({"decision":"allow_once"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/bypass"),
+        Some(&json!({"enabled":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_events(&state, id, "task.done", 1).await;
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 1);
+    assert!(resolved[0].payload.get("approved_by").is_none());
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "from driver-write"
+    );
+    state.close_session(id).await.unwrap();
 }
 
 // Given allow-folder on one folder
@@ -512,7 +621,7 @@ fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
 
 // Given `navai run` reaching a gated call
 // Then it stops with `permission_required` and exit 3, never hanging or
-//      approving; with --yes it approves once and finishes
+//      approving; with --yes the session's bypass lets ordinary work finish
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn navai_run_stops_on_a_permission_request_unless_yes() {
     let env = env();
@@ -560,6 +669,98 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
     .unwrap();
     assert_eq!(approved.status.code(), Some(0), "{approved:?}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w2");
+}
+
+// Given `navai run --yes` whose model writes a credentials file
+// Then the hard floor holds: it prints the request with its reason, exits 3
+//      and writes nothing
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
+    let env = env();
+    let target = env.ws.join("auth.json");
+    let provider = provider(vec![one_write("w1", &target), done("never")]).await;
+    let cfg = config(&env, &provider);
+    cfg.config();
+    let models = cfg.models_path();
+    let (root_env, ws) = (env.root.clone(), env.ws.clone());
+    let output = tokio::task::spawn_blocking(move || {
+        let env = Env {
+            _tmp: tempfile::tempdir().unwrap(),
+            root: root_env,
+            ws,
+        };
+        run_navai(&env, &models, &["--yes", "--prompt", "write auth.json"])
+    })
+    .await
+    .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("permission_required: write "), "{stderr}");
+    assert!(
+        stderr.contains(&format!("{}: ", env.ws.display())),
+        "{stderr}"
+    );
+    assert!(!target.exists());
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "the run stopped at the request"
+    );
+}
+
+// Given `navai run --yes` where a child session reaches the hard floor
+// Then the mirrored request ends the whole run with exit 3, and the child
+//      writes nothing
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
+    let env = env();
+    let agents = env.ws.join(".navai/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("writer.md"),
+        "---\nmode: subagent\naccess: full\n---\nWrite the requested change.",
+    )
+    .unwrap();
+    let target = env.ws.join("auth.json");
+    let child_target = target.clone();
+    // The parent's second answer is held open, so the child's request is what
+    // ends the run.
+    let provider = spawn_holding_provider(
+        3,
+        2,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        move |_, request| {
+            if request.contains("Write the requested change.") {
+                one_write("child-write", &child_target)
+            } else {
+                http_sse(&sse_body(&[&tool_call_chunk(
+                    "spawn",
+                    "task",
+                    &json!({"agent":"writer","prompt":"write auth.json"}),
+                )]))
+            }
+        },
+    )
+    .await;
+    let cfg = config(&env, &provider);
+    cfg.config();
+    let models = cfg.models_path();
+    let started = std::time::Instant::now();
+    let (root_env, ws) = (env.root.clone(), env.ws.clone());
+    let output = tokio::task::spawn_blocking(move || {
+        let env = Env {
+            _tmp: tempfile::tempdir().unwrap(),
+            root: root_env,
+            ws,
+        };
+        run_navai(&env, &models, &["--yes", "--prompt", "delegate"])
+    })
+    .await
+    .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(started.elapsed() < Duration::from_secs(5), "ended promptly");
+    assert!(!target.exists());
 }
 
 // Given a decision already taken in while the resumed turn stalls

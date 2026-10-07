@@ -27,6 +27,106 @@ fn state(tmp: &std::path::Path) -> AppState {
         .state()
 }
 
+#[tokio::test]
+async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
+    use navai::bus::runtime::bypass::BypassOrigin;
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let first = state.create_session(&ws, None, false).await.unwrap();
+    let second = state.create_session(&ws, None, false).await.unwrap();
+    let initial = state.session_summary(first).await.unwrap();
+    assert!(!initial.bypass);
+    assert!(initial.incarnation.is_some());
+    let enabled = state
+        .set_bypass(first, true, BypassOrigin::Http)
+        .await
+        .unwrap();
+    assert!(enabled.enabled && enabled.changed);
+    let repeated = state
+        .set_bypass(first, true, BypassOrigin::Http)
+        .await
+        .unwrap();
+    assert!(!repeated.changed);
+    assert_eq!(repeated.bypass_seq, enabled.bypass_seq);
+    let snapshot = state.session_summary(first).await.unwrap();
+    assert!(snapshot.bypass);
+    assert_eq!(snapshot.bypass_seq, enabled.bypass_seq);
+    assert_eq!(snapshot.incarnation, initial.incarnation);
+    assert!(!state.session_summary(second).await.unwrap().bypass);
+    let disabled = state
+        .set_bypass(first, false, BypassOrigin::Cli)
+        .await
+        .unwrap();
+    assert!(!disabled.enabled && disabled.changed);
+    assert!(disabled.bypass_seq > enabled.bypass_seq);
+    state.history().flush().await.unwrap();
+    let sub = state.subscribe(first, None).await.unwrap();
+    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+        panic!("expected replay");
+    };
+    let toggles: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "session.bypass")
+        .collect();
+    assert_eq!(toggles.len(), 2);
+    assert_eq!(toggles[0].payload, json!({"enabled":true,"by":"user:http"}));
+    assert_eq!(toggles[1].payload, json!({"enabled":false,"by":"user:cli"}));
+    state.close_session(first).await.unwrap();
+    let stored = state.session_summary(first).await.unwrap();
+    assert!(!stored.bypass);
+    assert_eq!(stored.incarnation, None);
+    assert_eq!(stored.bypass_seq, stored.current_seq);
+}
+
+// Given a session with bypass on that is stopped and resumed
+// Then the resumed runtime starts off, and its history says so before
+//      anything else the resume wrote
+#[tokio::test]
+async fn resume_resets_bypass_off_with_an_event_first() {
+    use navai::bus::runtime::bypass::BypassOrigin;
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let id = state.create_session(&ws, None, false).await.unwrap();
+    state
+        .set_bypass(id, true, BypassOrigin::Http)
+        .await
+        .unwrap();
+    state.close_session(id).await.unwrap();
+    let stored = state.session_summary(id).await.unwrap();
+    let (resumed, _) = state
+        .create_or_resume_session(&ws, None, false, Some(id))
+        .await
+        .unwrap();
+    assert_eq!(resumed, id);
+    let summary = state.session_summary(id).await.unwrap();
+    assert!(!summary.bypass);
+    state.history().flush().await.unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+        panic!("expected replay");
+    };
+    let resets: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "session.bypass" && e.payload["by"] == "system:resume")
+        .collect();
+    assert_eq!(resets.len(), 1);
+    assert_eq!(
+        resets[0].payload,
+        json!({"enabled":false,"by":"system:resume"})
+    );
+    assert_eq!(
+        resets[0].seq,
+        stored.current_seq + 1,
+        "the first event of the resume"
+    );
+    assert_eq!(summary.bypass_seq, resets[0].seq);
+    // The earlier ON stays in the history; replay never restores it.
+    assert!(events
+        .iter()
+        .any(|e| e.kind == "session.bypass" && e.payload["enabled"] == true));
+    state.close_session(id).await.unwrap();
+}
+
 async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
@@ -60,9 +160,9 @@ async fn help_lists_commands_and_publishes_a_result() {
         .collect();
     assert_eq!(
         names,
-        ["help", "model", "new", "stop", "context", "variant", "compact", "agent"]
+        ["help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"]
     );
-    assert_eq!(state.list_commands().len(), 8);
+    assert_eq!(state.list_commands().len(), 9);
 
     let events = results(&state, id).await;
     assert_eq!(events.len(), 1);
@@ -236,6 +336,9 @@ async fn a_command_during_a_pending_ask_is_refused() {
         assert!(!out.ok, "{name}");
         assert!(out.error.unwrap().contains("waiting for an answer"));
     }
+    let bypass = state.run_command(id, "bypass", "on").await.unwrap();
+    assert!(bypass.ok);
+    assert_eq!(bypass.data.as_ref().unwrap()["enabled"], true);
     assert_eq!(state.session_count(), 1, "/new did not run");
     assert_eq!(
         state.session_summary(id).await.unwrap().actor_state,
@@ -331,6 +434,122 @@ async fn http_endpoints_list_and_run_commands() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn bypass_http_requires_configured_authentication() {
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let router = app(state.clone());
+    let id = state.create_session(&ws, None, false).await.unwrap();
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "on"})),
+        ("commands", json!({"name": " /bypass ", "arguments": "off"})),
+    ] {
+        let (status, body) = request_json(
+            &router,
+            "POST",
+            &format!("/v1/sessions/{id}/{suffix}"),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "auth_required");
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("bypass can only be changed by an authenticated client"));
+    }
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/commands"),
+        Some(&json!({"name": "bypass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn bypass_http_is_strict_and_matches_slash_commands() {
+    let (tmp, ws) = tmp_ws();
+    let state = TestServerConfig::unreachable(tmp.path())
+        .bearer_token("test-token")
+        .state();
+    let router = app(state.clone());
+    let id = state.create_session(&ws, None, false).await.unwrap();
+    let path = format!("/v1/sessions/{id}/bypass");
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "on"})),
+    ] {
+        use tower::ServiceExt;
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{id}/{suffix}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    let router = router.layer(axum::middleware::from_fn(
+        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+            request
+                .headers_mut()
+                .insert("authorization", "Bearer test-token".parse().unwrap());
+            next.run(request).await
+        },
+    ));
+    for body in [
+        json!({}),
+        json!({"enabled": "on"}),
+        json!({"enabled": null}),
+        json!({"enabled": true, "by": "user:cli"}),
+        json!({"enabled": false, "extra": true}),
+    ] {
+        let (status, _) = request_json(&router, "POST", &path, Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (status, enabled) =
+        request_json(&router, "POST", &path, Some(&json!({"enabled": true}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["changed"], true);
+    let (status, off) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/commands"),
+        Some(&json!({"name": "bypass", "arguments": "off"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(off["data"]["enabled"], false);
+    let (_, enabled) = request_json(&router, "POST", &path, Some(&json!({"enabled": true}))).await;
+    let report = state.run_command(id, "bypass", "").await.unwrap();
+    assert!(report.ok);
+    assert_eq!(
+        report.data.as_ref().unwrap()["bypass_seq"],
+        enabled["bypass_seq"]
+    );
+    assert_eq!(report.data.as_ref().unwrap()["changed"], false);
+    let repeat = state.run_command(id, "bypass", "on").await.unwrap();
+    assert_eq!(repeat.data, report.data);
+    let off = state.run_command(id, "bypass", "off").await.unwrap();
+    assert_eq!(off.data.as_ref().unwrap()["enabled"], false);
+    assert_eq!(off.data.as_ref().unwrap()["changed"], true);
+    for argument in ["toggle", "on off", "ON"] {
+        let out = state.run_command(id, "bypass", argument).await.unwrap();
+        assert!(!out.ok);
+        assert_eq!(out.error.as_deref(), Some("usage: /bypass [on|off]"));
+    }
 }
 
 // Given a session

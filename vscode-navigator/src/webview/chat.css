@@ -64,7 +64,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visib
 .empty { color: var(--vscode-descriptionForeground); padding: 28px 0; max-width: 32ch; }
 [hidden] { display: none !important; }
 .message { padding: 16px 0 18px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); overflow-wrap: anywhere; }
-.message.driver { margin: 12px -8px 0; padding: 12px 8px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-radius: 5px; background: var(--vscode-input-background); }
+.message.driver { padding: 16px 0 18px; }
 .byline { font-size: 11px; font-weight: 600; margin-bottom: 7px; color: var(--vscode-descriptionForeground); }
 .message.driver .byline { color: var(--vscode-foreground); }
 .message-body > :first-child { margin-top: 0; }
@@ -99,8 +99,8 @@ pre code { padding: 0; white-space: pre; background: none; }
 .question-label { display: block; margin-bottom: 4px; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
 .turn-result { margin-top: 9px; font-size: 12px; }
 /* Navigator note (a wake): a quiet aside, not a message block. */
-.message.note { --note-accent: var(--vscode-editorInfo-foreground, var(--vscode-focusBorder)); position: relative; padding: 9px 0 10px 12px; font-size: 12px; line-height: 1.45; color: var(--vscode-descriptionForeground); }
-.message.note::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 11px; width: 2px; border-radius: 1px; background: var(--note-accent); opacity: .45; }
+.message.note { --note-accent: var(--vscode-errorForeground, var(--vscode-foreground)); position: relative; padding: 9px 0 10px 12px; font-size: 12px; line-height: 1.45; color: var(--vscode-descriptionForeground); }
+.message.note::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 11px; width: 2px; border-radius: 1px; background: var(--note-accent); }
 .message.note.arrived::before { animation: note-rule 2.4s ease-out; }
 .message.note.arrived .note-mark { animation: note-mark 2.4s ease-out; }
 .note-head { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
@@ -221,7 +221,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .deny-message { min-height: 48px; margin-top: 8px; font-size: 12px; }
 .control-outcome { margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
 .permission-card[data-resolution=error] .control-outcome { color: var(--vscode-errorForeground); }
-.permission-card[data-resolution=allow_once], .permission-card[data-resolution=allow_folder], .permission-card[data-resolution=deny], .permission-card[data-resolution=expired], .permission-card[data-resolution=cancelled], .permission-card[data-resolution=stale] { border-left-color: var(--vscode-panel-border, var(--vscode-widget-border)); }
+.permission-card[data-resolution=expired], .permission-card[data-resolution=cancelled], .permission-card[data-resolution=stale] { border-left-color: var(--vscode-panel-border, var(--vscode-widget-border)); }
 .tool-row { flex-wrap: wrap; }
 .tool-row .tool-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-row > .approval-evidence { flex-basis: 100%; margin-left: 19px; overflow: visible; white-space: normal; }
@@ -230,3 +230,39 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .evidence-body { margin-top: 6px; padding: 6px 0 6px 8px; border-left: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); white-space: pre-wrap; overflow-wrap: anywhere; }
 .evidence-field { margin-top: 4px; }
 .control-notice { font-size: 12px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+
+/* Theme role colours belong to the conversation, not the surrounding chrome. */
+.agent-label, .message.cognition .byline {
+  color: var(--vscode-charts-orange, var(--vscode-textLink-foreground, var(--vscode-foreground)));
+  color: color-mix(in srgb, var(--vscode-charts-orange, var(--vscode-textLink-foreground, var(--vscode-foreground))) 60%, var(--vscode-foreground) 40%);
+}
+.agent-label { border-left: 2px solid currentColor; }
+.agent-label[data-agent=plan], .message.cognition[data-agent=plan] .byline {
+  color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+.message.driver .byline { color: var(--vscode-foreground); }
+.tool-row.complete .tool-mark { color: var(--vscode-testing-iconPassed, var(--vscode-foreground)); }
+.tool-row.working .tool-mark { color: var(--vscode-progressBar-background, var(--vscode-textLink-foreground, var(--vscode-foreground))); animation: none; }
+.tool-row.failed .tool-mark { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.tool-verb { color: var(--vscode-symbolIcon-functionForeground, var(--vscode-textLink-foreground, var(--vscode-foreground))); }
+.note-label { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.message.subagent, .child-row, .child-header {
+  border-left: 2px solid var(--vscode-charts-purple, var(--vscode-textLink-foreground, var(--vscode-foreground)));
+}
+.child-row { padding-left: 8px; }
+.message.subagent .byline, .child-open, .child-header strong, .subagents summary {
+  color: var(--vscode-charts-purple, var(--vscode-textLink-foreground, var(--vscode-foreground)));
+}
+.permission-card[data-resolution=allow_once], .permission-card[data-resolution=allow_folder] {
+  border-left-color: var(--vscode-testing-iconPassed, var(--vscode-foreground));
+}
+.permission-card[data-resolution=deny] { border-left-color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.permission-card[data-resolution=allow_once] .control-outcome, .permission-card[data-resolution=allow_folder] .control-outcome {
+  color: var(--vscode-testing-iconPassed, var(--vscode-foreground));
+  color: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-foreground)) 75%, var(--vscode-foreground) 25%);
+}
+.permission-card[data-resolution=deny] .control-outcome { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.bypass-toggle { margin-left: auto; padding: 3px 7px; font-size: 11px; background: transparent; color: var(--vscode-foreground, #cccccc); border: 1px solid var(--vscode-widget-border, #555555); border-radius: 4px; }
+.bypass-toggle:disabled { opacity: .55; cursor: default; }
+.bypass-badge { padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--vscode-editorWarning-foreground, #bf8803); background: var(--vscode-inputValidation-warningBackground, transparent); border: 1px solid var(--vscode-inputValidation-warningBorder, #bf8803); }
+.bypass-badge[hidden] { display: none; }

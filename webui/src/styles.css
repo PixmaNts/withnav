@@ -74,6 +74,12 @@ a:hover {
 }
 
 /* ---------- shell ---------- */
+.bypass-badge { color: var(--or); border: 1px solid currentColor; border-radius: 4px; padding: 2px 5px; font-size: 11px; white-space: nowrap; width: fit-content; }
+.bypass-toggle { border: 1px solid var(--bd); border-radius: 5px; padding: 4px 8px; color: var(--mu); background: var(--sf); white-space: nowrap; }
+.bypass-toggle[aria-pressed="true"] { color: var(--or); border-color: var(--or); }
+.bypass-toggle:disabled { opacity: .65; cursor: not-allowed; }
+.topbar { flex-wrap: wrap; }
+.bypass-warning { flex-basis: 100%; color: var(--or); font-size: 11px; text-align: right; }
 .shell {
   height: 100%;
   display: grid;
@@ -182,9 +188,10 @@ a:hover {
 .icon-btn:hover {
   color: var(--tx);
 }
-.side-head .icon-btn {
+.side-actions {
+  display: flex;
+  gap: 6px;
   margin-left: auto;
-  font-size: 14px;
 }
 .ws {
   display: flex;
@@ -207,6 +214,19 @@ a:hover {
 .ws-row:hover {
   background: color-mix(in srgb, var(--tx) 5%, transparent);
 }
+.ws-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+}
+.ws-toggle { flex-shrink: 0; }
 .ws-row .caret {
   color: var(--mu);
   font-size: 11px;
@@ -222,6 +242,184 @@ a:hover {
   color: var(--mu);
   font-size: 11px;
 }
+/* The `…` of a workspace row: faint until the row is hovered or focused, always there for the keyboard. */
+.ws-more-wrap {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+}
+.ws-more {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.ws-row:hover .ws-more,
+.ws-row:focus-within .ws-more,
+.ws-more[data-open] {
+  opacity: 1;
+}
+.ws-more[data-open] {
+  color: var(--tx);
+  background: color-mix(in srgb, var(--tx) 8%, transparent);
+}
+@media (hover: none) {
+  .ws-more {
+    opacity: 1;
+  }
+}
+.ws-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: -2px;
+  z-index: 5;
+  width: 210px;
+  background: var(--pn);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  box-shadow: 0 10px 30px var(--shadow);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: ws-menu-in 0.12s ease-out;
+}
+@keyframes ws-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+.ws-menu-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--tx);
+}
+.ws-menu-item svg {
+  color: var(--mu);
+  flex-shrink: 0;
+}
+.ws-menu-item:hover:not([aria-disabled]),
+.ws-menu-item:focus-visible {
+  background: var(--tint);
+  outline: none;
+}
+.ws-menu-item.danger,
+.ws-menu-item.danger svg {
+  color: var(--rd);
+}
+.ws-menu-item.danger:hover:not([aria-disabled]),
+.ws-menu-item.danger:focus-visible {
+  background: color-mix(in srgb, var(--rd) 12%, transparent);
+}
+.ws-menu-item[aria-disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+.ws-menu-item[aria-disabled]:focus-visible {
+  background: color-mix(in srgb, var(--tx) 6%, transparent);
+}
+.ws-menu-note {
+  border-top: 1px solid var(--bd);
+  margin-top: 3px;
+  padding: 6px 8px 4px;
+  color: var(--mu);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.side-error {
+  padding: 0 6px 8px;
+  color: var(--rd);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* Confirmation of a workspace removal: the palette's surface, sized for a sentence. */
+.confirm {
+  width: 440px;
+  max-width: calc(100% - 40px);
+  height: fit-content;
+  background: var(--pn);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px var(--shadow);
+  padding: 16px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: confirm-in 0.14s ease-out;
+}
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.99);
+  }
+}
+.confirm h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.confirm h2 svg {
+  color: var(--mu);
+}
+.confirm h2.danger svg {
+  color: var(--rd);
+}
+.confirm-body p {
+  margin: 0 0 6px;
+  color: var(--mu);
+  font-size: 12.5px;
+}
+.confirm-body .confirm-lead {
+  color: var(--tx);
+  font-size: 13px;
+}
+.confirm h2.danger + .confirm-body .confirm-lead {
+  border-left: 2px solid var(--rd);
+  padding: 4px 0 4px 10px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rd) 10%, transparent), transparent 80%);
+}
+.confirm-body .confirm-path {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  border-radius: 5px;
+  padding: 4px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.confirm-error {
+  color: var(--rd);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+.btn.danger.solid {
+  background: var(--rd);
+  color: var(--bg);
+  border-color: var(--rd);
+}
+.btn.danger.solid:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rd) 85%, var(--tx));
+}
+
 .ws-path {
   padding: 0 6px 6px 30px;
   color: var(--mu);
@@ -347,18 +545,16 @@ a:hover {
   line-height: 1.55;
 }
 .msg-driver {
-  align-self: flex-end;
-  max-width: 70%;
-  background: var(--sf);
+  min-width: 0;
+  border-left: 2px solid var(--mu);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mu) 10%, transparent), transparent);
   padding: 9px 12px;
-  border-radius: 8px;
 }
 .byline {
   color: var(--mu);
   font-size: 11px;
 }
 .msg-cog {
-  max-width: 80%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -570,7 +766,7 @@ a:hover {
 
 /* wake / subagent result / notices */
 .wake {
-  max-width: 80%;
+  min-width: 0;
   border-left: 2px solid var(--rd);
   padding: 8px 14px;
   background: linear-gradient(90deg, color-mix(in srgb, var(--rd) 10%, transparent), transparent 80%);
@@ -596,7 +792,7 @@ a:hover {
   text-decoration: underline;
 }
 .sub-result {
-  max-width: 80%;
+  min-width: 0;
   border-left: 2px solid var(--pu);
   padding: 6px 14px;
 }
@@ -1321,7 +1517,7 @@ a:hover {
   padding: 12px 14px;
   background: var(--pn);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 290px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .task-card .goal {

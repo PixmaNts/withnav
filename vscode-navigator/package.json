@@ -2,7 +2,7 @@
   "name": "navai",
   "displayName": "Navai",
   "description": "Pair-programming navigator: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "pixmants",
   "private": true,
   "engines": {
@@ -35,6 +35,7 @@
       ]
     },
     "commands": [
+      { "command": "navai.toggleBypassPermissions", "title": "Navai: Toggle Bypass Permissions" },
       {
         "command": "navai.openSettings",
         "title": "Open Settings",

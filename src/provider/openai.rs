@@ -170,7 +170,7 @@ impl ToolDef {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatChunk {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub choices: Vec<ChunkChoice>,
     #[serde(default)]
     pub usage: Option<Usage>,
@@ -192,8 +192,18 @@ pub struct ChunkDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub reasoning_content: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub tool_calls: Vec<ToolCallDelta>,
+}
+
+// OpenAI-compatible gateways emit null for absent streaming lists (observed
+// 2026-10); both mean no entries, while other non-array values remain errors.
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Deserialize)]

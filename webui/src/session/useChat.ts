@@ -4,7 +4,7 @@
 // with `POST /v1/sessions` when the first message goes out.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { HttpError } from "../api/http";
 import { keys, useAgents, useContextSnapshot, useModels, useSessionSummary } from "../api/queries";
@@ -30,6 +30,14 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   const stopped = summary.data?.actor_state === "stopped";
   const onEnvelope = useCallback(
     (envelope: Envelope) => {
+      if ((envelope.kind === "session.bypass" || envelope.kind === "session.end") && sessionId) {
+        const enabled = envelope.kind === "session.bypass" ? envelope.payload?.enabled : false;
+        if (typeof enabled === "boolean") {
+          const update = <T extends { bypass_seq?: number }>(old: T): T => (old.bypass_seq ?? -1) < envelope.seq ? { ...old, bypass: enabled, bypass_seq: envelope.seq } : old;
+          qc.setQueryData(keys.session(sessionId), (old: import("../api/types").SessionSummary | undefined) => old ? update(old) : old);
+          if (workspace) qc.setQueryData(keys.sessions(workspace), (old: import("../api/types").SessionListEntry[] | undefined) => old?.map(row => row.id === sessionId ? update(row) : row));
+        }
+      }
       if (envelope.kind === "model.changed" || envelope.kind === "session.agent_changed") {
         if (workspace) void qc.invalidateQueries({ queryKey: ["agents", workspace] });
       }
@@ -42,7 +50,9 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
     },
     [qc, workspace, sessionId],
   );
-  const stream = useSessionStream(sessionId, { ready: !!summary.data, once: stopped, onEnvelope });
+  const stream = useSessionStream(sessionId, { ready: !!summary.data, once: stopped, bypass: summary.data?.bypass, bypassSeq: summary.data?.bypass_seq, onEnvelope });
+  const [bypassPending, setBypassPending] = useState(false);
+  const bypassGuard = useRef(false);
   const agents = useAgents(workspace, sessionId);
   const models = useModels(workspace);
   const [draft, setDraft] = useState<Draft>({ agent: null, model: null, variant: undefined });
@@ -75,6 +85,19 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
 
   const readOnly = !!summary.data?.read_only || !!summary.data?.resume_disabled_reason;
   const running = view.activity === "running";
+  const bypassReason = !sessionId ? "Send a first message to enable bypass" : readOnly ? "This session is read-only" : stopped ? "Archived sessions cannot change bypass" : !summary.data ? "Loading session" : bypassPending ? "Updating bypass…" : undefined;
+  const setBypass = useCallback(async (enabled: boolean) => {
+    if (bypassReason || bypassGuard.current || !sessionId) return;
+    bypassGuard.current = true;
+    setBypassPending(true);
+    setError(null);
+    try {
+      const result = await api.setBypass(sessionId, enabled);
+      qc.setQueryData(keys.session(sessionId), (old: typeof summary.data) => old && (old.bypass_seq ?? -1) <= result.bypass_seq ? { ...old, bypass: result.enabled, bypass_seq: result.bypass_seq } : old);
+      if (workspace) void qc.invalidateQueries({ queryKey: keys.sessions(workspace) });
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { bypassGuard.current = false; setBypassPending(false); }
+  }, [bypassReason, sessionId, qc, workspace]);
 
   const refreshSummary = useCallback(async () => {
     if (!sessionId) return;
@@ -230,6 +253,10 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   );
 
   return {
+    bypass: !!sessionId && view.bypass,
+    bypassReason,
+    bypassPending,
+    setBypass,
     summary: summary.data ?? null,
     summaryError: summary.error,
     stream,

@@ -23,6 +23,32 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         return;
     }
     frame.buffer_mut().set_style(area, theme.panel());
+    if state.bypass {
+        let marker_width = 11.min(area.width);
+        draw_content(
+            frame,
+            Rect::new(
+                area.x + marker_width,
+                area.y,
+                area.width - marker_width,
+                area.height,
+            ),
+            state,
+            theme,
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " ⚠ bypass ",
+                theme.warning().add_modifier(Modifier::BOLD),
+            )),
+            Rect::new(area.x, area.y, marker_width, 1),
+        );
+        return;
+    }
+    draw_content(frame, area, state, theme);
+}
+
+fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     if state.archive() {
         let reason = state
             .session

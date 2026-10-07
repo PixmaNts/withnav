@@ -319,6 +319,9 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    pub bypass: bool,
+    pub bypass_seq: u64,
+    pub incarnation: Option<String>,
     pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
@@ -401,6 +404,12 @@ pub struct Service {
     resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     child_start_failure: Arc<Mutex<Option<bool>>>,
+    #[cfg(debug_assertions)]
+    child_bypass_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    bypass_commit_failure: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(debug_assertions)]
+    bypass_commit_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     root_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
@@ -530,6 +539,50 @@ impl Service {
             .child_registration_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Parks a child start inside the bypass gate, after its runtime is
+    /// registered and before its first prompt.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_bypass_gate(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_bypass_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Parks the next durable bypass write before it is recorded.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_bypass_commit(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .bypass_commit_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Whether an answer already holds the request waiting in `id`.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn permission_claimed(&self, id: SessionId) -> bool {
+        self.handle(id)
+            .is_some_and(|handle| handle.status.permission_claimed())
+    }
+
+    /// Makes the next durable bypass write fail.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit(&self) {
+        self.fail_bypass_commit_after(0);
+    }
+
+    /// Makes the durable bypass write fail after `skip` successful ones.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit_after(&self, skip: usize) {
+        self.bypass_commit_failure
+            .store(skip + 1, std::sync::atomic::Ordering::Release);
     }
 
     #[cfg(debug_assertions)]
@@ -680,6 +733,12 @@ impl Service {
             resume_registration_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             child_start_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_bypass_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            bypass_commit_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            bypass_commit_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             root_publication_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -1023,9 +1082,24 @@ impl Service {
                     "injected child publication failure".into(),
                 ));
             }
+            // A bypass change waits here, so the child either reads the value
+            // after it or is registered before it and is given it.
+            let _bypass_gate = parent_handle.status.bypass_gate.lock().await;
             self.publish_session(prepared).await?;
             if parent_handle.session_cancel.is_cancelled() {
                 return Err(ServerError::SessionStopping);
+            }
+            #[cfg(debug_assertions)]
+            {
+                let barrier = self
+                    .child_bypass_barrier
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(barrier) = barrier {
+                    barrier.reached.notify_one();
+                    barrier.release.notified().await;
+                }
             }
             if let Some(handle) = self.handle(child) {
                 handle
@@ -1033,6 +1107,21 @@ impl Service {
                     .publish_acked(Candidate::new(EventKind::SubagentSpawned, spawned_payload))
                     .await
                     .map_err(|e| ServerError::History(e.to_string()))?;
+                let inherited = parent_handle
+                    .status
+                    .bypass
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .enabled;
+                if inherited {
+                    self.set_bypass_of(
+                        child,
+                        &handle,
+                        true,
+                        runtime::bypass::BypassOrigin::Parent(parent),
+                    )
+                    .await?;
+                }
                 #[cfg(debug_assertions)]
                 if self
                     .child_start_failure
@@ -1540,6 +1629,7 @@ impl Service {
         if handle
             .permissions
             .try_send(crate::bus::inbox::PermissionAnswer {
+                origin: crate::agent::permissions::PermissionOrigin::Driver,
                 request_id,
                 decision,
                 reply,
@@ -1764,7 +1854,15 @@ impl Service {
         let metadata = self.history.meta(id).await.map_err(ServerError::History)?;
         let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
         let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
+        let bypass = *handle
+            .status
+            .bypass
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         Ok(SessionSummary {
+            bypass: bypass.enabled,
+            bypass_seq: bypass.seq,
+            incarnation: Some(handle.incarnation.to_string()),
             editor,
             read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
@@ -1820,6 +1918,9 @@ impl Service {
             meta.provenance.as_ref(),
         );
         Ok(SessionSummary {
+            bypass: false,
+            bypass_seq: meta.last_seq,
+            incarnation: None,
             editor: meta.editor,
             read_only: meta.resume_disabled_reason.is_some(),
             session_id: id.to_string(),
@@ -1839,6 +1940,119 @@ impl Service {
             child_status: None,
             promptable: meta.resume_disabled_reason.is_none(),
             resume_disabled_reason: meta.resume_disabled_reason,
+        })
+    }
+
+    /// Sets the bypass of a root session, then of each of its live children,
+    /// under the root's bypass gate. A child that ended meanwhile is skipped;
+    /// any other child failure is reported after the rest were tried.
+    pub async fn set_bypass(
+        &self,
+        id: SessionId,
+        enabled: bool,
+        origin: runtime::bypass::BypassOrigin,
+    ) -> Result<runtime::bypass::BypassReply, ServerError> {
+        let handle = self.routable_handle(id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let _gate = handle.status.bypass_gate.lock().await;
+        let reply = self.set_bypass_of(id, &handle, enabled, origin).await?;
+        let children: Vec<(SessionId, SessionHandle)> = self
+            .lock_sessions()
+            .iter()
+            .filter(|(_, child)| {
+                child.parent_session_id == Some(id) && child.lifecycle == Lifecycle::Active
+            })
+            .map(|(child_id, child)| (*child_id, child.clone()))
+            .collect();
+        let mut failures = Vec::new();
+        for (child_id, child) in children {
+            let result = self
+                .set_bypass_of(
+                    child_id,
+                    &child,
+                    enabled,
+                    runtime::bypass::BypassOrigin::Parent(id),
+                )
+                .await;
+            match result {
+                Ok(_) => {}
+                // The child ended while the change spread: nothing to follow.
+                Err(_)
+                    if self
+                        .handle(child_id)
+                        .is_none_or(|now| now.lifecycle != Lifecycle::Active) => {}
+                Err(error) => {
+                    // A child that cannot follow would run under a policy the
+                    // driver did not choose: cancel its runtime immediately.
+                    child.session_cancel.cancel();
+                    failures.push((child_id, error));
+                }
+            }
+        }
+        // Lifecycle teardown can wait for publications that need this gate.
+        drop(_gate);
+        if failures.is_empty() {
+            Ok(reply)
+        } else {
+            let mut cleanup = Vec::new();
+            for (child_id, error) in failures {
+                let stopped = match self.close_session(child_id).await {
+                    Ok(()) => "stopped".to_string(),
+                    Err(stop) => format!("could not be stopped: {stop}"),
+                };
+                cleanup.push(format!("{child_id}: {error} ({stopped})"));
+            }
+            Err(ServerError::History(format!(
+                "bypass changed for the session but not for its children: {}",
+                cleanup.join("; ")
+            )))
+        }
+    }
+
+    /// One session's own change, durably recorded before it takes effect.
+    async fn set_bypass_of(
+        &self,
+        id: SessionId,
+        handle: &SessionHandle,
+        enabled: bool,
+        origin: runtime::bypass::BypassOrigin,
+    ) -> Result<runtime::bypass::BypassReply, ServerError> {
+        handle
+            .status
+            .set_bypass(enabled, origin, self.bypass_commit(id))
+            .await
+            .map_err(ServerError::History)
+    }
+
+    fn bypass_commit(&self, id: SessionId) -> crate::bus::sequencer::AckedCommit {
+        let history = self.history.clone();
+        #[cfg(debug_assertions)]
+        let failure = self.bypass_commit_failure.clone();
+        #[cfg(debug_assertions)]
+        let barrier = self.bypass_commit_barrier.clone();
+        Box::new(move |envelope| {
+            Box::pin(async move {
+                #[cfg(debug_assertions)]
+                {
+                    let barrier = barrier.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    if let Some(barrier) = barrier {
+                        barrier.reached.notify_one();
+                        barrier.release.notified().await;
+                    }
+                    // Test seam: one writer at a time, so load/store is enough.
+                    let left = failure.load(std::sync::atomic::Ordering::Acquire);
+                    if left > 0 {
+                        failure.store(left - 1, std::sync::atomic::Ordering::Release);
+                    }
+                    let fails = left == 1;
+                    if fails {
+                        return Err("injected bypass commit failure".into());
+                    }
+                }
+                history.append_event_acked(id, envelope).await
+            })
         })
     }
 
@@ -2577,6 +2791,28 @@ impl Service {
             None
         };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        // A resumed session starts with bypass off, said in its history
+        // before its runtime can run anything.
+        let resumed_bypass_seq = if is_resume {
+            Some(
+                sequencer
+                    .commit_acked(
+                        Candidate::new(
+                            EventKind::SessionBypass,
+                            serde_json::json!({
+                                "enabled": false,
+                                "by": runtime::bypass::BypassOrigin::Resume.by()
+                            }),
+                        ),
+                        self.bypass_commit(session_id),
+                    )
+                    .await
+                    .map_err(ServerError::History)?,
+            )
+        } else {
+            None
+        };
+
         let mut awaiting_fresh_driver = false;
         if is_resume && child_parent.is_none() {
             let events = self
@@ -2691,6 +2927,13 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        if let Some(seq) = resumed_bypass_seq {
+            *status.bypass.lock().unwrap_or_else(|e| e.into_inner()) =
+                crate::agent::actor::BypassState {
+                    enabled: false,
+                    seq,
+                };
+        }
         if child_parent.is_none() {
             let history = self.history.clone();
             let driver_sequencer = sequencer.clone();

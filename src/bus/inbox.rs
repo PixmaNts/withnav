@@ -27,6 +27,7 @@ const ANSWER_CAPACITY: usize = 16;
 pub struct PermissionAnswer {
     pub request_id: Ulid,
     pub decision: PermissionDecision,
+    pub origin: crate::agent::permissions::PermissionOrigin,
     pub reply: oneshot::Sender<Result<(), PermissionError>>,
 }
 
@@ -738,6 +739,7 @@ mod tests {
         actor.state = AgentState::Yielded;
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
+                requires_driver: false,
                 permission_gate: None,
                 id: Ulid::new(),
                 tool_call_id: "w1".into(),

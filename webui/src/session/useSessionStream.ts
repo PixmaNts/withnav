@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { followSession, type StreamSignal } from "../api/sse";
 import type { Envelope } from "../api/types";
 import { emptyView, reduceAll, type SessionView } from "./reducer";
@@ -21,7 +21,7 @@ export interface SessionStream {
  */
 export function useSessionStream(
   sessionId: string | null,
-  options: { once?: boolean; ready?: boolean; onEnvelope?: (envelope: Envelope) => void } = {},
+   options: { once?: boolean; ready?: boolean; bypass?: boolean; bypassSeq?: number; onEnvelope?: (envelope: Envelope) => void } = {},
 ): SessionStream {
   const [view, setView] = useState<SessionView>(emptyView);
   const [status, setStatus] = useState<StreamStatus>("idle");
@@ -34,15 +34,21 @@ export function useSessionStream(
   const onEnvelope = useRef(options.onEnvelope);
   onEnvelope.current = options.onEnvelope;
   const sessionRef = useRef(sessionId);
+  const snapshot = useRef(options);
+  snapshot.current = options;
+  const seed = useCallback(() => ({ ...emptyView(), bypass: snapshot.current.bypass === true, bypassSeq: snapshot.current.bypassSeq ?? -1 }), []);
+  useEffect(() => {
+    setView((current) => (options.bypassSeq ?? -1) >= current.bypassSeq ? { ...current, bypass: options.bypass === true, bypassSeq: options.bypassSeq ?? -1 } : current);
+  }, [options.bypass, options.bypassSeq]);
 
   // A different session starts from nothing.
   if (sessionRef.current !== sessionId) {
     sessionRef.current = sessionId;
     pending.current = [];
   }
-  useEffect(() => {
-    setView(emptyView());
-    viewRef.current = emptyView();
+  useLayoutEffect(() => {
+    setView(seed());
+    viewRef.current = seed();
     setStatus(sessionId ? "connecting" : "idle");
     setError(null);
   }, [sessionId]);
@@ -80,8 +86,8 @@ export function useSessionStream(
           // The server no longer holds our cursor: drop the projection, the
           // replay that follows rebuilds it.
           pending.current = [];
-          setView(emptyView());
-          viewRef.current = emptyView();
+           setView(seed());
+           viewRef.current = seed();
           break;
         case "ended":
           flush();

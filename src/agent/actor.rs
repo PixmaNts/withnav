@@ -44,7 +44,14 @@ pub enum PendingInteraction {
     },
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BypassState {
+    pub enabled: bool,
+    pub seq: u64,
+}
+
 pub struct AgentActor {
+    pub bypass: Arc<std::sync::Mutex<BypassState>>,
     pub driver_request_inherited: bool,
     pub protected_config_spelling: Option<std::path::PathBuf>,
     pub protected_config_unresolved: bool,
@@ -195,6 +202,7 @@ impl AgentActor {
             protected_config_root: None,
             permission_reviewer_unavailable: "no alias",
             automatic_permission_review: true,
+            bypass: Arc::default(),
             permission_judge: None,
             permission_reviewer: None,
             transcript: Vec::new(),

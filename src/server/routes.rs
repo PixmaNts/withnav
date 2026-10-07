@@ -42,6 +42,11 @@
 //! - `GET  /v1/workspaces`    -> `{workspaces:[{path,name,launched,session_count,updated_at?,branch?,dirty?}]}`:
 //!   the workspaces `navai web` was started with (`launched:true`, argument order), then the
 //!   history's other workspaces that still exist, newest activity first; child sessions are not counted.
+//!   Hidden history workspaces are omitted; creating a session makes its workspace visible again.
+//! - `DELETE /v1/workspaces?path=<abs>` -> 204, hides without deleting sessions.
+//!   With `sessions=delete`, stops and deletes root sessions and their children, returns `{deleted:N}` (root count).
+//!   A command-line workspace returns 409 `{reason:"launched",error}`; invalid paths return 400.
+//! - `POST /v1/workspaces?path=<abs>` -> 204, idempotently unhides an existing directory.
 //! - `GET  /v1/intent?workspace=<abs path>` -> `{exists,intent,plan,decisions,active_spec,raw}`
 //!   from `.navigator/intent.md` (nullable strings; 400 without an absolute `workspace`)
 //! - Every other path, only when started by `navai web` (`ServerConfig.web`): the embedded browser
@@ -170,10 +175,16 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/sessions/{id}/context", get(get_context))
         .route("/v1/sessions/{id}/skills", get(get_skills))
-        .route("/v1/workspaces", get(crate::server::web::list_workspaces))
+        .route(
+            "/v1/workspaces",
+            get(crate::server::web::list_workspaces)
+                .delete(crate::server::web::hide_workspace)
+                .post(crate::server::web::unhide_workspace),
+        )
         .route("/v1/intent", get(crate::server::web::get_intent))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))
+        .route("/v1/sessions/{id}/bypass", post(post_bypass))
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
@@ -432,6 +443,9 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub bypass: bool,
+    pub bypass_seq: u64,
+    pub incarnation: Option<String>,
     pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
@@ -489,6 +503,9 @@ async fn list_sessions(
                     Err(error) => return error_response(error),
                 };
                 sessions.push(SessionListEntry {
+                    bypass: summary.bypass,
+                    bypass_seq: summary.bypass_seq,
+                    incarnation: summary.incarnation,
                     editor: summary.editor,
                     read_only: row.read_only,
                     resume_disabled_reason: row.resume_disabled_reason,
@@ -758,6 +775,54 @@ async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value>
     Json(json!({ "commands": state.list_commands() }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PostBypassRequest {
+    enabled: bool,
+}
+
+fn bypass_auth_required() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "reason": "auth_required",
+            "error": "bypass can only be changed by an authenticated client",
+        })),
+    )
+        .into_response()
+}
+
+async fn post_bypass(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<PostBypassRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if state.http.bearer_token.is_none() {
+        return bypass_auth_required();
+    }
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    let Json(request) = match body {
+        Ok(parsed) => parsed,
+        Err(rejection) => {
+            return error_response(ServerError::MalformedBody(rejection.body_text()));
+        }
+    };
+    match state
+        .set_bypass(
+            parsed,
+            request.enabled,
+            crate::bus::runtime::bypass::BypassOrigin::Http,
+        )
+        .await
+    {
+        Ok(reply) => Json(reply).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 /// `POST /v1/sessions/:id/commands` request.
 #[derive(Debug, Deserialize)]
 pub struct PostCommandRequest {
@@ -783,6 +848,17 @@ async fn post_command(
             return error_response(ServerError::MalformedBody(rejection.body_text()));
         }
     };
+    if state.http.bearer_token.is_none()
+        && request
+            .name
+            .trim()
+            .strip_prefix('/')
+            .unwrap_or(request.name.trim())
+            == "bypass"
+        && matches!(request.arguments.trim(), "on" | "off")
+    {
+        return bypass_auth_required();
+    }
     match state
         .run_command(parsed, &request.name, &request.arguments)
         .await

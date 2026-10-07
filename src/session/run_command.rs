@@ -53,15 +53,15 @@ impl Service {
     /// cannot take commands (unknown, stopping, stopped). Either way one
     /// durable `command.result` is published on the session stream, with the
     /// operation id returned. A command never becomes a message and is never
-    /// queued: during a pending `ask` every command is refused (`/stop`
+    /// queued: during a pending `ask` every command except `/bypass` is refused (`/stop`
     /// included: the stop endpoint still ends the session); during a pending
-    /// permission request every command but `/stop` is, and `/stop` cancels
+    /// permission request every command but `/stop` and `/bypass` is, and `/stop` cancels
     /// the request.
     ///
     /// The run holds the lifecycle gate from the session check to the
     /// acknowledged publication of its result, so a stop or delete of the
     /// session waits for the command and never lands between its work and
-    /// its result. `/compact` is the exception: it hands its work to the
+    /// its result. Runtime controls such as `/compact` and `/bypass` are exceptions: they hand work to the
     /// session runtime and lets go of the gate before it waits for the
     /// summary, so a stop, a shutdown and the other sessions never wait for
     /// the provider; the runtime, which a stop cancels, guarantees that a
@@ -174,12 +174,12 @@ impl Service {
         // A waiting permission request also reads as a waiting actor; `/stop`
         // goes through it and cancels the request.
         if handle.status.pending_permission().is_some() {
-            if spec.name != "stop" {
+            if !matches!(spec.name, "stop" | "bypass") {
                 return Err(CommandFailure::Refused(
                     commands::PERMISSION_PENDING_ERROR.to_string(),
                 ));
             }
-        } else if handle.status.pending_ask() {
+        } else if handle.status.pending_ask() && spec.name != "bypass" {
             return Err(CommandFailure::Refused(
                 commands::ASK_PENDING_ERROR.to_string(),
             ));
@@ -193,6 +193,35 @@ impl Service {
             return Err(CommandFailure::Refused(format!("usage: /{}", spec.name)));
         }
         match spec.name {
+            "bypass" => {
+                let enabled = match arguments {
+                    "" => {
+                        let state = *handle
+                            .status
+                            .bypass
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        return Ok(Done::data(json!({
+                            "enabled": state.enabled,
+                            "changed": false,
+                            "bypass_seq": state.seq,
+                        })));
+                    }
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(CommandFailure::Refused("usage: /bypass [on|off]".into())),
+                };
+                drop(gate.take());
+                let reply = self
+                    .set_bypass(
+                        session_id,
+                        enabled,
+                        crate::bus::runtime::bypass::BypassOrigin::Http,
+                    )
+                    .await
+                    .map_err(CommandFailure::Server)?;
+                Ok(Done::data(json!(reply)))
+            }
             "help" => Ok(Done::data(json!({ "commands": commands::COMMANDS }))),
             "model" if arguments.is_empty() => Ok(Done::data(self.model_data(handle))),
             "model" => {

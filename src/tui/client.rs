@@ -49,6 +49,13 @@ pub struct Client {
 }
 
 impl Client {
+    pub async fn set_bypass(&self, id: &str, enabled: bool) -> Result<BypassResponse, String> {
+        self.json(
+            self.post(&format!("/v1/sessions/{id}/bypass"))
+                .json(&serde_json::json!({"enabled": enabled})),
+        )
+        .await
+    }
     pub async fn settings(&self, workspace: &str) -> Result<super::config::SettingsBody, String> {
         self.json(self.get("/v1/settings").query(&[("workspace", workspace)]))
             .await

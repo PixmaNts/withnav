@@ -153,6 +153,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ("alt+r", "hide / show the side panel"),
     ("alt+s", "open a subagent transcript (read-only)"),
     ("alt+c", "continue a subagent out of steps"),
+    (
+        "alt+p",
+        "Bypass ordinary permission prompts; protected requests still ask",
+    ),
     ("f2", "switch this conversation's model"),
     ("ctrl+n (in models)", "open that model in a new tab"),
     ("ctrl+f (in models)", "add / remove the model as a favorite"),
@@ -354,6 +358,7 @@ pub fn key_to_action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('r') if alt => Action::TogglePanel,
         KeyCode::Char('s') if alt => Action::OpenOverlay(Overlay::Children),
         KeyCode::Char('c') if alt => Action::ContinueChild,
+        KeyCode::Char('p') if alt => Action::ToggleBypass,
         KeyCode::Char('p') if ctrl => Action::OpenOverlay(Overlay::Commands),
         KeyCode::Char('n') if ctrl => Action::NewConversation,
         KeyCode::Char('o') if ctrl => Action::OpenOverlay(Overlay::Sessions),

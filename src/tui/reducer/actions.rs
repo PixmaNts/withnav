@@ -470,6 +470,9 @@ fn run_command(
     arguments: String,
     revision: Option<u64>,
 ) -> Vec<Effect> {
+    if name == "bypass" && !arguments.trim().is_empty() && (s.bypass_pending || s.archive()) {
+        return vec![];
+    }
     if s.read_only() {
         push_local(
             s,
@@ -499,6 +502,12 @@ fn run_command(
         return vec![];
     };
     s.command_token += 1;
+    if name == "bypass" && !arguments.trim().is_empty() {
+        if s.bypass_pending {
+            return vec![];
+        }
+        s.bypass_pending = true;
+    }
     vec![Effect::RunCommand {
         session_id,
         request: CommandRequest { name, arguments },
@@ -649,6 +658,30 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             revision,
         } => run_command(s, name, arguments, revision),
         Action::ToggleAgent => toggle_agent(s),
+        Action::ToggleBypass => {
+            if s.bypass_pending
+                || s.read_only()
+                || s.archive()
+                || s.activity == Activity::Stopped
+                || s.resuming.is_some()
+            {
+                return vec![];
+            }
+            let Some(session_id) = s.session.as_ref().map(|m| m.session_id.clone()) else {
+                push_local(
+                    s,
+                    BlockKind::Notice(
+                        "no conversation yet; send a message first, then toggle bypass".into(),
+                    ),
+                );
+                return vec![];
+            };
+            s.bypass_pending = true;
+            vec![Effect::SetBypass {
+                session_id,
+                enabled: !s.bypass,
+            }]
+        }
         Action::AnswerPermission { request_id, answer } => {
             let open = s.open_permission().map(|p| p.request_id.clone());
             let session = if s.read_only() {

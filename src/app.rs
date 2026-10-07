@@ -135,9 +135,11 @@ pub struct RunArgs {
     /// `off` for no variant. Default: the alias's default variant.
     #[arg(long)]
     pub variant: Option<String>,
-    /// UNSAFE: approve every permission request once, without asking. By
-    /// default a run that reaches a `write`, `edit`, `bash` or `fetch` call
-    /// stops with `permission_required` and exit code 3.
+    /// UNSAFE: turn on bypass for the run, so ordinary permission prompts
+    /// (`write`, `edit`, `bash`, `fetch`) run without asking. Protected
+    /// requests (Navai's own config, credentials and keys) still stop the run
+    /// with `permission_required` and exit code 3, as every request does
+    /// without this flag.
     #[arg(long)]
     pub yes: bool,
 }
@@ -308,11 +310,26 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         crate::session::Routed::Message(text) => text,
     };
 
+    // Bypass is on before the first prompt; no fallback if it cannot be.
+    if args.yes {
+        if let Err(e) = state
+            .set_bypass(
+                session_id,
+                true,
+                crate::bus::runtime::bypass::BypassOrigin::Cli,
+            )
+            .await
+        {
+            eprintln!("\nerror: cannot enable bypass: {e}");
+            let _ = state.close_session(session_id).await;
+            return Ok(EXIT_ERROR);
+        }
+    }
+
     post_prompt(&state, session_id, &prompt).await?;
 
     let mut renderer = Renderer::new(args.show_thinking);
-    let approve = args.yes.then_some((&state, session_id));
-    let exit = render_until_terminal(&mut sub, &mut renderer, approve).await;
+    let exit = render_until_terminal(&mut sub, &mut renderer).await;
 
     let _ = state.close_session(session_id).await;
     Ok(exit)
@@ -352,13 +369,12 @@ async fn post_prompt(
 /// event stream instead of the raw `RunOutcome`.
 ///
 /// A `permission.requested` ends the run with [`EXIT_PERMISSION_REQUIRED`] and
-/// a `permission_required: <tool> <scope>` line on stderr, unless `approve` is
-/// given (`--yes`): then each request is answered `allow_once` and the run
-/// goes on. Nothing is ever approved implicitly.
+/// a `permission_required: <tool> <scope>: <reason>` line on stderr. Nothing
+/// is ever approved here: with `--yes` the session's bypass already answered
+/// the ordinary requests, so one that arrives is one the driver must decide.
 async fn render_until_terminal(
     sub: &mut crate::session::Subscription,
     renderer: &mut Renderer,
-    approve: Option<(&crate::server::session::AppState, ulid::Ulid)>,
 ) -> i32 {
     if let crate::bus::ResumeOutcome::Replay(events) = &sub.replay {
         for env in events {
@@ -372,9 +388,6 @@ async fn render_until_terminal(
     };
     // Ctrl-C cancels the session token, so cancellation arrives here as a real
     // turn.end{interrupted} event — just read the live stream to the terminal.
-    // The turn that asked ends `yielded`; with `--yes` that is not the end.
-    let mut answered = 0usize;
-    let mut watchdog_pause = false;
     while let Some(env) = live.recv().await {
         if let Some(ui) = event_to_ui(&env) {
             renderer.render(ui);
@@ -385,30 +398,13 @@ async fn render_until_terminal(
             ) else {
                 return EXIT_ERROR;
             };
-            let Some((state, session_id)) = approve else {
-                eprintln!("\npermission_required: {} {}", request.tool, request.scope);
-                return EXIT_PERMISSION_REQUIRED;
-            };
-            let decision = crate::agent::permissions::PermissionDecision::AllowOnce;
-            if let Err(err) = state
-                .answer_permission(session_id, request.request_id, decision)
-                .await
-            {
-                eprintln!("\nerror: {err}");
-                return EXIT_ERROR;
-            }
-            answered += 1;
-        }
-        if env.kind == EventKind::AgentYield.as_str() && env.payload["kind"] == "watchdog" {
-            watchdog_pause = true;
+            eprintln!(
+                "\npermission_required: {} {}: {}",
+                request.tool, request.scope, request.reason
+            );
+            return EXIT_PERMISSION_REQUIRED;
         }
         if env.kind == EventKind::TurnEnd.as_str() {
-            let yielded = serde_json::from_value::<TurnEnd>(env.payload.clone())
-                .is_ok_and(|end| end.outcome == TurnEndOutcome::Yielded);
-            if yielded && answered > 0 && !watchdog_pause {
-                answered -= 1;
-                continue;
-            }
             return exit_code_for(&env);
         }
     }
@@ -558,7 +554,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::SubagentDone
         | EventKind::SubagentWatchdog
         | EventKind::ContextCompacted => None,
-        EventKind::ContextUpdated => None,
+        EventKind::ContextUpdated | EventKind::SessionBypass => None,
     }
 }
 

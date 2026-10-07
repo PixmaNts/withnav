@@ -23,6 +23,12 @@ use crate::tools::{bound_output, validate_path, ToolContext};
 /// The longest rendering of a call's arguments kept in a request, in bytes.
 pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionOrigin {
+    Driver,
+    Bypass,
+}
+
 /// A driver's answer to a [`PermissionRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -58,6 +64,8 @@ impl std::fmt::Display for Scope {
 /// A gated call waiting for a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequest {
+    #[serde(default)]
+    pub requires_driver: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_gate: Option<Box<Value>>,
     pub id: Ulid,
@@ -82,6 +90,7 @@ impl PermissionRequest {
             Scope::Origin(origin) => format!("`{}` reaches {origin}", call.name),
         };
         Self {
+            requires_driver: false,
             permission_gate: None,
             id: Ulid::new(),
             tool_call_id: call.id.clone(),
@@ -309,10 +318,12 @@ pub fn offered_decision(
 /// * the path as the model wrote it is not a link (any kind, dangling or
 ///   not): the check is on the un-canonicalized path, whose resolution would
 ///   hide a link to another `.md` file or to a file that is not markdown;
+///   a link in any folder of the path below the project and the writable
+///   roots counts too, since it would carry the write elsewhere;
 /// * the destination is an existing regular file (not a directory, a FIFO or
 ///   a device), or a missing one in a folder that already exists: a write
 ///   that would create folders is an exception.
-pub fn exempt_from_guard(tool: &str, args: &Value, needed: &Needed) -> bool {
+pub fn exempt_from_guard(tool: &str, args: &Value, needed: &Needed, cx: &ToolContext) -> bool {
     if !matches!(tool, "write" | "edit") {
         return false;
     }
@@ -328,7 +339,10 @@ pub fn exempt_from_guard(tool: &str, args: &Value, needed: &Needed) -> bool {
     {
         return false;
     }
-    if is_link(Path::new(path)) || is_link(destination) {
+    let Ok(requested) = requested_path(Path::new(path), cx) else {
+        return false;
+    };
+    if has_link(&requested, cx) || has_link(destination, cx) {
         return false;
     }
     match std::fs::symlink_metadata(destination) {
@@ -338,6 +352,20 @@ pub fn exempt_from_guard(tool: &str, args: &Value, needed: &Needed) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Whether `path` or any folder above it is a link, ignoring the folders at or
+/// above the workspace and the writable roots (as written or canonical): those
+/// are the host's own layout (`/home` may itself be a link), not the model's.
+fn has_link(path: &Path, cx: &ToolContext) -> bool {
+    let trusted: Vec<PathBuf> = std::iter::once(&cx.workspace)
+        .chain(cx.writable_roots.iter())
+        .flat_map(|root| [Some(root.clone()), root.canonicalize().ok()])
+        .flatten()
+        .collect();
+    path.ancestors()
+        .filter(|ancestor| !trusted.iter().any(|root| root.starts_with(ancestor)))
+        .any(is_link)
 }
 
 fn is_link(path: &Path) -> bool {
@@ -798,7 +826,7 @@ mod tests {
     fn exempt(f: &Fixture, tool: &str, path: &Path) -> bool {
         let args = json!({"path": path, "content": "x"});
         match gate(f, tool, args.clone()) {
-            Gate::Needs(needed) => exempt_from_guard(tool, &args, &needed),
+            Gate::Needs(needed) => exempt_from_guard(tool, &args, &needed, &f.cx),
             Gate::Rejected(_) => false,
             other => panic!("expected a request, got {other:?}"),
         }
@@ -830,6 +858,27 @@ mod tests {
             assert!(!exempt(&f, "write", &f.ws.join(name)), "{name}");
             assert!(!exempt(&f, "edit", &f.ws.join(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn a_link_in_a_parent_folder_is_never_exempt() {
+        let f = fixture();
+        // `notes` leads to another writable root, so the call is still a
+        // request; only the link keeps it from being exempt.
+        std::fs::write(f.config.join("spec.md"), "s").unwrap();
+        std::os::unix::fs::symlink(&f.config, f.ws.join("notes")).unwrap();
+        for tool in ["write", "edit"] {
+            assert!(!exempt(&f, tool, &f.ws.join("notes/spec.md")), "{tool}");
+            assert!(!exempt(&f, tool, &f.ws.join("notes/new.md")), "{tool} new");
+        }
+        // A link further up the path counts as well.
+        std::fs::create_dir(f.config.join("deep")).unwrap();
+        assert!(!exempt(&f, "write", &f.ws.join("notes/deep/new.md")));
+        // A relative path through the link is the same call.
+        assert!(!exempt(&f, "write", Path::new("notes/spec.md")));
+        // A real folder next to it stays exempt.
+        std::fs::create_dir(f.ws.join("docs")).unwrap();
+        assert!(exempt(&f, "write", &f.ws.join("docs/new.md")));
     }
 
     #[test]

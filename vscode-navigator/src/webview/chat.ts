@@ -17,6 +17,15 @@ const identity = new ConversationIdentity(() => {
   for (const button of document.querySelectorAll<HTMLButtonElement>(".control-card button, .control-card textarea")) button.disabled = true;
 });
 const post = (message: WebviewToHost): void => rawPost({ ...message, generation: identity.generation });
+const bypassToggle = document.createElement("button");
+bypassToggle.type = "button"; bypassToggle.className = "bypass-toggle";
+bypassToggle.textContent = "Bypass OFF"; bypassToggle.setAttribute("aria-pressed", "false");
+bypassToggle.title = "Bypass ordinary permission prompts; protected requests still ask";
+const bypassBadge = document.createElement("span");
+bypassBadge.className = "bypass-badge"; bypassBadge.textContent = "⚠ Bypass ON"; bypassBadge.hidden = true;
+bypassBadge.title = bypassToggle.title;
+document.querySelector(".topbar .identity")!.after(bypassToggle, bypassBadge);
+bypassToggle.addEventListener("click", () => post({ type: "toggleBypass" }));
 const transcript = document.querySelector<HTMLElement>("#transcript")!;
 const empty = document.querySelector<HTMLElement>("#empty")!;
 const status = document.querySelector<HTMLElement>("#status")!;
@@ -87,6 +96,7 @@ prompt.after(commandError);
 const agentLabel = document.createElement("span");
 agentLabel.className = "agent-label";
 agentLabel.textContent = "build";
+agentLabel.dataset.agent = "build";
 const pendingModel = document.createElement("span");
 pendingModel.className = "pending-model";
 modelSelect.after(agentLabel, pendingModel);
@@ -356,6 +366,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string): void {
   if (author === "navigator") { add(navigatorNote(text)); return; }
   const root = el("article", `message ${author}`);
+  if (author === "cognition") root.dataset.agent = agentLabel.dataset.agent;
   const byline = el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Subagent output · untrusted data");
   if (author === "subagent" && source) byline.title = `Source: ${source}`;
   if (skill) {
@@ -497,6 +508,7 @@ function turn(id: string): Turn {
   const existing = turns.get(id);
   if (existing) return existing;
   const root = el("article", "message cognition");
+  root.dataset.agent = agentLabel.dataset.agent;
   root.append(el("div", "byline", "Cognition"));
   const content = el("div", "message-body");
   const details = el("details", "reasoning");
@@ -542,7 +554,10 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
     link.addEventListener("click", () => post({ type: "openFile", ...target }));
     row.append(link);
   } else {
-    row.append(el("span", "tool-text", summary));
+    const text = el("span", "tool-text");
+    const name = summary.startsWith(event.name) ? event.name : "";
+    text.append(el("span", "tool-verb", name), document.createTextNode(summary.slice(name.length)));
+    row.append(text);
   }
   row.title = summary;
   row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
@@ -656,6 +671,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    bypassToggle.textContent = "Bypass OFF"; bypassToggle.setAttribute("aria-pressed", "false"); bypassBadge.hidden = true;
     form.hidden = false;
     archiveReadOnly = false;
     compacting = false; compactionRow = undefined;
@@ -668,10 +684,16 @@ function receive(event: HostToWebview): void {
     closePalette();
     commandError.hidden = true;
     agentLabel.textContent = "build";
+    agentLabel.dataset.agent = "build";
     pendingModel.textContent = "";
   }
   if (conversations(event)) return;
   switch (event.type) {
+    case "bypass":
+      bypassToggle.disabled = event.disabled || event.pending;
+      bypassToggle.textContent = event.pending ? "Bypass…" : event.enabled ? "Turn bypass off" : "Bypass OFF";
+      bypassToggle.setAttribute("aria-pressed", String(event.enabled)); bypassBadge.hidden = !event.enabled;
+      break;
     case "compaction": {
       compacting = event.pending;
       if (!compactionRow || !compactionRow.isConnected) { compactionRow = el("article", "message compaction-progress"); add(compactionRow); }
@@ -726,12 +748,13 @@ function receive(event: HostToWebview): void {
     }
     case "commands": commands = event.items; filterPalette(); break;
     case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
-    case "agent": agentLabel.textContent = event.name; break;
+    case "agent": agentLabel.textContent = event.name; agentLabel.dataset.agent = event.name; break;
     case "assignments": {
       if (event.models) renderModels({ type: "models", items: event.models, current: event.model, locked: !!event.locked });
       agentSelect.replaceChildren(...event.agents.map(agent => { const option = el("option", "", agent.id); option.value = agent.id; option.title = `${agent.description} · ${agent.effective?.model ?? "Unassigned"}${agent.warning ? ` · ${agent.warning}` : ""}`; return option; }));
       agentSelect.value = event.current; agentSelect.disabled = readOnly || !!event.locked;
       agentLabel.textContent = `${event.current}${event.source === "override" ? " · model override" : ""}${event.variant_source === "override" ? " · variant override" : ""}`;
+      agentLabel.dataset.agent = event.current;
       const types: Record<string,string> = { reflex: "FIM · editor", instinct: "SystemOne", metacognition: "Chat" };
       const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant === null ? " · variant off" : event.variant ? ` · ${event.variant}` : ""} · model source: ${event.source ?? "assignment"} · variant source: ${event.variant_source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
       document.querySelector<HTMLElement>(".topbar")!.title = tooltip; agentLabel.title = tooltip;

@@ -15,11 +15,9 @@ The host surface is an initial implementation, not release-ready enforcement.
   0700; trust grants use RFC3339 and writes use 0600.
 - Multi-file save errors currently do not enumerate already-written template files. Template deletion
   is conservative: templates are never deleted. Directory fsync and cross-process write locking remain.
-- The existing Navai System One transport is reused, with run cancellation/deadline and engine answer
-  validation; its body buffering/redirect policy must be tightened before claiming the full protocol.
 - Blocking effects are applied after combination, ordered by flow name; native verdict application
   records remain to be completed by the tool-hook integration.
-- Per-host concurrent provider-call admission, secret redaction, payload enum/nested-schema validation,
+- Secret redaction, payload enum/nested-schema validation,
   and the complete requested HTTP/runtime regression matrix remain to be implemented.
 - Studio and contract definitions agree; the engine record currently emits numeric `budget_ms` and
   node `duration_ms` rather than nullable values described by Studio. No engine files were changed.

@@ -645,6 +645,50 @@ mod tests {
             "external change"
         );
     }
+    #[test]
+    fn shared_template_modification_requires_an_unshared_write_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        let draft = |name: &str, body: &str| {
+            Content::Toml {
+            toml: format!("[flow]\nversion=1\nname='{name}'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\nstate_template='shared.txt'\n"),
+            templates: BTreeMap::from([("shared.txt".into(), body.into())]),
+        }
+        };
+        let a = store
+            .save("a", Location::Global, None, draft("a", "original"))
+            .unwrap();
+        store
+            .save("b", Location::Global, None, draft("b", "original"))
+            .unwrap();
+        assert_eq!(
+            store
+                .save(
+                    "a",
+                    Location::Global,
+                    Some(&a.revision),
+                    draft("a", "changed")
+                )
+                .unwrap_err()
+                .reason,
+            "stale"
+        );
+        let dir = Directory::open(&store.directory(Location::Global).unwrap(), false).unwrap();
+        dir.write("shared.txt", b"external").unwrap();
+        assert_eq!(
+            store
+                .save(
+                    "a",
+                    Location::Global,
+                    Some(&a.revision),
+                    draft("a", "original")
+                )
+                .unwrap_err()
+                .reason,
+            "stale"
+        );
+        assert_eq!(dir.read("shared.txt", 100, false).unwrap(), "external");
+    }
     fn content(name: &str, action: &str) -> Content {
         Content::Toml {toml:format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=500\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n"),templates:BTreeMap::new()}
     }

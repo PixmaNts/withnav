@@ -163,7 +163,7 @@ impl Records {
             Ok(text) => Ok(text
                 .lines()
                 .filter_map(|line| serde_json::from_str::<RunRecord>(line).ok())
-                .filter(|record| retained(record))
+                .filter(retained)
                 .map(|mut record| {
                     super::redaction::record(&mut record);
                     record

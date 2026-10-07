@@ -18,115 +18,6 @@ pub struct Host {
     workspaces: Mutex<BTreeMap<PathBuf, Workspace>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn editor_adapter_observes_shared_host_reload() {
-        let temp = tempfile::tempdir().unwrap();
-        let host = Host::new(temp.path().join("config"), temp.path().join("data"), None);
-        let runtime = host.runtime(temp.path()).unwrap();
-        let editor = runtime.with_effects_adapter(Arc::new(NoEffects));
-        let store = host.store(temp.path().canonicalize().unwrap());
-        assert!(Arc::ptr_eq(&editor.store, &store));
-        let text = "[flow]\nversion=1\nname='editor'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='test'\n";
-        let saved = store
-            .save(
-                "editor",
-                super::super::store::Location::Global,
-                None,
-                super::super::store::Content::Toml {
-                    toml: text.into(),
-                    templates: BTreeMap::new(),
-                },
-            )
-            .unwrap();
-        store.reload().unwrap();
-        assert!(
-            editor.store.snapshot()["editor"]
-                .compiled
-                .definition()
-                .flow
-                .enabled
-        );
-        store
-            .save(
-                "editor",
-                super::super::store::Location::Global,
-                Some(&saved.revision),
-                super::super::store::Content::Toml {
-                    toml: text.replace("on='save'", "on='save'\nenabled=false"),
-                    templates: BTreeMap::new(),
-                },
-            )
-            .unwrap();
-        store.reload().unwrap();
-        assert!(
-            !editor.store.snapshot()["editor"]
-                .compiled
-                .definition()
-                .flow
-                .enabled
-        );
-    }
-    #[tokio::test]
-    async fn unavailable_client_keeps_deterministic_rules_and_decision_fallbacks() {
-        let temp = tempfile::tempdir().unwrap();
-        let host = Host::new(
-            temp.path().join("config"),
-            temp.path().join("data"),
-            Some(temp.path().join("missing-models.toml")),
-        );
-        let runtime = host.runtime(temp.path()).unwrap();
-        assert!(!host.diagnostics(temp.path()).is_empty());
-        for (name, node) in [
-            (
-                "deterministic",
-                "type='action'\naction='deny'\n[node.params]\nnote='denied'",
-            ),
-            (
-                "decision",
-                "type='noul'\ninstructions='test'\nthreshold=0.5",
-            ),
-        ] {
-            runtime.store.save(name, super::super::store::Location::Global, None, super::super::store::Content::Toml {
-                toml: format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\n{node}\n"), templates: BTreeMap::new()
-            }).unwrap();
-        }
-        runtime.store.reload().unwrap();
-        let verdict = runtime
-            .tool_pre_call(
-                super::super::runtime::ToolCallContextLike {
-                    call_id: "x".into(),
-                    tool: "read".into(),
-                    args: serde_json::json!({}),
-                    agent: "build".into(),
-                    workspace: temp.path().into(),
-                },
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await;
-        assert!(matches!(
-            verdict,
-            super::super::runtime::VerdictLike::Deny { .. }
-        ));
-        assert_eq!(
-            runtime
-                .client()
-                .decide(
-                    instinct_flow::protocol::DecisionRequest {
-                        state: "",
-                        questions: &BTreeMap::new()
-                    },
-                    &tokio_util::sync::CancellationToken::new(),
-                    std::time::Instant::now()
-                )
-                .await
-                .unwrap_err(),
-            instinct_flow::DecisionError::ProviderError
-        );
-    }
-}
 struct Workspace {
     store: Arc<FlowStore>,
     runtime: Option<Arc<FlowRuntime>>,
@@ -254,6 +145,116 @@ impl Host {
                 records,
                 diagnostic: None,
             },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn editor_adapter_observes_shared_host_reload() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = Host::new(temp.path().join("config"), temp.path().join("data"), None);
+        let runtime = host.runtime(temp.path()).unwrap();
+        let editor = runtime.with_effects_adapter(Arc::new(NoEffects));
+        let store = host.store(temp.path().canonicalize().unwrap());
+        assert!(Arc::ptr_eq(&editor.store, &store));
+        let text = "[flow]\nversion=1\nname='editor'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='test'\n";
+        let saved = store
+            .save(
+                "editor",
+                super::super::store::Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: text.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(
+            editor.store.snapshot()["editor"]
+                .compiled
+                .definition()
+                .flow
+                .enabled
+        );
+        store
+            .save(
+                "editor",
+                super::super::store::Location::Global,
+                Some(&saved.revision),
+                super::super::store::Content::Toml {
+                    toml: text.replace("on='save'", "on='save'\nenabled=false"),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(
+            !editor.store.snapshot()["editor"]
+                .compiled
+                .definition()
+                .flow
+                .enabled
+        );
+    }
+    #[tokio::test]
+    async fn unavailable_client_keeps_deterministic_rules_and_decision_fallbacks() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            Some(temp.path().join("missing-models.toml")),
+        );
+        let runtime = host.runtime(temp.path()).unwrap();
+        assert!(!host.diagnostics(temp.path()).is_empty());
+        for (name, node) in [
+            (
+                "deterministic",
+                "type='action'\naction='deny'\n[node.params]\nnote='denied'",
+            ),
+            (
+                "decision",
+                "type='noul'\ninstructions='test'\nthreshold=0.5",
+            ),
+        ] {
+            runtime.store.save(name, super::super::store::Location::Global, None, super::super::store::Content::Toml {
+                toml: format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\n{node}\n"), templates: BTreeMap::new()
+            }).unwrap();
+        }
+        runtime.store.reload().unwrap();
+        let verdict = runtime
+            .tool_pre_call(
+                super::super::runtime::ToolCallContextLike {
+                    call_id: "x".into(),
+                    tool: "read".into(),
+                    args: serde_json::json!({}),
+                    agent: "build".into(),
+                    workspace: temp.path().into(),
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(
+            verdict,
+            super::super::runtime::VerdictLike::Deny { .. }
+        ));
+        assert_eq!(
+            runtime
+                .client()
+                .decide(
+                    instinct_flow::protocol::DecisionRequest {
+                        state: "",
+                        questions: &BTreeMap::new()
+                    },
+                    &tokio_util::sync::CancellationToken::new(),
+                    std::time::Instant::now()
+                )
+                .await
+                .unwrap_err(),
+            instinct_flow::DecisionError::ProviderError
         );
     }
 }

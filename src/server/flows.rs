@@ -91,7 +91,11 @@ async fn dispatch(
 ) -> Response {
     match handle(&state, &query, &headers, peer, method, &tail, &body).await {
         Ok((status, mut value)) => {
-            crate::flows::redaction::response(&mut value);
+            if matches!(tail.as_str(), "sample" | "replay")
+                || tail.split('/').nth(1) == Some("runs")
+            {
+                crate::flows::redaction::response(&mut value);
+            }
             (status, Json(value)).into_response()
         }
         Err(e) => error(e),

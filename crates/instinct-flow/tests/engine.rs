@@ -826,6 +826,69 @@ async fn changed_expression_and_action_cannot_read_uncaptured_host_inputs() {
     }
 }
 #[tokio::test]
+async fn redacted_event_references_are_unavailable_even_without_selected_inputs() {
+    for body in [
+        "[[node]]\nid='x'\ntype='expression'\ncondition='x == \"<redacted>\"'\n[node.inputs]\nx='event.tool'\n".into(),
+        decision("x", "[node.inputs]\nx='event.tool'"),
+        action("x", "log", "text='{x}'") + "[node.inputs]\nx='event.tool'\n",
+    ] {
+        let c = compile(&(header("['x']") + &body));
+        let client = Fake::new();
+        let mut record = evaluate(&c, &client).await.trace;
+        assert!(replay(&c, &record, &client.identity()).comparable);
+        record.event.payload["tool"] = "<redacted>".into();
+        record.redacted_event_paths.push("event.tool".into());
+        for node in &mut record.nodes {
+            node.selected_inputs = None;
+        }
+        let result = replay(&c, &record, &client.identity());
+        assert!(!result.comparable);
+        assert!(result.outcome.is_none());
+        assert_eq!(result.nodes[0].status, "missing_capture");
+        assert_eq!(serde_json::to_value(result).unwrap()["outcome"], serde_json::Value::Null);
+    }
+}
+
+#[tokio::test]
+async fn event_redaction_is_reference_scoped_and_legacy_captures_still_load() {
+    let c = compile(&(header("['x']") + "when='x == \"write\"'\n[flow.inputs]\nx='event.tool'\n[[node]]\nid='x'\ntype='expression'\ncondition='true'\n"));
+    let client = Fake::new();
+    let mut record = evaluate(&c, &client).await.trace;
+    let legacy = serde_json::to_value(&record).unwrap();
+    assert!(legacy.get("redacted_event_paths").is_none());
+    let loaded: RunRecord = serde_json::from_value(legacy).unwrap();
+    assert!(loaded.redacted_event_paths.is_empty());
+    assert!(replay(&c, &loaded, &client.identity()).comparable);
+    record.redacted_event_paths.push("event.args".into());
+    assert!(replay(&c, &record, &client.identity()).comparable);
+    record.redacted_event_paths.push("event.tool".into());
+    let result = replay(&c, &record, &client.identity());
+    assert!(!result.comparable);
+    assert!(result.outcome.is_none());
+    assert_eq!(result.nodes[0].status, "missing_capture");
+}
+
+#[tokio::test]
+async fn deterministic_replay_honors_legacy_selected_event_redaction() {
+    let c = compile(&(header("['x']") + "[[node]]\nid='x'\ntype='expression'\ncondition='is_set(x)'\n[node.inputs]\nx='event.tool'\n"));
+    let client = Fake::new();
+    let mut record = evaluate(&c, &client).await.trace;
+    let captured = &mut record.nodes[0]
+        .selected_inputs
+        .as_mut()
+        .unwrap()
+        .get_mut("x")
+        .unwrap()
+        .captured;
+    captured.redacted = true;
+    captured.value = None;
+    let result = replay(&c, &record, &client.identity());
+    assert!(!result.comparable);
+    assert!(result.outcome.is_none());
+    assert_eq!(result.nodes[0].status, "missing_capture");
+}
+
+#[tokio::test]
 async fn redacted_inputs_are_live_but_never_retained_or_replayed_as_absent() {
     for body in [decision("b", "[node.inputs]\nx='session.agent'"), "[[node]]\nid='b'\ntype='expression'\ncondition='is_set(x)'\n[node.inputs]\nx='session.agent'\n".into(), action("b", "log", "text='{x}'") + "[node.inputs]\nx='session.agent'\n"] {
         let c = compile(&(header("['b']") + &body));

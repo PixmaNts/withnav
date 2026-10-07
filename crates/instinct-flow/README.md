@@ -22,7 +22,11 @@ It never applies actions, reads Navai settings, resolves credentials or stores c
    reached decision cannot be compared honestly. It does not invoke any trait callbacks.
    Version 1 records optionally add `NodeRecord.selected_inputs` (alias → reference and
    captured value/cut/redacted). Changed references or constants invalidate decision reuse;
-   missing or redacted host evidence invalidates every consumer, including expressions/actions.
+    missing or redacted host evidence invalidates every consumer, including expressions/actions.
+    Hosts list removed event evidence in `RunRecord.redacted_event_paths` (for example,
+    `event.text` or `event.args`); replay rejects consumers of those references, including
+    flow-level `when`, without treating replacement text as original evidence. Older records
+    may omit this field; unredacted event fields remain comparable.
    Legacy records without selected inputs require the original definition digest for reuse.
 
 Input byte ceilings are allocated equally across distinct declared non-upstream references

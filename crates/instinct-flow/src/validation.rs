@@ -734,6 +734,15 @@ pub(crate) fn validate(
     if !errors.is_empty() {
         return Err(errors);
     }
+    for (path, expression) in &expressions {
+        if let Err(mut error) = expression.check_limits(&catalogue.limits) {
+            error.path = path.clone();
+            errors.push(error);
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let bytes = serde_json::to_vec(&(definition, templates))
         .map_err(|e| vec![Diagnostic::new("schema", e.to_string(), "flow")])?;
     // SHA-256 is provided by the existing transitive ecosystem; explicit dependency keeps the digest stable.
@@ -799,7 +808,7 @@ fn static_choices(
         verdicts: &'a [bool],
         limit: usize,
         steps: usize,
-        memo: BTreeSet<(usize, Vec<Option<String>>)>,
+        memo: BTreeSet<(usize, Vec<bool>, usize, usize)>,
     }
     impl Search<'_> {
         fn visit(
@@ -820,7 +829,18 @@ fn static_choices(
             if pos == self.order.len() {
                 return Ok(());
             }
-            if !self.memo.insert((pos, ports.clone())) {
+            let active_frontier = self.order[pos..]
+                .iter()
+                .map(|i| {
+                    self.preds[*i]
+                        .iter()
+                        .any(|(p, port)| ports[*p].as_ref() == Some(port))
+                })
+                .collect();
+            if !self
+                .memo
+                .insert((pos, active_frontier, decisions, verdict_count))
+            {
                 return Ok(());
             }
             let i = self.order[pos];

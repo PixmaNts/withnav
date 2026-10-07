@@ -1,5 +1,5 @@
 //! Bounded evalexpr trees with typed admission and lazy absent-safe selection.
-use crate::{Diagnostic, ValueType};
+use crate::{Diagnostic, Limits, ValueType};
 use evalexpr::{Node, Operator, Value};
 use std::collections::BTreeMap;
 pub type Values = BTreeMap<String, Value>;
@@ -7,6 +7,7 @@ pub type Values = BTreeMap<String, Value>;
 pub struct Expression {
     tree: Node,
     pub value_type: ValueType,
+    source: String,
 }
 fn error(message: &str) -> Diagnostic {
     Diagnostic::new("expression", message, "expression")
@@ -19,8 +20,8 @@ pub fn identifier(name: &str) -> bool {
             .enumerate()
             .all(|(i, c)| c.is_ascii_alphabetic() || c == b'_' || (i > 0 && c.is_ascii_digit()))
 }
-fn scan(text: &str) -> Result<(), Diagnostic> {
-    if text.len() > 4096 {
+fn scan(text: &str, limits: &Limits) -> Result<(), Diagnostic> {
+    if text.len() > limits.expression_bytes.min(4096) {
         return Err(error("expression exceeds byte limit"));
     }
     let mut chars = text.chars().peekable();
@@ -76,7 +77,7 @@ fn scan(text: &str) -> Result<(), Diagnostic> {
             }
             '(' => {
                 depth += 1;
-                if depth > 16 {
+                if depth > limits.expression_nesting.min(16) {
                     return Err(error("expression nesting limit"));
                 }
             }
@@ -120,7 +121,9 @@ fn scan(text: &str) -> Result<(), Diagnostic> {
                 }
             }
         }
-        if tokens > 128 || operators > 32 {
+        if tokens > limits.expression_tokens.min(128)
+            || operators > limits.expression_operators.min(32)
+        {
             return Err(error("expression complexity limit"));
         }
     }
@@ -149,7 +152,14 @@ fn args(node: &Node) -> &[Node] {
 }
 impl Expression {
     pub fn compile(text: &str, symbols: &BTreeMap<String, ValueType>) -> Result<Self, Diagnostic> {
-        scan(text)?;
+        Self::compile_with_limits(text, symbols, &Limits::default())
+    }
+    pub fn compile_with_limits(
+        text: &str,
+        symbols: &BTreeMap<String, ValueType>,
+        limits: &Limits,
+    ) -> Result<Self, Diagnostic> {
+        scan(text, limits)?;
         let tree =
             evalexpr::build_operator_tree(text).map_err(|_| error("invalid expression syntax"))?;
         let mut count = 0;
@@ -261,7 +271,36 @@ impl Expression {
             }
         }
         let value_type = infer(&tree, symbols, 0, &mut count)?;
-        Ok(Self { tree, value_type })
+        fn depth(node: &Node) -> usize {
+            1 + node.children().iter().map(depth).max().unwrap_or(0)
+        }
+        if count > limits.expression_ast_nodes.min(128)
+            || depth(&tree) > limits.expression_ast_depth.min(32)
+        {
+            return Err(error("expression AST exceeds host ceiling"));
+        }
+        Ok(Self {
+            tree,
+            value_type,
+            source: text.into(),
+        })
+    }
+    pub(crate) fn check_limits(&self, limits: &Limits) -> Result<(), Diagnostic> {
+        scan(&self.source, limits)?;
+        fn measure(node: &Node) -> (usize, usize) {
+            let children: Vec<_> = node.children().iter().map(measure).collect();
+            (
+                1 + children.iter().map(|(n, _)| n).sum::<usize>(),
+                1 + children.iter().map(|(_, d)| *d).max().unwrap_or(0),
+            )
+        }
+        let (nodes, depth) = measure(&self.tree);
+        if nodes > limits.expression_ast_nodes.min(128)
+            || depth > limits.expression_ast_depth.min(32)
+        {
+            return Err(error("expression AST exceeds host ceiling"));
+        }
+        Ok(())
     }
     pub fn evaluate(&self, values: &Values) -> Result<Value, Diagnostic> {
         fn boolean(v: Value) -> Result<bool, Diagnostic> {
@@ -331,6 +370,7 @@ impl Expression {
                         match (&a, &b) {
                             (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
                             (Value::Boolean(a), Value::Boolean(b)) => Ok(a.cmp(b)),
+                            (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
                             _ => num(&a)?
                                 .partial_cmp(&num(&b)?)
                                 .ok_or_else(|| error("nonfinite comparison")),

@@ -285,3 +285,73 @@ fn conflicts_limits_and_nonblocking_verdicts_fail_closed() {
         )
         .is_err());
 }
+#[test]
+fn sixteen_independent_decisions_use_memoized_port_choices() {
+    let starts = (0..16)
+        .map(|i| format!("'q{i}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut text = header(&format!("[{starts}]"));
+    for i in 0..16 {
+        text += &decision(&format!("q{i}"), "");
+    }
+    compile(&text);
+}
+#[tokio::test]
+async fn cancellation_discards_actions_and_unknown_usage_stays_null() {
+    let c = compile(
+        &(header("['deny','a']") + &action("deny", "deny", "note='no'") + &decision("a", "")),
+    );
+    let client = Fake::new();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let result = run(
+        &c,
+        &event(),
+        &Inputs,
+        &client,
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "cancel".into(),
+        },
+        &cancel,
+    )
+    .await;
+    assert!(matches!(
+        result.result,
+        RunResult::Failure {
+            kind: FailureKind::Cancelled,
+            ..
+        }
+    ));
+    assert!(result.trace.actions.is_empty());
+    assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+    let mut client = Fake::new();
+    client.fail = true;
+    let result = evaluate(&c, &client).await;
+    assert!(result.trace.usage.is_none());
+}
+#[tokio::test]
+async fn replay_rejects_changed_question_with_unchanged_template() {
+    let text = header("['a']")
+        + &decision("a", "[node.next]\nno=['b']")
+        + &decision(
+            "b",
+            "state_template='state.txt'\n[node.inputs]\nx='answer.a'",
+        );
+    let templates = BTreeMap::from([("state.txt".into(), "fixed state".into())]);
+    let definition = Definition::parse(&text).unwrap();
+    let compiled = definition
+        .validate(&catalogue(), &Capabilities { images: false }, &templates)
+        .unwrap();
+    let client = Fake::new();
+    let result = evaluate(&compiled, &client).await;
+    let mut changed = definition.clone();
+    if let NodeKind::Noul { instructions, .. } = &mut changed.node[1].kind {
+        *instructions = "Changed".into();
+    }
+    let changed = changed
+        .validate(&catalogue(), &Capabilities { images: false }, &templates)
+        .unwrap();
+    assert!(!replay(&changed, &result.trace, &client.identity()).comparable);
+}

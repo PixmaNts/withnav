@@ -304,6 +304,7 @@ impl<'a> Evaluation<'a> {
         cancel: &CancellationToken,
     ) -> Result<(), Failure> {
         self.check(cancel)?;
+        self.prepare_local(map)?;
         let names: Vec<_> = map
             .values()
             .filter(|r| {
@@ -353,7 +354,39 @@ impl<'a> Evaluation<'a> {
         }
         Ok(())
     }
+    fn prepare_local(&mut self, map: &BTreeMap<String, String>) -> Result<(), Failure> {
+        let references: BTreeSet<_> = map
+            .values()
+            .filter(|r| {
+                (r.starts_with("event.") || r.starts_with("constant."))
+                    && !self.cache.contains_key(*r)
+            })
+            .cloned()
+            .collect();
+        for reference in references {
+            let mut value = self.resolve(&reference);
+            self.bound(&mut value, &reference)?;
+            self.cache.insert(reference, value);
+        }
+        Ok(())
+    }
     fn bound(&mut self, value: &mut InputValue, reference: &str) -> Result<(), Failure> {
+        let expression_reads = self.compiled.definition.node.iter().any(|n| {
+            matches!(n.kind, NodeKind::Expression { .. })
+                && n.inputs.values().any(|r| r == reference)
+        }) || self
+            .compiled
+            .definition
+            .flow
+            .inputs
+            .values()
+            .any(|r| r == reference);
+        if value.cut && expression_reads {
+            return Err((
+                FailureKind::Limit,
+                "expression input was already truncated".into(),
+            ));
+        }
         let Some(v) = &value.value else {
             return Ok(());
         };
@@ -370,16 +403,6 @@ impl<'a> Evaluation<'a> {
                 .saturating_sub(self.bytes),
         );
         if text.len() > cap {
-            let expression_reads = self.compiled.definition.node.iter().any(|n| {
-                matches!(n.kind, NodeKind::Expression { .. })
-                    && n.inputs.values().any(|r| r == reference)
-            }) || self
-                .compiled
-                .definition
-                .flow
-                .inputs
-                .values()
-                .any(|r| r == reference);
             if expression_reads {
                 return Err((
                     FailureKind::Limit,
@@ -581,6 +604,16 @@ impl<'a> Evaluation<'a> {
     }
     fn finish(mut self, status: Result<bool, Failure>, start: Instant) -> RunOutcome {
         self.trace.duration_ms = elapsed(start);
+        self.trace.usage =
+            self.trace
+                .batches
+                .iter()
+                .try_fold(DecisionUsage::default(), |sum, batch| {
+                    batch.usage.map(|usage| DecisionUsage {
+                        input_tokens: sum.input_tokens.saturating_add(usage.input_tokens),
+                        output_tokens: sum.output_tokens.saturating_add(usage.output_tokens),
+                    })
+                });
         self.trace.actions.sort_by_key(|a| {
             a.node_id
                 .as_ref()
@@ -694,21 +727,6 @@ async fn execute(
             return Err((FailureKind::Input, "missing required event field".into()));
         }
     }
-    // Event inputs use the same cache and byte accounting as host values.
-    let event_refs: BTreeSet<_> = definition
-        .flow
-        .inputs
-        .values()
-        .chain(definition.node.iter().flat_map(|n| n.inputs.values()))
-        .chain(definition.fallback.iter().flat_map(|f| f.inputs.values()))
-        .filter(|r| r.starts_with("event."))
-        .cloned()
-        .collect();
-    for reference in event_refs {
-        let mut value = e.resolve(&reference);
-        e.bound(&mut value, &reference)?;
-        e.cache.insert(reference, value);
-    }
     let map = definition.flow.inputs.clone();
     e.collect(&map, inputs, cancel).await?;
     if let Some(when) = e.compiled.expressions.get("flow.when") {
@@ -808,7 +826,8 @@ async fn execute(
                     let _permit=semaphore.acquire().await.map_err(|_|DecisionError::Cancelled)?;
                     let call_deadline=deadline.min(Instant::now()+Duration::from_millis(call_ms));
                     let response=tokio::time::timeout_at(call_deadline.into(),client.decide(DecisionRequest {state:&state,questions:&questions},cancel,call_deadline)).await.map_err(|_|DecisionError::Timeout)??;
-                    if cancel.is_cancelled(){return Err(DecisionError::Cancelled);}if Instant::now()>=call_deadline {return Err(DecisionError::Timeout);}
+                    if cancel.is_cancelled(){return Err(DecisionError::Cancelled);}
+                    if Instant::now()>=call_deadline {return Err(DecisionError::Timeout);}
                     validate_answers(&questions,&response.answers)?;Ok(response)
                 };
                 let response=tokio::select! {biased;_=cancel.cancelled()=>Err(DecisionError::Cancelled),_=tokio::time::sleep_until(deadline.into())=>Err(DecisionError::Timeout),r=work=>r};
@@ -816,7 +835,7 @@ async fn execute(
             }));
         }
         if calls.is_empty() {
-            if e.status.iter().any(|s| *s == Status::Pending) {
+            if e.status.contains(&Status::Pending) {
                 return Err((FailureKind::Limit, "scheduler made no progress".into()));
             }
             return Ok(true);
@@ -829,6 +848,14 @@ async fn execute(
         e.check(cancel)?;
         e.trace.batches[batch].duration_ms = duration;
         let response = response.map_err(decision_failure)?;
+        if serde_json::to_vec(&response).map_or(true, |bytes| {
+            bytes.len() > e.compiled.catalogue.limits.response_bytes.min(262144)
+        }) {
+            return Err((
+                FailureKind::Limit,
+                "provider response exceeds host ceiling".into(),
+            ));
+        }
         e.trace.batches[batch].usage = response.usage;
         e.trace.usage = match (e.trace.usage, response.usage) {
             (Some(a), Some(b)) => Some(DecisionUsage {
@@ -905,6 +932,26 @@ pub fn replay(
             run_id: record.run_id.clone(),
         },
     );
+    let mut captured = Evaluation::new(
+        definition,
+        &record.event,
+        record.identity.clone(),
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(5),
+            run_id: record.run_id.clone(),
+        },
+    );
+    captured.cache = record.inputs.clone();
+    for (i, node) in definition.definition.node.iter().enumerate() {
+        if let Some(original) = record.nodes.iter().find(|n| n.id == node.id) {
+            captured.trace.nodes[i] = original.clone();
+            captured.status[i] = if original.status == "completed" {
+                Status::Completed
+            } else {
+                Status::Unreachable
+            };
+        }
+    }
     e.trace.mode = "replay".into();
     e.trace.started_at = record.started_at.clone();
     e.cache = record.inputs.clone();
@@ -976,6 +1023,7 @@ pub fn replay(
                 let classification = if missing || capture.is_none() || batch.is_none() {
                     "missing_capture"
                 } else if record.identity != *identity
+                    || e.aliases(&node.inputs) != captured.aliases(&node.inputs)
                     || batch.is_some_and(|b| {
                         b.state != state || b.questions.get(&node.id) != Some(&question)
                     })

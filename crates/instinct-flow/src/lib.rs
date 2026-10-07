@@ -1,4 +1,5 @@
 //! Host-independent decision graphs: validated definitions propose, never apply, actions.
+mod admission;
 pub mod catalogue;
 pub mod client;
 pub mod definition;
@@ -21,8 +22,8 @@ pub struct Diagnostic {
     pub message: String,
     pub path: String,
     pub node_id: Option<String>,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
 }
 impl Diagnostic {
     pub fn new(

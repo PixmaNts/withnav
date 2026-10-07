@@ -138,7 +138,13 @@ impl DecisionClient for SystemOneClient {
                     }
                     bytes.extend_from_slice(&chunk);
                 }
-                let response: DecisionResponse = serde_json::from_slice(&bytes)
+                let raw: crate::admission::UniqueValue =
+                    serde_json::from_slice(&bytes).map_err(|_| {
+                        DecisionError::InvalidAnswer(
+                            "malformed or duplicate response fields".into(),
+                        )
+                    })?;
+                let response: DecisionResponse = serde_json::from_value(raw.0)
                     .map_err(|_| DecisionError::InvalidAnswer("malformed response".into()))?;
                 validate_answers(request.questions, &response.answers)?;
                 Ok(response)

@@ -103,7 +103,7 @@ struct Evaluation<'a> {
     trace: RunRecord,
     status: Vec<Status>,
     cache: BTreeMap<String, InputValue>,
-    bytes: usize,
+    allowance: usize,
     deadline: Instant,
 }
 impl<'a> Evaluation<'a> {
@@ -163,7 +163,20 @@ impl<'a> Evaluation<'a> {
             },
             status: vec![Status::Pending; compiled.definition.node.len()],
             cache: BTreeMap::new(),
-            bytes: 0,
+            allowance: {
+                let f = &compiled.definition;
+                let count = f
+                    .flow
+                    .inputs
+                    .values()
+                    .chain(f.node.iter().flat_map(|n| n.inputs.values()))
+                    .chain(f.fallback.iter().flat_map(|f| f.inputs.values()))
+                    .filter(|r| crate::validation::upstream(r).is_none())
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    .max(1);
+                compiled.catalogue.limits.run_input_bytes.min(65536) / count
+            },
             deadline,
         }
     }
@@ -414,18 +427,20 @@ impl<'a> Evaluation<'a> {
         let Some(v) = &value.value else {
             return Ok(());
         };
-        let text = v
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| v.to_string());
-        let cap = self.compiled.catalogue.limits.input_bytes.min(16384).min(
-            self.compiled
-                .catalogue
-                .limits
-                .run_input_bytes
-                .min(65536)
-                .saturating_sub(self.bytes),
-        );
+        let cap = self
+            .compiled
+            .catalogue
+            .limits
+            .input_bytes
+            .min(16384)
+            .min(self.allowance);
+        let serialized;
+        let text = if let Some(s) = v.as_str() {
+            s
+        } else {
+            serialized = crate::rendering::json_text(v, cap).map_err(render_failure)?;
+            &serialized
+        };
         if text.len() > cap {
             if expression_reads {
                 return Err((
@@ -439,9 +454,6 @@ impl<'a> Evaluation<'a> {
             }
             value.value = Some(text[..boundary].into());
             value.cut = true;
-            self.bytes += boundary;
-        } else {
-            self.bytes += text.len();
         }
         Ok(())
     }
@@ -453,8 +465,12 @@ impl<'a> Evaluation<'a> {
             .template()
             .and_then(|name| self.compiled.templates.get(name))
             .map(String::as_str);
-        let state = crate::rendering::state(&values, template)
-            .map_err(|_| (FailureKind::Input, "state rendering failed".into()))?;
+        let state = crate::rendering::state_bounded(
+            &values,
+            template,
+            self.compiled.catalogue.limits.state_bytes.min(65536),
+        )
+        .map_err(render_failure)?;
         if state.len() > self.compiled.catalogue.limits.state_bytes.min(65536) {
             return Err((
                 FailureKind::Limit,
@@ -496,8 +512,8 @@ impl<'a> Evaluation<'a> {
                 if result { "true" } else { "false" }.into()
             }
             NodeKind::Action { action, params } => {
-                let params = crate::rendering::params(params, &inputs)
-                    .map_err(|e| (FailureKind::Input, e.message))?;
+                let params = crate::rendering::params(params, &inputs).map_err(render_failure)?;
+                self.validate_params(action, &params)?;
                 self.trace.actions.push(ProposedAction {
                     node_id: Some(node.id.clone()),
                     action: action.clone(),
@@ -520,6 +536,30 @@ impl<'a> Evaluation<'a> {
         self.status[i] = Status::Completed;
         self.trace.nodes[i].status = "completed".into();
         self.trace.nodes[i].port = Some(port);
+    }
+    fn validate_params(
+        &self,
+        action: &str,
+        params: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), Failure> {
+        let spec = self
+            .compiled
+            .catalogue
+            .action(action)
+            .expect("validated action");
+        if spec.params.iter().any(|p| match params.get(&p.name) {
+            Some(value) => !p.value_type.matches(value),
+            None => p.required,
+        }) || params
+            .keys()
+            .any(|name| !spec.params.iter().any(|p| &p.name == name))
+        {
+            return Err((
+                FailureKind::Input,
+                "resolved action parameter has invalid type".into(),
+            ));
+        }
+        Ok(())
     }
     fn answer(&mut self, i: usize, answer: Answer) -> Result<(), Failure> {
         let port = match (&self.compiled.definition.node[i].kind, &answer) {
@@ -620,6 +660,9 @@ impl<'a> Evaluation<'a> {
             let Ok(params) = crate::rendering::params(&item.params, &values) else {
                 return;
             };
+            if self.validate_params(&item.action, &params).is_err() {
+                return;
+            }
             actions.push(ProposedAction {
                 node_id: None,
                 action: item.action.clone(),
@@ -689,6 +732,16 @@ impl<'a> Evaluation<'a> {
 }
 fn elapsed(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+fn render_failure(d: Diagnostic) -> Failure {
+    (
+        if d.code == "limit" {
+            FailureKind::Limit
+        } else {
+            FailureKind::Input
+        },
+        d.message,
+    )
 }
 fn decision_failure(error: DecisionError) -> Failure {
     let kind = match error {

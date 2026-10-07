@@ -1,14 +1,49 @@
 //! Deterministic state and action rendering; placeholders never evaluate code.
 use crate::{Diagnostic, InputValue};
 use std::collections::{BTreeMap, BTreeSet};
+fn limit() -> Diagnostic {
+    Diagnostic::new("limit", "rendered value exceeds byte limit", "rendering")
+}
+fn append(out: &mut String, text: &str, cap: usize) -> Result<(), Diagnostic> {
+    if text.len() > cap.saturating_sub(out.len()) {
+        return Err(limit());
+    }
+    out.push_str(text);
+    Ok(())
+}
+pub(crate) fn json_text(value: &serde_json::Value, cap: usize) -> Result<String, Diagnostic> {
+    struct Writer {
+        bytes: Vec<u8>,
+        cap: usize,
+    }
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.cap.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other("byte limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Writer {
+        bytes: Vec::new(),
+        cap,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|_| limit())?;
+    String::from_utf8(writer.bytes).map_err(|_| limit())
+}
 pub fn placeholders(text: &str, state: bool) -> Result<BTreeSet<String>, Diagnostic> {
-    render(text, &BTreeMap::new(), state, true).map(|(_, names)| names)
+    render(text, &BTreeMap::new(), state, true, 65536).map(|(_, names)| names)
 }
 fn render(
     text: &str,
     values: &BTreeMap<String, InputValue>,
     state: bool,
     admit: bool,
+    cap: usize,
 ) -> Result<(String, BTreeSet<String>), Diagnostic> {
     let (open, close, escape_open, escape_close) = if state {
         ("{{", "}}", "{{{{", "}}}}")
@@ -20,10 +55,10 @@ fn render(
     let mut names = BTreeSet::new();
     while !rest.is_empty() {
         if rest.starts_with(escape_open) {
-            out.push_str(open);
+            append(&mut out, open, cap)?;
             rest = &rest[escape_open.len()..];
         } else if rest.starts_with(escape_close) {
-            out.push_str(close);
+            append(&mut out, close, cap)?;
             rest = &rest[escape_close.len()..];
         } else if let Some(tail) = rest.strip_prefix(open) {
             let end = tail
@@ -42,21 +77,27 @@ fn render(
                 let value = values.get(name).ok_or_else(|| {
                     Diagnostic::new("template", "undeclared placeholder", "template")
                 })?;
-                out.push_str(&match &value.value {
-                    Some(v) if !v.is_null() => v
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| v.to_string()),
-                    _ => {
-                        if state {
-                            "<absent>".into()
+                let rendered;
+                let text = match &value.value {
+                    Some(v) if !v.is_null() => {
+                        if let Some(s) = v.as_str() {
+                            s
                         } else {
-                            "—".into()
+                            rendered = json_text(v, cap.saturating_sub(out.len()))?;
+                            &rendered
                         }
                     }
-                });
+                    _ => {
+                        if state {
+                            "<absent>"
+                        } else {
+                            "—"
+                        }
+                    }
+                };
+                append(&mut out, text, cap)?;
                 if state && value.cut {
-                    out.push_str(" [cut]");
+                    append(&mut out, " [cut]", cap)?;
                 }
             }
             rest = &tail[end + close.len()..];
@@ -64,7 +105,7 @@ fn render(
             return Err(Diagnostic::new("template", "unescaped brace", "template"));
         } else {
             let ch = rest.chars().next().expect("nonempty renderer input");
-            out.push(ch);
+            append(&mut out, ch.encode_utf8(&mut [0; 4]), cap)?;
             rest = &rest[ch.len_utf8()..];
         }
     }
@@ -74,24 +115,34 @@ pub fn state(
     values: &BTreeMap<String, InputValue>,
     template: Option<&str>,
 ) -> Result<String, Diagnostic> {
+    state_bounded(values, template, 65536)
+}
+pub(crate) fn state_bounded(
+    values: &BTreeMap<String, InputValue>,
+    template: Option<&str>,
+    cap: usize,
+) -> Result<String, Diagnostic> {
     if let Some(template) = template {
-        return render(template, values, true, false).map(|(s, _)| s);
+        return render(template, values, true, false, cap).map(|(s, _)| s);
     }
-    Ok(values
-        .iter()
-        .map(|(alias, v)| {
-            format!(
-                "{alias} = {}{}",
-                v.value
-                    .as_ref()
-                    .filter(|v| !v.is_null())
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "<absent>".into()),
-                if v.cut { " [cut]" } else { "" }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n"))
+    let mut out = String::new();
+    for (alias, value) in values {
+        if !out.is_empty() {
+            append(&mut out, "\n", cap)?;
+        }
+        append(&mut out, alias, cap)?;
+        append(&mut out, " = ", cap)?;
+        if let Some(v) = value.value.as_ref().filter(|v| !v.is_null()) {
+            let text = json_text(v, cap.saturating_sub(out.len()))?;
+            append(&mut out, &text, cap)?;
+        } else {
+            append(&mut out, "<absent>", cap)?;
+        }
+        if value.cut {
+            append(&mut out, " [cut]", cap)?;
+        }
+    }
+    Ok(out)
 }
 pub fn params(
     params: &BTreeMap<String, serde_json::Value>,
@@ -101,12 +152,15 @@ pub fn params(
         .iter()
         .map(|(name, value)| {
             let value = if let Some(text) = value.as_str() {
-                serde_json::Value::String(render(text, values, false, false)?.0)
+                serde_json::Value::String(render(text, values, false, false, 16384)?.0)
             } else if let Some(alias) = value
                 .as_object()
                 .and_then(|m| m.get("ref"))
                 .and_then(|v| v.as_str())
             {
+                if values.get(alias).is_some_and(|v| v.cut) {
+                    return Err(limit());
+                }
                 values
                     .get(alias)
                     .and_then(|v| v.value.clone())

@@ -1,0 +1,135 @@
+[flow]
+version = 1
+name = "guard-mutations"
+on = "tool.pre_call"
+enabled = true
+blocking = true
+budget_ms = 800
+start = ["effect"]
+when = 'tool == "bash" || tool == "write" || tool == "edit" || tool == "fetch"'
+[flow.inputs]
+tool = "event.tool"
+
+[constants]
+MIN_YES = 0.75
+
+[fallback]
+on_failure = { action = "ask_driver", params = { note = "Flow failed: {failure_message}" } }
+on_timeout = { action = "no_objection", params = {} }
+on_provider_error = { action = "ask_driver", params = { note = "Instinct unavailable" } }
+on_invalid_answer = { action = "ask_driver", params = { note = "Invalid instinct answer" } }
+
+[[node]]
+id = "effect"
+type = "choice"
+instructions = "What will this call do? Choose its most consequential effect."
+[node.inputs]
+tool = "event.tool"
+args = "event.args"
+agent = "session.agent"
+[node.criteria]
+read_only = "Only reads files or prints information."
+local_change = "Changes files inside the workspace."
+network = "Reaches a host outside the machine."
+destructive = "Deletes, force-pushes or rewrites history."
+[node.next]
+read_only = ["continue"]
+local_change = ["asked_for"]
+network = ["trusted_host"]
+destructive = ["blast_radius"]
+
+[[node]]
+id = "asked_for"
+type = "noul"
+instructions = "Did the driver or the intent record ask for this exact change?"
+threshold = "constant.MIN_YES"
+[node.inputs]
+last_driver = "conversation.last_driver"
+intent = "intent.record"
+args = "event.args"
+[node.next]
+yes = ["continue"]
+no = ["plan_overreach"]
+
+[[node]]
+id = "trusted_host"
+type = "noul"
+instructions = "Is this a read-only request to an identifiable public documentation host?"
+threshold = 0.9
+[node.inputs]
+args = "event.args"
+[node.next]
+yes = ["continue"]
+no = ["ask"]
+
+[[node]]
+id = "blast_radius"
+type = "score"
+instructions = "How far could this reach if it goes wrong? Levels are weakest first."
+levels = ["one file", "one folder", "whole repo", "outside the repo"]
+at_least = "whole repo"
+[node.inputs]
+args = "event.args"
+root = "workspace.root"
+dirty = "workspace.dirty_files"
+[node.next]
+at_least = ["deny"]
+below = ["ask"]
+
+[[node]]
+id = "plan_overreach"
+type = "expression"
+condition = 'asked_for < THRESHOLD'
+[node.inputs]
+asked_for = "answer.asked_for"
+agent = "session.agent"
+[node.assign]
+# The plan agent should not change code: demand a clearer request from it.
+THRESHOLD = 'if(agent == "plan", 0.9, 0.6)'
+[node.next]
+true = ["deny"]
+false = ["ask"]
+
+[[node]]
+id = "continue"
+type = "action"
+action = "no_objection"
+[node.params]
+
+[[node]]
+id = "ask"
+type = "action"
+action = "ask_driver"
+[node.inputs]
+effect = "answer.effect"
+asked_for = "answer.asked_for"
+[node.params]
+note = "Review {effect}; requested confidence: {asked_for}."
+
+[[node]]
+id = "deny"
+type = "action"
+action = "deny"
+[node.params]
+note = "Change not requested, or destructive reach too broad. Propose it to the driver."
+[node.next]
+then = ["audit"]
+
+[[node]]
+id = "audit"
+type = "action"
+action = "log"
+[node.params]
+text = "guard-mutations proposed denial"
+
+[layout]
+trigger = { x = 16, y = 230 }
+effect = { x = 226, y = 200 }
+asked_for = { x = 476, y = 30 }
+trusted_host = { x = 476, y = 250 }
+blast_radius = { x = 476, y = 450 }
+plan_overreach = { x = 726, y = 120 }
+continue = { x = 966, y = 30 }
+ask = { x = 966, y = 260 }
+deny = { x = 966, y = 470 }
+audit = { x = 1180, y = 470 }

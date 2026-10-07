@@ -1272,14 +1272,6 @@ pub fn replay(
             }
             for i in ready {
                 let node = &definition.definition.node[i];
-                if !e.prepare_replay(&node.inputs, record).unwrap_or(false) {
-                    nodes.get_mut(&node.id).expect("replay node").status =
-                        "question_changed".into();
-                    comparable = false;
-                    return Ok(false);
-                }
-                let state = e.state(i)?;
-                let question = node.kind.question().expect("decision frontier");
                 let capture = record.nodes.iter().find(|n| n.id == node.id);
                 let batch = capture
                     .and_then(|n| n.batch_id.as_ref())
@@ -1289,6 +1281,19 @@ pub fn replay(
                     || capture
                         .and_then(|n| n.selected_inputs.as_ref())
                         .is_some_and(|m| m.values().any(|v| v.captured.redacted));
+                if missing || capture.is_none() || batch.is_none() {
+                    nodes.get_mut(&node.id).expect("replay node").status = "missing_capture".into();
+                    comparable = false;
+                    return Ok(false);
+                }
+                if !e.prepare_replay(&node.inputs, record).unwrap_or(false) {
+                    nodes.get_mut(&node.id).expect("replay node").status =
+                        "question_changed".into();
+                    comparable = false;
+                    return Ok(false);
+                }
+                let state = e.state(i)?;
+                let question = node.kind.question().expect("decision frontier");
                 let inputs_equal = capture
                     .and_then(|n| n.selected_inputs.as_ref())
                     .map_or_else(

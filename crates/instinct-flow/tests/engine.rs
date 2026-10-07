@@ -862,6 +862,54 @@ async fn redacted_capture_overflow_omits_state_without_failing_live_run() {
     assert!(!replay(&c, &outcome.trace, &Fake::new().identity()).comparable);
 }
 #[tokio::test]
+async fn missing_or_redacted_decision_evidence_precedes_render_limit() {
+    let text = header("['b']")
+        + &decision(
+            "b",
+            "state_template='repeat'\n[node.inputs]\nx='session.agent'",
+        );
+    let make = |count| {
+        Definition::parse(&text)
+            .unwrap()
+            .validate(
+                &catalogue(),
+                &Capabilities { images: false },
+                &BTreeMap::from([("repeat".into(), "{{x}}".repeat(count))]),
+            )
+            .unwrap()
+    };
+    let c = make(1);
+    let record = with_values(
+        &c,
+        &Values {
+            value: "a".into(),
+            redacted: false,
+        },
+    )
+    .await
+    .trace;
+    for redacted in [false, true] {
+        let mut record = record.clone();
+        if redacted {
+            record.inputs.get_mut("session.agent").unwrap().redacted = true;
+            record.nodes[0]
+                .selected_inputs
+                .as_mut()
+                .unwrap()
+                .get_mut("x")
+                .unwrap()
+                .captured
+                .redacted = true;
+        } else {
+            record.inputs.remove("session.agent");
+        }
+        let result = replay(&make(9000), &record, &Fake::new().identity());
+        assert!(!result.comparable);
+        assert!(result.outcome.is_none());
+        assert_eq!(result.nodes[0].status, "missing_capture");
+    }
+}
+#[tokio::test]
 async fn captured_absence_remains_comparable() {
     struct Absent;
     impl InputSource for Absent {

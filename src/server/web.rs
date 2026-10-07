@@ -111,6 +111,10 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
         Ok(rows) => rows,
         Err(error) => return error_response(ServerError::History(error)),
     };
+    let hidden = match state.history().hidden_workspaces().await {
+        Ok(paths) => paths,
+        Err(error) => return error_response(ServerError::History(error)),
+    };
     let launch: Vec<PathBuf> = state
         .http
         .web
@@ -141,6 +145,7 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
     }
     let mut others: Vec<_> = seen
         .into_iter()
+        .filter(|(path, _)| !hidden.contains(path))
         .map(|(path, (count, updated))| (path, false, count, updated))
         .collect();
     others.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
@@ -167,6 +172,94 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
         )
         .collect();
     Json(json!({ "workspaces": workspaces })).into_response()
+}
+
+fn workspace_path(params: &HashMap<String, String>) -> Result<PathBuf, ServerError> {
+    let path = params
+        .get("path")
+        .map(PathBuf::from)
+        .ok_or_else(|| ServerError::MalformedBody("missing query parameter: path".into()))?;
+    if !path.is_absolute() {
+        return Err(ServerError::MalformedBody(
+            "workspace must be an absolute path".into(),
+        ));
+    }
+    let path = std::fs::canonicalize(path).map_err(|_| {
+        ServerError::MalformedBody("workspace must be an existing directory".into())
+    })?;
+    if !path.is_dir() {
+        return Err(ServerError::MalformedBody(
+            "workspace must be an existing directory".into(),
+        ));
+    }
+    Ok(path)
+}
+
+/// Explicitly reopening a folder makes its saved conversations visible again.
+pub(super) async fn unhide_workspace(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let path = match workspace_path(&params) {
+        Ok(path) => path,
+        Err(error) => return error_response(error),
+    };
+    match state.history().set_workspace_hidden(&path, false).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error_response(ServerError::History(error)),
+    }
+}
+
+/// Hide a folder, optionally stopping and deleting its root session trees first.
+pub(super) async fn hide_workspace(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let path = match workspace_path(&params) {
+        Ok(path) => path,
+        Err(error) => return error_response(error),
+    };
+    if state.http.web.as_ref().is_some_and(|web| {
+        web.launch_workspaces
+            .iter()
+            .any(|launch| std::fs::canonicalize(launch).ok().as_ref() == Some(&path))
+    }) {
+        return (StatusCode::CONFLICT, Json(json!({
+            "reason": "launched",
+            "error": "this workspace was opened by navai web on the command line and cannot be hidden"
+        }))).into_response();
+    }
+    let delete = match params.get("sessions").map(String::as_str) {
+        None => false,
+        Some("delete") => true,
+        Some(_) => {
+            return error_response(ServerError::MalformedBody(
+                "sessions must be delete or omitted".into(),
+            ))
+        }
+    };
+    let mut deleted = 0;
+    if delete {
+        let ids = match state.history().workspace_session_ids(&path).await {
+            Ok(ids) => ids,
+            Err(error) => return error_response(ServerError::History(error)),
+        };
+        for id in ids {
+            match state.delete(id).await {
+                Ok(()) => deleted += 1,
+                Err(ServerError::SessionNotFound(_)) => {}
+                Err(error) => return error_response(error),
+            }
+        }
+    }
+    if let Err(error) = state.history().set_workspace_hidden(&path, true).await {
+        return error_response(ServerError::History(error));
+    }
+    if delete {
+        Json(json!({ "deleted": deleted })).into_response()
+    } else {
+        StatusCode::NO_CONTENT.into_response()
+    }
 }
 
 /// `GET /v1/intent?workspace=<abs path>`: the workspace's `.navigator/intent.md`.

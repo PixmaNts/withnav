@@ -320,9 +320,10 @@ is delivered once nothing is pending. Driver text, unlike a wake, still cancels 
 _Avoid_: mute, queue
 
 **Trigger**:
-An event (save, idle, diagnostic change, conversation turn) that makes the instinct evaluate whether
-a layer should act.
-_Avoid_: hook, event (too generic)
+The kind of event a flow listens to (save, idle, diagnostic change, conversation turn, an agent-loop
+hook such as a tool call about to run). Each flow has exactly one trigger; the arrival of a matching
+event starts a flow run.
+_Avoid_: hook (the agent-loop point it comes from), input (what a node reads)
 
 ## Decision pipeline
 
@@ -353,27 +354,105 @@ _Avoid_: backtest, simulation
 
 ## Flows
 
-Planned for 0.6, not shipped; see [ADR 0012](docs/adr/0012-extractable-system-one-flows.md).
+Agreed on 2026-10-07, not implemented; see [ADR 0013](docs/adr/0013-instinct-flow-engine-crate.md)
+and `.scratch/instinct-flow/spec.md`.
+
+**InstinctFlow**:
+The feature: flows run by the instinct layer, edited in the studio.
+_Avoid_: Jev flows
+
+**Studio**:
+The editor where the driver draws, tests and saves flows, and asks the engine to reload them.
+_Avoid_: flow editor (fine in prose, not as a name), canvas (the canvas is one part of it)
 
 **Flow**:
-A staged set of instinct questions where an earlier answer can choose which question runs next, ending in an action. It has no loops. The existing pipeline is the flat, single-batch case.
+An acyclic graph of nodes started by one trigger: decisions ask the instinct, expressions compute,
+actions end the chains. A node runs at most once per flow run, as soon as any wire into it is
+active; one output may feed several nodes, so a run can follow several branches at once. The
+existing pipeline is the flat, single-batch case.
 _Avoid_: workflow, automation, subagent (a subagent is a child session, not a flow)
 
+**Event**:
+Something that arrives and may start a flow run: what happened, and its payload.
+_Avoid_: trigger (the trigger is the kind of event a flow listens to)
+
+**Payload**:
+The data carried by one event, such as the tool name and arguments of a tool call about to run.
+It is one source of inputs.
+_Avoid_: input (a payload is a source of inputs, not an input)
+
+**Input**:
+One named piece of data a node reads: a payload field, session or workspace context, a constant,
+or the answer of a node upstream of it. A node may read only what it declares, and only answers
+of nodes it is downstream of. An answer from a node the run did not pass through is absent, never
+a default value. In the end an input is text or an image.
+_Avoid_: state (state is the set of inputs a decision sends), context (too broad)
+
+**Node**:
+One step of a flow, drawn as a card on the canvas: a decision, an expression or an action. It
+reads its inputs and, except for actions, produces one output.
+_Avoid_: card (the drawing, not the step), block, step
+
+**Port**:
+A named exit of a node, such as `yes` and `no` of a noul or one per option of a choice. The
+active port chooses which wires carry the run on.
+_Avoid_: branch (a branch is the old pipeline's ordered condition), edge
+
+**Decision**:
+A node that asks the instinct one typed question about its inputs: noul (probability of yes,
+against a threshold), choice (one option among named criteria) or score (an ordered level, against
+a minimum). Its answer is both control (it activates one port) and data (later nodes may read it).
+_Avoid_: question (one decision asks one question), classifier
+
+**Expression**:
+A node computing a deterministic condition over its inputs, without calling any model and
+without side effects; it activates `true` or `false`.
+_Avoid_: filter, rule, function
+
+**Constant**:
+A named value of a flow, such as `MIN_CONFIDENCE = 0.6`, read as an input by its nodes.
+_Avoid_: magic number, parameter
+
+**Variable**:
+A named value computed during one flow run by an expression (`THRESHOLD = asked_for > 0.5 ? 0.5 :
+0.75`) and read by the nodes after it. It starts afresh on every run and is never kept between
+runs, sessions or workspaces, so a run depends only on its event.
+_Avoid_: state, memory, setting
+
+**Workspace flow** / **Global flow**:
+Where a flow definition lives: in the workspace, read only once the workspace is trusted, or in the
+driver's own configuration, for every workspace. A workspace flow replaces a global flow of the
+same name. The driver chooses where when creating the flow.
+_Avoid_: project flow, user flow
+
+**Action** (flows):
+What a chain ends with: something Navai does, chosen from the closed list Navai offers. A flow
+can make Navai more careful (deny a tool call, ask the driver) but never less: an action that does
+not object leaves the normal permission review in place. Actions never run arbitrary code.
+_Avoid_: outcome, effect, allow (say "no objection")
+
+**Fallback**:
+What a flow does when its run fails: the whole run's actions are replaced by it, even if some
+branches had already concluded. One general fallback (on failure) may be specialised per kind of
+failure (on timeout, on provider error, on invalid answer). The failure message is always kept in
+the trace. Without a fallback, a blocking flow asks the driver and an asynchronous flow does
+nothing.
+_Avoid_: on timeout (a timeout is one kind of failure), default action
+
+**Reload**:
+The flow engine reading the flow files again. Saving a flow only writes its file; what runs
+changes at the next reload (an explicit command, or a restart). A reload in which any file is
+invalid changes nothing and reports the errors.
+_Avoid_: activate, deploy, publish
+
 **Flow definition**:
-The definition of a flow with the inputs each step may read. Graph and text are two views of it. Once validated and activated, a version is immutable; an unsaved or saved draft is still being edited.
+The definition of a flow with the inputs each node may read, stored as one file. Graph and text are
+two views of it; the positions of the cards are kept in the file but do not change what it does.
 _Avoid_: flow file (the file is where it is stored), script
 
 **Flow run**:
-One evaluation of a flow definition for one event, within explicit call, input and time limits; it ends in a proposed action and a trace.
+One evaluation of a flow definition for one event, within explicit call, input and time limits; it ends in proposed actions and a trace.
 _Avoid_: execution, job
-
-**Draft**:
-A flow definition being edited and not running, unsaved in the studio or saved to its file. Neither editing nor saving it changes what is active; only explicit activation does.
-_Avoid_: pending
-
-**Active version**:
-The flow definition currently producing actions for one workspace. Activation is explicit; the previous active version is kept for rollback.
-_Avoid_: deployed, published, live
 
 **Observation**:
 Evaluating a flow on real events, possibly calling the instinct, without applying any action or changing any production state.

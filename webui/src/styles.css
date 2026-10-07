@@ -74,6 +74,12 @@ a:hover {
 }
 
 /* ---------- shell ---------- */
+.bypass-badge { color: var(--or); border: 1px solid currentColor; border-radius: 4px; padding: 2px 5px; font-size: 11px; white-space: nowrap; width: fit-content; }
+.bypass-toggle { border: 1px solid var(--bd); border-radius: 5px; padding: 4px 8px; color: var(--mu); background: var(--sf); white-space: nowrap; }
+.bypass-toggle[aria-pressed="true"] { color: var(--or); border-color: var(--or); }
+.bypass-toggle:disabled { opacity: .65; cursor: not-allowed; }
+.topbar { flex-wrap: wrap; }
+.bypass-warning { flex-basis: 100%; color: var(--or); font-size: 11px; text-align: right; }
 .shell {
   height: 100%;
   display: grid;

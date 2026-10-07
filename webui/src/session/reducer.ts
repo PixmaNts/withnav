@@ -84,6 +84,8 @@ export interface Child {
 export type Activity = "idle" | "running" | "stopped";
 
 export interface SessionView {
+  bypass: boolean;
+  bypassSeq: number;
   items: Item[];
   tools: Record<string, ToolCall>;
   permissions: Record<string, Permission>;
@@ -104,6 +106,8 @@ export interface SessionView {
 }
 
 export const emptyView = (): SessionView => ({
+  bypass: false,
+  bypassSeq: -1,
   items: [],
   tools: {},
   permissions: {},
@@ -142,6 +146,10 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       next.activity = "idle";
       return next;
     case "session.end":
+      if (envelope.seq > next.bypassSeq) {
+        next.bypass = false;
+        next.bypassSeq = envelope.seq;
+      }
       next.activity = "stopped";
       next.endedAt = envelope.occurred_at;
       next.currentTurn = null;
@@ -301,6 +309,14 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       const what = p.reason === "variant" ? `Variant: ${next.variant ?? "off"}` : p.reason === "agent" ? `Agent: ${next.agent} · ${next.model}` : `Model: ${next.model}${next.variant ? ` · ${next.variant}` : ""}`;
       return notice(next, envelope.seq, what, "info");
     }
+    case "session.bypass": {
+      if (typeof p.enabled !== "boolean") return next;
+      if (envelope.seq > next.bypassSeq) {
+        next.bypass = p.enabled;
+        next.bypassSeq = envelope.seq;
+      }
+      return notice(next, envelope.seq, bypassNotice(p.enabled, str(p.by)), "info");
+    }
     case "session.agent_changed": {
       // Turns before the first change ran as `previous`: label them now.
       const previous = str(p.previous);
@@ -391,6 +407,15 @@ function subagentResult(text: string, p: any): { text: string; agent?: string; o
 
 export function reduceAll(view: SessionView, envelopes: Envelope[]): SessionView {
   return envelopes.reduce(reduce, view);
+}
+
+/** The transcript line for a bypass change, in the TUI's words; `by` is the server's origin tag. */
+function bypassNotice(enabled: boolean, by: string): string {
+  if (by === "system:resume") return "Bypass off: the session was reopened";
+  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (navai run --yes)" : "";
+  return enabled
+    ? `Bypass on${from}: ordinary permission prompts are skipped; protected requests still ask`
+    : `Bypass off${from}`;
 }
 
 function notice(view: SessionView, seq: number, text: string, tone: "info" | "error"): SessionView {

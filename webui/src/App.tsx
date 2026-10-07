@@ -96,6 +96,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const title = route.session ? sessionTitle(sessionRow?.title) : "New session";
   const childRow = route.subagent ? sessions.data?.find((s) => s.id === route.subagent) : undefined;
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
+  const bypass = route.subagent ? childRow?.bypass === true : chat.bypass;
+  const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
 
   useEffect(() => {
     document.title = route.session ? `${title} · Navai` : "Navai";
@@ -136,6 +138,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     const hasSession = !!route.session;
     const children = Object.values(chat.view.children);
     const items: PaletteCommand[] = [
+      { id: "bypass", group: "Session", label: `Turn bypass ${bypass ? "off" : "on"}`, description: "Bypass ordinary permission prompts; protected requests still ask", hint: "", disabled: bypassReason, run: () => void chat.setBypass(!bypass) },
       { id: "agent", group: "Agent", label: `Switch agent to ${otherAgent}`, hint: "tab", run: toggleAgent, disabled: workspace ? undefined : "Choose a workspace first" },
       { id: "model", group: "Agent", label: "Model for this session…", hint: "/model", run: () => setOverlay("models"), disabled: workspace ? undefined : "Choose a workspace first" },
       {
@@ -192,7 +195,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       { id: "settings", group: "View", label: "Open settings", hint: "", run: openSettings, disabled: workspace ? undefined : "Choose a workspace first" },
     ];
     // The server's commands, minus the ones above already cover.
-    const covered = new Set(["model", "new", "agent", "stop"]);
+    const covered = new Set(["model", "new", "agent", "stop", "bypass"]);
     for (const c of commands.data ?? []) {
       if (covered.has(c.name)) continue;
       items.push({
@@ -208,9 +211,14 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, expansion.collapseAll, expandAllWorkspaces, currentWs]);
+  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, expansion.collapseAll, expandAllWorkspaces, currentWs]);
 
   const runServer = async (name: string, args: string) => {
+    if (name === "bypass" && ["on", "off"].includes(args.trim())) {
+      if (bypassReason) { chat.setError(bypassReason); return; }
+      await chat.setBypass(args.trim() === "on");
+      return;
+    }
     if (!route.session) {
       chat.setError("Send a first message to start the session, then run commands.");
       return;
@@ -293,6 +301,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <WifiSlash size={13} aria-hidden /> {connection}
           </span>
         )}
+        {bypass && <span className="bypass-badge" title="Bypass ordinary permission prompts; protected requests still ask">⚠ bypass</span>}
         <div className="topbar-right">
           <span className="muted" style={{ fontSize: 12 }}>
             Agent
@@ -310,6 +319,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
               {id}
             </button>
           ))}
+          <button type="button" className="bypass-toggle" aria-pressed={bypass} disabled={!!bypassReason} title={bypassReason ?? "Bypass ordinary permission prompts; protected requests still ask"} onClick={() => void chat.setBypass(!bypass)}>
+            ⚠ Bypass {bypass ? "ON" : "OFF"}
+          </button>
           <button type="button" className="icon-btn st-gear" onClick={openSettings} disabled={!workspace} aria-label="Settings" title={workspace ? "Settings" : "Choose a workspace first"}>
             <GearSix size={16} />
           </button>
@@ -317,6 +329,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             {modKey("K")}
           </button>
         </div>
+        {bypass && <span className="bypass-warning" role="status">Bypass ordinary permission prompts; protected requests still ask</span>}
       </header>
 
       <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />

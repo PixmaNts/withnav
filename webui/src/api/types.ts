@@ -28,6 +28,9 @@ export interface WorkspaceEntry {
 }
 
 export interface SessionListEntry {
+  bypass?: boolean;
+  bypass_seq?: number;
+  incarnation?: string | null;
   id: string;
   title: string | null;
   created_at: string;
@@ -45,6 +48,9 @@ export interface SessionListEntry {
 }
 
 export interface SessionSummary {
+  bypass?: boolean;
+  bypass_seq?: number;
+  incarnation?: string | null;
   session_id: string;
   actor_state: string;
   workspace: string;

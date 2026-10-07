@@ -42,6 +42,11 @@
 //! - `GET  /v1/workspaces`    -> `{workspaces:[{path,name,launched,session_count,updated_at?,branch?,dirty?}]}`:
 //!   the workspaces `navai web` was started with (`launched:true`, argument order), then the
 //!   history's other workspaces that still exist, newest activity first; child sessions are not counted.
+//!   Hidden history workspaces are omitted; creating a session makes its workspace visible again.
+//! - `DELETE /v1/workspaces?path=<abs>` -> 204, hides without deleting sessions.
+//!   With `sessions=delete`, stops and deletes root sessions and their children, returns `{deleted:N}` (root count).
+//!   A command-line workspace returns 409 `{reason:"launched",error}`; invalid paths return 400.
+//! - `POST /v1/workspaces?path=<abs>` -> 204, idempotently unhides an existing directory.
 //! - `GET  /v1/intent?workspace=<abs path>` -> `{exists,intent,plan,decisions,active_spec,raw}`
 //!   from `.navigator/intent.md` (nullable strings; 400 without an absolute `workspace`)
 //! - Every other path, only when started by `navai web` (`ServerConfig.web`): the embedded browser
@@ -170,7 +175,12 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/sessions/{id}/context", get(get_context))
         .route("/v1/sessions/{id}/skills", get(get_skills))
-        .route("/v1/workspaces", get(crate::server::web::list_workspaces))
+        .route(
+            "/v1/workspaces",
+            get(crate::server::web::list_workspaces)
+                .delete(crate::server::web::hide_workspace)
+                .post(crate::server::web::unhide_workspace),
+        )
         .route("/v1/intent", get(crate::server::web::get_intent))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))

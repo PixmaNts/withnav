@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Remove a workspace from the browser list.** The `…` menu of a workspace (or the command palette, for the open one) offers **Remove from list**, which keeps its sessions, and **Delete workspace sessions…**, which deletes every session of that folder with its subagents after you confirm the count. A removed folder stays out of the list after a restart and comes back when you open it again with "Open a folder" or start a session there. Folders passed to `navai web` on the command line stay in the list while that server runs.
+
 ### Changed
 
 - VS Code's Cognition panel uses theme colours to distinguish build and plan, tools, Navigator wakes, subagents and permission outcomes; Settings highlights saved changes in the same style.

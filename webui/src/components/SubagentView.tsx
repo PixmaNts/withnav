@@ -84,8 +84,9 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
         </span>
       </div>
       <div className="task-card">
-        <div style={{ minWidth: 0 }}>
-          <div className="label">TASK{child ? ` · from ${child.spawnedBy}` : ""}</div>
+        <div className="msg-driver" style={{ minWidth: 0 }}>
+          <div className="byline">{child ? `Delegation · from ${child.spawnedBy}` : "Driver · Delegation"}</div>
+          <div className="label">TASK</div>
           <div className="goal">{goal || <span className="muted">Not known yet.</span>}</div>
         </div>
         <div className="facts">

@@ -16,12 +16,12 @@
 <div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
 <div style="min-width:1440px">
   <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px">
-    <div style="display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600"><i class="ph ph-compass" style="color:var(--ac);font-size:22px"></i>Navai</div>
+    <div style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:28px;width:84.6px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></div>
     <div style="display:flex;gap:4px">
       <span style="color:var(--tx);font-size:14px;display:flex;gap:6px;align-items:center;white-space:nowrap"><i class="ph ph-flow-arrow"></i>InstinctFlow · WebUI</span>
     </div>
     <div style="margin-left:auto;display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:12px">Theme</span>
-      <sc-for list="{{ themes }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:1px solid {{ t.bd }};border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer">{{ t.label }}</button></sc-for>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeFams }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div><div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeModes }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
     </div>
   </div>
 
@@ -29,7 +29,7 @@
 <sc-if value="{{ isFlows }}" hint-placeholder-val="{{ true }}">
 <div style="position:relative;height:820px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:220px minmax(0,1fr) 340px;grid-template-rows:auto minmax(0,1fr);overflow:hidden">
   <div style="grid-column:1/4;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn)">
-    <span style="display:flex;gap:6px;align-items:center;font-weight:600"><i class="ph ph-compass" style="color:var(--ac)"></i>Navai</span>
+    <span style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:19px;width:57.4px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></span>
     <span style="color:var(--mu)">rust-agent / InstinctFlow</span>
     <span style="margin-left:auto;color:var(--mu);font-size:12px;display:flex;gap:6px;align-items:center"><i class="ph ph-lightning"></i>instinct · omniroute/typesafe/jev-1.13 · System One API</span>
   </div>
@@ -209,10 +209,14 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script>
 const TH = {
-  ayuDark: ['Ayu Dark', 'ayu-dark', { bg: '#0b0e14', pn: '#0f131a', sf: '#151a23', bd: '#232a36', tx: '#bfbdb6', mu: '#7b8494', ac: '#e6b450', at: '#e6b450', acfg: '#0b0e14', gr: '#aad94c', rd: '#f07178', bl: '#59c2ff', pu: '#d2a6ff', or: '#ff8f40' }],
-  ayuLight: ['Ayu Light', 'ayu-light', { bg: '#fcfcfc', pn: '#f3f4f5', sf: '#ffffff', bd: '#dfe2e6', tx: '#4a5058', mu: '#6e7781', ac: '#ffaa33', at: '#a35f00', acfg: '#1f2328', gr: '#5c8a00', rd: '#d94f4f', bl: '#1a7bbf', pu: '#8052b8', or: '#c25d00' }],
-  nordDark: ['Nord Dark', 'nord-dark', { bg: '#2e3440', pn: '#292e39', sf: '#3b4252', bd: '#434c5e', tx: '#d8dee9', mu: '#8f9bb3', ac: '#88c0d0', at: '#88c0d0', acfg: '#2e3440', gr: '#a3be8c', rd: '#bf616a', bl: '#81a1c1', pu: '#b48ead', or: '#d08770' }],
-  nordLight: ['Nord Light', 'nord-light', { bg: '#eceff4', pn: '#e5e9f0', sf: '#ffffff', bd: '#d0d7e3', tx: '#2e3440', mu: '#586174', ac: '#5e81ac', at: '#3f6591', acfg: '#eceff4', gr: '#4f7a3c', rd: '#b0424d', bl: '#3f6591', pu: '#7d5a78', or: '#a85a3f' }]
+  ayuDark: ['Ayu Dark', 'ayu-dark', { bg: '#0b0e14', pn: '#0f131a', sf: '#151a23', bd: '#232a36', tx: '#bfbdb6', mu: '#7b8494', ac: '#e6b450', at: '#e6b450', acfg: '#0b0e14', gr: '#aad94c', rd: '#f07178', bl: '#59c2ff', pu: '#d2a6ff', or: '#ff8f40', lh: '#e6b450', la: '#d2a6ff' }],
+  ayuLight: ['Ayu Light', 'ayu-light', { bg: '#fcfcfc', pn: '#f3f4f5', sf: '#ffffff', bd: '#dfe2e6', tx: '#4a5058', mu: '#6e7781', ac: '#ffaa33', at: '#a35f00', acfg: '#1f2328', gr: '#5c8a00', rd: '#d94f4f', bl: '#1a7bbf', pu: '#8052b8', or: '#c25d00', lh: '#a35f00', la: '#8052b8' }],
+  nordDark: ['Nord Dark', 'nord-dark', { bg: '#2e3440', pn: '#292e39', sf: '#3b4252', bd: '#434c5e', tx: '#d8dee9', mu: '#8f9bb3', ac: '#88c0d0', at: '#88c0d0', acfg: '#2e3440', gr: '#a3be8c', rd: '#bf616a', bl: '#81a1c1', pu: '#b48ead', or: '#d08770', lh: '#d08770', la: '#88c0d0' }],
+  nordLight: ['Nord Light', 'nord-light', { bg: '#eceff4', pn: '#e5e9f0', sf: '#ffffff', bd: '#d0d7e3', tx: '#2e3440', mu: '#586174', ac: '#5e81ac', at: '#3f6591', acfg: '#eceff4', gr: '#4f7a3c', rd: '#b0424d', bl: '#3f6591', pu: '#7d5a78', or: '#a85a3f', lh: '#a85a3f', la: '#3f6591' }],
+  tideDark: ['Tide Dark', 'tide-dark', { bg: '#061115', pn: '#0a171b', sf: '#101e23', bd: '#213135', tx: '#d5e1e1', mu: '#87999e', ac: '#5ecbcb', at: '#5ecbcb', acfg: '#061115', gr: '#81d584', rd: '#ee6570', bl: '#6cb2ec', pu: '#b59be6', or: '#f69370', lh: '#f69370', la: '#5ecbcb' }],
+  tideLight: ['Tide Light', 'tide-light', { bg: '#f2f8f8', pn: '#e9f2f3', sf: '#fbfefe', bd: '#cddbdc', tx: '#1f3137', mu: '#53676c', ac: '#1d9999', at: '#00696f', acfg: '#081e24', gr: '#2e7c35', rd: '#c53443', bl: '#0f68a2', pu: '#6f4fa1', or: '#c1552c', lh: '#c1552c', la: '#00696f' }],
+  mossDark: ['Moss Dark', 'moss-dark', { bg: '#0b100c', pn: '#101511', sf: '#161d17', bd: '#262e27', tx: '#e6e1cf', mu: '#909487', ac: '#75d78d', at: '#75d78d', acfg: '#0b100c', gr: '#c8df58', rd: '#ea6a64', bl: '#6eb9dc', pu: '#be99da', or: '#ebb25f', lh: '#e6e1cf', la: '#75d78d' }],
+  mossLight: ['Moss Light', 'moss-light', { bg: '#f7f5ee', pn: '#efede3', sf: '#fdfcf7', bd: '#d7d5c7', tx: '#293027', mu: '#5f665a', ac: '#429c5a', at: '#197037', acfg: '#141d16', gr: '#577600', rd: '#c13c3b', bl: '#136b94', pu: '#784d96', or: '#ae6700', lh: '#293027', la: '#197037' }]
 };
 const PROVIDERS = [
   { k: 'omniroute', base: 'http://localhost:20128/v1', env: 'OMNIROUTE_API_KEY', cat: 'omniroute', connect: 5000, request: 600000, keySrc: 'found in environment', lat: '42 ms' },
@@ -612,7 +616,11 @@ class Component extends DCLogic {
     const c = TH[st.th][2];
     const themeVars = Object.keys(c).map((k) => `--${k}:${c[k]}`).join(';');
         const themes = Object.keys(TH).map((k) => { const [bg, fg, bd] = this.pill(st.th === k); return { label: TH[k][0], bg, fg, bd, click: () => this.setState({ th: k }) }; });
-    return { themeVars, themes, isFlows: st.scr === 'flows', isWebSet: st.scr === 'webset', isVsSet: st.scr === 'vsset', ...this.flowVals(st), ...this.settingsVals(st) };
+    const curF = st.th.replace(/(Dark|Light)$/, ''), curD = st.th.endsWith('Dark');
+    const tSty = (on) => ({ bg: on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)' });
+    const themeFams = [...new Set(Object.keys(TH).map((k) => k.replace(/(Dark|Light)$/, '')))].map((f) => ({ label: f[0].toUpperCase() + f.slice(1), ...tSty(f === curF), click: () => this.setState({ th: f + (curD ? 'Dark' : 'Light') }) }));
+    const themeModes = [['Dark', true], ['Light', false]].map(([l, d]) => ({ label: l, ...tSty(d === curD), click: () => this.setState({ th: curF + l }) }));
+    return { themeVars, themes, themeFams, themeModes, isFlows: st.scr === 'flows', isWebSet: st.scr === 'webset', isVsSet: st.scr === 'vsset', ...this.flowVals(st), ...this.settingsVals(st) };
   }
 }
 </script>

@@ -2,7 +2,7 @@
 
 Date: 2026-10-05
 
-Status: Accepted as direction — planned for 0.6, not implemented or shipped
+Status: Superseded by [ADR 0013](0013-instinct-flow-engine-crate.md) on 2026-10-07
 
 The navigator's decision pipeline asks one batch of questions and takes the first matching branch.
 The driver wants staged questions where an earlier answer selects the next, edited as a graph or

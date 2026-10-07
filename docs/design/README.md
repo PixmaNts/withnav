@@ -81,24 +81,26 @@ Default pipeline values come from `src/navigator/default_pipeline.rs` — keep t
 - Overlays close on backdrop click / `esc`.
 
 ## Design tokens — themes
-Four themes, same role names. Implement as CSS custom properties (WebUI, webview) and as a `Theme` struct of `ratatui::style::Color::Rgb` (TUI).
+Eight themes (Ayu, Nord, Tide, Moss — each dark and light), same role names. The theme switcher is a family picker plus a dark/light toggle. Implement as CSS custom properties (WebUI, webview) and as a `Theme` struct of `ratatui::style::Color::Rgb` (TUI).
 
-| Role | Ayu Dark | Ayu Light | Nord Dark | Nord Light |
-| --- | --- | --- | --- | --- |
-| bg | #0b0e14 | #fcfcfc | #2e3440 | #eceff4 |
-| panel | #0f131a | #f3f4f5 | #292e39 | #e5e9f0 |
-| surface | #151a23 | #ffffff | #3b4252 | #ffffff |
-| border | #232a36 | #dfe2e6 | #434c5e | #d0d7e3 |
-| text | #bfbdb6 | #4a5058 | #d8dee9 | #2e3440 |
-| muted | #7b8494 | #6e7781 | #8f9bb3 | #586174 |
-| accent | #e6b450 | #ffaa33 | #88c0d0 | #5e81ac |
-| accent text | #e6b450 | #a35f00 | #88c0d0 | #3f6591 |
-| on accent | #0b0e14 | #1f2328 | #2e3440 | #eceff4 |
-| green (ok, useful) | #aad94c | #5c8a00 | #a3be8c | #4f7a3c |
-| red (wake, error, noise) | #f07178 | #d94f4f | #bf616a | #b0424d |
-| blue (code refs, plan, links) | #59c2ff | #1a7bbf | #81a1c1 | #3f6591 |
-| purple (subagents) | #d2a6ff | #8052b8 | #b48ead | #7d5a78 |
-| orange (warnings, numbers) | #ff8f40 | #c25d00 | #d08770 | #a85a3f |
+| Role | Ayu Dark | Ayu Light | Nord Dark | Nord Light | Tide Dark | Tide Light | Moss Dark | Moss Light |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| bg | #0b0e14 | #fcfcfc | #2e3440 | #eceff4 | #061115 | #f2f8f8 | #0b100c | #f7f5ee |
+| panel | #0f131a | #f3f4f5 | #292e39 | #e5e9f0 | #0a171b | #e9f2f3 | #101511 | #efede3 |
+| surface | #151a23 | #ffffff | #3b4252 | #ffffff | #101e23 | #fbfefe | #161d17 | #fdfcf7 |
+| border | #232a36 | #dfe2e6 | #434c5e | #d0d7e3 | #213135 | #cddbdc | #262e27 | #d7d5c7 |
+| text | #bfbdb6 | #4a5058 | #d8dee9 | #2e3440 | #d5e1e1 | #1f3137 | #e6e1cf | #293027 |
+| muted | #7b8494 | #6e7781 | #8f9bb3 | #586174 | #87999e | #53676c | #909487 | #5f665a |
+| accent | #e6b450 | #ffaa33 | #88c0d0 | #5e81ac | #5ecbcb | #1d9999 | #75d78d | #429c5a |
+| accent text | #e6b450 | #a35f00 | #88c0d0 | #3f6591 | #5ecbcb | #00696f | #75d78d | #197037 |
+| on accent | #0b0e14 | #1f2328 | #2e3440 | #eceff4 | #061115 | #081e24 | #0b100c | #141d16 |
+| green (ok, useful) | #aad94c | #5c8a00 | #a3be8c | #4f7a3c | #81d584 | #2e7c35 | #c8df58 | #577600 |
+| red (wake, error, noise) | #f07178 | #d94f4f | #bf616a | #b0424d | #ee6570 | #c53443 | #ea6a64 | #c13c3b |
+| blue (code refs, plan, links) | #59c2ff | #1a7bbf | #81a1c1 | #3f6591 | #6cb2ec | #0f68a2 | #6eb9dc | #136b94 |
+| purple (subagents) | #d2a6ff | #8052b8 | #b48ead | #7d5a78 | #b59be6 | #6f4fa1 | #be99da | #784d96 |
+| orange (warnings, numbers) | #ff8f40 | #c25d00 | #d08770 | #a85a3f | #f69370 | #c1552c | #ebb25f | #ae6700 |
+| logo needle (human) | #e6b450 | #a35f00 | #d08770 | #a85a3f | #f69370 | #c1552c | #e6e1cf | #293027 |
+| logo rings (AI) | #d2a6ff | #8052b8 | #88c0d0 | #3f6591 | #5ecbcb | #00696f | #75d78d | #197037 |
 
 Tints: selected / active backgrounds = accent at 14–16% over transparent; remark block = accent 12% → transparent horizontal gradient; wake block = red 10%.
 
@@ -106,11 +108,24 @@ Type: UI `IBM Plex Sans` 13px (11px uppercase-ish section labels in muted, 12–
 Radii: 4–6px controls, 8px panels, 10–14px pills. Spacing is compact: 4/6/8/10/12/14/16/20/24px.
 Icons: Phosphor (regular).
 
+## Logo
+Wordmark **3d · Monoline** with the **2e i**: drawn letters (one 9-unit stroke, round ends, single-storey a). The i stem is the compass needle (human, `lh`), its dot is the layer rings (AI, `la`); letters use `text`. Official icon: **2e** in the Tide palette. Exploration history in `Navai Logo.dc.html`.
+
+In the UI, embed `logo/navai-wordmark-themable.svg` inline (it reads `--tx`, `--lh`, `--la`) so it follows the theme. TUI keeps a text mark: `◆` in `lh` + `navai` in `text`.
+
+- `logo/navai-wordmark-<theme>.svg` — fixed colors for each of the 8 themes, transparent background.
+- `logo/navai-wordmark-themable.svg` — CSS variables with Tide Dark fallbacks. `navai-wordmark-mono.svg` — currentColor.
+- `logo/navai-icon.svg` / `navai-icon-light.svg` — app icon, 512 px, rounded square.
+- `logo/navai-mark.svg` / `navai-mark-mono.svg` — the i alone, transparent.
+- `logo/navai-favicon.svg` — simplified i for 16–32 px.
+
 ## Files
 - `Navai.dc.html` — sessions, pickers, palette, subagent view, pipeline editor (all surfaces, themes).
 - `Navai Settings.dc.html` — Settings, TUI, WebUI and VS Code.
 - `Navai InstinctFlow.dc.html` — InstinctFlow editor, WebUI.
 - `SETTINGS.md`, `INSTINCTFLOW.md` — specs for the two pages above.
+- `Navai Logo.dc.html` — logo explorations (turns 1–3).
+- `logo/` — SVG exports.
 - `support.js` — runtime needed to open the reference in a browser.
 
 ## Suggested implementation order

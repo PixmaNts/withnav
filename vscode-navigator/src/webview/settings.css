@@ -311,6 +311,10 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .test-result { color: var(--muted); }
 .test-result.ok { color: var(--vscode-testing-iconPassed, var(--vscode-foreground)); }
 .test-result.failed { color: var(--vscode-errorForeground); }
+.row.modified { border-left-color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-settings-modifiedItemIndicator, var(--vscode-textLink-foreground))); }
+.row-modified { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-textLink-foreground, var(--vscode-foreground))); }
+.row-saving { color: var(--vscode-textLink-foreground, var(--vscode-foreground)); }
+.test-result.ok { color: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-foreground)) 75%, var(--vscode-foreground) 25%); }
 
 /* Narrow editor groups: the TOC goes away, like the native settings editor. */
 @media (max-width: 620px) {

@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- VS Code's Cognition panel uses theme colours to distinguish build and plan, tools, Navigator wakes, subagents and permission outcomes; Settings highlights saved changes in the same style.
+
 ### Fixed
 
 - Responses no longer stop midway when a model gateway sends `null` instead of an empty list of tool calls or response choices.

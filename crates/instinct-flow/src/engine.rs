@@ -570,6 +570,9 @@ impl<'a> Evaluation<'a> {
             .as_ref()
             .map(|f| f.inputs.clone())
             .unwrap_or_default();
+        if self.prepare_local(&map).is_err() {
+            return;
+        }
         // Failure selection must not reset the run deadline; exhausted inputs remain absent.
         let _ = self.collect(&map, source, cancel).await;
         let mut values = self.aliases(&map);
@@ -978,6 +981,8 @@ pub fn replay(
             return Ok(false);
         }
         if let Some(when) = definition.expressions.get("flow.when") {
+            e.prepare_local(&definition.definition.flow.inputs)?;
+            captured.prepare_local(&definition.definition.flow.inputs)?;
             let values = e
                 .aliases(&definition.definition.flow.inputs)
                 .iter()
@@ -1002,12 +1007,16 @@ pub fn replay(
                 .collect();
             if !deterministic.is_empty() {
                 for i in deterministic {
+                    e.prepare_local(&definition.definition.node[i].inputs)?;
+                    captured.prepare_local(&definition.definition.node[i].inputs)?;
                     e.deterministic(i)?;
                 }
                 continue;
             }
             for i in ready {
                 let node = &definition.definition.node[i];
+                e.prepare_local(&node.inputs)?;
+                captured.prepare_local(&node.inputs)?;
                 let state = e.state(i)?;
                 let question = node.kind.question().expect("decision frontier");
                 let capture = record.nodes.iter().find(|n| n.id == node.id);

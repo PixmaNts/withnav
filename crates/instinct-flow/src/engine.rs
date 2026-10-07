@@ -327,7 +327,30 @@ impl<'a> Evaluation<'a> {
             result=source.collect(&names,cancel,self.deadline)=>result.map_err(|_|(FailureKind::Input,"host input collection failed".into()))?,
         };
         self.check(cancel)?;
+        self.accept_inputs(names, collected)
+    }
+    fn needed(&self, map: &BTreeMap<String, String>) -> Vec<String> {
+        map.values()
+            .filter(|r| {
+                !r.starts_with("event.")
+                    && !r.starts_with("constant.")
+                    && crate::validation::upstream(r).is_none()
+                    && !self.cache.contains_key(*r)
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+    fn accept_inputs(
+        &mut self,
+        names: Vec<String>,
+        collected: BTreeMap<String, InputValue>,
+    ) -> Result<(), Failure> {
         for name in names {
+            if self.cache.contains_key(&name) {
+                continue;
+            }
             let mut value = collected.get(&name).cloned().unwrap_or(InputValue {
                 value: None,
                 cut: false,
@@ -760,21 +783,48 @@ async fn execute(
     let semaphore =
         tokio::sync::Semaphore::new(e.compiled.catalogue.limits.concurrent_calls.min(4));
     let mut calls: FuturesUnordered<BoxFuture<'_, Completed>> = FuturesUnordered::new();
+    type Collected = (
+        usize,
+        Vec<String>,
+        Result<BTreeMap<String, InputValue>, InputError>,
+    );
+    let mut collections: FuturesUnordered<BoxFuture<'_, Collected>> = FuturesUnordered::new();
+    let mut collecting = BTreeSet::new();
     let mut decision_count = 0;
     loop {
         e.check(cancel)?;
+        for i in e.ready() {
+            if collecting.contains(&i) {
+                continue;
+            }
+            let map = e.compiled.definition.node[i].inputs.clone();
+            e.prepare_local(&map)?;
+            let names = e.needed(&map);
+            if !names.is_empty() {
+                collecting.insert(i);
+                let deadline = e.deadline;
+                collections.push(Box::pin(async move {
+                    let result = inputs.collect(&names, cancel, deadline).await;
+                    (i, names, result)
+                }));
+            }
+        }
         loop {
             let ready = e.ready();
             let deterministic: Vec<_> = ready
                 .into_iter()
-                .filter(|i| e.compiled.definition.node[*i].kind.question().is_none())
+                .filter(|i| {
+                    !collecting.contains(i)
+                        && e.needed(&e.compiled.definition.node[*i].inputs).is_empty()
+                        && e.compiled.definition.node[*i].kind.question().is_none()
+                })
                 .collect();
             if deterministic.is_empty() {
                 break;
             }
             for i in deterministic {
                 let map = e.compiled.definition.node[i].inputs.clone();
-                e.collect(&map, inputs, cancel).await?;
+                e.prepare_local(&map)?;
                 e.check(cancel)?;
                 if let Err(error) = e.deterministic(i) {
                     e.trace.nodes[i].status = "failed".into();
@@ -786,11 +836,16 @@ async fn execute(
         let ready = e.ready();
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for i in ready {
+            if collecting.contains(&i)
+                || !e.needed(&e.compiled.definition.node[i].inputs).is_empty()
+            {
+                continue;
+            }
             if e.compiled.definition.node[i].kind.question().is_none() {
                 continue;
             }
             let map = e.compiled.definition.node[i].inputs.clone();
-            e.collect(&map, inputs, cancel).await?;
+            e.prepare_local(&map)?;
             let state = e.state(i)?;
             groups.entry(state).or_default().push(i);
         }
@@ -838,7 +893,12 @@ async fn execute(
                 (batch,nodes,response,elapsed(start))
             }));
         }
-        if calls.is_empty() {
+        if calls.is_empty() && collections.is_empty() {
+            // Newly activated nodes may still need host collection on the next iteration.
+            if !e.ready().is_empty() {
+                continue;
+            }
+            e.check(cancel)?;
             if e.status.contains(&Status::Pending) {
                 return Err((FailureKind::Limit, "scheduler made no progress".into()));
             }
@@ -847,7 +907,14 @@ async fn execute(
         let (batch, nodes, response, duration) = tokio::select! {biased;
             _=cancel.cancelled()=>return Err((FailureKind::Cancelled,"run cancelled".into())),
             _=tokio::time::sleep_until(e.deadline.into())=>return Err((FailureKind::Timeout,"run deadline exhausted".into())),
-            result=calls.next()=>result.expect("nonempty call set"),
+            result=collections.next(), if !collections.is_empty()=> {
+                let (i, names, result) = result.expect("nonempty collection set");
+                e.check(cancel)?;
+                e.accept_inputs(names, result.map_err(|_| (FailureKind::Input, "host input collection failed".into()))?)?;
+                collecting.remove(&i);
+                continue;
+            },
+            result=calls.next(), if !calls.is_empty()=>result.expect("nonempty call set"),
         };
         e.check(cancel)?;
         e.trace.batches[batch].duration_ms = duration;

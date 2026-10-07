@@ -507,7 +507,7 @@ mod tests {
         .await
         .unwrap();
         let (_,saved)=handle(&state,&query,&headers,peer,Method::PUT,"test",&serde_json::to_vec(&json!({"location":"workspace","revision":document["revision"],"content":{"format":"toml","toml":"broken","templates":{}}})).unwrap()).await.unwrap();
-        assert!(saved["errors"].as_array().unwrap().len() > 0);
+        assert!(!saved["errors"].as_array().unwrap().is_empty());
         assert_eq!(
             handle(
                 &state,

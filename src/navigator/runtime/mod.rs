@@ -9,6 +9,7 @@
 //! capture it without needing an `Arc<NavigatorBackend>`.
 
 mod delivery;
+mod flows;
 mod inline;
 mod trigger;
 mod wake;
@@ -39,6 +40,7 @@ use crate::navigator::reflex::{ReflexContext, ReflexService};
 use crate::navigator::{ConversationEvent, Metacognition, NavigatorDeps};
 
 pub(crate) struct Runtime {
+    flows: Option<Arc<crate::navigator::FlowFactory>>,
     client: Client,
     metacognition: Arc<dyn Metacognition>,
     log: Arc<NavLog>,
@@ -95,6 +97,7 @@ impl Runtime {
         let log = Arc::new(NavLog::new(deps.log_path));
         let turns = deps.conversation.as_ref().map(|feed| feed.subscribe());
         let runtime = Arc::new(Self {
+            flows: deps.flows,
             client,
             metacognition: deps.commenter,
             reflex_context: Arc::new(ReflexContext::new(

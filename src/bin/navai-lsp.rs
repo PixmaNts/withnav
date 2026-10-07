@@ -37,6 +37,9 @@ enum Command {
     /// Replays a candidate pipeline over the recorded trigger log and
     /// compares its decisions with the ones the driver took.
     Replay {
+        /// Replay the embedded editor flows offline, retaining legacy provenance.
+        #[arg(long, conflicts_with_all = ["pipeline", "reask"])]
+        flows: bool,
         /// A `.navigator` directory or its `pipeline.toml` (default: the
         /// built-in pipeline).
         #[arg(long)]
@@ -91,8 +94,18 @@ async fn run() -> anyhow::Result<()> {
         ref log,
         reask,
         json,
+        flows,
     }) = cli.command
     {
+        if flows {
+            let path = log
+                .clone()
+                .or_else(navai::paths::decision_log)
+                .ok_or_else(|| anyhow::anyhow!("pass --log"))?;
+            let report = navigator::replay::flows::report(&std::fs::read_to_string(path)?);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Ok(());
+        }
         return run_replay(&cli, pipeline.as_deref(), log.as_deref(), reask, json).await;
     }
 

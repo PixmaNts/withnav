@@ -67,6 +67,8 @@ pub use session_hooks::{NavigatorHooks, COGNITION_PROMPT};
 /// layers keep working. `workspace`/`user_dir` drive pipeline resolution,
 /// the intent record and hot reload.
 pub struct NavigatorDeps {
+    /// Creates the editor runtime with its document-scoped effect adapter.
+    pub flows: Option<Arc<FlowFactory>>,
     pub commenter: Arc<dyn Metacognition>,
     pub fim: Option<Arc<dyn FimModel>>,
     pub decision: Option<Arc<dyn DecisionModel>>,
@@ -98,6 +100,7 @@ pub struct NavigatorDeps {
 impl NavigatorDeps {
     pub fn new(commenter: Arc<dyn Metacognition>, log_path: impl Into<PathBuf>) -> Self {
         Self {
+            flows: None,
             commenter,
             fim: None,
             decision: None,
@@ -123,6 +126,11 @@ impl NavigatorDeps {
     /// Builder-style: attaches the instinct layer's model seam.
     pub fn with_decision(mut self, decision: Arc<dyn DecisionModel>) -> Self {
         self.decision = Some(decision);
+        self
+    }
+
+    pub fn with_flows(mut self, factory: Arc<FlowFactory>) -> Self {
+        self.flows = Some(factory);
         self
     }
 
@@ -173,6 +181,10 @@ impl NavigatorDeps {
         self
     }
 }
+
+pub type FlowFactory = dyn Fn(Arc<dyn crate::flows::runtime::FlowEffects>) -> Arc<crate::flows::runtime::FlowRuntime>
+    + Send
+    + Sync;
 
 /// The default user-level navigator dir
 /// (`~/.config/navai/navigator/`), when it can be resolved.

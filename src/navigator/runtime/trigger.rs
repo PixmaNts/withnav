@@ -23,6 +23,7 @@ const CONVERSATION_CONTEXT_LINES: usize = 20;
 
 /// One trigger's gathered context: everything the pipeline inputs, the
 /// templates and the log record need.
+#[derive(Clone)]
 pub(super) struct TriggerContext {
     pub(super) uri: String,
     pub(super) event: &'static str,
@@ -56,7 +57,7 @@ pub(super) struct TriggerContext {
 }
 
 impl TriggerContext {
-    fn template_inputs(&self) -> std::collections::BTreeMap<String, String> {
+    pub(super) fn template_inputs(&self) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([
             ("file".to_string(), self.uri.clone()),
             ("language".to_string(), self.language_id.clone()),
@@ -69,7 +70,7 @@ impl TriggerContext {
         ])
     }
 
-    fn prefilter_inputs(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+    pub(super) fn prefilter_inputs(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         std::collections::BTreeMap::from([
             (
                 "changed_lines".to_string(),
@@ -99,7 +100,12 @@ impl TriggerContext {
 
 impl Runtime {
     /// Gathers everything one trigger needs from the document state.
-    async fn gather(&self, uri: &str, event: TriggerKind, now: Instant) -> Option<TriggerContext> {
+    pub(super) async fn gather(
+        &self,
+        uri: &str,
+        event: TriggerKind,
+        now: Instant,
+    ) -> Option<TriggerContext> {
         let snapshot = self.documents.lock().await.snapshot(uri, event, now)?;
         let has_errors = snapshot.diagnostics.iter().any(|d| d.severity == "error");
         let diagnostics_text = snapshot
@@ -175,6 +181,9 @@ impl Runtime {
     pub(super) async fn evaluate(self: &Arc<Self>, uri: String, event: TriggerKind) {
         let config = self.config.lock().await.clone();
         if !config.enabled {
+            return;
+        }
+        if self.evaluate_flows(&uri, event).await {
             return;
         }
         // An event no trigger of the pipeline listens to: nothing to decide,

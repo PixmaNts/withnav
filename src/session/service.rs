@@ -91,6 +91,7 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
+    pub(crate) flows: Option<Arc<crate::flows::runtime::FlowRuntime>>,
     pub(crate) skills: Arc<Skills>,
     pub(crate) publications: Arc<Mutex<Vec<CancellationToken>>>,
     pub incarnation: Ulid,
@@ -354,6 +355,7 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    pub(crate) flows: Arc<crate::flows::host::Host>,
     #[cfg(debug_assertions)]
     skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
@@ -690,6 +692,11 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            flows: Arc::new(crate::flows::host::Host::new(
+                config.config_dir.clone(),
+                config.data_dir.clone(),
+                config.models_path.clone(),
+            )),
             #[cfg(debug_assertions)]
             delivery_failure_countdown: Arc::default(),
             #[cfg(debug_assertions)]
@@ -3086,6 +3093,19 @@ impl Service {
             variant: selected,
             offer: Arc::new(offered),
         }));
+        let flows = child_parent
+            .is_none()
+            .then(|| self.flows.runtime(&workspace))
+            .flatten();
+        actor.tool_flows = flows.as_ref().map(|runtime| {
+            super::flows::hook(
+                runtime,
+                session_id.to_string(),
+                selected_model.clone(),
+                status.clone(),
+                sequencer.clone(),
+            )
+        });
         status.install_model_switcher(self.model_switcher(
             session_id,
             workspace.clone(),
@@ -3114,6 +3134,7 @@ impl Service {
         let incarnation = Ulid::new();
         status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
+            flows,
             skills,
             publications: Arc::default(),
             incarnation,
@@ -3131,6 +3152,7 @@ impl Service {
             parent_session_id: child_parent,
         };
         let sender = SessionSender::new(session_id, handle.clone());
+        super::flows::settled(handle.clone(), session_id.to_string()).await;
         let cancel = handle.session_cancel.clone();
         {
             let _admission = if child_parent.is_none() {

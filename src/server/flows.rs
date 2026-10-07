@@ -16,39 +16,13 @@ use axum::{
 use instinct_flow::*;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug)]
-pub(super) struct Host {
-    config: PathBuf,
-    data: PathBuf,
-    models: Option<PathBuf>,
-    stores: Mutex<BTreeMap<PathBuf, Arc<FlowStore>>>,
-}
-impl Host {
-    pub fn new(config: PathBuf, data: PathBuf, models: Option<PathBuf>) -> Self {
-        Self {
-            config,
-            data,
-            models,
-            stores: Mutex::new(BTreeMap::new()),
-        }
-    }
-    fn store(&self, workspace: PathBuf) -> Arc<FlowStore> {
-        self.stores
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(workspace.clone())
-            .or_insert_with(|| Arc::new(FlowStore::new(workspace, self.config.clone())))
-            .clone()
-    }
-}
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/flows", any(root))
@@ -234,18 +208,11 @@ async fn handle(
                 return Err(StoreError::reason("untrusted"));
             }
             let compiled = source(&store, &data["source"])?;
-            let (models, _) = crate::provider::config::load_models(
-                state.flows.models.as_deref(),
-                &workspace,
-                &state.flows.config,
-            )
-            .map_err(|_| StoreError::reason("unavailable"))?;
-            let client = crate::flows::client::NavaiDecisionClient::new(
-                &models,
-                &state.flows.config,
-                crate::provider::openai::ClientCache::new().into(),
-            )
-            .map_err(|_| StoreError::reason("unavailable"))?;
+            let runtime = state
+                .flows
+                .runtime(&workspace)
+                .ok_or_else(|| StoreError::reason("unavailable"))?;
+            let client = runtime.client();
             let event = Event {
                 trigger: compiled.definition().flow.on.clone(),
                 payload: data["payload"].clone(),
@@ -268,7 +235,7 @@ async fn handle(
                 &compiled,
                 &event,
                 &context,
-                &client,
+                client.as_ref(),
                 RunOptions {
                     deadline: Instant::now()
                         + Duration::from_millis(

@@ -17,6 +17,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn flow_note_preserves_non_driver_provenance_without_claiming_replacement() {
+        let steering = Steering::default();
+        let provenance = UserProvenance::Flow {
+            source: crate::provider::openai::FlowSource::Flow,
+            flow: "routing".into(),
+            run_id: "capture".into(),
+        };
+        steering.admit(Operation {
+            id: Ulid::new(),
+            content: "untrusted note".into(),
+            interrupt: false,
+            provenance: provenance.clone(),
+        });
+        let (messages, claimed) = steering.claim_replacements(vec![]);
+        assert!(!claimed);
+        assert!(messages.is_empty());
+        let messages = steering.apply(messages);
+        assert!(!messages[0].is_driver_message());
+        let value = serde_json::to_value(&messages[0]).unwrap();
+        assert_eq!(
+            value["provenance"],
+            serde_json::json!({"source":"flow","flow":"routing","run_id":"capture"})
+        );
+        let restored: ChatMessage = serde_json::from_value(value).unwrap();
+        assert!(matches!(restored, ChatMessage::User { provenance: p, .. } if p == provenance));
+    }
+
+    #[test]
     fn interrupt_is_reserved_regardless_of_boundary_control_order() {
         for boundary_first in [true, false] {
             let steering = Steering::default();
@@ -24,6 +52,7 @@ mod tests {
             steering.queue.lock().unwrap().push_back(Operation {
                 id,
                 content: "replace".into(),
+                provenance: UserProvenance::Parent,
                 interrupt: true,
             });
             let mut transcript = vec![];
@@ -47,6 +76,7 @@ mod tests {
             assert!(steering.admit(Operation {
                 id,
                 content: text.into(),
+                provenance: UserProvenance::Parent,
                 interrupt: true
             }));
         }
@@ -65,6 +95,7 @@ mod tests {
 
 #[derive(Debug)]
 pub(super) struct Operation {
+    pub provenance: UserProvenance,
     pub id: Ulid,
     pub content: String,
     pub interrupt: bool,
@@ -87,7 +118,7 @@ impl Steering {
                 claimed = true;
                 transcript.push(ChatMessage::User {
                     content: op.content,
-                    provenance: UserProvenance::Parent,
+                    provenance: op.provenance,
                 });
             } else {
                 kept.push_back(op);
@@ -123,7 +154,7 @@ impl Steering {
             }
             transcript.push(ChatMessage::User {
                 content: operation.content,
-                provenance: UserProvenance::Parent,
+                provenance: operation.provenance,
             });
         }
         *queue = kept;
@@ -141,7 +172,7 @@ impl Steering {
         let operation = queue.remove(index)?;
         transcript.push(ChatMessage::User {
             content: operation.content,
-            provenance: UserProvenance::Parent,
+            provenance: operation.provenance,
         });
         Some(transcript)
     }

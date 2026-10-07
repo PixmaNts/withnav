@@ -100,6 +100,19 @@ impl Directory {
         Ok(Self(fd))
     }
     pub fn read(&self, name: &str, max: usize, private: bool) -> std::io::Result<String> {
+        self.read_with_mode(name, max, private, false)
+    }
+    /// Reload signals are user-owned regular files with no group/other access.
+    pub fn read_private(&self, name: &str, max: usize) -> std::io::Result<String> {
+        self.read_with_mode(name, max, true, true)
+    }
+    fn read_with_mode(
+        &self,
+        name: &str,
+        max: usize,
+        private: bool,
+        exact: bool,
+    ) -> std::io::Result<String> {
         valid_name(name)?;
         let fd = openat(
             &self.0,
@@ -108,8 +121,13 @@ impl Directory {
             Mode::empty(),
         )
         .map_err(io)?;
-        check(&fd, private)?;
         let stat = fstat(&fd).map_err(io)?;
+        if stat.st_uid != getuid().as_raw()
+            || (private && stat.st_mode & 0o022 != 0)
+            || (exact && stat.st_mode & 0o777 != 0o600)
+        {
+            return Err(std::io::Error::other("unsafe owner or permissions"));
+        }
         if !SFlag::from_bits_truncate(stat.st_mode).contains(SFlag::S_IFREG) {
             return Err(std::io::Error::other("not a regular file"));
         }
@@ -210,6 +228,22 @@ fn check(fd: &OwnedFd, private: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_read_refuses_nonprivate_modes_and_links() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Directory::open(temp.path(), false).unwrap();
+        dir.write("marker", b"1").unwrap();
+        assert_eq!(dir.read_private("marker", 10).unwrap(), "1");
+        std::fs::set_permissions(
+            temp.path().join("marker"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(dir.read_private("marker", 10).is_err());
+        symlink("marker", temp.path().join("link")).unwrap();
+        assert!(dir.read_private("link", 10).is_err());
+    }
     #[test]
     fn no_replace_install_preserves_existing_file() {
         let temp = tempfile::tempdir().unwrap();

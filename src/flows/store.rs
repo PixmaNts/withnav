@@ -118,6 +118,91 @@ pub struct FlowStore {
     loaded: RwLock<Arc<Snapshot>>,
     revisions: RwLock<BTreeMap<(Location, String), String>>,
     write: std::sync::Mutex<()>,
+    reload_marker: Option<ReloadMarker>,
+    reload_errors: RwLock<Vec<Diagnostic>>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Generation {
+    generation: u64,
+    reloaded_at: String,
+}
+struct ReloadMarker {
+    path: PathBuf,
+    name: String,
+    state: std::sync::Mutex<MarkerState>,
+}
+#[derive(Default)]
+struct MarkerState {
+    directory: Option<Directory>,
+    observed: u64,
+}
+impl std::fmt::Debug for ReloadMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReloadMarker")
+    }
+}
+impl ReloadMarker {
+    fn new(data: PathBuf, workspace: &std::path::Path) -> Self {
+        use sha2::{Digest, Sha256};
+        Self {
+            path: data.join("flows/reload"),
+            name: format!(
+                "{:x}",
+                Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+            ),
+            state: std::sync::Mutex::new(MarkerState::default()),
+        }
+    }
+    fn read(&self, state: &mut MarkerState) -> Result<u64, StoreError> {
+        if state.directory.is_none() {
+            state.directory = Some(Directory::private(&self.path, true)?);
+        }
+        match state
+            .directory
+            .as_ref()
+            .unwrap()
+            .read_private(&self.name, 1024)
+        {
+            Ok(text) => {
+                let marker = serde_json::from_str::<Generation>(&text)
+                    .map_err(|_| StoreError::reason("io"))?;
+                time::OffsetDateTime::parse(
+                    &marker.reloaded_at,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map_err(|_| StoreError::reason("io"))?;
+                if marker.generation == 0 {
+                    return Err(StoreError::reason("io"));
+                }
+                Ok(marker.generation)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+    fn publish(&self) -> Result<(), StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::reason("io"))?;
+        self.publish_locked(&mut state).map(|_| ())
+    }
+    fn publish_locked(&self, state: &mut MarkerState) -> Result<u64, StoreError> {
+        self.read(state)?;
+        let dir = state.directory.as_ref().unwrap();
+        let _lock = dir.lock(&format!(".{}.lock", self.name))?;
+        let generation = self
+            .read(state)?
+            .checked_add(1)
+            .ok_or_else(|| StoreError::reason("io"))?;
+        state.directory.as_ref().unwrap().write(
+            &self.name,
+            &serde_json::to_vec(&Generation {
+                generation,
+                reloaded_at: timestamp(),
+            })
+            .map_err(|_| StoreError::reason("io"))?,
+        )?;
+        Ok(generation)
+    }
 }
 #[derive(Debug, Clone)]
 pub struct StoreError {
@@ -154,14 +239,35 @@ struct Grant {
 }
 impl FlowStore {
     pub fn new(workspace: PathBuf, config_dir: PathBuf) -> Self {
+        Self::construct(workspace, config_dir, None)
+    }
+    pub fn with_data(workspace: PathBuf, config_dir: PathBuf, data: PathBuf) -> Self {
+        let workspace = workspace.canonicalize().unwrap_or(workspace);
+        let marker = ReloadMarker::new(data, &workspace);
+        Self::construct(workspace, config_dir, Some(marker))
+    }
+    fn construct(
+        workspace: PathBuf,
+        config_dir: PathBuf,
+        reload_marker: Option<ReloadMarker>,
+    ) -> Self {
+        if let Some(marker) = &reload_marker {
+            let mut state = marker.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(generation) = marker.read(&mut state) {
+                state.observed = generation;
+            }
+        }
         let store = Self {
             workspace,
             config_dir,
             loaded: RwLock::new(Arc::new(BTreeMap::new())),
             revisions: RwLock::new(BTreeMap::new()),
             write: std::sync::Mutex::new(()),
+            reload_marker,
+            reload_errors: RwLock::new(vec![]),
         };
-        if let Err(e) = store.reload() {
+        if let Err(e) = store.reload_local() {
+            store.record_reload_error(&e);
             tracing::warn!(
                 diagnostics = e.errors.len(),
                 "flow startup rejected; builtins only"
@@ -241,6 +347,9 @@ impl FlowStore {
             "flows-trust.json",
             &serde_json::to_vec(&file).map_err(|_| StoreError::reason("io"))?,
         )?;
+        if let Some(marker) = &self.reload_marker {
+            marker.publish()?;
+        }
         Ok(())
     }
     pub fn snapshot(&self) -> Arc<Snapshot> {
@@ -365,6 +474,61 @@ impl FlowStore {
         Ok(documents)
     }
     pub fn reload(&self) -> Result<(), StoreError> {
+        let result = (|| {
+            if let Some(marker) = &self.reload_marker {
+                let mut state = marker.state.lock().map_err(|_| StoreError::reason("io"))?;
+                self.reload_local()?;
+                state.observed = marker.publish_locked(&mut state)?;
+                Ok(())
+            } else {
+                self.reload_local()
+            }
+        })();
+        if let Err(e) = &result {
+            self.record_reload_error(e);
+        }
+        result
+    }
+    fn record_reload_error(&self, error: &StoreError) {
+        // Filesystem diagnostics may contain sensitive paths; keep propagation failures fixed.
+        *self
+            .reload_errors
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = if error.errors.is_empty() || error.reason == "io"
+        {
+            vec![Diagnostic::new(
+                "reload",
+                "flow reload or propagation failed",
+                "",
+            )]
+        } else {
+            error.errors.clone()
+        };
+    }
+    pub fn reload_diagnostics(&self) -> Vec<Diagnostic> {
+        self.reload_errors
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    /// A marker, not flow-file watching: external edits remain inactive until explicit reload.
+    pub fn refresh(&self) {
+        let Some(marker) = &self.reload_marker else {
+            return;
+        };
+        let mut state = marker.state.lock().unwrap_or_else(|e| e.into_inner());
+        match marker.read(&mut state) {
+            Ok(generation) if generation > state.observed => {
+                state.observed = generation;
+                if let Err(e) = self.reload_local() {
+                    self.record_reload_error(&e);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.record_reload_error(&e),
+        }
+    }
+    fn reload_local(&self) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let trusted = self.trusted();
         let documents = self.documents(trusted)?;
@@ -420,6 +584,10 @@ impl FlowStore {
         }
         *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(candidate);
         *self.revisions.write().unwrap_or_else(|e| e.into_inner()) = revisions;
+        self.reload_errors
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Ok(())
     }
     pub fn save(
@@ -566,6 +734,33 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_markers_advance_monotonically_and_reject_unsafe_files() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        let markers: Vec<_> = (0..16)
+            .map(|_| ReloadMarker::new(data.clone(), temp.path()))
+            .collect();
+        std::thread::scope(|scope| {
+            for marker in &markers {
+                scope.spawn(move || marker.publish().unwrap());
+            }
+        });
+        let marker = &markers[0];
+        let mut state = marker.state.lock().unwrap();
+        assert_eq!(marker.read(&mut state).unwrap(), 16);
+        let path = marker.path.join(&marker.name);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(marker.read(&mut state).is_err());
+        std::fs::remove_file(&path).unwrap();
+        symlink(temp.path().join("external"), &path).unwrap();
+        assert!(marker.read(&mut state).is_err());
+    }
     #[test]
     fn untrusted_files_are_excluded_before_enumeration() {
         use std::os::unix::fs::symlink;

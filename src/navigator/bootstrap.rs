@@ -403,6 +403,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         let _ = http.shutdown.send(());
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;
     }
+    let _ = tokio::task::spawn_blocking(move || flow_host.shutdown()).await;
     Ok(())
 }
 

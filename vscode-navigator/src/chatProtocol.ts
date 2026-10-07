@@ -36,6 +36,7 @@ export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
+  | { type: "bypass"; enabled: boolean; pending: boolean; disabled: boolean }
   | { type: "viewMode"; readOnly: boolean; archiveReason?: string }
   | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string; variant_source?: string; models?: ModelInfo[]; locked?: boolean }
   | { type: "compaction"; operationId: string; pending: boolean; text: string; ok?: boolean }
@@ -123,6 +124,7 @@ export interface ComposerOperation { owner: object; generation: number }
 
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number } & (
+  | { type: "toggleBypass" }
   | { type: "selectAgent"; id: string }
   | { type: "openChild"; parentId: string; childId: string }
   | { type: "controlChild"; parentId: string; childId: string; action: "stop" | "continue" }
@@ -151,6 +153,8 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  toggleBypassPermissions(): Promise<void>;
+  publishBypass(): void;
   refreshAssignments(): Promise<void>;
   selectAgent(id: string): Promise<void>;
   publishCompaction(): void;

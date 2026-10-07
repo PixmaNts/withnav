@@ -96,11 +96,15 @@ export function registerChatView(
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
         if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
         switch (message?.type) {
+          case "toggleBypass":
+            void backend.toggleBypassPermissions().catch(showError);
+            break;
           case "ready":
             if (lastConversations) post(lastConversations);
             post({ type: "conversationOpened", id: backend.currentConversationId(),
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
             backend.publishSubagents();
+            backend.publishBypass?.();
             post({ type: "history", items: backend.history() });
             backend.publishCompaction();
             if (lastModels) post(lastModels);

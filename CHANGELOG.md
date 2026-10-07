@@ -36,6 +36,9 @@ limits and the theme from the browser, the terminal (`/config`) or VS Code, all 
 `config.json`. No configuration change is needed to upgrade from 0.5.1.
 
 ### Added
+- **Bypass in VS Code.** "Navai: Toggle Bypass Permissions" (or the button in the Cognition panel
+  header) turns bypass on for the open session, after a confirmation the first time. While it is on,
+  a warning badge stays in the header, and each change appears in the conversation.
 
 - **Settings in VS Code.** "Navai: Open Settings" (or the gear in the Cognition view) opens a
   Navai Settings tab laid out like VS Code's own settings editor: the same sections, saved at once

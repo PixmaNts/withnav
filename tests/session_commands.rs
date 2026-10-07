@@ -111,9 +111,9 @@ async fn help_lists_commands_and_publishes_a_result() {
         .collect();
     assert_eq!(
         names,
-        ["help", "model", "new", "stop", "context", "variant", "compact", "agent"]
+        ["help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"]
     );
-    assert_eq!(state.list_commands().len(), 8);
+    assert_eq!(state.list_commands().len(), 9);
 
     let events = results(&state, id).await;
     assert_eq!(events.len(), 1);
@@ -287,6 +287,9 @@ async fn a_command_during_a_pending_ask_is_refused() {
         assert!(!out.ok, "{name}");
         assert!(out.error.unwrap().contains("waiting for an answer"));
     }
+    let bypass = state.run_command(id, "bypass", "on").await.unwrap();
+    assert!(bypass.ok);
+    assert_eq!(bypass.data.as_ref().unwrap()["enabled"], true);
     assert_eq!(state.session_count(), 1, "/new did not run");
     assert_eq!(
         state.session_summary(id).await.unwrap().actor_state,
@@ -382,6 +385,47 @@ async fn http_endpoints_list_and_run_commands() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn bypass_http_is_strict_and_matches_slash_commands() {
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let router = app(state.clone());
+    let id = state.create_session(&ws, None, false).await.unwrap();
+    let path = format!("/v1/sessions/{id}/bypass");
+    for body in [
+        json!({}),
+        json!({"enabled": "on"}),
+        json!({"enabled": null}),
+        json!({"enabled": true, "by": "user:cli"}),
+        json!({"enabled": false, "extra": true}),
+    ] {
+        let (status, _) = request_json(&router, "POST", &path, Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (status, enabled) =
+        request_json(&router, "POST", &path, Some(&json!({"enabled": true}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["changed"], true);
+    let report = state.run_command(id, "bypass", "").await.unwrap();
+    assert!(report.ok);
+    assert_eq!(
+        report.data.as_ref().unwrap()["bypass_seq"],
+        enabled["bypass_seq"]
+    );
+    assert_eq!(report.data.as_ref().unwrap()["changed"], false);
+    let repeat = state.run_command(id, "bypass", "on").await.unwrap();
+    assert_eq!(repeat.data, report.data);
+    let off = state.run_command(id, "bypass", "off").await.unwrap();
+    assert_eq!(off.data.as_ref().unwrap()["enabled"], false);
+    assert_eq!(off.data.as_ref().unwrap()["changed"], true);
+    for argument in ["toggle", "on off", "ON"] {
+        let out = state.run_command(id, "bypass", argument).await.unwrap();
+        assert!(!out.ok);
+        assert_eq!(out.error.as_deref(), Some("usage: /bypass [on|off]"));
+    }
 }
 
 // Given a session

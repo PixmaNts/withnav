@@ -18,7 +18,7 @@ pub struct CommandSpec {
 
 /// Every registered command, in listing order. A command that is listed but
 /// not built answers [`NOT_AVAILABLE`].
-pub const COMMANDS: [CommandSpec; 8] = [
+pub const COMMANDS: [CommandSpec; 9] = [
     CommandSpec {
         name: "help",
         description: "List the available commands",
@@ -59,6 +59,11 @@ pub const COMMANDS: [CommandSpec; 8] = [
         name: "agent",
         description: "Show or change the primary agent",
         args_hint: "[id]",
+    },
+    CommandSpec {
+        name: "bypass",
+        description: "Bypass ordinary permission prompts; protected requests still ask",
+        args_hint: "[on|off]",
     },
 ];
 
@@ -306,11 +311,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_lists_the_eight_commands_with_unique_names() {
+    fn registry_lists_the_commands_with_unique_names() {
         let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
         assert_eq!(
             names,
-            ["help", "model", "new", "stop", "context", "variant", "compact", "agent"]
+            ["help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"]
         );
         assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));
         assert_eq!(find("/help").map(|c| c.name), Some("help"));

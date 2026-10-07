@@ -87,6 +87,7 @@ prompt.after(commandError);
 const agentLabel = document.createElement("span");
 agentLabel.className = "agent-label";
 agentLabel.textContent = "build";
+agentLabel.dataset.agent = "build";
 const pendingModel = document.createElement("span");
 pendingModel.className = "pending-model";
 modelSelect.after(agentLabel, pendingModel);
@@ -356,6 +357,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string): void {
   if (author === "navigator") { add(navigatorNote(text)); return; }
   const root = el("article", `message ${author}`);
+  if (author === "cognition") root.dataset.agent = agentLabel.dataset.agent;
   const byline = el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Subagent output · untrusted data");
   if (author === "subagent" && source) byline.title = `Source: ${source}`;
   if (skill) {
@@ -497,6 +499,7 @@ function turn(id: string): Turn {
   const existing = turns.get(id);
   if (existing) return existing;
   const root = el("article", "message cognition");
+  root.dataset.agent = agentLabel.dataset.agent;
   root.append(el("div", "byline", "Cognition"));
   const content = el("div", "message-body");
   const details = el("details", "reasoning");
@@ -542,7 +545,10 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
     link.addEventListener("click", () => post({ type: "openFile", ...target }));
     row.append(link);
   } else {
-    row.append(el("span", "tool-text", summary));
+    const text = el("span", "tool-text");
+    const name = summary.startsWith(event.name) ? event.name : "";
+    text.append(el("span", "tool-verb", name), document.createTextNode(summary.slice(name.length)));
+    row.append(text);
   }
   row.title = summary;
   row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
@@ -668,6 +674,7 @@ function receive(event: HostToWebview): void {
     closePalette();
     commandError.hidden = true;
     agentLabel.textContent = "build";
+    agentLabel.dataset.agent = "build";
     pendingModel.textContent = "";
   }
   if (conversations(event)) return;
@@ -726,12 +733,13 @@ function receive(event: HostToWebview): void {
     }
     case "commands": commands = event.items; filterPalette(); break;
     case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
-    case "agent": agentLabel.textContent = event.name; break;
+    case "agent": agentLabel.textContent = event.name; agentLabel.dataset.agent = event.name; break;
     case "assignments": {
       if (event.models) renderModels({ type: "models", items: event.models, current: event.model, locked: !!event.locked });
       agentSelect.replaceChildren(...event.agents.map(agent => { const option = el("option", "", agent.id); option.value = agent.id; option.title = `${agent.description} · ${agent.effective?.model ?? "Unassigned"}${agent.warning ? ` · ${agent.warning}` : ""}`; return option; }));
       agentSelect.value = event.current; agentSelect.disabled = readOnly || !!event.locked;
       agentLabel.textContent = `${event.current}${event.source === "override" ? " · model override" : ""}${event.variant_source === "override" ? " · variant override" : ""}`;
+      agentLabel.dataset.agent = event.current;
       const types: Record<string,string> = { reflex: "FIM · editor", instinct: "SystemOne", metacognition: "Chat" };
       const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant === null ? " · variant off" : event.variant ? ` · ${event.variant}` : ""} · model source: ${event.source ?? "assignment"} · variant source: ${event.variant_source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
       document.querySelector<HTMLElement>(".topbar")!.title = tooltip; agentLabel.title = tooltip;

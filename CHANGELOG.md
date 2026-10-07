@@ -4,8 +4,13 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- VS Code's Cognition panel uses theme colours to distinguish build and plan, tools, Navigator wakes, subagents and permission outcomes; Settings highlights saved changes in the same style.
+
 ### Fixed
 
+- Responses no longer stop midway when a model gateway sends `null` instead of an empty list of tool calls or response choices.
 - **Browser transcripts use one column.** Driver messages and cognition replies share the full width, with bylines and a quiet Driver accent instead of right-aligned chat bubbles.
 - **Every workspace can collapse in the browser sidebar.** Carets expand without switching workspaces, names navigate without reopening collapsed rows, and the browser remembers which folders are expanded. Collapse all and Expand all are also available in the command palette.
 

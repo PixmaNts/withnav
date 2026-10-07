@@ -205,6 +205,17 @@ impl Definition {
         toml::from_str(text).map_err(|e| vec![Diagnostic::new("parse", e.to_string(), "flow")])
     }
     pub fn to_toml(&self) -> Result<String, Vec<Diagnostic>> {
+        if self
+            .constants
+            .values()
+            .any(|v| !v.is_string() && !v.is_number() && !v.is_boolean())
+        {
+            return Err(vec![Diagnostic::new(
+                "schema",
+                "constants must be scalar values",
+                "constants",
+            )]);
+        }
         // JSON null denotes optional fields, whereas TOML has no null value.
         fn omit_null(v: &mut Value) {
             match v {

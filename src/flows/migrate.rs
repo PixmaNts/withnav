@@ -245,6 +245,7 @@ pub fn migrate_directory(source: &Path, target: &Path) -> anyhow::Result<bool> {
     }) {
         return Ok(false);
     }
+    let mut installs = Vec::new();
     for (mut definition, templates) in flows {
         let state_name = format!("{}-state.md", definition.flow.name);
         for node in &mut definition.node {
@@ -265,17 +266,18 @@ pub fn migrate_directory(source: &Path, target: &Path) -> anyhow::Result<bool> {
                 &templates,
             )
             .map_err(|e| anyhow::anyhow!("converted flow invalid: {e:?}"))?;
-        target_directory.write(
-            &state_name,
-            templates.values().next().expect("one template").as_bytes(),
-        )?;
-        target_directory.write(
-            &format!("{}.toml", definition.flow.name),
-            definition
-                .to_toml()
-                .map_err(|e| anyhow::anyhow!("{e:?}"))?
-                .as_bytes(),
-        )?;
+        installs.push((
+            state_name,
+            templates.values().next().expect("one template").clone(),
+        ));
+        installs.push((
+            format!("{}.toml", definition.flow.name),
+            definition.to_toml().map_err(|e| anyhow::anyhow!("{e:?}"))?,
+        ));
+    }
+    // Validate every conversion before installing any file; a competing editor wins.
+    for (name, bytes) in installs {
+        target_directory.write_new(&name, bytes.as_bytes())?;
     }
     tracing::warn!(source = %path.display(), "legacy navigator pipeline converted to flows; original retained");
     Ok(true)

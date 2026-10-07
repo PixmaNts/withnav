@@ -140,6 +140,12 @@ impl Directory {
         Ok(names)
     }
     pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.install(name, bytes, false)
+    }
+    pub fn write_new(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.install(name, bytes, true)
+    }
+    fn install(&self, name: &str, bytes: &[u8], no_replace: bool) -> std::io::Result<()> {
         valid_name(name)?;
         match openat(
             &self.0,
@@ -163,7 +169,18 @@ impl Directory {
             let mut file = File::from(fd);
             file.write_all(bytes)?;
             file.sync_all()?;
-            renameat(&self.0, temporary.as_str(), &self.0, name).map_err(io)
+            if no_replace {
+                nix::fcntl::renameat2(
+                    &self.0,
+                    temporary.as_str(),
+                    &self.0,
+                    name,
+                    nix::fcntl::RenameFlags::RENAME_NOREPLACE,
+                )
+                .map_err(io)
+            } else {
+                renameat(&self.0, temporary.as_str(), &self.0, name).map_err(io)
+            }
         })();
         if result.is_err() {
             let _ = unlinkat(&self.0, temporary.as_str(), UnlinkatFlags::NoRemoveDir);
@@ -188,4 +205,22 @@ fn check(fd: &OwnedFd, private: bool) -> std::io::Result<()> {
         return Err(std::io::Error::other("unsafe owner or permissions"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn no_replace_install_preserves_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Directory::open(temp.path(), false).unwrap();
+        dir.write_new("flow.toml", b"original").unwrap();
+        assert_eq!(
+            dir.write_new("flow.toml", b"replacement")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(dir.read("flow.toml", 100, false).unwrap(), "original");
+    }
 }

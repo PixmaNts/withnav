@@ -163,6 +163,7 @@ impl Records {
             Ok(text) => Ok(text
                 .lines()
                 .filter_map(|line| serde_json::from_str::<RunRecord>(line).ok())
+                .filter(|record| retained(record))
                 .map(|mut record| {
                     super::redaction::record(&mut record);
                     record
@@ -190,14 +191,7 @@ impl Records {
         }
         let mut records = self.read()?;
         records.push(record.clone());
-        let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(7);
-        records.retain(|r| {
-            time::OffsetDateTime::parse(
-                &r.started_at,
-                &time::format_description::well_known::Rfc3339,
-            )
-            .is_ok_and(|t| t >= cutoff)
-        });
+        records.retain(retained);
         let mut lines: Vec<String> = records
             .into_iter()
             .filter_map(|r| serde_json::to_string(&r).ok())
@@ -212,6 +206,14 @@ impl Records {
         Directory::private(&self.path, true)?
             .write("runs.jsonl", format!("{}\n", lines.join("\n")).as_bytes())
     }
+}
+fn retained(record: &RunRecord) -> bool {
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(7);
+    time::OffsetDateTime::parse(
+        &record.started_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .is_ok_and(|t| t >= cutoff)
 }
 
 #[cfg(test)]
@@ -251,6 +253,21 @@ mod tests {
             Records::new(temp.path(), temp.path()).read().unwrap().len(),
             24
         );
+    }
+    #[test]
+    fn read_excludes_expired_capture_without_an_append() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let mut record = fixture();
+        record.started_at = "2020-01-01T00:00:00Z".into();
+        Directory::private(&records.path, true)
+            .unwrap()
+            .write(
+                "runs.jsonl",
+                serde_json::to_string(&record).unwrap().as_bytes(),
+            )
+            .unwrap();
+        assert!(records.read().unwrap().is_empty());
     }
     #[test]
     fn health_is_independent_of_retained_captures_and_expires() {

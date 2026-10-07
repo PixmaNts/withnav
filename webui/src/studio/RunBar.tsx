@@ -142,6 +142,9 @@ function PathLine({ run, def }: { run: RunRecord; def: Definition }) {
       <span className={`sf-outcome${run.status === "failure" ? " bad" : ""}`}>{outcome}</span>
       <span className={`sf-application${run.application.status === "failed" ? " bad" : ""}`}>
         application · {applicationLabel(run.application.status)}
+        {run.application.actions.some((action) => action.status !== run.application.status) && (
+          <small className="muted"> · {run.application.actions.map((action) => `${action.action}: ${action.status.replaceAll("_", " ")}`).join(", ")}</small>
+        )}
       </span>
     </div>
   );

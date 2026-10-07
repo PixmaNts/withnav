@@ -679,9 +679,6 @@ impl FlowRuntime {
                                 .await
                         };
                         let (status, message) = application_status(&result);
-                        if status == "failed" {
-                            report.status = "failed".into();
-                        }
                         report.actions.push(AppliedAction {
                             node_id: action.node_id.clone(),
                             action: action.action.clone(),
@@ -689,6 +686,7 @@ impl FlowRuntime {
                             message,
                         });
                     }
+                    report.status = aggregate_application_status(&report.actions).into();
                     outcome.trace.application = report;
                 }
                 if let Some(records) = records.filter(|_| !is_blocking) {
@@ -770,9 +768,6 @@ impl FlowRuntime {
                             .await
                     };
                     let (status, message) = application_status(&result);
-                    if status == "failed" {
-                        report.status = "failed".into();
-                    }
                     report.actions.push(AppliedAction {
                         node_id: action.node_id.clone(),
                         action: action.action.clone(),
@@ -780,6 +775,7 @@ impl FlowRuntime {
                         message,
                     });
                 }
+                report.status = aggregate_application_status(&report.actions).into();
                 outcome.trace.application = report;
             }
             if let Some(records) = &self.records {
@@ -891,6 +887,16 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
     }
 }
 
+fn aggregate_application_status(actions: &[AppliedAction]) -> &'static str {
+    if actions.iter().any(|action| action.status == "failed") {
+        "failed"
+    } else if !actions.is_empty() && actions.iter().all(|action| action.status == "suppressed") {
+        "suppressed"
+    } else {
+        "applied"
+    }
+}
+
 /// How one applied effect is recorded. A wake held back by the session's flow-wake cooldown
 /// was deliberately not delivered: it is `suppressed`, not a failure, so health counters do not
 /// report a working flow as broken and the Studio shows why nothing happened.
@@ -910,6 +916,31 @@ pub(crate) const WAKE_COOLDOWN: &str = "wake cooldown";
 #[cfg(test)]
 mod application_status_tests {
     use super::*;
+
+    #[test]
+    fn aggregate_application_follows_action_statuses() {
+        for (statuses, expected) in [
+            (vec![], "applied"),
+            (vec!["applied"], "applied"),
+            (vec!["suppressed"], "suppressed"),
+            (vec!["suppressed", "suppressed"], "suppressed"),
+            (vec!["suppressed", "applied"], "applied"),
+            (vec!["applied", "suppressed"], "applied"),
+            (vec!["suppressed", "failed", "applied"], "failed"),
+            (vec!["failed", "suppressed"], "failed"),
+        ] {
+            let actions: Vec<_> = statuses
+                .into_iter()
+                .map(|status| AppliedAction {
+                    node_id: None,
+                    action: "wake".into(),
+                    status: status.into(),
+                    message: None,
+                })
+                .collect();
+            assert_eq!(aggregate_application_status(&actions), expected);
+        }
+    }
 
     #[test]
     fn a_cooled_down_wake_is_suppressed_not_failed() {

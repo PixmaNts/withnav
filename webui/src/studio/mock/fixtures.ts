@@ -381,7 +381,6 @@ export function sampleRunRecord(digest: string): RunRecord {
     application: {
       status: "applied",
       actions: [
-        { node_id: "deny", action: "deny", status: "applied", message: null },
         { node_id: "audit", action: "log", status: "applied", message: null },
       ],
     },
@@ -402,6 +401,21 @@ export function suppressedRunRecord(): RunRecord {
     ],
     batches: [], duration_ms: 1, inputs: {}, usage: null,
     actions: [{ node_id: "wake_cognition", action: "wake", params: { note: "The last turn failed; look at what went wrong before going on." } }],
-    application: { status: "suppressed", actions: [{ node_id: "wake_cognition", action: "wake", status: "suppressed", message: "Wake cooldown is active." }] },
+    application: { status: "suppressed", actions: [{ node_id: "wake_cognition", action: "wake", status: "suppressed", message: "wake cooldown" }] },
+  };
+}
+
+/** Logging succeeds even when the wake in the same run is suppressed. */
+export function mixedApplicationRunRecord(): RunRecord {
+  const run = suppressedRunRecord();
+  return {
+    ...run,
+    run_id: "01JA7Q3M9ZK4V8R2N6T5W1XHCG",
+    nodes: [...run.nodes, { id: "audit", status: "completed", port: null, duration_ms: 0, answer: null, result: null, variables: {}, batch_id: null, error: null }],
+    actions: [...run.actions, { node_id: "audit", action: "log", params: { text: "wake requested" } }],
+    application: {
+      status: "applied",
+      actions: [...run.application.actions, { node_id: "audit", action: "log", status: "applied", message: null }],
+    },
   };
 }

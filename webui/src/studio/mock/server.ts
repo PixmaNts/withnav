@@ -11,7 +11,7 @@ import type {
   ReplayResult, RunNode, RunRecord, Trust, ValidateResult,
 } from "../types";
 import { evaluate } from "./expr";
-import { BUILTIN_TOML, CATALOGUE, GUARD_MUTATIONS_TOML, HOST_DIAGNOSTICS, RELOAD_PROPAGATION, REMARK_ON_SAVE_TOML, sampleRunRecord, suppressedRunRecord } from "./fixtures";
+import { BUILTIN_TOML, CATALOGUE, GUARD_MUTATIONS_TOML, HOST_DIAGNOSTICS, RELOAD_PROPAGATION, REMARK_ON_SAVE_TOML, mixedApplicationRunRecord, sampleRunRecord, suppressedRunRecord } from "./fixtures";
 import { flowToToml, parseFlowToml } from "./toml";
 import { validateDefinition } from "./validate";
 
@@ -54,7 +54,7 @@ export function createMockApi(workspace: string): StudioApi {
   /** What the last successful reload loaded: file key → revision. */
   let loaded = new Map([...files.values()].map((s) => [key(s.name, s.location), revisionOf(s)]));
   let trusted = false;
-  const runs: RunRecord[] = [sampleRunRecord(`sha256:${hash(GUARD_MUTATIONS_TOML)}`), suppressedRunRecord()];
+  const runs: RunRecord[] = [sampleRunRecord(`sha256:${hash(GUARD_MUTATIONS_TOML)}`), suppressedRunRecord(), mixedApplicationRunRecord()];
   let reloadErrors: Diagnostic[] = [];
 
   const compile = (toml: string) => {

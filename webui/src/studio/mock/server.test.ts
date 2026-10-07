@@ -12,7 +12,17 @@ describe("mock flows API", () => {
     expect(health.flows.find((row) => row.name === "guard-mutations")).toMatchObject({ unavailable: true, errors: [{ code: "unavailable" }] });
     expect((await api.reload()).propagation).toContain("next event");
     const { runs } = await api.runs("turn-digest");
-    expect((await api.run("turn-digest", runs[0]!.run_id)).application.status).toBe("suppressed");
+    expect((await api.run("turn-digest", runs[0]!.run_id)).application).toEqual({
+      status: "suppressed",
+      actions: [{ node_id: "wake_cognition", action: "wake", status: "suppressed", message: "wake cooldown" }],
+    });
+    expect((await api.run("turn-digest", runs[1]!.run_id)).application).toEqual({
+      status: "applied",
+      actions: [
+        { node_id: "wake_cognition", action: "wake", status: "suppressed", message: "wake cooldown" },
+        { node_id: "audit", action: "log", status: "applied", message: null },
+      ],
+    });
   });
   it("lists the seed flows sorted by trigger, and opens guard-mutations", async () => {
     const api = createMockApi(WS);

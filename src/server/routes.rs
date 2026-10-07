@@ -781,11 +781,25 @@ struct PostBypassRequest {
     enabled: bool,
 }
 
+fn bypass_auth_required() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "reason": "auth_required",
+            "error": "bypass can only be changed by an authenticated client",
+        })),
+    )
+        .into_response()
+}
+
 async fn post_bypass(
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: Result<Json<PostBypassRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
+    if state.http.bearer_token.is_none() {
+        return bypass_auth_required();
+    }
     let parsed: Ulid = match id.parse() {
         Ok(parsed) => parsed,
         Err(_) => return error_response(ServerError::SessionNotFound(id)),
@@ -834,6 +848,17 @@ async fn post_command(
             return error_response(ServerError::MalformedBody(rejection.body_text()));
         }
     };
+    if state.http.bearer_token.is_none()
+        && request
+            .name
+            .trim()
+            .strip_prefix('/')
+            .unwrap_or(request.name.trim())
+            == "bypass"
+        && matches!(request.arguments.trim(), "on" | "off")
+    {
+        return bypass_auth_required();
+    }
     match state
         .run_command(parsed, &request.name, &request.arguments)
         .await

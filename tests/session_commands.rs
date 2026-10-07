@@ -437,12 +437,77 @@ async fn http_endpoints_list_and_run_commands() {
 }
 
 #[tokio::test]
-async fn bypass_http_is_strict_and_matches_slash_commands() {
+async fn bypass_http_requires_configured_authentication() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let router = app(state.clone());
     let id = state.create_session(&ws, None, false).await.unwrap();
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "on"})),
+        ("commands", json!({"name": " /bypass ", "arguments": "off"})),
+    ] {
+        let (status, body) = request_json(
+            &router,
+            "POST",
+            &format!("/v1/sessions/{id}/{suffix}"),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "auth_required");
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("bypass can only be changed by an authenticated client"));
+    }
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/commands"),
+        Some(&json!({"name": "bypass"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn bypass_http_is_strict_and_matches_slash_commands() {
+    let (tmp, ws) = tmp_ws();
+    let state = TestServerConfig::unreachable(tmp.path())
+        .bearer_token("test-token")
+        .state();
+    let router = app(state.clone());
+    let id = state.create_session(&ws, None, false).await.unwrap();
     let path = format!("/v1/sessions/{id}/bypass");
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "on"})),
+    ] {
+        use tower::ServiceExt;
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{id}/{suffix}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    let router = router.layer(axum::middleware::from_fn(
+        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+            request
+                .headers_mut()
+                .insert("authorization", "Bearer test-token".parse().unwrap());
+            next.run(request).await
+        },
+    ));
     for body in [
         json!({}),
         json!({"enabled": "on"}),
@@ -458,6 +523,16 @@ async fn bypass_http_is_strict_and_matches_slash_commands() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(enabled["enabled"], true);
     assert_eq!(enabled["changed"], true);
+    let (status, off) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/commands"),
+        Some(&json!({"name": "bypass", "arguments": "off"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(off["data"]["enabled"], false);
+    let (_, enabled) = request_json(&router, "POST", &path, Some(&json!({"enabled": true}))).await;
     let report = state.run_command(id, "bypass", "").await.unwrap();
     assert!(report.ok);
     assert_eq!(

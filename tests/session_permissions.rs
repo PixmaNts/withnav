@@ -257,13 +257,24 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "not a decision");
 }
 
+fn authenticated_router(state: navai::server::AppState) -> axum::Router {
+    app(state).layer(axum::middleware::from_fn(
+        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+            request
+                .headers_mut()
+                .insert("authorization", "Bearer test-token".parse().unwrap());
+            next.run(request).await
+        },
+    ))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
     let env = env();
     let target = env.ws.join("bypass.txt");
     let provider = provider(vec![one_write("bypass-write", &target), done("written")]).await;
-    let state = config(&env, &provider).state();
-    let router = app(state.clone());
+    let state = config(&env, &provider).bearer_token("test-token").state();
+    let router = authenticated_router(state.clone());
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "write the file").await;
     wait_events(&state, id, "permission.requested", 1).await;
@@ -298,8 +309,8 @@ async fn bypass_leaves_pending_sensitive_request_open() {
     let env = env();
     let target = env.ws.join("auth.json");
     let provider = provider(vec![one_write("protected-write", &target)]).await;
-    let state = config(&env, &provider).state();
-    let router = app(state.clone());
+    let state = config(&env, &provider).bearer_token("test-token").state();
+    let router = authenticated_router(state.clone());
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "write credentials").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
@@ -323,8 +334,8 @@ async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
     let env = env();
     let target = env.ws.join("driver.txt");
     let provider = provider(vec![one_write("driver-write", &target), done("written")]).await;
-    let state = config(&env, &provider).state();
-    let router = app(state.clone());
+    let state = config(&env, &provider).bearer_token("test-token").state();
+    let router = authenticated_router(state.clone());
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "write the file").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;

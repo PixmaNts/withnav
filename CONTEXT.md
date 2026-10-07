@@ -282,7 +282,10 @@ policy, read-only agents and outside searches are refused as before, and a quest
 never answered. Turning it on also answers an eligible request already waiting. A root session
 sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `navai run --yes`) and its live
 subagents follow every change; a new subagent starts with the parent's current value. A resumed
-session starts off, and its history says so. Not a sandbox: bash keeps its ambient access.
+session starts off, and its history says so. HTTP changes require a configured bearer token and
+an authenticated client, including slash commands; servers without a token allow only state reads.
+The in-process `navai run --yes` path does not require HTTP authentication.
+Not a sandbox: bash keeps its ambient access.
 _Avoid_: auto-approve, yolo, allow all
 
 **Folder grant**:

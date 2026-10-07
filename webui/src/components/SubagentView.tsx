@@ -21,11 +21,15 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
   const qc = useQueryClient();
   const summary = useSessionSummary(childId);
   const stopped = summary.data?.actor_state === "stopped";
-  const stream = useSessionStream(childId, { ready: !!summary.data, once: stopped });
+  const stream = useSessionStream(childId, { ready: !!summary.data, once: stopped, bypass: summary.data?.bypass, bypassSeq: summary.data?.bypass_seq });
   const child: Child | undefined = parent.children[childId];
   const spawnCall: ToolCall | undefined = child ? parent.tools[child.toolCallId] : undefined;
   const delivery = child?.delivery ?? (typeof spawnCall?.args?.delivery === "string" ? spawnCall.args.delivery : null);
   const view = stream.view;
+  useEffect(() => {
+    if (!summary.data || view.bypassSeq < 0) return;
+    qc.setQueryData(keys.sessions(summary.data.workspace), (rows: import("../api/types").SessionListEntry[] | undefined) => rows?.map(row => row.id === childId && (row.bypass_seq ?? -1) <= view.bypassSeq ? { ...row, bypass: view.bypass, bypass_seq: view.bypassSeq } : row));
+  }, [view.bypass, view.bypassSeq, childId, summary.data, qc]);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
@@ -66,6 +70,7 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
 
   return (
     <div className="subview">
+      {view.items.filter(item => item.kind === "notice" && item.text.startsWith("Bypass ")).map(item => item.kind === "notice" && <div className="sub-note" key={item.key}>{item.text}</div>)}
       <div className="sub-crumb">
         <a
           href="#"

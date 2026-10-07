@@ -231,9 +231,6 @@ async fn handle(
             if !store.trusted() {
                 return Err(StoreError::reason("untrusted"));
             }
-            if !data["session_id"].is_null() {
-                return Err(StoreError::reason("unavailable"));
-            }
             let compiled = source(&store, &data["source"])?;
             let (models, _) = crate::provider::config::load_models(
                 state.flows.models.as_deref(),
@@ -252,7 +249,19 @@ async fn handle(
                 payload: data["payload"].clone(),
             };
             let cancel = CancellationToken::new();
-            let context = ContextSnapshot::default();
+            let mut context = ContextSnapshot {
+                workspace: Some(workspace.clone()),
+                ..Default::default()
+            };
+            if let Some(id) = data["session_id"].as_str() {
+                let id = id.parse().map_err(|_| StoreError::reason("unavailable"))?;
+                if let Ok(session) = state.session_summary(id).await {
+                    if PathBuf::from(&session.workspace) != workspace {
+                        return Err(StoreError::reason("forbidden"));
+                    }
+                    context.session(&session);
+                }
+            }
             let mut outcome = run(
                 &compiled,
                 &event,

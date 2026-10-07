@@ -68,6 +68,92 @@ mod tests {
         format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\nnote='{name}'\n")
     }
     #[tokio::test]
+    async fn context_collects_intent_and_leaves_missing_sources_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".navigator")).unwrap();
+        std::fs::write(
+            dir.path().join(".navigator/intent.md"),
+            "## Intent\nShip it",
+        )
+        .unwrap();
+        let context = ContextSnapshot {
+            workspace: Some(dir.path().into()),
+            ..Default::default()
+        };
+        let names = vec![
+            "intent.record".into(),
+            "workspace.root".into(),
+            "conversation.digest".into(),
+        ];
+        let values = context
+            .collect(
+                &names,
+                &CancellationToken::new(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert!(values["intent.record"]
+            .value
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("Ship it"));
+        assert_eq!(values["workspace.root"].value, Some(json!(dir.path())));
+        assert!(values["conversation.digest"].value.is_none());
+    }
+    #[tokio::test]
+    async fn context_marks_nested_tokens_and_bounds_utf8() {
+        let mut context = ContextSnapshot::default();
+        context.values.insert(
+            "conversation.digest".into(),
+            InputValue {
+                value: Some(json!("é".repeat(10000))),
+                cut: false,
+                redacted: false,
+            },
+        );
+        context.values.insert(
+            "session.model".into(),
+            InputValue {
+                value: Some(json!({"token":"ghp_abcdefghijklmnopqrstuvwxyz"})),
+                cut: false,
+                redacted: false,
+            },
+        );
+        let names = vec!["conversation.digest".into(), "session.model".into()];
+        let values = context
+            .collect(
+                &names,
+                &CancellationToken::new(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert!(values["conversation.digest"].cut);
+        assert_eq!(
+            values["conversation.digest"]
+                .value
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .len(),
+            16384
+        );
+        assert!(values["session.model"].redacted);
+    }
+    #[tokio::test]
+    async fn cancelled_collection_is_refused() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(ContextSnapshot::default()
+            .collect(&[], &cancel, Instant::now() + Duration::from_secs(1))
+            .await
+            .is_err());
+    }
+    #[tokio::test]
     async fn deny_wins_over_ask_and_outage_is_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
@@ -165,6 +251,52 @@ impl FlowEffects for NoEffects {
 #[derive(Default, Clone)]
 pub struct ContextSnapshot {
     pub values: BTreeMap<String, InputValue>,
+    pub workspace: Option<PathBuf>,
+}
+impl ContextSnapshot {
+    pub fn session(&mut self, session: &crate::session::SessionSummary) {
+        for (name, value) in [
+            ("session.id", &session.session_id),
+            ("session.agent", &session.agent),
+            ("session.model", &session.model),
+            ("session.workspace", &session.workspace),
+        ] {
+            self.values.insert(
+                name.into(),
+                InputValue {
+                    value: Some(json!(value)),
+                    cut: false,
+                    redacted: false,
+                },
+            );
+        }
+    }
+}
+
+/// Conservative whole-input marking; values stay available for live evaluation,
+/// while the engine replaces marked evidence with its redaction marker in captures.
+fn contains_secret(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text
+            .split(|c: char| c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ':' | '='))
+            .any(|word| {
+                [
+                    "sk-",
+                    "ghp_",
+                    "github_pat_",
+                    "gho_",
+                    "xoxb-",
+                    "xoxp-",
+                    "AKIA",
+                    "eyJ",
+                ]
+                .iter()
+                .any(|prefix| word.starts_with(prefix) && word.len() >= 20)
+            }),
+        Value::Array(values) => values.iter().any(contains_secret),
+        Value::Object(values) => values.values().any(contains_secret),
+        _ => false,
+    }
 }
 impl InputSource for ContextSnapshot {
     fn collect<'a>(
@@ -178,12 +310,83 @@ impl InputSource for ContextSnapshot {
                 return Err(InputError("collection cancelled or expired".into()));
             }
             let mut result = BTreeMap::new();
+            let mut values = self.values.clone();
+            if let Some(workspace) = &self.workspace {
+                values.insert(
+                    "workspace.root".into(),
+                    InputValue {
+                        value: Some(json!(workspace)),
+                        cut: false,
+                        redacted: false,
+                    },
+                );
+                if names
+                    .iter()
+                    .any(|n| n == "workspace.branch" || n == "workspace.dirty_files")
+                {
+                    let status = tokio::select! { biased;
+                        _ = cancel.cancelled() => return Err(InputError("collection cancelled".into())),
+                        status = tokio::time::timeout_at(deadline.into(), crate::workspace::git::read(workspace)) => status.ok().flatten(),
+                    };
+                    if let Some(status) = status {
+                        if let Some(branch) = status.branch {
+                            values.insert(
+                                "workspace.branch".into(),
+                                InputValue {
+                                    value: Some(json!(branch)),
+                                    cut: false,
+                                    redacted: false,
+                                },
+                            );
+                        }
+                        let files: Vec<_> = status.files.iter().map(|f| &f.path).collect();
+                        values.insert(
+                            "workspace.dirty_files".into(),
+                            InputValue {
+                                value: Some(json!(files)),
+                                cut: status.dirty > files.len(),
+                                redacted: false,
+                            },
+                        );
+                    }
+                }
+                if names.iter().any(|n| n == "intent.record") {
+                    let workspace = workspace.clone();
+                    let read = tokio::task::spawn_blocking(move || {
+                        let path = workspace.join(".navigator/intent.md");
+                        // Refuse links and oversize files before the existing intent reader.
+                        let metadata = std::fs::symlink_metadata(&path).ok()?;
+                        if !metadata.is_file() || metadata.len() > 16384 {
+                            return None;
+                        }
+                        let sensitive = crate::agent::permission_gate::sensitive_read(&path)
+                            || std::fs::canonicalize(&path)
+                                .is_ok_and(|p| crate::agent::permission_gate::sensitive_read(&p));
+                        crate::navigator::intent::read_intent(&workspace)
+                            .ok()
+                            .flatten()
+                            .map(|r| InputValue {
+                                value: Some(json!(r.raw)),
+                                cut: false,
+                                redacted: sensitive,
+                            })
+                    });
+                    let value = tokio::select! { biased;
+                        _ = cancel.cancelled() => return Err(InputError("collection cancelled".into())),
+                        value = tokio::time::timeout_at(deadline.into(), read) => value.ok().and_then(Result::ok).flatten(),
+                    };
+                    if let Some(value) = value {
+                        values.insert("intent.record".into(), value);
+                    }
+                }
+            }
             for name in names {
-                let mut value = self.values.get(name).cloned().unwrap_or(InputValue {
+                let mut value = values.get(name).cloned().unwrap_or(InputValue {
                     value: None,
                     cut: false,
                     redacted: false,
                 });
+                value.redacted |= value.value.as_ref().is_some_and(contains_secret);
                 if let Some(Value::String(text)) = &mut value.value {
                     if text.len() > 16384 {
                         let mut end = 16384;
@@ -434,6 +637,7 @@ impl FlowRuntime {
         cancel: CancellationToken,
     ) -> VerdictLike {
         let mut context = ContextSnapshot::default();
+        context.workspace = Some(ctx.workspace.clone());
         for (name, value) in [
             ("session.agent", json!(ctx.agent)),
             ("session.workspace", json!(ctx.workspace)),
@@ -448,14 +652,6 @@ impl FlowRuntime {
                 },
             );
         }
-        context.values.insert(
-            "session.model".into(),
-            InputValue {
-                value: Some(json!(self.client.identity().model)),
-                cut: false,
-                redacted: false,
-            },
-        );
         self.evaluate(
             Event {
                 trigger: "tool.pre_call".into(),

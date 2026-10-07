@@ -143,6 +143,12 @@ pub struct ModelChanged {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionListEntry {
     #[serde(default, skip_serializing_if = "is_false")]
+    pub bypass: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bypass_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incarnation: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_disabled_reason: Option<String>,
@@ -170,6 +176,9 @@ fn promptable_default() -> bool {
 }
 fn is_false(value: &bool) -> bool {
     !value
+}
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 fn is_promptable(value: &bool) -> bool {
     *value
@@ -201,6 +210,12 @@ pub struct CreateSessionResponse {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bypass: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bypass_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incarnation: Option<String>,
     pub session_id: String,
     pub actor_state: String,
     pub workspace: String,
@@ -292,6 +307,10 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    BypassSet {
+        generation: Generation,
+        result: Result<BypassResponse, String>,
+    },
     ConfigLoaded {
         generation: Generation,
         request: u64,
@@ -437,6 +456,7 @@ pub enum Mode {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    ToggleBypass,
     OpenConfig,
     Config(super::config::ConfigAction),
     PickAgent(String),
@@ -519,6 +539,10 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    SetBypass {
+        session_id: String,
+        enabled: bool,
+    },
     FetchConfig(u64),
     WriteConfig(super::config::WriteRequest),
     TestGateway(String),
@@ -608,3 +632,10 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("protocol error: {0}")]
 pub struct ProtocolError(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BypassResponse {
+    pub enabled: bool,
+    pub changed: bool,
+    pub bypass_seq: u64,
+}

@@ -171,7 +171,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                     agent_style(tab.agent_name(), theme),
                 ),
                 Span::styled(" · ", theme.muted()),
-                Span::styled(status, status_style),
+                Span::styled(
+                    if tab.bypass { "⚠ bypass" } else { status },
+                    if tab.bypass {
+                        theme.warning().add_modifier(ratatui::style::Modifier::BOLD)
+                    } else {
+                        status_style
+                    },
+                ),
             ])),
             Rect::new(inner.x, y + 1, inner.width, 1),
         );

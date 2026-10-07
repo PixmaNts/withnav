@@ -108,6 +108,22 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     let kind = EventKind::from_wire(&e.kind);
     let bad = || ProtocolError(format!("malformed {} payload", e.kind));
     let actor = e.actor_id.clone();
+    if e.kind == "session.bypass" {
+        let enabled = e.payload["enabled"].as_bool().ok_or_else(bad)?;
+        s.conversation.blocks.push(block(
+            format!("bypass:{}", e.seq),
+            BlockKind::Notice(if enabled {
+                "bypass on: ordinary permission prompts are skipped; protected requests still ask"
+                    .into()
+            } else {
+                "bypass off".into()
+            }),
+        ));
+        if e.seq > s.bypass_seq {
+            super::keep_bypass(s, enabled, e.seq);
+        }
+        return Ok(());
+    }
     if matches!(
         e.kind.as_str(),
         "subagent.spawned" | "subagent.done" | "subagent.watchdog"
@@ -184,6 +200,8 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     match kind {
         Some(EventKind::SessionStart) => s.activity = Activity::Idle,
         Some(EventKind::SessionEnd) => {
+            s.bypass = false;
+            s.bypass_seq = s.bypass_seq.max(e.seq);
             s.watchdog_paused = false;
             s.pause_token = None;
             s.activity = Activity::Stopped;

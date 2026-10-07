@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Responses no longer stop midway when a model gateway sends `null` instead of an empty list of tool calls or response choices.
+
 ## [0.6.0] - 2026-10-07
 
 Navai gets a browser interface and a Settings screen in every client. `navai web` opens the chat in

@@ -44,9 +44,7 @@ use ulid::Ulid;
 use crate::agent::actor::{AgentActor, AgentState};
 use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
 use crate::agent::permissions::PermissionDecision;
-use crate::agent::run_loop::{
-    continue_run, resolve_permission, run_agent, AgentEvent, ResolveError, RunOutcome,
-};
+use crate::agent::run_loop::{continue_run, run_agent, AgentEvent, ResolveError, RunOutcome};
 use crate::bus::event::{
     AgentStateChanged, AgentYield, EventKind, PermissionResolution, PermissionResolved, TaskDone,
     TaskStatus, ToolPostCall, ToolPreCall, ToolSource, TurnEnd, TurnEndOutcome, TurnError,
@@ -958,7 +956,7 @@ async fn runtime_loop(
                         if status.awaiting_fresh_driver.load(std::sync::atomic::Ordering::Acquire) || status.watchdog.root_hold().is_some() { continue; }
                         Some(Inbound::Continue)
                     },
-                    Control::Bypass(request) => { bypass::apply(&status, &sequencer, request).await; continue; }
+                    Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, Some((&actor, &inbox))).await; continue; }
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::DeliverySteer => { delivery_waiting=true; continue; }
                     Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
@@ -1030,7 +1028,11 @@ async fn runtime_loop(
 
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
-        let resume: Option<(Ulid, PermissionDecision)> = match inbound {
+        let resume: Option<(
+            Ulid,
+            PermissionDecision,
+            crate::agent::permissions::PermissionOrigin,
+        )> = match inbound {
             Inbound::Continue => {
                 let (transcript, _) = status.steering.claim_replacements(actor.transcript.clone());
                 actor.transcript = transcript;
@@ -1112,14 +1114,15 @@ async fn runtime_loop(
                     &request.tool,
                     answer.decision,
                 );
-                publish_resolved(
+                publish_resolved_with_origin(
                     &sequencer,
                     active_task_id,
                     &request,
                     PermissionResolution::from(&decision),
+                    answer.origin,
                 );
                 let _ = answer.reply.send(Ok(()));
-                Some((answer.request_id, decision))
+                Some((answer.request_id, decision, answer.origin))
             }
         };
         *status
@@ -1180,9 +1183,15 @@ async fn runtime_loop(
             let turn_fut = async {
                 let first = match resume {
                     None => run_agent(&mut actor, &mut observe).await,
-                    Some((request_id, decision)) => {
-                        match resolve_permission(&mut actor, request_id, decision, &mut observe)
-                            .await
+                    Some((request_id, decision, origin)) => {
+                        match crate::agent::run_loop::resolve_permission_with_origin(
+                            &mut actor,
+                            request_id,
+                            decision,
+                            origin,
+                            &mut observe,
+                        )
+                        .await
                         {
                             Ok(outcome) => Ok(outcome),
                             Err(ResolveError::Agent(err)) => Err(err),
@@ -1208,7 +1217,7 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
-                            Control::Bypass(request) => { bypass::apply(&status, &sequencer, request).await; }
+                            Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, None).await; }
                             Control::Steer => {}
                             Control::Interrupt(id) => {
                                 if !status.steering.has_interrupt(id) { continue; }
@@ -1424,6 +1433,7 @@ async fn runtime_loop(
                     None,
                 );
                 emit_agent_state(&mut turn, "yielded");
+                status.resolve_pending_bypass(&actor, &inbox);
             }
             Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
                 if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
@@ -1639,6 +1649,22 @@ pub(crate) fn publish_resolved(
     request: &crate::agent::permissions::PermissionRequest,
     resolution: PermissionResolution,
 ) {
+    publish_resolved_with_origin(
+        sequencer,
+        task_id,
+        request,
+        resolution,
+        crate::agent::permissions::PermissionOrigin::Driver,
+    );
+}
+
+fn publish_resolved_with_origin(
+    sequencer: &Sequencer,
+    task_id: Option<Ulid>,
+    request: &crate::agent::permissions::PermissionRequest,
+    resolution: PermissionResolution,
+    origin: crate::agent::permissions::PermissionOrigin,
+) {
     let mut candidate = Candidate::new(
         EventKind::PermissionResolved,
         to_value(&PermissionResolved {
@@ -1648,6 +1674,9 @@ pub(crate) fn publish_resolved(
             resolution,
         }),
     );
+    if origin == crate::agent::permissions::PermissionOrigin::Bypass {
+        candidate.payload["approved_by"] = serde_json::json!("bypass");
+    }
     if let Some(task) = task_id {
         candidate = candidate.with_correlation_id(task);
     }
@@ -1961,6 +1990,7 @@ mod tests {
         let (reply, response) = tokio::sync::oneshot::channel();
         answers
             .send(crate::bus::inbox::PermissionAnswer {
+                origin: crate::agent::permissions::PermissionOrigin::Driver,
                 request_id,
                 decision: PermissionDecision::Deny {
                     message: "no".into(),

@@ -288,6 +288,48 @@ pub async fn resolve_permission(
     decision: PermissionDecision,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
+    resolve_permission_with_origin(
+        actor,
+        request_id,
+        decision,
+        super::permissions::PermissionOrigin::Driver,
+        observe,
+    )
+    .await
+}
+
+pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
+    match &actor.pending {
+        Some(PendingInteraction::Permission { call, .. }) => {
+            pending_bypass_eligible_call(actor, call)
+        }
+        _ => false,
+    }
+}
+
+fn pending_bypass_eligible_call(actor: &AgentActor, call: &ToolCall) -> bool {
+    match gate(actor, call) {
+        Gated::Ask(request, destination) => {
+            let needed = Needed {
+                scope: request.scope.clone(),
+                destination,
+            };
+            super::permission_gate::hard_floor(actor, call, &needed).is_none()
+        }
+        Gated::Guarded(needed) | Gated::Reviewed(needed) => {
+            super::permission_gate::hard_floor(actor, call, &needed).is_none()
+        }
+        _ => false,
+    }
+}
+
+pub async fn resolve_permission_with_origin(
+    actor: &mut AgentActor,
+    request_id: ulid::Ulid,
+    decision: PermissionDecision,
+    origin: super::permissions::PermissionOrigin,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Result<RunOutcome, ResolveError> {
     match &actor.pending {
         Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {}
         Some(PendingInteraction::Permission { .. }) | Some(PendingInteraction::Ask { .. }) => {
@@ -318,31 +360,44 @@ pub async fn resolve_permission(
     match decision {
         PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
             let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
-            evidence["source"] = serde_json::json!("driver");
-            let approval_note = Some(serde_json::json!({"permission_gate":evidence}));
+            let bypass = origin == super::permissions::PermissionOrigin::Bypass;
+            evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "driver" });
+            let mut approval = serde_json::json!({"permission_gate":evidence});
+            if bypass {
+                approval["approved_by"] = serde_json::json!("bypass");
+            }
+            let approval_note = Some(approval);
             // The approval is for the destination the driver reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
             // not run on this approval, and goes through the gate afresh.
-            let one = match gate(actor, &call) {
-                Gated::Ask(fresh, fresh_destination)
-                    if fresh_destination == destination && fresh.scope == request.scope =>
-                {
-                    if decision == PermissionDecision::AllowFolder && call.name == "fetch" {
-                        actor
-                            .grants
-                            .grant(&request.agent, &request.tool, request.scope.clone());
+            let one = if bypass && !pending_bypass_eligible_call(actor, &call) {
+                run_gated(actor, &call, observe).await
+            } else {
+                match gate(actor, &call) {
+                    Gated::Ask(fresh, fresh_destination)
+                        if fresh_destination == destination && fresh.scope == request.scope =>
+                    {
+                        if decision == PermissionDecision::AllowFolder && call.name == "fetch" {
+                            actor.grants.grant(
+                                &request.agent,
+                                &request.tool,
+                                request.scope.clone(),
+                            );
+                        }
+                        run_reviewed(actor, &call, destination.as_deref(), approval_note, observe)
+                            .await
                     }
-                    run_reviewed(actor, &call, destination.as_deref(), approval_note, observe).await
+                    // An exception of a guarded agent: the driver's approval is
+                    // for this one call and never becomes a grant, whatever the
+                    // decision said.
+                    Gated::Guarded(needed) | Gated::Reviewed(needed)
+                        if needed.destination == destination && needed.scope == request.scope =>
+                    {
+                        run_reviewed(actor, &call, destination.as_deref(), approval_note, observe)
+                            .await
+                    }
+                    _ => run_gated(actor, &call, observe).await,
                 }
-                // An exception of a guarded agent: the driver's approval is
-                // for this one call and never becomes a grant, whatever the
-                // decision said.
-                Gated::Guarded(needed) | Gated::Reviewed(needed)
-                    if needed.destination == destination && needed.scope == request.scope =>
-                {
-                    run_reviewed(actor, &call, destination.as_deref(), approval_note, observe).await
-                }
-                _ => run_gated(actor, &call, observe).await,
             };
             match one {
                 One::Settled => {}

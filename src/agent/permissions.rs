@@ -23,6 +23,12 @@ use crate::tools::{bound_output, validate_path, ToolContext};
 /// The longest rendering of a call's arguments kept in a request, in bytes.
 pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionOrigin {
+    Driver,
+    Bypass,
+}
+
 /// A driver's answer to a [`PermissionRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]

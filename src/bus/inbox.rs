@@ -27,6 +27,7 @@ const ANSWER_CAPACITY: usize = 16;
 pub struct PermissionAnswer {
     pub request_id: Ulid,
     pub decision: PermissionDecision,
+    pub origin: crate::agent::permissions::PermissionOrigin,
     pub reply: oneshot::Sender<Result<(), PermissionError>>,
 }
 

@@ -257,6 +257,104 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "not a decision");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
+    let env = env();
+    let target = env.ws.join("bypass.txt");
+    let provider = provider(vec![one_write("bypass-write", &target), done("written")]).await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write the file").await;
+    wait_events(&state, id, "permission.requested", 1).await;
+    for _ in 0..2 {
+        let (status, body) = request_json(
+            &router,
+            "POST",
+            &format!("/v1/sessions/{id}/bypass"),
+            Some(&json!({"enabled":true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    wait_events(&state, id, "task.done", 1).await;
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "from bypass-write"
+    );
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["approved_by"], "bypass");
+    let posts = events(&state, id, "tool.post_call").await;
+    assert_eq!(posts.len(), 1);
+    assert!(serde_json::to_string(&posts[0].payload)
+        .unwrap()
+        .contains("bypass"));
+    state.close_session(id).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bypass_leaves_pending_sensitive_request_open() {
+    let env = env();
+    let target = env.ws.join("auth.json");
+    let provider = provider(vec![one_write("protected-write", &target)]).await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write credentials").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    assert_eq!(requested[0].payload["requires_driver"], true);
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/bypass"),
+        Some(&json!({"enabled":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(events(&state, id, "permission.resolved").await.is_empty());
+    assert!(!target.exists());
+    state.close_session(id).await.unwrap();
+    assert!(!target.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
+    let env = env();
+    let target = env.ws.join("driver.txt");
+    let provider = provider(vec![one_write("driver-write", &target), done("written")]).await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write the file").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    let (status, body) = answer(
+        &router,
+        id,
+        &request_id(&requested[0]),
+        json!({"decision":"allow_once"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/bypass"),
+        Some(&json!({"enabled":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_events(&state, id, "task.done", 1).await;
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 1);
+    assert!(resolved[0].payload.get("approved_by").is_none());
+    assert_eq!(
+        std::fs::read_to_string(target).unwrap(),
+        "from driver-write"
+    );
+    state.close_session(id).await.unwrap();
+}
+
 // Given allow-folder on one folder
 // Then a write below it runs without a request, a write in another folder
 //      asks, and a denial with a message reaches the model as

@@ -46,6 +46,10 @@ pub(super) async fn apply(
     status: &super::RuntimeStatus,
     sequencer: &Sequencer,
     request: BypassRequest,
+    pending: Option<(
+        &crate::agent::actor::AgentActor,
+        &crate::bus::inbox::ActorInbox,
+    )>,
 ) {
     let state = *status.bypass.lock().unwrap_or_else(|e| e.into_inner());
     let result = if state.enabled == request.enabled {
@@ -80,10 +84,50 @@ pub(super) async fn apply(
             })
             .map_err(|error| error.to_string())
     };
+    if result.is_ok() {
+        if let Some((actor, inbox)) = pending {
+            status.resolve_pending_bypass(actor, inbox);
+        }
+    }
     let _ = request.reply.send(result);
 }
 
 impl super::RuntimeStatus {
+    pub(super) fn resolve_pending_bypass(
+        &self,
+        actor: &crate::agent::actor::AgentActor,
+        inbox: &crate::bus::inbox::ActorInbox,
+    ) {
+        if !self
+            .bypass
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .enabled
+            || !crate::agent::run_loop::pending_bypass_eligible(actor)
+        {
+            return;
+        }
+        let Some(request) = actor.pending_permission() else {
+            return;
+        };
+        if !self.claim_permission(request.id) {
+            return;
+        }
+        let (reply, _) = oneshot::channel();
+        if inbox
+            .permission_sender()
+            .try_send(crate::bus::inbox::PermissionAnswer {
+                request_id: request.id,
+                decision: crate::agent::permissions::PermissionDecision::AllowOnce,
+                origin: crate::agent::permissions::PermissionOrigin::Bypass,
+                reply,
+            })
+            .is_err()
+        {
+            self.release_permission(request.id);
+        }
+    }
+
     pub async fn set_bypass(
         &self,
         enabled: bool,

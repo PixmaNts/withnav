@@ -17,7 +17,7 @@ pub struct AppState {
     service: Service,
     pub http: Arc<HttpConfig>,
     pub(super) settings_write: Arc<tokio::sync::Mutex<()>>,
-    pub(super) flows: Arc<super::flows::Host>,
+    pub(super) flows: Arc<crate::flows::host::Host>,
 }
 
 impl AppState {
@@ -35,14 +35,11 @@ impl AppState {
         config: ServerConfig,
         hooks: Arc<dyn SessionHooks>,
     ) -> Result<Self, ServerError> {
-        let flows = Arc::new(super::flows::Host::new(
-            config.config_dir.clone(),
-            config.data_dir.clone(),
-            config.models_path.clone(),
-        ));
         let (session, http) = config.split();
+        let service = Service::with_hooks(session, hooks)?;
+        let flows = service.flows.clone();
         Ok(Self {
-            service: Service::with_hooks(session, hooks)?,
+            service,
             http: Arc::new(http),
             settings_write: Arc::default(),
             flows,

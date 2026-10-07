@@ -72,7 +72,7 @@ pub enum ChatMessage {
     },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UserProvenance {
     #[default]
@@ -80,6 +80,17 @@ pub enum UserProvenance {
     Navigator,
     Parent,
     Subagent,
+    #[serde(untagged)]
+    Flow {
+        source: FlowSource,
+        flow: String,
+        run_id: String,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowSource {
+    Flow,
 }
 impl UserProvenance {
     fn is_driver(&self) -> bool {

@@ -36,3 +36,6 @@ auth.json
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Orchestrator progress files (local only)
+.slim/deepwork/

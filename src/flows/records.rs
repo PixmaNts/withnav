@@ -118,13 +118,20 @@ impl Records {
         match dir.read("runs.jsonl", 32 * 1024 * 1024, true) {
             Ok(text) => Ok(text
                 .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
+                .filter_map(|line| serde_json::from_str::<RunRecord>(line).ok())
+                .map(|mut record| {
+                    super::redaction::record(&mut record);
+                    record
+                })
                 .collect()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
             Err(e) => Err(e),
         }
     }
     pub fn append(&self, record: &RunRecord) -> std::io::Result<()> {
+        let mut record = record.clone();
+        super::redaction::record(&mut record);
+        let record = &record;
         let _guard = self
             .write
             .lock()

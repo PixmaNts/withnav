@@ -396,29 +396,7 @@ impl ContextSnapshot {
 
 /// Conservative whole-input marking; values stay available for live evaluation,
 /// while the engine replaces marked evidence with its redaction marker in captures.
-fn contains_secret(value: &Value) -> bool {
-    match value {
-        Value::String(text) => text
-            .split(|c: char| c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ':' | '='))
-            .any(|word| {
-                [
-                    "sk-",
-                    "ghp_",
-                    "github_pat_",
-                    "gho_",
-                    "xoxb-",
-                    "xoxp-",
-                    "AKIA",
-                    "eyJ",
-                ]
-                .iter()
-                .any(|prefix| word.starts_with(prefix) && word.len() >= 20)
-            }),
-        Value::Array(values) => values.iter().any(contains_secret),
-        Value::Object(values) => values.values().any(contains_secret),
-        _ => false,
-    }
-}
+use super::redaction::contains_secret;
 impl InputSource for ContextSnapshot {
     fn collect<'a>(
         &'a self,

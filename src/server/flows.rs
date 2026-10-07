@@ -91,7 +91,10 @@ async fn dispatch(
     body: Bytes,
 ) -> Response {
     match handle(&state, &query, &headers, peer, method, &tail, &body).await {
-        Ok((status, value)) => (status, Json(value)).into_response(),
+        Ok((status, mut value)) => {
+            crate::flows::redaction::response(&mut value);
+            (status, Json(value)).into_response()
+        }
         Err(e) => error(e),
     }
 }
@@ -262,6 +265,7 @@ async fn handle(
             )
             .await;
             outcome.trace.mode = "sample".into();
+            crate::flows::redaction::record(&mut outcome.trace);
             records.append(&outcome.trace)?;
             ok(json!(outcome.trace))
         }

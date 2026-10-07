@@ -231,6 +231,18 @@ impl Runtime {
         pending: PendingTrigger,
         reason: WakeReason,
     ) {
+        self.deliver_wake_message(uri, ctx, pending, reason, None)
+            .await;
+    }
+
+    pub(super) async fn deliver_wake_message(
+        self: &Arc<Self>,
+        uri: String,
+        ctx: TriggerContext,
+        pending: PendingTrigger,
+        reason: WakeReason,
+        note: Option<String>,
+    ) {
         const UNAVAILABLE: DeliveryOutcome = DeliveryOutcome::None {
             reason: "cognition_unavailable",
         };
@@ -245,13 +257,15 @@ impl Runtime {
             return;
         }
         let workspace = self.workspace.lock().await.clone();
-        let message = wake_message(
-            &reason,
-            &relative_path(&ctx.uri, workspace.as_deref()),
-            ctx.first_changed_line,
-            &ctx.diff,
-            &ctx.intent_text,
-        );
+        let message = note.unwrap_or_else(|| {
+            wake_message(
+                &reason,
+                &relative_path(&ctx.uri, workspace.as_deref()),
+                ctx.first_changed_line,
+                &ctx.diff,
+                &ctx.intent_text,
+            )
+        });
         let outcome = feed.post_wake(&message).await;
         if matches!(outcome, WakeOutcome::Posted(_) | WakeOutcome::Queued(_)) {
             // A wake consumes the edit like a remark does: stamp the wake

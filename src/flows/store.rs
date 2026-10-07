@@ -166,6 +166,25 @@ impl FlowStore {
                 diagnostics = e.errors.len(),
                 "flow startup rejected; builtins only"
             );
+            let builtins = super::builtin::definitions()
+                .into_iter()
+                .filter_map(|(definition, templates)| {
+                    let name = definition.flow.name.clone();
+                    definition
+                        .validate(&catalogue(), &Capabilities { images: false }, &templates)
+                        .ok()
+                        .map(|compiled| {
+                            (
+                                name,
+                                Arc::new(LoadedFlow {
+                                    location: Location::Builtin,
+                                    compiled,
+                                }),
+                            )
+                        })
+                })
+                .collect();
+            *store.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(builtins);
         }
         store
     }
@@ -231,7 +250,26 @@ impl FlowStore {
     pub fn get(&self, name: &str, location: Location) -> Result<Document, StoreError> {
         check_name(name)?;
         if location == Location::Builtin {
-            return Err(StoreError::reason("not_found"));
+            let (definition, templates) = super::builtin::definitions()
+                .into_iter()
+                .find(|(d, _)| d.flow.name == name)
+                .ok_or_else(|| StoreError::reason("not_found"))?;
+            let toml = definition.to_toml().map_err(|errors| StoreError {
+                reason: "invalid",
+                errors,
+            })?;
+            return Ok(Document {
+                name: name.into(),
+                location,
+                path: format!("builtin/{name}.toml"),
+                revision: revision(&toml, &templates),
+                toml,
+                definition: Some(definition),
+                templates,
+                errors: vec![],
+                saved_since_reload: false,
+                read_only: true,
+            });
         }
         let path = self.directory(location)?;
         let dir = Directory::open(&path, false).map_err(missing)?;
@@ -286,7 +324,10 @@ impl FlowStore {
         Ok(self.documents()?.iter().map(Document::summary).collect())
     }
     fn documents(&self) -> Result<Vec<Document>, StoreError> {
-        let mut documents = vec![];
+        let mut documents = super::builtin::definitions()
+            .into_iter()
+            .map(|(d, _)| self.get(&d.flow.name, Location::Builtin))
+            .collect::<Result<Vec<_>, _>>()?;
         for location in [Location::Global, Location::Workspace] {
             let path = self.directory(location)?;
             let dir = match Directory::open(&path, false) {

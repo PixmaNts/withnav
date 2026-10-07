@@ -23,6 +23,7 @@ const CONVERSATION_CONTEXT_LINES: usize = 20;
 
 /// One trigger's gathered context: everything the pipeline inputs, the
 /// templates and the log record need.
+#[derive(Clone)]
 pub(super) struct TriggerContext {
     pub(super) uri: String,
     pub(super) event: &'static str,
@@ -51,12 +52,13 @@ pub(super) struct TriggerContext {
     pub(super) first_changed_line: usize,
     pub(super) context_text: String,
     pub(super) diagnostics_text: String,
+    pub(super) diagnostics_payload: serde_json::Value,
     pub(super) conversation_text: String,
     pub(super) live_state_text: String,
 }
 
 impl TriggerContext {
-    fn template_inputs(&self) -> std::collections::BTreeMap<String, String> {
+    pub(super) fn template_inputs(&self) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([
             ("file".to_string(), self.uri.clone()),
             ("language".to_string(), self.language_id.clone()),
@@ -69,7 +71,7 @@ impl TriggerContext {
         ])
     }
 
-    fn prefilter_inputs(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+    pub(super) fn prefilter_inputs(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         std::collections::BTreeMap::from([
             (
                 "changed_lines".to_string(),
@@ -99,7 +101,12 @@ impl TriggerContext {
 
 impl Runtime {
     /// Gathers everything one trigger needs from the document state.
-    async fn gather(&self, uri: &str, event: TriggerKind, now: Instant) -> Option<TriggerContext> {
+    pub(super) async fn gather(
+        &self,
+        uri: &str,
+        event: TriggerKind,
+        now: Instant,
+    ) -> Option<TriggerContext> {
         let snapshot = self.documents.lock().await.snapshot(uri, event, now)?;
         let has_errors = snapshot.diagnostics.iter().any(|d| d.severity == "error");
         let diagnostics_text = snapshot
@@ -108,6 +115,7 @@ impl Runtime {
             .map(|d| format!("line {}: [{}] {}", d.line + 1, d.severity, d.message))
             .collect::<Vec<_>>()
             .join("\n");
+        let diagnostics_payload = serde_json::json!(snapshot.diagnostics.iter().map(|d| serde_json::json!({"message":d.message,"severity": match d.severity.as_str() { "error" => 1, "warning" => 2, "information" => 3, _ => 4 }, "range":{"start":{"line":d.line,"character":0},"end":{"line":d.line,"character":0}}})).collect::<Vec<_>>());
         let (intent_text, has_intent) = self.current_intent().await;
         // Reuse the prototype's diff/excerpt builders for the {{diff}} and
         // {{context}} template variables.
@@ -165,6 +173,7 @@ impl Runtime {
             first_changed_line,
             context_text: ctx.text_excerpt,
             diagnostics_text,
+            diagnostics_payload,
             conversation_text,
             live_state_text: snapshot.live_state,
         })
@@ -175,6 +184,9 @@ impl Runtime {
     pub(super) async fn evaluate(self: &Arc<Self>, uri: String, event: TriggerKind) {
         let config = self.config.lock().await.clone();
         if !config.enabled {
+            return;
+        }
+        if self.evaluate_flows(&uri, event).await {
             return;
         }
         // An event no trigger of the pipeline listens to: nothing to decide,

@@ -322,6 +322,37 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // Admission, layers and cognition all use the initialize workspace catalog.
     let workspace = Some(initialized_workspace);
     let user_dir = navigator::default_user_dir();
+    let flow_client = crate::flows::client::NavaiDecisionClient::new(
+        preflight.models(),
+        &config_dir,
+        Arc::new(ClientCache::new()),
+    );
+    let flow_factory = flow_client.ok().map(|client| {
+        let client: Arc<dyn instinct_flow::DecisionClient> = Arc::new(client);
+        let root = workspace.clone().unwrap_or_else(|| PathBuf::from("."));
+        for (source, target) in [
+            (root.join(".navigator"), root.join(".navai/flows")),
+            (config_dir.join("navigator"), config_dir.join("flows")),
+        ] {
+            if let Err(error) = crate::flows::migrate::migrate_directory(&source, &target) {
+                tracing::warn!(%error, "navigator flow conversion failed; legacy source retained");
+            }
+        }
+        let store = Arc::new(crate::flows::store::FlowStore::new(
+            root.clone(),
+            config_dir.clone(),
+        ));
+        let records = crate::paths::data_dir()
+            .map(|data| Arc::new(crate::flows::records::Records::new(&data, &root)));
+        Arc::new(move |effects| {
+            let runtime =
+                crate::flows::runtime::FlowRuntime::new(store.clone(), client.clone(), effects);
+            Arc::new(match &records {
+                Some(records) => runtime.with_records(records.clone()),
+                None => runtime,
+            })
+        }) as Arc<crate::navigator::FlowFactory>
+    });
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
     // loopback ephemeral port with a per-process bearer token, announced as
@@ -353,6 +384,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
             layers.metacognition_model.clone(),
         )
         .with_disabled_layers(layers.disabled.clone());
+    deps.flows = flow_factory;
     if let Some(info) = http.as_ref().map(|h| h.info.clone()) {
         deps = deps.with_server_info(info);
     }

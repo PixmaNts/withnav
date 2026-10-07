@@ -1,0 +1,121 @@
+[constants]
+
+[flow]
+blocking = false
+enabled = true
+name = "navigator-default-conversation"
+on = "conversation"
+start = ["code_contradicts_conversation"]
+version = 1
+when = "changed_lines >= 0 && since_last_remark_ms >= 30000"
+
+[flow.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+
+[layout]
+
+[[node]]
+id = "code_contradicts_conversation"
+instructions = "Does the code in this file already conflict with an explicit goal or agreement the driver stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
+state_template = "state.md"
+threshold = 0.5
+type = "noul"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+no = ["branch_0"]
+yes = ["branch_0"]
+
+[[node]]
+condition = "has_conversation && code_contradicts_conversation > 0.8"
+id = "branch_0"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+code_contradicts_conversation = "answer.code_contradicts_conversation"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+
+[node.next]
+false = ["branch_1"]
+true = ["action_0"]
+
+[[node]]
+action = "remark"
+id = "action_0"
+type = "action"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+
+[node.params]
+prompt = """
+You are the metacognition of a pair-programming navigator: you write one short remark at the end of a line, never more than one.
+
+The driver and the cognition just agreed on something in the conversation, and the code in this file already contradicts it. Say which line goes against what was agreed and why, so the driver sees it where it is.
+
+File: {file} ({language})
+Intent:
+{intent}
+
+Conversation:
+{conversation}
+
+Code (numbered lines):
+{context}
+
+Diagnostics:
+{diagnostics}
+
+Write one concrete remark on the line that contradicts the conversation. The line must be a line number of the code above. If on reflection the code does not contradict what was agreed, stay silent. Never rewrite code, never produce more than one remark.
+"""
+
+[[node]]
+condition = "true"
+id = "branch_1"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+code_contradicts_conversation = "answer.code_contradicts_conversation"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+
+[node.next]

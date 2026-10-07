@@ -4,7 +4,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub fn catalogue() -> Catalogue {
-    use ValueType::{Array, Integer, Object, String as Text};
+    use ValueType::{Array, Boolean, Integer, Object, String as Text};
     let all = [
         "conversation",
         "diagnostics",
@@ -118,28 +118,62 @@ pub fn catalogue() -> Catalogue {
     ];
     let triggers = schemas
         .into_iter()
-        .map(|(name, fields, sample_payload)| TriggerSpec {
-            name: name.into(),
-            payload_fields: fields
-                .into_iter()
-                .map(|(name, value_type, required)| FieldSpec {
-                    name: name.into(),
-                    value_type,
-                    required,
-                })
-                .collect(),
-            can_block: matches!(name, "tool.pre_call" | "message.received"),
-            allowed_actions: actions
-                .iter()
-                .filter(|a| a.allowed_triggers.iter().any(|t| t == name))
-                .map(|a| a.name.clone())
-                .collect(),
-            sample_payload,
-            default_fallback: (name == "tool.pre_call").then(|| FallbackAction {
-                action: "ask_driver".into(),
-                params: BTreeMap::from([("note".into(), json!("Flow failed: {failure_message}"))]),
-                then: None,
-            }),
+        .map(|(name, mut fields, sample_payload)| {
+            if editor.contains(&name) {
+                fields.extend(super::migrate::TEMPLATE_FIELDS.iter().map(|f| {
+                    (
+                        match *f {
+                            "file" => "template_file",
+                            "language" => "template_language",
+                            "intent" => "template_intent",
+                            "diff" => "template_diff",
+                            "context" => "template_context",
+                            "diagnostics" => "template_diagnostics",
+                            "live_state" => "template_live_state",
+                            "conversation" => "template_conversation",
+                            _ => unreachable!("fixed template fields"),
+                        },
+                        Text,
+                        false,
+                    )
+                }));
+                fields.extend(
+                    super::migrate::INTEGER_FIELDS
+                        .iter()
+                        .map(|f| (*f, Integer, false)),
+                );
+                fields.extend(
+                    super::migrate::BOOLEAN_FIELDS
+                        .iter()
+                        .map(|f| (*f, Boolean, false)),
+                );
+            }
+            TriggerSpec {
+                name: name.into(),
+                payload_fields: fields
+                    .into_iter()
+                    .map(|(name, value_type, required)| FieldSpec {
+                        name: name.into(),
+                        value_type,
+                        required,
+                    })
+                    .collect(),
+                can_block: matches!(name, "tool.pre_call" | "message.received"),
+                allowed_actions: actions
+                    .iter()
+                    .filter(|a| a.allowed_triggers.iter().any(|t| t == name))
+                    .map(|a| a.name.clone())
+                    .collect(),
+                sample_payload,
+                default_fallback: (name == "tool.pre_call").then(|| FallbackAction {
+                    action: "ask_driver".into(),
+                    params: BTreeMap::from([(
+                        "note".into(),
+                        json!("Flow failed: {failure_message}"),
+                    )]),
+                    then: None,
+                }),
+            }
         })
         .collect();
     let mut inputs = vec![];

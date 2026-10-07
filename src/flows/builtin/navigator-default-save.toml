@@ -1,0 +1,419 @@
+[constants]
+
+[flow]
+blocking = false
+enabled = true
+name = "navigator-default-save"
+on = "save"
+start = [
+    "contradicts_conversation",
+    "drift",
+    "route",
+    "stuck",
+    "unfinished",
+    "worth_attention",
+]
+version = 1
+when = "called_for_help || (changed_lines >= 1 && since_last_remark_ms >= 0)"
+
+[flow.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+
+[layout]
+
+[[node]]
+id = "contradicts_conversation"
+instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the driver stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
+state_template = "state.md"
+threshold = 0.5
+type = "noul"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+no = ["branch_0"]
+yes = ["branch_0"]
+
+[[node]]
+id = "drift"
+instructions = "Does an observable decision in the code conflict with the stated intent? Missing implementation, compile errors and copied scaffolding being adapted are not drift."
+state_template = "state.md"
+threshold = 0.5
+type = "noul"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+no = ["branch_0"]
+yes = ["branch_0"]
+
+[[node]]
+id = "route"
+instructions = "Who should handle this?"
+state_template = "state.md"
+type = "choice"
+
+[node.criteria]
+cognition = "A deeper discussion about design or intent"
+metacognition = "A short local remark on the code"
+silent = "Nothing worth saying"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+cognition = ["branch_0"]
+metacognition = ["branch_0"]
+silent = ["branch_0"]
+
+[[node]]
+id = "stuck"
+instructions = "Has the driver tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
+state_template = "state.md"
+threshold = 0.5
+type = "noul"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+no = ["branch_0"]
+yes = ["branch_0"]
+
+[[node]]
+id = "unfinished"
+instructions = "Is this an edit the driver is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
+state_template = "state.md"
+threshold = 0.5
+type = "noul"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+no = ["branch_0"]
+yes = ["branch_0"]
+
+[[node]]
+id = "worth_attention"
+instructions = "Is there a concrete local correction or next step worth saying now? Incomplete code can still merit help. Do not score routine unfinished syntax, or a feature not implemented yet, as a problem by itself."
+state_template = "state.md"
+threshold = 0.5
+type = "noul"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+no = ["branch_0"]
+yes = ["branch_0"]
+
+[[node]]
+condition = "called_for_help"
+id = "branch_0"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+contradicts_conversation = "answer.contradicts_conversation"
+drift = "answer.drift"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+route = "answer.route"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+stuck = "answer.stuck"
+unfinished = "answer.unfinished"
+worth_attention = "answer.worth_attention"
+
+[node.next]
+false = ["branch_1"]
+true = ["action_0"]
+
+[[node]]
+action = "remark"
+id = "action_0"
+type = "action"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+
+[node.params]
+prompt = """
+You are the metacognition of a pair-programming navigator: you write one short remark at the end of a line, never more than one.
+
+The driver just wrote a comment that calls on you. Answer it: that is why you are speaking.
+
+File: {file} ({language})
+Intent:
+{intent}
+
+Diff since last consideration (the call is in the added lines):
+{diff}
+
+Context (numbered lines):
+{context}
+
+Diagnostics:
+{diagnostics}
+
+Live state (recent distinct edits, then the current diagnostics only; whether a diagnostic persisted across edits is not recorded):
+{live_state}
+
+Conversation:
+{conversation}
+
+Put your remark on the line of the comment that calls on you. Answer what the comment asks, or the question its surrounding code raises, in one or two concrete sentences, as a senior pair programmer would say it aloud. Never rewrite the code, never produce more than one remark. If the comment is not actually addressed to you, stay silent.
+"""
+
+[[node]]
+condition = "(stuck > 0.8) && since_last_wake_ms >= 120000"
+id = "branch_1"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+contradicts_conversation = "answer.contradicts_conversation"
+drift = "answer.drift"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+route = "answer.route"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+stuck = "answer.stuck"
+unfinished = "answer.unfinished"
+worth_attention = "answer.worth_attention"
+
+[node.next]
+false = ["branch_2"]
+true = ["action_1"]
+
+[[node]]
+action = "wake"
+id = "action_1"
+type = "action"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+
+[node.params]
+note = """
+Navigator noticed an obstacle in {file}.
+{diff}"""
+
+[[node]]
+condition = "(unfinished < 0.5 && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))) && since_last_wake_ms >= 120000"
+id = "branch_2"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+contradicts_conversation = "answer.contradicts_conversation"
+drift = "answer.drift"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+route = "answer.route"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+stuck = "answer.stuck"
+unfinished = "answer.unfinished"
+worth_attention = "answer.worth_attention"
+
+[node.next]
+false = ["branch_3"]
+true = ["action_2"]
+
+[[node]]
+action = "wake"
+id = "action_2"
+type = "action"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+
+[node.params]
+note = """
+Navigator noticed an obstacle in {file}.
+{diff}"""
+
+[[node]]
+condition = 'worth_attention > 0.8 && route != "silent" && since_last_remark_ms >= 45000'
+id = "branch_3"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+contradicts_conversation = "answer.contradicts_conversation"
+drift = "answer.drift"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+route = "answer.route"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+stuck = "answer.stuck"
+unfinished = "answer.unfinished"
+worth_attention = "answer.worth_attention"
+
+[node.next]
+false = ["branch_4"]
+true = ["action_3"]
+
+[[node]]
+action = "remark"
+id = "action_3"
+type = "action"
+
+[node.inputs]
+context = "event.template_context"
+conversation = "event.template_conversation"
+diagnostics = "event.template_diagnostics"
+diff = "event.template_diff"
+file = "event.template_file"
+intent = "event.template_intent"
+language = "event.template_language"
+live_state = "event.template_live_state"
+
+[node.next]
+
+[node.params]
+prompt = """
+You are the metacognition of a pair-programming navigator: you write one short remark at the end of a line, never more than one.
+
+File: {file} ({language})
+Intent:
+{intent}
+
+Diff since last consideration:
+{diff}
+
+Context (numbered lines):
+{context}
+
+Diagnostics:
+{diagnostics}
+
+Live state (recent distinct edits, then the current diagnostics only; whether a diagnostic persisted across edits is not recorded):
+{live_state}
+
+Conversation:
+{conversation}
+
+Help with one concrete obstacle or wrong choice in the change above, as a senior pair programmer would say it aloud. Never announce that code is unfinished: the driver knows. If the correction is not evident from what you can see, stay silent. Never rewrite code, never produce more than one remark.
+"""
+
+[[node]]
+condition = "true"
+id = "branch_4"
+type = "expression"
+
+[node.assign]
+
+[node.inputs]
+called_for_help = "event.called_for_help"
+changed_lines = "event.changed_lines"
+contradicts_conversation = "answer.contradicts_conversation"
+drift = "answer.drift"
+has_conversation = "event.has_conversation"
+has_errors = "event.has_errors"
+has_intent = "event.has_intent"
+route = "answer.route"
+since_last_remark_ms = "event.since_last_remark_ms"
+since_last_wake_ms = "event.since_last_wake_ms"
+stuck = "answer.stuck"
+unfinished = "answer.unfinished"
+worth_attention = "answer.worth_attention"
+
+[node.next]

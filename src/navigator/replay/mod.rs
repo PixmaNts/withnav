@@ -26,6 +26,7 @@
 //! the server derived them from the intent record, the conversation feed
 //! and the latest diagnostics.
 
+pub mod flows;
 mod log;
 mod report;
 

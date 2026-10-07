@@ -10,7 +10,13 @@ pub(super) struct Steering {
     // remain in the durable completion outbox until transcript consumption.
     pub queue: Mutex<VecDeque<Operation>>,
     terminal: std::sync::atomic::AtomicBool,
-    flow_wakes: Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    flow_wakes: Mutex<FlowWakes>,
+}
+
+#[derive(Debug, Default)]
+struct FlowWakes {
+    last: Option<std::time::Instant>,
+    since_driver: bool,
 }
 
 #[cfg(test)]
@@ -55,14 +61,44 @@ mod tests {
         assert!(steering.admit_flow("wake".into(), "review".into(), "b".into(), true));
         assert!(steering.has_wake());
         assert_eq!(steering.apply(vec![]).len(), 1);
-        assert!(steering.admit_flow("loop".into(), "review".into(), "c".into(), true));
+        assert_eq!(
+            steering.admit_flow_report(
+                "loop".into(),
+                "another-flow".into(),
+                "c".into(),
+                true,
+                false
+            ),
+            Err("wake cooldown".into())
+        );
         assert!(!steering.has_wake());
         assert!(steering.apply(vec![]).is_empty());
-        steering.flow_wakes.lock().unwrap().insert(
-            "review".into(),
-            std::time::Instant::now() - std::time::Duration::from_secs(120),
-        );
+        steering.flow_wakes.lock().unwrap().last =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(120));
         assert!(steering.admit_flow("later".into(), "review".into(), "d".into(), true));
+        assert!(steering.has_wake());
+    }
+
+    #[test]
+    fn turn_end_cannot_wake_again_after_a_long_turn_until_driver_input() {
+        let steering = Steering::default();
+        assert_eq!(
+            steering.admit_flow_report("wake".into(), "review".into(), "a".into(), true, true),
+            Ok(())
+        );
+        assert_eq!(steering.apply(vec![]).len(), 1);
+        steering.flow_wakes.lock().unwrap().last =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(121));
+        assert_eq!(
+            steering.admit_flow_report("loop".into(), "other".into(), "b".into(), true, true),
+            Err("wake cooldown".into())
+        );
+        assert!(!steering.has_wake());
+        steering.flow_wakes.lock().unwrap().since_driver = false;
+        assert_eq!(
+            steering.admit_flow_report("new task".into(), "other".into(), "c".into(), true, true),
+            Ok(())
+        );
         assert!(steering.has_wake());
     }
 
@@ -127,30 +163,52 @@ pub(super) struct Operation {
 }
 
 impl Steering {
-    /// Flow wakes have a 120 s minimum interval per flow and session incarnation.
-    /// This also coalesces action chains and prevents turn.end feedback loops.
+    /// The steering instance belongs to one session, so all flows share its cooldown.
     pub fn admit_flow(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
+        match self.admit_flow_report(text, flow, run_id, wake, false) {
+            Ok(()) => true,
+            Err(reason) => reason == "wake cooldown",
+        }
+    }
+
+    fn admit_flow_report(
+        &self,
+        text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+        turn_end: bool,
+    ) -> Result<(), String> {
         let mut wakes = self.flow_wakes.lock().unwrap_or_else(|e| e.into_inner());
         let now = std::time::Instant::now();
-        wakes.retain(|_, last| now.duration_since(*last) < std::time::Duration::from_secs(120));
-        if wake && wakes.contains_key(&flow) {
-            return true;
+        if wake
+            && (wakes
+                .last
+                .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_secs(120))
+                || (turn_end && wakes.since_driver))
+        {
+            return Err("wake cooldown".into());
         }
         let admitted = self.admit(Operation {
             id: Ulid::new(),
             content: format!("<untrusted-flow-note>\n{text}\n</untrusted-flow-note>"),
             provenance: UserProvenance::Flow {
                 source: crate::provider::openai::FlowSource::Flow,
-                flow: flow.clone(),
+                flow,
                 run_id,
             },
             interrupt: false,
             wake,
         });
         if admitted && wake {
-            wakes.insert(flow, now);
+            wakes.last = Some(now);
+            wakes.since_driver = true;
         }
-        admitted
+        if admitted {
+            Ok(())
+        } else {
+            Err("session stopped".into())
+        }
     }
 
     pub fn has_wake(&self) -> bool {
@@ -233,5 +291,34 @@ impl Steering {
             provenance: operation.provenance,
         });
         Some(transcript)
+    }
+}
+
+impl super::RuntimeStatus {
+    pub(crate) fn flow_driver_message(&self) {
+        self.steering
+            .flow_wakes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .since_driver = false;
+    }
+
+    pub(crate) fn queue_flow_note_report(
+        &self,
+        text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+        turn_end: bool,
+    ) -> Result<(), String> {
+        self.steering
+            .admit_flow_report(text, flow, run_id, wake, turn_end)?;
+        if wake {
+            self.controls
+                .tx
+                .send(super::Control::Steer)
+                .map_err(|_| "session stopped".to_string())?;
+        }
+        Ok(())
     }
 }

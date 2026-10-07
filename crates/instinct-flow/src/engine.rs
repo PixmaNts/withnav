@@ -948,12 +948,12 @@ async fn execute(
         tokio::sync::Semaphore::new(e.compiled.catalogue.limits.concurrent_calls.min(4));
     let mut calls: FuturesUnordered<BoxFuture<'_, Completed>> = FuturesUnordered::new();
     type Collected = (
-        usize,
         Vec<String>,
         Result<BTreeMap<String, InputValue>, InputError>,
     );
     let mut collections: FuturesUnordered<BoxFuture<'_, Collected>> = FuturesUnordered::new();
     let mut collecting = BTreeSet::new();
+    let mut pending_references = BTreeSet::new();
     let mut decision_count = 0;
     loop {
         e.check(cancel)?;
@@ -966,10 +966,17 @@ async fn execute(
             let names = e.needed(&map);
             if !names.is_empty() {
                 collecting.insert(i);
+                let names: Vec<_> = names
+                    .into_iter()
+                    .filter(|name| pending_references.insert(name.clone()))
+                    .collect();
+                if names.is_empty() {
+                    continue;
+                }
                 let deadline = e.deadline;
                 collections.push(Box::pin(async move {
                     let result = inputs.collect(&names, cancel, deadline).await;
-                    (i, names, result)
+                    (names, result)
                 }));
             }
         }
@@ -1085,10 +1092,13 @@ async fn execute(
             _=cancel.cancelled()=>return Err((FailureKind::Cancelled,"run cancelled".into())),
             _=tokio::time::sleep_until(e.deadline.into())=>return Err((FailureKind::Timeout,"run deadline exhausted".into())),
             result=collections.next(), if !collections.is_empty()=> {
-                let (i, names, result) = result.expect("nonempty collection set");
+                let (names, result) = result.expect("nonempty collection set");
                 e.check(cancel)?;
+                for name in &names {
+                    pending_references.remove(name);
+                }
                 e.accept_inputs(names, result.map_err(|_| (FailureKind::Input, "host input collection failed".into()))?)?;
-                collecting.remove(&i);
+                collecting.retain(|i| !e.needed(&e.compiled.definition.node[*i].inputs).is_empty());
                 continue;
             },
             result=calls.next(), if !calls.is_empty()=>result.expect("nonempty call set"),

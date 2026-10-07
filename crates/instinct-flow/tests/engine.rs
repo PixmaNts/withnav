@@ -516,6 +516,64 @@ struct Values {
     value: serde_json::Value,
     redacted: bool,
 }
+#[tokio::test]
+async fn simultaneous_consumers_share_pending_host_collection() {
+    struct Once {
+        calls: AtomicUsize,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    impl InputSource for Once {
+        fn collect<'a>(
+            &'a self,
+            names: &'a [String],
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<BTreeMap<String, InputValue>, InputError>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.entered.notify_one();
+                self.release.notified().await;
+                Inputs
+                    .collect(names, &CancellationToken::new(), Instant::now())
+                    .await
+            })
+        }
+    }
+    let c = compile(
+        &(header("['a','b']")
+            + &decision("a", "[node.inputs]\nx='session.agent'")
+            + &decision("b", "[node.inputs]\nx='session.agent'")),
+    );
+    let source = Once {
+        calls: AtomicUsize::new(0),
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    };
+    let client = Fake::new();
+    let event = event();
+    let cancel = CancellationToken::new();
+    let work = run(
+        &c,
+        &event,
+        &source,
+        &client,
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "once".into(),
+        },
+        &cancel,
+    );
+    let (outcome, ()) = tokio::join!(work, async {
+        source.entered.notified().await;
+        assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        source.release.notify_one();
+    });
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+    assert!(outcome.trace.nodes.iter().all(|n| n.status == "completed"));
+}
 impl InputSource for Values {
     fn collect<'a>(
         &'a self,

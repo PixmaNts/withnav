@@ -2056,6 +2056,137 @@ async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() 
 }
 
 #[tokio::test]
+async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let service = fx.state.service();
+    let parent = service
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child_gate = navai::session::ChildPreparationBarrier::default();
+    service.pause_child_bypass_gate(child_gate.clone());
+    let spawning = service.clone();
+    let first_child = tokio::spawn(async move {
+        spawning
+            .create_child_session(parent, "writer", "write")
+            .await
+    });
+    child_gate
+        .reached
+        .notified()
+        .bounded(file!(), line!())
+        .await;
+
+    // Another publication is outstanding before the root's sequencer pauses.
+    let registration = navai::session::ChildPreparationBarrier::default();
+    service.pause_child_registration(registration.clone());
+    let spawning = service.clone();
+    let publication = tokio::spawn(async move {
+        spawning
+            .create_child_session(parent, "writer", "another task")
+            .await
+    });
+    registration
+        .reached
+        .notified()
+        .bounded(file!(), line!())
+        .await;
+
+    // The toggle acquires the gate as soon as the first child releases it.
+    let root_commit = navai::session::ChildPreparationBarrier::default();
+    service.pause_bypass_commit(root_commit.clone());
+    service.fail_bypass_commit_after(1);
+    let toggle = service.set_bypass(
+        parent,
+        true,
+        navai::bus::runtime::bypass::BypassOrigin::Http,
+    );
+    tokio::pin!(toggle);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut toggle)
+            .await
+            .is_err()
+    );
+    child_gate.release.notify_one();
+    tokio::select! {
+        _ = root_commit.reached.notified().bounded(file!(), line!()) => {}
+        result = &mut toggle => panic!("toggle finished before its commit: {result:?}"),
+    }
+    let child = first_child
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, _hold) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+
+    // The outstanding publication now waits for the root's bypass gate.
+    registration.release.notify_one();
+
+    // Hold the lifecycle gate without marking the live child stopping yet.
+    let claim = navai::session::ChildPreparationBarrier::default();
+    service.pause_lifecycle_claim(claim.clone());
+    let stopping = service.clone();
+    let stop = tokio::spawn(async move { stopping.close_session(parent).await });
+    claim.reached.notified().bounded(file!(), line!()).await;
+    let child_commit = navai::session::ChildPreparationBarrier::default();
+    service.pause_bypass_commit(child_commit.clone());
+    root_commit.release.notify_one();
+    tokio::select! {
+        _ = child_commit.reached.notified().bounded(file!(), line!()) => {}
+        result = &mut toggle => panic!("toggle finished before the child's commit: {result:?}"),
+    }
+    child_commit.release.notify_one();
+    // Drive the failed commit through its active-state check and cleanup;
+    // cleanup must wait for the lifecycle gate still held by the parent stop.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut toggle)
+            .await
+            .is_err()
+    );
+    assert!(
+        service.session_is_cancelled(child),
+        "the failed child is cancelled before lifecycle cleanup can proceed"
+    );
+    claim.release.notify_one();
+
+    let (error, stopped, published) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(&mut toggle, stop, publication)
+        })
+        .await
+        .expect("failed-child cleanup and parent stop must not deadlock");
+    let error = error.unwrap_err().to_string();
+    assert!(
+        error.contains(&child.to_string()) && error.contains("stopped"),
+        "{error}"
+    );
+    stopped.unwrap().unwrap();
+    // Publication may win the race with the lifecycle claim once the gate
+    // is released; the parent stop must still tear down that child.
+    if let Ok(published) = published.unwrap() {
+        assert_eq!(
+            service
+                .session_summary(published)
+                .await
+                .unwrap()
+                .actor_state,
+            "stopped"
+        );
+    }
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
 async fn a_child_that_cannot_follow_the_toggle_is_stopped() {
     let mut provider = common::sse::spawn_streaming_provider()
         .bounded(file!(), line!())

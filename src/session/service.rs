@@ -1985,21 +1985,28 @@ impl Service {
                         .is_none_or(|now| now.lifecycle != Lifecycle::Active) => {}
                 Err(error) => {
                     // A child that cannot follow would run under a policy the
-                    // driver did not choose: stop it before reporting.
-                    let stopped = match self.close_session(child_id).await {
-                        Ok(()) => "stopped".to_string(),
-                        Err(stop) => format!("could not be stopped: {stop}"),
-                    };
-                    failures.push(format!("{child_id}: {error} ({stopped})"));
+                    // driver did not choose: cancel its runtime immediately.
+                    child.session_cancel.cancel();
+                    failures.push((child_id, error));
                 }
             }
         }
+        // Lifecycle teardown can wait for publications that need this gate.
+        drop(_gate);
         if failures.is_empty() {
             Ok(reply)
         } else {
+            let mut cleanup = Vec::new();
+            for (child_id, error) in failures {
+                let stopped = match self.close_session(child_id).await {
+                    Ok(()) => "stopped".to_string(),
+                    Err(stop) => format!("could not be stopped: {stop}"),
+                };
+                cleanup.push(format!("{child_id}: {error} ({stopped})"));
+            }
             Err(ServerError::History(format!(
                 "bypass changed for the session but not for its children: {}",
-                failures.join("; ")
+                cleanup.join("; ")
             )))
         }
     }

@@ -71,6 +71,7 @@ export function activate(_context: vscode.ExtensionContext) {
   statusItem.show();
 
   registerCommands();
+  _context.subscriptions.push(vscode.commands.registerCommand("navai.toggleBypassPermissions", () => cognition.toggleBypassPermissions().catch(error => vscode.window.showErrorMessage(String(error)))));
   _context.subscriptions.push(registerChatView(_context, cognition));
   _context.subscriptions.push(registerSettingsView(_context, cognition));
   _context.subscriptions.push(cognition);

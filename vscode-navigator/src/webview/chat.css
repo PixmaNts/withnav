@@ -262,3 +262,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
   color: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-foreground)) 75%, var(--vscode-foreground) 25%);
 }
 .permission-card[data-resolution=deny] .control-outcome { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.bypass-toggle { margin-left: auto; padding: 3px 7px; font-size: 11px; background: transparent; color: var(--vscode-foreground, #cccccc); border: 1px solid var(--vscode-widget-border, #555555); border-radius: 4px; }
+.bypass-toggle:disabled { opacity: .55; cursor: default; }
+.bypass-badge { padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--vscode-editorWarning-foreground, #bf8803); background: var(--vscode-inputValidation-warningBackground, transparent); border: 1px solid var(--vscode-inputValidation-warningBorder, #bf8803); }
+.bypass-badge[hidden] { display: none; }

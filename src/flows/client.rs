@@ -4,14 +4,14 @@ use std::{path::Path, sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 pub struct NavaiDecisionClient {
-    client: crate::provider::systemone::SystemOneClient,
+    client: instinct_flow::SystemOneClient,
     identity: ClientIdentity,
 }
 impl NavaiDecisionClient {
     pub fn new(
         models: &crate::provider::config::ModelsConfig,
         config: &Path,
-        cache: Arc<crate::provider::openai::ClientCache>,
+        _cache: Arc<crate::provider::openai::ClientCache>,
     ) -> anyhow::Result<Self> {
         let assignment = crate::provider::layers::assigned(
             models,
@@ -23,12 +23,21 @@ impl NavaiDecisionClient {
             variant: assignment.variant.clone(),
         };
         let resolved = assignment.resolved;
-        let client = crate::provider::systemone::SystemOneClient::new(
-            &resolved.provider_name,
-            &resolved.provider,
-            &resolved.model,
+        let key = crate::provider::auth::resolve_key(
             config,
-            cache,
+            &resolved.provider_name,
+            resolved.provider.api_key_env.as_deref(),
+        )?;
+        let client = instinct_flow::SystemOneClient::new(
+            format!(
+                "{}/systemone",
+                resolved.provider.base_url.trim_end_matches('/')
+            )
+            .parse()?,
+            resolved.model.model.clone(),
+            key,
+            crate::provider::systemone::SYSTEMONE_DEADLINE,
+            resolved.provider.headers.clone().into_iter().collect(),
         )?;
         Ok(Self { client, identity })
     }
@@ -47,19 +56,14 @@ impl DecisionClient for NavaiDecisionClient {
         deadline: Instant,
     ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>> {
         Box::pin(async move {
-            let response = tokio::select! { biased;
+            // Admission is shared by every host instance, and consumes the run budget.
+            static CALLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+            let _permit = tokio::select! { biased;
                 _=cancel.cancelled()=>return Err(DecisionError::Cancelled),
                 _=tokio::time::sleep_until(deadline.into())=>return Err(DecisionError::Timeout),
-                response=self.client.decide(&request,cancel)=>response.map_err(|_|DecisionError::ProviderError)?,
+                permit=CALLS.acquire()=>permit.map_err(|_|DecisionError::ProviderError)?,
             };
-            if cancel.is_cancelled() {
-                return Err(DecisionError::Cancelled);
-            }
-            if Instant::now() >= deadline {
-                return Err(DecisionError::Timeout);
-            }
-            instinct_flow::client::validate_answers(request.questions, &response.answers)?;
-            Ok(response)
+            self.client.decide(request, cancel, deadline).await
         })
     }
 }

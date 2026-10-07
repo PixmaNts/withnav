@@ -1278,6 +1278,7 @@ pub fn replay(
                     .and_then(|n| n.batch_id.as_ref())
                     .and_then(|id| record.batches.iter().find(|b| b.id == *id));
                 let missing = e.missing_capture(&node.inputs, record)
+                    || capture.is_some_and(|n| n.answer.is_none() && n.status != "failed")
                     || batch.is_some_and(|b| b.redacted)
                     || capture
                         .and_then(|n| n.selected_inputs.as_ref())

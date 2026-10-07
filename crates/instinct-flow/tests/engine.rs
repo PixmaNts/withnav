@@ -894,9 +894,12 @@ async fn missing_or_redacted_decision_evidence_precedes_render_limit() {
     )
     .await
     .trace;
-    for redacted in [false, true] {
+    for evidence in ["missing_input", "redacted_input", "missing_answer"] {
         let mut record = record.clone();
-        if redacted {
+        if evidence == "missing_answer" {
+            assert_eq!(record.nodes[0].status, "completed");
+            record.nodes[0].answer = None;
+        } else if evidence == "redacted_input" {
             record.inputs.get_mut("session.agent").unwrap().redacted = true;
             record.nodes[0]
                 .selected_inputs

@@ -8,6 +8,10 @@ requests land in `develop`.
 
 - VS Code's Cognition panel uses theme colours to distinguish build and plan, tools, Navigator wakes, subagents and permission outcomes; Settings highlights saved changes in the same style.
 
+### Fixed
+
+- Responses no longer stop midway when a model gateway sends `null` instead of an empty list of tool calls or response choices.
+
 ## [0.6.0] - 2026-10-07
 
 Navai gets a browser interface and a Settings screen in every client. `navai web` opens the chat in

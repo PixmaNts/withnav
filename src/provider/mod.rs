@@ -209,9 +209,12 @@ where
                         let chunk: ChatChunk = match serde_json::from_str(&payload) {
                             Ok(c) => c,
                             Err(e) => {
+                                // Response stream chunks contain no request credentials;
+                                // still cap the excerpt to avoid dumping a whole response.
+                                let excerpt: String = payload.chars().take(200).collect();
                                 return Err(ProviderError::Api {
                                     status: 0,
-                                    message: format!("malformed SSE JSON: {e}"),
+                                    message: format!("malformed SSE JSON: {e}; frame: {excerpt}"),
                                     partial: Some(Box::new(acc.snapshot())),
                                 });
                             }
@@ -331,6 +334,79 @@ mod accumulator_tests {
         assert_eq!(msg.tool_calls[1].args, serde_json::json!({"cmd":"ls"}));
         assert_eq!(msg.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(msg.usage.unwrap().total_tokens, 15);
+    }
+
+    #[tokio::test]
+    async fn null_stream_arrays_preserve_text_reasoning_tools_and_usage() {
+        let msg = run(vec![
+            r#"{"choices":[{"delta":{"content":"hello "}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c0","function":{"name":"read","arguments":"{\"pa"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"content":"world","tool_calls":null}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning_content":"think","tool_calls":[]}}]}"#,
+            r#"{}"#,
+            r#"{"choices":[]}"#,
+            r#"{"choices":null}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            r#"{"choices":null,"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#,
+            "[DONE]",
+        ]).await.unwrap();
+        assert_eq!(msg.text, "hello world");
+        assert_eq!(msg.thinking, "think");
+        assert_eq!(msg.tool_calls.len(), 1);
+        assert_eq!(msg.tool_calls[0].id, "c0");
+        assert_eq!(msg.tool_calls[0].name, "read");
+        assert_eq!(msg.tool_calls[0].args, serde_json::json!({"path":"a"}));
+        assert!(msg.tool_calls[0].args_valid);
+        assert_eq!(msg.finish_reason.as_deref(), Some("tool_calls"));
+        let usage = msg.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[tokio::test]
+    async fn invalid_stream_arrays_fail_with_partial_and_frame_excerpt() {
+        for frame in [
+            r#"{"choices":"bad"}"#,
+            r#"{"choices":{}}"#,
+            r#"{"choices":[{"delta":{"tool_calls":"bad"}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":{}}}]}"#,
+        ] {
+            let err = run(vec![
+                r#"{"choices":[{"delta":{"content":"partial"}}]}"#,
+                frame,
+                "[DONE]",
+            ])
+            .await
+            .unwrap_err();
+            match err {
+                ProviderError::Api {
+                    status,
+                    message,
+                    partial,
+                } => {
+                    assert_eq!(status, 0);
+                    assert!(message.contains("malformed SSE JSON"));
+                    assert!(message.contains(frame));
+                    assert_eq!(partial.unwrap().text, "partial");
+                }
+                other => panic!("expected Api error, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_frame_excerpt_is_bounded_and_unicode_safe() {
+        let frame = format!("{{\"choices\":\"{}\"}}", "é".repeat(300));
+        let err = run(vec![&frame, "[DONE]"]).await.unwrap_err();
+        match err {
+            ProviderError::Api { message, .. } => {
+                let excerpt = message.split_once("; frame: ").unwrap().1;
+                assert_eq!(excerpt.chars().count(), 200);
+                assert_eq!(excerpt, frame.chars().take(200).collect::<String>());
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -13,6 +13,9 @@ pub struct RunRecord {
     pub duration_ms: u64,
     pub budget_ms: u64,
     pub event: Event,
+    /// Event references whose evidence the host removed; omitted in older captures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redacted_event_paths: Vec<String>,
     pub identity: ClientIdentity,
     pub inputs: BTreeMap<String, InputValue>,
     pub nodes: Vec<NodeRecord>,

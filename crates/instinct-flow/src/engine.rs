@@ -152,6 +152,7 @@ impl<'a> Evaluation<'a> {
                 duration_ms: 0,
                 budget_ms: budget,
                 event: event.clone(),
+                redacted_event_paths: Vec::new(),
                 identity,
                 inputs: BTreeMap::new(),
                 nodes,
@@ -574,7 +575,19 @@ impl<'a> Evaluation<'a> {
     fn missing_capture(&self, map: &BTreeMap<String, String>, record: &RunRecord) -> bool {
         map.values().any(|r| {
             self.resolve(r).redacted
+                || record.redacted_event_paths.iter().any(|path| {
+                    r == path
+                        || r.strip_prefix(path)
+                            .is_some_and(|tail| tail.starts_with('.'))
+                })
                 || record.inputs.get(r).is_some_and(|v| v.redacted)
+                || record.nodes.iter().any(|node| {
+                    node.selected_inputs.as_ref().is_some_and(|inputs| {
+                        inputs
+                            .values()
+                            .any(|selected| selected.reference == *r && selected.captured.redacted)
+                    })
+                })
                 || (!r.starts_with("event.")
                     && !r.starts_with("constant.")
                     && crate::validation::upstream(r).is_none()
@@ -1223,9 +1236,14 @@ pub fn replay(
             return Ok(false);
         }
         let flow_inputs = &definition.definition.flow.inputs;
-        if e.missing_capture(flow_inputs, record)
-            || !e.prepare_replay(flow_inputs, record).unwrap_or(false)
-        {
+        if e.missing_capture(flow_inputs, record) {
+            for node in nodes.values_mut() {
+                node.status = "missing_capture".into();
+            }
+            comparable = false;
+            return Ok(false);
+        }
+        if !e.prepare_replay(flow_inputs, record).unwrap_or(false) {
             comparable = false;
             return Ok(false);
         }

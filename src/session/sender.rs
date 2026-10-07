@@ -21,6 +21,21 @@ pub struct SessionSender {
 }
 
 impl SessionSender {
+    /// Queues untrusted flow data at the next safe boundary, without admission.
+    pub(crate) fn queue_flow_note(
+        &self,
+        text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+    ) -> Result<(), ServerError> {
+        if self.handle.session_cancel.is_cancelled()
+            || !self.handle.status.queue_flow_note(text, flow, run_id, wake)
+        {
+            return Err(ServerError::SessionStopping);
+        }
+        Ok(())
+    }
     pub(super) fn new(session_id: SessionId, handle: SessionHandle) -> Self {
         Self { session_id, handle }
     }

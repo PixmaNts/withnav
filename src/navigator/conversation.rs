@@ -56,6 +56,10 @@ const MAX_EXCHANGE_CHARS: usize = 600;
 pub type SessionPost =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
+/// Typed flow effects bypass the message inbox; notes need not start a turn.
+pub(crate) type FlowPost =
+    Arc<dyn Fn(String, String, String, bool) -> Result<(), String> + Send + Sync>;
+
 /// What came of posting a wake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WakeOutcome {
@@ -115,6 +119,7 @@ struct Exchange {
 /// One watched navigator session: its poster, its ask state, its queued
 /// wake and its bounded digest.
 struct SessionConversation {
+    flow_post: Option<FlowPost>,
     post: SessionPost,
     waiting_on_driver: bool,
     queued_wake: Option<String>,
@@ -196,6 +201,7 @@ impl ConversationFeed {
         self.lock().sessions.insert(
             session_id,
             SessionConversation {
+                flow_post: None,
                 post,
                 waiting_on_driver: false,
                 queued_wake: None,
@@ -203,6 +209,30 @@ impl ConversationFeed {
                 driver_pending: false,
             },
         );
+    }
+
+    pub(crate) fn register_flow_poster(&self, session_id: Ulid, post: FlowPost) {
+        if let Some(entry) = self.lock().sessions.get_mut(&session_id) {
+            entry.flow_post = Some(post);
+        }
+    }
+
+    pub(crate) fn post_flow_note(
+        &self,
+        text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+    ) -> Result<(), String> {
+        let post = {
+            let state = self.lock();
+            state
+                .active
+                .and_then(|id| state.sessions.get(&id))
+                .and_then(|entry| entry.flow_post.clone())
+        }
+        .ok_or_else(|| "no active flow session".to_string())?;
+        post(text, flow, run_id, wake)
     }
 
     /// Drops a session (it ended); its queued wake, if any, goes with it.

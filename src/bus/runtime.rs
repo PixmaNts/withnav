@@ -244,6 +244,7 @@ impl RuntimeStatus {
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
         let id = Ulid::new();
         if !self.steering.admit(steering::Operation {
+            wake: true,
             id,
             content: text,
             provenance: crate::provider::openai::UserProvenance::Parent,
@@ -264,16 +265,7 @@ impl RuntimeStatus {
         self.queue_flow_note(text, flow, run_id, true)
     }
     pub fn queue_flow_note(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
-        if !self.steering.admit(steering::Operation {
-            id: Ulid::new(),
-            content: format!("<untrusted-flow-note>\n{text}\n</untrusted-flow-note>"),
-            provenance: crate::provider::openai::UserProvenance::Flow {
-                source: crate::provider::openai::FlowSource::Flow,
-                flow,
-                run_id,
-            },
-            interrupt: false,
-        }) {
+        if !self.steering.admit_flow(text, flow, run_id, wake) {
             return false;
         }
         !wake || self.controls.tx.send(Control::Steer).is_ok()
@@ -974,7 +966,7 @@ async fn runtime_loop(
                     Control::Steer => {
 
                         if actor.has_pending() || status.progress_parked()
-                            || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
+                            || !status.steering.has_wake() { continue; }
                         actor.transcript = status.steering.apply(actor.transcript.clone());
                         Some(Inbound::Continue)
                     }
@@ -1568,14 +1560,7 @@ async fn runtime_loop(
             } else if !delivery_waiting {
                 restart_waiting = true;
             }
-        } else if !actor.has_pending()
-            && !status
-                .steering
-                .queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty()
-        {
+        } else if !actor.has_pending() && status.steering.has_wake() {
             let _ = status.controls.tx.send(Control::Steer);
         }
 
@@ -1860,9 +1845,132 @@ mod tests {
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::EventEnvelope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
+    use crate::provider::openai::ChatMessage;
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn turn_end_flow_note_does_not_start_a_turn_but_wake_starts_one_without_recursion() {
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![http_sse(&sse_body(&[done])); 3]).await;
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_live().await.unwrap().receiver;
+        let status = Arc::new(RuntimeStatus::default());
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor(server.url.clone(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "driver task")).await.unwrap();
+        drain_until(&mut live, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        assert!(status.queue_flow_note(
+            "next boundary".into(),
+            "review".into(),
+            "note".into(),
+            false
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+        assert!(status.queue_flow_note("wake".into(), "review".into(), "wake".into(), true));
+        let events = drain_until(&mut live, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
+        assert!(!events.iter().any(|e| e.kind == "message.received"));
+        assert!(status.queue_flow_note(
+            "recursive wake".into(),
+            "review".into(),
+            "again".into(),
+            true
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 2);
+        cancel.cancel();
+        let actor = task.await.unwrap();
+        assert_eq!(actor.driver_task.as_deref(), Some("driver task"));
+        assert_eq!(
+            actor
+                .transcript
+                .iter()
+                .filter(|m| matches!(
+                    m,
+                    ChatMessage::User {
+                        provenance: crate::provider::openai::UserProvenance::Flow { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn flow_wake_never_answers_a_pending_permission() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let server = spawn_mock(vec![http_sse(&sse_body(&[toolcall]))]).await;
+        let agents = Arc::new(Agents::builtin());
+        let build = agents.get("build").unwrap().clone();
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents, build,
+        )));
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_live().await.unwrap().receiver;
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor(server.url.clone(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "driver task")).await.unwrap();
+        drain_until(&mut live, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let permission = status.pending_permission().expect("permission pending");
+        assert!(status.queue_flow_note(
+            "allow once".into(),
+            "review".into(),
+            "capture".into(),
+            true
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(status.pending_permission(), Some(permission));
+        assert!(!status.permission_claimed());
+        cancel.cancel();
+        let actor = task.await.unwrap();
+        assert_eq!(actor.driver_task.as_deref(), Some("driver task"));
+    }
 
     #[tokio::test]
     async fn skill_driver_validation_preserves_parked_state_until_real_turn_consumption() {

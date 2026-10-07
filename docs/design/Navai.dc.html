@@ -16,12 +16,12 @@
 <div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
 <div style="min-width:1120px">
   <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px">
-    <div style="display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600"><i class="ph ph-compass" style="color:var(--ac);font-size:22px"></i>Navai</div>
+    <div style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:28px;width:84.6px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></div>
     <div style="display:flex;gap:4px">
       <sc-for list="{{ surfaces }}" as="s" hint-placeholder-count="3"><button onClick="{{ s.click }}" style="background:{{ s.bg }};color:{{ s.fg }};border:1px solid {{ s.bd }};border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;display:flex;gap:6px;align-items:center"><i class="{{ s.icon }}"></i>{{ s.label }}</button></sc-for>
     </div>
     <div style="margin-left:auto;display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:12px">Theme</span>
-      <sc-for list="{{ themes }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:1px solid {{ t.bd }};border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer">{{ t.label }}</button></sc-for>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeFams }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div><div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeModes }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
     </div>
   </div>
 
@@ -31,7 +31,7 @@
 <sc-if value="{{ isTui }}" hint-placeholder-val="{{ true }}">
 <div class="mono" style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:180px minmax(0,1fr) 290px;grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden;font-size:12.5px;line-height:1.55">
   <div style="grid-column:1/4;display:flex;gap:16px;padding:6px 14px;border-bottom:1px solid var(--bd);background:var(--pn);color:var(--mu)">
-    <span style="color:var(--ac)">◆ navai</span><span>~/dev/rust-agent</span><span>develop ●3</span>
+    <span><span style="color:var(--lh)">◆</span> <span style="color:var(--tx)">navai</span></span><span>~/dev/rust-agent</span><span>develop ●3</span>
     <span style="margin-left:auto;color:{{ modeColor }}">▌{{ modeName }}</span><span>cognition · {{ cogModel }} · {{ cogVariant }} · 41k/200k</span>
   </div>
   <div style="border-right:1px solid var(--bd);background:var(--pn);padding:10px 0;overflow:auto;display:flex;flex-direction:column;gap:2px">
@@ -223,7 +223,7 @@
 <sc-if value="{{ isWeb }}" hint-placeholder-val="{{ false }}">
 <div style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:240px minmax(0,1fr) 360px;grid-template-rows:auto minmax(0,1fr);overflow:hidden">
   <div style="grid-column:1/4;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn)">
-    <span style="display:flex;gap:6px;align-items:center;font-weight:600"><i class="ph ph-compass" style="color:var(--ac)"></i>Navai</span>
+    <span style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:19px;width:57.4px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></span>
     <span style="color:var(--mu)">{{ wsName }} / {{ webCrumb }}</span>
     <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
       <span style="color:var(--mu);font-size:12px">Agent</span><button onClick="{{ setBuild }}" style="{{ segBuild }}">build</button><button onClick="{{ setPlan }}" style="{{ segPlan }}">plan</button>
@@ -234,11 +234,11 @@
     <div style="display:flex;align-items:center;padding:2px 6px 8px;color:var(--mu);font-size:11px">WORKSPACES<span style="margin-left:auto;font-size:14px"><i class="ph ph-folder-plus"></i></span></div>
     <sc-for list="{{ workspaces }}" as="w" hint-placeholder-count="3">
       <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:4px">
-        <button onClick="{{ w.click }}" style="background:transparent;border:0;color:var(--tx);text-align:left;padding:6px;border-radius:5px;cursor:pointer;display:flex;gap:6px;align-items:center;font-size:13px"><i class="{{ w.caret }}" style="color:var(--mu);font-size:11px"></i><i class="ph ph-folder" style="color:{{ w.ic }}"></i><span style="font-weight:500">{{ w.name }}</span><span style="margin-left:auto;color:var(--mu);font-size:11px">{{ w.count }}</span></button>
+        <div style="display:flex;align-items:center;gap:2px"><button onClick="{{ w.click }}" style="flex:1;min-width:0;background:transparent;border:0;color:var(--tx);text-align:left;padding:6px;border-radius:5px;cursor:pointer;display:flex;gap:6px;align-items:center;font-size:13px"><i class="{{ w.caret }}" style="color:var(--mu);font-size:11px"></i><i class="ph ph-folder" style="color:{{ w.ic }}"></i><span style="font-weight:500">{{ w.name }}</span><span style="margin-left:auto;color:var(--mu);font-size:11px">{{ w.count }}</span></button><button onClick="{{ w.remove }}" title="Remove workspace" style="background:transparent;border:0;color:var(--mu);padding:5px;border-radius:5px;cursor:pointer;font-size:13px;display:flex" style-hover="color:var(--rd);background:color-mix(in srgb,var(--rd) 12%,transparent)"><i class="ph ph-folder-minus"></i></button></div>
         <sc-if value="{{ w.open }}" hint-placeholder-val="{{ false }}">
           <div class="mono" style="padding:0 6px 6px 30px;color:var(--mu);font-size:11px">{{ w.path }} · {{ w.branch }}</div>
           <button style="margin:0 0 4px 22px;background:transparent;border:1px dashed var(--bd);color:var(--mu);border-radius:5px;padding:5px 8px;text-align:left;font-size:12px;cursor:pointer"><i class="ph ph-plus"></i> New session</button>
-          <sc-for list="{{ w.sessions }}" as="x" hint-placeholder-count="3"><button onClick="{{ x.click }}" style="margin-left:22px;background:{{ x.bg }};border:1px solid {{ x.bd }};color:var(--tx);border-radius:5px;padding:6px 8px;text-align:left;font-size:12.5px;cursor:pointer;display:flex;flex-direction:column"><span>{{ x.title }}</span><span style="color:var(--mu);font-size:11px">{{ x.meta }}</span></button></sc-for>
+          <sc-for list="{{ w.sessions }}" as="x" hint-placeholder-count="3"><div style="margin-left:22px;background:{{ x.bg }};border:1px solid {{ x.bd }};border-radius:5px;display:flex;align-items:flex-start"><button onClick="{{ x.click }}" style="flex:1;min-width:0;background:transparent;border:0;color:var(--tx);padding:6px 8px;text-align:left;font-size:12.5px;cursor:pointer;display:flex;flex-direction:column"><span>{{ x.title }}</span><span style="color:var(--mu);font-size:11px">{{ x.meta }}</span></button><button onClick="{{ x.remove }}" title="Delete session" style="background:transparent;border:0;color:var(--mu);padding:7px 7px;border-radius:5px;cursor:pointer;font-size:12.5px;display:flex" style-hover="color:var(--rd)"><i class="ph ph-trash"></i></button></div></sc-for>
         </sc-if>
       </div>
     </sc-for>
@@ -246,7 +246,7 @@
   <sc-if value="{{ webChat }}" hint-placeholder-val="{{ true }}">
   <div style="display:flex;flex-direction:column;min-width:0;position:relative">
     <div style="flex:1;overflow:auto;padding:20px 28px;display:flex;flex-direction:column;gap:14px;line-height:1.55">
-      <div style="align-self:flex-end;max-width:70%;background:var(--sf);padding:9px 12px;border-radius:8px"><div style="color:var(--mu);font-size:11px">Driver · Delegation</div>Swap the toml parser for an incremental one. Keep <span class="mono" style="color:var(--bl)">Config::load(p)</span> as it is.</div>
+      <div style="border-left:2px solid var(--bd);padding:2px 0 2px 12px"><div style="color:var(--mu);font-size:11.5px;margin-bottom:3px;display:flex;gap:6px;align-items:center"><i class="ph ph-user"></i>Driver · Delegation</div>Swap the toml parser for an incremental one. Keep <span class="mono" style="color:var(--bl)">Config::load(p)</span> as it is.</div>
       <div style="max-width:80%"><div style="color:var(--ac);font-size:11.5px;margin-bottom:3px">Cognition · {{ modeName }}</div>I'll map the call sites first, then delegate the survey to a subagent.
         <div style="margin-top:8px;border:1px solid var(--bd);border-radius:6px;overflow:hidden">
           <div style="padding:6px 10px;display:flex;gap:8px;color:var(--mu)"><i class="ph ph-check" style="color:var(--gr)"></i>grep <span class="mono">"from_str"</span><span style="margin-left:auto">7 matches</span></div>
@@ -288,6 +288,22 @@
     </sc-if>
   </div>
   </sc-if>
+  <sc-if value="{{ webEmpty }}" hint-placeholder-val="{{ false }}">
+  <div style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:8px;padding:28px;color:var(--mu)"><div style="color:var(--tx);font-size:14px">No session open</div><div>Pick a session on the left or start a new one.</div><button style="{{ outBtn }}"><i class="ph ph-plus"></i> New session</button></div>
+  </sc-if>
+  <sc-if value="{{ confirmOpen }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ cancelRemove }}" style="position:absolute;inset:0;z-index:8;background:color-mix(in srgb,var(--bg) 70%,transparent);display:flex;align-items:center;justify-content:center">
+    <div onClick="{{ stop }}" style="width:420px;background:var(--pn);border:1px solid var(--bd);border-radius:8px;box-shadow:0 14px 40px rgba(0,0,0,.35);padding:16px 18px;display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.5">
+      <div style="font-size:14px;font-weight:500">{{ cfTitle }}</div>
+      <div style="color:var(--mu)">{{ cfBody }}</div>
+      <sc-if value="{{ cfHasSubs }}" hint-placeholder-val="{{ true }}">
+        <div style="border:1px solid var(--bd);border-radius:6px;overflow:hidden"><div style="padding:6px 10px;color:var(--mu);font-size:11px;border-bottom:1px solid var(--bd)">SUB-AGENTS REMOVED WITH IT</div><sc-for list="{{ cfSubs }}" as="a" hint-placeholder-count="2"><div style="padding:6px 10px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--bd)"><i class="ph ph-arrow-elbow-down-right" style="color:var(--pu)"></i><span style="color:var(--pu)">@{{ a.name }}</span><span style="color:var(--mu);font-size:12px">{{ a.sess }}</span><span style="margin-left:auto;color:{{ a.col }};font-size:12px">{{ a.state }}</span></div></sc-for></div>
+      </sc-if>
+      <div style="color:var(--mu);font-size:12px">{{ cfNote }}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px"><button onClick="{{ cancelRemove }}" style="{{ ghostBtn }}">Cancel</button><button onClick="{{ doRemove }}" style="background:transparent;color:var(--rd);border:1px solid var(--rd);border-radius:5px;padding:4px 12px;font-size:12px;cursor:pointer">{{ cfAction }}</button></div>
+    </div>
+  </div>
+  </sc-if>
   <sc-if value="{{ webSub }}" hint-placeholder-val="{{ false }}">
   <div style="min-width:0;overflow:auto;padding:20px 28px;display:flex;flex-direction:column;gap:14px;line-height:1.55">
     <div style="display:flex;gap:8px;align-items:center;color:var(--mu)"><a href="#" onClick="{{ toSession }}"><i class="ph ph-arrow-left"></i> {{ sessName }}</a><span>›</span><span style="color:var(--pu)">@explore</span><span style="margin-left:auto;border:1px solid var(--pu);color:var(--pu);border-radius:10px;padding:1px 9px;font-size:11.5px">running · 0:42</span></div>
@@ -307,9 +323,6 @@
       <sc-if value="{{ tabIntent }}" hint-placeholder-val="{{ true }}">
         <div style="color:var(--mu);font-size:11px">INTENT RECORD · .navigator/intent.md</div>
         <div class="mono" style="background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:10px 12px;margin:6px 0 14px;font-size:12px;line-height:1.7"><span style="color:var(--or)">## intent</span><br>Incremental TOML parser.<br><span style="color:var(--or)">## plan</span><br>1. map call sites<br>2. IncrParser::feed<br>3. swap in Config::load<br><span style="color:var(--or)">## decisions</span><br>- public API unchanged<br>- no new dependency</div>
-        <div style="color:var(--mu);font-size:11px;margin-bottom:6px">DRIFT · LAST 30 MIN</div>
-        <svg viewBox="0 0 320 64" style="width:100%;height:64px"><line x1="0" y1="13" x2="320" y2="13" stroke="#f07178" stroke-dasharray="3 3" opacity=".7"></line><polyline fill="none" stroke="#e6b450" stroke-width="1.6" points="0,52 40,50 80,46 120,44 160,38 200,30 240,22 280,12 320,10"></polyline></svg>
-        <div style="color:var(--mu)">Wake threshold 0.80 · crossed at 14:32</div>
       </sc-if>
       <sc-if value="{{ tabAgents }}" hint-placeholder-val="{{ false }}">
         <div style="display:flex;flex-direction:column;gap:8px">
@@ -419,7 +432,7 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
-  state = { s: 'tui', th: 'ayuDark', mode: 'build', perm: 'pending', verdict: 'pending', tab: 'intent', scr: 'session', layer: 'cognition', tuiTab: 1, conv: 'refactor-parser', ws: 'ra', sess: 'refactor-parser', pipeTrig: 'edit',
+  state = { s: 'tui', th: 'ayuDark', mode: 'build', perm: 'pending', verdict: 'pending', tab: 'intent', scr: 'session', layer: 'cognition', tuiTab: 1, conv: 'refactor-parser', ws: 'ra', sess: 'refactor-parser', pipeTrig: 'edit', gone: {}, confirm: null,
     mcol: {}, assign: { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } } };
   navExtra(st, set) {
     const tint = 'color-mix(in srgb,var(--ac) 16%,transparent)';
@@ -485,13 +498,34 @@ class Component extends DCLogic {
     const CV = [['refactor-parser', '2 min', 14], ['fix-ci-clippy', '1 h', 6], ['sse-reconnect', 'yesterday', 22], ['docs-plugin-api', 'Mon', 9], ['intent-tool-sections', 'Sep 27', 17]];
     const convs = CV.map(([title, when, n]) => { const on = st.conv === title; return { title, when, n, click: () => this.setState({ conv: title, scr: 'session' }), bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent' }; });
     const W = [
-      { k: 'ra', name: 'rust-agent', path: '~/dev/rust-agent', branch: 'develop', s: [['refactor-parser', 'Today · 14 msgs · drift 0.86'], ['fix-ci-clippy', 'Today · 6 msgs'], ['sse-reconnect', 'Yesterday · 22 msgs'], ['docs-plugin-api', 'Mon · 9 msgs']] },
-      { k: 'om', name: 'omniroute', path: '~/dev/omniroute', branch: 'main', s: [['combo-routing', 'Today · 31 msgs'], ['rate-limit-backoff', 'Tue · 8 msgs']] },
-      { k: 'df', name: 'dotfiles', path: '~/dotfiles', branch: 'main', s: [['nvim-lsp-setup', 'Sep 24 · 5 msgs']] }
-    ];
-    const workspaces = W.map((w) => { const open = st.ws === w.k; return { name: w.name, path: w.path, branch: w.branch, open, count: w.s.length, caret: open ? 'ph ph-caret-down' : 'ph ph-caret-right', ic: open ? 'var(--ac)' : 'var(--mu)', click: () => this.setState({ ws: w.k, sess: w.s[0][0], scr: st.scr === 'pipeline' ? 'pipeline' : 'session' }),
-      sessions: w.s.map(([title, meta]) => { const on = open && st.sess === title; return { title, meta, click: () => this.setState({ sess: title, scr: 'session' }), bg: on ? tint : 'transparent', bd: on ? 'color-mix(in srgb,var(--ac) 45%,transparent)' : 'transparent' }; }) }; });
-    const curW = W.find((w) => w.k === st.ws);
+      { k: 'ra', name: 'rust-agent', path: '~/dev/rust-agent', branch: 'develop', s: [['refactor-parser', 'Today · 14 msgs · drift 0.86', [['explore', 'running'], ['review', 'idle']]], ['fix-ci-clippy', 'Today · 6 msgs', [['review', 'done']]], ['sse-reconnect', 'Yesterday · 22 msgs', []], ['docs-plugin-api', 'Mon · 9 msgs', []]] },
+      { k: 'om', name: 'omniroute', path: '~/dev/omniroute', branch: 'main', s: [['combo-routing', 'Today · 31 msgs', [['explore', 'done']]], ['rate-limit-backoff', 'Tue · 8 msgs', []]] },
+      { k: 'df', name: 'dotfiles', path: '~/dotfiles', branch: 'main', s: [['nvim-lsp-setup', 'Sep 24 · 5 msgs', []]] }
+    ].filter((w) => !st.gone['ws:' + w.k]).map((w) => ({ ...w, s: w.s.filter(([t]) => !st.gone['s:' + w.k + '/' + t]) }));
+    const workspaces = W.map((w) => { const open = st.ws === w.k; return { name: w.name, path: w.path, branch: w.branch, open, count: w.s.length, caret: open ? 'ph ph-caret-down' : 'ph ph-caret-right', ic: open ? 'var(--ac)' : 'var(--mu)', click: () => this.setState({ ws: w.k, sess: w.s[0] ? w.s[0][0] : null, scr: st.scr === 'pipeline' ? 'pipeline' : 'session' }),
+      remove: () => this.setState({ confirm: { kind: 'ws', ws: w.k } }),
+      sessions: w.s.map(([title, meta]) => { const on = open && st.sess === title; return { title, meta, click: () => this.setState({ sess: title, scr: 'session' }), remove: () => this.setState({ confirm: { kind: 's', ws: w.k, title } }), bg: on ? tint : 'transparent', bd: on ? 'color-mix(in srgb,var(--ac) 45%,transparent)' : 'transparent' }; }) }; });
+    const curW = W.find((w) => w.k === st.ws) || { name: 'no workspace', s: [] };
+    const hasSess = !!(st.sess && curW.s.some(([t]) => t === st.sess));
+    const cf = st.confirm, cfW = cf && W.find((w) => w.k === cf.ws);
+    const subCol = (s) => s === 'running' ? 'var(--pu)' : 'var(--mu)';
+    let cfv = { confirmOpen: false, cfTitle: '', cfBody: '', cfNote: '', cfAction: '', cfSubs: [], cfHasSubs: false };
+    if (cf && cfW) {
+      const ss = cf.kind === 'ws' ? cfW.s : cfW.s.filter(([t]) => t === cf.title);
+      const cfSubs = ss.flatMap(([t, , subs]) => subs.map(([name, state]) => ({ name, state: state === 'running' ? 'running · will be stopped' : state, col: subCol(state), sess: cf.kind === 'ws' ? t : '' })));
+      cfv = cf.kind === 'ws'
+        ? { confirmOpen: true, cfTitle: 'Remove workspace "' + cfW.name + '"?', cfBody: 'Navai forgets this workspace and deletes its ' + ss.length + ' session' + (ss.length === 1 ? '' : 's') + ': conversations, trigger logs and remarks.', cfNote: 'Files in ' + cfW.path + ' are not touched. Add the folder again to reopen it.', cfAction: 'Remove workspace', cfSubs, cfHasSubs: cfSubs.length > 0 }
+        : { confirmOpen: true, cfTitle: 'Delete session "' + cf.title + '"?', cfBody: 'Deletes the conversation, its trigger log and remarks.', cfNote: 'The intent record in .navigator/intent.md stays. This cannot be undone.', cfAction: 'Delete session', cfSubs, cfHasSubs: cfSubs.length > 0 };
+    }
+    const doRemove = () => this.setState((s) => {
+      const c = s.confirm; if (!c) return null;
+      const gone = { ...s.gone, [c.kind === 'ws' ? 'ws:' + c.ws : 's:' + c.ws + '/' + c.title]: true };
+      const left = W.filter((w) => !gone['ws:' + w.k]).map((w) => ({ ...w, s: w.s.filter(([t]) => !gone['s:' + w.k + '/' + t]) }));
+      let ws = s.ws, sess = s.sess;
+      if (!left.find((w) => w.k === ws)) { ws = left[0] ? left[0].k : null; sess = left[0] && left[0].s[0] ? left[0].s[0][0] : null; }
+      else if (c.kind === 's' && c.ws === ws && c.title === sess) { const lw = left.find((w) => w.k === ws); sess = lw.s[0] ? lw.s[0][0] : null; }
+      return { gone, confirm: null, ws, sess, scr: 'session' };
+    });
     const edit = st.pipeTrig === 'edit';
     const pipeTrigTabs = [['edit', 'Edit triggers'], ['conv', 'Conversation trigger']].map(([k, label]) => { const on = st.pipeTrig === k; return { label, click: set({ pipeTrig: k }), bg: on ? tint : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
     const evOn = edit ? ['save', 'idle', 'diagnostic'] : ['conversation'];
@@ -528,32 +562,41 @@ class Component extends DCLogic {
       resetOv: () => this.setState((s) => ({ assign: { ...s.assign, [K]: CFG[K] } })), ovDisp: ovK ? 'inline-block' : 'none', cfgCog: short(st.mode),
       cogModel: byK[A[st.mode].m].name, cogVariant: A[st.mode].v || 'default', mReflex: short('reflex'), mInstinct: short('instinct'), mMeta: short('metacognition'),
       subModel: 'omniroute/opencode-go/deepseek-v4-flash · low', convTitle: st.conv, wsName: curW.name, sessName: st.sess,
-      webCrumb: st.scr === 'pipeline' ? 'pipeline' : st.scr === 'subagent' ? st.sess + ' / explore' : st.sess,
+      webCrumb: st.scr === 'pipeline' ? 'pipeline' : !hasSess ? 'no session' : st.scr === 'subagent' ? st.sess + ' / explore' : st.sess,
+      ...cfv, doRemove, cancelRemove: () => this.setState({ confirm: null }), webEmpty: !hasSess && st.scr !== 'pipeline',
       pipeStatePrompt: edit ? 'prompts/state.md' : 'prompts/conversation_state.md',
       modelsOpen: st.scr === 'models', palOpen: st.scr === 'palette', toSession: stopE, stop: (e) => e.stopPropagation(), goSub: go('subagent'), goModels: go('models'),
       vscChat: st.scr !== 'subagent', vscSub: st.scr === 'subagent',
-      webChat: ['session', 'models', 'palette'].includes(st.scr), webSub: st.scr === 'subagent', webSide: st.scr !== 'pipeline', webPipe: st.scr === 'pipeline'
+      webChat: hasSess && ['session', 'models', 'palette'].includes(st.scr), webSub: hasSess && st.scr === 'subagent', webSide: st.scr !== 'pipeline', webPipe: st.scr === 'pipeline'
     };
   }
   renderVals() {
     const st = this.state, set = (o) => () => this.setState(o);
     const T = {
-      ayuDark: ['Ayu Dark', '--bg:#0b0e14;--pn:#0f131a;--sf:#151a23;--bd:#232a36;--tx:#bfbdb6;--mu:#7b8494;--ac:#e6b450;--at:#e6b450;--acfg:#0b0e14;--gr:#aad94c;--rd:#f07178;--bl:#59c2ff;--pu:#d2a6ff;--or:#ff8f40'],
-      ayuLight: ['Ayu Light', '--bg:#fcfcfc;--pn:#f3f4f5;--sf:#ffffff;--bd:#dfe2e6;--tx:#4a5058;--mu:#6e7781;--ac:#ffaa33;--at:#a35f00;--acfg:#1f2328;--gr:#5c8a00;--rd:#d94f4f;--bl:#1a7bbf;--pu:#8052b8;--or:#c25d00'],
-      nordDark: ['Nord Dark', '--bg:#2e3440;--pn:#292e39;--sf:#3b4252;--bd:#434c5e;--tx:#d8dee9;--mu:#8f9bb3;--ac:#88c0d0;--at:#88c0d0;--acfg:#2e3440;--gr:#a3be8c;--rd:#bf616a;--bl:#81a1c1;--pu:#b48ead;--or:#d08770'],
-      nordLight: ['Nord Light', '--bg:#eceff4;--pn:#e5e9f0;--sf:#ffffff;--bd:#d0d7e3;--tx:#2e3440;--mu:#586174;--ac:#5e81ac;--at:#3f6591;--acfg:#eceff4;--gr:#4f7a3c;--rd:#b0424d;--bl:#3f6591;--pu:#7d5a78;--or:#a85a3f']
+      ayuDark: ['Ayu Dark', '--bg:#0b0e14;--pn:#0f131a;--sf:#151a23;--bd:#232a36;--tx:#bfbdb6;--mu:#7b8494;--ac:#e6b450;--at:#e6b450;--acfg:#0b0e14;--gr:#aad94c;--rd:#f07178;--bl:#59c2ff;--pu:#d2a6ff;--or:#ff8f40;--lh:#e6b450;--la:#d2a6ff'],
+      ayuLight: ['Ayu Light', '--bg:#fcfcfc;--pn:#f3f4f5;--sf:#ffffff;--bd:#dfe2e6;--tx:#4a5058;--mu:#6e7781;--ac:#ffaa33;--at:#a35f00;--acfg:#1f2328;--gr:#5c8a00;--rd:#d94f4f;--bl:#1a7bbf;--pu:#8052b8;--or:#c25d00;--lh:#a35f00;--la:#8052b8'],
+      nordDark: ['Nord Dark', '--bg:#2e3440;--pn:#292e39;--sf:#3b4252;--bd:#434c5e;--tx:#d8dee9;--mu:#8f9bb3;--ac:#88c0d0;--at:#88c0d0;--acfg:#2e3440;--gr:#a3be8c;--rd:#bf616a;--bl:#81a1c1;--pu:#b48ead;--or:#d08770;--lh:#d08770;--la:#88c0d0'],
+      nordLight: ['Nord Light', '--bg:#eceff4;--pn:#e5e9f0;--sf:#ffffff;--bd:#d0d7e3;--tx:#2e3440;--mu:#586174;--ac:#5e81ac;--at:#3f6591;--acfg:#eceff4;--gr:#4f7a3c;--rd:#b0424d;--bl:#3f6591;--pu:#7d5a78;--or:#a85a3f;--lh:#a85a3f;--la:#3f6591'],
+      tideDark: ['Tide Dark', '--bg:#061115;--pn:#0a171b;--sf:#101e23;--bd:#213135;--tx:#d5e1e1;--mu:#87999e;--ac:#5ecbcb;--at:#5ecbcb;--acfg:#061115;--gr:#81d584;--rd:#ee6570;--bl:#6cb2ec;--pu:#b59be6;--or:#f69370;--lh:#f69370;--la:#5ecbcb'],
+      tideLight: ['Tide Light', '--bg:#f2f8f8;--pn:#e9f2f3;--sf:#fbfefe;--bd:#cddbdc;--tx:#1f3137;--mu:#53676c;--ac:#1d9999;--at:#00696f;--acfg:#081e24;--gr:#2e7c35;--rd:#c53443;--bl:#0f68a2;--pu:#6f4fa1;--or:#c1552c;--lh:#c1552c;--la:#00696f'],
+      mossDark: ['Moss Dark', '--bg:#0b100c;--pn:#101511;--sf:#161d17;--bd:#262e27;--tx:#e6e1cf;--mu:#909487;--ac:#75d78d;--at:#75d78d;--acfg:#0b100c;--gr:#c8df58;--rd:#ea6a64;--bl:#6eb9dc;--pu:#be99da;--or:#ebb25f;--lh:#e6e1cf;--la:#75d78d'],
+      mossLight: ['Moss Light', '--bg:#f7f5ee;--pn:#efede3;--sf:#fdfcf7;--bd:#d7d5c7;--tx:#293027;--mu:#5f665a;--ac:#429c5a;--at:#197037;--acfg:#141d16;--gr:#577600;--rd:#c13c3b;--bl:#136b94;--pu:#784d96;--or:#ae6700;--lh:#293027;--la:#197037']
     };
     const b = (on) => on ? ['color-mix(in srgb,var(--ac) 16%,transparent)', 'var(--tx)', 'var(--ac)'] : ['transparent', 'var(--mu)', 'var(--bd)'];
     const mk = (key, label, cur, click) => { const [bg, fg, bd] = b(cur === key); return { label, click: click(key), bg, fg, bd }; };
     const surfaces = [['tui', 'ph ph-terminal-window', 'TUI'], ['vsc', 'ph ph-code', 'VS Code extension'], ['web', 'ph ph-browser', 'WebUI']].map(([k, icon, label]) => ({ ...mk(k, label, st.s, (x) => set({ s: x })), icon }));
     const themes = Object.keys(T).map((k) => mk(k, T[k][0], st.th, (x) => set({ th: x })));
+    const curF = st.th.replace(/(Dark|Light)$/, ''), curD = st.th.endsWith('Dark');
+    const tSty = (on) => ({ bg: on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)' });
+    const themeFams = [...new Set(Object.keys(T).map((k) => k.replace(/(Dark|Light)$/, '')))].map((f) => ({ label: f[0].toUpperCase() + f.slice(1), ...tSty(f === curF), click: () => this.setState({ th: f + (curD ? 'Dark' : 'Light') }) }));
+    const themeModes = [['Dark', true], ['Light', false]].map(([l, d]) => ({ label: l, ...tSty(d === curD), click: () => this.setState({ th: curF + l }) }));
     const tabs = [['intent', 'Intent'], ['agents', 'Agents'], ['pipeline', 'Pipeline'], ['ext', 'Extensions'], ['config', 'Config']].map(([k, l]) => { const on = st.tab === k; return { label: l, click: set({ tab: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent' }; });
     const build = st.mode === 'build';
     const seg = (on) => `background:${on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent'};color:${on ? 'var(--tx)' : 'var(--mu)'};border:1px solid ${on ? 'var(--ac)' : 'var(--bd)'};border-radius:4px;padding:2px 9px;font-size:12px;cursor:pointer`;
     const permText = { allowed: '✓ Allowed once.', always: '✓ Allowed for this folder.', denied: '✕ Denied. Cognition proposes an alternative.' }[st.perm];
     const verdictText = { useful: 'useful', noise: 'noise', dismissed: 'dismissed' }[st.verdict];
     return {
-      surfaces, themes, tabs, themeVars: T[st.th][1], permText, verdictText,
+      surfaces, themes, tabs, themeFams, themeModes, themeVars: T[st.th][1], permText, verdictText,
       isTui: st.s === 'tui', isVsc: st.s === 'vsc', isWeb: st.s === 'web',
       ...this.navExtra(st, set),
       tuiSession: ['session', 'palette', 'models'].includes(st.scr), tuiPipeline: st.scr === 'pipeline', tuiSub: st.scr === 'subagent', tuiPaletteOpen: st.scr === 'palette',

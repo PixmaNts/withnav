@@ -693,13 +693,7 @@ impl FlowRuntime {
                     outcome.trace.application = report;
                 }
                 if let Some(records) = records.filter(|_| !is_blocking) {
-                    let failed = records.append(&outcome.trace).is_err();
-                    if records.update_health(&outcome.trace, failed).is_err() {
-                        tracing::warn!("private flow health update failed");
-                    }
-                    if failed {
-                        tracing::warn!("private flow capture failed");
-                    }
+                    records.enqueue(outcome.trace.clone());
                 }
                 outcome
             };
@@ -792,13 +786,7 @@ impl FlowRuntime {
                 outcome.trace.application = report;
             }
             if let Some(records) = &self.records {
-                let failed = records.append(&outcome.trace).is_err();
-                if records.update_health(&outcome.trace, failed).is_err() {
-                    tracing::warn!("private flow health update failed");
-                }
-                if failed {
-                    tracing::warn!("private flow capture failed");
-                }
+                records.enqueue(outcome.trace.clone());
             }
         }
         (verdict, handles)

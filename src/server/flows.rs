@@ -202,7 +202,10 @@ async fn handle(
             serde_json::to_value(crate::flows::catalogue::catalogue()).map_err(|_| invalid())?
         ),
         ("GET", "") => {
-            ok(json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace)}))
+            store.refresh();
+            ok(
+                json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace),"propagation":"other Navai processes reload on their next event"}),
+            )
         }
         ("POST", "") => {
             let document = store.save(
@@ -216,14 +219,16 @@ async fn handle(
         ("POST", "validate") => ok(json!(validate(parse::<Content>(data["content"].clone())?))),
         ("POST", "reload") => {
             store.reload()?;
-            ok(json!({"reloaded":true,"errors":[],"flows":store.list()?}))
+            ok(
+                json!({"reloaded":true,"errors":[],"flows":store.list()?,"propagation":"other Navai processes reload on their next event"}),
+            )
         }
         ("GET", "trust") | ("POST", "trust") => {
             if method == Method::POST {
                 store.set_trust(data["trusted"].as_bool().ok_or_else(invalid)?)?;
             }
             ok(
-                json!({"workspace":workspace,"has_workspace_flows":store.list()?.iter().any(|s|s.location==Location::Workspace),"trusted":store.trusted()}),
+                json!({"workspace":workspace,"has_workspace_flows":store.list()?.iter().any(|s|s.location==Location::Workspace),"trusted":store.trusted(),"propagation":"other Navai processes reload on their next event"}),
             )
         }
         ("POST", "sample") => {
@@ -569,6 +574,10 @@ mod tests {
             .await
             .unwrap();
         assert!(listed.to_string().contains("test"));
+        assert_eq!(
+            listed["propagation"],
+            "other Navai processes reload on their next event"
+        );
         let (_, trust) = handle(&state, &query, &headers, peer, Method::GET, "trust", b"")
             .await
             .unwrap();
@@ -636,7 +645,7 @@ mod tests {
         )
         .await
         .unwrap();
-        handle(
+        let (_, reloaded) = handle(
             &state,
             &query,
             &headers,
@@ -647,6 +656,11 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(reloaded["reloaded"], true);
+        assert_eq!(
+            reloaded["propagation"],
+            "other Navai processes reload on their next event"
+        );
         let (_,saved)=handle(&state,&query,&headers,peer,Method::PUT,"test",&serde_json::to_vec(&json!({"location":"workspace","revision":document["revision"],"content":{"format":"toml","toml":"broken","templates":{}}})).unwrap()).await.unwrap();
         assert!(!saved["errors"].as_array().unwrap().is_empty());
         assert_eq!(

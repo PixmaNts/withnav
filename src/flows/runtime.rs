@@ -598,6 +598,7 @@ impl FlowRuntime {
         cancel: CancellationToken,
         effects: Arc<dyn FlowEffects>,
     ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
+        self.store.refresh();
         let snapshot = self.store.snapshot();
         let trusted = self.store.trusted();
         let started = Instant::now();

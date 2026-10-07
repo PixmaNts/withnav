@@ -7,16 +7,24 @@ use std::collections::BTreeMap;
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{sync_channel, SyncSender},
-        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{sync_channel, Receiver, SyncSender},
+        Arc, Mutex,
     },
 };
 pub struct Records {
     path: PathBuf,
     write: Arc<Mutex<()>>,
-    worker: OnceLock<SyncSender<RunRecord>>,
+    worker: Mutex<Option<Writer>>,
+    stopped: Arc<AtomicBool>,
+    closed: AtomicBool,
+    pending: Arc<AtomicU64>,
     dropped: Arc<AtomicU64>,
+}
+struct Writer {
+    sender: SyncSender<RunRecord>,
+    done: Receiver<()>,
+    join: std::thread::JoinHandle<()>,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Health {
@@ -34,19 +42,39 @@ struct HealthRow {
 impl Records {
     /// Nonblocking admission: bounded queue, no private filesystem access on the caller.
     pub fn enqueue(&self, record: RunRecord) {
-        let sender = self.worker.get_or_init(|| {
+        let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closed.load(Ordering::Acquire) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if worker.is_none() {
             let (sender, receiver) = sync_channel::<RunRecord>(32);
+            let (done_tx, done) = sync_channel(1);
             let writer = Self {
                 path: self.path.clone(),
                 write: self.write.clone(),
-                worker: OnceLock::new(),
+                worker: Mutex::new(None),
+                stopped: Arc::new(AtomicBool::new(false)),
+                closed: AtomicBool::new(true),
+                pending: self.pending.clone(),
                 dropped: self.dropped.clone(),
             };
             let dropped = self.dropped.clone();
+            let stopped = self.stopped.clone();
             let result = std::thread::Builder::new()
                 .name("flow-captures".into())
                 .spawn(move || {
                     while let Ok(record) = receiver.recv() {
+                        if stopped.load(Ordering::Acquire) {
+                            break;
+                        }
+                        // fetch_update supports the declared Rust 1.89 minimum; newer compilers rename it.
+                        #[allow(deprecated)]
+                        let _ = writer.pending.fetch_update(
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                            |n| Some(n.saturating_sub(1)),
+                        );
                         let failed = writer.append(&record).is_err();
                         if failed {
                             dropped.fetch_add(1, Ordering::Relaxed);
@@ -55,15 +83,43 @@ impl Records {
                             tracing::warn!("private flow health update failed");
                         }
                     }
+                    let _ = done_tx.send(());
                 });
-            if result.is_err() {
-                tracing::warn!("private flow capture worker unavailable");
+            match result {
+                Ok(join) => *worker = Some(Writer { sender, done, join }),
+                Err(_) => {
+                    tracing::warn!("private flow capture worker unavailable");
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
             }
-            sender
-        });
-        if sender.try_send(record).is_err() {
+        }
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if worker.as_ref().unwrap().sender.try_send(record).is_err() {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+    /// Closing admission is separate from cancellation, so queued records can drain.
+    pub fn shutdown(&self, timeout: std::time::Duration) {
+        let worker = {
+            let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
+            self.closed.store(true, Ordering::Release);
+            worker.take()
+        };
+        let Some(Writer { sender, done, join }) = worker else {
+            return;
+        };
+        drop(sender);
+        if done.recv_timeout(timeout).is_ok() {
+            let _ = join.join();
+        } else {
+            self.stopped.store(true, Ordering::Release);
+            self.dropped
+                .fetch_add(self.pending.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+            // A filesystem call cannot be cancelled safely; detach the in-flight write.
+        }
+        self.stopped.store(true, Ordering::Release);
     }
     fn read_health(&self) -> std::io::Result<Health> {
         let dir = match Directory::private(&self.path, false) {
@@ -149,7 +205,10 @@ impl Records {
         Self {
             write: super::fs::resource_lock(&path.join("runs.jsonl")),
             path,
-            worker: OnceLock::new(),
+            worker: Mutex::new(None),
+            stopped: Arc::new(AtomicBool::new(false)),
+            closed: AtomicBool::new(false),
+            pending: Arc::new(AtomicU64::new(0)),
             dropped: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -207,6 +266,11 @@ impl Records {
             .write("runs.jsonl", format!("{}\n", lines.join("\n")).as_bytes())
     }
 }
+impl Drop for Records {
+    fn drop(&mut self) {
+        self.shutdown(std::time::Duration::from_secs(2));
+    }
+}
 fn retained(record: &RunRecord) -> bool {
     let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(7);
     time::OffsetDateTime::parse(
@@ -219,6 +283,35 @@ fn retained(record: &RunRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shutdown_drains_and_joins_capture_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        for i in 0..8 {
+            let mut record = fixture();
+            record.run_id = i.to_string();
+            records.enqueue(record);
+        }
+        records.shutdown(std::time::Duration::from_secs(2));
+        assert_eq!(records.read().unwrap().len(), 8);
+        assert_eq!(records.dropped.load(Ordering::Relaxed), 0);
+        records.enqueue(fixture());
+        assert_eq!(records.dropped.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn shutdown_timeout_counts_queued_records_without_blocking() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let guard = records.write.lock().unwrap();
+        for _ in 0..8 {
+            records.enqueue(fixture());
+        }
+        let started = std::time::Instant::now();
+        records.shutdown(std::time::Duration::from_millis(10));
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        assert!(records.dropped.load(Ordering::Relaxed) >= 7);
+        drop(guard);
+    }
     #[test]
     fn stalled_capture_writer_never_blocks_admission_and_counts_overflow() {
         let temp = tempfile::tempdir().unwrap();

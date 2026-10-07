@@ -30,6 +30,19 @@ impl std::fmt::Debug for Host {
     }
 }
 impl Host {
+    pub fn shutdown(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        for entry in self
+            .workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            entry
+                .records
+                .shutdown(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
+    }
     pub fn new(config: PathBuf, data: PathBuf, models: Option<PathBuf>) -> Self {
         Self {
             config,
@@ -42,7 +55,11 @@ impl Host {
         std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     }
     fn entry(&self, workspace: PathBuf) -> Workspace {
-        let store = Arc::new(FlowStore::new(workspace.clone(), self.config.clone()));
+        let store = Arc::new(FlowStore::with_data(
+            workspace.clone(),
+            self.config.clone(),
+            self.data.clone(),
+        ));
         let records = Arc::new(Records::new(&self.data, &workspace));
         let client =
             crate::provider::config::load_models(self.models.as_deref(), &workspace, &self.config)
@@ -84,14 +101,15 @@ impl Host {
     }
     pub fn diagnostics(&self, path: &Path) -> Vec<instinct_flow::Diagnostic> {
         let workspace = self.workspace(path);
-        self.workspaces
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        let mut workspaces = self.workspaces.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = workspaces
             .entry(workspace.clone())
-            .or_insert_with(|| self.entry(workspace))
+            .or_insert_with(|| self.entry(workspace));
+        entry
             .diagnostic
             .clone()
             .into_iter()
+            .chain(entry.store.reload_diagnostics())
             .collect()
     }
     pub fn records(&self, path: &Path) -> Arc<Records> {
@@ -148,10 +166,130 @@ impl Host {
         );
     }
 }
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn content(action: &str) -> super::super::store::Content {
+        let params = if action == "no_objection" {
+            ""
+        } else {
+            "note='guard'\n"
+        };
+        super::super::store::Content::Toml {
+            toml: format!("[flow]\nversion=1\nname='guard'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n{params}"),
+            templates: BTreeMap::new(),
+        }
+    }
+    async fn verdict(runtime: &FlowRuntime) -> super::super::runtime::VerdictLike {
+        runtime
+            .tool_pre_call(
+                super::super::runtime::ToolCallContextLike {
+                    call_id: "x".into(),
+                    tool: "read".into(),
+                    args: serde_json::json!({}),
+                    agent: "build".into(),
+                    workspace: runtime.store.workspace.clone(),
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    }
+    #[tokio::test]
+    async fn independent_hosts_reload_on_next_event_and_keep_invalid_snapshot() {
+        use super::super::{
+            runtime::VerdictLike,
+            store::{Content, Location},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let a = Host::new(temp.path().join("config"), temp.path().join("data"), None);
+        let b = Host::new(a.config.clone(), a.data.clone(), None);
+        let store = a.store(temp.path().into());
+        let runtime = b.runtime(temp.path()).unwrap();
+        let doc = store
+            .save("guard", Location::Global, None, content("deny"))
+            .unwrap();
+        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        store.reload().unwrap();
+        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        let next = store
+            .save(
+                "guard",
+                Location::Global,
+                Some(&doc.revision),
+                content("no_objection"),
+            )
+            .unwrap();
+        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        store.reload().unwrap();
+        // A publishes a valid set; an external editor corrupts the file before B evaluates.
+        store
+            .save(
+                "guard",
+                Location::Global,
+                Some(&next.revision),
+                Content::Toml {
+                    toml: "invalid".into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(!b.diagnostics(temp.path()).is_empty());
+        assert!(store.reload().is_err());
+        let dir =
+            super::super::fs::Directory::private(&a.data.join("flows/reload"), false).unwrap();
+        let marker = dir
+            .names()
+            .unwrap()
+            .into_iter()
+            .find(|n| !n.starts_with('.'))
+            .unwrap();
+        let generation: serde_json::Value =
+            serde_json::from_str(&dir.read(&marker, 1024, true).unwrap()).unwrap();
+        assert_eq!(generation["generation"], 2);
+        assert!(time::OffsetDateTime::parse(
+            generation["reloaded_at"].as_str().unwrap(),
+            &time::format_description::well_known::Rfc3339
+        )
+        .is_ok());
+    }
+    #[tokio::test]
+    async fn independent_hosts_revoke_workspace_runs_even_when_reload_is_invalid() {
+        use super::super::{
+            runtime::VerdictLike,
+            store::{Content, Location},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let a = Host::new(temp.path().join("config"), temp.path().join("data"), None);
+        let b = Host::new(a.config.clone(), a.data.clone(), None);
+        let store = a.store(temp.path().into());
+        let runtime = b.runtime(temp.path()).unwrap();
+        store
+            .save("guard", Location::Workspace, None, content("deny"))
+            .unwrap();
+        store.set_trust(true).unwrap();
+        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        store
+            .save(
+                "broken",
+                Location::Global,
+                None,
+                Content::Toml {
+                    toml: "invalid".into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.set_trust(false).unwrap();
+        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        assert!(!runtime.store.reload_diagnostics().is_empty());
+    }
     #[test]
     fn editor_adapter_observes_shared_host_reload() {
         let temp = tempfile::tempdir().unwrap();

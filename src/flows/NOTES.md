@@ -1,7 +1,11 @@
 # Host integration status
 
-The workspace host is shared by root sessions, Studio and editor execution. Event-local editor
-effects share its activation snapshot, provider and captures; Studio reload reaches the next event.
+Each process owns its workspace host. Event-local editor effects share that process's activation
+snapshot, provider and captures. Successful explicit reload and trust changes atomically advance
+a private workspace-hashed generation marker. Other Navai processes reload all-or-nothing before
+their next event; invalid definitions retain their previous snapshot and expose reload diagnostics.
+External file edits alone do not activate changes. Trust is checked fail-closed on every event,
+including when a propagated reload fails, so revocation still excludes workspace flows immediately.
 
 - Provider/config/auth initialization failure keeps a runtime with an unavailable decision client:
   deterministic rules still execute, decisions fail through provider-error fallback, and Studio
@@ -9,6 +13,9 @@ effects share its activation snapshot, provider and captures; Studio reload reac
 - Captures use a bounded background writer (32 pending records); queue overflow omits capture and
   increments `capture_drops` in health. This process-local counter is not durable. Capture/health
   filesystem IO is not part of blocking admission; capture visibility is eventually consistent.
+  Host shutdown closes admission and drains pending captures for at most two seconds, joins finished
+  writers, and counts queued records dropped on timeout. An in-flight filesystem call is detached
+  on timeout rather than cancelled; it may finish afterward.
 - Trust/capture writers share canonical-resource mutexes and stable sibling advisory flocks across
   atomic replacements. External editors not taking those locks are not serialized.
 - Template maps are validated before writes; `.toml` and unsafe sibling names are refused. Existing

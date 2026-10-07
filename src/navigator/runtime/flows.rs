@@ -270,3 +270,63 @@ impl Runtime {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::flows::{
+        builtin,
+        store::{Content, FlowStore, Location},
+    };
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn disabled_override_and_revoked_workspace_do_not_create_a_second_producer() {
+        let root = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(root.path().into(), root.path().join("config"));
+        let owns = |trigger: &str| {
+            store.snapshot().values().any(|f| {
+                let h = &f.compiled.definition().flow;
+                h.enabled
+                    && h.on == trigger
+                    && (f.location != Location::Workspace || store.trusted())
+            })
+        };
+        assert!(owns("save"));
+        assert!(!owns("diagnostics"));
+        let (mut definition, templates) = builtin::definitions()
+            .into_iter()
+            .find(|(d, _)| d.flow.on == "save")
+            .unwrap();
+        definition.flow.enabled = false;
+        store
+            .save(
+                "navigator-default-save",
+                Location::Global,
+                None,
+                Content::Graph {
+                    definition: Box::new(definition),
+                    templates,
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(!owns("save"));
+        let toml = "[flow]\nversion=1\nname='custom-save'\non='save'\nstart=['note']\n[[node]]\nid='note'\ntype='action'\naction='wake'\n[node.params]\nnote='Review this'\n";
+        store
+            .save(
+                "custom-save",
+                Location::Workspace,
+                None,
+                Content::Toml {
+                    toml: toml.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.set_trust(true).unwrap();
+        store.reload().unwrap();
+        assert!(owns("save"));
+        store.set_trust(false).unwrap();
+        assert!(!owns("save"));
+    }
+}

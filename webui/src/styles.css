@@ -182,9 +182,10 @@ a:hover {
 .icon-btn:hover {
   color: var(--tx);
 }
-.side-head .icon-btn {
+.side-actions {
+  display: flex;
+  gap: 6px;
   margin-left: auto;
-  font-size: 14px;
 }
 .ws {
   display: flex;
@@ -207,6 +208,19 @@ a:hover {
 .ws-row:hover {
   background: color-mix(in srgb, var(--tx) 5%, transparent);
 }
+.ws-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+}
+.ws-toggle { flex-shrink: 0; }
 .ws-row .caret {
   color: var(--mu);
   font-size: 11px;
@@ -347,18 +361,16 @@ a:hover {
   line-height: 1.55;
 }
 .msg-driver {
-  align-self: flex-end;
-  max-width: 70%;
-  background: var(--sf);
+  min-width: 0;
+  border-left: 2px solid var(--mu);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mu) 10%, transparent), transparent);
   padding: 9px 12px;
-  border-radius: 8px;
 }
 .byline {
   color: var(--mu);
   font-size: 11px;
 }
 .msg-cog {
-  max-width: 80%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -570,7 +582,7 @@ a:hover {
 
 /* wake / subagent result / notices */
 .wake {
-  max-width: 80%;
+  min-width: 0;
   border-left: 2px solid var(--rd);
   padding: 8px 14px;
   background: linear-gradient(90deg, color-mix(in srgb, var(--rd) 10%, transparent), transparent 80%);
@@ -596,7 +608,7 @@ a:hover {
   text-decoration: underline;
 }
 .sub-result {
-  max-width: 80%;
+  min-width: 0;
   border-left: 2px solid var(--pu);
   padding: 6px 14px;
 }
@@ -1321,7 +1333,7 @@ a:hover {
   padding: 12px 14px;
   background: var(--pn);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 290px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .task-card .goal {

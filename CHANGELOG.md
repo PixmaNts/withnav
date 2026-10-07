@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Browser transcripts use one column.** Driver messages and cognition replies share the full width, with bylines and a quiet Driver accent instead of right-aligned chat bubbles.
+- **Every workspace can collapse in the browser sidebar.** Carets expand without switching workspaces, names navigate without reopening collapsed rows, and the browser remembers which folders are expanded. Collapse all and Expand all are also available in the command palette.
+
 ## [0.6.0] - 2026-10-07
 
 Navai gets a browser interface and a Settings screen in every client. `navai web` opens the chat in

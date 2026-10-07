@@ -3,7 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
-import { keys, useCommands, useSessions, useSettings } from "./api/queries";
+import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
+import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
@@ -79,6 +80,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const [tab, setTab] = useState<PanelTab>("intent");
   const composer = useRef<ComposerHandle>(null);
   const workspace = route.workspace;
+  const expansion = useWorkspaceExpansion(workspace);
+  const workspaces = useWorkspaces();
+  const expandAllWorkspaces = useCallback(() => expansion.expandAll([...new Set([...(workspaces.data ?? []).map((w) => w.path), ...(workspace ? [workspace] : [])])]), [expansion.expandAll, workspaces.data, workspace]);
   const onCreated = useCallback((id: string) => navigate({ session: id, subagent: null }, true), [navigate]);
   const chat = useChat(workspace, route.session, onCreated);
   const sessions = useSessions(workspace);
@@ -165,6 +169,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         page: skillsPage,
       },
       { id: "theme", group: "View", label: "Theme…", hint: "", page: themePage },
+      { id: "collapse-workspaces", group: "View", label: "Collapse all workspaces", hint: "", run: expansion.collapseAll },
+      { id: "expand-workspaces", group: "View", label: "Expand all workspaces", hint: "", run: expandAllWorkspaces },
       { id: "settings", group: "View", label: "Open settings", hint: "", run: openSettings, disabled: workspace ? undefined : "Choose a workspace first" },
     ];
     // The server's commands, minus the ones above already cover.
@@ -184,7 +190,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings]);
+  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, expansion.collapseAll, expandAllWorkspaces]);
 
   const runServer = async (name: string, args: string) => {
     if (!route.session) {
@@ -295,7 +301,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         </div>
       </header>
 
-      <Sidebar route={route} navigate={navigate} />
+      <Sidebar route={route} navigate={navigate} expansion={expansion} />
 
       {route.subagent && route.session ? (
         <main className="main">

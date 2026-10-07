@@ -7,14 +7,17 @@ requests land in `develop`.
 ### Added
 
 - **Bypass ordinary permission prompts for one session.** Turn it on with `/bypass on`, `navai run --yes`, or `POST /v1/sessions/{id}/bypass`: `write`, `edit`, `bash` and `fetch` calls that would have asked run once instead, after the usual reviews, and the result says `approved_by: bypass`. A request already waiting is answered too. Requests for Navai's own configuration, credentials and keys still ask you, and `navai run --yes` stops with exit code 3 on one. It is off for every new or resumed session, never saved, and a session's subagents follow it. It is not a sandbox: `bash` keeps its access to your machine.
+- **Bypass in the terminal.** Alt+P (or `/bypass on` / `/bypass off`) turns bypass on or off for the
+  open session. While it is on, `⚠ bypass` stays in the header and next to the tab, and each change
+  appears in the conversation. Protected requests still ask.
+- **Bypass in VS Code.** "Navai: Toggle Bypass Permissions" (or the button in the Cognition panel
+  header) turns bypass on for the open session, after a confirmation the first time. While it is on,
+  a warning badge stays in the header, and each change appears in the conversation.
 - **Bypass in the browser.** The "Bypass" button next to build/plan (or the command palette) turns
   bypass on or off for the open session. While it is on, a warning badge stays on the session in the
   sidebar and in the breadcrumb, and each change appears in the conversation. Protected requests
   still ask.
 - **Remove a workspace from the browser list.** The `…` menu of a workspace (or the command palette, for the open one) offers **Remove from list**, which keeps its sessions, and **Delete workspace sessions…**, which deletes every session of that folder with its subagents after you confirm the count. A removed folder stays out of the list after a restart and comes back when you open it again with "Open a folder" or start a session there. Folders passed to `navai web` on the command line stay in the list while that server runs.
-- **Bypass in the terminal.** Alt+P (or `/bypass on` / `/bypass off`) turns bypass on or off for the
-  open session. While it is on, `⚠ bypass` stays in the header and next to the tab, and each change
-  appears in the conversation. Protected requests still ask.
 
 ### Changed
 
@@ -40,9 +43,6 @@ limits and the theme from the browser, the terminal (`/config`) or VS Code, all 
 `config.json`. No configuration change is needed to upgrade from 0.5.1.
 
 ### Added
-- **Bypass in VS Code.** "Navai: Toggle Bypass Permissions" (or the button in the Cognition panel
-  header) turns bypass on for the open session, after a confirmation the first time. While it is on,
-  a warning badge stays in the header, and each change appears in the conversation.
 
 - **Settings in VS Code.** "Navai: Open Settings" (or the gear in the Cognition view) opens a
   Navai Settings tab laid out like VS Code's own settings editor: the same sections, saved at once

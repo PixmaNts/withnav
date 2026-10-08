@@ -11,10 +11,11 @@ use std::sync::Arc;
 
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
-    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult,
-    InitializedParams, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidChangeWorkspaceFoldersParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    InitializeParams, InitializeResult, InitializedParams, OneOf, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities,
+    WorkspaceServerCapabilities,
 };
 use tower_lsp_server::{Client, ClientSocket, LanguageServer, LspService, Server};
 
@@ -45,17 +46,26 @@ impl LanguageServer for NavigatorBackend {
         }
         #[allow(deprecated)]
         let from_root = params.root_uri.as_ref().and_then(uri_to_path);
-        let from_folder = params
+        let from_folders: Vec<_> = params
             .workspace_folders
-            .as_ref()
-            .and_then(|folders| folders.first().and_then(|f| uri_to_path(&f.uri)));
-        self.runtime.set_workspace(from_root, from_folder).await;
+            .iter()
+            .flatten()
+            .filter_map(|f| uri_to_path(&f.uri))
+            .collect();
+        self.runtime.set_workspace(from_root, from_folders).await;
         self.runtime.report_disabled_layers().await;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                workspace: Some(WorkspaceServerCapabilities {
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: Some(OneOf::Left(true)),
+                    }),
+                    file_operations: None,
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -91,6 +101,18 @@ impl LanguageServer for NavigatorBackend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.runtime.on_did_close(params).await;
+    }
+
+    async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+        let paths = |folders: Vec<tower_lsp_server::ls_types::WorkspaceFolder>| {
+            folders
+                .iter()
+                .filter_map(|f| uri_to_path(&f.uri))
+                .collect::<Vec<_>>()
+        };
+        self.runtime
+            .change_workspace_folders(paths(params.event.added), paths(params.event.removed))
+            .await;
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {

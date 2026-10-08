@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Invalid grep expressions return the same error on every host.**
+  The ripgrep engine validates expressions before starting its process, returning
+  `invalid_regex` just like the built-in fallback rather than a generic command failure.
+
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

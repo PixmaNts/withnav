@@ -4,6 +4,14 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The VS Code panel colours what waits on you, how subagents are doing, and how big a change is.**
+  Pause cards and pending permissions get the warning colour; a subagent's state reads blue while
+  running, amber when it needs you, green when done, red when failed; a wake shows `+N −M` and its
+  diff lines in your theme's git colours. All from VS Code theme colours, AA contrast in Dark+,
+  Light+ and High Contrast.
+
 ### Fixed
 
 - **VS Code's layer protocol now includes variant discovery diagnostics.** The optional server

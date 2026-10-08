@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **The example default agent has an explicit context window.** Startup preflight no longer
+  needs online catalogue discovery to determine its capacity.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

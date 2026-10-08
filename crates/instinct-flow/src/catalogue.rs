@@ -114,6 +114,8 @@ pub struct Limits {
     pub response_bytes: usize,
     pub concurrent_calls: usize,
 }
+pub const MAX_INPUT_BYTES: usize = 32 * 1024;
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -123,7 +125,7 @@ impl Default for Limits {
             async_deadline_ms: 5000,
             call_deadline_ms: 2000,
             flow_bytes: 262144,
-            input_bytes: 16384,
+            input_bytes: MAX_INPUT_BYTES,
             run_input_bytes: 65536,
             state_bytes: 65536,
             template_bytes: 65536,

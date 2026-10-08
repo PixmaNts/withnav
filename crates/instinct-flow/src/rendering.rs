@@ -227,7 +227,7 @@ mod tests {
         let values = BTreeMap::from([(
             "x".into(),
             InputValue {
-                value: Some("x".repeat(16384).into()),
+                value: Some("x".repeat(crate::catalogue::MAX_INPUT_BYTES).into()),
                 cut: false,
                 redacted: false,
             },

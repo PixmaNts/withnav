@@ -29,7 +29,7 @@ including when a propagated reload fails, so revocation still excludes workspace
 - `ContextSnapshot` accepts a caller session snapshot and collects workspace git and intent inputs.
   Conversation/editor inputs remain absent. Root tool hooks and message/turn adapters pass
   the actual session snapshot; the instinct model is not the session model. Intent collection
-  refuses files over 16 KiB; the existing intent reader still has a metadata/read race.
+  refuses files over 32 KiB; the existing intent reader still has a metadata/read race.
 - Health uses independent private hourly aggregates for the latest 24 buckets, not retained runs.
   This is an hour-aligned approximation, not an exact rolling 24-hour window. An unavailable
   private directory prevents persisting both health and capture-failure counters.

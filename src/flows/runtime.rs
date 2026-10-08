@@ -236,7 +236,7 @@ mod tests {
         context.values.insert(
             "conversation.digest".into(),
             InputValue {
-                value: Some(json!("é".repeat(10000))),
+                value: Some(json!("é".repeat(20000))),
                 cut: false,
                 redacted: false,
             },
@@ -267,7 +267,7 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .len(),
-            16384
+            instinct_flow::catalogue::MAX_INPUT_BYTES
         );
         assert!(values["session.model"].redacted);
     }
@@ -461,7 +461,9 @@ impl InputSource for ContextSnapshot {
                         let path = workspace.join(".navigator/intent.md");
                         // Refuse links and oversize files before the existing intent reader.
                         let metadata = std::fs::symlink_metadata(&path).ok()?;
-                        if !metadata.is_file() || metadata.len() > 16384 {
+                        if !metadata.is_file()
+                            || metadata.len() > instinct_flow::catalogue::MAX_INPUT_BYTES as u64
+                        {
                             return None;
                         }
                         let sensitive = crate::agent::permission_gate::sensitive_read(&path)
@@ -493,8 +495,8 @@ impl InputSource for ContextSnapshot {
                 });
                 value.redacted |= value.value.as_ref().is_some_and(contains_secret);
                 if let Some(Value::String(text)) = &mut value.value {
-                    if text.len() > 16384 {
-                        let mut end = 16384;
+                    if text.len() > instinct_flow::catalogue::MAX_INPUT_BYTES {
+                        let mut end = instinct_flow::catalogue::MAX_INPUT_BYTES;
                         while !text.is_char_boundary(end) {
                             end -= 1;
                         }

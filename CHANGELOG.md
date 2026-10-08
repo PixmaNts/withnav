@@ -26,6 +26,9 @@ requests land in `develop`.
   Child ids are checked before conversion, and termination rejects nonpositive ids so an invalid
   id cannot signal WithNav's own process group.
 
+- **The terminal client no longer fails to load skills or toggle bypass for a session whose id needs
+  escaping.** Those two requests put the id in the URL path as-is while every other one escaped it, so
+  an id with a space or a slash gave a 404.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

@@ -405,18 +405,31 @@ impl Documents {
 }
 
 /// The first changed line (1-based) and its text in the new document:
-/// where this edit starts and what it says. `(0, "")` when nothing was
-/// inserted (a pure deletion has no new line to quote).
+/// where this edit starts and what it says. A pure deletion has no new line
+/// to quote: it reports the line of the new document where the removed text
+/// used to sit (clamped to the last line) with an empty text, so the edit
+/// point still moves. `(0, "")` when nothing changed or the new text is empty.
 pub fn first_changed_line(old: &str, new: &str) -> (usize, String) {
     let diff = similar::TextDiff::from_lines(old, new);
+    let mut new_lines_seen = 0usize;
+    let mut first_delete = None;
     for change in diff.iter_all_changes() {
-        if matches!(change.tag(), similar::ChangeTag::Insert) {
-            if let Some(idx) = change.new_index() {
-                return (idx + 1, change.value().trim_end().to_string());
+        match change.tag() {
+            similar::ChangeTag::Insert => {
+                if let Some(idx) = change.new_index() {
+                    return (idx + 1, change.value().trim_end().to_string());
+                }
             }
+            similar::ChangeTag::Delete => {
+                first_delete.get_or_insert(new_lines_seen + 1);
+            }
+            similar::ChangeTag::Equal => new_lines_seen += 1,
         }
     }
-    (0, String::new())
+    match first_delete {
+        Some(line) => (line.min(new.lines().count()), String::new()),
+        None => (0, String::new()),
+    }
 }
 
 /// Where the 0-based `line` of `old` sits in `new`: its new index when the

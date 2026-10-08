@@ -13,6 +13,13 @@ requests land in `develop`.
   a delete button (shown on hover or focus; the Delete key works on the row), and the command
   palette has "Delete session…" for the open one. The confirmation lists the subagents that go
   with it and says it cannot be undone; deleting the open session moves to the next one.
+### Changed
+
+- **The VS Code panel colours what waits on you, how subagents are doing, and how big a change is.**
+  Pause cards and pending permissions get the warning colour; a subagent's state reads blue while
+  running, amber when it needs you, green when done, red when failed; a wake shows `+N −M` and its
+  diff lines in your theme's git colours. All from VS Code theme colours, AA contrast in Dark+,
+  Light+ and High Contrast.
 
 ### Fixed
 

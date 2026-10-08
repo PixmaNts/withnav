@@ -262,6 +262,37 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
   color: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-foreground)) 75%, var(--vscode-foreground) 25%);
 }
 .permission-card[data-resolution=deny] .control-outcome { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+/* Text in the warning, passed and git-added colours: those tokens are tuned for icons and
+   decorations (3:1), so text mixes them with the foreground to reach 4.5:1 in light themes. */
+:root {
+  --nav-warning-text: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+  --nav-passed-text: var(--vscode-testing-iconPassed, var(--vscode-foreground));
+  --nav-added-text: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-foreground));
+}
+@supports (color: color-mix(in srgb, red, blue)) {
+  :root {
+    --nav-warning-text: color-mix(in srgb, var(--vscode-editorWarning-foreground, var(--vscode-foreground)) 60%, var(--vscode-foreground) 40%);
+    --nav-passed-text: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-foreground)) 70%, var(--vscode-foreground) 30%);
+    --nav-added-text: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-foreground)) 70%, var(--vscode-foreground) 30%);
+  }
+}
+/* Watchdog and step-limit pauses wait on the Captain: the warning rule, as a pending permission. */
+.pause-card { border-left-color: var(--vscode-editorWarning-foreground, var(--vscode-focusBorder)); }
+.pause-card .control-kicker, .permission-card:not([data-resolution]) .control-kicker { color: var(--nav-warning-text); }
+.pause-card[data-state=resolved] { border-left-color: var(--vscode-panel-border, var(--vscode-widget-border)); }
+.pause-card[data-state=resolved] .control-kicker { color: var(--vscode-descriptionForeground); }
+.pause-card[data-state=error] .control-outcome { color: var(--vscode-errorForeground); }
+/* A subagent's state in the colour of what it asks: running, waiting on the Captain, done, failed. */
+.child-state { font-weight: 600; }
+.child-state[data-state=running] { color: var(--vscode-textLink-foreground, currentColor); }
+.child-state[data-state=permission], .child-state[data-state=budget], .child-state[data-state=watchdog] { color: var(--nav-warning-text); }
+.child-state[data-state=done] { color: var(--nav-passed-text); }
+.child-state[data-state=failed] { color: var(--vscode-errorForeground, currentColor); }
+.child-state[data-state=stopped], .child-state[data-state=unknown] { color: var(--vscode-descriptionForeground); font-weight: normal; }
+/* The size of the change a wake is about, and its lines, in the editor's git colours. */
+.diff-count { display: inline-flex; gap: 5px; font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-variant-numeric: tabular-nums; }
+.diff-added, .diff-line.add { color: var(--nav-added-text); }
+.diff-removed, .diff-line.del { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground, var(--vscode-foreground))); }
 .bypass-toggle { margin-left: auto; padding: 3px 7px; font-size: 11px; background: transparent; color: var(--vscode-foreground, #cccccc); border: 1px solid var(--vscode-widget-border, #555555); border-radius: 4px; }
 .bypass-toggle:disabled { opacity: .55; cursor: default; }
 .bypass-badge { padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--vscode-editorWarning-foreground, #bf8803); background: var(--vscode-inputValidation-warningBackground, transparent); border: 1px solid var(--vscode-inputValidation-warningBorder, #bf8803); }

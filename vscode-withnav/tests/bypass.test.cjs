@@ -49,7 +49,7 @@ test('child and archive views show state but cannot set it', async () => {
   const b = setup(); b.state.readOnly = true; b.state.bypass = true;
   let view; b.subscribe(m => { view = m; }); b.publishBypass();
   assert.equal(view.enabled, true); assert.equal(view.disabled, true);
-  await assert.rejects(b.toggleBypassPermissions(), /unavailable/);
+  await assert.rejects(b.toggleBypassPermissions(), /uwithnavlable/);
 });
 test('events arriving before the snapshot stay dark until reconciliation', () => {
   const b = new CognitionBackend();

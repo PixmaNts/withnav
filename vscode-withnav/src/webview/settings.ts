@@ -424,7 +424,7 @@ function renderRows(): number {
 function render(): void {
   projectionPending = false;
   if (!snapshot) {
-    rowsHost.replaceChildren(el("p", loadError ? "placeholder error" : "placeholder", noWorkspace ? "Open a folder to edit Navai settings" : loadError ?? "Loading Navai settings…"));
+    rowsHost.replaceChildren(el("p", loadError ? "placeholder error" : "placeholder", noWorkspace ? "Open a folder to edit WithNav settings" : loadError ?? "Loading WithNav settings…"));
     if (loadError || noWorkspace) {
       const retry = el("button", "button primary", noWorkspace ? "Open Folder" : "Retry");
       retry.type = "button";

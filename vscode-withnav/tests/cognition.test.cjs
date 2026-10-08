@@ -130,9 +130,9 @@ test("stale or malformed optional pause tokens are not guessed", t => {
 });
 
 test("permission HTTP failure leaves card open and shows refusal", async t => {
-  const { backend, permission } = setup(t, { error: "Unavailable" }, 503);
+  const { backend, permission } = setup(t, { error: "Uwithnavlable" }, 503);
   permission();
-  await assert.rejects(backend.answerPermission("parent", "R", "allow_once"), /Unavailable/);
+  await assert.rejects(backend.answerPermission("parent", "R", "allow_once"), /Uwithnavlable/);
   assert.equal(backend.hasOpenPermissions(), true);
   assert.equal(backend.history().at(-1).resolution, "error");
 });
@@ -424,7 +424,7 @@ test("summary 503 retries then reconciles and releases child enrichment", async 
     if (url.includes('/v1/agents?')) return new Response(JSON.stringify({agents:[],default_agent:'build'}));
     if (url.includes('/v1/layers?')) return new Response(JSON.stringify({layers:[]}));
     summaries++;
-    return new Response(JSON.stringify(summaries === 1 ? { error: "Unavailable" } : { current_seq: 4, model: "model" }), { status: summaries === 1 ? 503 : 200 });
+    return new Response(JSON.stringify(summaries === 1 ? { error: "Uwithnavlable" } : { current_seq: 4, model: "model" }), { status: summaries === 1 ? 503 : 200 });
   });
   await backend.loadSessionModel("parent");
   assert.equal(summaries, 2);
@@ -472,7 +472,7 @@ test("restart A with failed bootstrap then create B never relabels A controls or
   t.mock.method(globalThis, "fetch", async (url, init) => {
     calls.push({ url, ...init });
     if (url.includes("/v1/models")) return new Response(JSON.stringify({ models: [] }));
-    if (url.includes("/v1/sessions?")) return new Response(JSON.stringify({ error: "Unavailable" }), { status: 503 });
+    if (url.includes("/v1/sessions?")) return new Response(JSON.stringify({ error: "Uwithnavlable" }), { status: 503 });
     if (url.endsWith("/v1/sessions")) return new Response(JSON.stringify({ session_id: "B" }));
     return new Response(JSON.stringify({ accepted: true }));
   });

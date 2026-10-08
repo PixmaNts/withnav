@@ -11,8 +11,8 @@ const reflexEnabled = () =>
 
 /**
  * The reflex layer's editor half: an inline-completion provider that asks
- * the language server (`navigator/inlineCompletion`, after a 150 ms
- * debounce) and reports display time back (`navigator/reflexShown`) so the
+ * the language server (`withnav/inlineCompletion`, after a 150 ms
+ * debounce) and reports display time back (`withnav/reflexShown`) so the
  * server's log holds both halves of the pause-to-display latency.
  *
  * Suggestions apply on Tab (VS Code's inlineSuggest default); continuing
@@ -64,7 +64,7 @@ export function registerReflex(client: LanguageClient): vscode.Disposable[] {
       let result: InlineCompletionResult | undefined;
       try {
         result = await client.sendRequest<InlineCompletionResult>(
-          "navigator/inlineCompletion",
+          "withnav/inlineCompletion",
           params,
         );
       } catch {

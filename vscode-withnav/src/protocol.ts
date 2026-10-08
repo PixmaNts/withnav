@@ -93,33 +93,33 @@ export interface ServerInfoParams {
 }
 
 export namespace ServerInfoNotification {
-  export const type = new NotificationType<ServerInfoParams>("navigator/serverInfo");
+  export const type = new NotificationType<ServerInfoParams>("withnav/serverInfo");
 }
 
 export namespace RemarkNotification {
-  export const type = new NotificationType<RemarkParams>("navigator/remark");
+  export const type = new NotificationType<RemarkParams>("withnav/remark");
 }
 
 export namespace ClearNotification {
-  export const type = new NotificationType<ClearParams>("navigator/clear");
+  export const type = new NotificationType<ClearParams>("withnav/clear");
 }
 
 export namespace StatusNotification {
-  export const type = new NotificationType<StatusParams>("navigator/status");
+  export const type = new NotificationType<StatusParams>("withnav/status");
 }
 
 export namespace FeedbackNotification {
-  export const type = new NotificationType<FeedbackParams>("navigator/feedback");
+  export const type = new NotificationType<FeedbackParams>("withnav/feedback");
 }
 
 export namespace DiagnosticsNotification {
-  export const type = new NotificationType<DiagnosticsParams>("navigator/diagnostics");
+  export const type = new NotificationType<DiagnosticsParams>("withnav/diagnostics");
 }
 
 export namespace IntentNotification {
-  export const type = new NotificationType<IntentParams>("navigator/intent");
+  export const type = new NotificationType<IntentParams>("withnav/intent");
 }
 
 export namespace ReflexShownNotification {
-  export const type = new NotificationType<ReflexShownParams>("navigator/reflexShown");
+  export const type = new NotificationType<ReflexShownParams>("withnav/reflexShown");
 }

@@ -79,10 +79,10 @@ test("write and edit previews bound content independently with exact UTF-8 omiss
   assert.match(edit, /New\n/);
 });
 
-test("bash commands are never bounded; server-shortened arguments say unavailable", () => {
+test("bash commands are never bounded; server-shortened arguments say uwithnavlable", () => {
   const command = "a".repeat(9000);
   assert.equal(permissionCall("bash", JSON.stringify({ command })), command);
-  assert.match(permissionCall("bash", '{"command":"cut'), /full call unavailable/);
+  assert.match(permissionCall("bash", '{"command":"cut'), /full call uwithnavlable/);
 });
 
 for (const [source, author] of [["user:http", "driver"], ["user:cli", "driver"],

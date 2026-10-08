@@ -20,21 +20,21 @@ export function findAgentDefinition(dirs: string[], id: string): string | undefi
   return undefined;
 }
 
-/** "Navai: Open Settings": one editor tab, revealed when it is already open. */
+/** "WithNav: Open Settings": one editor tab, revealed when it is already open. */
 export function registerSettingsView(context: vscode.ExtensionContext, backend: SettingsConnection): vscode.Disposable {
   let panel: vscode.WebviewPanel | undefined;
-  const command = vscode.commands.registerCommand("navai.openSettings", () => {
+  const command = vscode.commands.registerCommand("withnav.openSettings", () => {
     if (panel) {
       panel.reveal();
       return;
     }
-    const current = vscode.window.createWebviewPanel("navai.settings", "Navai Settings", vscode.ViewColumn.Active, {
+    const current = vscode.window.createWebviewPanel("withnav.settings", "WithNav Settings", vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")],
     });
     panel = current;
-    current.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "navai.svg");
+    current.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "withnav.svg");
     const webview = current.webview;
     const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
     const asset = (name: string) => String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", name)));
@@ -48,7 +48,7 @@ export function registerSettingsView(context: vscode.ExtensionContext, backend: 
         workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
         home: os.homedir(),
         findDefinition: findAgentDefinition,
-        onSaved: () => vscode.window.setStatusBarMessage("$(check) Navai · settings saved", 3000),
+        onSaved: () => vscode.window.setStatusBarMessage("$(check) WithNav · settings saved", 3000),
       },
     );
 
@@ -96,6 +96,6 @@ async function openFile(file: string): Promise<void> {
     const uri = fs.existsSync(file) ? vscode.Uri.file(file) : vscode.Uri.file(file).with({ scheme: "untitled" });
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: false });
   } catch (error) {
-    void vscode.window.showErrorMessage(`Navai: cannot open ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    void vscode.window.showErrorMessage(`WithNav: cannot open ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

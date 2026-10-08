@@ -21,7 +21,7 @@ const RECONNECT_DELAY_MS = 500;
 
 /**
  * Extension-host bridge to the cognition: the language server announces the
- * in-process session server (`navigator/serverInfo`), this class creates a
+ * in-process session server (`withnav/serverInfo`), this class creates a
  * editor session on first use, posts the driver's messages and
  * maps the SSE event stream onto the webview's message vocabulary. All
  * networking lives here; the webview never sees HTTP.
@@ -105,7 +105,7 @@ export class CognitionBackend implements ChatBackend {
   async toggleBypassPermissions(): Promise<void> { await this.setBypassPermissions(!this.state.bypass); }
   private async setBypassPermissions(enabled: boolean, operation?: ComposerOperation): Promise<void> {
     const origin = this.state;
-    if (origin.readOnly || origin.starting) throw new Error("Bypass controls are unavailable in this view.");
+    if (origin.readOnly || origin.starting) throw new Error("Bypass controls are uwithnavlable in this view.");
     if (origin.bypassPending) throw new Error("Bypass change is already pending.");
     origin.bypassPending = true; this.publishBypass();
     try {
@@ -172,7 +172,7 @@ export class CognitionBackend implements ChatBackend {
     this.emitAssignments(); this.emitModels();
   }
   async selectAgent(id: string): Promise<void> {
-    if (this.isReadOnly() || this.state.starting) throw new Error("Agent selection unavailable here.");
+    if (this.isReadOnly() || this.state.starting) throw new Error("Agent selection uwithnavlable here.");
     if (!this.agents.some(a => a.id === id)) throw new Error("Unknown primary agent");
     if (this.currentConversationId()) { await this.runComposerCommand(`/agent ${id}`); return; }
     this.state.agent = id; this.state.modelOverride = undefined; this.state.startVariant = undefined;
@@ -268,18 +268,18 @@ export class CognitionBackend implements ChatBackend {
   private endpoint?: ServerInfoParams;
   /**
    * An authenticated request for the settings page. The page may open before
-   * navai-lsp announces its server: wait for it a while, then say so rather
+   * withnav-lsp announces its server: wait for it a while, then say so rather
    * than leave the page loading forever.
    */
   async settingsRequest(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<Response> {
     if (!this.endpoint) await this.waitForEndpoint(signal);
     const endpoint = this.endpoint;
-    if (!endpoint) throw new Error("the Navai server has not started (is navai-lsp running?)");
+    if (!endpoint) throw new Error("the WithNav server has not started (is withnav-lsp running?)");
     const response = await fetch(`http://127.0.0.1:${endpoint.port}${path}`, {
       ...init, headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000), redirect: "error",
     });
-    if (endpoint !== this.endpoint) throw new Error("Navai restarted; reload settings");
+    if (endpoint !== this.endpoint) throw new Error("WithNav restarted; reload settings");
     return response;
   }
   private listeners = new Set<(message: HostToWebview) => void>();
@@ -793,7 +793,7 @@ export class CognitionBackend implements ChatBackend {
       const timer = setInterval(() => {
         if (this.endpoint) finish();
       }, 100);
-      const deadline = setTimeout(() => finish(new Error("Navai's language server is not running")), 30000);
+      const deadline = setTimeout(() => finish(new Error("WithNav's language server is not running")), 30000);
       signal?.addEventListener("abort", cancel, { once: true });
     });
   }
@@ -1299,7 +1299,7 @@ export class CognitionBackend implements ChatBackend {
           }
         }
       }
-    } catch { /* The card explicitly says when full arguments are unavailable. */ }
+    } catch { /* The card explicitly says when full arguments are uwithnavlable. */ }
     finally { clearTimeout(timer); abort.signal.removeEventListener("abort", cancel); abort.abort(); await reader?.cancel().catch(() => undefined); }
   }
 

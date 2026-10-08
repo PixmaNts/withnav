@@ -35,7 +35,7 @@ export function boundedContent(text: string, limit = 4096): string {
 export function permissionCall(tool: string, argumentsText: string): string {
   let args: any;
   try { args = JSON.parse(argumentsText); }
-  catch { return `${argumentsText}\n(Arguments shortened by the server; full call unavailable.)`; }
+  catch { return `${argumentsText}\n(Arguments shortened by the server; full call uwithnavlable.)`; }
   const field = (key: string): string => typeof args?.[key] === "string" ? args[key] : "(not provided)";
   const extra = (excluded: string[]): string => Object.entries(args ?? {})
     .filter(([key]) => !excluded.includes(key))

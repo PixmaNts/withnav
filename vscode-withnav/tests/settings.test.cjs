@@ -12,14 +12,14 @@ const field = (key, value, def, set, applies = "new_sessions") => ({ key, value,
 function settingsBody(revision = "rev-1") {
   return {
     revision,
-    paths: { config: "/home/u/.config/navai/config.json", models: "/home/u/.config/navai/models.json", agents: ["/home/u/.config/navai/agents", "/ws/.navai/agents"] },
+    paths: { config: "/home/u/.config/withnav/config.json", models: "/home/u/.config/withnav/models.json", agents: ["/home/u/.config/withnav/agents", "/ws/.withnav/agents"] },
     fields: [
       field("layers.reflex", { model: "inception/mercury-edit-2", variant: null }, null, true, "restart"),
       field("layers.instinct", { model: "omniroute/typesafe/jev-1.13", variant: null }, null, true, "restart"),
       field("layers.metacognition", { model: "omniroute/combo/flash", variant: "low" }, null, true, "restart"),
       field("default_agent", "build", "build", true),
       field("permissions.automatic_review", null, true, false),
-      field("permissions.scratch_dirs", null, ["/run/user/1000/navai", "/tmp/navai"], false),
+      field("permissions.scratch_dirs", null, ["/run/user/1000/withnav", "/tmp/withnav"], false),
       field("subagents.max_concurrent", 5, 4, true),
       field("subagents.watchdog_interval_secs", null, 300, false),
       field("agent.watchdog_interval_secs", null, 300, false),
@@ -84,19 +84,19 @@ test("modified means config.json holds a value other than the default", () => {
   assert.equal(isModified({ set: true, value: 4, default: 4 }), false);
   assert.equal(isModified({ set: true, value: 5, default: 4 }), true);
   assert.equal(isModified({ set: true, value: ["/a"], default: ["/a"] }), false);
-  assert.match(appliesText("restart"), /after restarting Navai/);
+  assert.match(appliesText("restart"), /after restarting WithNav/);
 });
 
 test("load reads settings, catalogue, agents and layers for the workspace, never exposing the token", async () => {
   const server = fakeServer(() => json({}));
   const posted = [];
-  const host = new SettingsHost(server.transport, (m) => posted.push(m), { workspace: "/ws dir", findDefinition: (_dirs, id) => (id === "build" ? "/ws/.navai/agents/build.md" : undefined) });
+  const host = new SettingsHost(server.transport, (m) => posted.push(m), { workspace: "/ws dir", findDefinition: (_dirs, id) => (id === "build" ? "/ws/.withnav/agents/build.md" : undefined) });
   await host.handle({ type: "ready" });
   assert.ok(server.calls.every((c) => c.path.endsWith("?workspace=%2Fws%20dir")));
   assert.deepEqual(server.calls.map((c) => c.path.split("?")[0]).sort(), ["/v1/agents", "/v1/layers", "/v1/models", "/v1/settings"]);
   const snapshot = posted.find((m) => m.type === "snapshot").data;
   assert.equal(snapshot.models.length, 4);
-  assert.equal(snapshot.agents[0].definition, "/ws/.navai/agents/build.md");
+  assert.equal(snapshot.agents[0].definition, "/ws/.withnav/agents/build.md");
   assert.doesNotMatch(JSON.stringify(posted), /token|authorization/i);
 });
 
@@ -162,7 +162,7 @@ test("connection test only targets a known gateway and reports the result", asyn
 function snapshot() {
   return {
     settings: settingsBody(), models: modelsBody.models, layers: layersBody.layers, home: "/home/u",
-    agents: agentsBody.agents.map((a) => ({ ...a, definition: a.id === "build" ? "/home/u/.config/navai/agents/build.md" : undefined })),
+    agents: agentsBody.agents.map((a) => ({ ...a, definition: a.id === "build" ? "/home/u/.config/withnav/agents/build.md" : undefined })),
   };
 }
 
@@ -204,7 +204,7 @@ test("webview renders the TOC, rows as Category › sub: Title, Modified, and th
   assert.equal(title(rows()[0]), "Gateways › omniroute:Base URL");
   assert.ok(rows()[0].querySelector("input").disabled);
   assert.match(d.querySelector("#count").textContent, /^\d+ Settings$/);
-  assert.equal(d.querySelector("#paths").textContent, "~/.config/navai/config.json · models.json");
+  assert.equal(d.querySelector("#paths").textContent, "~/.config/withnav/config.json · models.json");
 
   toc("Subagents").click();
   const [max, sub] = rows();
@@ -214,7 +214,7 @@ test("webview renders the TOC, rows as Category › sub: Title, Modified, and th
   assert.equal(sub.querySelector("input").value, "300", "an unset key shows its default");
 
   toc("metacognition").click();
-  assert.match(rows()[0].querySelector(".row-applies").textContent, /after restarting Navai/);
+  assert.match(rows()[0].querySelector(".row-applies").textContent, /after restarting WithNav/);
   toc("build").click();
   assert.ok(toc("cognition").classList.contains("active"), "an agent keeps cognition highlighted");
   assert.equal(rows()[2].querySelector("select").disabled, true, "mode is read-only");
@@ -255,7 +255,7 @@ test("webview controls post one key per change; refusals show under their row; s
   const input = rows()[1].querySelector(".list-edit input");
   input.value = "/srv/scratch";
   rows()[1].querySelector(".list-edit .button.primary").click();
-  assert.deepEqual(posts.at(-1), { type: "save", key: "permissions.scratch_dirs", value: ["/run/user/1000/navai", "/tmp/navai", "/srv/scratch"] });
+  assert.deepEqual(posts.at(-1), { type: "save", key: "permissions.scratch_dirs", value: ["/run/user/1000/withnav", "/tmp/withnav", "/srv/scratch"] });
   receive({ type: "invalid", key: "permissions.scratch_dirs", message: "scratch dir must be absolute" });
   assert.equal(rows()[1].querySelector(".row-error").textContent, "scratch dir must be absolute");
   assert.equal(rows()[0].querySelector(".row-error"), null);

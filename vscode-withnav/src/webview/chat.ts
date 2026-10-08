@@ -330,7 +330,7 @@ const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement
 function updateControls(): void {
   prompt.disabled = readOnly || state === "connecting";
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
-  else if (!readOnly) prompt.placeholder = "Message Navai…";
+  else if (!readOnly) prompt.placeholder = "Message WithNav…";
   if (readOnly) modelSelect.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
   stop.hidden = readOnly || (state !== "busy" && !compacting);
@@ -658,7 +658,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
   const resume = actionButton("Continue", () => control("continue"), true);
   if (event.kind === "watchdog" && !event.token) {
     resume.disabled = true;
-    outcome.textContent = "Pause token unavailable. Send a new message or stop instead.";
+    outcome.textContent = "Pause token uwithnavlable. Send a new message or stop instead.";
   }
   controls.append(resume);
   if (event.kind === "watchdog") controls.append(actionButton("Stop", () => control("stop")));
@@ -743,7 +743,7 @@ function receive(event: HostToWebview): void {
         childrenSection.hidden = true;
       }
       form.hidden = readOnly;
-      prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message Navai…";
+      prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message WithNav…";
       closePalette(); updateControls(); break;
     }
     case "commands": commands = event.items; filterPalette(); break;

@@ -116,7 +116,7 @@ export class SettingsHost {
       this.send({ type: "snapshot", data: this.snapshot });
       await Promise.all([this.loadProjection("models"), this.loadProjection("agents"), this.loadProjection("layers")]);
     } catch (error) {
-      this.send({ type: "loadError", message: `Cannot read the Navai settings: ${errorText(error)}` });
+      this.send({ type: "loadError", message: `Cannot read the WithNav settings: ${errorText(error)}` });
     }
   }
 

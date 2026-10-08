@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Relative file destinations can name folders that do not exist yet.**
+  Path validation anchors relative destinations to the first allowed root before resolving
+  existing ancestors, while still refusing paths that escape the allowed roots.
+
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

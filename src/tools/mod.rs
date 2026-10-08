@@ -274,6 +274,16 @@ impl Registry {
 }
 
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    let anchored;
+    let candidate = if candidate.is_relative() {
+        let root = roots
+            .first()
+            .ok_or_else(|| ToolError::PathTraversal(candidate.to_path_buf()))?;
+        anchored = root.join(candidate);
+        anchored.as_path()
+    } else {
+        candidate
+    };
     let existing = nearest_existing_ancestor(candidate);
     let canon_existing = existing
         .canonicalize()
@@ -410,6 +420,19 @@ mod tests {
         let resolved = validate_path(std::slice::from_ref(&root), &target).unwrap();
         assert!(resolved.starts_with(root.canonicalize().unwrap()));
         assert!(resolved.ends_with("new/deep/file.txt"));
+    }
+
+    #[test]
+    fn validate_path_anchors_missing_relative_target_to_first_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = vec![tmp.path().to_path_buf()];
+        let relative = Path::new("new_dir/sub_dir/file.txt");
+        assert_eq!(
+            validate_path(&roots, relative).unwrap(),
+            tmp.path().canonicalize().unwrap().join(relative)
+        );
+        assert!(validate_path(&[], relative).is_err());
+        assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
     }
 
     #[test]

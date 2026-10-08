@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **A model with an 8k context window can be assigned again.** The safety margin was never below
+  4096 tokens, so an 8k model with a 4k output limit was refused and one with the default reserve
+  kept only a quarter of its window for input. Windows under 32k now use an eighth of their size as
+  the floor (1024 tokens at 8k); windows of 32k and above are unchanged.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

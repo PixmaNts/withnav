@@ -69,7 +69,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {
-                    content: Some(format!("answer {n} {}", "word ".repeat(1200))),
+                    content: Some(format!("answer {n} {}", "word ".repeat(1400))),
                     reasoning_content: None,
                     tool_calls: vec![],
                 },

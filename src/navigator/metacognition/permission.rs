@@ -184,7 +184,7 @@ mod tests {
                 content: "x".repeat(12000),
             },
         ];
-        assert!(check_budget(8192, Some(100000), 1024, &messages, &[]).is_err());
+        assert!(check_budget(4096, Some(100000), 1024, &messages, &[]).is_err());
         assert!(check_budget(32768, Some(100000), 1024, &messages, &[]).is_ok());
         assert!(check_budget(32768, Some(5000), 1024, &messages, &[]).is_err());
     }

@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Provider error bodies are bounded and cancellable.** Chat and non-streaming failures read
+  at most 64 KiB, and Stop interrupts a slow error response rather than waiting for its end.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

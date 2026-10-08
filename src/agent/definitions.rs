@@ -304,7 +304,7 @@ impl Agents {
             // A project's agents stay inside the project: a link out of it
             // would let a repository pull a prompt from anywhere.
             agents.load_dir(
-                &dir.join(".navai").join("agents"),
+                &crate::paths::workspace_dir(&dir).join("agents"),
                 Some(&dir),
                 AgentSource::Project,
             );

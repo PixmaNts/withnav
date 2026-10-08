@@ -168,11 +168,9 @@ async fn editor_context_sends_the_pair_programmer_prompt_as_second_system_messag
     );
     assert_eq!(messages[0]["role"], "system", "loop contract first");
     assert_eq!(messages[1]["role"], "system", "cognition prompt second");
-    assert_eq!(
-        messages[1]["content"],
-        withnav::navigator::COGNITION_PROMPT,
-        "the second system message IS the cognition prompt"
-    );
+    let role = messages[1]["content"].as_str().unwrap();
+    assert!(role.starts_with("You are Nav · The Navigator"));
+    assert!(role.ends_with(withnav::navigator::COGNITION_PROMPT));
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"], "hello there");
     let tools: Vec<&str> = body["tools"]
@@ -645,9 +643,9 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
     let state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
-        .assigned_navigator_state_with_conversation(
-            Some(withnav::navigator::ConversationFeed::new()),
-        );
+        .assigned_navigator_state_with_conversation(Some(
+            withnav::navigator::ConversationFeed::new(),
+        ));
 
     let id = state
         .create_session(&ws, None, true)

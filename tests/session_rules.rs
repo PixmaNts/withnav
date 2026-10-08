@@ -127,18 +127,18 @@ async fn the_rules_message_follows_the_contract_and_precedes_history() {
 
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
-    assert_eq!(roles, ["system", "system", "user"], "{sent:?}");
+    assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
     assert!(sent[0]
         .1
         .starts_with("You are a headless Rust coding agent"));
-    let rules = &sent[1].1;
+    let rules = &sent[2].1;
     let global = rules
         .find(&rules_label(&env.home.join(".agents/AGENTS.md")))
         .unwrap();
     let project = rules.find(&rules_label(&env.ws.join("AGENTS.md"))).unwrap();
     assert!(global < project, "{rules}");
     assert!(rules.contains("global rule") && rules.contains("project rule"));
-    assert_eq!(sent[2].1, "hello");
+    assert_eq!(sent[3].1, "hello");
 }
 
 // Given no rules file at all
@@ -154,7 +154,7 @@ async fn without_rules_the_request_has_no_extra_message() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
     let roles: Vec<String> = messages(&provider, 0).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles, ["system", "user"]);
+    assert_eq!(roles, ["system", "system", "user"]);
 }
 
 // Given a navigator session
@@ -174,7 +174,8 @@ async fn the_navigator_role_stays_before_the_rules() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert_eq!(sent[1].1, withnav::navigator::COGNITION_PROMPT);
+    assert!(sent[1].1.starts_with("You are Nav · The Navigator"));
+    assert!(sent[1].1.ends_with(withnav::navigator::COGNITION_PROMPT));
     assert!(sent[2].1.contains("project rule"));
 }
 
@@ -195,7 +196,7 @@ async fn resume_reloads_the_rules_once() {
     // The snapshot holds for the life of the session: no rediscovery.
     std::fs::write(env.ws.join("AGENTS.md"), "edited while running").unwrap();
     converse(&first, id, "two").await;
-    assert!(messages(&provider, 1)[1].1.contains("project rule"));
+    assert!(messages(&provider, 1)[2].1.contains("project rule"));
     first.close_session(id).await.expect("close");
     drop(first);
 
@@ -209,9 +210,9 @@ async fn resume_reloads_the_rules_once() {
 
     let sent = messages(&provider, 2);
     assert_eq!(sent[0].0, "system");
-    assert!(sent[1].1.contains("edited while running"), "{sent:?}");
-    assert!(!sent[1].1.contains("project rule"));
-    assert_eq!(sent[2], ("user".to_string(), "one".to_string()));
+    assert!(sent[2].1.contains("edited while running"), "{sent:?}");
+    assert!(!sent[2].1.contains("project rule"));
+    assert_eq!(sent[3], ("user".to_string(), "one".to_string()));
     let rules_count = sent
         .iter()
         .filter(|(_, c)| c.contains("Instructions from"))

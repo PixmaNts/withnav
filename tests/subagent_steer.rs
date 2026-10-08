@@ -1,5 +1,5 @@
-use withnav::server::AppState;
 use serde_json::{json, Value};
+use withnav::server::AppState;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;

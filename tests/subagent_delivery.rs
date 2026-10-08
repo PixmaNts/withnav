@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
-use serde_json::{json, Value};
 
 mod common;
 use common::deadline::Deadline;

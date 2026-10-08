@@ -1,12 +1,12 @@
 use futures::future::BoxFuture;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
-use withnav::session::SessionId;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::SessionId;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
@@ -1646,9 +1646,9 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
 
 #[tokio::test]
 async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
     use withnav::provider::{config::load_models, openai::ClientCache, systemone::SystemOneClient};
     use withnav::session::subagents::watchdog::JevJudge;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     let server = MockServer::start().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let config = TestServerConfig::mock(tmp.path(), &server.uri()).config();

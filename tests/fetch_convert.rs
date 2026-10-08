@@ -4,12 +4,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use withnav::tools::fetch::FetchTool;
-use withnav::tools::{Tool, ToolContext, ToolResult, ToolStatus};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use withnav::tools::fetch::FetchTool;
+use withnav::tools::{Tool, ToolContext, ToolResult, ToolStatus};
 
 fn cx() -> ToolContext {
     ToolContext {

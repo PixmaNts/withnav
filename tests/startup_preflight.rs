@@ -4,9 +4,9 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use withnav::agent::instructions::RulesRoots;
 use withnav::session::preflight::Preflight;
-use serde_json::{json, Value};
 
 fn fixture(config: Value) -> tempfile::TempDir {
     let mut config = config;
@@ -45,7 +45,7 @@ async fn default_admission_rejects_unknown_ineligible_and_unusable_assignments()
         (json!({}), "no assigned model"),
         (
             json!({"default_agent":"missing","agents":{"build":"mock/chat"}}),
-            "valid agents: build, plan",
+            "valid agents: build, lux, plan",
         ),
         (
             json!({"default_agent":"vigie","agents":{"vigie":"mock/chat"}}),
@@ -516,7 +516,7 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
             let err = String::from_utf8_lossy(&output.stderr);
             assert!(
                 err.contains("default_agent 'local' is unknown")
-                    && err.contains("valid agents: build, plan"),
+                    && err.contains("valid agents: build, lux, plan"),
                 "{err}"
             );
         }

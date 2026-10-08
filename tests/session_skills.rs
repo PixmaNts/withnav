@@ -183,7 +183,8 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         selected.payload["selected_skill"],
         json!({"name":"ask-matt","origin":"driver"})
     );
-    let withnav::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
+    let withnav::bus::ResumeOutcome::Replay(replay) =
+        state.subscribe(id, None).await.unwrap().replay
     else {
         panic!("durable replay")
     };
@@ -508,9 +509,13 @@ async fn the_catalog_follows_the_rules_and_the_skill_call_returns_the_body() {
 
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
-    assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert!(sent[1].1.contains("global rule"), "rules come first");
-    let catalog = &sent[2].1;
+    assert_eq!(
+        roles,
+        ["system", "system", "system", "system", "user"],
+        "{sent:?}"
+    );
+    assert!(sent[2].1.contains("global rule"), "rules come first");
+    let catalog = &sent[3].1;
     assert!(catalog.contains("skill({\"name\":\"<id>\"})"), "{catalog}");
     let local = catalog
         .find("local-flow — The project's own flow.")
@@ -572,6 +577,7 @@ async fn the_loaded_skill_survives_a_resume() {
             "system",
             "system",
             "system",
+            "system",
             "user",
             "assistant",
             "tool",
@@ -581,11 +587,11 @@ async fn the_loaded_skill_survives_a_resume() {
         "{sent:?}"
     );
     assert!(
-        sent[2].1.contains("ask-matt —"),
+        sent[3].1.contains("ask-matt —"),
         "the catalog is rebuilt on resume"
     );
     assert!(
-        sent[5].1.contains("STEP ONE: ask Matt."),
+        sent[6].1.contains("STEP ONE: ask Matt."),
         "the tool result is kept"
     );
     assert!(tool_names(&provider, 2).contains(&"skill".to_string()));
@@ -605,7 +611,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     let first = state(&env, &provider, "default", false);
     let id = first.create_session(&env.ws, None, false).await.unwrap();
     converse(&first, id, "one").await;
-    let created = messages(&provider, 0)[2].1.clone();
+    let created = messages(&provider, 0)[3].1.clone();
     assert!(
         created.contains("ask-matt — Ask Matt about it."),
         "{created}"
@@ -625,7 +631,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     .unwrap();
     converse(&first, id, "two").await;
     assert_eq!(
-        messages(&provider, 1)[2].1,
+        messages(&provider, 1)[3].1,
         created,
         "the live catalog is a snapshot"
     );
@@ -641,7 +647,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     converse(&second, id, "three").await;
 
     let sent = messages(&provider, 2);
-    let catalog = &sent[2].1;
+    let catalog = &sent[3].1;
     assert!(
         catalog.contains("late-flow — Added while running."),
         "{catalog}"
@@ -672,7 +678,7 @@ async fn without_skills_the_request_is_unchanged() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
     let roles: Vec<String> = messages(&provider, 0).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles, ["system", "system", "user"]);
+    assert_eq!(roles, ["system", "system", "system", "user"]);
     assert!(!tool_names(&provider, 0).contains(&"skill".to_string()));
 }
 
@@ -697,7 +703,8 @@ async fn the_navigator_catalog_comes_after_the_rules() {
         ["system", "system", "system", "system", "user"],
         "{sent:?}"
     );
-    assert_eq!(sent[1].1, withnav::navigator::COGNITION_PROMPT);
+    assert!(sent[1].1.starts_with("You are Nav · The Navigator"));
+    assert!(sent[1].1.ends_with(withnav::navigator::COGNITION_PROMPT));
     assert!(sent[2].1.contains("global rule"));
     assert!(sent[3].1.contains("ask-matt —"));
     let tools = tool_names(&provider, 0);

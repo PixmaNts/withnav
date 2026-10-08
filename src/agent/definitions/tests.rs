@@ -152,6 +152,12 @@ fn every_alias_resolves_and_canonical_files_win() {
             "---\ndescription: canonical\n---\nnew",
         );
         assert_eq!(load(&f).get(old).unwrap().description, "canonical");
+        write(
+            &f.ws.join(".navai/agents"),
+            &format!("{old}.md"),
+            "---\ndescription: nearer legacy\n---\nold",
+        );
+        assert_eq!(load(&f).get(old).unwrap().description, "canonical");
     }
 }
 

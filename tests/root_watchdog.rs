@@ -1,10 +1,10 @@
 use futures::future::BoxFuture;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
 mod common;
 use common::deadline::Deadline;
 use common::server::{collect_until, send_text, TestServerConfig};

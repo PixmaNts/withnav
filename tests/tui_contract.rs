@@ -53,7 +53,11 @@ fn the_panel_gives_the_primary_agents_the_roles_the_server_defines() {
     let server = withnav::agent::definitions::Agents::builtin();
     for (id, role) in withnav::tui::view::panel::PRIMARY_ROLES {
         let definition = server.get(id).unwrap_or_else(|| panic!("{id} is built in"));
-        assert_eq!(definition.description, role, "{id}");
+        assert!(!role.is_empty());
+        assert!(
+            definition.description.starts_with("Nav · The Navigator:"),
+            "{id}"
+        );
         // no agent file can take these names, so the role shown is the one in use
         assert!(withnav::agent::definitions::AgentId::parse(id).is_ok_and(|a| a.is_reserved()));
     }

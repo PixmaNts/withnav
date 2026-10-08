@@ -173,7 +173,13 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
     let before = compacted[0].payload["estimate_before"].as_u64().unwrap();
     assert!(after < before);
     // Below ~70% of the budget (20k - 5k reserve - 4k margin = 11k).
-    assert!(after <= 11_000 / 10 * 7 + 1, "{after}");
+    let role_tokens = withnav::agent::definitions::Agents::builtin()
+        .get("build")
+        .unwrap()
+        .prompt
+        .len()
+        .div_ceil(4) as u64;
+    assert!(after <= 11_000 / 10 * 7 + 1 + role_tokens, "{after}");
 
     // The provider saw: read, read, summary request, then the turn on.
     let bodies = provider.bodies();

@@ -235,9 +235,8 @@ fn default_agent_validates_name_and_requires_usable_model() {
             .unwrap(),
         "build"
     );
-    let configured = settings(
-        json!({"default_agent":"lux","agents":{"lux":{"model":"omniroute/cc/chat"}}}),
-    );
+    let configured =
+        settings(json!({"default_agent":"lux","agents":{"lux":{"model":"omniroute/cc/chat"}}}));
     assert_eq!(
         AssignmentResolver::new(&catalog, &configured)
             .default_agent_check(&known)

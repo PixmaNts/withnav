@@ -19,28 +19,56 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
     let config = TestServerConfig::unreachable(&env.root).config();
     let state = AppState::new(config.clone()).unwrap();
     for old in ["review", "oracle"] {
-        let id = state.create_session_as(&env.ws, None, false, Some(old)).await.unwrap();
+        let id = state
+            .create_session_as(&env.ws, None, false, Some(old))
+            .await
+            .unwrap();
         assert_eq!(state.session_summary(id).await.unwrap().agent, "lux");
-        state.history().set_primary_agent(id, Some(old)).await.unwrap();
+        state
+            .history()
+            .set_primary_agent(id, Some(old))
+            .await
+            .unwrap();
         state.close_session(id).await.unwrap();
         let resumed = AppState::new(config.clone()).unwrap();
-        resumed.create_or_resume_session(&env.ws, None, false, Some(id)).await.unwrap();
+        resumed
+            .create_or_resume_session(&env.ws, None, false, Some(id))
+            .await
+            .unwrap();
         assert_eq!(resumed.session_summary(id).await.unwrap().agent, "lux");
         resumed.close_session(id).await.unwrap();
     }
     let parent = state.create_session(&env.ws, None, false).await.unwrap();
     for (old, new) in withnav::agent::definitions::AGENT_ALIASES {
-        let child = state.create_child_session(parent, old, "inspect").await.unwrap();
+        let child = state
+            .create_child_session(parent, old, "inspect")
+            .await
+            .unwrap();
         assert_eq!(state.session_summary(child).await.unwrap().agent, *new);
         state.close_session(child).await.unwrap();
     }
     let task = withnav::tools::task::TaskTool::new(state.service(), parent);
-    let cx = ToolContext { binding: None, workspace: env.ws.clone(), writable_roots: vec![env.ws.clone()], readable_roots: vec![] };
+    let cx = ToolContext {
+        binding: None,
+        workspace: env.ws.clone(),
+        writable_roots: vec![env.ws.clone()],
+        readable_roots: vec![],
+    };
     for (old, new) in withnav::agent::definitions::AGENT_ALIASES {
-        let result = task.call(json!({"agent":old,"prompt":"inspect"}), tokio_util::sync::CancellationToken::new(), &cx).await.unwrap();
+        let result = task
+            .call(
+                json!({"agent":old,"prompt":"inspect"}),
+                tokio_util::sync::CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
         let result: Value = serde_json::from_str(&result.output).unwrap();
         assert_eq!(result["agent"], *new);
-        state.close_session(result["child_id"].as_str().unwrap().parse().unwrap()).await.unwrap();
+        state
+            .close_session(result["child_id"].as_str().unwrap().parse().unwrap())
+            .await
+            .unwrap();
     }
 }
 
@@ -538,7 +566,11 @@ async fn a_session_runs_as_build_by_default() {
     converse(&state, id, "hello").await;
 
     let roles: Vec<String> = sent(&provider, 0).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles, ["system", "system", "user"], "Nav adds its build role");
+    assert_eq!(
+        roles,
+        ["system", "system", "user"],
+        "Nav adds its build role"
+    );
     assert_eq!(state.session_summary(id).await.unwrap().agent, "build");
     assert_eq!(stored_agent(&state, id).await, None);
     let listed = state.list(&env.ws.display().to_string()).await.unwrap();
@@ -599,7 +631,10 @@ async fn only_primary_agents_can_start_a_session() {
             matches!(err, withnav::error::ServerError::UnknownAgent { .. }),
             "{bad}: {err:?}"
         );
-        assert!(err.to_string().contains("build, lux, plan, scribe"), "{err}");
+        assert!(
+            err.to_string().contains("build, lux, plan, scribe"),
+            "{err}"
+        );
     }
     assert_eq!(state.session_count(), 0);
     assert!(state
@@ -639,7 +674,10 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, withnav::error::ServerError::SavedAgentUnavailable { .. }),
+        matches!(
+            err,
+            withnav::error::ServerError::SavedAgentUnavailable { .. }
+        ),
         "{err:?}"
     );
     assert!(err.to_string().contains("scribe"));
@@ -726,7 +764,10 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
     assert_eq!(stored_agent(&state, id).await.as_deref(), Some("build"));
     converse(&state, id, "third").await;
     let roles: Vec<String> = sent(&provider, 2).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles[1], "system", "Nav sends its build role again: {roles:?}");
+    assert_eq!(
+        roles[1], "system",
+        "Nav sends its build role again: {roles:?}"
+    );
 }
 
 // Given a session
@@ -750,7 +791,11 @@ async fn agent_lists_and_refuses_bad_choices() {
         .iter()
         .map(|a| a["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["build", "lux", "plan"], "subagent-only roles are not offered");
+    assert_eq!(
+        ids,
+        ["build", "lux", "plan"],
+        "subagent-only roles are not offered"
+    );
     let text = out.render_text();
     assert!(
         text.starts_with("agent build\n") && text.contains("plan"),

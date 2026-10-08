@@ -46,7 +46,11 @@ fn category_sum(snapshot: &Value) -> u64 {
 async fn scripted_turn(
     tmp: &std::path::Path,
     ws: &std::path::Path,
-) -> (AppState, ulid::Ulid, Vec<withnav::bus::event::EventEnvelope>) {
+) -> (
+    AppState,
+    ulid::Ulid,
+    Vec<withnav::bus::event::EventEnvelope>,
+) {
     let notes = ws.join("notes.txt");
     let call = tool_call_chunk(
         "call_1",

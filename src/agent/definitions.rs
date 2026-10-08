@@ -416,6 +416,26 @@ impl Agents {
     }
 
     fn add(&mut self, path: &Path, mut definition: AgentDefinition) {
+        let legacy_name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| AGENT_ALIASES.iter().any(|(old, _)| *old == stem));
+        if legacy_name
+            && self
+                .by_id
+                .get(definition.id.as_str())
+                .is_some_and(|existing| match &existing.source {
+                    AgentSource::Builtin => false,
+                    AgentSource::OpenCode(path)
+                    | AgentSource::User(path)
+                    | AgentSource::Project(path) => {
+                        path.file_stem().and_then(|stem| stem.to_str())
+                            == Some(definition.id.as_str())
+                    }
+                })
+        {
+            return;
+        }
         if definition.id.is_reserved() {
             self.diagnostics.push(Diagnostic {
                 path: path.to_path_buf(),

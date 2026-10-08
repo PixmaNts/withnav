@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::{json, Value};
 use withnav::bus::event::EventKind;
 use withnav::server::AppState;
 use withnav::tools::Tool;
-use serde_json::{json, Value};
 
 mod common;
 use common::deadline::Deadline;
@@ -1793,7 +1793,11 @@ async fn bypass_of(fx: &Fx, id: ulid::Ulid) -> bool {
 
 async fn set_bypass(fx: &Fx, id: ulid::Ulid, enabled: bool) {
     fx.state
-        .set_bypass(id, enabled, withnav::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(
+            id,
+            enabled,
+            withnav::bus::runtime::bypass::BypassOrigin::Http,
+        )
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1898,7 +1902,11 @@ async fn parent_changes_reach_live_children_both_ways_and_no_unrelated_root() {
     // A child cannot be toggled by hand.
     assert!(matches!(
         fx.state
-            .set_bypass(child, true, withnav::bus::runtime::bypass::BypassOrigin::Http)
+            .set_bypass(
+                child,
+                true,
+                withnav::bus::runtime::bypass::BypassOrigin::Http
+            )
             .bounded(file!(), line!())
             .await,
         Err(withnav::error::ServerError::ChildReadOnly)

@@ -1,8 +1,8 @@
+use serde_json::json;
+use ulid::Ulid;
 use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::provider::openai::{ChatMessage, UserProvenance};
 use withnav::session::store::HistoryStore;
-use serde_json::json;
-use ulid::Ulid;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;

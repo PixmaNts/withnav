@@ -3,12 +3,12 @@
 //! while the session lives, served on resume when discovery is down, and
 //! never moved to another model by a retargeted alias.
 
-use withnav::error::ServerError;
-use withnav::session::Service;
 use serde_json::{json, Value};
 use ulid::Ulid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use withnav::error::ServerError;
+use withnav::session::Service;
 
 mod common;
 use common::server::TestServerConfig;

@@ -1,6 +1,9 @@
 //! Reducer tests over JSONL fixtures built from the crate's real event types.
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
+use serde::Serialize;
+use serde_json::{json, Value};
+use ulid::Ulid;
 use withnav::tui::protocol::{ContextSnapshot, ModelIdentity};
 use withnav::{
     bus::event::*,
@@ -12,9 +15,6 @@ use withnav::{
         state::*,
     },
 };
-use serde::Serialize;
-use serde_json::{json, Value};
-use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
@@ -392,11 +392,6 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
 
 #[tokio::test]
 async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
-    use withnav::tui::{
-        client::Client,
-        input::Editor,
-        runtime::{Context, Executor},
-    };
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -404,6 +399,11 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
+    };
+    use withnav::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
     };
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -556,7 +556,7 @@ fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
 #[test]
 fn session_list_and_metadata_strip_terminal_controls_before_display() {
     let mut s = subagent_parent();
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mexplore\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mvigie\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -570,7 +570,7 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
     assert_eq!(s.children[0].name, "vigie");
     assert_eq!(s.sessions[0].title.as_deref(), Some("Goal"));
     let mut metadata = s.session.clone().unwrap();
-    metadata.agent = Some("\u{1b}[31mreview\u{1b}[0m".into());
+    metadata.agent = Some("\u{1b}[31mlux\u{1b}[0m".into());
     metadata.model = "\u{1b}[31mfast\u{1b}[0m".into();
     update(
         &mut s,
@@ -580,7 +580,7 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
         },
     )
     .unwrap();
-    assert_eq!(s.agent_name(), "review");
+    assert_eq!(s.agent_name(), "lux");
     assert_eq!(s.selected_model_id.as_deref(), Some("fast"));
 }
 
@@ -748,11 +748,11 @@ fn startup_child_metadata_opens_read_only_without_resume() {
 
 #[tokio::test]
 async fn child_controls_and_permission_answers_use_the_owner_routes() {
-    use withnav::tui::client::Client;
     use wiremock::{
         matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
     };
+    use withnav::tui::client::Client;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/sessions/child/stop"))
@@ -1040,7 +1040,7 @@ fn child_permission_is_labelled_and_answered_on_the_parent() {
         .open_permission()
         .unwrap()
         .reason
-        .contains("subagent explore"));
+        .contains("subagent vigie"));
     let answer = PermissionAnswer {
         decision: "allow_once".into(),
         message: None,
@@ -4442,7 +4442,10 @@ fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     let background = &s.tabs[0];
     assert!(background.open_permission().is_some());
     assert!(background.unread);
-    assert_eq!(withnav::tui::view::sidebar::tab_state(background), "waiting");
+    assert_eq!(
+        withnav::tui::view::sidebar::tab_state(background),
+        "waiting"
+    );
     assert!(s.open_permission().is_none(), "the tab on screen has none");
 }
 

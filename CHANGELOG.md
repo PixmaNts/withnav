@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **VS Code keeps watchdog-paused subagents continuable without a root pause token.**
+  Removed an unreachable tooltip that incorrectly implied child continuation
+  required a token; the server accepts tokenless child continuation.
+
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

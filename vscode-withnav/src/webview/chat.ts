@@ -60,7 +60,6 @@ function childActions(child: ChildInfo): HTMLElement {
     if (["unknown", "done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
     const button = actionButton(action === "stop" ? "Stop" : "Continue", () => boundPost({ type: "controlChild", parentId, childId: child.id, action }));
     button.disabled = !!child.pending;
-    if (button.disabled && !child.pending) button.title = "Pause token not yet available. Open the transcript to read the pause.";
     actions.append(button);
   }
   if (child.error) actions.append(el("span", "command-error", child.error));

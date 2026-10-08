@@ -3,6 +3,24 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
+test('child watchdog continuation needs no root pause token and pending actions stay disabled', () => {
+  const { dom, d, receive } = keyboardPage();
+  const child = { id: 'child', agent: 'build', goal: 'Check code', state: 'watchdog' };
+  const render = changes => receive({ type: 'subagents', parentId: 'S', items: [{ ...child, ...changes }] });
+  render({});
+  let buttons = d.querySelectorAll('.child-actions button');
+  assert.equal(buttons[0].disabled, false);
+  assert.equal(buttons[0].title, '');
+  assert.equal(buttons[1].disabled, false);
+  render({ pauseToken: { incarnation: 'run', hold_id: 'hold' } });
+  assert.equal(d.querySelector('.child-actions button').disabled, false);
+  render({ state: 'budget' });
+  assert.equal(d.querySelector('.child-actions button').disabled, false);
+  render({ pending: 'continue', pauseToken: { incarnation: 'run', hold_id: 'hold' } });
+  assert.equal(d.querySelector('.child-actions button').disabled, true);
+  dom.window.close();
+});
+
 test('conversation colour hooks preserve the agent of each turn and tool labels', () => {
   const { dom, d, receive } = keyboardPage();
   receive({ type: 'agent', name: 'build' });

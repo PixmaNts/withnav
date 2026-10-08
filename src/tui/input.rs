@@ -256,7 +256,7 @@ pub fn route_key(
                     }
                     // A live conversation switches to it, the model only (the server applies its
                     // default variant), refused with the reason while the agent waits for the
-                    // driver. An empty tab goes on to choose the variant it starts on.
+                    // Captain. An empty tab goes on to choose the variant it starts on.
                     Overlay::Models if reducer::occupied(state) => {
                         if let Some(why) = reducer::switch_blocked(state) {
                             return Some(Action::ShowNotice(why.into()));
@@ -565,7 +565,7 @@ fn typed_palette_key(
             let complete = key.code == KeyCode::Tab || !row.runs_bare();
             close_palette(ui);
             if complete {
-                // Fills in the name; the driver types the argument and sends it with enter.
+                // Fills in the name; the Captain types the argument and sends it with enter.
                 editor.set_text(&format!("{} ", row.name));
                 editor
                     .area_mut()

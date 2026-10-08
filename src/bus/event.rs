@@ -1172,7 +1172,7 @@ mod tests {
                 serde_json::to_value(&SubagentSpawned {
                     parent_session_id: Ulid::new(),
                     child_session_id: Ulid::new(),
-                    agent: "explore".into(),
+                    agent: "vigie".into(),
                     goal: "map the parser".into(),
                     tool_call_id: "call_1".into(),
                 })
@@ -1183,7 +1183,7 @@ mod tests {
                 serde_json::to_value(&SubagentDone {
                     parent_session_id: Ulid::new(),
                     child_session_id: Ulid::new(),
-                    agent: "explore".into(),
+                    agent: "vigie".into(),
                     outcome: SubagentOutcome::Stopped,
                     reason: Some("server_restart".into()),
                     notification_id: Ulid::new(),

@@ -153,11 +153,33 @@ fn every_alias_resolves_and_canonical_files_win() {
         );
         assert_eq!(load(&f).get(old).unwrap().description, "canonical");
         write(
-            &f.ws.join(".navai/agents"),
+            &f.ws.join(".withnav/agents"),
             &format!("{old}.md"),
             "---\ndescription: nearer legacy\n---\nold",
         );
         assert_eq!(load(&f).get(old).unwrap().description, "canonical");
+    }
+}
+
+#[test]
+fn legacy_project_agent_directories_are_read_only_without_withnav() {
+    for legacy in [".navai", ".navigator"] {
+        let f = fixture();
+        write(
+            &f.ws.join(legacy).join("agents"),
+            "scout.md",
+            "---\ndescription: legacy project agent\n---\nlegacy",
+        );
+        assert_eq!(load(&f).get("scout").unwrap().prompt, "legacy");
+
+        fs::create_dir_all(f.ws.join(".withnav")).unwrap();
+        assert!(load(&f).get("scout").is_none());
+        write(
+            &f.ws.join(".withnav/agents"),
+            "scout.md",
+            "---\ndescription: current project agent\n---\ncurrent",
+        );
+        assert_eq!(load(&f).get("scout").unwrap().prompt, "current");
     }
 }
 
@@ -183,12 +205,12 @@ fn later_sources_replace_earlier_ones() {
     assert_eq!(agents.get("only-oc").unwrap().description, "oc only");
 
     write(
-        &f.repo.join(".navai/agents"),
+        &f.repo.join(".withnav/agents"),
         "scout.md",
         &file("repo root", "from repo"),
     );
     write(
-        &f.ws.join(".navai/agents"),
+        &f.ws.join(".withnav/agents"),
         "scout.md",
         &file("workspace", "from workspace"),
     );
@@ -331,7 +353,7 @@ fn the_file_count_and_size_are_bounded() {
         write(&dir, &format!("a{i:04}.md"), "---\ndescription: d\n---\n");
     }
     let big = format!("---\ndescription: d\n---\n{}", "x".repeat(MAX_FILE_BYTES));
-    write(&f.ws.join(".navai/agents"), "big.md", &big);
+    write(&f.ws.join(".withnav/agents"), "big.md", &big);
     let agents = load(&f);
     let custom = agents
         .all()
@@ -377,13 +399,13 @@ mod links {
         let f = fixture();
         let elsewhere = f.repo.parent().unwrap().join("elsewhere");
         write(&elsewhere, "stolen.md", OUTSIDE);
-        let dir = f.repo.join(".navai/agents");
+        let dir = f.repo.join(".withnav/agents");
         fs::create_dir_all(&dir).unwrap();
         symlink(elsewhere.join("stolen.md"), dir.join("stolen.md")).unwrap();
 
         // A linked directory: the whole agents directory of the parent
         // directory of the repository lives elsewhere.
-        let outer = f.repo.join("pkg/.navai");
+        let outer = f.repo.join("pkg/.withnav");
         fs::create_dir_all(&outer).unwrap();
         symlink(&elsewhere, outer.join("agents")).unwrap();
 
@@ -403,7 +425,7 @@ mod links {
         assert!(
             messages
                 .iter()
-                .any(|m| m.contains("pkg/.navai/agents") && m.contains("links outside")),
+                .any(|m| m.contains("pkg/.withnav/agents") && m.contains("links outside")),
             "{messages:?}"
         );
     }
@@ -411,7 +433,7 @@ mod links {
     #[test]
     fn a_link_that_stays_inside_the_root_is_loaded() {
         let f = fixture();
-        let dir = f.repo.join(".navai/agents");
+        let dir = f.repo.join(".withnav/agents");
         write(&dir.join("shared"), "real.md", OUTSIDE);
         symlink(dir.join("shared/real.md"), dir.join("alias.md")).unwrap();
 

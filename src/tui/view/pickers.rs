@@ -498,7 +498,7 @@ pub fn confirm_child(
 }
 
 /// A line under the filter: what picking does to the live conversation (switched after the
-/// running turn, refused while the agent waits for the driver, ctrl+n for a new tab), or why the
+/// running turn, refused while the agent waits for the Captain, ctrl+n for a new tab), or why the
 /// variant list is empty.
 fn note<'a>(overlay: Overlay, state: &'a State, ui: &UiState, empty: bool) -> Option<&'a str> {
     let live = crate::tui::reducer::occupied(state);

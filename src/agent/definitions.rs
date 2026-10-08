@@ -1,12 +1,12 @@
 //! Agent definitions: the roles a session can run as. A primary agent is the
-//! one a driver talks to (`build`, `plan`, or a custom one); a subagent is
+//! one the Captain talks to (`build`, `plan`, or a custom one); a subagent is
 //! one another agent delegates to. A definition is a role prompt, an optional
 //! model, a tool allow/deny map and an access level; it says what the agent
 //! is for, not what it may execute.
 //!
 //! Sources, later ones replacing earlier ones that carry the same id:
 //! the built-ins, `<home>/.config/opencode/agents/*.md` (only read),
-//! `<navai config dir>/agents/*.md`, and `.navai/agents/*.md` of the project
+//! `<withnav config dir>/agents/*.md`, and `.withnav/agents/*.md` of the project
 //! (the worktree root down to the workspace, nearer directories last).
 //! `build` and `plan` are reserved: a file with one of those names never
 //! replaces the built-in and is reported.
@@ -126,7 +126,7 @@ impl fmt::Display for AgentId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
-    /// A driver can select it for a session.
+    /// The Captain can select it for a session.
     Primary,
     /// Another agent can delegate to it.
     Subagent,
@@ -188,9 +188,9 @@ pub enum AgentSource {
     Builtin,
     /// `<home>/.config/opencode/agents`: only read.
     OpenCode(PathBuf),
-    /// `<navai config dir>/agents`.
+    /// `<withnav config dir>/agents`.
     User(PathBuf),
-    /// `.navai/agents` of the project.
+    /// `.withnav/agents` of the project.
     Project(PathBuf),
 }
 
@@ -263,7 +263,7 @@ pub struct Diagnostic {
 pub struct AgentRoots {
     /// The home directory holding `.config/opencode/agents`.
     pub home: Option<PathBuf>,
-    /// Navai's config directory holding `agents`.
+    /// WithNav's config directory holding `agents`.
     pub config_dir: Option<PathBuf>,
 }
 
@@ -321,7 +321,7 @@ impl Agents {
         self.by_id.values()
     }
 
-    /// The agents a driver can select, by id.
+    /// The agents the Captain can select, by id.
     pub fn primary(&self) -> impl Iterator<Item = &Arc<AgentDefinition>> {
         self.all().filter(|a| a.mode.is_primary())
     }

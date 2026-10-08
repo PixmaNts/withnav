@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- ◆ withnav  /ws/refactor-parser  —  /config              Not saved: Must be between 1 and 64  /cfg/navai/config.json · /cfg/navai/models.jso
+ ◆ withnav  /ws/refactor-parser  —  /config          Not saved: Must be between 1 and 64  /cfg/withnav/config.json · /cfg/withnav/models.jso
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │                                                                                  │                                   
  SETTINGS            │  Subagents  config.json → subagents, agent                                       │ FOCUSED                           

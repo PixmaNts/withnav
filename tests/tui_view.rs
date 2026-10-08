@@ -158,7 +158,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
 }
 
 #[test]
-fn delivered_subagent_output_is_not_labelled_as_the_driver() {
+fn delivered_subagent_output_is_not_labelled_as_the_captain() {
     let mut s = state();
     s.conversation.blocks.push(message(
         "result",
@@ -387,7 +387,7 @@ fn settings_view_state() -> (State, UiState) {
         ("permissions.automatic_review", json!(true)),
         (
             "permissions.scratch_dirs",
-            json!(["/run/user/1000/navai", "/tmp/navai"]),
+            json!(["/run/user/1000/withnav", "/tmp/withnav"]),
         ),
         ("subagents.max_concurrent", json!(4)),
         ("subagents.watchdog_interval_secs", json!(300)),
@@ -407,8 +407,8 @@ fn settings_view_state() -> (State, UiState) {
     s.config.body = Some(SettingsBody {
         revision: "r0".into(),
         paths: SettingsPaths {
-            config: "/cfg/navai/config.json".into(),
-            models: Some("/cfg/navai/models.json".into()),
+            config: "/cfg/withnav/config.json".into(),
+            models: Some("/cfg/withnav/models.json".into()),
             agents: vec![],
         },
         fields,
@@ -2269,12 +2269,12 @@ fn bash_edit_and_fetch_prompts_show_what_they_would_do() {
     };
     let s = asking(prompt(
         "bash",
-        json!({"command": "cargo test -p navai"}),
+        json!({"command": "cargo test -p withnav"}),
         ("folder", "/ws"),
     ));
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(shown.contains("wants to run bash in /ws"), "{shown}");
-    assert!(shown.contains("$ cargo test -p navai"), "{shown}");
+    assert!(shown.contains("$ cargo test -p withnav"), "{shown}");
     let s = asking(prompt(
         "edit",
         json!({"path": "/ws/a.rs", "old_string": "let x = 1;", "new_string": "let x = 2;"}),
@@ -2400,7 +2400,7 @@ fn a_long_command_and_control_characters_are_shown_safely() {
     assert!(!shown.contains('\u{1b}'), "{shown}");
 }
 
-/// An open request of the `plan` agent, as a guarded exception reaches the driver.
+/// An open request of the `plan` agent, as a guarded exception reaches the Captain.
 fn plan_exception() -> State {
     let mut block = prompt(
         "write",
@@ -3472,7 +3472,7 @@ fn permission_layout_is_fresh_with_one_render_cache() {
 
 #[test]
 fn auto_approval_notes_render_narrow_with_optional_evidence() {
-    for source in ["jev", "metacognition", "driver", "none"] {
+    for source in ["jev", "metacognition", "captain", "driver", "none"] {
         for detailed in [false, true] {
             let mut s = State::default();
             let mut block = tool_block(Some(ToolStatus::Ok));
@@ -3501,7 +3501,7 @@ fn auto_approval_notes_render_narrow_with_optional_evidence() {
             match source {
                 "jev" => assert!(collapsed.contains("auto · Jev")),
                 "metacognition" => assert!(collapsed.contains("auto · metacognition")),
-                "driver" => assert!(collapsed.contains("Captain approved")),
+                "captain" | "driver" => assert!(collapsed.contains("Captain approved")),
                 _ => assert!(!collapsed.contains("auto ·")),
             }
             ui.expanded.insert("review".into());

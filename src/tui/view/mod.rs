@@ -403,7 +403,7 @@ pub fn draw(
 
 fn editor_height(editor: &Editor, available_height: u16) -> u16 {
     // Five chrome rows and five transcript rows stay visible whenever the terminal permits; the
-    // editor itself never shrinks below one text line, so the driver can always type.
+    // editor itself never shrinks below one text line, so the Captain can always type.
     let desired = editor.area().lines().len().clamp(1, 20) as u16 + 2;
     desired.min(available_height.saturating_sub(10).max(3))
 }

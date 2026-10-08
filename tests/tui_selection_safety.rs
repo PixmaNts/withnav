@@ -77,8 +77,8 @@ fn complete_selection_is_atomic_across_summary_replay_secondary_and_old_variant_
         json!({"name":"variant","ok":true,"data":{"agent":"plan","model":"gateway/astra","variant":null,"variant_source":"override"}}),
     );
     assert_eq!(tuple(&s), held);
-    metadata(&mut s, summary(110, "review", "gateway/newer", None));
-    assert_eq!(s.agent_name(), "review");
+    metadata(&mut s, summary(110, "lux", "gateway/newer", None));
+    assert_eq!(s.agent_name(), "lux");
     assert_eq!(s.selected_model_name.as_deref(), Some("gateway/newer"));
     assert_eq!(s.model_seq, Some(110));
 }
@@ -209,7 +209,7 @@ fn workspace_order_and_tab_scoped_agents_reject_foreign_and_reversed_answers() {
     s.tabs.push(Default::default());
     s.tabs[1].generation = Generation(2);
     s.active = 1;
-    let body = serde_json::from_value(json!({"default_agent":"build","agents":[{"id":"review","description":"Review","mode":"primary","assignment":null,"effective":null,"warning":null}]})).unwrap();
+    let body = serde_json::from_value(json!({"default_agent":"build","agents":[{"id":"lux","description":"Lux","mode":"primary","assignment":null,"effective":null,"warning":null}]})).unwrap();
     reducer::update(
         &mut s,
         ClientEvent::Agents {
@@ -222,7 +222,7 @@ fn workspace_order_and_tab_scoped_agents_reject_foreign_and_reversed_answers() {
     )
     .unwrap();
     assert!(s.tabs[1].agents.is_empty());
-    assert_eq!(s.tabs[0].agents[0].id, "review");
+    assert_eq!(s.tabs[0].agents[0].id, "lux");
     // Workspace catalog survives closure of the tab that issued it.
     s.tabs.remove(0);
     s.active = 0;

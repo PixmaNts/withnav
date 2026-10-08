@@ -148,7 +148,7 @@ impl Tool for FetchTool {
 
     fn schema(&self) -> Value {
         json!({
-            "description": "Fetch one http(s) URL with GET and return its text. HTML is converted to markdown (default) or plain text, or returned raw with format `html`; other textual types (JSON, XML, plain text, JavaScript) are returned as is. Images and other binary content are refused. The body is limited to 5 MiB and the output to 64 KiB. Only same-origin redirects are followed: a redirect to another origin is returned as the target URL, call fetch again with it. Any address is allowed, including localhost and private networks, so the call needs the user's approval. URLs with credentials are refused.",
+            "description": "Fetch one http(s) URL with GET and return its text. HTML is converted to markdown (default) or plain text, or returned raw with format `html`; other textual types (JSON, XML, plain text, JavaScript) are returned as is. Images and other binary content are refused. The body is limited to 5 MiB and the output to 64 KiB. Only same-origin redirects are followed: a redirect to another origin is returned as the target URL, call fetch again with it. Redirect locations use standard URL resolution: a new path without a query drops the original query; query parameters are not automatically forwarded. Any address is allowed, including localhost and private networks, so the call needs the user's approval. URLs with credentials are refused.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1055,9 +1055,16 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw("arrived", "text/plain"))
             .mount(&server)
             .await;
-        let res = call(json!({"url": format!("{}/old", server.uri())})).await;
+        let res = call(json!({"url": format!("{}/old?token=private", server.uri())})).await;
         assert_eq!(res.output, "arrived", "{:?}", res.error);
         assert_eq!(res.metadata["redirects"], 1);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].url.query(), Some("token=private"));
+        assert_eq!(requests[1].url.query(), None);
+        assert!(FetchTool::new().schema()["description"]
+            .as_str()
+            .unwrap()
+            .contains("drops the original query"));
     }
 
     // Given a redirect to another origin

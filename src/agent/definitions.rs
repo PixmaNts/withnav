@@ -44,6 +44,29 @@ pub const BUILD: &str = "build";
 /// The id of the planning agent.
 pub const PLAN: &str = "plan";
 
+/// Compatibility names accepted throughout the 0.7 series.
+pub const AGENT_ALIASES: &[(&str, &str)] = &[
+    ("explore", "vigie"),
+    ("librarian", "vigie"),
+    ("review", "lux"),
+    ("oracle", "lux"),
+    ("explorer", "mousse"),
+];
+
+/// Resolves a legacy id and emits one deprecation line per resolution.
+pub fn canonical_agent_id(id: &str) -> &str {
+    if let Some((_, canonical)) = AGENT_ALIASES.iter().find(|(old, _)| *old == id) {
+        tracing::warn!(
+            agent = id,
+            replacement = canonical,
+            "deprecated agent id; use the replacement"
+        );
+        canonical
+    } else {
+        id
+    }
+}
+
 /// An agent's name: lowercase letters, digits, `-` and `_`, starting with a
 /// letter or a digit.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -189,6 +212,45 @@ pub struct AgentDefinition {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+impl AgentDefinition {
+    /// Cartographe's write exception is confined to Mermaid chart files.
+    /// Call before permission review and again at dispatch: approval must not broaden it.
+    pub fn validate_write_scope(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        if self.id.as_str() != "cartographe" || !matches!(tool, "write" | "edit") {
+            return Ok(());
+        }
+        let raw = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing string argument: path")?;
+        let path = Path::new(raw);
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        let resolved = crate::tools::validate_path(&[workspace.to_path_buf()], &candidate)
+            .map_err(|e| e.to_string())?;
+        let root = workspace
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .join(".withnav/charts");
+        if !resolved.starts_with(&root)
+            || !resolved
+                .extension()
+                .is_some_and(|e| e == "mmd" || e == "mermaid")
+        {
+            return Err("cartographe may only write Mermaid charts under .withnav/charts/".into());
+        }
+        Ok(())
+    }
+}
+
 /// A problem found while loading, never fatal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -251,7 +313,7 @@ impl Agents {
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<AgentDefinition>> {
-        self.by_id.get(id)
+        self.by_id.get(canonical_agent_id(id))
     }
 
     /// Every agent, by id.
@@ -307,7 +369,17 @@ impl Agents {
                     && std::fs::metadata(path).is_ok_and(|m| m.is_file())
             })
             .collect();
-        files.sort();
+        // Canonical files win over legacy filenames within the same source.
+        files.sort_by_key(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            (
+                !AGENT_ALIASES.iter().any(|(old, _)| *old == stem),
+                path.clone(),
+            )
+        });
         if files.len() > MAX_FILES {
             files.truncate(MAX_FILES);
             self.diagnostics.push(Diagnostic {
@@ -397,39 +469,61 @@ fn builtin_definitions() -> Vec<AgentDefinition> {
     vec![
         make(
             BUILD,
-            "Implements the task, verifies it and reports",
+            "Nav · The Navigator: implements the task, verifies it and reports",
             AgentMode::Primary,
-            // The system contract every request starts with already is the
-            // build stance (implement, verify, report): `build` adds no role
-            // text, so a session on the default agent sends the same
-            // requests it always did.
-            "",
+            include_str!("builtin/build.md"),
             BTreeMap::new(),
             AgentAccess::Full,
         ),
         make(
             PLAN,
-            "Researches, writes markdown plans and delegates; never changes code",
+            "Nav · The Navigator: researches and proposes read-only plans",
             AgentMode::Primary,
             include_str!("builtin/plan.md"),
             BTreeMap::new(),
             AgentAccess::Full,
         ),
         make(
-            "explore",
-            "Read-only codebase exploration",
+            "vigie",
+            "Vigie · The Lookout: read-only code, documentation and web research with sources",
             AgentMode::Subagent,
-            include_str!("builtin/explore.md"),
+            include_str!("builtin/vigie.md"),
             read_only_tools.clone(),
             AgentAccess::ReadOnly,
         ),
         make(
-            "review",
-            "Read-only code review",
-            AgentMode::Subagent,
-            include_str!("builtin/review.md"),
-            read_only_tools,
+            "lux",
+            "Lux · The Expert Advisor: read-only analysis of decisions, risks and trade-offs",
+            AgentMode::All,
+            include_str!("builtin/lux.md"),
+            read_only_tools.clone(),
             AgentAccess::ReadOnly,
+        ),
+        make(
+            "mousse",
+            "Mousse · The Lightweight Deckhand: small, local, low-risk edits after permission review",
+            AgentMode::Subagent,
+            include_str!("builtin/mousse.md"),
+            BTreeMap::new(),
+            AgentAccess::Full,
+        ),
+        make(
+            "cartographe",
+            "Cartographe · The Cartographer: on-demand diagrams of modules, dependencies and data flows",
+            AgentMode::Subagent,
+            include_str!("builtin/cartographe.md"),
+            ["edit", "bash", "ask", "task", "steer_subagent", "decide_subagent", "intent"]
+                .into_iter().map(|name| (name.to_string(), false)).collect(),
+            AgentAccess::Full,
+        ),
+        make(
+            "sondeur",
+            "Sondeur · The Deep Diver: on-demand root-cause investigation with reviewed tests and profiling",
+            AgentMode::Subagent,
+            include_str!("builtin/sondeur.md"),
+            ["write", "edit", "ask", "task", "steer_subagent", "decide_subagent", "intent"]
+                .into_iter().map(|name| (name.to_string(), false)).collect(),
+            AgentAccess::Full,
         ),
     ]
 }
@@ -452,7 +546,7 @@ fn read_file(path: &Path, target: &Path, source: AgentSource) -> Result<AgentDef
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
-    let id = AgentId::parse(stem)?;
+    let id = AgentId::parse(canonical_agent_id(stem))?;
     let file = std::fs::File::open(target).map_err(|e| format!("cannot be read: {e}"))?;
     let mut text = String::new();
     file.take(MAX_FILE_BYTES as u64 + 1)

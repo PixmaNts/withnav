@@ -548,6 +548,9 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
             call.name
         ));
     }
+    if let Some(role) = actor.role.as_deref() {
+        role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)?;
+    }
     Ok(())
 }
 
@@ -1011,6 +1014,13 @@ async fn execute_call(
     // The seam tests use to move a file between the check and the dispatch.
     #[cfg(test)]
     tests::before_dispatch();
+    if let Some(role) = actor.role.as_deref() {
+        if let Err(message) =
+            role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)
+        {
+            return Some(ToolResult::error("agent_write_scope", message));
+        }
+    }
     if !still_resolves(&call.args, destination, &actor.tool_context) {
         return None;
     }

@@ -1761,7 +1761,7 @@ fn permission_requested(
     payload["requires_driver"] = serde_json::json!(request.requires_driver);
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
-            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"driver","reason":request.reason,"truncated":false}));
+            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
     }
     payload
 }

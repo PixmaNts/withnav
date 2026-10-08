@@ -376,7 +376,7 @@ pub async fn resolve_permission_with_origin(
         PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
             let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
             let bypass = origin == super::permissions::PermissionOrigin::Bypass;
-            evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "driver" });
+            evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "captain" });
             let mut approval = serde_json::json!({"permission_gate":evidence});
             if bypass {
                 approval["approved_by"] = serde_json::json!("bypass");
@@ -745,7 +745,7 @@ async fn resolve_flow_call(
             unreachable!()
         };
         let approval =
-            serde_json::json!({"approved_by":"driver","flow":{"name":flow,"run_id":run_id}});
+            serde_json::json!({"approved_by":"captain","flow":{"name":flow,"run_id":run_id}});
         if let Some(result) = execute_call(actor, call, destination, Some(approval), observe).await
         {
             append_tool_result(actor, &call.id, &result);
@@ -1355,7 +1355,7 @@ mod tests {
         let mut metadata = serde_json::Value::Null;
         merge_approval_metadata(
             &mut metadata,
-            &serde_json::json!({"approved_by":"driver","flow":{"name":"test","run_id":"run"}}),
+            &serde_json::json!({"approved_by":"captain","flow":{"name":"test","run_id":"run"}}),
         );
         assert_eq!(metadata["flow"]["name"], "test");
         assert!(metadata.get("guard").is_none());
@@ -3117,7 +3117,7 @@ mod tests {
                 panic!("driver required");
             };
             assert!(request.requires_driver);
-            assert_eq!(request.permission_gate.unwrap()["source"], "driver");
+            assert_eq!(request.permission_gate.unwrap()["source"], "captain");
             assert!(
                 meta.captured.lock().unwrap().is_some(),
                 "metacognition consulted"
@@ -3185,11 +3185,11 @@ mod tests {
                 panic!("driver required");
             };
             let mut count = 0;
-            assert!(matches!(run_reviewed(&mut actor, &call, destination.as_deref(), Some(serde_json::json!({"permission_gate":{"source":"driver","reason":request.reason}})), &mut |event| {
+            assert!(matches!(run_reviewed(&mut actor, &call, destination.as_deref(), Some(serde_json::json!({"permission_gate":{"source":"captain","reason":request.reason}})), &mut |event| {
             if let AgentEvent::PostCall { result, .. } = event {
                 count += 1;
                 assert!(result.output.contains(if tool == "glob" { "README.md" } else { "first line" }));
-                assert_eq!(result.metadata["permission_gate"]["source"], "driver");
+                assert_eq!(result.metadata["permission_gate"]["source"], "captain");
             }
         }).await, One::Settled));
             assert_eq!(count, 1);
@@ -3266,7 +3266,7 @@ mod tests {
             panic!("held call");
         };
         request.permission_gate = Some(Box::new(
-            serde_json::json!({"policy_version":1,"source":"driver","reason":"review uncertainty","verdicts":{"effect":"read_write","scope":"inside","risk":"unsure"},"truncated":false}),
+            serde_json::json!({"policy_version":1,"source":"captain","reason":"review uncertainty","verdicts":{"effect":"read_write","scope":"inside","risk":"unsure"},"truncated":false}),
         ));
         let id = request.id;
         let mut second = call.clone();
@@ -3298,7 +3298,7 @@ mod tests {
         ));
         assert_eq!(pre, post);
         assert_eq!(pre.len(), 1);
-        assert_eq!(pre[0]["source"], "driver");
+        assert_eq!(pre[0]["source"], "captain");
         assert_eq!(pre[0]["verdicts"]["risk"], "unsure");
     }
 
@@ -3660,7 +3660,7 @@ mod tests {
                 };
                 let mut request = request;
                 request.permission_gate = Some(Box::new(
-                    serde_json::json!({"policy_version":1,"source":"driver","reason":"original destination approval","truncated":false}),
+                    serde_json::json!({"policy_version":1,"source":"captain","reason":"original destination approval","truncated":false}),
                 ));
                 let id = request.id;
                 actor.pending = Some(PendingInteraction::Permission {
@@ -3711,7 +3711,7 @@ mod tests {
                     .is_none_or(|evidence| evidence["reason"] != "original destination approval"));
                 if at_open {
                     assert_eq!(attempt_evidence.len(), 1);
-                    assert_eq!(attempt_evidence[0]["source"], "driver");
+                    assert_eq!(attempt_evidence[0]["source"], "captain");
                     assert_eq!(
                         attempt_evidence[0]["reason"],
                         "original destination approval"
@@ -3728,7 +3728,7 @@ mod tests {
     #[tokio::test]
     async fn external_native_write_and_edit_approval_matrix_preserves_roots() {
         for tool in ["write", "edit"] {
-            for route in ["meta", "driver", "deny"] {
+            for route in ["meta", "captain", "deny"] {
                 let mut actor =
                     plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
                 actor
@@ -3758,7 +3758,7 @@ mod tests {
                 }
                 let outcome = run_gated(&mut actor, &call, &mut |_| {}).await;
                 match outcome {
-                    One::Ask(_, destination) if route == "driver" => {
+                    One::Ask(_, destination) if route == "captain" => {
                         assert!(matches!(
                             run_reviewed(
                                 &mut actor,

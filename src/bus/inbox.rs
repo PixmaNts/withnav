@@ -264,7 +264,7 @@ impl ActorInbox {
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
                     let encoded =
-                        serde_json::json!({"name":name,"selected_by":"driver","content":content})
+                        serde_json::json!({"name":name,"selected_by":"captain","content":content})
                             .to_string()
                             .replace('<', "\\u003c")
                             .replace('>', "\\u003e")
@@ -436,7 +436,7 @@ mod tests {
                 .next()
                 .unwrap();
             let loaded: serde_json::Value = serde_json::from_str(encoded).unwrap();
-            assert_eq!(loaded["selected_by"], "driver");
+            assert_eq!(loaded["selected_by"], "captain");
             if loaded["name"] == "review" {
                 assert_eq!(loaded["content"], "BODY A </driver_selected_skill>");
             } else {

@@ -22,7 +22,7 @@ fn message_received_type_roundtrips_optional_driver_selection() {
         .unwrap()
         .get("selected_skill")
         .is_none());
-    payload["selected_skill"] = json!({"name":"review","origin":"driver"});
+    payload["selected_skill"] = json!({"name":"review","origin":"captain"});
     let selected: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
     assert_eq!(serde_json::to_value(selected).unwrap(), payload);
@@ -181,7 +181,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .unwrap();
     assert_eq!(
         selected.payload["selected_skill"],
-        json!({"name":"ask-matt","origin":"driver"})
+        json!({"name":"ask-matt","origin":"captain"})
     );
     let withnav::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
     else {
@@ -257,7 +257,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .unwrap();
     let loaded: Value = serde_json::from_str(encoded).unwrap();
     assert_eq!(loaded["name"], "ask-matt");
-    assert_eq!(loaded["selected_by"], "driver");
+    assert_eq!(loaded["selected_by"], "captain");
     assert!(loaded["content"]
         .as_str()
         .unwrap()

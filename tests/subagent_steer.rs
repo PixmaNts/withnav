@@ -280,7 +280,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(parent, "driver".into()))
+        .send(common::server::driver_command(parent, "captain".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();

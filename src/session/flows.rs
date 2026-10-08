@@ -92,7 +92,7 @@ pub(crate) async fn received(
         return;
     };
     let author = if command.from_driver() {
-        "driver"
+        "captain"
     } else if command.source_actor_id.starts_with("agent:") {
         "subagent"
     } else {
@@ -103,7 +103,7 @@ pub(crate) async fn received(
         crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name),
         _ => None,
     }) {
-        payload["selected_skill"] = json!({"name":name,"origin":"driver"});
+        payload["selected_skill"] = json!({"name":name,"origin":"captain"});
     }
     runtime
         .evaluate_with_effects(

@@ -192,7 +192,7 @@ mod tests {
             ).unwrap();
             let event = Event {
                 trigger: "message.received".into(),
-                payload: serde_json::json!({"command_id":"test","author":"driver","text":"sk-123456789012345678901234"}),
+                payload: serde_json::json!({"command_id":"test","author":"captain","text":"sk-123456789012345678901234"}),
             };
             let mut outcome = run(&compiled, &event, &Inputs, &Client, RunOptions {
                 deadline: Instant::now() + Duration::from_secs(1),

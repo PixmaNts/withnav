@@ -85,7 +85,7 @@ pub fn catalogue() -> Catalogue {
                 ("text", Text, true),
                 ("selected_skill", Object, false),
             ],
-            json!({"command_id":"sample","author":"driver","text":"Please review"}),
+            json!({"command_id":"sample","author":"captain","text":"Please review"}),
         ),
         (
             "save",

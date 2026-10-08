@@ -629,7 +629,7 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     let _cancel_on_exit = review_cancel.clone().drop_guard();
     let request_incomplete = serde_json::from_str::<Value>(&input.state)
         .is_ok_and(|state| state["driver_request_complete"] == false);
-    let mut evidence = json!({"policy_version":1,"source":"driver","reason":"","truncated":context_truncated(actor) || request_incomplete,"overrides":override_names(&flags)});
+    let mut evidence = json!({"policy_version":1,"source":"captain","reason":"","truncated":context_truncated(actor) || request_incomplete,"overrides":override_names(&flags)});
     evidence["canonical_target"] = json!(needed.destination);
     evidence["read_only"] = json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
     evidence["sensitive_read"] = json!(sensitive_call(call, needed, &actor.tool_context));
@@ -836,7 +836,7 @@ fn context_truncated(actor: &super::actor::AgentActor) -> bool {
             .is_some_and(|text| text.len() > 1024)
 }
 fn ask_evidence(reason: String, mut evidence: Value) -> Judged {
-    evidence["source"] = json!("driver");
+    evidence["source"] = json!("captain");
     evidence["reason"] = json!(reason);
     Judged::AskWithEvidence(reason, evidence)
 }
@@ -1009,7 +1009,7 @@ mod tests {
     }
     #[test]
     fn audit_evidence_preserves_fixed_names_and_optional_values() {
-        let evidence = json!({"policy_version":1,"source":"driver","truncated":true,"verdicts":{"effect":"read_write","scope":"outside","risk":"low"},"overrides":override_names(&Overrides { mutation:true,outside:true,risky:false }),"models":{"jev":"test-jev"},"latency_ms":{"jev":7}});
+        let evidence = json!({"policy_version":1,"source":"captain","truncated":true,"verdicts":{"effect":"read_write","scope":"outside","risk":"low"},"overrides":override_names(&Overrides { mutation:true,outside:true,risky:false }),"models":{"jev":"test-jev"},"latency_ms":{"jev":7}});
         let Judged::AskWithEvidence(reason, evidence) =
             ask_evidence("review unavailable".into(), evidence)
         else {

@@ -102,7 +102,7 @@ enum Author {
 impl Author {
     fn as_str(self) -> &'static str {
         match self {
-            Author::Driver => "driver",
+            Author::Driver => "captain",
             Author::Cognition => "cognition",
             Author::Navigator => "navigator",
             Author::Subagent => "subagent (untrusted)",

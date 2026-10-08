@@ -36,7 +36,7 @@
 //!   the skill tool's bounded loader before accepting the message; unknown, omitted, disabled or
 //!   unreadable skills return 400 without sending anything. The exact bounded tool-loader output
 //!   is JSON-escaped into a delimited block in the driver's own user message, never a synthetic tool call.
-//!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"driver"}`.
+//!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"captain"}`.
 //!   If the consuming turn's pinned agent disables skills, the whole command is refused before
 //!   transcript mutation; `command.result` carries its command id as operation id and correlation.
 //! - `GET  /v1/workspaces`    -> `{workspaces:[{path,name,launched,session_count,updated_at?,branch?,dirty?}]}`:

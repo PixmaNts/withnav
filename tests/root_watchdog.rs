@@ -116,7 +116,7 @@ async fn pause_lifecycle(mode: u8) {
     assert!(provider.requests.try_recv().is_err());
     if mode == 2 {
         let child = service
-            .create_child_session(id, "explore", "finish child now")
+            .create_child_session(id, "vigie", "finish child now")
             .await
             .unwrap();
         let (_, child_stream) = provider
@@ -371,7 +371,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     );
     assert!(sleeps.try_recv().is_err());
     let child = service
-        .create_child_session(id, "explore", "finish child now")
+        .create_child_session(id, "vigie", "finish child now")
         .await
         .unwrap();
     let sub = service.subscribe(child, None).await.unwrap();

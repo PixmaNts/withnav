@@ -49,7 +49,7 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
     let subscription = state.subscribe(parent, None).await.unwrap();
     let child = state
         .service()
-        .create_child_session(parent, "explore", "inspect child")
+        .create_child_session(parent, "vigie", "inspect child")
         .await
         .unwrap();
     let events = collect_until(subscription, |event| {
@@ -168,11 +168,9 @@ async fn editor_context_sends_the_pair_programmer_prompt_as_second_system_messag
     );
     assert_eq!(messages[0]["role"], "system", "loop contract first");
     assert_eq!(messages[1]["role"], "system", "cognition prompt second");
-    assert_eq!(
-        messages[1]["content"],
-        withnav::navigator::COGNITION_PROMPT,
-        "the second system message IS the cognition prompt"
-    );
+    let role = messages[1]["content"].as_str().unwrap();
+    assert!(role.starts_with("You are Nav · The Navigator"));
+    assert!(role.ends_with(withnav::navigator::COGNITION_PROMPT));
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"], "hello there");
     let tools: Vec<&str> = body["tools"]

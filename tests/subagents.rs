@@ -52,7 +52,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
     let service = fx.state.service();
     let spawn = tokio::spawn(async move {
         service
-            .create_child_session(parent, "explore", "inspect")
+            .create_child_session(parent, "vigie", "inspect")
             .bounded(file!(), line!())
             .await
     });
@@ -202,7 +202,7 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
     let service = fx.state.service();
     let spawn = tokio::spawn(async move {
         service
-            .create_child_session(parent, "explore", "inspect")
+            .create_child_session(parent, "vigie", "inspect")
             .bounded(file!(), line!())
             .await
     });
@@ -257,7 +257,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         fx.state.fail_child_start(publication);
         assert!(fx
             .state
-            .create_child_session(parent, "explore", "inspect")
+            .create_child_session(parent, "vigie", "inspect")
             .bounded(file!(), line!())
             .await
             .is_err());
@@ -343,7 +343,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
     std::fs::write(&path, config.to_string()).unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "child request")
+        .create_child_session(parent, "vigie", "child request")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -383,7 +383,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -487,7 +487,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -590,7 +590,7 @@ async fn paused_child_admission(resume: bool) {
     let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[&tool_call_chunk(
         "paused-task",
         "task",
-        &json!({"agent":"explore","prompt":"inspect"}),
+        &json!({"agent":"vigie","prompt":"inspect"}),
     )]))])
     .bounded(file!(), line!())
     .await;
@@ -984,7 +984,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "inspect sources")
+        .create_child_session(parent, "vigie", "inspect sources")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1030,7 +1030,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     assert!(!child_row.promptable);
     assert_eq!(
         fx.state
-            .create_child_session(child, "explore", "nested")
+            .create_child_session(child, "vigie", "nested")
             .bounded(file!(), line!())
             .await
             .unwrap_err()
@@ -1044,7 +1044,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
             .await
             .unwrap()
             .agent,
-        "explore"
+        "vigie"
     );
     fx.state
         .close_session(child)
@@ -1137,7 +1137,7 @@ async fn capacity_error_has_clear_machine_and_model_message() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "first")
+        .create_child_session(parent, "vigie", "first")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1162,7 +1162,7 @@ async fn capacity_error_has_clear_machine_and_model_message() {
     assert_eq!(fx.state.reserved_child_count(parent), 1);
     let err = fx
         .state
-        .create_child_session(parent, "explore", "second")
+        .create_child_session(parent, "vigie", "second")
         .bounded(file!(), line!())
         .await
         .unwrap_err();
@@ -1237,7 +1237,7 @@ async fn parent_sse_replay_contains_spawned_and_done_after_completion() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "review")
+        .create_child_session(parent, "vigie", "review")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1297,7 +1297,7 @@ async fn child_slot_is_released_after_terminal_result() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "finish")
+        .create_child_session(parent, "vigie", "finish")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1326,7 +1326,7 @@ async fn child_slot_is_released_after_terminal_result() {
     assert!(matches!(link.status.as_str(), "done" | "failed"));
     let next = fx
         .state
-        .create_child_session(parent, "explore", "second task")
+        .create_child_session(parent, "vigie", "second task")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1357,7 +1357,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
         .await
         .unwrap();
     let children = futures::future::join_all(
-        (0..4).map(|_| fx.state.create_child_session(parent, "explore", "inspect")),
+        (0..4).map(|_| fx.state.create_child_session(parent, "vigie", "inspect")),
     )
     .bounded(file!(), line!())
     .await
@@ -1377,7 +1377,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     }
     assert!(matches!(
         fx.state
-            .create_child_session(parent, "explore", "fifth")
+            .create_child_session(parent, "vigie", "fifth")
             .bounded(file!(), line!())
             .await,
         Err(withnav::error::ServerError::SubagentCapacity { capacity: 4 })
@@ -1411,7 +1411,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     .unwrap();
     let replacements = futures::future::join_all((0..2).map(|_| {
         fx.state
-            .create_child_session(parent, "explore", "replacement")
+            .create_child_session(parent, "vigie", "replacement")
     }))
     .bounded(file!(), line!())
     .await
@@ -1431,7 +1431,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     assert_eq!(fx.state.reserved_child_count(parent), 4);
     assert!(matches!(
         fx.state
-            .create_child_session(parent, "explore", "fifth again")
+            .create_child_session(parent, "vigie", "fifth again")
             .bounded(file!(), line!())
             .await,
         Err(withnav::error::ServerError::SubagentCapacity { capacity: 4 })
@@ -1459,7 +1459,7 @@ async fn child_prompt_is_not_attributed_as_captain_task_or_transcript_inherited(
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "only child prompt")
+        .create_child_session(parent, "vigie", "only child prompt")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1498,7 +1498,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
                 http_sse(&sse_body(&[&tool_call_chunk(
                     "spawn-1",
                     "task",
-                    &json!({"agent":"explore","prompt":"inspect"}),
+                    &json!({"agent":"vigie","prompt":"inspect"}),
                 )]))
             } else {
                 http_sse(&sse_body(&[&text_chunk(if i == 1 {
@@ -1529,7 +1529,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
     };
     let result = task
         .call(
-            json!({"agent":"explore","prompt":"inspect"}),
+            json!({"agent":"vigie","prompt":"inspect"}),
             tokio_util::sync::CancellationToken::new(),
             &cx,
         )
@@ -1693,7 +1693,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "read")
+        .create_child_session(parent, "vigie", "read")
         .bounded(file!(), line!())
         .await
         .unwrap();

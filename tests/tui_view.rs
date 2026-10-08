@@ -95,7 +95,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
     let mut s = state();
     s.children.push(ChildAgent {
         session_id: "child-session".into(),
-        name: "explore".into(),
+        name: "vigie".into(),
         goal: "Read parser tests".into(),
         status: ChildStatus::Running,
         ..Default::default()
@@ -2958,7 +2958,7 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         assert!(shown.contains(want), "{want}: {shown}");
     }
     // nothing the server does not report
-    for absent in ["INTENT", "drift", "MCP", "PLUGINS", "explore", "review"] {
+    for absent in ["INTENT", "drift", "MCP", "PLUGINS", "vigie", "review"] {
         assert!(!shown.contains(absent), "{absent}: {shown}");
     }
 }

@@ -52,27 +52,113 @@ fn load(f: &Fixture) -> Agents {
 }
 
 #[test]
-fn builtins_are_build_plan_explore_and_review() {
+fn builtins_have_crew_modes_and_permissions() {
     let agents = Agents::builtin();
     let ids: Vec<&str> = agents.all().map(|a| a.id.as_str()).collect();
-    assert_eq!(ids, ["build", "explore", "plan", "review"]);
+    assert_eq!(
+        ids,
+        [
+            "build",
+            "cartographe",
+            "lux",
+            "mousse",
+            "plan",
+            "sondeur",
+            "vigie"
+        ]
+    );
     let primary: Vec<&str> = agents.primary().map(|a| a.id.as_str()).collect();
-    assert_eq!(primary, ["build", "plan"]);
-    for id in ["explore", "review"] {
+    assert_eq!(primary, ["build", "lux", "plan"]);
+    for id in ["vigie", "lux"] {
         let agent = agents.get(id).unwrap();
-        assert_eq!(agent.mode, AgentMode::Subagent);
+        assert_eq!(
+            agent.mode,
+            if id == "lux" {
+                AgentMode::All
+            } else {
+                AgentMode::Subagent
+            }
+        );
         assert_eq!(agent.access, AgentAccess::ReadOnly);
         for tool in ["write", "edit", "bash"] {
             assert_eq!(agent.tools.get(tool), Some(&false), "{id} {tool}");
         }
     }
     let plan = agents.get("plan").unwrap();
-    assert_eq!(plan.access, AgentAccess::Full, "plan keeps all tools");
+    assert_eq!(
+        plan.access,
+        AgentAccess::Full,
+        "plan retains its existing role and permission review"
+    );
     assert!(plan.prompt.contains("markdown"));
     assert!(plan.prompt.contains("fetch") && plan.prompt.contains("skill"));
     let build = agents.get("build").unwrap();
-    assert!(build.prompt.is_empty(), "the system contract is its prompt");
+    assert!(build.prompt.contains("implement"));
     assert!(build.description.contains("verifies"));
+}
+
+#[test]
+fn cartographe_write_scope_rejects_other_files_and_escapes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agents = Agents::builtin();
+    let role = agents.get("cartographe").unwrap();
+    for path in [
+        ".withnav/charts/modules.mmd",
+        ".withnav/charts/flows.mermaid",
+    ] {
+        assert!(role
+            .validate_write_scope("write", &serde_json::json!({"path":path}), workspace.path())
+            .is_ok());
+    }
+    for path in [
+        "src/main.rs",
+        ".withnav/charts/../../../outside.mmd",
+        ".withnav/charts/code.rs",
+    ] {
+        assert!(role
+            .validate_write_scope("write", &serde_json::json!({"path":path}), workspace.path())
+            .is_err());
+    }
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".withnav")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join(".withnav/charts"))
+            .unwrap();
+        assert!(role
+            .validate_write_scope(
+                "write",
+                &serde_json::json!({"path":".withnav/charts/escape.mmd"}),
+                workspace.path()
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn every_alias_resolves_and_canonical_files_win() {
+    for (old, new) in AGENT_ALIASES {
+        assert_eq!(Agents::builtin().get(old).unwrap().id.as_str(), *new);
+        let f = fixture();
+        write(
+            &user_dir(&f),
+            &format!("{old}.md"),
+            "---\ndescription: legacy\n---\nold",
+        );
+        assert_eq!(load(&f).get(new).unwrap().description, "legacy");
+        write(
+            &user_dir(&f),
+            &format!("{new}.md"),
+            "---\ndescription: canonical\n---\nnew",
+        );
+        assert_eq!(load(&f).get(old).unwrap().description, "canonical");
+        write(
+            &f.ws.join(".navai/agents"),
+            &format!("{old}.md"),
+            "---\ndescription: nearer legacy\n---\nold",
+        );
+        assert_eq!(load(&f).get(old).unwrap().description, "canonical");
+    }
 }
 
 #[test]
@@ -157,7 +243,7 @@ fn a_custom_agent_defaults_to_all_and_modes_are_read() {
     assert_eq!(agents.get("sub").unwrap().mode, AgentMode::Subagent);
     assert_eq!(agents.get("prim").unwrap().mode, AgentMode::Primary);
     let primary: Vec<&str> = agents.primary().map(|a| a.id.as_str()).collect();
-    assert_eq!(primary, ["build", "plain", "plan", "prim"]);
+    assert_eq!(primary, ["build", "lux", "plain", "plan", "prim"]);
 }
 
 #[test]
@@ -211,7 +297,19 @@ fn malformed_files_are_rejected_one_by_one() {
     write(&dir, "notes.txt", "---\ndescription: x\n---\n");
     let agents = load(&f);
     let ids: Vec<&str> = agents.all().map(|a| a.id.as_str()).collect();
-    assert_eq!(ids, ["build", "explore", "good", "plan", "review"]);
+    assert_eq!(
+        ids,
+        [
+            "build",
+            "cartographe",
+            "good",
+            "lux",
+            "mousse",
+            "plan",
+            "sondeur",
+            "vigie"
+        ]
+    );
     assert_eq!(agents.diagnostics().len(), 7, "{:?}", agents.diagnostics());
     let named = |name: &str| {
         agents
@@ -263,7 +361,7 @@ fn ids_are_validated() {
 fn no_directories_means_only_the_builtins() {
     let tmp = tempfile::tempdir().unwrap();
     let agents = Agents::load(&AgentRoots::default(), tmp.path());
-    assert_eq!(agents.all().count(), 4);
+    assert_eq!(agents.all().count(), 7);
     assert!(agents.diagnostics().is_empty());
 }
 

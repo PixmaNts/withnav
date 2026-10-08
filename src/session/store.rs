@@ -2946,7 +2946,7 @@ mod tests {
         store
             .create_child_link(
                 child,
-                "explore".into(),
+                "vigie".into(),
                 "goal".into(),
                 "{}".into(),
                 4,
@@ -2992,7 +2992,7 @@ mod tests {
         store
             .create_child_link(
                 child,
-                "explore".into(),
+                "vigie".into(),
                 "goal".into(),
                 "{}".into(),
                 4,

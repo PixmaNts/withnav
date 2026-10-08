@@ -20,7 +20,7 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
         .state();
     let parent = state.create_session(&ws, None, false).await.unwrap();
     let child = state
-        .create_child_session(parent, "explore", "original delegated task")
+        .create_child_session(parent, "vigie", "original delegated task")
         .await
         .unwrap();
     for step in 0..withnav::agent::run_loop::max_steps() {
@@ -101,7 +101,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_captain() 
         .await
         .unwrap();
     let _child = state
-        .create_child_with_delivery(parent, "explore", "inspect", "steer")
+        .create_child_with_delivery(parent, "vigie", "inspect", "steer")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -196,7 +196,7 @@ async fn two_interrupts_deliver_both_inputs_in_admission_order() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -291,7 +291,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .await
         .unwrap();
     let _child = state
-        .create_child_with_delivery(parent, "explore", "inspect", "interrupt")
+        .create_child_with_delivery(parent, "vigie", "inspect", "interrupt")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -358,7 +358,7 @@ async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_on
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect the file twice")
+        .create_child_session(parent, "vigie", "inspect the file twice")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -492,7 +492,7 @@ async fn queued_captain_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     let child = state
-        .create_child_with_delivery(parent, "explore", "inspect", "steer")
+        .create_child_with_delivery(parent, "vigie", "inspect", "steer")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -575,7 +575,7 @@ async fn accepted_guidance_prevents_obsolete_final_response_terminalization() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -653,7 +653,7 @@ async fn steer_during_provider_request_lands_after_the_complete_tool_batch() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -713,7 +713,7 @@ async fn interrupt_provider_request_keeps_child_session_and_starts_a_fresh_turn(
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -927,7 +927,7 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
             .await
             .unwrap();
         let child = state
-            .create_child_with_delivery(parent, "explore", "inspect", mode)
+            .create_child_with_delivery(parent, "vigie", "inspect", mode)
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -1036,7 +1036,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_captain_goes_fi
     .await
     .unwrap();
     let child = state
-        .create_child_with_delivery(parent, "explore", "inspect", "interrupt")
+        .create_child_with_delivery(parent, "vigie", "inspect", "interrupt")
         .bounded(file!(), line!())
         .await
         .unwrap();

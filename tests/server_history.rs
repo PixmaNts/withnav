@@ -507,7 +507,9 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
         .collect();
     assert_eq!(shape.len(), 5, "{shape:?}");
     assert_eq!(shape[0].0, "system");
-    assert_eq!(shape[1], ("system", COGNITION_PROMPT));
+    assert_eq!(shape[1].0, "system");
+    assert!(shape[1].1.starts_with("You are Nav · The Navigator"));
+    assert!(shape[1].1.ends_with(COGNITION_PROMPT));
     assert_eq!(shape[2], ("user", "earlier question"));
     assert_eq!(shape[3], ("assistant", "earlier answer"));
     assert_eq!(shape[4], ("user", "new question"));

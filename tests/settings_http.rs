@@ -133,7 +133,7 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         ("permissions.scratch_dirs", json!(["relative"])),
         ("agent.watchdog_interval_secs", json!(31536001)),
         ("tui.theme", json!("bad")),
-        ("default_agent", json!("explore")),
+        ("default_agent", json!("vigie")),
         ("agents.build", json!({"model":"missing/m"})),
         ("layers.reflex", json!({"model":"mock/mock-model"})),
         (

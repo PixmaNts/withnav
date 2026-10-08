@@ -234,7 +234,7 @@ fn direct_lower_layer_model_actions_are_rejected_before_tab_or_switch_effects() 
 fn agents() -> AgentsBody {
     serde_json::from_value(json!({"default_agent":"plan","agents":[
         {"id":"plan","description":"Plan","mode":"primary","assignment":{"model":"openai/astra","variant":null,"source":"config","variant_source":"model_default"},"effective":{"model":"openai/astra","variant":null,"source":"config","variant_source":"model_default"},"warning":null},
-        {"id":"explore","description":"Explore","mode":"subagent","assignment":null,"effective":null,"warning":null}
+        {"id":"vigie","description":"Explore","mode":"subagent","assignment":null,"effective":null,"warning":null}
     ]})).unwrap()
 }
 

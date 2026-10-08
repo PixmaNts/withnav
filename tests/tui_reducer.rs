@@ -286,7 +286,7 @@ fn interrupted_steering_keeps_watched_and_open_children_running_then_parked() {
             let mut ui = UiState::default();
             if opened {
                 handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
-                let metadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","actor_state":"active","agent":"explore","current_seq":0,"parent_session_id":Ulid(1),"promptable":false,"child_status":"running"})).unwrap();
+                let metadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","actor_state":"active","agent":"vigie","current_seq":0,"parent_session_id":Ulid(1),"promptable":false,"child_status":"running"})).unwrap();
                 let generation = s.generation.clone();
                 update(
                     &mut s,
@@ -395,7 +395,7 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
         assert_eq!(s.active_child_status(), projected);
         subagent_event(&mut s, 11, "turn.start", json!({"turn_id":"late"}));
         assert_eq!(s.active_child_status(), projected);
-        let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"explore","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
+        let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"vigie","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
         let generation = s.generation.clone();
         update(
             &mut s,
@@ -457,7 +457,7 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
 #[test]
 fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
     let mut s = subagent_parent();
-    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"explore","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"vigie","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     let list = ClientEvent::Sessions {
         generation: Generation(0),
         result: Ok(SessionListBody {
@@ -498,7 +498,7 @@ fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
         &mut s,
         2,
         "subagent.spawned",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","goal":"Read tests"}),
     );
     assert_eq!(s.children[0].status, ChildStatus::Done);
 }
@@ -562,7 +562,7 @@ fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
         &mut s,
         2,
         "subagent.done",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"failed"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","outcome":"failed"}),
     );
     assert!(
         matches!(&s.conversation.blocks.last().unwrap().kind, BlockKind::Notice(text) if text.contains("alt+s open transcript"))
@@ -575,7 +575,7 @@ fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
 #[test]
 fn session_list_and_metadata_strip_terminal_controls_before_display() {
     let mut s = subagent_parent();
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mexplore\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mvigie\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -586,10 +586,10 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
         },
     )
     .unwrap();
-    assert_eq!(s.children[0].name, "explore");
+    assert_eq!(s.children[0].name, "vigie");
     assert_eq!(s.sessions[0].title.as_deref(), Some("Goal"));
     let mut metadata = s.session.clone().unwrap();
-    metadata.agent = Some("\u{1b}[31mreview\u{1b}[0m".into());
+    metadata.agent = Some("\u{1b}[31mlux\u{1b}[0m".into());
     metadata.model = "\u{1b}[31mfast\u{1b}[0m".into();
     update(
         &mut s,
@@ -599,7 +599,7 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
         },
     )
     .unwrap();
-    assert_eq!(s.agent_name(), "review");
+    assert_eq!(s.agent_name(), "lux");
     assert_eq!(s.selected_model_id.as_deref(), Some("fast"));
 }
 
@@ -681,7 +681,7 @@ async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completio
         ..Default::default()
     });
     s.active = 1;
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"explore","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"vigie","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     let effects = update(
         &mut s,
         ClientEvent::Sessions {
@@ -712,7 +712,7 @@ async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completio
         &mut s,
         1,
         "subagent.done",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","outcome":"done"}),
     );
     assert!(effects.contains(&Effect::UnwatchChild(Ulid(2).to_string())));
     for effect in effects {
@@ -730,7 +730,7 @@ fn a_child_spawn_event_on_its_own_stream_adds_no_self_child() {
         &mut s,
         1,
         "subagent.spawned",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","goal":"Read tests"}),
     );
     assert!(s.children.is_empty());
     assert!(effects.is_empty());
@@ -745,7 +745,7 @@ fn startup_child_metadata_opens_read_only_without_resume() {
         Action::ResumeSession("child".into()),
     );
     assert_eq!(effects, vec![Effect::FetchMetadata("child".into())]);
-    let metadata = serde_json::from_value(json!({"session_id":"child","actor_state":"active","workspace":"/ws","model":"fast","agent":"explore","current_seq":0,"parent_session_id":"parent","promptable":false,"child_status":"running"})).unwrap();
+    let metadata = serde_json::from_value(json!({"session_id":"child","actor_state":"active","workspace":"/ws","model":"fast","agent":"vigie","current_seq":0,"parent_session_id":"parent","promptable":false,"child_status":"running"})).unwrap();
     let generation = s.generation.clone();
     let effects = update(
         &mut s,
@@ -869,7 +869,7 @@ fn subagent_event(s: &mut State, seq: u64, kind: &str, payload: Value) -> Vec<Ef
 }
 
 fn spawn_subagent(s: &mut State, delivery: Option<&str>) {
-    let mut payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"explore", "goal":"Read the parser tests", "tool_call_id":"task-1"});
+    let mut payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"vigie", "goal":"Read the parser tests", "tool_call_id":"task-1"});
     if let Some(delivery) = delivery {
         payload["delivery"] = json!(delivery);
     }
@@ -883,7 +883,7 @@ fn subagents_replay_running_and_every_terminal_outcome() {
         let mut s = subagent_parent();
         spawn_subagent(&mut s, None);
         assert_eq!(s.children[0].status, ChildStatus::Running);
-        let payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"explore", "outcome":outcome,"notification_id":Ulid(3), "reason":"server reported this"});
+        let payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"vigie", "outcome":outcome,"notification_id":Ulid(3), "reason":"server reported this"});
         subagent_event(&mut s, 2, "subagent.done", payload.clone());
         let children = s.children.clone();
         let blocks = s.conversation.blocks.clone();
@@ -928,7 +928,7 @@ fn optional_subagent_delivery_and_watchdog_fields_are_tolerated() {
             &mut s,
             4,
             "subagent.done",
-            json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done","delivery":delivery}),
+            json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","outcome":"done","delivery":delivery}),
         );
         subagent_event(
             &mut s,
@@ -1005,7 +1005,7 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
                     actor_state: "active".into(),
                     workspace: "/ws".into(),
                     model: "fast".into(),
-                    agent: Some("explore".into()),
+                    agent: Some("vigie".into()),
                     variant: None,
                     parent_session_id: None,
                     promptable: true,
@@ -1052,14 +1052,14 @@ fn child_permission_is_labelled_and_answered_on_the_parent() {
         &mut s,
         2,
         "permission.requested",
-        json!({"request_id":"request-1","tool_call_id":"child-call","tool":"bash","arguments":"{\"command\":\"cargo test\"}","scope":{"kind":"folder","value":"/ws"},"agent":"explore","reason":"needs approval","child_session_id":Ulid(2)}),
+        json!({"request_id":"request-1","tool_call_id":"child-call","tool":"bash","arguments":"{\"command\":\"cargo test\"}","scope":{"kind":"folder","value":"/ws"},"agent":"vigie","reason":"needs approval","child_session_id":Ulid(2)}),
     );
     assert_eq!(s.children[0].status, ChildStatus::Permission);
     assert!(s
         .open_permission()
         .unwrap()
         .reason
-        .contains("subagent explore"));
+        .contains("subagent vigie"));
     let answer = PermissionAnswer {
         decision: "allow_once".into(),
         message: None,

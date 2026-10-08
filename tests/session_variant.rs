@@ -62,7 +62,7 @@ async fn child_inherits_parent_variant_and_saved_resolution() {
     models["models"]["mock/mock-model"]["variants"]["low"] = json!({"reasoning_effort":"high"});
     std::fs::write(path, models.to_string()).unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .await
         .unwrap();
     let after = state.history().meta(child).await.unwrap().unwrap();

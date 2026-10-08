@@ -216,7 +216,7 @@ async fn concurrent_terminal_winners_release_exactly_their_reservations() {
             .history()
             .create_child_link(
                 child,
-                "explore".into(),
+                "vigie".into(),
                 "goal".into(),
                 "{}".into(),
                 4,
@@ -281,7 +281,7 @@ async fn listing_hides_child_until_relationship_commits() {
         .history()
         .create_child_link(
             child,
-            "explore".into(),
+            "vigie".into(),
             "inspect".into(),
             "{}".into(),
             4,

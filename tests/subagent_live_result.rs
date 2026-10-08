@@ -34,7 +34,7 @@ async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_rest
         .await
         .unwrap();
     let a = service
-        .create_child_with_delivery(parent, "explore", "A", "steer")
+        .create_child_with_delivery(parent, "vigie", "A", "steer")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -45,7 +45,7 @@ async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_rest
         .await
         .unwrap();
     let b = service
-        .create_child_with_delivery(parent, "explore", "B", "steer")
+        .create_child_with_delivery(parent, "vigie", "B", "steer")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -201,7 +201,7 @@ async fn delivered_result_is_live_and_replayed_once_before_the_woken_turn() {
         .await
         .unwrap();
     let child = service
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -228,7 +228,7 @@ async fn delivered_result_is_live_and_replayed_once_before_the_woken_turn() {
         if event.kind == "message.received" && event.payload["source"] == "subagent" {
             assert!(result.is_none());
             assert_eq!(event.payload["child_session_id"], child.to_string());
-            assert_eq!(event.payload["agent"], "explore");
+            assert_eq!(event.payload["agent"], "vigie");
             assert_eq!(event.payload["outcome"], "done");
             assert_eq!(event.payload["target"], "agent:main");
             assert_eq!(event.payload["mode"], "next-turn");
@@ -284,7 +284,7 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
     store
         .create_child_link(
             child,
-            "explore".into(),
+            "vigie".into(),
             "inspect".into(),
             "{}".into(),
             4,
@@ -309,7 +309,7 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
         EventKind::MessageReceived,
         json!({
             "command_id":child,"source":"subagent","target":"agent:main","mode":"next-turn",
-            "content":text,"child_session_id":child,"agent":"explore","outcome":"done"
+            "content":text,"child_session_id":child,"agent":"vigie","outcome":"done"
         }),
     );
     // Execute the sequencer's durable callback, then lose the process before its emitter runs.

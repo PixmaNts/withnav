@@ -798,7 +798,7 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
         .await
         .unwrap();
     let child = service
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1006,7 +1006,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
         .await
         .unwrap();
     let child = service
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1037,7 +1037,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
         "running"
     );
     assert!(service
-        .create_child_session(parent, "explore", "replacement")
+        .create_child_session(parent, "vigie", "replacement")
         .bounded(file!(), line!())
         .await
         .is_err());
@@ -1106,7 +1106,7 @@ impl Fixture {
             .await
             .unwrap();
         let child = service
-            .create_child_session(parent, "explore", "inspect parser")
+            .create_child_session(parent, "vigie", "inspect parser")
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -1488,7 +1488,7 @@ async fn interval_zero_starts_no_supervisor_and_children_have_no_decision_tool()
         .await
         .unwrap();
     service
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();

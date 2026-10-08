@@ -49,6 +49,9 @@ requests land in `develop`.
   The language server only knew the first folder, so the navigator's read and search tools refused
   files in the others. It now knows all of them, follows folders added or removed while it runs,
   and keeps the first folder as the anchor for relative paths, the intent record and flows.
+- **The TUI header fits narrow terminals.** In a split pane the agent, model and gauge ran past the
+  right edge and were cut off. The row now gives way in order (path, model, variant, branch,
+  gauge, pending switch, then `withnav` shrinks to `◆`, then the model_id); the agent stays visible.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

@@ -269,6 +269,11 @@ impl ModelsConfig {
                         "model '{alias}': a variant cannot be named '{name}': that word clears the variant"
                     )));
                 }
+                if name == "inherit" {
+                    return Err(ConfigError::Invalid(format!(
+                        "model '{alias}': a variant cannot be named '{name}': that word selects the default variant"
+                    )));
+                }
                 if let Some(key) = RESERVED_VARIANT_KEYS
                     .iter()
                     .find(|k| variant.contains_key(**k))
@@ -739,7 +744,7 @@ mod tests {
 
     #[test]
     fn an_unusable_variant_name_is_rejected() {
-        for name in ["", "two words", "off"] {
+        for name in ["", "two words", "off", "inherit"] {
             let raw = config_with("", &format!(r#", "variants": {{"{name}": {{}}}}"#));
             assert!(ModelsConfig::parse(&raw).is_err(), "{name:?}");
         }

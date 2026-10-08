@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Shell cancellation only signals positive process group ids.**
+  Child ids are checked before conversion, and termination rejects nonpositive ids so an invalid
+  id cannot signal WithNav's own process group.
+
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

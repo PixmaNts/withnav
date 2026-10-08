@@ -1,4 +1,4 @@
-# Navai — Layer-0 Meta-Plan (PLAN.md)
+# WithNav — Layer-0 Meta-Plan (PLAN.md)
 
 **Status:** Historical: the Phase 1 plan, kept for reference. It is not kept up to date.
 For what the code does today read [`ARCHITECTURE.md`](../ARCHITECTURE.md) (module map and flows) and
@@ -195,7 +195,7 @@ without a second concrete use (SPEC §27). The loop stays legible as one primary
   `tests/`. `proptest` for the SSE chunk-boundary property. `wiremock`/raw `TcpListener` for the
   mock HTTP server. No extra test framework.
 - Every todo has a **happy** and a **failure** QA scenario with the exact `cargo test`/`cargo run`
-  invocation and an evidence path `.omo/evidence/task-<N>-navai-phase1.txt`.
+  invocation and an evidence path `.omo/evidence/task-<N>-nav-phase1.txt`.
 - **Anti-fake rule:** "SSE works" / "it compiles" is never an acceptance criterion. Two DISTINCT
   test suites, never conflated:
   - **SSE framing suite** (provider-agnostic, `provider::sse`): the 13 named framing tests +
@@ -431,7 +431,7 @@ by config/data ROOTS — not deployment tiers.
   machine (or a homelab host such as `pixma-main`). It is an ENVIRONMENT, not a tier. **Isolation
   is CONCRETE and pinned:** a `--config <dir>` / `--data <dir>` override (or explicit
   `XDG_CONFIG_HOME` / `XDG_DATA_HOME`) so a staging run **never touches** the prod
-  `~/.config/navai/auth.json`. Config precedence + per-env data dir are pinned so dev
+  `~/.config/withnav/auth.json`. Config precedence + per-env data dir are pinned so dev
   experiments never pollute prod.
 - **prod (personal)** — `cargo build --release`; single binary; loopback only (never a
   non-loopback bind without explicit config, SPEC §20.1); `auth.json` 0600, DB file user-only
@@ -454,8 +454,8 @@ by config/data ROOTS — not deployment tiers.
 ### Config & secret precedence (pinned now)
 
 - **`models.json`** location + precedence: workspace `./models.json` wins over
-  `~/.config/navai/models.json`; `--models <path>` overrides both.
-- **`auth.json`**: file (`~/.config/navai/auth.json`) WINS over the env var named by the
+  `~/.config/withnav/models.json`; `--models <path>` overrides both.
+- **`auth.json`**: file (`~/.config/withnav/auth.json`) WINS over the env var named by the
   provider's `api_key_env` (default `OMNIROUTE_API_KEY`); `auth set` writes the file. Created
   **atomically with mode 0600 at creation** (`O_CREAT|mode`, not create-then-chmod). An existing
   `auth.json` with looser perms **fails closed** with a clear "fix perms" error — a

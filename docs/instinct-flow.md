@@ -1,10 +1,10 @@
-# InstinctFlow: a driver's guide
+# InstinctFlow: a Captain's guide
 ## 1. What a flow is
 A **flow** is an acyclic set of **nodes** listening to one **trigger**. An **event**
 arrives with a **payload**; the flow's `when` expression decides whether to start.
 Each node declares its **inputs**. A **decision** asks the instinct a typed question;
 an **expression** computes without a model; an **action** proposes something for
-Navai to do. A node's active **port** carries the run along its wires. A **constant**
+WithNav to do. A node's active **port** carries the run along its wires. A **constant**
 belongs to the definition; a **variable** exists only for this run. A **fallback**
 replaces the run's proposed actions on failure. The Studio edits the definition,
 Save writes it, and **reload** changes what runs. A **workspace flow** requires
@@ -34,7 +34,7 @@ no instinct call. It does not answer the message or change a permission.
    means the file is newer than the running definition.
 7. Click the sample payload in the bottom bar and replace it with:
    ```json
-   {"command_id":"sample","author":"driver","text":"test"}
+   {"command_id":"sample","author":"captain","text":"test"}
    ```
 8. Choose **Run sample**. The path proposes `log`; application says **not applied**.
    This is correct: samples never apply actions. Change `text` to `Test` or
@@ -175,14 +175,14 @@ not dotted references. A declaration in one place does not declare it elsewhere.
 | Reference | Value |
 | --- | --- |
 | `event.<field>` | One exact payload field offered by this trigger (section 7); no arbitrary nested traversal. |
-| Host name, e.g. `session.agent` | Context collected by Navai, only when declared and needed. |
+| Host name, e.g. `session.agent` | Context collected by WithNav, only when declared and needed. |
 | `constant.MIN_YES` | Scalar from `[constants]`: string, finite number, integer or boolean. |
 | `answer.requested` | Upstream decision answer: noul number, choice string, score number. |
 | `answer.kind.confidence` | Upstream choice/score confidence. |
 | `answer.kind.probabilities.option` | Choice probability for an option; score probability keys are zero-based index strings. |
 | `result.gate` | Upstream expression's boolean condition result. |
 | `variable.gate.THRESHOLD` | Variable qualified by the expression node that wrote it. |
-Host inputs in the Navai catalogue (all transported as text; scalar types remain
+Host inputs in the WithNav catalogue (all transported as text; scalar types remain
 available to expressions):
 | Host input | Semantic type | Context / availability |
 | --- | --- | --- |
@@ -190,7 +190,7 @@ available to expressions):
 | `session.agent` | string | Current agent; all triggers. |
 | `session.model` | string | Sanitised canonical model identity; all triggers. |
 | `session.workspace` | string | Session workspace; all triggers. |
-| `conversation.last_driver` | string | Latest driver request; all triggers. |
+| `conversation.last_driver` | string | Latest Captain request; all triggers. |
 | `conversation.digest` | string | Conversation digest; all triggers. |
 | `conversation.last_turns` | array | Recent turns; all triggers. |
 | `intent.record` | string | Existing intent record; all triggers. |
@@ -232,13 +232,13 @@ by zero or a nonfinite result fails, rather than being coerced.
 Per expression: at most 4096 UTF-8 bytes, 128 lexical tokens, 32 operators,
 16 nested parentheses, AST depth 32 and 128 AST nodes. A node may declare at most
 16 inputs; an expression may declare at most 16 assignments.
-## 7. Navai triggers and actions
+## 7. WithNav triggers and actions
 Payload fields below are required unless marked `?`. `s` = string, `i` = integer,
 `o` = object, `a` = array. Use `event.<field>` when declaring an input.
 Unknown payload fields are rejected.
 
 Action groups: **common** = `wake`, `inject_note`, `log`; **editor** = common plus
-`remark`; **tool** = common plus `no_objection`, `deny`, `ask_driver`.
+`remark`; **tool** = common plus `no_objection`, `deny`, `ask_captain`.
 
 | Trigger | Payload fields | Can block | Allowed actions |
 | --- | --- | --- | --- |
@@ -259,8 +259,8 @@ built-ins and migrated definitions (not host-input names):
 | integer | `changed_lines`, `since_last_remark_ms`, `since_last_wake_ms` |
 | boolean | `called_for_help`, `has_errors`, `has_intent`, `has_conversation` |
 
-Message authors are `driver`, `subagent` or `system`; `selected_skill` is
-`{name: string, origin: "driver"}`. Turn status is `completed`, `interrupted` or
+Message authors are `Captain`, `subagent` or `system`; `selected_skill` is
+`{name: string, origin: "captain"}`. Turn status is `completed`, `interrupted` or
 `failed`. Diagnostics entries carry `message`, numeric LSP `severity` and `range`.
 Only root-session events emit flows in v1; editor events use attached root context.
 `message.received` runs after admission checks, before transcript consumption;
@@ -269,10 +269,10 @@ final and is not offered to flows.
 
 All listed parameters are required strings; `no_objection` has an empty map.
 
-| Action | Parameters | Kind | What Navai does |
+| Action | Parameters | Kind | What WithNav does |
 | --- | --- | --- | --- |
 | `no_objection` | `{}` | verdict, priority 0 | Continue normal tool permission review, unchanged; not permission to run. |
-| `ask_driver` | `note` | verdict, priority 1 | Hold the call for a driver-only permission request, skipping model reviews. |
+| `ask_captain` | `note` | verdict, priority 1 | Hold the call for a Captain-only permission request, skipping model reviews. |
 | `deny` | `note` | verdict, priority 2 | Do not run the tool; return the note as the denied tool result. |
 | `remark` | `prompt` | effect | Ask metacognition for an editor remark using inline rendered text, not a prompt-file lookup. |
 | `wake` | `note` | effect | Bring the note to cognition's attention; wake delivery rules/cooldown still apply. |
@@ -281,8 +281,8 @@ All listed parameters are required strings; `no_objection` has an empty map.
 
 Verdicts are only for **blocking `tool.pre_call` flows**, including fallbacks.
 At most one verdict may be reachable per run. `wake` / `inject_note` have typed
-non-driver provenance (`source: flow`, flow name, run id), remain untrusted data,
-and never update the driver request, choose a skill, answer an ask or generate
+non-Captain provenance (`source: flow`, flow name, run id), remain untrusted data,
+and never update the Captain request, choose a skill, answer an ask or generate
 recursive `message.received` events. No action runs arbitrary code, grants tool
 permission, switches agent/model or starts a session.
 
@@ -318,17 +318,17 @@ Fallback inputs can read event, host and constants only. `failure_kind` and
 on_failure = { action = "log", params = { text = "Failed: {failure_kind}: {failure_message}" } }
 ```
 
-Without a matching fallback, a blocking tool flow defaults to `ask_driver` with
+Without a matching fallback, a blocking tool flow defaults to `ask_captain` with
 `Flow failed: {failure_message}`. Blocking message flows have **no verdict default**:
 the message continues after failure/deadline, with host outage handling. Async
 flows have **no default fallback**; failure with none leaves **not applied**.
 Cancellation of a no-longer-current event applies no live effect or fallback.
 
 Several enabled flows on one event run with independent budgets. Blocking verdicts
-combine as **deny > ask driver > no objection**. Tied notes are retained in flow-name
+combine as **deny > ask Captain > no objection**. Tied notes are retained in flow-name
 order; effects accumulate in flow-name / topological order, preserving `then`.
 A flow's no objection never skips normal permission review. **Bypass never answers
-a flow's `ask_driver`**, including follow-ups, and never defeats a flow's denial.
+a flow's `ask_captain`**, including follow-ups, and never defeats a flow's denial.
 An approved flow-origin call is still rechecked for preflight, binding and hard floor.
 
 Limits include 64 nodes/flow, at most 16 decisions reachable in a run, 64 loaded
@@ -346,10 +346,10 @@ and nothing is applied.
 
 | Location | Path / precedence |
 | --- | --- |
-| Workspace flow | `<workspace>/.navai/flows/<name>.toml`; trusted workspace wins by name. |
-| Global flow | `~/.config/navai/flows/<name>.toml` (or configured config directory); wins over built-in. |
-| Built-in | Shipped in Navai: `navigator-default-save`, `navigator-default-idle`, `navigator-default-conversation`; read-only. |
-| Trust | `<config_dir>/flows-trust.json`, private driver-granted canonical-workspace trust, not tracked in the workspace. |
+| Workspace flow | `<workspace>/.withnav/flows/<name>.toml`; trusted workspace wins by name. |
+| Global flow | `~/.config/withnav/flows/<name>.toml` (or configured config directory); wins over built-in. |
+| Built-in | Shipped in WithNav: `navigator-default-save`, `navigator-default-idle`, `navigator-default-conversation`; read-only. |
+| Trust | `<config_dir>/flows-trust.json`, private Captain-granted canonical-workspace trust, not tracked in the workspace. |
 | Run records | `<data_dir>/flows/runs/<sha256-canonical-workspace>/runs.jsonl`, private captures. |
 
 Untrusted workspace flows stay listed and editable, but cannot run, sample,
@@ -365,7 +365,7 @@ disabled and shadowed files, are validated. Any invalid file prevents replacing
 the whole running set; the previous set stays. Startup failure uses validated
 built-ins only. In-flight runs keep their old immutable definition/templates.
 
-A successful reload changes this process immediately and signals other Navai
+A successful reload changes this process immediately and signals other WithNav
 processes to reload **on their next event**. It is not simultaneous application
 across processes: inspect the propagation message and diagnostics in each process.
 An unsaved draft is not part of reload.
@@ -402,10 +402,10 @@ tool = "event.tool"
 MIN_YES = 0.75
 
 [fallback]
-on_failure = { action = "ask_driver", params = { note = "Flow failed: {failure_message}" } }
+on_failure = { action = "ask_captain", params = { note = "Flow failed: {failure_message}" } }
 on_timeout = { action = "no_objection", params = {} }
-on_provider_error = { action = "ask_driver", params = { note = "Instinct unavailable" } }
-on_invalid_answer = { action = "ask_driver", params = { note = "Invalid instinct answer" } }
+on_provider_error = { action = "ask_captain", params = { note = "Instinct unavailable" } }
+on_invalid_answer = { action = "ask_captain", params = { note = "Invalid instinct answer" } }
 
 [[node]]
 id = "effect"
@@ -429,7 +429,7 @@ destructive = ["blast_radius"]
 [[node]]
 id = "asked_for"
 type = "noul"
-instructions = "Did the driver or the intent record ask for this exact change?"
+instructions = "Did the Captain or the intent record ask for this exact change?"
 threshold = "constant.MIN_YES"
 [node.inputs]
 last_driver = "conversation.last_driver"
@@ -487,7 +487,7 @@ action = "no_objection"
 [[node]]
 id = "ask"
 type = "action"
-action = "ask_driver"
+action = "ask_captain"
 [node.inputs]
 effect = "answer.effect"
 asked_for = "answer.asked_for"
@@ -499,7 +499,7 @@ id = "deny"
 type = "action"
 action = "deny"
 [node.params]
-note = "Change not requested, or destructive reach too broad. Propose it to the driver."
+note = "Change not requested, or destructive reach too broad. Propose it to the Captain."
 [node.next]
 then = ["audit"]
 
@@ -552,29 +552,29 @@ Directories are 0700, records 0600; retention is at most 7 days, 1000 records an
 
 ### Command line
 
-Export Navai's current host catalogue first; the standalone CLI does not infer it:
+Export WithNav's current host catalogue first; the standalone CLI does not infer it:
 
 ```sh
-navai flows catalogue > catalogue.json
-instinct-flow validate .navai/flows --catalogue catalogue.json
-instinct-flow run .navai/flows/message-test.toml --payload event.json \
+nav flows catalogue > catalogue.json
+instinct-flow validate .withnav/flows --catalogue catalogue.json
+instinct-flow run .withnav/flows/message-test.toml --payload event.json \
   --catalogue catalogue.json --endpoint https://your-provider.example/systemone \
   --model your-systemone-model
-instinct-flow replay .navai/flows/message-test.toml --runs runs.jsonl \
+instinct-flow replay .withnav/flows/message-test.toml --runs runs.jsonl \
   --catalogue catalogue.json
-navai-lsp replay --flows --log navai.jsonl
+withnav-lsp replay --flows --log withnav.jsonl
 ```
 
 For `run`, `event.json` contains just the payload object shown in quick start.
 Supply the API key through `INSTINCT_API_KEY`, not a command-line literal.
-The endpoint is the full `/systemone` URL. The CLI reads neither Navai's model
+The endpoint is the full `/systemone` URL. The CLI reads neither WithNav's model
 configuration nor `auth.json`, and its host inputs are absent. It prints a JSON
 run record with proposed actions and no application; it is not a live host.
 `validate` checks `.toml` files in the directory and sibling templates without
 model calls. `replay` prints a replay result for each JSONL record.
 
-`navai-lsp replay --flows` replays the **embedded editor flows** against legacy
-`navai.jsonl` captures, preserving question/state provenance, without model calls.
+`withnav-lsp replay --flows` replays the **embedded editor flows** against legacy
+`withnav.jsonl` captures, preserving question/state provenance, without model calls.
 It is not a path option for arbitrary workspace flows. `--json` produces a
 machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`.
 
@@ -584,7 +584,7 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 | --- | --- | --- |
 | Validation error "a decision needs at least one input" | The decision sends no evidence; instructions alone are not state. | Select meaningful inputs on that decision (State section), inspect the rendered state, Save and Reload. |
 | `provider rejected the request (HTTP 4xx)` | The instinct endpoint refused the request (model id, malformed state). Not an outage: no "instinct unavailable" notice. | Check the instinct layer's model in Settings, then the rendered state of the failing decision. |
-| `provider unreachable` / `provider error (HTTP 5xx)` | Instinct endpoint down or failing. The driver is told once per outage. | Check the gateway; blocking flows apply their fallback meanwhile. |
+| `provider unreachable` / `provider error (HTTP 5xx)` | Instinct endpoint down or failing. The Captain is told once per outage. | Check the gateway; blocking flows apply their fallback meanwhile. |
 | `skipped: when is false` | Payload does not satisfy exact comparison. | Inspect text, case and whitespace; edit sample JSON or correct the condition. |
 | Unknown name in `when` | Alias not declared in `[flow.inputs]`, or dotted reference used as expression name. | Select the input chip first; bind `text = "event.text"`, then use `text`. Node inputs do not declare flow inputs. |
 | `in [...]` / single-quoted expression string fails | Unsupported expression syntax. | Use double-quoted string literals and `||`: `text == "test" || text == "hello"`. |

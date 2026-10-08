@@ -34,6 +34,10 @@ requests land in `develop`.
 - **Remarks survive explanatory JSON before the final answer.** The navigator skips unrelated
   objects in prose and code fences and uses the last answer-shaped object, while still rejecting
   malformed lines and empty remark text.
+- **Verbose shell commands drain excess output in larger chunks.**
+  Once the output buffer fills, larger discard reads reduce reader overhead without artificial
+  delays or closing the pipe. Retained bytes never exceed the buffer cap.
+
 - **Shell cancellation only signals positive process group ids.**
   Child ids are checked before conversion, and termination rejects nonpositive ids so an invalid
   id cannot signal WithNav's own process group.

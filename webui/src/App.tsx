@@ -1,3 +1,4 @@
+import { BrandMark, Crew } from "./components/Crew";
 import { Compass, FlowArrow, GearSix, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -70,7 +71,7 @@ function Expired() {
           <Compass size={18} aria-hidden /> Session expired
         </h1>
         <div>
-          The Navai server no longer accepts this page. Relaunch <code>navai web</code> and open the address it prints.
+          The WithNav server no longer accepts this page. Relaunch <code>nav web</code> and open the address it prints.
         </div>
       </div>
     </div>
@@ -109,7 +110,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
 
   useEffect(() => {
-    document.title = route.session ? `${title} · Navai` : "Navai";
+    document.title = route.session ? `${title} · WithNav` : "WithNav";
   }, [route.session, title]);
 
   // A route whose workspace the stream reports differently is corrected.
@@ -294,15 +295,15 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const connection = chat.stream.status === "reconnecting" ? "Reconnecting…" : chat.stream.status === "error" ? chat.stream.error ?? "Disconnected" : null;
   const composerDisabled = !workspace ? "Choose a workspace on the left to start." : chat.readOnly ? chat.summary?.resume_disabled_reason ?? "This session is read-only." : undefined;
 
-  const crumbWs = workspace ? baseName(workspace) : "Navai";
+  const crumbWs = workspace ? baseName(workspace) : "WithNav";
   const crumb = route.subagent ? `${title} / ${childAgent ?? "subagent"}` : workspace ? title : "Choose a workspace";
 
   return (
     <div className="shell">
       <header className="topbar">
         <span className="brand">
-          <Compass size={16} aria-hidden />
-          Navai
+          <BrandMark />
+          WithNav
         </span>
         <span className="crumb" title={workspace ?? undefined}>
           {crumbWs} / {crumb}

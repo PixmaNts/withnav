@@ -233,7 +233,7 @@ export function saveReducer(state: SaveState, event: SaveEvent): SaveState {
 export function appliesText(applies: SettingApplies | undefined): string | null {
   switch (applies) {
     case "restart":
-      return "Applies after restarting Navai";
+      return "Applies after restarting WithNav";
     case "new_sessions":
       return "Applies to new sessions and subagents";
     case "live":

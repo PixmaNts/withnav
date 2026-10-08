@@ -412,7 +412,7 @@ export function reduceAll(view: SessionView, envelopes: Envelope[]): SessionView
 /** The transcript line for a bypass change, in the TUI's words; `by` is the server's origin tag. */
 function bypassNotice(enabled: boolean, by: string): string {
   if (by === "system:resume") return "Bypass off: the session was reopened";
-  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (navai run --yes)" : "";
+  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (nav run --yes)" : "";
   return enabled
     ? `Bypass on${from}: ordinary permission prompts are skipped; protected requests still ask`
     : `Bypass off${from}`;

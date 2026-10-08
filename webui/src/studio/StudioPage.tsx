@@ -33,7 +33,7 @@ const isLocation = (v: string | null | undefined): v is Location => v === "works
 export function StudioPage({ route, navigate }: Props) {
   const workspace = route.workspace;
   useEffect(() => {
-    document.title = route.flow ? `${route.flow} · Studio · Navai` : "Studio · Navai";
+    document.title = route.flow ? `${route.flow} · Studio · WithNav` : "Studio · WithNav";
   }, [route.flow]);
 
   const apiQ = useQuery({ queryKey: ["studio-api", workspace, !!route.mock], queryFn: () => studioApi(workspace!, !!route.mock), enabled: !!workspace, staleTime: Infinity, retry: false });
@@ -49,7 +49,7 @@ export function StudioPage({ route, navigate }: Props) {
           Studio
         </span>
         <span className="crumb" title={workspace ?? undefined}>
-          {workspace ? workspace.split("/").filter(Boolean).pop() : "Navai"} / InstinctFlow
+          {workspace ? workspace.split("/").filter(Boolean).pop() : "WithNav"} / InstinctFlow
         </span>
         <div className="topbar-right">
           {apiQ.data?.mocked && (
@@ -689,7 +689,7 @@ function NewFlowDialog({ api, flows, catalogue, onClose, onCreated }: { api: Stu
             {(["workspace", "global"] as const).map((l) => (
               <button key={l} type="button" role="radio" aria-checked={location === l} className="sf-type" onClick={() => setLocation(l)}>
                 <span>{l === "workspace" ? "This workspace" : "My configuration"}</span>
-                <span className="sf-type-sub mono">{l === "workspace" ? ".navai/flows/" : "~/.config/navai/flows/"}</span>
+                <span className="sf-type-sub mono">{l === "workspace" ? ".withnav/flows/" : "~/.config/withnav/flows/"}</span>
               </button>
             ))}
           </div>

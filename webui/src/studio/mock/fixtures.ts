@@ -1,4 +1,4 @@
-// Seed data of the mock API: the Navai catalogue of contracts §7, the complete `guard-mutations`
+// Seed data of the mock API: the WithNav catalogue of contracts §7, the complete `guard-mutations`
 // example of contracts §1, two smaller flows so the list has more than one group, and one recorded
 // run of `guard-mutations`.
 
@@ -7,7 +7,7 @@ import type { ActionSpec, Catalogue, Diagnostic, FieldSpec, InputSpec, RunRecord
 export const HOST_DIAGNOSTICS: Diagnostic[] = [
   { code: "unavailable", message: "Instinct unavailable: the mock host has no live model configured. Sample answers are invented.", path: "", node_id: null, line: null, column: null },
 ];
-export const RELOAD_PROPAGATION = "Other Navai processes reload on their next event.";
+export const RELOAD_PROPAGATION = "Other WithNav processes reload on their next event.";
 
 const f = (name: string, value_type: FieldSpec["value_type"], required = true): FieldSpec => ({ name, value_type, required });
 
@@ -67,9 +67,9 @@ const triggers: TriggerSpec[] = [
     name: "tool.pre_call",
     can_block: true,
     payload_fields: [f("tool", "string"), f("args", "object"), f("call_id", "string")],
-    allowed_actions: ["ask_driver", "deny", "inject_note", "log", "no_objection", "wake"],
+    allowed_actions: ["ask_captain", "deny", "inject_note", "log", "no_objection", "wake"],
     sample_payload: { tool: "write", args: { path: "src/lib.rs", content: "" }, call_id: "sample" },
-    default_fallback: { action: "ask_driver", params: { note: "Flow failed: {failure_message}" }, then: null },
+    default_fallback: { action: "ask_captain", params: { note: "Flow failed: {failure_message}" }, then: null },
   },
   {
     name: "turn.end",
@@ -102,7 +102,7 @@ const inputs: InputSpec[] = [
 
 const note = [f("note", "string")];
 const actions: ActionSpec[] = [
-  { name: "ask_driver", kind: "verdict", priority: 1, params: note, allowed_triggers: ["tool.pre_call"] },
+  { name: "ask_captain", kind: "verdict", priority: 1, params: note, allowed_triggers: ["tool.pre_call"] },
   { name: "deny", kind: "verdict", priority: 2, params: note, allowed_triggers: ["tool.pre_call"] },
   { name: "inject_note", kind: "effect", priority: null, params: [f("text", "string")], allowed_triggers: ALL },
   { name: "log", kind: "effect", priority: null, params: [f("text", "string")], allowed_triggers: ALL },
@@ -141,10 +141,10 @@ tool = "event.tool"
 MIN_YES = 0.75
 
 [fallback]
-on_failure = { action = "ask_driver", params = { note = "Flow failed: {failure_message}" } }
+on_failure = { action = "ask_captain", params = { note = "Flow failed: {failure_message}" } }
 on_timeout = { action = "no_objection", params = {} }
-on_provider_error = { action = "ask_driver", params = { note = "Instinct unavailable" } }
-on_invalid_answer = { action = "ask_driver", params = { note = "Invalid instinct answer" } }
+on_provider_error = { action = "ask_captain", params = { note = "Instinct unavailable" } }
+on_invalid_answer = { action = "ask_captain", params = { note = "Invalid instinct answer" } }
 
 [[node]]
 id = "effect"
@@ -226,7 +226,7 @@ action = "no_objection"
 [[node]]
 id = "ask"
 type = "action"
-action = "ask_driver"
+action = "ask_captain"
 [node.inputs]
 effect = "answer.effect"
 asked_for = "answer.asked_for"

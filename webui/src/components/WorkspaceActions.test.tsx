@@ -73,13 +73,13 @@ describe("workspace menu", () => {
     expect(container.querySelector('[role="menu"]')).toBeNull();
   });
 
-  it("disables both actions on a folder navai web was started with, and says why", () => {
+  it("disables both actions on a folder nav web was started with, and says why", () => {
     const onRemove = vi.fn();
     render(<WorkspaceMenu ws={alpha} count={3} onRemove={onRemove} />);
     act(() => $<HTMLButtonElement>(".ws-more").click());
     for (const item of items()) {
       expect(item.getAttribute("aria-disabled")).toBe("true");
-      expect(item.title).toMatch(/navai web was started with this folder/);
+      expect(item.title).toMatch(/nav web was started with this folder/);
       act(() => item.click());
     }
     expect(onRemove).not.toHaveBeenCalled();
@@ -148,7 +148,7 @@ describe("remove confirmation", () => {
     const { navigate, onClose, confirm } = dialog({ ws: beta, kind: "hide", count: 12 }, "/work/beta");
     await act(async () => confirm().click());
     await flush();
-    expect($('[role="alert"]').textContent).toMatch(/navai web was started with this folder/);
+    expect($('[role="alert"]').textContent).toMatch(/nav web was started with this folder/);
     expect(onClose).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
     expect(confirm().disabled).toBe(false);

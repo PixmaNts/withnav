@@ -33,7 +33,7 @@ export function RightPanel({ tab, setTab, workspace, chat, onOpenChild }: { tab:
 
 function IntentTab({ workspace }: { workspace: string | null }) {
   const intent = useIntent(workspace);
-  const label = <div className="label">INTENT RECORD · .navigator/intent.md</div>;
+  const label = <div className="label">INTENT RECORD · .withnav/intent.md</div>;
   if (!workspace) return <>{label}<div className="panel-empty">Choose a workspace to see its intent record.</div></>;
   if (intent.isError) return <>{label}<div className="panel-empty">The intent record is not available from this server.</div></>;
   if (!intent.data) return label;
@@ -42,7 +42,7 @@ function IntentTab({ workspace }: { workspace: string | null }) {
       <>
         {label}
         <div className="panel-empty">
-          No intent record in this workspace yet. In an editor session, the cognition writes one when an intent, a plan or a decision is settled. You can also create <span className="mono">.navigator/intent.md</span> by hand.
+          No intent record in this workspace yet. In an editor session, the cognition writes one when an intent, a plan or a decision is settled. You can also create <span className="mono">.withnav/intent.md</span> by hand.
         </div>
       </>
     );
@@ -96,7 +96,7 @@ function AgentsTab({ chat, onOpenChild }: { chat: Chat; onOpenChild: (id: string
         </Fragment>
       ))}
       {!subagents.length && <div className="panel-empty">No subagent is defined.</div>}
-      <div className="label" style={{ marginTop: 4 }}>AGENT FILES · .navai/agents/*.md</div>
+      <div className="label" style={{ marginTop: 4 }}>AGENT FILES · .withnav/agents/*.md</div>
     </div>
   );
 }

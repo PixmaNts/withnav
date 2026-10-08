@@ -65,7 +65,7 @@ export function createMockApi(workspace: string): StudioApi {
 
   const document = (s: Stored): FlowDocument => {
     const { definition, errors } = compile(s.toml);
-    const base = s.location === "workspace" ? `${workspace}/.navai/flows` : s.location === "global" ? "~/.config/navai/flows" : "builtin:";
+    const base = s.location === "workspace" ? `${workspace}/.withnav/flows` : s.location === "global" ? "~/.config/withnav/flows" : "builtin:";
     return {
       name: s.name,
       location: s.location,

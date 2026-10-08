@@ -1,4 +1,4 @@
-//! `navai-lsp`: the navigator Language Server over stdio.
+//! `withnav-lsp`: the navigator Language Server over stdio.
 //!
 //! stdout is the LSP channel; all logging goes to stderr via tracing. This
 //! file only parses the command line and dispatches: the server wiring lives
@@ -12,7 +12,7 @@ use withnav::navigator::bootstrap;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "navai-lsp",
+    name = "withnav-lsp",
     version,
     about = "Navigator: a pair-programming navigator over LSP"
 )]

@@ -1,3 +1,4 @@
+pub mod entry;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -19,7 +20,7 @@ pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "navai",
+    name = "nav",
     version,
     about = "A personal, minimal-but-complete coding agent in Rust",
     propagate_version = true

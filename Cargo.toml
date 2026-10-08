@@ -7,7 +7,8 @@ name = "withnav"
 version = "0.6.1"
 edition = "2021"
 rust-version = "1.89"
-description = "Navigator: a pair-programming assistant around a coding-agent core (reflex, instinct, metacognition, cognition)"
+homepage = "https://withnav.dev"
+description = "WithNav: a pair-programming assistant around a coding-agent core (reflex, instinct, metacognition, cognition)"
 license = "MIT OR Apache-2.0"
 
 # LIB + BIN split: all behavior lives in the library; the binary is a thin CLI shell.
@@ -91,3 +92,7 @@ flate2 = "1.1.10"
 
 [profile.release]
 lto = "thin"
+
+[[bin]]
+name = "navai"
+path = "src/bin/navai.rs"

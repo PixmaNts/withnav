@@ -449,3 +449,36 @@ mod links {
         );
     }
 }
+
+#[test]
+fn opencode_files_named_like_a_former_agent_id_do_not_replace_the_crew() {
+    let f = fixture();
+    // The shape of a real OpenCode `explorer.md`: it configures OpenCode's own agent.
+    write(&opencode_dir(&f), "explorer.md", "---\nmode: all\n---\n");
+    write(
+        &opencode_dir(&f),
+        "oracle.md",
+        "---\ndescription: oc oracle\n---\nx",
+    );
+    let agents = load(&f);
+    let mousse = agents.get("mousse").unwrap();
+    assert!(matches!(mousse.source, AgentSource::Builtin));
+    assert!(!mousse.prompt.is_empty());
+    assert!(matches!(
+        agents.get("lux").unwrap().source,
+        AgentSource::Builtin
+    ));
+    assert!(
+        agents.diagnostics().is_empty(),
+        "{:?}",
+        agents.diagnostics()
+    );
+
+    // The same name in WithNav's own directory still counts as the former id.
+    write(
+        &user_dir(&f),
+        "explorer.md",
+        "---\ndescription: mine\n---\nx",
+    );
+    assert_eq!(load(&f).get("mousse").unwrap().description, "mine");
+}

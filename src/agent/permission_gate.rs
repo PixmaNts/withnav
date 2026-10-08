@@ -308,8 +308,8 @@ pub fn parse_review(text: &str) -> Result<PermissionReview, ReviewError> {
     Ok(review)
 }
 
-pub struct JevJudge(pub SystemOneClient);
-impl PermissionJudge for JevJudge {
+pub struct InstinctJudge(pub SystemOneClient);
+impl PermissionJudge for InstinctJudge {
     fn model_id(&self) -> Option<&str> {
         Some(self.0.model())
     }
@@ -650,7 +650,7 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
         return Judged::Ask("Permission review: oversized input; approve once or deny".into());
     };
     let Some(judge) = &actor.permission_judge else {
-        return Judged::Ask("Permission review: Jev unavailable; approve once or deny".into());
+        return Judged::Ask("Permission review: instinct unavailable; approve once or deny".into());
     };
     let review_cancel = actor.cancel.child_token();
     let _cancel_on_exit = review_cancel.clone().drop_guard();
@@ -661,16 +661,16 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     evidence["read_only"] = json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
     evidence["sensitive_read"] = json!(sensitive_call(call, needed, &actor.tool_context));
     if let Some(model) = judge.model_id() {
-        evidence["models"] = json!({"jev":model});
+        evidence["models"] = json!({"instinct":model});
     }
     let started = Instant::now();
     let result = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, result = tokio::time::timeout(Duration::from_millis(2500), judge.judge(&input, &review_cancel)) => result };
-    evidence["latency_ms"] = json!({"jev":started.elapsed().as_millis() as u64});
+    evidence["latency_ms"] = json!({"instinct":started.elapsed().as_millis() as u64});
     let answers = match result {
         Ok(Ok(answers)) => answers,
         _ => {
             return ask_evidence(
-                "Jev unavailable or timed out; approve once or deny".into(),
+                "Instinct unavailable or timed out; approve once or deny".into(),
                 evidence,
             )
         }
@@ -679,14 +679,13 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     if route.is_ok() {
         evidence["verdicts"] = json!({"effect":choice(&answers,"call_effect"),"scope":choice(&answers,"call_scope"),"risk":choice(&answers,"call_risk")});
         if input.questions.contains_key("role_conformance") {
-            evidence["guard"] =
-                json!({"by":"jev","verdict":choice(&answers,"role_conformance"),"role":"plan"});
+            evidence["guard"] = json!({"by":"instinct","verdict":choice(&answers,"role_conformance"),"role":"plan"});
         }
     }
     match route {
         Ok(Route::Run) => allowed_evidence(
             &input,
-            "jev",
+            "instinct",
             "Read-only or low-risk project effects",
             evidence,
         ),
@@ -742,7 +741,7 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             }
         }
         _ => ask_evidence(
-            "Jev uncertain or malformed; approve once or deny".into(),
+            "Instinct uncertain or malformed; approve once or deny".into(),
             evidence,
         ),
     }
@@ -891,7 +890,7 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
         note["permission_gate"]["reason"] = json!(reason);
     }
     if input.questions.contains_key("role_conformance") {
-        note["guard"] = json!({"by":"jev","verdict":"conforms","role":"plan"});
+        note["guard"] = json!({"by":"instinct","verdict":"conforms","role":"plan"});
     }
     note
 }
@@ -1036,7 +1035,7 @@ mod tests {
     }
     #[test]
     fn audit_evidence_preserves_fixed_names_and_optional_values() {
-        let evidence = json!({"policy_version":1,"source":"captain","truncated":true,"verdicts":{"effect":"read_write","scope":"outside","risk":"low"},"overrides":override_names(&Overrides { mutation:true,outside:true,risky:false }),"models":{"jev":"test-jev"},"latency_ms":{"jev":7}});
+        let evidence = json!({"policy_version":1,"source":"captain","truncated":true,"verdicts":{"effect":"read_write","scope":"outside","risk":"low"},"overrides":override_names(&Overrides { mutation:true,outside:true,risky:false }),"models":{"instinct":"test-instinct"},"latency_ms":{"instinct":7}});
         let Judged::AskWithEvidence(reason, evidence) =
             ask_evidence("review unavailable".into(), evidence)
         else {

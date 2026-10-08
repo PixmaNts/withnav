@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SseDecoder } from "../api/sse";
+import { toolLine } from "./toolText";
 import type { Envelope } from "../api/types";
 import { emptyView, openPermissions, reduce, reduceAll, type Turn } from "./reducer";
 
@@ -18,6 +19,10 @@ function env(kind: string, payload: object, at = "2026-10-06T10:00:00.000Z"): En
 const turns = (items: ReturnType<typeof emptyView>["items"]) => items.filter((i): i is Turn => i.kind === "turn");
 
 describe("transcript projection", () => {
+  it("renders stored legacy instinct approvals with the layer name", () => {
+    const view = reduceAll(emptyView(), fixture("write-file.sse"));
+    expect(toolLine(Object.values(view.tools).find((call) => call.name === "write")!).meta).toContain("auto · instinct");
+  });
   it("projects a recorded live stream: Captain message, tools in order, final text", () => {
     const view = reduceAll(emptyView(), fixture("write-file.sse"));
     expect(view.items.map((i) => i.kind)).toEqual(["captain", "turn"]);

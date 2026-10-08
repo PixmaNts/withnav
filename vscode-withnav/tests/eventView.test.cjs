@@ -131,17 +131,25 @@ test("yielded turn keeps pause; next turn or terminal turn closes it", () => {
 });
 
 test("evidence absent and malformed does not invent an approval", () => {
-  for (const value of [undefined, null, {}, { source: "jev" }, { source: "unknown", policy_version: 1 }]) assert.equal(permissionEvidence(value), undefined);
+  for (const value of [undefined, null, {}, { source: "instinct" }, { source: "unknown", policy_version: 1 }]) assert.equal(permissionEvidence(value), undefined);
 });
 
 test("evidence preserves all optional review fields only when present", () => {
-  for (const source of ["jev", "metacognition", "captain", "driver"]) {
+  for (const source of ["instinct", "jev", "metacognition", "captain", "driver"]) {
     const minimal = { policy_version: 1, source };
     assert.deepEqual(permissionEvidence(minimal), minimal);
     const full = { ...minimal, reason: "Low risk", verdicts: { effect: "write", scope: "project", risk: "low" },
-      overrides: ["deterministic"], models: { jev: "model" }, latency_ms: 25, truncated: false };
+      overrides: ["deterministic"], models: { instinct: "model" }, latency_ms: 25, truncated: false };
     assert.deepEqual(permissionEvidence(full), full);
     assert.deepEqual(eventView(request({ permission_gate: full })).card.evidence, full);
+  }
+});
+
+test("stored legacy instinct events render with the layer name", () => {
+  const { evidenceLabel } = require("../out/tests/eventView.js");
+  for (const source of ["jev", "instinct"]) {
+    const evidence = permissionEvidence({ source, policy_version: 1 });
+    assert.equal(evidenceLabel(evidence, "tool"), "auto · instinct");
   }
 });
 

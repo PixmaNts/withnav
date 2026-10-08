@@ -17,7 +17,7 @@ expression: snapshot
                      │ │  I found the failing test. The empty argument is discarded.                
                      │ │                                                                            
                      │ │ PERMISSION · plan wants to run write in /ws/src                            
-                     │ │  Jev judged this outside the plan role. `write` acts in /ws/src (approve…  
+                     │ │  Instinct judged this outside the plan role. `write` acts in /ws/src (ap…  
                      │ │  /ws/src/main.rs                                                           
                      │ │  + fn main() {}                                                            
                      │ │  y allow once · n deny                                                     

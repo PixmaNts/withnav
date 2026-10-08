@@ -434,7 +434,7 @@
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   state = { s: 'tui', th: 'ayuDark', mode: 'build', perm: 'pending', verdict: 'pending', tab: 'intent', scr: 'session', layer: 'cognition', tuiTab: 1, conv: 'refactor-parser', ws: 'ra', sess: 'refactor-parser', pipeTrig: 'edit', gone: {}, confirm: null,
-    mcol: {}, assign: { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } } };
+    mcol: {}, assign: { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'instinct', v: null }, reflex: { m: 'mercury', v: null } } };
   navExtra(st, set) {
     const tint = 'color-mix(in srgb,var(--ac) 16%,transparent)';
     const go = (scr) => () => this.setState({ scr });
@@ -449,11 +449,11 @@ class Component extends DCLogic {
       { k: 'astra', gw: 'omniroute', pv: 'openai', id: 'gpt-6-astra', ctx: '400k', caps: 'tools · parallel', vars: ['medium', 'high', 'xhigh'], api: 'chat' },
       { k: 'dsflash', gw: 'omniroute', pv: 'opencode-go', id: 'deepseek-v4-flash', ctx: '128k', caps: 'tools · parallel', vars: ['low', 'high'], api: 'chat' },
       { k: 'combo', gw: 'omniroute', pv: 'combo', id: 'deepseek-v4-flash', ctx: '128k', caps: 'tools', vars: ['low', 'high'], api: 'chat' },
-      { k: 'jev', gw: 'omniroute', pv: 'typesafe', id: 'jev-1.13', ctx: '64k', caps: 'typed answers', vars: [], api: 'systemone' },
+      { k: 'instinct', gw: 'omniroute', pv: 'inception', id: 'mercury-2', ctx: '64k', caps: 'typed answers', vars: [], api: 'systemone' },
       { k: 'mercury', gw: 'inception', pv: '', id: 'mercury-edit-2', ctx: '128k', caps: 'fim · 512 out', vars: [], api: 'fim' }
     ].map((m) => ({ ...m, name: m.gw + '/' + (m.pv ? m.pv + '/' : '') + m.id }));
     const byK = Object.fromEntries(M.map((m) => [m.k, m]));
-    const CFG = { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } };
+    const CFG = { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'instinct', v: null }, reflex: { m: 'mercury', v: null } };
     const A = st.assign, K = st.layer === 'build' || st.layer === 'plan' ? st.layer : st.mode, cur = A[K], curM = byK[cur.m];
     const isOv = (k) => A[k].m !== CFG[k].m || A[k].v !== CFG[k].v;
     const layers = ['build', 'plan'].map((k) => { const on = k === K; const m = byK[A[k].m]; return { label: k + (k === st.mode ? ' · active' : ''), short: m.id + (A[k].v ? ' · ' + A[k].v : '') + (isOv(k) ? ' · session' : ''), click: set({ layer: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent', bg: on ? tint : 'transparent' }; });

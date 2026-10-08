@@ -1,6 +1,6 @@
 # Handoff: WithNav — InstinctFlow
 
-Design reference: `WithNav InstinctFlow.dc.html` (open in a browser next to `support.js`). Top bar switches **theme**. InstinctFlow was previously called Jev flows. Layers, model names and agents are specified in `SETTINGS.md`.
+Design reference: `WithNav InstinctFlow.dc.html` (open in a browser next to `support.js`). Top bar switches **theme**. InstinctFlow was previously called Instinct flows. Layers, model names and agents are specified in `SETTINGS.md`.
 
 This is a design, not as-built. Where the code disagrees, the code is right; items marked **(proposal)** do not exist in the code yet.
 

@@ -211,7 +211,7 @@ test("missing watchdog token and foreign pause id never post", async t => {
 
 test("tool evidence comes from pre-call or post-call and survives row updates", t => {
   const { apply } = setup(t);
-  const evidence = { policy_version: 1, source: "jev", reason: "Low risk" };
+  const evidence = { policy_version: 1, source: "instinct", reason: "Low risk" };
   assert.equal(apply("tool.pre_call", { tool_call_id: "plain", name: "read", args: {} }).evidence, undefined);
   assert.deepEqual(apply("tool.pre_call", { tool_call_id: "C", name: "bash", args: { command: "pwd" }, permission_gate: evidence }).evidence, evidence);
   assert.deepEqual(apply("tool.post_call", { tool_call_id: "C", name: "bash", status: "ok" }).evidence, evidence);
@@ -649,7 +649,7 @@ test("failed open preserves context state and emits restored usage with the curr
 test("failed open between tool calls preserves summary and approval evidence", async t => {
   const { backend, apply } = setup(t);
   backend.connect = async () => {};
-  const evidence = { source: "jev", policy_version: 1, reason: "Read only" };
+  const evidence = { source: "instinct", policy_version: 1, reason: "Read only" };
   apply("turn.start", { turn_id: "T" });
   apply("tool.pre_call", { tool_call_id: "C", name: "bash", args: { command: "pwd" }, permission_gate: evidence });
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "missing" }), { status: 404 }));

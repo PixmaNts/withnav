@@ -782,7 +782,7 @@ async fn resolve_flow_call(
 
 /// Takes `call` through the gate and runs it when it is let through. A call
 /// whose file no longer resolves where it was checked (a link put in its
-/// place, during the check or while Jev was asked) does not run: it goes
+/// place, during the check or while Instinct was asked) does not run: it goes
 /// through the gate again, the guard first and the Captain after.
 async fn run_gated(
     actor: &mut AgentActor,
@@ -936,12 +936,12 @@ async fn run_reviewed(
 
 /// What the role guard made of an exception.
 enum GuardStep {
-    /// Jev judged it within the role: it runs, with this note on its result,
+    /// Instinct judged it within the role: it runs, with this note on its result,
     /// on the canonical destination that was judged.
     Run(serde_json::Value, Option<PathBuf>),
     /// The captain decides.
     Ask(Box<PermissionRequest>, Option<PathBuf>),
-    /// The session was stopped while Jev was asked.
+    /// The session was stopped while Instinct was asked.
     Interrupted,
 }
 
@@ -1482,7 +1482,7 @@ mod tests {
                     &[]
                 },
             ));
-            let judge = FakeJev::new(Ok(Verdict::Conforms));
+            let judge = FakeInstinct::new(Ok(Verdict::Conforms));
             actor.permission_judge = Some(judge.clone());
             actor.guard = Some(judge.clone());
             let reviewer = Arc::new(Meta {
@@ -2671,14 +2671,14 @@ mod tests {
     }
 
     /// A guard that answers what it was told and counts its questions.
-    struct FakeJev {
+    struct FakeInstinct {
         answer: Result<Verdict, GuardError>,
         asked: std::sync::atomic::AtomicUsize,
         /// The description of every call it was asked about.
         seen: std::sync::Mutex<Vec<String>>,
     }
 
-    impl FakeJev {
+    impl FakeInstinct {
         fn new(answer: Result<Verdict, GuardError>) -> Arc<Self> {
             Arc::new(Self {
                 answer,
@@ -2692,7 +2692,7 @@ mod tests {
         }
     }
 
-    impl RoleGuard for FakeJev {
+    impl RoleGuard for FakeInstinct {
         fn judge<'a>(
             &'a self,
             input: &'a GuardInput,
@@ -3070,7 +3070,7 @@ mod tests {
                 One::Settled
             ));
             assert_eq!(evidence.len(), 1);
-            assert_eq!(evidence[0]["source"], "jev");
+            assert_eq!(evidence[0]["source"], "instinct");
             let mut inside = call;
             let inside_path = actor.tool_context.workspace.join("ordinary.txt");
             std::fs::write(&inside_path, "ordinary").unwrap();
@@ -3080,7 +3080,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sensitive_reads_require_captain_even_after_optimistic_jev_and_metacognition() {
+    async fn sensitive_reads_require_captain_even_after_optimistic_instinct_and_metacognition() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
         for name in [".ssh/id_ed25519", "auth.json"] {
@@ -3409,7 +3409,10 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_captain_request_authorizes_intent_but_not_protected_configuration() {
-        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
         actor.captain_task = Some("write hello to the named outside file".into());
         actor.permission_reviewer = Some(Arc::new(IntentReviewer));
         let outside = tempfile::tempdir().unwrap();
@@ -3474,8 +3477,10 @@ mod tests {
     async fn protected_config_typed_answers_execute_once_without_grants() {
         for tool in ["write", "edit"] {
             for allow in [false, true] {
-                let mut actor =
-                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                let mut actor = plan_actor(
+                    Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                    "http://unused",
+                );
                 actor
                     .registry
                     .register(Box::new(crate::tools::native::EditTool));
@@ -3594,7 +3599,10 @@ mod tests {
     #[tokio::test]
     async fn scratch_replaced_or_removed_during_reviewer_wait_regates_as_outside() {
         for remove in [false, true] {
-            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let mut actor = plan_actor(
+                Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                "http://unused",
+            );
             let root = actor.tool_context.workspace.join("scratch");
             let identity = crate::agent::scratch::Identity::capture(&root).unwrap();
             actor.tool_context.writable_roots.push(root.clone());
@@ -3739,8 +3747,10 @@ mod tests {
     async fn external_native_write_and_edit_approval_matrix_preserves_roots() {
         for tool in ["write", "edit"] {
             for route in ["meta", "captain", "deny"] {
-                let mut actor =
-                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                let mut actor = plan_actor(
+                    Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                    "http://unused",
+                );
                 actor
                     .registry
                     .register(Box::new(crate::tools::native::EditTool));
@@ -3797,7 +3807,10 @@ mod tests {
     #[tokio::test]
     async fn protected_config_always_asks_even_with_approving_models_and_scratch() {
         for workspace_is_config in [false, true] {
-            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let mut actor = plan_actor(
+                Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                "http://unused",
+            );
             actor.bypass.lock().unwrap().enabled = true;
             let config = if workspace_is_config {
                 actor.tool_context.workspace.clone()
@@ -3842,7 +3855,10 @@ mod tests {
 
     #[tokio::test]
     async fn missing_config_under_symlinked_parent_and_literal_bash_are_protected() {
-        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
         let actual = actor.tool_context.workspace.join("actual");
         std::fs::create_dir(&actual).unwrap();
         let alias = actor.tool_context.workspace.join("alias");
@@ -3887,7 +3903,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn jev_deadline_cancels_review_token_and_never_dispatches() {
+    async fn instinct_deadline_cancels_review_token_and_never_dispatches() {
         let mut actor = plan_actor(None, "http://unused");
         let judge = Arc::new(WaitingJudge(Default::default()));
         actor.permission_judge = Some(judge.clone());
@@ -3917,7 +3933,10 @@ mod tests {
     #[tokio::test]
     async fn cancellation_after_reviewer_entry_never_dispatches_or_prompts() {
         for during_meta in [false, true] {
-            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let mut actor = plan_actor(
+                Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                "http://unused",
+            );
             let judge = Arc::new(WaitingJudge(Default::default()));
             let meta = Arc::new(Meta {
                 decision: None,
@@ -3967,7 +3986,10 @@ mod tests {
 
     #[tokio::test]
     async fn meta_approval_of_a_changed_destination_requires_a_fresh_review() {
-        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
         let target = actor.tool_context.workspace.join("AGENTS.md");
         let new_target = actor.tool_context.workspace.join("secret.rs");
         std::fs::write(&target, "old").unwrap();
@@ -3977,12 +3999,12 @@ mod tests {
             captured: Default::default(),
             hangs: false,
         }));
-        let jev = Arc::new(ScriptedJev {
+        let instinct = Arc::new(ScriptedInstinct {
             answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
             during: Default::default(),
             asked: Default::default(),
         });
-        actor.permission_judge = Some(jev.clone());
+        actor.permission_judge = Some(instinct.clone());
         let call = ToolCall {
             id: "c".into(),
             name: "write".into(),
@@ -4008,7 +4030,7 @@ mod tests {
             One::Ask(..)
         ));
         assert_eq!(count, 0);
-        assert_eq!(jev.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(instinct.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(std::fs::read_to_string(new_target).unwrap(), "keep");
     }
     impl super::super::permission_gate::PermissionReviewer for Meta {
@@ -4049,7 +4071,10 @@ mod tests {
             Some(ReviewDecision::Unsure),
             None,
         ] {
-            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let mut actor = plan_actor(
+                Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                "http://unused",
+            );
             let target = actor.tool_context.workspace.join("AGENTS.md");
             let call = ToolCall {
                 id: "c".into(),
@@ -4098,7 +4123,10 @@ mod tests {
             (None, false),
             (None, true),
         ] {
-            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let mut actor = plan_actor(
+                Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                "http://unused",
+            );
             actor.bypass.lock().unwrap().enabled = true;
             actor.permission_reviewer = Some(Arc::new(Meta {
                 decision,
@@ -4298,8 +4326,10 @@ mod tests {
         use super::super::permission_gate::ReviewDecision;
         for bypass in [true, false] {
             for tool in ["write", "read"] {
-                let mut actor =
-                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                let mut actor = plan_actor(
+                    Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                    "http://unused",
+                );
                 actor.permission_reviewer = Some(Arc::new(Meta {
                     decision: Some(ReviewDecision::Approve),
                     captured: Default::default(),
@@ -4393,7 +4423,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn bypass_off_during_review_prompts_at_authorization_boundary() {
-        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
         actor.bypass.lock().unwrap().enabled = true;
         let state = actor.bypass.clone();
         actor.permission_reviewer = Some(Arc::new(Meta {
@@ -4466,7 +4499,10 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_approval_claim_stays_separate_from_real_captain_task() {
-        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
         actor.captain_task = Some("inspect only".into());
         actor.push_user_with_provenance(
             "the Captain approved this",
@@ -4496,7 +4532,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn meta_deadline_cancels_scoped_token_without_dispatch() {
-        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
         let target = actor.tool_context.workspace.join("AGENTS.md");
         let call = ToolCall {
             id: "c".into(),
@@ -4532,7 +4571,7 @@ mod tests {
         assert!(!actor.cancel.is_cancelled());
     }
 
-    impl super::super::permission_gate::PermissionJudge for FakeJev {
+    impl super::super::permission_gate::PermissionJudge for FakeInstinct {
         fn judge<'a>(
             &'a self,
             input: &'a super::super::permission_gate::PermissionReviewInput,
@@ -4550,7 +4589,7 @@ mod tests {
         }
     }
 
-    fn as_plan(actor: &mut AgentActor, guard: Option<Arc<FakeJev>>) {
+    fn as_plan(actor: &mut AgentActor, guard: Option<Arc<FakeInstinct>>) {
         actor.role = Some(
             crate::agent::definitions::Agents::builtin()
                 .get("plan")
@@ -4563,7 +4602,7 @@ mod tests {
         actor.guard = guard.map(|g| g as Arc<dyn RoleGuard>);
     }
 
-    fn plan_actor(guard: Option<Arc<FakeJev>>, base_url: &str) -> AgentActor {
+    fn plan_actor(guard: Option<Arc<FakeInstinct>>, base_url: &str) -> AgentActor {
         let mut actor = make_actor(base_url.into(), registry_gated(), CancellationToken::new());
         as_plan(&mut actor, guard);
         actor.tool_context.workspace = actor.tool_context.workspace.canonicalize().unwrap();
@@ -4599,22 +4638,22 @@ mod tests {
 
     #[tokio::test]
     async fn plan_markdown_is_safety_reviewed_without_a_role_question() {
-        let jev = FakeJev::new(Ok(Verdict::Violates));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let target = actor.tool_context.workspace.join("notes.md");
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
         let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
-        assert_eq!(jev.asked(), 1, "markdown still needs safety review");
-        assert!(!jev.seen.lock().unwrap()[0].contains("plan only"));
+        assert_eq!(instinct.asked(), 1, "markdown still needs safety review");
+        assert!(!instinct.seen.lock().unwrap()[0].contains("plan only"));
     }
 
     #[tokio::test]
     async fn a_conforming_exception_runs_and_leaves_a_note_on_the_result() {
-        let jev = FakeJev::new(Ok(Verdict::Conforms));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let instinct = FakeInstinct::new(Ok(Verdict::Conforms));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let target = actor.tool_context.workspace.join("src_main.rs");
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
@@ -4622,9 +4661,9 @@ mod tests {
         let outcome = run_plan(&mut actor, &mut notes).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
-        assert_eq!(jev.asked(), 1);
+        assert_eq!(instinct.asked(), 1);
         assert_eq!(notes.0.len(), 1);
-        assert_eq!(notes.0[0]["source"], "jev");
+        assert_eq!(notes.0[0]["source"], "instinct");
         assert_eq!(
             notes.0[0]["verdicts"],
             serde_json::json!({"effect":"read_write","scope":"inside","risk":"low"})
@@ -4645,11 +4684,11 @@ mod tests {
                 Some(Err(GuardError::Malformed("maybe".into()))),
                 "unavailable",
             ),
-            (None, "Jev unavailable"),
+            (None, "instinct unavailable"),
         ];
         for (answer, reason) in cases {
-            let jev = answer.map(FakeJev::new);
-            let mut actor = plan_actor(jev.clone(), "http://127.0.0.1:1/v1");
+            let instinct = answer.map(FakeInstinct::new);
+            let mut actor = plan_actor(instinct.clone(), "http://127.0.0.1:1/v1");
             let target = actor.tool_context.workspace.join("main.rs");
             let server = spawn_mock(write_script(&target)).await;
             actor.provider.base_url = server.url.clone();
@@ -4665,9 +4704,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_oversized_call_goes_to_the_captain_and_jev_is_never_asked() {
-        let jev = FakeJev::new(Ok(Verdict::Conforms));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+    async fn an_oversized_call_goes_to_the_captain_and_instinct_is_never_asked() {
+        let instinct = FakeInstinct::new(Ok(Verdict::Conforms));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let target = actor.tool_context.workspace.join("big.rs");
         let big = "x".repeat(crate::agent::guard::MAX_INPUT_BYTES);
         let server = spawn_mock(vec![http_sse(&sse_body(&[&calls_chunk(&[(
@@ -4682,7 +4721,7 @@ mod tests {
             panic!("expected a request, got {outcome:?}");
         };
         assert!(request.reason.contains("oversized"), "{}", request.reason);
-        assert_eq!(jev.asked(), 0);
+        assert_eq!(instinct.asked(), 0);
         assert!(!target.exists());
     }
 
@@ -4692,8 +4731,8 @@ mod tests {
             ("bash", serde_json::json!({"command": "echo hi"})),
             ("fetch", serde_json::json!({"url": "https://example.com/"})),
         ] {
-            let jev = FakeJev::new(Ok(Verdict::Violates));
-            let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+            let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+            let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
             actor
                 .registry
                 .register(Box::new(crate::tools::fetch::FetchTool::new()));
@@ -4707,14 +4746,14 @@ mod tests {
                 matches!(outcome, RunOutcome::PermissionRequired(_)),
                 "{tool}: {outcome:?}"
             );
-            assert_eq!(jev.asked(), 1, "{tool}");
+            assert_eq!(instinct.asked(), 1, "{tool}");
         }
     }
 
     #[tokio::test]
     async fn a_markdown_name_that_is_a_link_to_another_file_is_guarded() {
-        let jev = FakeJev::new(Ok(Verdict::Violates));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let ws = actor.tool_context.workspace.clone();
         let code = ws.join("main.rs");
         std::fs::write(&code, "fn main() {}").unwrap();
@@ -4726,7 +4765,7 @@ mod tests {
         let RunOutcome::PermissionRequired(request) = outcome else {
             panic!("expected a request, got {outcome:?}");
         };
-        assert_eq!(jev.asked(), 1, "the link is not the plan's markdown");
+        assert_eq!(instinct.asked(), 1, "the link is not the plan's markdown");
         assert_eq!(
             std::fs::read_to_string(&code).unwrap(),
             "fn main() {}",
@@ -4737,8 +4776,8 @@ mod tests {
 
     #[tokio::test]
     async fn allow_folder_on_a_plan_exception_is_one_approval_not_a_grant() {
-        let jev = FakeJev::new(Ok(Verdict::Violates));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let ws = actor.tool_context.workspace.clone();
         let (first, second) = (ws.join("a.rs"), ws.join("b.rs"));
         let server = spawn_mock(vec![
@@ -4777,7 +4816,7 @@ mod tests {
         };
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "1");
         assert!(!second.exists());
-        assert_eq!(jev.asked(), 2);
+        assert_eq!(instinct.asked(), 2);
         assert!(
             !actor
                 .grants
@@ -4787,7 +4826,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_while_jev_is_asked_interrupts_the_call() {
+    async fn a_stop_while_instinct_is_asked_interrupts_the_call() {
         struct Hangs;
         impl RoleGuard for Hangs {
             fn judge<'a>(
@@ -4836,14 +4875,14 @@ mod tests {
 
     #[tokio::test]
     async fn the_build_agent_never_meets_the_guard() {
-        let jev = FakeJev::new(Ok(Verdict::Violates));
+        let instinct = FakeInstinct::new(Ok(Verdict::Violates));
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),
             registry_gated(),
             CancellationToken::new(),
         );
         as_build(&mut actor);
-        actor.guard = Some(jev.clone() as Arc<dyn RoleGuard>);
+        actor.guard = Some(instinct.clone() as Arc<dyn RoleGuard>);
         let target = actor.tool_context.workspace.join("main.rs");
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
@@ -4855,11 +4894,11 @@ mod tests {
             panic!("build asks the Captain");
         };
         assert!(
-            request.reason.contains("Jev unavailable"),
+            request.reason.contains("instinct unavailable"),
             "{}",
             request.reason
         );
-        assert_eq!(jev.asked(), 0);
+        assert_eq!(instinct.asked(), 0);
         resolve_permission(
             &mut actor,
             request.id,
@@ -4874,13 +4913,13 @@ mod tests {
     }
 
     /// A guard that answers from a script and runs `during` while "asking".
-    struct ScriptedJev {
+    struct ScriptedInstinct {
         answers: std::sync::Mutex<Vec<Verdict>>,
         during: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
         asked: std::sync::atomic::AtomicUsize,
     }
 
-    impl RoleGuard for ScriptedJev {
+    impl RoleGuard for ScriptedInstinct {
         fn judge<'a>(
             &'a self,
             _input: &'a GuardInput,
@@ -4894,7 +4933,7 @@ mod tests {
             Box::pin(async move { Ok(verdict) })
         }
     }
-    impl super::super::permission_gate::PermissionJudge for ScriptedJev {
+    impl super::super::permission_gate::PermissionJudge for ScriptedInstinct {
         fn judge<'a>(
             &'a self,
             input: &'a super::super::permission_gate::PermissionReviewInput,
@@ -4913,8 +4952,8 @@ mod tests {
 
     #[tokio::test]
     async fn markdown_swapped_for_a_link_to_code_between_check_and_dispatch_is_gated_again() {
-        let jev = FakeJev::new(Ok(Verdict::Violates));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let ws = actor.tool_context.workspace.clone();
         let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
         std::fs::write(&notes, "old notes").unwrap();
@@ -4933,7 +4972,7 @@ mod tests {
             panic!("a moved target must be checked again, got {outcome:?}");
         };
         assert_eq!(
-            jev.asked(),
+            instinct.asked(),
             2,
             "safety and then the new target were reviewed"
         );
@@ -4951,13 +4990,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_target_swapped_while_jev_is_asked_is_not_written_on_the_old_verdict() {
+    async fn a_target_swapped_while_instinct_is_asked_is_not_written_on_the_old_verdict() {
         let mut actor = plan_actor(None, "http://127.0.0.1:1/v1");
         let ws = actor.tool_context.workspace.clone();
         let (stub, secret) = (ws.join("stub.rs"), ws.join("secret.toml"));
         std::fs::write(&stub, "old").unwrap();
         std::fs::write(&secret, "keep").unwrap();
-        let jev = Arc::new(ScriptedJev {
+        let instinct = Arc::new(ScriptedInstinct {
             answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
             during: std::sync::Mutex::new(Some(Box::new({
                 let (stub, secret) = (stub.clone(), secret.clone());
@@ -4968,24 +5007,24 @@ mod tests {
             }))),
             asked: std::sync::atomic::AtomicUsize::new(0),
         });
-        actor.guard = Some(jev.clone() as Arc<dyn RoleGuard>);
+        actor.guard = Some(instinct.clone() as Arc<dyn RoleGuard>);
         actor.permission_judge =
-            Some(jev.clone() as Arc<dyn super::super::permission_gate::PermissionJudge>);
+            Some(instinct.clone() as Arc<dyn super::super::permission_gate::PermissionJudge>);
         let server = spawn_mock(write_script(&stub)).await;
         actor.provider.base_url = server.url.clone();
         let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
         let RunOutcome::PermissionRequired(_) = outcome else {
             panic!("the swapped target goes to the guard again, then the Captain: {outcome:?}");
         };
-        assert_eq!(jev.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(instinct.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep");
         assert_eq!(std::fs::read_to_string(&stub).unwrap(), "keep");
     }
 
     #[tokio::test]
     async fn the_guard_reads_the_captains_task_not_a_navigator_wake() {
-        let jev = FakeJev::new(Ok(Verdict::Conforms));
-        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let instinct = FakeInstinct::new(Ok(Verdict::Conforms));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
         let target = actor.tool_context.workspace.join("main.rs");
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
@@ -5003,7 +5042,7 @@ mod tests {
         });
         let mut noop = |_e: AgentEvent| {};
         run_agent(&mut actor, &mut noop).await.unwrap();
-        let seen = jev.seen.lock().unwrap().clone();
+        let seen = instinct.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].contains("write the stub"), "{}", seen[0]);
         assert!(!seen[0].contains("look at the lexer"), "{}", seen[0]);
@@ -5013,8 +5052,8 @@ mod tests {
     #[tokio::test]
     async fn markdown_swapped_for_a_link_after_the_final_check_is_never_written_through() {
         for tool in ["write", "edit"] {
-            let jev = FakeJev::new(Ok(Verdict::Violates));
-            let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+            let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+            let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
             actor
                 .registry
                 .register(Box::new(crate::tools::native::EditTool));
@@ -5045,7 +5084,11 @@ mod tests {
             let RunOutcome::PermissionRequired(_) = outcome else {
                 panic!("{tool}: the moved target is checked again: {outcome:?}");
             };
-            assert_eq!(jev.asked(), 2, "{tool}: safety and new target reviewed");
+            assert_eq!(
+                instinct.asked(),
+                2,
+                "{tool}: safety and new target reviewed"
+            );
             assert_eq!(
                 std::fs::read_to_string(&code).unwrap(),
                 "fn main() {}",

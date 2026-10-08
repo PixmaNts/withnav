@@ -11,7 +11,7 @@ No aliases in the UI. Four **layers**:
 | Layer | API | Models | Notes |
 | --- | --- | --- | --- |
 | Reflex | `fim` | exactly one | LSP only: runs when an IDE is attached (VS Code now; Zed, IntelliJ later). |
-| Instinct | `systemone` | exactly one | Jev. Fixed 2 s deadline. Runs InstinctFlow, permission review, the pipeline. |
+| Instinct | `systemone` | exactly one | Typed decisions. Fixed 2 s deadline. Runs InstinctFlow, permission review, the pipeline. |
 | Metacognition | `chat` | exactly one | Fast (flash) model. **Variant = one the model offers**, `low` by default (no fixed off/low/medium/high scale). Also approves risky calls (see Permissions). |
 | Cognition | `chat` | one per **agent** | Several agents and several flows (subagents) at once. |
 
@@ -21,7 +21,7 @@ No aliases in the UI. Four **layers**:
 - `models.json` = **catalogue only** (gateways and their models).
 - `config.json` = `layers` (one model each), `agents.<name>.model` / variant, `default_agent`, plus the existing keys (`permissions`, `subagents`, `agent`, `tui`). A model set in `config.json` **wins over** a `model:` line in the agent's `.md`.
 
-**Model names** are `<gateway>/<id>`, e.g. `omniroute/cc/claude-opus-5-5`, `omniroute/typesafe/jev-1.13`, `inception/mercury-edit-2`. Every model list is **grouped by gateway, then by provider** (the segment after the gateway: `cc`, `zai`, `openai`, `opencode-go`, `combo`, `typesafe`; none for `inception/mercury-edit-2`), with **collapsible groups**, and filtered by the target's API.
+**Model names** are `<gateway>/<id>`, e.g. `omniroute/cc/claude-opus-5-5`, `omniroute/inception/mercury-2`, `inception/mercury-edit-2`. Every model list is **grouped by gateway, then by provider** (the segment after the gateway: `cc`, `zai`, `openai`, `opencode-go`, `combo`, `typesafe`; none for `inception/mercury-edit-2`), with **collapsible groups**, and filtered by the target's API.
 
 Mock assignment: build → `omniroute/cc/claude-opus-5-5` · high, plan → `omniroute/zai/glm-5.3` · high, vigie → `omniroute/openai/gpt-6-luna` · medium, mousse → `omniroute/opencode-go/deepseek-v4-flash` · low, lux → `omniroute/openai/gpt-6-astra` · high, cartographe → `omniroute/openai/gpt-6-luna` · medium, sondeur → `omniroute/cc/claude-opus-5-5` · high (mode `all`). The `zai` / `openai` provider segments and every variant list are placeholders.
 

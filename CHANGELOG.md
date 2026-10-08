@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Permission review and supervision now use the Instinct layer name.**
+  New events write `instinct` source, model, latency and guard metadata; clients
+  still read stored `jev` events and display them as `auto · instinct` until 0.8.
+
 ### Added
 
 - **Delete VS Code conversations from the command palette.** Choose a workspace conversation,

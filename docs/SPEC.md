@@ -616,7 +616,7 @@ A session that runs as an agent asks the Captain before it runs `write`, `edit`,
 
 ### 9.5 Plan Role Guard
 
-The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Jev (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the Captain. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
+The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Instinct (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the Captain. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
 
 ## 10. Event Bus
 
@@ -2178,17 +2178,19 @@ Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_ga
 ```json
 {
   "policy_version": 1,
-  "source": "jev",
+  "source": "instinct",
   "reason": "Read-only or low-risk project effects",
   "verdicts": {"effect": "read_only", "scope": "inside", "risk": "low"},
   "overrides": ["read_write", "outside_project", "risky"],
-  "models": {"jev": "model-id", "metacognition": "model-id"},
-  "latency_ms": {"jev": 12, "metacognition": 500},
+  "models": {"instinct": "model-id", "metacognition": "model-id"},
+  "latency_ms": {"instinct": 12, "metacognition": 500},
   "truncated": false
 }
 ```
 
-`source` is `jev`, `metacognition` or `captain`. Verdicts are validated typed Jev answers, not
+Legacy `jev` sources and metadata keys remain readable until 0.8; new events write `instinct`.
+
+`source` is `instinct`, `metacognition` or `captain`. Verdicts are validated typed Instinct answers, not
 the deterministic effective classification. Override names are fixed. Unknown model ids, verdicts
 and latencies are omitted. `truncated` reports bounded context excerpts, never cut tool arguments.
 Old events without these optional fields remain valid. No event kind is added; the catalog stays 22.

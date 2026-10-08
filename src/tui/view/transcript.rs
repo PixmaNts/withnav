@@ -644,7 +644,7 @@ mod selection_tests {
             sender(&block("navigator"), &state),
             "Beacon · Remark — ◎ Nav"
         );
-        assert_eq!(sender(&block("Jev"), &state), "◎ Jev");
+        assert_eq!(sender(&block("Instinct"), &state), "◎ Instinct");
         assert_eq!(
             sender(
                 &Block {

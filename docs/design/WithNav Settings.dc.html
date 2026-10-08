@@ -301,12 +301,12 @@ const CATALOG = [
   ['omniroute', 'openai', 'gpt-6-astra', 'chat', 400000, ['medium', 'high', 'xhigh']],
   ['omniroute', 'opencode-go', 'deepseek-v4-flash', 'chat', 128000, ['low', 'high']],
   ['omniroute', 'combo', 'deepseek-v4-flash', 'chat', 128000, ['low', 'high']],
-  ['omniroute', 'typesafe', 'jev-1.13', 'systemone', 64000, []],
+  ['omniroute', 'inception', 'mercury-2', 'systemone', 64000, []],
   ['inception', '', 'mercury-edit-2', 'fim', 128000, []]
 ].map(([gw, pv, id, api, ctx, vars]) => ({ gw, pv, id, api, ctx, vars, full: gw + '/' + (pv ? pv + '/' : '') + id }));
 const LAYERS = [
   { k: 'reflex', label: 'Reflex', icon: 'ph ph-lightning', api: 'fim', prov: 'inception', model: 'inception/mercury-edit-2', out: 512, role: 'Ghost-text suggestions in the editor.', note: 'LSP only · IDE attached', modelNote: 'Only fill-in-the-middle models are offered.' },
-  { k: 'instinct', label: 'Instinct', icon: 'ph ph-gauge', api: 'systemone', prov: 'omniroute', model: 'omniroute/typesafe/jev-1.13', out: 2048, role: 'Typed decisions: InstinctFlow, permission review, pipeline.', note: 'System One decisions', modelNote: 'Only models behind the System One API are offered.' },
+  { k: 'instinct', label: 'Instinct', icon: 'ph ph-gauge', api: 'systemone', prov: 'omniroute', model: 'omniroute/inception/mercury-2', out: 2048, role: 'Typed decisions: InstinctFlow, permission review, pipeline.', note: 'System One decisions', modelNote: 'Only models behind the System One API are offered.' },
   { k: 'metacognition', label: 'Metacognition', icon: 'ph ph-compass', api: 'chat', prov: 'omniroute', model: 'omniroute/combo/deepseek-v4-flash', out: 8000, role: 'Remarks, wakes, and approval of risky calls.', note: 'fast model', modelNote: 'A fast (flash) chat model works best here.' },
   { k: 'cognition', label: 'Cognition', icon: 'ph ph-brain', api: 'chat', note: '5 agents' }
 ];

@@ -33,7 +33,7 @@ impl LlmCommenter {
         };
         let mut args = tc.args.clone();
         if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-            if !path.starts_with('/') {
+            if !Path::new(path).is_absolute() && !path.starts_with('~') {
                 args["path"] =
                     serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
             }
@@ -180,6 +180,14 @@ mod tests {
         );
         let mut ctx = RemarkContext::build("file:///file", "text", "", "", vec![], None);
         ctx.workspace = Some(tmp.path().to_path_buf());
+        let call = crate::provider::ToolCall {
+            id: "tilde".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":"~/outside-workspace.txt"}),
+            args_valid: true,
+        };
+        let output = commenter.execute_tool(&ctx, &call).await;
+        assert!(output.contains("outside the workspace"), "{output}");
         std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
         std::fs::create_dir(tmp.path().join("ordinary-dir")).unwrap();
         std::os::unix::fs::symlink(tmp.path().join("ordinary.txt"), tmp.path().join(".env"))

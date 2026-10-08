@@ -35,6 +35,8 @@ requests land in `develop`.
 
 - **The intent tool can clear an obsolete section with an empty string.** An explicit empty
   update now removes the previous text; omitted sections still retain their contents.
+- **Interrupted terminal turns no longer retain unfinished tool arguments.** Turn and session
+  boundaries discard streamed fragments so a later turn starts with an empty buffer.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

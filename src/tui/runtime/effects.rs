@@ -635,7 +635,7 @@ impl Drop for Executor {
 }
 
 /// How long a Settings request waits for theme or favorites saves queued before it. Such a save
-/// can itself wait on `config.json.lock` held by another Navai process; past this the request
+/// can itself wait on `config.json.lock` held by another WithNav process; past this the request
 /// fails like any unreachable server (staged changes kept, ctrl+s retries) instead of leaving
 /// `/config` loading or writing forever. It never goes ahead without the barrier: that would let
 /// an older queued theme land after a newer `/config` write.

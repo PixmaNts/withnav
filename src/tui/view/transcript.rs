@@ -40,7 +40,7 @@ impl Origin {
             Self::Subagent
         } else if matches!(source, "user" | "driver" | "captain")
             || source.starts_with("captain:")
-            || crate::bus::command::is_driver_source(source)
+            || crate::bus::command::is_captain_source(source)
         {
             Self::User
         } else if matches!(source, "navigator" | "metacognition" | "nav")
@@ -634,7 +634,7 @@ mod selection_tests {
             },
         };
         assert_eq!(
-            sender(&block("subagent:explore"), &state),
+            sender(&block("subagent:vigie"), &state),
             "Subagent ◉ vigie · untrusted data"
         );
         for source in ["driver", "captain", "captain:tui"] {

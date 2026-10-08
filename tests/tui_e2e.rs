@@ -639,7 +639,7 @@ fn command_blocks(tab: &withnav::tui::state::Tab) -> Vec<(String, bool, String)>
 }
 
 // Given a conversation that answered once
-// When the driver types, key by key, `/context`, then an unknown `/contxt`, then `//context`
+// When the Captain types, key by key, `/context`, then an unknown `/contxt`, then `//context`
 // Then the first two run on the server and come back as command blocks (the editor cleared once
 //      the server took them), and the third is sent as the message "/context"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -878,9 +878,9 @@ fn open_request(rt: &Runtime) -> Option<String> {
 }
 
 // Given a build conversation whose model asks to write a file
-// When the prompt appears and the driver presses y
+// When the prompt appears and the Captain presses y
 // Then the file is written, the prompt shows "allowed once" and the turn carries on to the answer
-// And when the model asks again and the driver presses n, types a reason and enter, the file is
+// And when the model asks again and the Captain presses n, types a reason and enter, the file is
 //     left alone and the model's next request carries the denial with that reason
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
@@ -945,7 +945,7 @@ async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
 }
 
 // Given an open permission request
-// When the driver types a message and presses enter twice
+// When the Captain types a message and presses enter twice
 // Then the first enter only warns; the second sends the text, which cancels the request
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_sent_over_an_open_request_cancels_it_after_a_warning() {
@@ -1070,7 +1070,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
     });
     luna["default_variant"] = json!("high");
     let provider = |url: &str| {
-        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+        json!({"base_url": url, "api_key_env": "WITHNAV_TEST_KEY", "headers": {},
                "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
     };
     std::fs::write(

@@ -1331,13 +1331,13 @@ mod tests {
         std::fs::remove_file(state.config.config_dir.join("agents/lux.md")).unwrap();
         let (status, body) = get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
         assert_eq!(status, StatusCode::OK);
-        let oracle = body["agents"]
+        let lux = body["agents"]
             .as_array()
             .unwrap()
             .iter()
             .find(|agent| agent["id"] == "lux")
             .unwrap();
-        assert_eq!(oracle["effective"]["source"], "override");
+        assert_eq!(lux["effective"]["source"], "override");
         assert_eq!(
             state
                 .handle(id)

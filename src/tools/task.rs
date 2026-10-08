@@ -89,7 +89,7 @@ mod tests {
             readable_roots: vec![],
         };
         assert!(matches!(
-            task.call(json!({"agent":"explore","prompt":"inspect"}), cancel, &cx)
+            task.call(json!({"agent":"vigie","prompt":"inspect"}), cancel, &cx)
                 .await,
             Err(ToolError::Canceled)
         ));

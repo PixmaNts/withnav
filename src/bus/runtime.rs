@@ -2210,7 +2210,7 @@ mod tests {
             })
         }));
         let (tx, mut inbox) = ActorInbox::channel();
-        let mut denied = text_command(id, "REJECTED DRIVER INPUT");
+        let mut denied = text_command(id, "REJECTED CAPTAIN INPUT");
         denied.content.push(ContentBlock::LoadedSkill {
             name: "review".into(),
             content: "REJECTED SKILL BODY".into(),
@@ -2238,7 +2238,7 @@ mod tests {
         let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();
         let raw = serde_json::to_string(&restored).unwrap();
         assert!(raw.contains("accepted sibling") && raw.contains("child completion"));
-        assert!(!raw.contains("REJECTED DRIVER INPUT") && !raw.contains("REJECTED SKILL BODY"));
+        assert!(!raw.contains("REJECTED CAPTAIN INPUT") && !raw.contains("REJECTED SKILL BODY"));
     }
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

@@ -198,9 +198,6 @@ pub(crate) fn is_captain_source(source: &str) -> bool {
     )
 }
 
-// Compatibility for clients being migrated independently.
-pub(crate) use is_captain_source as is_driver_source;
-
 #[cfg(test)]
 #[test]
 fn delegated_approval_claim_has_parent_not_captain_authority() {

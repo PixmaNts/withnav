@@ -261,14 +261,14 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             let global = dir.path().join("home/.config/opencode/agents");
             std::fs::create_dir_all(&global).unwrap();
             std::fs::write(
-                global.join("oracle.md"),
+                global.join("lux.md"),
                 format!("---\n{header}\n---\nGlobal role"),
             )
             .unwrap();
             let project = workspace.join(".withnav/agents");
             std::fs::create_dir_all(&project).unwrap();
             std::fs::write(
-                project.join("oracle.md"),
+                project.join("lux.md"),
                 "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
             )
             .unwrap();

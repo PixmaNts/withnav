@@ -1114,7 +1114,7 @@ fn child_budget_events_update_the_sidebar_without_opening_a_transcript() {
 #[test]
 fn session_list_seeds_real_children_without_inventing_goals() {
     let mut s = subagent_parent();
-    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"title":"Not a delegated goal","created_at":"now","updated_at":"now","message_count":1,"agent":"review","live":false,"parent_session_id":Ulid(1),"child_status":"stopped","promptable":false})).unwrap();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"title":"Not a delegated goal","created_at":"now","updated_at":"now","message_count":1,"agent":"lux","live":false,"parent_session_id":Ulid(1),"child_status":"stopped","promptable":false})).unwrap();
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -1125,7 +1125,7 @@ fn session_list_seeds_real_children_without_inventing_goals() {
         },
     )
     .unwrap();
-    assert_eq!(s.children[0].name, "review");
+    assert_eq!(s.children[0].name, "lux");
     assert_eq!(s.children[0].status, ChildStatus::Stopped);
     assert!(s.children[0].goal.is_empty());
 }
@@ -2738,7 +2738,7 @@ fn a_background_creation_subscribes_for_its_own_tab() {
     let (mut s, mut ui) = (st(), ui());
     handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
     let first = s.generation.clone();
-    // the driver opens another tab before the server answers
+    // the Captain opens another tab before the server answers
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert_eq!(s.active, 1);
     let fx = update(
@@ -3403,8 +3403,8 @@ fn a_catalog_answer_reaches_every_tab() {
     assert_eq!(s.tabs[1].context_window, None);
 }
 
-// Given a tab whose conversation is still being resumed, holding a message the driver sent
-// When the driver closes the tab, then the server's late answer arrives
+// Given a tab whose conversation is still being resumed, holding a message the Captain sent
+// When the Captain closes the tab, then the server's late answer arrives
 // Then the close is refused with a notice and the tab stays, so the held message is sent
 //      to the resumed conversation instead of being lost
 #[test]
@@ -4757,7 +4757,7 @@ fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
 }
 
 #[test]
-fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
+fn no_switch_is_sent_while_the_agent_waits_for_the_captain() {
     let (mut s, mut ui) = (st(), ui());
     models_now(&mut s, Some("a".into())).unwrap();
     created_now(&mut s, "S1").unwrap();

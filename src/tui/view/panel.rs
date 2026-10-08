@@ -18,7 +18,7 @@ use ratatui::{
 
 /// Columns the column takes, its left border included.
 pub const WIDTH: u16 = 36;
-/// Below this terminal width the column hides itself, unless the driver asked for it.
+/// Below this terminal width the column hides itself, unless the Captain asked for it.
 pub const MIN_TERMINAL_WIDTH: u16 = 140;
 /// The roles of the two primary agents. Their names are reserved, so no agent file replaces them;
 /// the TUI is a client and reads no agent code, and a test keeps these equal to the server's.

@@ -2,7 +2,7 @@
 
 **Status:** The original design, partly built. Read the notes under each section heading.  
 **Audience:** Pixma and coding agents implementing the project  
-**Repository:** https://github.com/PixmaNts/Navai  
+**Repository:** https://github.com/PixmaNts/withnav  
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
 **Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 

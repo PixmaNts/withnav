@@ -10,7 +10,8 @@ Write new names throughout 0.7; legacy readers warn or give a migration hint.
 Removal of the deprecated names is planned for 0.8 ([ADR 0014](docs/adr/0014-rebrand-withnav.md)).
 
 - **Product and crate:** Navai → WithNav (withnav.dev), crate `rust-agent` → `withnav`.
-  No old crate alias; the GitHub URL and internal `src/navigator/` module stay unchanged.
+  No old crate alias. The GitHub repository moves to `github.com/PixmaNts/withnav`
+  (the old URL redirects); the internal `src/navigator/` module stays.
 - **Binaries:** `navai` → `nav` (deprecated `navai` alias prints a notice and runs `nav`);
   `navai-lsp` → `withnav-lsp` (update the configured server path; no old LSP executable alias).
 - **Project directory:** `.navai/` / `.navigator/` → `.withnav/`, including `intent.md`,

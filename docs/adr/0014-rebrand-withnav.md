@@ -35,7 +35,8 @@ Metacognition remarks are Beacons signed by Nav; the layers have no persona.
 
 ## What stays
 
-The GitHub repository remains `github.com/PixmaNts/Navai`. The internal module
+The GitHub repository is renamed `github.com/PixmaNts/withnav` (2026-10-08); GitHub
+redirects the old `github.com/PixmaNts/Navai` URL. The internal module
 remains `src/navigator/`. Technical layer names remain Reflex, Instinct,
 Metacognition and Cognition, labelled Completion, Triage, Beacon, and Nav and the
 crew respectively. Standard terms such as commit, test, branch and file stay plain.

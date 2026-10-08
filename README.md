@@ -200,7 +200,7 @@ they are not part of 0.5.
 
 ## Contributing
 
-The repository is on GitHub: <https://github.com/PixmaNts/Navai>. `main` holds releases only.
+The repository is on GitHub: <https://github.com/PixmaNts/withnav>. `main` holds releases only.
 Work branches off `develop` as `feat/<name>` or `fix/<name>` and comes back through a pull request
 into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. Details in
 [`AGENTS.md`](AGENTS.md).

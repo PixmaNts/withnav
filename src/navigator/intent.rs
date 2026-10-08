@@ -192,10 +192,7 @@ fn apply_sections(current: &str, sections: &IntentSections) -> String {
         .into_iter()
         .zip(new_texts.into_iter().zip(current_texts))
     {
-        let text = new_text
-            .filter(|t| !t.is_empty())
-            .or(current_text)
-            .unwrap_or_default();
+        let text = new_text.or(current_text).unwrap_or_default();
         out.push_str(&format!("## {heading}\n"));
         if !text.is_empty() {
             out.push_str(&text);
@@ -431,7 +428,7 @@ Add retry with backoff to the HTTP client.
             tmp.path(),
             &IntentSections {
                 intent: Some("kept".into()),
-                plan: None,
+                plan: Some("obsolete plan".into()),
                 decisions: None,
                 active_spec: None,
             },
@@ -441,7 +438,7 @@ Add retry with backoff to the HTTP client.
             tmp.path(),
             &IntentSections {
                 intent: None,
-                plan: Some("   ".into()),
+                plan: Some("".into()),
                 decisions: None,
                 active_spec: None,
             },
@@ -449,7 +446,7 @@ Add retry with backoff to the HTTP client.
         .unwrap();
         let r = read_intent(tmp.path()).unwrap().unwrap();
         assert_eq!(r.intent.as_deref(), Some("kept"));
-        assert_eq!(r.plan, None, "whitespace-only clears the section");
+        assert_eq!(r.plan, None, "an empty string clears the existing section");
     }
 
     #[tokio::test]

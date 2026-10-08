@@ -33,6 +33,8 @@ requests land in `develop`.
   Removed an unreachable tooltip that incorrectly implied child continuation
   required a token; the server accepts tokenless child continuation.
 
+- **The intent tool can clear an obsolete section with an empty string.** An explicit empty
+  update now removes the previous text; omitted sections still retain their contents.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

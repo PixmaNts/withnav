@@ -19,6 +19,9 @@ requests land in `develop`.
   The cursor position was converted to a byte offset assuming one byte per line break, so in a CRLF
   file the code sent to the completion model drifted one byte per line; and a cursor on the empty
   line after a final newline got no completion at all.
+- **Remarks survive explanatory JSON before the final answer.** The navigator skips unrelated
+  objects in prose and code fences and uses the last answer-shaped object, while still rejecting
+  malformed lines and empty remark text.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

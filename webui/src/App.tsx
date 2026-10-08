@@ -13,6 +13,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { RightPanel, type PanelTab } from "./components/RightPanel";
 import { Sidebar, sidebarWorkspaces } from "./components/Sidebar";
 import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./components/WorkspaceActions";
+import { DeleteSessionDialog, type DeleteSessionRequest } from "./components/SessionActions";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
@@ -91,6 +92,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
   const [removing, setRemoving] = useState<RemoveRequest | null>(null);
+  const [deleting, setDeleting] = useState<DeleteSessionRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
   const workspace = route.workspace;
   const expansion = useWorkspaceExpansion(workspace);
@@ -119,12 +121,12 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     closeSide(false);
     closeDetails(false);
   }, [route.workspace, route.session, route.subagent, closeSide, closeDetails]);
-  // The palette, the model picker and the removal dialog open over the page, not under a drawer.
+  // The palette, the model picker and the confirmations open over the page, not under a drawer.
   useEffect(() => {
-    if (!overlay && !removing) return;
+    if (!overlay && !removing && !deleting) return;
     closeSide(false);
     closeDetails(false);
-  }, [overlay, removing, closeSide, closeDetails]);
+  }, [overlay, removing, deleting, closeSide, closeDetails]);
 
   useEffect(() => {
     document.title = route.session ? `${title} · WithNav` : "WithNav";
@@ -195,6 +197,15 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
           items: (sessions.data ?? []).filter((s) => !s.parent_session_id).map((s) => ({ id: s.id, group: s.agent, label: sessionTitle(s.title), description: `${s.message_count} msgs`, run: () => navigate({ session: s.id, subagent: null }) })),
         }),
       },
+      {
+        id: "delete",
+        group: "Session",
+        label: "Delete session…",
+        description: "With its subagent sessions; cannot be undone",
+        hint: "",
+        disabled: hasSession && workspace ? undefined : "No saved session is open",
+        run: () => workspace && route.session && setDeleting({ workspace, id: route.session, title: sessionRow?.title ?? null }),
+      },
       ...(hasSession && chat.running ? [{ id: "stop", group: "Session", label: "Stop the session", hint: "/stop", run: () => void chat.stop() }] : []),
       {
         id: "skill",
@@ -240,7 +251,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, openStudio, expansion.collapseAll, expandAllWorkspaces, currentWs]);
+  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, openStudio, expansion.collapseAll, expandAllWorkspaces, currentWs, sessionRow?.title]);
 
   const runServer = async (name: string, args: string) => {
     if (name === "bypass" && ["on", "off"].includes(args.trim())) {
@@ -372,7 +383,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       </header>
 
       <Drawer id="chat-side" side="left" state={side} label="Workspaces">
-        <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />
+        <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} onDelete={setDeleting} />
       </Drawer>
 
       {route.subagent && route.session ? (
@@ -416,6 +427,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       </Drawer>
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}
+      {deleting && <DeleteSessionDialog request={deleting} route={route} navigate={navigate} onClose={() => setDeleting(null)} />}
       {removing && <RemoveWorkspaceDialog request={removing} workspaces={sidebarList} route={route} navigate={navigate} onClose={() => setRemoving(null)} />}
     </div>
   );

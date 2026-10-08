@@ -6,6 +6,9 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
+  The extension built the message URL from the raw id while every other call encoded it, so such an
+  id produced a malformed request and a 404.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

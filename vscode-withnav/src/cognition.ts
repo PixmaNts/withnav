@@ -669,7 +669,7 @@ export class CognitionBackend implements ChatBackend {
     // NOT emit an optimistic copy here (that duplicated it).
     const { session, generation } = await this.ensureSession(operation);
     this.checkGeneration(generation);
-    await this.request(`/v1/sessions/${session}/messages`, {
+    await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, {
       method: "POST",
       body: JSON.stringify({
         target_actor_id: ROOT_ACTOR,
@@ -1014,7 +1014,7 @@ export class CognitionBackend implements ChatBackend {
       };
       if (this.state.lastSeq !== undefined) headers["last-event-id"] = this.state.lastSeq;
       const response = await fetch(
-        `http://127.0.0.1:${endpoint.port}/v1/sessions/${session}/events`,
+        `http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(session)}/events`,
         { headers, signal: abort.signal },
       );
       if (!response.ok || !response.body) {

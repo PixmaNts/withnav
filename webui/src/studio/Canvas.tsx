@@ -3,7 +3,7 @@
 
 import {
   applyNodeChanges, Background, BackgroundVariant, Handle, Position, ReactFlow, type Connection, type EdgeChange,
-  type NodeChange, type NodeProps,
+  type NodeChange, type NodeProps, BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps,
 } from "@xyflow/react";
 import { WarningCircle } from "@phosphor-icons/react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import { canvasEdges, canvasNodes, cardWidth, definitionFromDrag, type CardNode,
 import { CARD, connect, connectionError, disconnect, parseWireId, removeNode, TRIGGER_ID } from "./graph";
 import { actionLook, lookOf, portLabel, runText } from "./meta";
 import type { Definition, Diagnostic, FlowNode, RunRecord } from "./types";
+import { EMPTY_DECISION_WARNING, hasEmptyDecisionState } from "./inputs";
 
 interface CardExtra {
   labels: string[];
@@ -40,6 +41,7 @@ function CardView({ data, selected }: NodeProps<Card>) {
           </span>
         )}
         <span className="sf-card-name mono">{data.name}</span>
+        {node && hasEmptyDecisionState(node) && <span className="sf-card-err" title={EMPTY_DECISION_WARNING} aria-label={EMPTY_DECISION_WARNING}><WarningCircle size={12} weight="fill" /></span>}
       </div>
       <div className="sf-card-body" style={{ height: CARD.body }}>
         <div className="sf-card-text">{data.body || <span className="muted">No instructions yet.</span>}</div>
@@ -62,6 +64,16 @@ function CardView({ data, selected }: NodeProps<Card>) {
 
 // Defined once, outside render: React Flow re-mounts every card when this object changes.
 const nodeTypes = { trigger: memo(CardView), decision: memo(CardView), expression: memo(CardView), action: memo(CardView) };
+
+function WireView(props: EdgeProps<WireEdge>) {
+  const [path, x, y] = getBezierPath(props);
+  const remove = props.data?.remove as (() => void) | undefined;
+  return <>
+    <BaseEdge id={props.id} path={path} style={props.style} interactionWidth={24} />
+    {props.selected && remove && <EdgeLabelRenderer><button type="button" className="sf-wire-delete nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }} aria-label="Delete wire" title="Delete wire" onClick={(e) => { e.stopPropagation(); remove(); }}>×</button></EdgeLabelRenderer>}
+  </>;
+}
+const edgeTypes = { studio: WireView };
 
 function cardBody(node: FlowNode | null, def: Definition): { name: string; body: string; stateLine: string } {
   if (!node) {
@@ -138,7 +150,7 @@ export function Canvas({ def, run, diagnostics, selected, onSelect, edit, onRefu
   }, [derived]);
 
   const [edgeSel, setEdgeSel] = useState<string | null>(null);
-  const edges = useMemo((): WireEdge[] => canvasEdges(def, run).map((e) => ({ ...e, selected: e.id === edgeSel })), [def, run, edgeSel]);
+  const edges = useMemo((): WireEdge[] => canvasEdges(def, run).map((e) => ({ ...e, type: "studio", selected: e.id === edgeSel, data: { ...e.data!, ...edit && !run ? { remove: () => { const wire = parseWireId(e.id); if (wire) edit((d) => disconnect(d, wire)); setEdgeSel(null); } } : {} } })), [def, run, edgeSel, edit]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<Card>[]) => {
@@ -180,6 +192,7 @@ export function Canvas({ def, run, diagnostics, selected, onSelect, edit, onRefu
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

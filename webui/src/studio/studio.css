@@ -351,6 +351,10 @@ form.sf-const .sf-input { flex: 1; }
 .sf-card-icon { display: inline-flex; }
 .sf-card-tag { font-size: 10.5px; letter-spacing: 0.06em; }
 .sf-card-err { color: var(--rd); display: inline-flex; }
+.sf-wire-delete { position: absolute; pointer-events: all; width: 22px; height: 22px; padding: 0; border: 1px solid var(--bd); border-radius: 50%; background: var(--bg); color: var(--fg); cursor: pointer; }
+.sf-wire-delete:hover, .sf-wire-delete:focus-visible { color: var(--rd); border-color: var(--rd); }
+.sf-wire:hover .react-flow__edge-path { stroke-width: 2.5; }
+.sf-delete-hint { margin-left: 8px; }
 .sf-card-name { font-size: 12px; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 62%; }
 .sf-card-body {
   box-sizing: border-box;

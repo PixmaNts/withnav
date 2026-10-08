@@ -96,6 +96,22 @@ export function toggleInput(node: FlowNode, reference: string): FlowNode {
   return { ...node, inputs: { ...node.inputs, [aliasFor(reference, node.inputs)]: reference } };
 }
 
+/** Declare once and replace the expression's selection with the actual alias. */
+export function insertInputAlias(inputs: Record<string, string>, expression: string, reference: string, start: number, end = start) {
+  const alias = Object.entries(inputs).find(([, ref]) => ref === reference)?.[0] ?? aliasFor(reference, inputs);
+  return { inputs: { ...inputs, [alias]: reference }, expression: expression.slice(0, start) + alias + expression.slice(end), cursor: start + alias.length };
+}
+
+export function defaultDecisionInputs(trigger: Catalogue["triggers"][number] | undefined): Record<string, string> {
+  const fields = trigger?.name === "tool.pre_call" ? trigger.payload_fields.filter((f) => f.name === "tool" || f.name === "args") : trigger?.payload_fields.slice(0, 1) ?? [];
+  return Object.fromEntries(fields.map((f) => [f.name, `event.${f.name}`]));
+}
+
+export const EMPTY_DECISION_WARNING = "No inputs: the instinct has nothing to judge.";
+export function hasEmptyDecisionState(node: FlowNode): boolean {
+  return isDecision(node) && !Object.keys(node.inputs).length && !node.state_template?.trim();
+}
+
 /** The value a reference has in a run (or in the sample payload when there is no run); undefined = absent. */
 export function valueOf(reference: string, def: Definition, payload: Record<string, unknown> | undefined, run: RunRecord | null): unknown {
   const [ns, ...rest] = reference.split(".");

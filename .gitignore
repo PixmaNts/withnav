@@ -39,3 +39,6 @@ __pycache__/
 
 # Orchestrator progress files (local only)
 .slim/deepwork/
+
+# OpenChamber session data (screenshots, local state)
+/.openchamber/

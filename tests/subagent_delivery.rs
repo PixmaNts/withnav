@@ -30,7 +30,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -171,7 +171,7 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .await
         .unwrap();
     state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -421,7 +421,7 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
         .history()
         .create_child_link(
             child,
-            "explore".into(),
+            "vigie".into(),
             "goal".into(),
             "{}".into(),
             4,
@@ -546,7 +546,7 @@ async fn finished_child_wakes_idle_parent_and_consumes_once() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -648,7 +648,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .await
         .unwrap();
     let first = state
-        .create_child_session(parent, "explore", "first")
+        .create_child_session(parent, "vigie", "first")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -659,7 +659,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .await
         .unwrap();
     let second = state
-        .create_child_session(parent, "explore", "second")
+        .create_child_session(parent, "vigie", "second")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -746,7 +746,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -800,7 +800,7 @@ async fn parent_delete_removes_child_tree_and_notices() {
         .await
         .unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -870,7 +870,7 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
     history
         .create_child_link(
             child,
-            "explore".into(),
+            "vigie".into(),
             "inspect".into(),
             "{}".into(),
             4,
@@ -1242,7 +1242,7 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
     store
         .create_child_link(
             child,
-            "explore".into(),
+            "vigie".into(),
             "goal".into(),
             "{}".into(),
             4,

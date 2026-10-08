@@ -847,6 +847,7 @@ impl Service {
         prompt: &str,
         delivery: &str,
     ) -> Result<SessionId, ServerError> {
+        let agent = crate::agent::definitions::canonical_agent_id(agent);
         let parent_handle = self.routable_handle(parent).await?;
         if parent_handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);

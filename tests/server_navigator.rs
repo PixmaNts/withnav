@@ -49,7 +49,7 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
     let subscription = state.subscribe(parent, None).await.unwrap();
     let child = state
         .service()
-        .create_child_session(parent, "explore", "inspect child")
+        .create_child_session(parent, "vigie", "inspect child")
         .await
         .unwrap();
     let events = collect_until(subscription, |event| {

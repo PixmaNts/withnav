@@ -24,7 +24,7 @@ impl Tool for TaskTool {
         "task"
     }
     fn schema(&self) -> Value {
-        json!({"description":"Start a background subagent","parameters":{"type":"object","properties":{"agent":{"type":"string"},"prompt":{"type":"string"},"delivery":{"type":"string","enum":["next_turn","steer","interrupt"]}},"required":["agent","prompt"]}})
+        json!({"description":"Start a background specialist: vigie researches with sources, lux advises, mousse makes local low-risk edits, cartographe diagrams the project, sondeur investigates root causes. Cartographe and Sondeur run only on demand.","parameters":{"type":"object","properties":{"agent":{"type":"string"},"prompt":{"type":"string"},"delivery":{"type":"string","enum":["next_turn","steer","interrupt"]}},"required":["agent","prompt"]}})
     }
     fn call<'a>(
         &'a self,
@@ -47,6 +47,7 @@ impl Tool for TaskTool {
                         code: "invalid_args".into(),
                         message: "prompt must be a string".into(),
                     })?;
+            let agent = crate::agent::definitions::canonical_agent_id(agent);
             let id = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(ToolError::Canceled),

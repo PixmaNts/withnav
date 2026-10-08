@@ -484,7 +484,7 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
         Some("previous real driver task")
     );
     let child = state
-        .create_child_session(id, "explore", "delegated work")
+        .create_child_session(id, "vigie", "delegated work")
         .await
         .unwrap();
     assert_eq!(

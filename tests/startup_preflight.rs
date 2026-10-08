@@ -48,7 +48,7 @@ async fn default_admission_rejects_unknown_ineligible_and_unusable_assignments()
             "valid agents: build, plan",
         ),
         (
-            json!({"default_agent":"explore","agents":{"explore":"mock/chat"}}),
+            json!({"default_agent":"vigie","agents":{"vigie":"mock/chat"}}),
             "not primary",
         ),
         (
@@ -241,7 +241,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
         Some("mode: primary\nmodel: mock/fim"),
     ] {
         let dir = fixture(if global_header.is_some() {
-            json!({"default_agent":"oracle"})
+            json!({"default_agent":"lux"})
         } else {
             json!({"agents":{"build":{"model":"mock/chat"}},"layers":{"reflex":"mock/fim"}})
         });
@@ -339,7 +339,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             .unwrap();
         assert_eq!(session["model"], "mock/chat", "{session}");
         if global_header.is_some() {
-            assert_eq!(session["agent"], "oracle", "{session}");
+            assert_eq!(session["agent"], "lux", "{session}");
         } else {
             let layers: Value = client
                 .get(format!("{base}/v1/layers"))
@@ -637,11 +637,11 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
 async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-    let dir = fixture(json!({"default_agent":"oracle"}));
+    let dir = fixture(json!({"default_agent":"lux"}));
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/opencode/agents")).unwrap();
     std::fs::write(
-        home.join(".config/opencode/agents/oracle.md"),
+        home.join(".config/opencode/agents/lux.md"),
         "---\nmode: primary\nmodel: mock/chat\n---\nGlobal role",
     )
     .unwrap();
@@ -653,7 +653,7 @@ async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
     )
     .await
     .unwrap();
-    assert_eq!(snapshot.check(dir.path()).await.unwrap(), "oracle");
+    assert_eq!(snapshot.check(dir.path()).await.unwrap(), "lux");
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))

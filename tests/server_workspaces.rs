@@ -164,7 +164,7 @@ async fn destructive_removal_deletes_folded_root_sessions_children_and_events() 
         .unwrap();
     state.history().flush().await.unwrap();
     let conn = rusqlite::Connection::open(tmp.path().join("history.db")).unwrap();
-    conn.execute("INSERT INTO child_links(parent_id,child_id,agent,goal,policy_snapshot,status,created_at) VALUES (?1,?2,'explore','task','{}','done','now')", rusqlite::params![root, child.to_string()]).unwrap();
+    conn.execute("INSERT INTO child_links(parent_id,child_id,agent,goal,policy_snapshot,status,created_at) VALUES (?1,?2,'vigie','task','{}','done','now')", rusqlite::params![root, child.to_string()]).unwrap();
     let (status, body) = request(
         &state,
         "DELETE",

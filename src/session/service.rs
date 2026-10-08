@@ -2590,7 +2590,7 @@ impl Service {
             .load_skills(&workspace, session_id, resumed.is_some())
             .await;
         actor.set_skills(skills);
-        actor.guard = super::guard::jev_guard(
+        actor.guard = super::guard::instinct_guard(
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,

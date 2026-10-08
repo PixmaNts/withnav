@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::watchdog::{Clock, Evidence, JevJudge, Judge, RealClock, Watchdog};
+use super::watchdog::{Clock, Evidence, InstinctJudge, Judge, RealClock, Watchdog};
 
 #[cfg(debug_assertions)]
 #[derive(Clone)]
@@ -46,7 +46,7 @@ impl Service {
                 Arc::new(ClientCache::new()),
             )
         })
-        .map(|client| Arc::new(JevJudge(client)) as Arc<dyn Judge>);
+        .map(|client| Arc::new(InstinctJudge(client)) as Arc<dyn Judge>);
         let service = self.clone();
         let clock: Arc<dyn Clock> = Arc::new(RealClock);
         #[cfg(debug_assertions)]

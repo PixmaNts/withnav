@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use super::watchdog::{Clock, Evidence, JevJudge, Judge, RealClock, Verdict, Watchdog};
+use super::watchdog::{Clock, Evidence, InstinctJudge, Judge, RealClock, Verdict, Watchdog};
 use crate::bus::event::EventKind;
 use crate::bus::runtime::RuntimeStatus;
 use crate::bus::sequencer::{Candidate, Sequencer};
@@ -180,7 +180,7 @@ impl Service {
                     cache.clone(),
                 )
             })
-            .map(|client| Arc::new(JevJudge(client)) as Arc<dyn Judge>);
+            .map(|client| Arc::new(InstinctJudge(client)) as Arc<dyn Judge>);
         let reviewer = models.as_ref().and_then(|models| {
             let assigned = match crate::provider::layers::assigned(
                 models,

@@ -1645,10 +1645,10 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
 }
 
 #[tokio::test]
-async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() {
+async fn instinct_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() {
     use wiremock::{Mock, MockServer, ResponseTemplate};
     use withnav::provider::{config::load_models, openai::ClientCache, systemone::SystemOneClient};
-    use withnav::session::subagents::watchdog::JevJudge;
+    use withnav::session::subagents::watchdog::InstinctJudge;
     let server = MockServer::start().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let config = TestServerConfig::mock(tmp.path(), &server.uri()).config();
@@ -1658,7 +1658,7 @@ async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() 
         &config.config_dir,
     )
     .unwrap();
-    let judge = JevJudge(
+    let judge = InstinctJudge(
         SystemOneClient::from_alias(
             &models,
             "mock/mock-model",

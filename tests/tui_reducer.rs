@@ -5406,7 +5406,7 @@ fn approval_evidence_survives_live_and_replay() {
             )
             .spans
             .iter()
-            .any(|span| span.content.contains("auto · Jev")));
+            .any(|span| span.content.contains("auto · instinct")));
         }
     }
 }

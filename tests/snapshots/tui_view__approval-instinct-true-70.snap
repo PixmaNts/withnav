@@ -4,15 +4,15 @@ expression: shown
 ---
  ◆ withnav                             ▌◎ build  — · assigned · — / — 
 ──────────────────────────────────────────────────────────────────────
- │ ▾ ✓ bash · auto · Jev cargo test parser  ok  1.42 s  exit 101      
- │   Auto-approved by Jev: Matches the requested change               
+ │ ▾ ✓ bash · auto · instinct cargo test parser  ok  1.42 s  exit 101 
+ │   Auto-approved by instinct: read-only · inside the project · low  
+ │ risk · Matches the requested change                                
+ │   Overrides: scratch root                                          
+ │   Review evidence was shortened                                    
+ │   Role check: conforms · Within the plan role                      
  │   test parser::empty_argument ... FAILED                           
  │   expected Some(""), got None                                      
  │                                                                    
-                                                                      
-                                                                      
-                                                                      
-                                                                      
                                                                       
                                                                       
                                                                       

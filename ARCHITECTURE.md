@@ -38,7 +38,7 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
-| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Instinct from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
@@ -244,7 +244,7 @@ arbitrary commands. Literal supported file operands are canonicalized; ambiguous
 expansions tighten risk. Native sensitivity is deterministic. In-root search descendant reopen
 races remain a documented follow-up, not grounds to permit outside walks.
 Every gated call goes to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
-families, canonical destinations) only tighten, then Jev answers `call_effect`, `call_scope` and
+families, canonical destinations) only tighten, then Instinct answers `call_effect`, `call_scope` and
 `call_risk` in one bounded request (plus `role_conformance` for `plan`). A read-only call, or a
 low-risk change inside the project, runs only if it is not risky. A risky call or outside-project change goes to a synchronous,
 tool-free metacognition review (20 s); only `approve` runs it. Anything else (reject, unsure, a
@@ -281,12 +281,12 @@ resume expires every request that has no `permission.resolved` and settles its c
 **Plan exception to the role guard.** For the `plan` agent, a `write` or `edit` whose path as
 written is not a symlink, and whose destination is an existing regular `.md` file or a missing `.md`
 file in an existing directory, needs no `role_conformance` answer; it still goes through the
-permission review. Every other `write` or `edit`, and every `bash`, asks Jev `role_conformance` in the
+permission review. Every other `write` or `edit`, and every `bash`, asks Instinct `role_conformance` in the
 same batched request (role prompt, the Captain's latest message, workspace, resolved target, tool,
 exact arguments, at most 16 KiB); a `fetch` asks it alone. Only a valid `conforms` lets the call
 continue, and the verdict is recorded as `guard` in the metadata of its durable `tool.post_call`.
 Anything else (`violates`, `uncertain`, a malformed answer, no usable instinct assignment or key, a timeout, an
-oversized call) is an ordinary permission request whose `reason` says why. Jev is advisory, never a
+oversized call) is an ordinary permission request whose `reason` says why. Instinct is advisory, never a
 sandbox.
 
 **Keystroke to suggestion (reflex).** The extension asks `withnav/inlineCompletion` after 150 ms
@@ -405,7 +405,7 @@ it outside admission and registry locks.
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
 `supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal
 completion. It sleeps a full configured interval between checks, never replays missed ticks,
-skips parked/idle children and awaits Jev outside lifecycle/admission. `bus/runtime/progress.rs`
+skips parked/idle children and awaits Instinct outside lifecycle/admission. `bus/runtime/progress.rs`
 records only observable text, call/result and step activity; thinking is never evidence.
 
 `outcomes.rs` puts every verdict except the first failed check in the existing durable outbox.

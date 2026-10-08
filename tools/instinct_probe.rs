@@ -3,8 +3,8 @@
 //! Checks all roles where WithNav uses `instinct` (`SystemOneClient`):
 //! 1. Wiring & Layer Resolution: verifies `config.json` -> `models.json` -> `auth.json`.
 //! 2. Editor-flow decision (triage): `worth_attention` (noul) + `route` (choice).
-//! 3. Role Guard (`JevGuard`): `role_conformance` on a `plan` agent code modification.
-//! 4. Permission Gate (`JevJudge`): `call_effect`, `call_scope`, `call_risk`.
+//! 3. Role Guard (`InstinctGuard`): `role_conformance` on a `plan` agent code modification.
+//! 4. Permission Gate (`InstinctJudge`): `call_effect`, `call_scope`, `call_risk`.
 //! 5. Latency check: verifies each call answers within the 2.0 s deadline.
 //!
 //! Run with:
@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
-use withnav::agent::guard::{CallFacts, GuardInput, JevGuard, RoleGuard, Verdict};
+use withnav::agent::guard::{CallFacts, GuardInput, InstinctGuard, RoleGuard, Verdict};
 use withnav::provider::auth;
 use withnav::provider::config::ModelsConfig;
 use withnav::provider::layers;
@@ -122,10 +122,10 @@ async fn main() -> anyhow::Result<()> {
     }
     println!();
 
-    // 3. Test Role Guard: JevGuard answering role_conformance
-    println!("[3/4] Role Guard (JevGuard role_conformance)...");
+    // 3. Test Role Guard: InstinctGuard answering role_conformance
+    println!("[3/4] Role Guard (InstinctGuard role_conformance)...");
     {
-        let guard = JevGuard(client.clone());
+        let guard = InstinctGuard(client.clone());
         let write_args = json!({
             "path": "/workspace/src/compiler.rs",
             "content": "pub fn compile() -> Result<()> { Ok(()) }"
@@ -153,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
         assert_eq!(
             verdict,
             Verdict::Violates,
-            "Jev should flag source edit in plan role as 'violates'"
+            "Instinct should flag source edit in plan role as 'violates'"
         );
     }
     println!();

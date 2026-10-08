@@ -24,7 +24,7 @@ export interface PermissionCard {
 }
 export interface PermissionEvidence {
   policy_version: number;
-  source: "jev" | "metacognition" | "captain" | "driver";
+  source: "instinct" | "jev" | "metacognition" | "captain" | "driver";
   reason?: string;
   verdicts?: unknown;
   overrides?: unknown;

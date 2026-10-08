@@ -56,5 +56,13 @@ export function toolLine(call: ToolCall): ToolLine {
   else if (call.status === "denied") meta = "denied";
   else if (call.status === "interrupted") meta = "interrupted";
   else if (call.status === "error" && !meta) meta = "failed";
+  const gate = m.permission_gate;
+  if (gate && typeof gate === "object" && gate.policy_version === 1) {
+    const source = gate.source;
+    const approval = source === "instinct" || source === "jev" ? "auto · instinct"
+      : source === "metacognition" ? "auto · metacognition"
+      : source === "captain" || source === "driver" ? "approved · Captain" : "";
+    if (approval) meta = meta ? `${meta} · ${approval}` : approval;
+  }
   return { verb: call.name, target: target.length > 160 ? `${target.slice(0, 157)}…` : target, meta };
 }

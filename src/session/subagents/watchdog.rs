@@ -92,8 +92,8 @@ pub trait Judge: Send + Sync {
     ) -> BoxFuture<'a, Result<Verdict, JudgeError>>;
 }
 
-pub struct JevJudge(pub SystemOneClient);
-impl Judge for JevJudge {
+pub struct InstinctJudge(pub SystemOneClient);
+impl Judge for InstinctJudge {
     fn judge<'a>(
         &'a self,
         evidence: &'a Evidence,

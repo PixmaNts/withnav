@@ -174,7 +174,12 @@ where
                 Ok(0) => break,
                 Ok(n) => {
                     if buf.len() < DEFAULT_MAX_OUTPUT_BYTES * 2 {
-                        buf.extend_from_slice(&chunk[..n]);
+                        let remaining = DEFAULT_MAX_OUTPUT_BYTES * 2 - buf.len();
+                        buf.extend_from_slice(&chunk[..n.min(remaining)]);
+                    } else {
+                        // Keep the pipe open so verbose commands can finish without SIGPIPE,
+                        // but apply backpressure once their retained output is full.
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 }
                 Err(_) => break,
@@ -240,6 +245,16 @@ mod tests {
         assert!(positive_pgid(u32::MAX).is_none());
         assert_eq!(positive_pgid(1).unwrap().as_raw(), 1);
         assert_eq!(positive_pgid(i32::MAX as u32).unwrap().as_raw(), i32::MAX);
+    }
+
+    #[tokio::test]
+    async fn output_reader_caps_retained_bytes() {
+        let input = vec![b'x'; DEFAULT_MAX_OUTPUT_BYTES * 2 + 8192];
+        let mut reader = spawn_reader(std::io::Cursor::new(input));
+        assert_eq!(
+            join_reader(&mut reader).await.len(),
+            DEFAULT_MAX_OUTPUT_BYTES * 2
+        );
     }
 
     #[tokio::test]

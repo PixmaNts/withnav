@@ -223,8 +223,8 @@ fn the_navai_token_variable_still_works_with_a_deprecation_warning() {
         &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
     );
     // The terminal owns stderr, so the deprecation goes to the client log.
-    let log = std::fs::read_to_string(run.dirs.path().join("data/withnav/tui.log"))
-        .unwrap_or_default();
+    let log =
+        std::fs::read_to_string(run.dirs.path().join("data/withnav/tui.log")).unwrap_or_default();
     assert!(
         log.contains("NAVAI_SERVER_TOKEN is deprecated; use WITHNAV_SERVER_TOKEN"),
         "{log}"

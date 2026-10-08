@@ -273,12 +273,8 @@ mod tests {
     #[tokio::test]
     async fn context_collects_intent_and_leaves_missing_sources_absent() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".navigator")).unwrap();
-        std::fs::write(
-            dir.path().join(".navigator/intent.md"),
-            "## Intent\nShip it",
-        )
-        .unwrap();
+        std::fs::create_dir(dir.path().join(".withnav")).unwrap();
+        std::fs::write(dir.path().join(".withnav/intent.md"), "## Intent\nShip it").unwrap();
         let context = ContextSnapshot {
             workspace: Some(dir.path().into()),
             ..Default::default()
@@ -534,7 +530,7 @@ impl InputSource for ContextSnapshot {
                 if names.iter().any(|n| n == "intent.record") {
                     let workspace = workspace.clone();
                     let read = tokio::task::spawn_blocking(move || {
-                        let path = workspace.join(".navigator/intent.md");
+                        let path = workspace.join(".withnav/intent.md");
                         // Refuse links and oversize files before the existing intent reader.
                         let metadata = std::fs::symlink_metadata(&path).ok()?;
                         if !metadata.is_file()

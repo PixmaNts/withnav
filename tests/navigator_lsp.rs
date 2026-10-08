@@ -22,7 +22,7 @@ use common::navigator::{
 #[tokio::test]
 async fn failed_legacy_conversion_is_warned_once_after_initialized() {
     let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |mut deps, ws| {
-        let source = ws.join(".navigator");
+        let source = ws.join(".withnav");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("pipeline.toml"), "unsupported = true").unwrap();
         let host = withnav::flows::host::Host::new(ws.join("config"), ws.join("data"), None);

@@ -262,7 +262,7 @@ pub(super) async fn hide_workspace(
     }
 }
 
-/// `GET /v1/intent?workspace=<abs path>`: the workspace's `.navigator/intent.md`.
+/// `GET /v1/intent?workspace=<abs path>`: the workspace's `.withnav/intent.md`.
 pub(super) async fn get_intent(Query(params): Query<HashMap<String, String>>) -> Response {
     let Some(workspace) = params.get("workspace") else {
         return error_response(ServerError::MalformedBody(

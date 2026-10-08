@@ -841,9 +841,9 @@ pub fn with_intent_and_feed(
     workspace: &Path,
     feed: navigator::ConversationFeed,
 ) -> NavigatorDeps {
-    std::fs::create_dir_all(workspace.join(".navigator")).unwrap();
+    std::fs::create_dir_all(workspace.join(".withnav")).unwrap();
     std::fs::write(
-        workspace.join(".navigator/intent.md"),
+        workspace.join(".withnav/intent.md"),
         "## Intent\nadd an auth remove command",
     )
     .unwrap();

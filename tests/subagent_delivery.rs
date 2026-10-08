@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
-use serde_json::{json, Value};
 
 mod common;
 use common::deadline::Deadline;
@@ -236,9 +236,9 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();
@@ -917,9 +917,9 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();
@@ -1061,9 +1061,9 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();

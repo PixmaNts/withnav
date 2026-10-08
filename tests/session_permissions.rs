@@ -714,7 +714,7 @@ async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     let env = env();
-    let agents = env.ws.join(".navai/agents");
+    let agents = env.ws.join(".withnav/agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
         agents.join("writer.md"),

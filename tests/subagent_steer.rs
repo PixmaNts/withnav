@@ -1,5 +1,5 @@
-use withnav::server::AppState;
 use serde_json::{json, Value};
+use withnav::server::AppState;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
@@ -778,9 +778,9 @@ async fn parked_permission_queues_steer_and_interrupt_cancels_without_running_ca
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();
@@ -1115,9 +1115,9 @@ async fn interrupt_during_running_tool_preserves_result_pairing_and_capability_c
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();

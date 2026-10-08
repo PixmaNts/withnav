@@ -826,7 +826,10 @@ async fn variant_step_and_slash_variant_drive_the_server() {
     })
     .await;
     assert_eq!(
-        withnav::tui::commands::variant_choices(&rt.state, &withnav::tui::state::VariantPick::Current),
+        withnav::tui::commands::variant_choices(
+            &rt.state,
+            &withnav::tui::state::VariantPick::Current
+        ),
         (
             vec!["high".into(), "low".into(), "off".into(), "inherit".into()],
             1

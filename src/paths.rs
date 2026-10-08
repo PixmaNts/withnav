@@ -55,3 +55,50 @@ mod tests {
         assert_eq!(log, dir.join("withnav.jsonl"));
     }
 }
+
+/// Selects the workspace configuration directory, reading legacy names for 0.7.
+pub fn workspace_dir(workspace: &std::path::Path) -> std::path::PathBuf {
+    workspace_dir_with_hint(
+        workspace,
+        |legacy| tracing::warn!(workspace = %workspace.display(), "{legacy} is deprecated; move it to .withnav"),
+    )
+}
+
+fn workspace_dir_with_hint(
+    workspace: &std::path::Path,
+    hint: impl FnOnce(&str),
+) -> std::path::PathBuf {
+    use std::sync::{Mutex, OnceLock};
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<std::path::PathBuf>>> = OnceLock::new();
+    let new = workspace.join(".withnav");
+    if new.exists() {
+        return new;
+    }
+    for legacy in [".navai", ".navigator"] {
+        let path = workspace.join(legacy);
+        if path.exists() {
+            if WARNED
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(workspace.to_path_buf())
+            {
+                hint(legacy);
+            }
+            return path;
+        }
+    }
+    new
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    #[test]
+    fn old_workspace_directories_are_read_in_priority_order() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [".navigator", ".navai", ".withnav"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+            assert_eq!(super::workspace_dir(root.path()), root.path().join(name));
+        }
+    }
+}

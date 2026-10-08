@@ -607,7 +607,10 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, withnav::error::ServerError::SavedAgentUnavailable { .. }),
+        matches!(
+            err,
+            withnav::error::ServerError::SavedAgentUnavailable { .. }
+        ),
         "{err:?}"
     );
     assert!(err.to_string().contains("scribe"));

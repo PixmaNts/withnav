@@ -293,7 +293,10 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
         .run_command(ulid::Ulid::new(), "help", "")
         .await
         .unwrap_err();
-    assert!(matches!(err, withnav::error::ServerError::SessionNotFound(_)));
+    assert!(matches!(
+        err,
+        withnav::error::ServerError::SessionNotFound(_)
+    ));
     let id = state
         .create_session(&ws, None, false)
         .await

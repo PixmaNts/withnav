@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use withnav::bus::event::{EventEnvelope, EventKind};
-use withnav::navigator::ports::Answer;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::navigator::ports::Answer;
 
 mod common;
 use common::navigator::EditorFlowsExt;

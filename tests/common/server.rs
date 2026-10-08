@@ -285,7 +285,7 @@ impl TestServerConfig {
 
     /// Like [`Self::state`], with editor hooks.
     pub fn navigator_state(&self) -> AppState {
-        self.navigator_state_with_conversation(None)
+        self.withnav_state_with_conversation(None)
     }
 
     /// [`Self::navigator_state`] sharing the navigator's conversation feed.

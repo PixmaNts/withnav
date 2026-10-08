@@ -103,7 +103,7 @@ fn body(state: &AppState, ws: &std::path::Path) -> Result<Value, Box<Response>> 
         gateways.push(json!({"name":name,"base_url":base_url,"api_key_env":p.api_key_env,"key_source":source,"catalog_format":p.catalog_format,"connect_timeout_ms":p.connect_timeout_ms,"request_timeout_ms":p.request_timeout_ms,"headers":p.headers.keys().collect::<Vec<_>>(),"model_count":catalog.models.values().filter(|m| &m.provider == name).count(),"used_by":used}));
     }
     Ok(
-        json!({"revision":revision,"paths":{"config":settings::path(dir),"models":models,"agents":[dir.join("agents"),ws.join(".navai/agents")]},"fields":fields,"gateways":gateways}),
+        json!({"revision":revision,"paths":{"config":settings::path(dir),"models":models,"agents":[dir.join("agents"),crate::paths::workspace_dir(&ws).join("agents")]},"fields":fields,"gateways":gateways}),
     )
 }
 pub(super) async fn get(

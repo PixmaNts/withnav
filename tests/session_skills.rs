@@ -183,7 +183,8 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         selected.payload["selected_skill"],
         json!({"name":"ask-matt","origin":"driver"})
     );
-    let withnav::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
+    let withnav::bus::ResumeOutcome::Replay(replay) =
+        state.subscribe(id, None).await.unwrap().replay
     else {
         panic!("durable replay")
     };

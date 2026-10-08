@@ -1,14 +1,14 @@
 //! Explicit archive markers preserve legacy history without preparing a runtime.
 use axum::http::StatusCode;
 use http_body_util::BodyExt;
+use serde_json::json;
+use tower::ServiceExt;
+use ulid::Ulid;
 use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::error::ServerError;
 use withnav::provider::openai::ChatMessage;
 use withnav::server::routes::app as router;
 use withnav::session::store::HistoryStore;
-use serde_json::json;
-use tower::ServiceExt;
-use ulid::Ulid;
 
 mod common;
 use common::server::{driver_command, request_json, TestServerConfig};

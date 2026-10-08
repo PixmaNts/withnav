@@ -254,10 +254,10 @@ async fn intent_reports_present_absent_and_missing_query() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let with = tmp.path().join("with");
     let without = tmp.path().join("without");
-    std::fs::create_dir_all(with.join(".navigator")).expect("dir");
+    std::fs::create_dir_all(with.join(".withnav")).expect("dir");
     std::fs::create_dir_all(&without).expect("dir");
     std::fs::write(
-        with.join(".navigator/intent.md"),
+        with.join(".withnav/intent.md"),
         "## Intent\nShip the web client\n\n## Plan\n1. build\n",
     )
     .expect("intent");

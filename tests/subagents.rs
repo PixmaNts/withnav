@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::{json, Value};
 use withnav::bus::event::EventKind;
 use withnav::server::AppState;
 use withnav::tools::Tool;
-use serde_json::{json, Value};
 
 mod common;
 use common::deadline::Deadline;
@@ -703,7 +703,7 @@ fn fixture_at(provider_url: &str) -> Fx {
 fn install_agents(root: &Path, ws: &Path) {
     let home = root.join("home");
     let cfg = root.join("cfg/agents");
-    let project = ws.join(".navai/agents");
+    let project = ws.join(".withnav/agents");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&project).unwrap();
@@ -907,7 +907,7 @@ async fn forbidden_child_calls_are_denied_before_permissions() {
     let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
-        fx.ws.join(".navai/agents/writer.md"),
+        fx.ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\ntools:\n  write: false\n---\nResearch without writes.",
     )
     .unwrap();
@@ -1793,7 +1793,11 @@ async fn bypass_of(fx: &Fx, id: ulid::Ulid) -> bool {
 
 async fn set_bypass(fx: &Fx, id: ulid::Ulid, enabled: bool) {
     fx.state
-        .set_bypass(id, enabled, withnav::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(
+            id,
+            enabled,
+            withnav::bus::runtime::bypass::BypassOrigin::Http,
+        )
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1898,7 +1902,11 @@ async fn parent_changes_reach_live_children_both_ways_and_no_unrelated_root() {
     // A child cannot be toggled by hand.
     assert!(matches!(
         fx.state
-            .set_bypass(child, true, withnav::bus::runtime::bypass::BypassOrigin::Http)
+            .set_bypass(
+                child,
+                true,
+                withnav::bus::runtime::bypass::BypassOrigin::Http
+            )
             .bounded(file!(), line!())
             .await,
         Err(withnav::error::ServerError::ChildReadOnly)

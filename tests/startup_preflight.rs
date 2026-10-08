@@ -4,9 +4,9 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use withnav::agent::instructions::RulesRoots;
 use withnav::session::preflight::Preflight;
-use serde_json::{json, Value};
 
 fn fixture(config: Value) -> tempfile::TempDir {
     let mut config = config;
@@ -103,9 +103,9 @@ async fn settings_and_models_are_captured_once_and_project_agents_use_actual_sco
         .unwrap()
         .is_none());
     let workspace = dir.path().join("project");
-    std::fs::create_dir_all(workspace.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(workspace.join(".withnav/agents")).unwrap();
     std::fs::write(
-        workspace.join(".navai/agents/local.md"),
+        workspace.join(".withnav/agents/local.md"),
         "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
     )
     .unwrap();
@@ -260,7 +260,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
                 format!("---\n{header}\n---\nGlobal role"),
             )
             .unwrap();
-            let project = workspace.join(".navai/agents");
+            let project = workspace.join(".withnav/agents");
             std::fs::create_dir_all(&project).unwrap();
             std::fs::write(
                 project.join("oracle.md"),
@@ -463,10 +463,10 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
     for present in [true, false] {
         let dir = fixture(json!({"default_agent":"local"}));
         let workspace = dir.path().join("project");
-        std::fs::create_dir_all(workspace.join(".navai/agents")).unwrap();
+        std::fs::create_dir_all(workspace.join(".withnav/agents")).unwrap();
         if present {
             std::fs::write(
-                workspace.join(".navai/agents/local.md"),
+                workspace.join(".withnav/agents/local.md"),
                 "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
             )
             .unwrap();

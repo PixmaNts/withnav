@@ -7,7 +7,10 @@ use common::server::{spawn_server, TestServerConfig, PROVIDER};
 
 const SECRET_SENTINEL: &str = "synthetic-secret-never-echo";
 
-async fn catalog_response(state: withnav::server::AppState, root: &std::path::Path) -> (u16, Value) {
+async fn catalog_response(
+    state: withnav::server::AppState,
+    root: &std::path::Path,
+) -> (u16, Value) {
     let (addr, task) = spawn_server(state).await;
     let response = reqwest::Client::new()
         .get(format!("http://{addr}/v1/models"))
@@ -125,7 +128,7 @@ async fn provider_response_diagnostic_does_not_echo_endpoint_or_key() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agent() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9").navigator_state();
+    let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9").withnav_state();
 
     std::fs::write(
         tmp.path().join("models.json"),
@@ -224,7 +227,7 @@ async fn get_models_from(
     base_url: &str,
     write: fn(&std::path::Path, &str),
 ) -> Value {
-    let state = TestServerConfig::mock(root, base_url).navigator_state();
+    let state = TestServerConfig::mock(root, base_url).withnav_state();
     write(root, base_url);
     let (addr, task) = spawn_server(state).await;
     let body = reqwest::Client::new()

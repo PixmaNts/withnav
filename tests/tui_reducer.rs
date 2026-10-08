@@ -1,6 +1,9 @@
 //! Reducer tests over JSONL fixtures built from the crate's real event types.
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
+use serde::Serialize;
+use serde_json::{json, Value};
+use ulid::Ulid;
 use withnav::tui::protocol::{ContextSnapshot, ModelIdentity};
 use withnav::{
     bus::event::*,
@@ -12,9 +15,6 @@ use withnav::{
         state::*,
     },
 };
-use serde::Serialize;
-use serde_json::{json, Value};
-use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
@@ -392,11 +392,6 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
 
 #[tokio::test]
 async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
-    use withnav::tui::{
-        client::Client,
-        input::Editor,
-        runtime::{Context, Executor},
-    };
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -404,6 +399,11 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
+    };
+    use withnav::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
     };
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -748,11 +748,11 @@ fn startup_child_metadata_opens_read_only_without_resume() {
 
 #[tokio::test]
 async fn child_controls_and_permission_answers_use_the_owner_routes() {
-    use withnav::tui::client::Client;
     use wiremock::{
         matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
     };
+    use withnav::tui::client::Client;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/sessions/child/stop"))
@@ -4442,7 +4442,10 @@ fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     let background = &s.tabs[0];
     assert!(background.open_permission().is_some());
     assert!(background.unread);
-    assert_eq!(withnav::tui::view::sidebar::tab_state(background), "waiting");
+    assert_eq!(
+        withnav::tui::view::sidebar::tab_state(background),
+        "waiting"
+    );
     assert!(s.open_permission().is_none(), "the tab on screen has none");
 }
 

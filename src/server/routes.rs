@@ -48,7 +48,7 @@
 //!   A command-line workspace returns 409 `{reason:"launched",error}`; invalid paths return 400.
 //! - `POST /v1/workspaces?path=<abs>` -> 204, idempotently unhides an existing directory.
 //! - `GET  /v1/intent?workspace=<abs path>` -> `{exists,intent,plan,decisions,active_spec,raw}`
-//!   from `.navigator/intent.md` (nullable strings; 400 without an absolute `workspace`)
+//!   from `.withnav/intent.md` (nullable strings; 400 without an absolute `workspace`)
 //! - Every other path, only when started by `navai web` (`ServerConfig.web`): the embedded browser
 //!   client's files, `index.html` for unknown non-`/v1/` paths; no token needed, unknown `/v1/` paths stay 404.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`

@@ -1,6 +1,6 @@
-// Parses a navigator wake into the parts the chat shows as a note.
+// Parses a Nav wake into the parts the chat shows as a note.
 //
-// Current shape (one header line, then sections):
+// Structured shape (legacy server text, still accepted):
 //   Navigator noticed: <reason> in <path>:<line>
 //   ```diff ... ```
 //   Intent on record:
@@ -14,7 +14,7 @@
 //   Intent on record:
 //   <intent>
 //   Recent conversation:
-//   <digest, dropped: the driver already sees it>
+//   <digest, dropped: the Captain already sees it>
 
 export type WakeNote = {
   shape: "current" | "legacy" | "other";

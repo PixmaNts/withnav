@@ -25,7 +25,7 @@ function settingsBody(revision = "rev-1") {
       field("agent.watchdog_interval_secs", null, 300, false),
       field("tui.theme", "nord-light", null, true, "live"),
       field("agents.build", { model: "omniroute/cc/opus", variant: "high" }, null, true),
-      field("agents.explore", null, null, false),
+      field("agents.vigie", null, null, false),
     ],
     gateways: [
       { name: "omniroute", base_url: "http://localhost:20128/v1", api_key_env: "OMNIROUTE_API_KEY", key_source: "auth_store", catalog_format: "omniroute", connect_timeout_ms: 5000, request_timeout_ms: 600000, headers: [], model_count: 4, used_by: ["layers.instinct", "agents.build"] },
@@ -41,7 +41,7 @@ const modelsBody = { models: [
 ] };
 const agentsBody = { default_agent: "build", agents: [
   { id: "build", description: "Implements the task", mode: "primary", effective: { model: "omniroute/cc/opus", variant: "high", source: "config" }, warning: null },
-  { id: "explore", description: "Read-only exploration", mode: "subagent", effective: null, warning: null },
+  { id: "vigie", description: "Read-only exploration", mode: "subagent", effective: null, warning: null },
 ] };
 const layersBody = { layers: [{ layer: "reflex", status: "usable", model: "inception/mercury-edit-2", variant: null, reason: null }] };
 
@@ -168,7 +168,7 @@ function snapshot() {
 
 test("sections follow the TOC of the design and filter models by API, grouped gateway › provider", () => {
   const sections = buildSections(snapshot());
-  assert.deepEqual(sections.map((s) => s.label), ["Gateways", "omniroute", "inception", "Layers", "reflex", "instinct", "metacognition", "cognition", "build", "explore", "Permissions", "Subagents", "Appearance"]);
+  assert.deepEqual(sections.map((s) => s.label), ["Gateways", "omniroute", "inception", "Layers", "reflex", "instinct", "metacognition", "cognition", "build", "vigie", "Permissions", "Subagents", "Appearance"]);
   const reflex = sections.find((s) => s.id === "layer:reflex").rows[0];
   assert.deepEqual(reflex.control.groups.map((g) => g.label), ["inception"]);
   const build = sections.find((s) => s.id === "agent:build").rows[0];

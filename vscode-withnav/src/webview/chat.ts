@@ -377,8 +377,8 @@ function decorateCrew(byline: HTMLElement, agent = "build"): void {
 }
 
 function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string): void {
-  if ((author === "navigator" || author === "nav")) { add(navigatorNote(text)); return; }
-  const root = el("article", `message ${author}`);
+  if ((author === "navigator" || author === "nav")) { add(navNote(text)); return; }
+  const root = el("article", `message ${author === "driver" ? "captain" : author}`);
   if (author === "cognition") root.dataset.agent = agentLabel.dataset.agent;
   const byline = el("div", "byline", (author === "driver" || author === "captain") ? pendingQuestion ? "Captain · Answer" : "Captain" : author === "cognition" ? "Cognition" : "Subagent output · untrusted data");
   if (author === "cognition") decorateCrew(byline, agentLabel.dataset.agent);
@@ -403,15 +403,15 @@ function message(author: string, text: string, context?: string, skill?: { name:
   if (pendingQuestion && (author === "driver" || author === "captain")) pendingQuestion = false;
 }
 
-// A wake: the navigator glancing over the driver's shoulder. One quiet
+// A wake: Nav glancing over the Captain's shoulder. One quiet
 // summary, the change and the intent behind a disclosure.
 let noteCount = 0;
-function navigatorNote(text: string): HTMLElement {
+function navNote(text: string): HTMLElement {
   const wake = parseWake(text);
   const root = el("article", "message note");
   if (!replaying) root.classList.add("arrived");
   const head = el("div", "note-head");
-  head.append(navigatorMark());
+  head.append(navMark());
   const line = el("div", "note-line");
   line.append(el("span", "note-label", "Beacon · Nav · metacognition → nav"));
   if (wake.reason) line.append(el("span", "note-reason", wake.reason));
@@ -490,7 +490,7 @@ function svgIcon(className: string, d: string): SVGSVGElement {
   svg.append(path);
   return svg;
 }
-const navigatorMark = (): SVGSVGElement => svgIcon("note-mark", "M8 2.5 12.5 13 8 10.4 3.5 13Z");
+const navMark = (): SVGSVGElement => svgIcon("note-mark", "M8 2.5 12.5 13 8 10.4 3.5 13Z");
 const chevron = (): SVGSVGElement => svgIcon("note-chevron", "M6 4l4 4-4 4");
 
 function codeBlock(label: string, value: string, fill: (code: HTMLElement) => void): HTMLElement {

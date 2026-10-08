@@ -64,9 +64,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visib
 .empty { color: var(--vscode-descriptionForeground); padding: 28px 0; max-width: 32ch; }
 [hidden] { display: none !important; }
 .message { padding: 16px 0 18px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); overflow-wrap: anywhere; }
-.message.driver { padding: 16px 0 18px; }
+.message.captain { padding: 16px 0 18px; }
 .byline { font-size: 11px; font-weight: 600; margin-bottom: 7px; color: var(--vscode-descriptionForeground); }
-.message.driver .byline { color: var(--vscode-foreground); }
+.message.captain .byline { color: var(--vscode-foreground); }
 .message-body > :first-child { margin-top: 0; }
 .message-body > :last-child { margin-bottom: 0; }
 p { margin: 0 0 12px; white-space: pre-wrap; }
@@ -240,7 +240,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .agent-label[data-agent=plan], .message.cognition[data-agent=plan] .byline {
   color: var(--vscode-textLink-foreground, var(--vscode-foreground));
 }
-.message.driver .byline { color: var(--vscode-foreground); }
+.message.captain .byline { color: var(--vscode-foreground); }
 .tool-row.complete .tool-mark { color: var(--vscode-testing-iconPassed, var(--vscode-foreground)); }
 .tool-row.working .tool-mark { color: var(--vscode-progressBar-background, var(--vscode-textLink-foreground, var(--vscode-foreground))); animation: none; }
 .tool-row.failed .tool-mark { color: var(--vscode-errorForeground, var(--vscode-foreground)); }

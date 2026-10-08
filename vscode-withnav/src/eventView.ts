@@ -104,9 +104,9 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
   switch (envelope.kind) {
     case "message.received": {
       const source = String(p.source ?? "");
-      const author = source === "captain" || source === "driver" || source === "user:http" || source === "user:cli" ? "driver"
+      const author = source === "captain" || source === "driver" || source === "user:http" || source === "user:cli" ? "captain"
         : source === "nav" || source.startsWith("nav:") || source === "navigator" || source.startsWith("navigator:") ? "navigator" : "subagent";
-      const selectedSkill = author === "driver" && typeof p.selected_skill?.name === "string"
+      const selectedSkill = author === "captain" && typeof p.selected_skill?.name === "string"
         ? { name: p.selected_skill.name, origin: String(p.selected_skill.origin ?? "") } : undefined;
       return { type: "message", id: String(p.command_id ?? envelope.seq), author, source,
         text: String(p.content ?? ""), selectedSkill };

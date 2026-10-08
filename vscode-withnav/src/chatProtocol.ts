@@ -43,9 +43,9 @@ export type HostToWebview = { generation?: number } & (
   | { type: "subagents"; parentId: string; items: ChildInfo[] }
   | { type: "childView"; child?: ChildInfo; parentId?: string; parentTitle?: string }
   | { type: "status"; state: "connecting" | "ready" | "busy" | "error"; message?: string }
-  /** A message already complete when shown (the driver's own, or a navigator wake).
-   *  `context` is the chip label of the editor context attached to a driver message;
-   *  `text` then holds the driver's own text only, without the raw block. */
+  /** A message already complete when shown (the Captain's own, or a Nav wake).
+   *  `context` is the chip label of the editor context attached to a Captain message;
+   *  `text` then holds the Captain's own text only, without the raw block. */
   | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string } }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
@@ -69,7 +69,7 @@ export type HostToWebview = { generation?: number } & (
   | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence }
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
-  /** The cognition asked the driver a question and waits for the next message as the answer. */
+  /** The cognition asked the Captain a question and waits for the next message as the answer. */
   | { type: "question"; id: string; text: string }
   /** Live preview of the editor context the next message would carry (chip label). */
   | { type: "editorContext"; label: string }
@@ -81,7 +81,7 @@ export type HostToWebview = { generation?: number } & (
   | { type: "history"; items: HostToWebview[] }
   /** Chat models; current is effective selection. Locked only while opening/creating. */
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
-  /** The driver's favorite model names (kept by the host, shared by every panel; names no longer in the catalogue are not listed by the picker). */
+  /** The Captain's favorite model names (kept by the host, shared by every panel; names no longer in the catalogue are not listed by the picker). */
   | { type: "favorites"; items: string[] }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
   | { type: "usage"; snapshot: import("./contextMeter").ContextSnapshot });
@@ -130,25 +130,25 @@ export type WebviewToHost = { generation?: number } & (
   | { type: "controlChild"; parentId: string; childId: string; action: "stop" | "continue" }
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
-  /** The driver sends a message to the cognition; the host appends the editor context when asked. */
+  /** The Captain sends a message to the cognition; the host appends the editor context when asked. */
   | { type: "send"; text: string; includeContext?: boolean }
-  /** The driver interrupts the current turn. */
+  /** The Captain interrupts the current turn. */
   | { type: "stop" }
   | { type: "answerPermission"; sessionId: string; requestId: string; decision: PermissionDecision; message?: string }
   | { type: "controlPause"; sessionId: string; id: string; action: "continue" | "stop" }
-  /** The driver opens a file mentioned in the chat. */
+  /** The Captain opens a file mentioned in the chat. */
   | { type: "openFile"; path: string; line?: number }
-  /** The driver asks for the conversation list (the host answers with `conversations`). */
+  /** The Captain asks for the conversation list (the host answers with `conversations`). */
   | { type: "listConversations" }
-  /** The driver reopens a past conversation. */
+  /** The Captain reopens a past conversation. */
   | { type: "openConversation"; id: string }
-  /** The driver starts a new conversation; the current one stays saved. */
+  /** The Captain starts a new conversation; the current one stays saved. */
   | { type: "newConversation" }
-  /** The driver deletes a saved conversation. */
+  /** The Captain deletes a saved conversation. */
   | { type: "deleteConversation"; id: string }
-  /** The driver picks the model for the next new conversation. */
+  /** The Captain picks the model for the next new conversation. */
   | { type: "selectModel"; name: string }
-  /** The driver adds the model to the favorites, or removes it. The host answers with `favorites`. */
+  /** The Captain adds the model to the favorites, or removes it. The host answers with `favorites`. */
   | { type: "toggleFavorite"; name: string });
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
@@ -176,7 +176,7 @@ export interface ChatBackend {
   history(): HostToWebview[];
   /** Subscribe to live messages; returns an unsubscribe function. */
   subscribe(listener: (message: HostToWebview) => void): () => void;
-  /** `context` is an editor-context block appended after the driver's text. */
+  /** `context` is an editor-context block appended after the Captain's text. */
   send(text: string, context?: string, operation?: ComposerOperation): Promise<void>;
   stop(): Promise<void>;
   hasOpenPermissions(): boolean;

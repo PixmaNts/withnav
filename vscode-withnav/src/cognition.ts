@@ -22,7 +22,7 @@ const RECONNECT_DELAY_MS = 500;
 /**
  * Extension-host bridge to the cognition: the language server announces the
  * in-process session server (`withnav/serverInfo`), this class creates a
- * editor session on first use, posts the driver's messages and
+ * editor session on first use, posts the Captain's messages and
  * maps the SSE event stream onto the webview's message vocabulary. All
  * networking lives here; the webview never sees HTTP.
  */
@@ -665,7 +665,7 @@ export class CognitionBackend implements ChatBackend {
 
   async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
     if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent.");
-    // The driver's message arrives as `message.received` on the stream; do
+    // The Captain's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
     const { session, generation } = await this.ensureSession(operation);
     this.checkGeneration(generation);
@@ -1518,7 +1518,7 @@ export class CognitionBackend implements ChatBackend {
         // A non-zero shell exit is reported as status error, but it is
         // often harmless: `grep` finding nothing exits 1, and in a `;` chain
         // the last command's code decides for all the output above it. Show
-        // the code so the driver can judge (observed 2026-09-30: a
+        // the code so the Captain can judge (observed 2026-09-30: a
         // `wc; ls; cat …` chain marked failed although its output was fine).
         const exitCode = payload.metadata?.exit_code;
         const shown = typeof exitCode === "number" && exitCode !== 0 ? `${summary} (exit ${exitCode})` : summary;

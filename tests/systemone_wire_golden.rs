@@ -5,12 +5,12 @@
 
 use std::collections::BTreeMap;
 
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 use withnav::error::ProviderError;
 use withnav::provider::config::{ApiKind, ModelConfig, ProviderConfig};
 use withnav::provider::openai::ClientCache;
 use withnav::provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
-use wiremock::matchers::{body_partial_json, header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const FIXTURE_RESPONSE: &str = include_str!("fixtures/navigator/systemone_multi.json");
 

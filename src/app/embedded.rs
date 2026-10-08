@@ -1,5 +1,5 @@
-//! The private session server both embedded clients run in-process: the terminal client (`navai
-//! tui`) and the browser client (`navai web`). It binds loopback only, protects every `/v1` route
+//! The private session server both embedded clients run in-process: the terminal client (`withnav
+//! tui`) and the browser client (`nav web`). It binds loopback only, protects every `/v1` route
 //! with a per-process bearer token, and stops gracefully when its owner is done.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

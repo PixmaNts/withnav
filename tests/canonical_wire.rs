@@ -1,5 +1,5 @@
-use withnav::bus::event::{ContextSnapshot, ModelChanged};
 use serde_json::json;
+use withnav::bus::event::{ContextSnapshot, ModelChanged};
 
 #[test]
 fn model_changed_round_trip_preserves_selection_provenance() {

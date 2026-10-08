@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use tokio_util::sync::CancellationToken;
 use withnav::agent::actor::AgentActor;
 use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use withnav::provider::config::{ProviderConfig, ReasoningHistory};
@@ -16,7 +17,6 @@ use withnav::tools::bash::BashTool;
 use withnav::tools::control::AskTool;
 use withnav::tools::native::ReadTool;
 use withnav::tools::{Registry, ToolContext};
-use tokio_util::sync::CancellationToken;
 
 mod common;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};

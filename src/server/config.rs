@@ -31,7 +31,7 @@ pub struct ServerConfig {
     /// Where session instructions are read from besides the workspace; the
     /// binaries use the user's home, tests an empty or temporary one.
     pub rules_roots: RulesRoots,
-    /// `Some` only when `navai web` starts the server: it then also serves the
+    /// `Some` only when `nav web` starts the server: it then also serves the
     /// browser client's static files. `None` for `serve`, the terminal client
     /// and the language server, which keep the API surface alone.
     pub web: Option<WebConfig>,
@@ -40,7 +40,7 @@ pub struct ServerConfig {
 /// What only the browser client's server knows.
 #[derive(Debug, Clone, Default)]
 pub struct WebConfig {
-    /// The workspaces `navai web` was started with, in argument order; they
+    /// The workspaces `nav web` was started with, in argument order; they
     /// head the list `GET /v1/workspaces` answers.
     pub launch_workspaces: Vec<PathBuf>,
 }
@@ -92,11 +92,11 @@ mod tests {
         ServerConfig {
             bind: bind.parse().expect("test bind addr"),
             models_path: None,
-            config_dir: PathBuf::from("/tmp/navai-test"),
+            config_dir: PathBuf::from("/tmp/withnav-test"),
             allow_non_loopback,
             bearer_token: None,
-            history_db: PathBuf::from("/tmp/navai-test/history.db"),
-            data_dir: PathBuf::from("/tmp/navai-test/data"),
+            history_db: PathBuf::from("/tmp/withnav-test/history.db"),
+            data_dir: PathBuf::from("/tmp/withnav-test/data"),
             rules_roots: RulesRoots::default(),
             web: None,
         }
@@ -135,7 +135,7 @@ mod tests {
         let (session, http) = config.split();
         assert_eq!(session.history_db, PathBuf::from("/tmp/h.db"));
         assert_eq!(session.models_path, Some(PathBuf::from("/tmp/m.json")));
-        assert_eq!(session.config_dir, PathBuf::from("/tmp/navai-test"));
+        assert_eq!(session.config_dir, PathBuf::from("/tmp/withnav-test"));
         assert_eq!(http.bind, "127.0.0.1:7310".parse().unwrap());
         assert!(http.allow_non_loopback);
         assert_eq!(http.bearer_token.as_deref(), Some("t"));

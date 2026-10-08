@@ -1,9 +1,9 @@
+use serde_json::json;
 use withnav::tui::{
     protocol::*,
     reducer,
     state::{Activity, State, UiState, VariantPick},
 };
-use serde_json::json;
 
 fn summary(seq: u64, agent: &str, model: &str, variant: Option<&str>) -> SessionMetadata {
     serde_json::from_value(json!({"session_id":"S","actor_state":"idle","workspace":"/ws","agent":agent,"model":model,"variant":variant,"source":"config","variant_source":"model_default","current_seq":seq})).unwrap()

@@ -2655,7 +2655,7 @@ impl Service {
                 &self.config.config_dir,
                 &self.catalog,
                 Arc::new(crate::provider::openai::ClientCache::new()),
-                self.config.data_dir.join("navai.jsonl"),
+                self.config.data_dir.join("withnav.jsonl"),
             )
             .ok()
             .map(|reviewer| {

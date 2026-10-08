@@ -1,5 +1,5 @@
 //! Primary agents through the session service and the HTTP surface: the role
-//! prompt on the wire, `/agent`, persistence, resume and `navai run --agent`.
+//! prompt on the wire, `/agent`, persistence, resume and `nav run --agent`.
 
 use std::path::{Path, PathBuf};
 
@@ -427,7 +427,7 @@ async fn provider(count: usize) -> CapturingProvider {
     .await
 }
 
-/// A custom agent file in Navai's config directory.
+/// A custom agent file in WithNav's config directory.
 fn write_agent(env: &Env, name: &str, text: &str) {
     let dir = env.root.join("cfg/agents");
     std::fs::create_dir_all(&dir).unwrap();
@@ -607,7 +607,10 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, withnav::error::ServerError::SavedAgentUnavailable { .. }),
+        matches!(
+            err,
+            withnav::error::ServerError::SavedAgentUnavailable { .. }
+        ),
         "{err:?}"
     );
     assert!(err.to_string().contains("scribe"));
@@ -851,10 +854,10 @@ async fn http_creates_with_an_agent_and_shows_it() {
     assert_eq!(body["data"]["previous"], "plan");
 }
 
-fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::process::Output {
-    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+fn run_withnav(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        root.join("config/navai/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
@@ -864,7 +867,7 @@ fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::proc
         .arg("--models")
         .arg(models)
         .args(extra)
-        .env("NAVAI_TEST_KEY", "test-key")
+        .env("WITHNAV_TEST_KEY", "test-key")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CONFIG_HOME", root.join("config"))
@@ -872,11 +875,11 @@ fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::proc
         .expect("run the binary")
 }
 
-// Given `navai run --agent plan`
+// Given `nav run --agent plan`
 // Then the request carries the plan role; an unknown agent exits 1 with the
 //      choices
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_agent_selects_the_role() {
+async fn withnav_run_agent_selects_the_role() {
     let env = env();
     let provider = provider(1).await;
     let cfg = config(&env, &provider);
@@ -885,13 +888,13 @@ async fn navai_run_agent_selects_the_role() {
     let (root, ws) = (env.root.clone(), env.ws.clone());
     let (ok, bad) = tokio::task::spawn_blocking(move || {
         (
-            run_navai(
+            run_withnav(
                 &root,
                 &models,
                 &ws,
                 &["--agent", "plan", "--prompt", "hello"],
             ),
-            run_navai(
+            run_withnav(
                 &root,
                 &models,
                 &ws,

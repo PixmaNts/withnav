@@ -1,4 +1,4 @@
-//! The `navai-lsp` binary starts serving without waiting for the provider's
+//! The `withnav-lsp` binary starts serving without waiting for the provider's
 //! model list: discovery belongs to the first remark, not to startup.
 
 use std::io::Write;
@@ -56,7 +56,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         json!({
             "providers": { "slow": {
                 "base_url": format!("{}/v1", provider.uri()),
-                "api_key_env": "NAVAI_TEST_KEY"
+                "api_key_env": "WITHNAV_TEST_KEY"
             }},
             "models": {
                 "slow/m-chat": { "provider": "slow", "model": "m-chat", "supports_tools": true },
@@ -68,7 +68,7 @@ async fn startup_does_not_wait_for_model_discovery() {
     )
     .expect("write");
     drop(file);
-    let config = root.path().join("config/navai");
+    let config = root.path().join("config/withnav");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(
         config.join("config.json"),
@@ -84,7 +84,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         .arg("--models")
         .arg(&models)
         .current_dir(root.path())
-        .env("NAVAI_TEST_KEY", "test-key")
+        .env("WITHNAV_TEST_KEY", "test-key")
         .env("HOME", root.path().join("home"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_CONFIG_HOME", root.path().join("config"))
@@ -93,7 +93,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
-        .expect("spawn navai-lsp");
+        .expect("spawn withnav-lsp");
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
@@ -128,7 +128,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         let msg = tokio::time::timeout(Duration::from_secs(5), read_message(&mut stdout))
             .await
             .expect("the announcement arrives while discovery is still pending");
-        if msg["method"] == "navigator/serverInfo" {
+        if msg["method"] == "withnav/serverInfo" {
             break msg;
         }
     };

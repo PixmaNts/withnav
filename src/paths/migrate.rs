@@ -1,4 +1,4 @@
-//! The one-time move of existing user data and configuration to the Navai
+//! The one-time move of existing user data and configuration to the WithNav
 //! dirs, on the first start of a new binary.
 //!
 //! Sources, in order of priority:
@@ -44,12 +44,15 @@ pub(super) fn kept_history_db() -> Option<PathBuf> {
 /// The directories involved in a migration.
 #[derive(Debug, Clone)]
 pub struct Layout {
-    /// The Navai data dir, the target.
+    /// The WithNav data dir, the target.
     pub data: PathBuf,
-    /// The Navai config dir, the target.
+    /// The WithNav config dir, the target.
     pub config: PathBuf,
     /// The former `navigator` data dir.
     pub navigator_data: PathBuf,
+    /// Compatibility source for the 0.7 series.
+    pub navai_data: PathBuf,
+    pub navai_config: PathBuf,
     /// The former `rust-agent` data dir.
     pub rust_agent_data: PathBuf,
     /// The former `rust-agent` config dir.
@@ -65,6 +68,8 @@ impl Layout {
             data: new.data_dir().to_path_buf(),
             config: new.config_dir().to_path_buf(),
             navigator_data: dirs(NAVIGATOR_NAME)?.data_dir().to_path_buf(),
+            navai_data: dirs("navai")?.data_dir().to_path_buf(),
+            navai_config: dirs("navai")?.config_dir().to_path_buf(),
             rust_agent_data: dirs(RUST_AGENT_NAME)?.data_dir().to_path_buf(),
             rust_agent_config: dirs(RUST_AGENT_NAME)?.config_dir().to_path_buf(),
         })
@@ -95,7 +100,7 @@ impl MigrationReport {
     }
 }
 
-/// Moves the data and configuration of the former locations to the Navai
+/// Moves the data and configuration of the former locations to the WithNav
 /// dirs. Call it once, before anything opens a data file or the log.
 pub fn migrate_legacy() -> MigrationReport {
     let Some(layout) = Layout::current() else {
@@ -126,14 +131,29 @@ fn items(layout: &Layout) -> Vec<Item> {
     let old = &layout.rust_agent_data;
     let mut items = vec![
         data(
-            "navai.db",
-            &[nav.join("navigator.db"), old.join("navigator/sessions.db")],
+            "withnav.db",
+            &[
+                layout.navai_data.join("navai.db"),
+                nav.join("navigator.db"),
+                old.join("navigator/sessions.db"),
+            ],
         ),
         data(
-            "navai.jsonl",
-            &[nav.join("navigator.jsonl"), old.join("navigator.jsonl")],
+            "withnav.jsonl",
+            &[
+                layout.navai_data.join("navai.jsonl"),
+                nav.join("navigator.jsonl"),
+                old.join("navigator.jsonl"),
+            ],
         ),
-        data("tui.log", &[nav.join("tui.log"), old.join("tui.log")]),
+        data(
+            "tui.log",
+            &[
+                layout.navai_data.join("tui.log"),
+                nav.join("tui.log"),
+                old.join("tui.log"),
+            ],
+        ),
     ];
     for name in ["auth.json", "models.json", "navigator/pipeline.toml"] {
         items.push(Item {
@@ -142,7 +162,39 @@ fn items(layout: &Layout) -> Vec<Item> {
             database: false,
         });
     }
+    for (source, target) in [
+        (&layout.navai_config, &layout.config),
+        (&layout.navai_data, &layout.data),
+    ] {
+        collect_legacy_files(source, target, &mut items);
+    }
     items
+}
+
+fn collect_legacy_files(source: &Path, target: &Path, items: &mut Vec<Item>) {
+    let Ok(entries) = fs::read_dir(source) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let name = entry.file_name();
+        if kind.is_dir() {
+            collect_legacy_files(&entry.path(), &target.join(&name), items);
+        } else if kind.is_file()
+            && !matches!(
+                name.to_str(),
+                Some("navai.db" | "navai.db-wal" | "navai.db-shm" | "navai.jsonl")
+            )
+        {
+            items.push(Item {
+                target: target.join(name),
+                sources: vec![entry.path()],
+                database: false,
+            });
+        }
+    }
 }
 
 /// Moves every present former file of `layout` to its new path.

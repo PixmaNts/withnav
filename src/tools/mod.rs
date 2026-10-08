@@ -23,16 +23,17 @@ pub mod task;
 
 /// Legacy reserved argument name. Every model ingress rejects it; approved
 /// destinations travel only in the host's dispatch context.
-pub const BOUND_ARG: &str = "navai_bound_destination";
+pub const BOUND_ARG: &str = "withnav_bound_destination";
 pub const OUTSIDE_SEARCH: &str =
     "outside the project: use `read` on a specific file, or a `bash` command, which are reviewed";
 
 /// Model arguments cannot supply host bindings or scratch identities.
 pub fn reject_reserved_args(args: &Value) -> Result<(), ToolError> {
-    if args
-        .as_object()
-        .is_some_and(|object| object.keys().any(|key| key.starts_with("navai_")))
-    {
+    if args.as_object().is_some_and(|object| {
+        object
+            .keys()
+            .any(|key| key.starts_with("withnav_") || key.starts_with("navai_"))
+    }) {
         return Err(ToolError::Denied {
             code: "invalid_args".into(),
             message: "reserved tool argument".into(),
@@ -46,7 +47,7 @@ pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
 pub const DEFAULT_BASH_GRACE_MS: u64 = 5_000;
 
 pub fn bash_grace_ms() -> u64 {
-    std::env::var("NAVAI_BASH_GRACE_MS")
+    crate::paths::env_var("WITHNAV_BASH_GRACE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_BASH_GRACE_MS)

@@ -526,6 +526,31 @@ pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed:
     let Some(root) = &actor.protected_config_root else {
         return false;
     };
+    // Leftover legacy configuration remains protected during the 0.7 series.
+    if let Some(parent) = actor
+        .protected_config_spelling
+        .as_deref()
+        .and_then(std::path::Path::parent)
+    {
+        for name in ["withnav", "navai"] {
+            let spelling = parent.join(name);
+            let resolved = super::permissions::resolve_protected_root(&spelling)
+                .unwrap_or_else(|_| spelling.clone());
+            if needed
+                .destination
+                .as_ref()
+                .is_some_and(|path| path.starts_with(&resolved))
+                || (call.name == "bash"
+                    && (bash_names_root(call, &spelling, &actor.tool_context)
+                        || bash_names_root(call, &resolved, &actor.tool_context)
+                        || bash_command(call).is_some_and(|command| {
+                            command.contains(spelling.to_string_lossy().as_ref())
+                        })))
+            {
+                return true;
+            }
+        }
+    }
     if needed
         .destination
         .as_ref()
@@ -535,7 +560,9 @@ pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed:
     }
     call.name == "bash"
         && (bash_command(call).is_some_and(|command| {
-            command.contains(root.to_string_lossy().as_ref()) || command.contains("~/.config/navai")
+            command.contains(root.to_string_lossy().as_ref())
+                || command.contains("~/.config/withnav")
+                || command.contains("~/.config/navai")
         }) || bash_names_root(call, root, &actor.tool_context)
             || actor
                 .protected_config_spelling
@@ -587,7 +614,7 @@ pub fn hard_floor(
 pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: &Needed) -> Judged {
     if protected_call(actor, call, needed) {
         return Judged::Ask(
-            "Navai configuration is driver-only; approve this call once or deny".into(),
+            "WithNav configuration is Captain-only; approve this call once or deny".into(),
         );
     }
     if actor.cancel.is_cancelled() {
@@ -999,12 +1026,12 @@ mod tests {
             "/home/driver/.netrc",
             "/home/driver/.aws/credentials",
             "/home/driver/.config/gcloud/application_default_credentials.json",
-            "/home/driver/.config/navai/auth.json",
+            "/home/driver/.config/withnav/auth.json",
         ] {
             assert!(sensitive_read(std::path::Path::new(path)), "{path}");
         }
         assert!(!sensitive_read(std::path::Path::new(
-            "/home/driver/.config/navai/config.json"
+            "/home/driver/.config/withnav/config.json"
         )));
     }
     #[test]

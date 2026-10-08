@@ -7,7 +7,10 @@ use common::server::{spawn_server, TestServerConfig, PROVIDER};
 
 const SECRET_SENTINEL: &str = "synthetic-secret-never-echo";
 
-async fn catalog_response(state: withnav::server::AppState, root: &std::path::Path) -> (u16, Value) {
+async fn catalog_response(
+    state: withnav::server::AppState,
+    root: &std::path::Path,
+) -> (u16, Value) {
     let (addr, task) = spawn_server(state).await;
     let response = reqwest::Client::new()
         .get(format!("http://{addr}/v1/models"))
@@ -133,7 +136,7 @@ async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agen
             "providers": {
                 PROVIDER: {
                     "base_url": "http://127.0.0.1:9",
-                    "api_key_env": "NAVAI_TEST_KEY",
+                    "api_key_env": "WITHNAV_TEST_KEY",
                     "headers": {}
                 }
             },
@@ -201,7 +204,7 @@ fn write_models(root: &std::path::Path, base_url: &str) {
     std::fs::write(
         root.join("models.json"),
         json!({
-            "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "NAVAI_TEST_KEY", "headers": {} } },
+            "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "WITHNAV_TEST_KEY", "headers": {} } },
             "models": {
                 "mock/m-found": { "provider": PROVIDER, "model": "m-found", "supports_tools": true },
                 "mock/m-pinned": { "provider": PROVIDER, "model": "m-pinned", "supports_tools": true,
@@ -350,7 +353,7 @@ fn write_variant_models(root: &std::path::Path, base_url: &str) {
     std::fs::write(
         root.join("models.json"),
         json!({
-            "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "NAVAI_TEST_KEY",
+            "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "WITHNAV_TEST_KEY",
                                        "headers": {}, "catalog_format": "omniroute" } },
             "models": {
                 "mock/m-tiers": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true,

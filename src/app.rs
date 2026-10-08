@@ -1,3 +1,4 @@
+pub mod entry;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -13,13 +14,13 @@ pub const EXIT_DONE: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
 pub const EXIT_YIELDED: i32 = 2;
 pub const EXIT_INTERRUPTED: i32 = 130;
-/// A tool call needs approval and nobody can give it: `navai run` never
+/// A tool call needs approval and nobody can give it: `nav run` never
 /// approves on its own.
 pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "navai",
+    name = "nav",
     version,
     about = "A personal, minimal-but-complete coding agent in Rust",
     propagate_version = true
@@ -83,7 +84,7 @@ pub struct TuiArgs {
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
     /// Connect to a running server instead of starting one. If it needs a bearer token, set
-    /// NAVAI_SERVER_TOKEN.
+    /// WITHNAV_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
 }
@@ -147,7 +148,7 @@ pub struct RunArgs {
     pub variant: Option<String>,
     /// UNSAFE: turn on bypass for the run, so ordinary permission prompts
     /// (`write`, `edit`, `bash`, `fetch`) run without asking. Protected
-    /// requests (Navai's own config, credentials and keys) still stop the run
+    /// requests (WithNav's own config, credentials and keys) still stop the run
     /// with `permission_required` and exit code 3, as every request does
     /// without this flag.
     #[arg(long)]
@@ -468,9 +469,9 @@ pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     }
 }
 
-/// The shared conversation database, in Navai's data dir.
+/// The shared conversation database, in WithNav's data dir.
 fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
-    crate::paths::history_db().ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))
+    crate::paths::history_db().ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))
 }
 
 async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {

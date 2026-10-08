@@ -2,10 +2,10 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use withnav::server::{app, AppState};
 use serde_json::{json, Value};
 use std::path::Path;
 use tower::ServiceExt;
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::TestServerConfig;
@@ -144,7 +144,7 @@ async fn workspace_mutations_require_auth_and_existing_absolute_directories_and_
     assert!(body["error"]
         .as_str()
         .unwrap()
-        .contains("opened by navai web on the command line"));
+        .contains("opened by nav web on the command line"));
     state.close_all().await;
 }
 

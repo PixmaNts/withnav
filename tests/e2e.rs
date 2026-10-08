@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
 use withnav::agent::actor::AgentActor;
 use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use withnav::provider::config::{ProviderConfig, ReasoningHistory};
@@ -10,8 +12,6 @@ use withnav::tools::bash::BashTool;
 use withnav::tools::control::AskTool;
 use withnav::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
 use withnav::tools::{Registry, ToolContext};
-use serde_json::{json, Value};
-use tokio_util::sync::CancellationToken;
 
 mod common;
 use common::sse::{http_sse, spawn_responding_provider, sse_body, CapturingProvider};
@@ -180,7 +180,7 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
 /// LIVE end-to-end against a real OmniRoute proxy.
 ///
 /// REQUIRED for Phase-1 completion. Run explicitly:
-///   NAVAI_LIVE=1 cargo test --test e2e -- --ignored --nocapture
+///   WITHNAV_LIVE=1 cargo test --test e2e -- --ignored --nocapture
 /// When OmniRoute is unavailable this test FAILS (or is a BLOCKED gate) — it is
 /// NEVER a passing skip.
 #[tokio::test]

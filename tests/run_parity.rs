@@ -204,7 +204,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
 }
 
 /// Subprocess capture of the REAL production stderr: run the actual
-/// `navai run` binary against a mock provider that returns HTTP 500, and
+/// `nav run` binary against a mock provider that returns HTTP 500, and
 /// assert the process stderr carries the `error:` line and the process exits
 /// 1. This exercises the `exit_code_for` -> `eprint!(terminal_stderr_line)`
 /// path end-to-end, so deleting the production `eprint!` would FAIL this test
@@ -238,9 +238,9 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     std::fs::create_dir_all(root.join("ws")).unwrap();
     let data_home = root.join("data");
     let config_home = root.join("config");
-    std::fs::create_dir_all(config_home.join("navai")).unwrap();
+    std::fs::create_dir_all(config_home.join("withnav")).unwrap();
     std::fs::write(
-        config_home.join("navai/config.json"),
+        config_home.join("withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/m"}}}"#,
     )
     .unwrap();
@@ -250,7 +250,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "mock/m": {
@@ -277,7 +277,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "--prompt",
                     "go",
                 ])
-                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
                 // The binary opens the conversation history in the XDG data
                 // dir and migrates legacy files there. Without these two, a
                 // test run wrote into the driver's real database and moved
@@ -355,7 +355,7 @@ fn cancel_placeholder() -> CancellationToken {
     CancellationToken::new()
 }
 
-/// A chat alias without a window is refused at `navai run` startup with the
+/// A chat alias without a window is refused at `nav run` startup with the
 /// usual `error:` line naming the models.json to fix, and exits 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_binary_refuses_an_alias_without_a_known_window() {
@@ -384,9 +384,9 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("ws")).unwrap();
-    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        root.join("config/navai/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/m"}}}"#,
     )
     .unwrap();
@@ -396,7 +396,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "mock/m": {
@@ -422,7 +422,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
                     "--prompt",
                     "go",
                 ])
-                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
                 .env("XDG_DATA_HOME", home.join("data"))
                 .env("XDG_CONFIG_HOME", home.join("config"))
                 .env("HOME", &home)

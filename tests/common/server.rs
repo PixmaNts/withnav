@@ -166,7 +166,7 @@ impl TestServerConfig {
         self
     }
 
-    /// Serves the browser client's files too, as `navai web` does, with these launch workspaces.
+    /// Serves the browser client's files too, as `nav web` does, with these launch workspaces.
     pub fn web(mut self, launch_workspaces: Vec<PathBuf>) -> Self {
         self.web = Some(withnav::server::WebConfig { launch_workspaces });
         self
@@ -237,7 +237,7 @@ impl TestServerConfig {
         }
         let mut provider = json!({
             "base_url": self.base_url,
-            "api_key_env": "NAVAI_TEST_KEY",
+            "api_key_env": "WITHNAV_TEST_KEY",
             "headers": {},
             "connect_timeout_ms": self.connect_timeout_ms,
             "request_timeout_ms": self.request_timeout_ms

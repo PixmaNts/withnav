@@ -1,6 +1,6 @@
 //! Workspace-owned execution, shared by session admission and Studio.
 use super::{
-    client::NavaiDecisionClient,
+    client::WithNavDecisionClient,
     records::Records,
     runtime::{FlowRuntime, NoEffects},
     store::FlowStore,
@@ -65,7 +65,7 @@ impl Host {
             crate::provider::config::load_models(self.models.as_deref(), &workspace, &self.config)
                 .map_err(anyhow::Error::from)
                 .and_then(|(models, _)| {
-                    NavaiDecisionClient::new(
+                    WithNavDecisionClient::new(
                         &models,
                         &self.config,
                         Arc::new(crate::provider::openai::ClientCache::new()),

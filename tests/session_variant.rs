@@ -432,17 +432,17 @@ async fn a_cleared_variant_sends_no_override() {
     assert!(body.get("reasoning_effort").is_none(), "{body}");
 }
 
-// Given `navai run --variant high` and `--variant off`
+// Given `nav run --variant high` and `--variant off`
 // Then the request body carries the variant, or none; an unknown one fails the run
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_variant_reaches_the_wire() {
+async fn withnav_run_variant_reaches_the_wire() {
     let provider = spawn_capturing_provider(vec![done_body(), done_body()]).await;
     let (tmp, ws) = tmp_ws();
     let cfg = config(tmp.path(), &provider.url, None);
     cfg.config();
-    std::fs::create_dir_all(tmp.path().join("config/navai")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("config/withnav")).unwrap();
     std::fs::write(
-        tmp.path().join("config/navai/config.json"),
+        tmp.path().join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
@@ -456,7 +456,7 @@ async fn navai_run_variant_reaches_the_wire() {
                 .arg("--models")
                 .arg(&models)
                 .args(["--variant", variant, "--prompt", "go"])
-                .env("NAVAI_TEST_KEY", "test-key")
+                .env("WITHNAV_TEST_KEY", "test-key")
                 .env("HOME", root.join("home"))
                 .env("XDG_DATA_HOME", root.join("data"))
                 .env("XDG_CONFIG_HOME", root.join("config"))

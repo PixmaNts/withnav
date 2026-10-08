@@ -39,7 +39,7 @@ pub const MAX_SUGGESTION_TOKENS: u64 = 128;
 #[derive(Debug, Clone)]
 pub struct Suggestion {
     pub item: InlineCompletionItem,
-    /// The id echoed back by the extension in `navigator/reflexShown`.
+    /// The id echoed back by the extension in `withnav/reflexShown`.
     pub request_id: String,
 }
 
@@ -338,7 +338,7 @@ impl ReflexService {
 }
 
 /// Wraps a [`Suggestion`] into the wire answer of
-/// `navigator/inlineCompletion`.
+/// `withnav/inlineCompletion`.
 pub fn to_result(suggestion: &Suggestion) -> InlineCompletionResult {
     InlineCompletionResult {
         items: vec![suggestion.item.clone()],

@@ -1,4 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{backend::TestBackend, Terminal};
+use serde_json::json;
 use withnav::{
     tools::ToolStatus,
     tui::{
@@ -9,8 +11,6 @@ use withnav::{
         view::{self, tool, RenderCache},
     },
 };
-use ratatui::{backend::TestBackend, Terminal};
-use serde_json::json;
 
 fn message(id: &str, source: &str, text: &str) -> Block {
     Block {
@@ -1056,7 +1056,9 @@ fn theme_picker_previews_and_esc_restores() {
     assert_eq!(enter, Some(Action::PickTheme(ThemeId::NordLight)));
     assert_eq!(
         apply(&mut ui, enter),
-        vec![withnav::tui::protocol::Effect::SaveTheme(ThemeId::NordLight)]
+        vec![withnav::tui::protocol::Effect::SaveTheme(
+            ThemeId::NordLight
+        )]
     );
     assert_eq!(ui.theme, ThemeId::NordLight);
     assert_eq!(ui.overlay, None);
@@ -1108,7 +1110,11 @@ fn highlighted_theme(ui: &UiState) -> Option<ThemeId> {
 #[test]
 fn theme_filter_previews_the_highlighted_row() {
     let mut ui = UiState::default();
-    withnav::tui::reducer::handle_action(&mut state(), &mut ui, Action::OpenOverlay(Overlay::Themes));
+    withnav::tui::reducer::handle_action(
+        &mut state(),
+        &mut ui,
+        Action::OpenOverlay(Overlay::Themes),
+    );
     // Typing `n` from Ayu Dark: the first match is Nord Dark, and that is what is drawn.
     assert_eq!(
         theme_key(&mut ui, KeyCode::Char('n')),
@@ -1248,7 +1254,10 @@ fn tab_keys_switch_close_and_hide_the_bar() {
         &mut editor,
     );
     assert_eq!(editor.text(), "1draft");
-    let help: Vec<_> = withnav::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    let help: Vec<_> = withnav::tui::commands::KEYS
+        .iter()
+        .map(|(k, _)| *k)
+        .collect();
     for wanted in ["alt+1 … alt+9", "alt+w", "alt+b"] {
         assert!(help.contains(&wanted), "{help:?}");
     }
@@ -1580,7 +1589,10 @@ fn tab_on_an_empty_message_switches_the_agent_otherwise_it_moves_the_focus() {
     let back = key(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(route_key(back, &s, &mut ui, &mut editor), None);
     assert_eq!(ui.focus, withnav::tui::state::Focus::Transcript);
-    let help: Vec<_> = withnav::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    let help: Vec<_> = withnav::tui::commands::KEYS
+        .iter()
+        .map(|(k, _)| *k)
+        .collect();
     assert!(
         help.contains(&"tab") && help.contains(&"shift+tab"),
         "{help:?}"
@@ -2855,7 +2867,9 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
 
 // ---------------------------------------------------------------- right column
 
-fn snapshot_with(breakdown: withnav::bus::event::Breakdown) -> withnav::tui::protocol::ContextSnapshot {
+fn snapshot_with(
+    breakdown: withnav::bus::event::Breakdown,
+) -> withnav::tui::protocol::ContextSnapshot {
     withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),

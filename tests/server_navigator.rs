@@ -645,9 +645,9 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
     let state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
-        .assigned_navigator_state_with_conversation(
-            Some(withnav::navigator::ConversationFeed::new()),
-        );
+        .assigned_navigator_state_with_conversation(Some(
+            withnav::navigator::ConversationFeed::new(),
+        ));
 
     let id = state
         .create_session(&ws, None, true)

@@ -1,4 +1,4 @@
-//! Process wiring for the `navai-lsp` binary: builds the model layers
+//! Process wiring for the `withnav-lsp` binary: builds the model layers
 //! from models.json and auth.json, starts the in-process cognition chat
 //! server, assembles the [`NavigatorDeps`] and serves the Language Server
 //! over stdio. A layer whose alias, key or config is missing is disabled
@@ -323,7 +323,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
     // loopback ephemeral port with a per-process bearer token, announced as
-    // `navigator/serverInfo`. It lives exactly as long as the LSP session:
+    // `withnav/serverInfo`. It lives exactly as long as the LSP session:
     // when `navigator::serve` returns (exit/EOF) the shutdown trigger fires,
     // every session is closed and the server drains so the process exits.
     // The SAME conversation hub goes to the session server (sessions
@@ -335,7 +335,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         Err(e) => {
             // A failed bind or an unopenable history database must not take
             // the navigator down: run the LSP without the chat (no
-            // serverInfo notification) and say so in `navigator/status`.
+            // serverInfo notification) and say so in `withnav/status`.
             tracing::error!("cognition chat server unavailable: {e}");
             layers.disabled.push(format!("chat: {e}"));
             None
@@ -496,9 +496,9 @@ async fn spawn_cognition_server(
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
-    // Conversation history: one SQLite file in Navai's data dir.
+    // Conversation history: one SQLite file in WithNav's data dir.
     let history_db = crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))?;
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
         models_path: Some(models_path.to_path_buf()),
@@ -543,7 +543,7 @@ fn bearer_token() -> String {
 }
 
 /// Stand-in used when the metacognition layer could not be built: every
-/// remark call errors, which surfaces as `navigator/status` error instead
+/// remark call errors, which surfaces as `withnav/status` error instead
 /// of a crash.
 struct FailingCommenter {
     message: String,

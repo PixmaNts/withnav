@@ -82,7 +82,7 @@ fn cli_lists_its_subcommands() {
 #[test]
 fn tui_flags_parse_and_conflicts_are_enforced() {
     let cli = Cli::try_parse_from([
-        "navai",
+        "nav",
         "tui",
         "--workspace",
         "/tmp",
@@ -92,11 +92,9 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
         "http://localhost",
     ]);
     assert!(cli.is_ok());
-    assert!(
-        Cli::try_parse_from(["navai", "tui", "--model", "fast", "--session", "01ABC"]).is_err()
-    );
+    assert!(Cli::try_parse_from(["nav", "tui", "--model", "fast", "--session", "01ABC"]).is_err());
     assert!(Cli::try_parse_from([
-        "navai",
+        "nav",
         "tui",
         "--models",
         "models.json",
@@ -111,7 +109,7 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
 #[test]
 fn web_flags_parse() {
     let cli = Cli::try_parse_from([
-        "navai",
+        "nav",
         "web",
         "--workspace",
         "/tmp/a",
@@ -135,21 +133,19 @@ fn web_flags_parse() {
     assert_eq!(args.port, 7399);
     assert!(args.no_open);
 
-    let Commands::Web(defaults) = Cli::try_parse_from(["navai", "web"])
-        .expect("parses")
-        .command
+    let Commands::Web(defaults) = Cli::try_parse_from(["nav", "web"]).expect("parses").command
     else {
         panic!("not the web command");
     };
     assert!(defaults.workspaces.is_empty());
     assert_eq!(defaults.port, 0);
     assert!(!defaults.no_open);
-    assert!(Cli::try_parse_from(["navai", "web", "--port", "70000"]).is_err());
+    assert!(Cli::try_parse_from(["nav", "web", "--port", "70000"]).is_err());
 }
 
 #[test]
 fn bogus_subcommand_is_error() {
-    let result = Cli::try_parse_from(["navai", "bogus-subcommand"]);
+    let result = Cli::try_parse_from(["nav", "bogus-subcommand"]);
     assert!(result.is_err());
 }
 
@@ -313,6 +309,6 @@ fn event_to_ui_maps_interrupted_and_error_turn_ends_to_none() {
 fn the_html_converter_subcommand_is_hidden_but_parses() {
     let help = Cli::command().render_long_help().to_string();
     assert!(!help.contains("internal-html-convert"));
-    assert!(Cli::try_parse_from(["navai", "internal-html-convert", "--format", "text"]).is_ok());
-    assert!(Cli::try_parse_from(["navai", "internal-html-convert", "--format", "html"]).is_err());
+    assert!(Cli::try_parse_from(["nav", "internal-html-convert", "--format", "text"]).is_ok());
+    assert!(Cli::try_parse_from(["nav", "internal-html-convert", "--format", "html"]).is_err());
 }

@@ -13,7 +13,7 @@ use super::embedded::{check_health, resolve_workspace, EmbeddedServer};
 use super::{TuiArgs, EXIT_DONE};
 
 /// Environment variable holding the bearer token of a server given by `--url`.
-pub const TOKEN_ENV: &str = "NAVAI_SERVER_TOKEN";
+pub const TOKEN_ENV: &str = "WITHNAV_SERVER_TOKEN";
 /// The former name of [`TOKEN_ENV`], still read when the new one is unset.
 const LEGACY_TOKEN_ENV: &str = "RUST_AGENT_SERVER_TOKEN";
 
@@ -70,7 +70,7 @@ async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::R
         url.starts_with("http://") || url.starts_with("https://"),
         "--url must start with http:// or https://, got {url:?}"
     );
-    let (token, deprecated) = server_token(|name| std::env::var(name).ok());
+    let (token, deprecated) = server_token(|name| crate::paths::env_var(name).ok());
     if deprecated {
         eprintln!("warning: {LEGACY_TOKEN_ENV} is deprecated, use {TOKEN_ENV}");
     }

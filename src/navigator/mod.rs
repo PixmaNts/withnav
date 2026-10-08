@@ -75,10 +75,10 @@ pub struct NavigatorDeps {
     /// The workspace root (upgraded from `rootUri` at initialize when the
     /// client sends one).
     pub workspace: Option<PathBuf>,
-    /// The user-level navigator dir (`~/.config/navai/navigator/`).
+    /// The user-level navigator dir (`~/.config/withnav/navigator/`).
     pub user_dir: Option<PathBuf>,
     /// The cognition chat server's endpoint: when set, `initialized` sends
-    /// `navigator/serverInfo` with the loopback port and bearer token.
+    /// `withnav/serverInfo` with the loopback port and bearer token.
     pub server_info: Option<ServerInfoParams>,
     /// Human-readable notes about layers that were disabled at startup;
     /// surfaced as one status message after initialize.
@@ -147,7 +147,7 @@ impl NavigatorDeps {
     }
 
     /// Builder-style: the cognition chat server's endpoint, announced as
-    /// `navigator/serverInfo` after `initialized`.
+    /// `withnav/serverInfo` after `initialized`.
     pub fn with_server_info(mut self, info: ServerInfoParams) -> Self {
         self.server_info = Some(info);
         self
@@ -172,7 +172,7 @@ pub type FlowFactory = dyn Fn(Arc<dyn crate::flows::runtime::FlowEffects>) -> Ar
     + Sync;
 
 /// The default user-level navigator dir
-/// (`~/.config/navai/navigator/`), when it can be resolved.
+/// (`~/.config/withnav/navigator/`), when it can be resolved.
 pub fn default_user_dir() -> Option<PathBuf> {
     crate::provider::auth::default_config_dir().map(|d| d.join("navigator"))
 }

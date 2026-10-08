@@ -1,12 +1,12 @@
 use futures::future::BoxFuture;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
-use withnav::session::SessionId;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::SessionId;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
@@ -56,9 +56,9 @@ async fn verdict_for_a_turn_that_parked_on_permission_is_discarded() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();
@@ -1566,9 +1566,9 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(ws.join(".withnav/agents")).unwrap();
     std::fs::write(
-        ws.join(".navai/agents/writer.md"),
+        ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\naccess: full\n---\nWrite.",
     )
     .unwrap();
@@ -1646,9 +1646,9 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
 
 #[tokio::test]
 async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
     use withnav::provider::{config::load_models, openai::ClientCache, systemone::SystemOneClient};
     use withnav::session::subagents::watchdog::JevJudge;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     let server = MockServer::start().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let config = TestServerConfig::mock(tmp.path(), &server.uri()).config();

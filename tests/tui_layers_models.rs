@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::json;
 use withnav::tui::{
     catalog::{self, Row},
     commands::{self, Routed},
@@ -7,7 +8,6 @@ use withnav::tui::{
     reducer,
     state::{State, UiState, VariantPick},
 };
-use serde_json::json;
 
 fn models() -> ModelsBody {
     serde_json::from_value(json!({"default_agent":"plan","models":[

@@ -81,7 +81,7 @@ fn state_at(
     });
     other["default_variant"] = json!("high");
     let provider = |url: &str| {
-        let mut p = json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+        let mut p = json!({"base_url": url, "api_key_env": "WITHNAV_TEST_KEY", "headers": {},
                "connect_timeout_ms": 2000, "request_timeout_ms": 600_000});
         if discovery_a && url == a_url {
             p["catalog_format"] = json!("omniroute");

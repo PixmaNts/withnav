@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav  ~/dev/project           ▌◎ Nav  opus · assigned · high · — / 200k 
+ Conversations       │ ◆ withnav  ~/dev/project         ▌◎ build  opus · assigned · high · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · running   │                                                                              
                      │                                                                              

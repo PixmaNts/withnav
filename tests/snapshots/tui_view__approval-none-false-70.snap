@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: shown
 ---
- ◆ withnav                               ▌◎ Nav  — · assigned · — / — 
+ ◆ withnav                             ▌◎ build  — · assigned · — / — 
 ──────────────────────────────────────────────────────────────────────
  │ ▾ ✓ bash cargo test parser  ok  1.42 s  exit 101                   
  │   test parser::empty_argument ... FAILED                           

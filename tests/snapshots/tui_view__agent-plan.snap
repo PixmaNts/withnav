@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav  …roject  ▌◎ Nav /plan  cognition · assigned · high · 12.4k / 200k 
+ Conversations       │ ◆ withnav  …dev/project  ▌◎ plan  cognition · assigned · high · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · idle      │ │ ▸ Captain                                                                  
                      │ │  Explain the failure, then fix it.                                         

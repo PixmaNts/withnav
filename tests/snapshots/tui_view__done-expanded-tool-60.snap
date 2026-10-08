@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- ◆ withnav      ▌◎ Nav  cognition · assigned · 12.4k / 200k 
+ ◆ withnav    ▌◎ build  cognition · assigned · 12.4k / 200k 
 ────────────────────────────────────────────────────────────
  │ ◎ Nav                                                    
  │ ▸ Reasoning                                              

@@ -435,7 +435,12 @@ impl<'a> Evaluation<'a> {
         let Some(v) = &value.value else {
             return Ok(());
         };
-        let cap = self.compiled.catalogue.limits.input_bytes.min(16384);
+        let cap = self
+            .compiled
+            .catalogue
+            .limits
+            .input_bytes
+            .min(crate::catalogue::MAX_INPUT_BYTES);
         let serialized;
         let mut structured_cut = false;
         let text = if let Some(s) = v.as_str() {

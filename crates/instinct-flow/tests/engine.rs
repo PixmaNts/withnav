@@ -687,12 +687,50 @@ async fn typed_parameter_overflow_is_a_limit_not_a_string() {
     assert!(outcome.trace.actions.is_empty());
 }
 #[tokio::test]
+async fn decision_text_preserves_driver_context_until_32_kib() {
+    let c = compile(&(header("['b']") + &decision("b", "")));
+    for (bytes, expected_bytes, cut) in [(25749, 25749, false), (33000, 32768, true)] {
+        let client = Fake::new();
+        let outcome = run(
+            &c,
+            &event(),
+            &Values {
+                value: "x".repeat(bytes).into(),
+                redacted: false,
+            },
+            &client,
+            RunOptions {
+                deadline: Instant::now() + Duration::from_secs(1),
+                run_id: "input-cut".into(),
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(outcome.result, RunResult::Success { .. }));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        let input = &outcome.trace.inputs["session.agent"];
+        assert_eq!(input.cut, cut);
+        assert_eq!(
+            input.value.as_ref().unwrap().as_str().unwrap().len(),
+            expected_bytes
+        );
+    }
+}
+#[tokio::test]
 async fn oversized_structured_input_is_cut_for_decisions_and_text_parameters() {
     for body in [
         decision("b", "[node.inputs]\nx='workspace.dirty_files'"),
         action("b", "log", "text='{x}'") + "[node.inputs]\nx='workspace.dirty_files'\n",
     ] {
-        let c = compile(&(header("['b']") + &body));
+        let mut cat = catalogue();
+        // Action text has its own, unchanged 16 KiB limit.
+        if body.contains("type='action'") {
+            cat.limits.input_bytes = 16384;
+        }
+        let c = Definition::parse(&(header("['b']") + &body))
+            .unwrap()
+            .validate(&cat, &Capabilities { images: false }, &BTreeMap::new())
+            .unwrap();
         let outcome = with_values(
             &c,
             &Values {
@@ -706,7 +744,7 @@ async fn oversized_structured_input_is_cut_for_decisions_and_text_parameters() {
         assert!(input.cut);
         let text = input.value.as_ref().unwrap().as_str().unwrap();
         assert!(text.starts_with("[\"é"));
-        assert!(text.len() <= 16384);
+        assert!(text.len() <= cat.limits.input_bytes);
         let replayed = replay(&c, &outcome.trace, &Fake::new().identity());
         assert!(replayed.comparable);
         assert!(matches!(
@@ -775,7 +813,7 @@ async fn collected_total_over_64_kib_fails_independently_of_unused_references() 
     let outcome = with_values(
         &c,
         &Values {
-            value: "x".repeat(16384).into(),
+            value: "x".repeat(catalogue::MAX_INPUT_BYTES).into(),
             redacted: false,
         },
     )

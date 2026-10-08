@@ -332,7 +332,7 @@ a flow's `ask_driver`**, including follow-ups, and never defeats a flow's denial
 An approved flow-origin call is still rechecked for preflight, binding and hard floor.
 
 Limits include 64 nodes/flow, at most 16 decisions reachable in a run, 64 loaded
-flows/workspace, 16 KiB per collected input, 64 KiB total inputs/run and rendered
+flows/workspace, 32 KiB per collected input, 64 KiB total inputs/run and rendered
 state, and 256 KiB definition/provider response. Cut text is marked, not hidden;
 total-input/state overflow fails with `limit`. Effects already applied by the host
 cannot be rolled back; failed or uncertain application is never retried automatically.

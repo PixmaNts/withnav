@@ -320,14 +320,6 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     let workspace = Some(initialized_workspace);
     let user_dir = navigator::default_user_dir();
     let root = workspace.clone().unwrap_or_else(|| PathBuf::from("."));
-    for (source, target) in [
-        (root.join(".navigator"), root.join(".navai/flows")),
-        (config_dir.join("navigator"), config_dir.join("flows")),
-    ] {
-        if let Err(error) = crate::flows::migrate::migrate_directory(&source, &target) {
-            tracing::warn!(%error, "navigator flow conversion failed; legacy source retained");
-        }
-    }
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
     // loopback ephemeral port with a per-process bearer token, announced as
@@ -374,6 +366,12 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         )
         .with_disabled_layers(layers.disabled.clone());
     deps.flows = flow_factory;
+    deps.startup_warnings = flow_host
+        .store(root.clone())
+        .migration_diagnostics()
+        .into_iter()
+        .map(|diagnostic| diagnostic.message)
+        .collect();
     if let Some(info) = http.as_ref().map(|h| h.info.clone()) {
         deps = deps.with_server_info(info);
     }

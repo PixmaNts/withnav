@@ -120,6 +120,7 @@ pub struct FlowStore {
     write: std::sync::Mutex<()>,
     reload_marker: Option<ReloadMarker>,
     reload_errors: RwLock<Vec<Diagnostic>>,
+    migration_errors: Vec<(Location, Diagnostic)>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -257,6 +258,27 @@ impl FlowStore {
                 state.observed = generation;
             }
         }
+        let mut migration_errors = vec![];
+        for (location, source, target) in [
+            (
+                Location::Workspace,
+                workspace.join(".navigator"),
+                workspace.join(".navai/flows"),
+            ),
+            (
+                Location::Global,
+                config_dir.join("navigator"),
+                config_dir.join("flows"),
+            ),
+        ] {
+            if let Err(error) = super::migrate::migrate_directory(&source, &target) {
+                let path = source.join("pipeline.toml").display().to_string();
+                let message =
+                    format!("{path}: legacy flow conversion failed: {error:#}; original retained");
+                tracing::warn!(%message);
+                migration_errors.push((location, Diagnostic::new("migration", message, path)));
+            }
+        }
         let store = Self {
             workspace,
             config_dir,
@@ -265,6 +287,7 @@ impl FlowStore {
             write: std::sync::Mutex::new(()),
             reload_marker,
             reload_errors: RwLock::new(vec![]),
+            migration_errors,
         };
         if let Err(e) = store.reload_local() {
             store.record_reload_error(&e);
@@ -432,11 +455,25 @@ impl FlowStore {
         })
     }
     pub fn list(&self) -> Result<Vec<FlowSummary>, StoreError> {
-        Ok(self
+        let mut summaries: Vec<_> = self
             .documents(true)?
             .iter()
             .map(Document::summary)
-            .collect())
+            .collect();
+        summaries.extend(
+            self.migration_errors
+                .iter()
+                .map(|(location, error)| FlowSummary {
+                    name: "legacy-pipeline".into(),
+                    trigger: None,
+                    location: *location,
+                    enabled: Some(false),
+                    blocking: None,
+                    saved_since_reload: false,
+                    errors: vec![error.clone()],
+                }),
+        );
+        Ok(summaries)
     }
     fn documents(&self, include_workspace: bool) -> Result<Vec<Document>, StoreError> {
         let mut documents = super::builtin::definitions()
@@ -506,10 +543,19 @@ impl FlowStore {
         };
     }
     pub fn reload_diagnostics(&self) -> Vec<Diagnostic> {
-        self.reload_errors
+        let mut errors = self
+            .reload_errors
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .clone();
+        errors.extend(self.migration_diagnostics());
+        errors
+    }
+    pub fn migration_diagnostics(&self) -> Vec<Diagnostic> {
+        self.migration_errors
+            .iter()
+            .map(|(_, error)| error.clone())
+            .collect()
     }
     /// A marker, not flow-file watching: external edits remain inactive until explicit reload.
     pub fn refresh(&self) {

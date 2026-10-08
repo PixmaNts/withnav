@@ -83,6 +83,8 @@ pub struct NavigatorDeps {
     /// Human-readable notes about layers that were disabled at startup;
     /// surfaced as one status message after initialize.
     pub disabled_layers: Vec<String>,
+    /// Flow conversion failures, shown once after the editor initializes.
+    pub startup_warnings: Vec<String>,
     pub log_path: PathBuf,
 }
 
@@ -101,6 +103,7 @@ impl NavigatorDeps {
             user_dir: None,
             server_info: None,
             disabled_layers: Vec::new(),
+            startup_warnings: Vec::new(),
             log_path: log_path.into(),
         }
     }

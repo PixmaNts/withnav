@@ -6,6 +6,9 @@ requests land in `develop`.
 
 ### Fixed
 
+- **`edit` now refuses an empty `old_string` instead of scrambling the file.** An empty search text
+  matches between every character, so `replace_all` interleaved the new text through the whole file
+  and a single replace failed with a confusing "ambiguous match". The call is now rejected up front.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

@@ -83,7 +83,9 @@ requests land in `develop`.
 - **You can switch off a failing model even when the conversation is too big for the new one.**
   `/model` summarises the conversation with the current model before moving to a smaller window, so
   a revoked key or a provider outage left you stuck on the broken model. When the current model
-  cannot answer, the model you are switching to now writes the summary.
+  cannot answer, the model you are switching to now writes the summary. It cannot rescue a
+  conversation whose text that cannot be cut down (messages, `ask` answers, loaded skills; only
+  other tool outputs can be) is larger than the new model's window: the switch is then refused.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

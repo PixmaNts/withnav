@@ -79,10 +79,14 @@ fn history(turns: usize) -> Vec<ChatMessage> {
 }
 
 async fn seeded(state: &AppState, ws: &Path, turns: usize) -> ulid::Ulid {
+    seeded_with(state, ws, history(turns)).await
+}
+
+async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) -> ulid::Ulid {
     let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
-    state.history().save_transcript(id, history(turns));
+    state.history().save_transcript(id, transcript);
     state.history().flush().await.expect("flush");
     state
         .create_or_resume_session(ws, None, false, Some(id))
@@ -504,6 +508,245 @@ async fn a_switch_off_a_broken_model_lets_the_destination_write_the_summary() {
     collect_until(sub, |e| e.kind == "turn.end").await;
     assert_eq!(a.bodies().len(), 1, "the broken model is not used again");
     assert!(all_text(&body(&b, 1)).contains("Goal: finish the parser."));
+}
+
+/// Rewrites `models.json` after [`two_models`] wrote it.
+fn edit_models(env: &Env, edit: impl FnOnce(&mut Value)) {
+    let path = env.root.join("models.json");
+    let mut models: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    edit(&mut models);
+    std::fs::write(path, models.to_string()).unwrap();
+}
+
+// Given a broken current model and a destination with its own key, header,
+//       variant and output limit
+// When the destination writes the summary instead
+// Then that request carries the destination's credentials, header, variant
+//      and output limit, and none of the current model's
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fallback_summary_is_sent_with_the_destinations_own_settings() {
+    let env = env();
+    let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
+    let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let state = two_models(&env, &a, &b, 16_000);
+    edit_models(&env, |models| {
+        models["providers"]["a"]["headers"] = json!({"x-gateway": "a"});
+        models["providers"]["b"]["headers"] = json!({"x-gateway": "b"});
+        let entry = &mut models["models"]["b/model-b"];
+        entry["variants"] = json!({"high": {"reasoning_effort": "high"}});
+        entry["default_variant"] = json!("high");
+        entry["max_output_tokens"] = json!(777);
+    });
+    let id = seeded(&state, &env.ws, 8).await;
+
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["compacted"]["generation"], 1);
+
+    let (tried, retried) = (
+        a.requests()[0].to_lowercase(),
+        b.requests()[0].to_lowercase(),
+    );
+    assert!(tried.contains("authorization: bearer key-a"), "{tried}");
+    assert!(tried.contains("x-gateway: a"), "{tried}");
+    assert!(retried.contains("authorization: bearer key-b"), "{retried}");
+    assert!(retried.contains("x-gateway: b"), "{retried}");
+    assert!(!retried.contains("key-a") && !retried.contains("x-gateway: a"));
+    let first = body(&a, 0);
+    assert!(first.get("reasoning_effort").is_none(), "{first}");
+    assert_ne!(first["max_tokens"], 777);
+    let summary = body(&b, 0);
+    assert_eq!(summary["model"], "model-b");
+    assert_eq!(summary["reasoning_effort"], "high");
+    assert_eq!(summary["max_tokens"], 777);
+    assert!(summary.get("tools").is_none());
+}
+
+/// Seeds a turn that reads a 20 kB file, then answers at length.
+fn read_turn(n: usize) -> Vec<ChatMessage> {
+    use withnav::provider::openai::{RequestFunction, RequestToolCall};
+    vec![
+        ChatMessage::User {
+            provenance: Default::default(),
+            content: format!("request {n}"),
+        },
+        ChatMessage::Assistant {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![RequestToolCall {
+                id: format!("call_{n}"),
+                kind: "function".into(),
+                function: RequestFunction {
+                    name: "read".into(),
+                    arguments: "{\"path\":\"big.txt\"}".into(),
+                },
+            }],
+        },
+        ChatMessage::Tool {
+            tool_call_id: format!("call_{n}"),
+            content: "lorem ".repeat(3_400),
+        },
+        ChatMessage::Assistant {
+            content: Some(format!("answer {n} {}", "word ".repeat(1_000))),
+            reasoning_content: None,
+            tool_calls: vec![],
+        },
+    ]
+}
+
+fn short_turn(n: usize) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::User {
+            provenance: Default::default(),
+            content: format!("request {n}"),
+        },
+        ChatMessage::Assistant {
+            content: Some(format!("answer {n}")),
+            reasoning_content: None,
+            tool_calls: vec![],
+        },
+    ]
+}
+
+// Given a broken current model, a destination with a small window, and tool
+//       outputs in the part to summarize that together outgrow that window
+// When the destination writes the summary
+// Then its request has those outputs cut down to markers (the current model's
+//      request, on its big window, had none) and the switch goes through
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fallback_summary_is_cut_down_to_the_destinations_window() {
+    let env = env();
+    let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
+    let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let transcript: Vec<ChatMessage> = (0..7)
+        .flat_map(read_turn)
+        .chain((7..9).flat_map(short_turn))
+        .collect();
+    let id = seeded_with(&state, &env.ws, transcript).await;
+
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(a.bodies().len(), 1);
+    assert!(
+        !a.bodies()[0].contains("output elided to save context"),
+        "the current model's window holds the whole part"
+    );
+    let summary = &b.bodies()[0];
+    assert!(is_summary(summary));
+    assert!(
+        summary.contains("output elided to save context"),
+        "the destination reads the part through its own window"
+    );
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
+    assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
+}
+
+// Given a broken current model and a part to summarize that is too big for the
+//       destination's window and has nothing that can be cut (no tool output)
+// When /model moves the conversation there
+// Then the switch is refused with the way out, the destination is never
+//      asked, and nothing changed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fallback_summary_that_cannot_be_cut_to_the_destinations_window_is_refused() {
+    let env = env();
+    let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 16).await;
+
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    let error = out.error.unwrap();
+    assert!(error.contains("cannot be compacted to fit it"), "{error}");
+    assert!(error.contains("the part to summarize needs"), "{error}");
+    assert_eq!(a.bodies().len(), 1, "the current model was tried");
+    assert!(b.bodies().is_empty(), "the destination was never asked");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert!(checkpoint.is_none());
+}
+
+/// Asserts that a switch stopped mid-way left no selection, notice or
+/// checkpoint behind.
+async fn assert_nothing_installed(state: &AppState, id: ulid::Ulid) {
+    assert!(stored(state, id, "context.compacted").await.is_empty());
+    assert!(stored(state, id, "model.changed").await.is_empty());
+    let (meta, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert_eq!(meta.model, "a/model-a");
+    assert!(checkpoint.is_none(), "no checkpoint was installed");
+}
+
+/// Runs `/model b/model-b` and stops the session while the provider that
+/// `held` is parked on its answer; then lets that answer through.
+async fn stop_a_switch_held_at(
+    state: &AppState,
+    id: ulid::Ulid,
+    reached: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+) {
+    let switching = {
+        let state = state.clone();
+        tokio::spawn(async move { state.run_command(id, "model", "b/model-b").await })
+    };
+    reached.notified().await;
+    let stopping = {
+        let state = state.clone();
+        tokio::spawn(async move { state.close_session(id).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    release.notify_one();
+    if let Ok(out) = switching.await.unwrap() {
+        assert!(!out.ok, "{out:?}");
+    }
+    stopping.await.unwrap().expect("the stop completes");
+}
+
+// Given a switch whose current model fails, held at that failure
+// When the session is stopped before the destination is asked
+// Then the stop wins: no selection, notice or checkpoint is installed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_between_the_two_summary_attempts_installs_nothing() {
+    let env = env();
+    let (reached, release) = (
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    let a = common::sse::spawn_holding_provider(1, 0, reached.clone(), release.clone(), |_, _| {
+        SERVER_ERROR.to_vec()
+    })
+    .await;
+    let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 8).await;
+
+    stop_a_switch_held_at(&state, id, reached, release).await;
+    assert_nothing_installed(&state, id).await;
+}
+
+// Given a switch whose destination is writing the summary
+// When the session is stopped before that summary arrives
+// Then the stop wins: no selection, notice or checkpoint is installed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_the_fallback_summary_installs_nothing() {
+    let env = env();
+    let (reached, release) = (
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
+    let b = common::sse::spawn_holding_provider(1, 0, reached.clone(), release.clone(), |_, _| {
+        answer(SUMMARY)
+    })
+    .await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 8).await;
+
+    stop_a_switch_held_at(&state, id, reached, release).await;
+    assert_eq!(a.bodies().len(), 1, "the current model was tried first");
+    assert_nothing_installed(&state, id).await;
 }
 
 // Given a manual /compact

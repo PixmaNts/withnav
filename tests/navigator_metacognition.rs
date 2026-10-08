@@ -103,6 +103,39 @@ async fn isolated_server() -> MockServer {
     MockServer::builder().listener(listener).start().await
 }
 
+#[tokio::test]
+async fn streamed_usage_is_recorded_in_the_round_log() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = isolated_server().await;
+    let stream = sse_stream(vec![
+        sse_data(&delta_text(r#"{"silent":true}"#)),
+        sse_data(&json!({"choices": [], "usage": {
+            "prompt_tokens": 123, "completion_tokens": 17, "total_tokens": 140
+        }})),
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let log_path = tmp.path().join("nav.jsonl");
+    let c = commenter(server.uri(), Some(log_path.clone()));
+    let mut ctx = remark_ctx(tmp.path(), vec![]);
+    ctx.tool_rounds = 0;
+    c.remark(&ctx, &tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+    let bodies = received_bodies(&server).await;
+    assert_eq!(bodies[0]["stream_options"]["include_usage"], true);
+    let records = NavLog::new(&log_path).read_all();
+    let call = records
+        .iter()
+        .find(|r| r["layer"] == "metacognition_round")
+        .unwrap();
+    assert_eq!(call["input_tokens"], 123);
+    assert_eq!(call["output_tokens"], 17);
+}
+
 // Given a wiremock chat provider where the first round asks to `read` a
 // file and the second answers the remark
 // When the metacognition remarks with a workspace

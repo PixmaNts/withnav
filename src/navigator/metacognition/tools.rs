@@ -99,7 +99,7 @@ impl LlmCommenter {
             },
             Err(e) => format!("error: {e}"),
         };
-        self.log_call("metacognition_tool", &tc.name, started, false);
+        self.log_call("metacognition_tool", &tc.name, started, false, None);
         crate::navigator::log::excerpt(&text, TOOL_OUTPUT_MAX_CHARS)
     }
 }

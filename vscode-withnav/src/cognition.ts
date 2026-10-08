@@ -532,6 +532,10 @@ export class CognitionBackend implements ChatBackend {
     }
     const body = await this.request(`/v1/sessions?${this.workspaceQuery()}`, { method: "GET" });
     const parent = this.parentState();
+    const listedIds = new Set<string>((Array.isArray(body?.sessions) ? body.sessions : []).map((s: any) => s.id));
+    for (const childId of parent.children.keys()) {
+      if (!listedIds.has(childId)) parent.children.delete(childId);
+    }
     for (const s of Array.isArray(body?.sessions) ? body.sessions : []) {
       if (typeof s.id === "string" && s.parent_session_id === (parent.session ?? parent.resumeId) && s.promptable === false) {
         if (!parent.children.has(s.id)) parent.children.set(s.id, { id: s.id, agent: typeof s.agent === "string" ? s.agent : "subagent", goal: "", state: this.childStatus(s.child_status) });
@@ -652,7 +656,11 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async deleteConversation(id: string): Promise<void> {
-    await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    try {
+      await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    } catch (error) {
+      if (!(error instanceof HttpError && error.status === 404)) throw error;
+    }
     this.conversations = this.conversations.filter((c) => c.id !== id);
     if (this.state.session === id || this.state.resumeId === id) {
       // The open conversation vanished: land in a fresh one (which pushes
@@ -661,6 +669,7 @@ export class CognitionBackend implements ChatBackend {
     } else {
       this.emitConversations();
     }
+    await this.listConversations();
   }
 
   async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
@@ -1669,10 +1678,24 @@ function isAbort(error: unknown): boolean {
 /** Maps the wire session list onto the panel's ConversationSummary. */
 function parseSessionList(body: any): ConversationSummary[] {
   const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
+  const descendants = (id: string): number => {
+    const found = new Set<string>([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const child of sessions) {
+        if (child && typeof child.id === "string" && found.has(child.parent_session_id) && !found.has(child.id)) {
+          found.add(child.id); changed = true;
+        }
+      }
+    }
+    return found.size - 1;
+  };
   return sessions
     .filter((s: any) => s && typeof s.id === "string" && !s.parent_session_id && s.promptable !== false)
     .map((s: any) => ({
       id: s.id,
+      subagentCount: descendants(s.id),
       title: typeof s.title === "string" && s.title ? s.title : "Untitled conversation",
       updatedAt: typeof s.updated_at === "string" ? s.updated_at : "",
       messageCount: typeof s.message_count === "number" ? s.message_count : 0,

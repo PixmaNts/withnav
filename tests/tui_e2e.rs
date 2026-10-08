@@ -747,7 +747,7 @@ async fn tab_switches_build_and_plan_through_the_server() {
     })
     .await;
     let shown = screen(&mut rt);
-    assert!(shown.contains("◎ Nav /plan"), "{shown}");
+    assert!(shown.contains("▌◎ plan"), "{shown}");
     assert!(shown.contains("◎ Nav · idle"), "{shown}");
     let summary = Client::new(env.base.clone(), None)
         .summary(&session_id(&rt))

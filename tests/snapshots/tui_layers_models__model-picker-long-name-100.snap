@@ -1,8 +1,9 @@
 ---
 source: tests/tui_layers_models.rs
+assertion_line: 937
 expression: "wide.join(\"\\n\")"
 ---
- Conversations       │ ◆ withnav                                 ◎ Nav /build  — · assigned · — / — 
+ Conversations       │ ◆ withnav                                      ◎ build  — · assigned · — / — 
  1 new conversation  │──────────────────────────────────────────────────────────────────────────────
    ◎ Nav · idle      │                                                                              
             ┌───────────────────────────── Choose a model ─────────────────────────────┐            

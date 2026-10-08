@@ -3185,7 +3185,10 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
             header.contains("200k"),
             "{width}: the gauge stays: {header}"
         );
-        assert!(header.contains("▌◎ Nav"), "{width}: {header}");
+        assert!(
+            header.contains("▌◎ Nav /build") || header.contains("▌◎ build"),
+            "{width}: {header}"
+        );
         // the header ends with the gauge and its trailing space: nothing was cut at the edge
         assert!(
             header.trim_end().ends_with("200k · 21%"),

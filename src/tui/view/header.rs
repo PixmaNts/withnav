@@ -137,8 +137,10 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme)
     // Right: the agent and the model_id always (each cut to a share of the row); then the gauge,
     // the variant and the model.
     let total = usize::from(area.width);
+    // A narrow header drops the crew name before the agent: build and plan act differently, so
+    // the mode stays visible at every width.
     let agent_label = if total < 80 {
-        super::sidebar::agent_label(agent)
+        format!("{} {agent}", super::sidebar::identity(agent).0)
     } else {
         format!("{} /{agent}", super::sidebar::agent_label(agent))
     };

@@ -74,6 +74,7 @@ export function parseFlowToml(text: string): { definition: Definition | null; er
     if (e instanceof TomlError) return { definition: null, errors: [diag("parse", e.message.split("\n")[0] ?? "Invalid TOML", "", { line: e.line, column: e.column })] };
     return { definition: null, errors: [diag("parse", String(e))] };
   }
+  raw = JSON.parse(JSON.stringify(raw), (key, value) => key === "action" && value === "ask_driver" ? "ask_captain" : value);
   return fromRaw(raw, text);
 }
 

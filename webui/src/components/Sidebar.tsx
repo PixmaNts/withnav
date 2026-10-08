@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { CaretDown, CaretRight, Folder, FolderPlus, Plus, ArrowsInLineVertical, ArrowsOutLineVertical } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -179,7 +180,7 @@ function SessionRow({ s, kids, ws, route, navigate }: { s: SessionListEntry; kid
           onClick={() => navigate({ workspace: ws, session: s.id, subagent: k.id })}
           title={k.title ?? undefined}
         >
-          <span className="agent">└ {k.agent}</span>
+          <span className="agent">└ <Crew id={k.agent} /></span>
           {k.bypass && <span className="bypass-badge">⚠ bypass</span>}
           <span className="meta">{k.child_status ?? (k.live ? "running" : "")}</span>
         </button>

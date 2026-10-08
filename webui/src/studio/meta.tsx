@@ -25,8 +25,8 @@ export const ACTION_LOOK: Record<string, Look & { label: string; describe: strin
   deny: { tag: "ACTION", icon: (s) => <Prohibit size={s} />, color: "var(--rd)", label: "Deny the tool call", describe: "The call does not run; the note is what the model sees." },
   ask_captain: { tag: "ACTION", icon: (s) => <Hand size={s} />, color: "var(--or)", label: "Ask the Captain", describe: "A permission request with the note, without the model review." },
   remark: { tag: "ACTION", icon: (s) => <Compass size={s} />, color: "var(--at)", label: "Show a remark", describe: "The metacognition writes a remark in the editor." },
-  wake: { tag: "ACTION", icon: (s) => <BellRinging size={s} />, color: "var(--rd)", label: "Wake the cognition", describe: "The cognition is woken with the note." },
-  inject_note: { tag: "ACTION", icon: (s) => <ChatText size={s} />, color: "var(--bl)", label: "Inject a note", describe: "A note reaches the cognition at its next safe point, marked as from a flow." },
+  wake: { tag: "ACTION", icon: (s) => <BellRinging size={s} />, color: "var(--rd)", label: "Wake Nav", describe: "Nav is woken with the note." },
+  inject_note: { tag: "ACTION", icon: (s) => <ChatText size={s} />, color: "var(--bl)", label: "Inject a note", describe: "A note reaches Nav at its next safe point, marked as from a flow." },
   log: { tag: "ACTION", icon: (s) => <Note size={s} />, color: "var(--mu)", label: "Log only", describe: "Recorded in the run trace only." },
 };
 

@@ -1,3 +1,4 @@
+import { Crew } from "../components/Crew";
 import { Brain, CaretDown, Compass, Gauge, Lightning, LockSimple, MagnifyingGlass, Star } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentEntry, LayerEntry, ModelEntry } from "../api/types";
@@ -9,10 +10,10 @@ import { Applies, Field, FieldError, Head, Pill } from "./ui";
 type Target = LayerId | "cognition";
 
 const LAYERS: { id: Target; label: string; icon: ReactNode; api: string; role: string; note: string; modelNote: string }[] = [
-  { id: "reflex", label: "Reflex", icon: <Lightning size={14} />, api: "fim", role: "Ghost-text suggestions in the editor.", note: "LSP only · IDE attached", modelNote: "Only fill-in-the-middle models are offered." },
-  { id: "instinct", label: "Instinct", icon: <Gauge size={14} />, api: "systemone", role: "Typed decisions: InstinctFlow, permission review, pipeline.", note: "System One decisions", modelNote: "Only models behind the System One API are offered." },
-  { id: "metacognition", label: "Metacognition", icon: <Compass size={14} />, api: "chat", role: "Remarks, wakes, and approval of risky calls.", note: "fast model", modelNote: "A fast (flash) chat model works best here." },
-  { id: "cognition", label: "Cognition", icon: <Brain size={14} />, api: "chat", role: "Agents, each with its own model.", note: "", modelNote: "" },
+  { id: "reflex", label: "Reflex · Completion", icon: <Lightning size={14} />, api: "fim", role: "Ghost-text suggestions in the editor.", note: "LSP only · IDE attached", modelNote: "Only fill-in-the-middle models are offered." },
+  { id: "instinct", label: "Instinct · Triage", icon: <Gauge size={14} />, api: "systemone", role: "Typed decisions: InstinctFlow, permission review, pipeline.", note: "System One decisions", modelNote: "Only models behind the System One API are offered." },
+  { id: "metacognition", label: "Metacognition · Beacon", icon: <Compass size={14} />, api: "chat", role: "Remarks, wakes, and approval of risky calls.", note: "fast model", modelNote: "A fast (flash) chat model works best here." },
+  { id: "cognition", label: "Cognition · Nav and the crew", icon: <Brain size={14} />, api: "chat", role: "Agents, each with its own model.", note: "", modelNote: "" },
 ];
 
 const fmt = (n: number | null | undefined) => (n ? n.toLocaleString("en-US") : null);
@@ -105,7 +106,7 @@ export function Layers(p: SectionProps) {
 function LayersHead() {
   return (
     <Head title="Layers" file="config.json → layers, agents, default_agent">
-      Reflex, instinct and metacognition run one model each. The cognition runs agents, several at once as subagents.
+      Reflex, instinct and metacognition run one model each. Nav runs agents, several at once as subagents.
     </Head>
   );
 }
@@ -210,7 +211,7 @@ function FixedLayer({ p, layer, id, onSearch }: { p: SectionProps; layer: (typeo
         {id === "reflex" && (
           <div className="st-field wide st-plain">The reflex runs only through the language server, while an editor is attached (VS Code today; Zed and IntelliJ are planned).</div>
         )}
-        {id === "instinct" && <div className="st-field wide st-plain">Every call has a 2 s deadline, whatever the provider timeout. Used by the permission review, the navigator pipeline and InstinctFlow.</div>}
+        {id === "instinct" && <div className="st-field wide st-plain">Every call has a 2 s deadline, whatever the provider timeout. Used by the permission review, the WithNav pipeline and InstinctFlow.</div>}
       </div>
     </div>
   );
@@ -279,7 +280,7 @@ function Cognition({ p, agent, leads, defaultAgent, onAgent, onSearch }: { p: Se
           return (
             <div key={a.id} role="row" className="st-agent-row" aria-selected={a.id === agent?.id} onClick={() => onAgent(a.id)}>
               <button type="button" className="mono name" onClick={() => onAgent(a.id)}>
-                {a.id}
+                <Crew id={a.id} />
               </button>
               <span className={`mode ${a.mode}`}>{a.mode}</span>
               <span className={`mono model${set ? "" : " inherited"}`} title={c ? (set ? `config.json → agents.${a.id}` : `from ${SOURCE[a.effective?.source ?? ""] ?? a.effective?.source}`) : undefined}>
@@ -328,7 +329,7 @@ function AgentDetail({ p, a, maxSub, onSearch }: { p: SectionProps; a: AgentEntr
   return (
     <div className="st-grid">
       <div className="st-field wide st-agent-title">
-        <span className="mono name">{a.id}</span>
+        <span className="mono name"><Crew id={a.id} /></span>
         <span className="muted">{a.description}</span>
         <span className="mono muted small end" title={`Looked up in ${dirs.join(" and ")}; built-in agents have no file.`}>
           {a.id}.md

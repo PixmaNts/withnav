@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { ArrowElbowDownRight, Hammer, Notebook, Robot } from "@phosphor-icons/react";
 import { Fragment } from "react";
 import { useIntent, useSkills } from "../api/queries";
@@ -42,7 +43,7 @@ function IntentTab({ workspace }: { workspace: string | null }) {
       <>
         {label}
         <div className="panel-empty">
-          No intent record in this workspace yet. In an editor session, the cognition writes one when an intent, a plan or a decision is settled. You can also create <span className="mono">.withnav/intent.md</span> by hand.
+          No intent record in this workspace yet. In an editor session, Nav writes one when an intent, a plan or a decision is settled. You can also create <span className="mono">.withnav/intent.md</span> by hand.
         </div>
       </>
     );
@@ -114,7 +115,7 @@ function AgentCard({ a, active, isDefault, sub, running, chat }: { a: AgentEntry
     <div className={`card${sub ? " sub" : ""}${active ? " active" : ""}${a.id === "plan" ? " plan" : ""}`}>
       <div className="head">
         <Icon size={14} style={{ color: active ? (a.id === "plan" ? "var(--bl)" : "var(--ac)") : undefined }} aria-hidden />
-        {a.id}
+        <Crew id={a.id} />
         <span className={sub && running ? "" : "muted"} style={sub && running ? { color: "var(--pu)" } : undefined}>
           · {sub ? `subagent${running ? ` · ${running} running` : ""}` : `primary${active ? " · active" : ""}${isDefault ? " · default" : ""}`}
         </span>
@@ -132,7 +133,7 @@ function ChildCard({ c, onOpen }: { c: Child; onOpen: () => void }) {
   return (
     <button type="button" className="card sub" style={{ marginLeft: 36, textAlign: "left", background: "transparent", color: "inherit" }} onClick={onOpen}>
       <div className="head">
-        <span style={{ color: "var(--pu)" }}>@{c.agent}</span>
+        <span style={{ color: "var(--pu)" }}><Crew id={c.agent} /></span>
         <span className="muted">· {c.status} · spawned by {c.spawnedBy}</span>
       </div>
       <div className="desc" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{c.goal}</div>

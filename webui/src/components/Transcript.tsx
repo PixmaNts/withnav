@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { ArrowUp, CaretRight, Compass, TreeStructure } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readDelegation } from "../lib/compose";
@@ -57,7 +58,7 @@ function ItemView({ item, view, agent, onAnswer, onOpenChild, readOnly }: { item
       return (
         <div className="msg-driver">
           <div className="byline">
-            Driver{delegated ? " · Delegation" : ""}
+            <Crew id="captain" />{delegated ? " · Delegation" : ""}
             {item.skill ? ` · skill ${item.skill}` : ""}
           </div>
           <Markdown text={text} />
@@ -79,7 +80,7 @@ function ItemView({ item, view, agent, onAnswer, onOpenChild, readOnly }: { item
               </button>
             )}
           </div>
-          <div className="muted" style={{ fontSize: 11.5 }}>Result passed to the cognition as untrusted text.</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>Result passed to Nav as untrusted text.</div>
           <Markdown text={item.text} />
         </div>
       );
@@ -103,7 +104,7 @@ function TurnView({ turn, view, fallbackAgent, onAnswer, onOpenChild, readOnly }
   const childCalls: Record<string, number> = {};
   return (
     <div className={`msg-cog${agent === "plan" ? " plan" : ""}`}>
-      <div className="byline">Cognition{agent ? ` · ${agent}` : ""}</div>
+      <div className="byline"><Crew id={agent ?? "nav"} /></div>
       {turn.parts.map((part, i) => {
         switch (part.type) {
           case "reasoning": {
@@ -162,10 +163,10 @@ function Wake({ item }: { item: Extract<Item, { kind: "wake" }> }) {
     <div className="wake">
       <div className="wake-head">
         <ArrowUp size={13} aria-hidden />
-        Wake · metacognition → cognition
+        Wake · metacognition → nav
         <span className="right">{[where, note.score ? `score ${note.score}` : ""].filter(Boolean).join(" · ")}</span>
       </div>
-      <div>{note.reason ? capitalize(note.reason) : "The navigator raised something for the cognition."}</div>
+      <div>{note.reason ? capitalize(note.reason) : "Nav raised something for your attention."}</div>
       {hasDetails && (
         <button type="button" className="link-btn" aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? "Hide details" : note.diff ? "Show change" : "Show details"}

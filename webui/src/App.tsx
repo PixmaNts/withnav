@@ -405,7 +405,7 @@ function EmptyState({ workspace, sessionId, loading, agent }: { workspace: strin
     <EmptySession title={`New session in ${baseName(workspace)}`}>
       <div className="mono" style={{ fontSize: 12 }}>{shortPath(workspace)}</div>
       <div>
-        The first message starts a session as <b style={{ color: agent === "plan" ? "var(--bl)" : "var(--at)", fontWeight: 500 }}>{agent}</b>. By default the cognition guides you; turn on Delegate to have it do the work.
+        The first message starts a session as <b style={{ color: agent === "plan" ? "var(--bl)" : "var(--at)", fontWeight: 500 }}><Crew id={agent} /></b>. By default Nav guides you; turn on Delegate to have it do the work.
       </div>
     </EmptySession>
   );

@@ -128,8 +128,8 @@ export const emptyView = (): SessionView => ({
 const str = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback);
 
 export function authorOf(source: string): "driver" | "navigator" | "subagent" {
-  if (source.startsWith("user:") && source !== "user:subagent") return "driver";
-  if (source === "navigator" || source.startsWith("navigator:")) return "navigator";
+  if (source === "captain" || source === "driver" || source.startsWith("captain:") || source.startsWith("user:") && source !== "user:subagent") return "driver";
+  if (source === "nav" || source.startsWith("nav:") || source === "navigator" || source.startsWith("navigator:")) return "navigator";
   return "subagent";
 }
 
@@ -164,7 +164,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       const key = `m:${envelope.seq}`;
       const author = authorOf(source);
       if (author === "driver") {
-        const skill = p.selected_skill?.origin === "driver" ? str(p.selected_skill?.name) || undefined : undefined;
+        const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
         next.items = [...next.items, { kind: "driver", key, text, skill }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];
       else next.items = [...next.items, { kind: "subagent-result", key, source, ...subagentResult(text, p) }];

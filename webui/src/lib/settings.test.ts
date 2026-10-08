@@ -23,7 +23,7 @@ const field = (key: string, value: unknown, extra: Partial<SettingField> = {}): 
 
 const body: SettingsBody = {
   revision: "sha256:1",
-  paths: { config: "/home/u/.config/navai/config.json", models: "/home/u/.config/navai/models.json", agents: [] },
+  paths: { config: "/home/u/.config/withnav/config.json", models: "/home/u/.config/withnav/models.json", agents: [] },
   fields: [
     field("layers.reflex", { model: "inception/mercury-edit-2", variant: null }),
     field("layers.instinct", null),
@@ -94,7 +94,7 @@ describe("sidebar summaries", () => {
   });
   it("show one folder for files that share it", () => {
     expect(fileLines(body.paths)).toEqual(["~/.config/withnav/", "config.json · models.json"]);
-    expect(fileLines({ config: "/home/u/.config/navai/config.json", models: "/ws/models.json", agents: [] })).toEqual(["~/.config/withnav/config.json", "/ws/models.json"]);
+    expect(fileLines({ config: "/home/u/.config/withnav/config.json", models: "/ws/models.json", agents: [] })).toEqual(["~/.config/withnav/config.json", "/ws/models.json"]);
   });
   it("label the users of a gateway like the design", () => {
     expect(usedByLabel("layers.reflex")).toBe("reflex");

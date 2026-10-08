@@ -29,6 +29,10 @@ requests land in `develop`.
 - **The terminal client no longer fails to load skills or toggle bypass for a session whose id needs
   escaping.** Those two requests put the id in the URL path as-is while every other one escaped it, so
   an id with a space or a slash gave a 404.
+- **VS Code keeps watchdog-paused subagents continuable without a root pause token.**
+  Removed an unreachable tooltip that incorrectly implied child continuation
+  required a token; the server accepts tokenless child continuation.
+
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

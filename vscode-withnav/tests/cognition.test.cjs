@@ -85,6 +85,13 @@ test("child approval posts to parent with bearer token and exact deny body", asy
   assert.equal(backend.hasOpenPermissions(), true);
 });
 
+test("sending a message percent-encodes the session id in the request path", async t => {
+  const { backend, calls } = setup(t);
+  backend.state.session = "a/b c";
+  await backend.send("hello");
+  assert.equal(calls[0].url, "http://127.0.0.1:1234/v1/sessions/a%2Fb%20c/messages");
+});
+
 test("foreign session, unknown request, forbidden folder grant and malformed message never post", async t => {
   const { backend, calls, permission } = setup(t);
   permission();

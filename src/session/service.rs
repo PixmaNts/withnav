@@ -1916,7 +1916,7 @@ impl Service {
             .as_deref()
             .map(crate::provider::catalog::ModelResolution::from_saved)
             .transpose()
-            .map_err(|_| ServerError::MalformedBody("saved selection unavailable".into()))?;
+            .map_err(|_| ServerError::MalformedBody("saved selection uwithnavlable".into()))?;
         let identity = selection_identity(
             agent,
             &meta.model,
@@ -2147,16 +2147,16 @@ impl Service {
                 .primary_agent
                 .as_deref()
                 .unwrap_or(crate::agent::definitions::BUILD);
-            let unavailable = |reason: &str| ServerError::SavedAgentUnavailable {
+            let uwithnavlable = |reason: &str| ServerError::SavedAgentUwithnavlable {
                 session: session_id.to_string(),
                 agent: saved.to_string(),
                 reason: reason.to_string(),
             };
             let definition = agents
                 .get(saved)
-                .ok_or_else(|| unavailable("no agent definition with this id was found"))?;
+                .ok_or_else(|| uwithnavlable("no agent definition with this id was found"))?;
             if !definition.mode.is_primary() {
-                return Err(unavailable("it is no longer a primary agent"));
+                return Err(uwithnavlable("it is no longer a primary agent"));
             }
             return Ok(definition.clone());
         }
@@ -2304,7 +2304,7 @@ impl Service {
             }
         };
         // The agent is chosen before anything is built or written: an unknown
-        // agent fails a fresh session, an unavailable saved one fails the
+        // agent fails a fresh session, an uwithnavlable saved one fails the
         // resume, and neither leaves a row behind.
         let agents = self
             .load_agents(&workspace, session_id, resumed.is_some())
@@ -2644,10 +2644,10 @@ impl Service {
                 crate::provider::assignments::Layer::Metacognition,
             )
             .is_ok();
-            actor.permission_reviewer_unavailable = if reviewer_present {
+            actor.permission_reviewer_uwithnavlable = if reviewer_present {
                 "no key"
             } else {
-                "metacognition layer unavailable"
+                "metacognition layer uwithnavlable"
             };
             actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
                 &models,
@@ -2655,7 +2655,7 @@ impl Service {
                 &self.config.config_dir,
                 &self.catalog,
                 Arc::new(crate::provider::openai::ClientCache::new()),
-                self.config.data_dir.join("navai.jsonl"),
+                self.config.data_dir.join("withnav.jsonl"),
             )
             .ok()
             .map(|reviewer| {
@@ -2859,7 +2859,7 @@ impl Service {
         }
         if root_watchdog
             .as_ref()
-            .is_some_and(|watchdog| watchdog.unavailable())
+            .is_some_and(|watchdog| watchdog.uwithnavlable())
             && actor.max_steps == usize::MAX
         {
             actor.max_steps = crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS;
@@ -2964,7 +2964,7 @@ impl Service {
         status.watchdog_fallback_notice.store(
             root_watchdog
                 .as_ref()
-                .is_some_and(|watchdog| watchdog.unavailable())
+                .is_some_and(|watchdog| watchdog.uwithnavlable())
                 && actor.max_steps == crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS,
             std::sync::atomic::Ordering::Release,
         );

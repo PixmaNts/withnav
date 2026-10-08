@@ -1610,7 +1610,7 @@ fn the_agent_shows_in_the_status_line_and_the_sidebar() {
     let ui = UiState::default();
     let t = cells(&s, &ui, (100, 30));
     let status = (0..30)
-        .find(|y| row_text(&t, *y, 100).contains("▌◎ Nav /build  cognition"))
+        .find(|y| row_text(&t, *y, 100).contains("▌◎ Nav  cognition"))
         .expect("status line");
     let x = row_text(&t, status, 100)
         .chars()
@@ -1624,7 +1624,7 @@ fn the_agent_shows_in_the_status_line_and_the_sidebar() {
     render("agent-plan", (100, 30), &s, &ui, &Editor::new());
     let t = cells(&s, &ui, (100, 30));
     let status = (0..30)
-        .find(|y| row_text(&t, *y, 100).contains("▌◎ Nav /plan  cognition"))
+        .find(|y| row_text(&t, *y, 100).contains("▌◎ Nav  cognition"))
         .expect("status line");
     let line = row_text(&t, status, 100);
     assert!(line.contains("· high · 12.4k / 200k"), "{line}");
@@ -2865,7 +2865,7 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
     assert!(!header.contains('●'), "{header}");
     // narrow: the path and the model give way before the agent and the gauge
     let header = row_text(&cells(&s, &ui, (60, 20)), 0, 60);
-    assert!(header.contains("▌◎ Nav /plan  cognition"), "{header}");
+    assert!(header.contains("▌◎ Nav  cognition"), "{header}");
     assert!(header.contains("/ 200k"), "{header}");
 }
 

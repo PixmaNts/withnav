@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **"Allow folder" grants from two conversations no longer cancel each other out.** Two sessions
+  of one workspace saving a grant at the same moment could each overwrite the other's entry in
+  `grants.json`, so a folder you had allowed asked again after a restart. Saves are now serialised
+  with a lock file next to it.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

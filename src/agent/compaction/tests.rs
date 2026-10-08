@@ -342,7 +342,7 @@ fn a_summary_cannot_close_its_wrapper_or_pass_for_a_message() {
     assert_eq!(content.matches("</conversation_summary>").count(), 1);
     assert!(content.ends_with("</conversation_summary>"));
     assert!(!content.contains("<system>"));
-    assert!(content.contains("\u{2039}/conversation_summary\u{203a}"));
+    assert!(content.contains("[/conversation_summary]"));
     // The summary is one user message; the only system messages are the rule.
     assert_eq!(
         h.iter()
@@ -353,8 +353,9 @@ fn a_summary_cannot_close_its_wrapper_or_pass_for_a_message() {
     // The cap holds for the escaped text, so the reserve holds for any
     // summary that passes it.
     assert!(summary_within_cap(&"x".repeat(SUMMARY_MAX_BYTES)));
-    assert!(!summary_within_cap(&"<".repeat(SUMMARY_MAX_BYTES / 3 + 1)));
-    let worst: u64 = summary_messages(&"<".repeat(SUMMARY_MAX_BYTES / 3))
+    assert!(summary_within_cap(&"<".repeat(SUMMARY_MAX_BYTES)));
+    assert!(!summary_within_cap(&"<".repeat(SUMMARY_MAX_BYTES + 1)));
+    let worst: u64 = summary_messages(&"<".repeat(SUMMARY_MAX_BYTES))
         .iter()
         .map(crate::agent::context::message_tokens)
         .sum();
@@ -419,7 +420,7 @@ fn an_oversized_summary_is_refused_on_restore() {
     assert!(validate(&k(3, &"a".repeat(SUMMARY_MAX_BYTES), vec![]), &t).is_ok());
     assert!(invalid(&k(3, &"a".repeat(SUMMARY_MAX_BYTES + 1), vec![]), &t).contains("cap"));
     // Counted as the prompt carries it: brackets grow to three bytes.
-    assert!(invalid(&k(3, &"<".repeat(SUMMARY_MAX_BYTES / 3 + 1), vec![]), &t).contains("cap"));
+    assert!(invalid(&k(3, &"<".repeat(SUMMARY_MAX_BYTES + 1), vec![]), &t).contains("cap"));
 }
 
 #[test]
@@ -674,7 +675,7 @@ fn adjacent_non_captain_input_does_not_inflate_no_skill_minimum_capacity() {
         else {
             panic!("capacity")
         };
-        assert_eq!(needed, 7_432);
+        assert_eq!(needed, 7_431);
         let baseline: Vec<_> = transcript
             .iter()
             .enumerate()

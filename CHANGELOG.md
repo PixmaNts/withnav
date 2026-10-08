@@ -65,6 +65,9 @@ requests land in `develop`.
 
 - **Metacognition call logs retain provider-reported token usage.** Successful chat rounds now
   record input and output counts; tools and responses without usage keep these fields unknown.
+- **Code-heavy conversation summaries no longer exceed their cap during escaping.** Angle
+  brackets become same-size square brackets, keeping generic types and HTML summaries bounded
+  without allowing summary text to close its data wrapper.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

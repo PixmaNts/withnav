@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ### Fixed
 
+- **The WebUI now fits tablets and phones.** Below 1100 px the Intent / Crew / Extensions panel
+  opens from a **Details** button in the top bar; below 700 px the page is one column and the
+  workspace list opens from the ☰ button. Settings and the Studio work the same way. Esc closes
+  a side panel and puts focus back on its button. The desktop layout does not change.
+
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

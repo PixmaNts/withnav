@@ -5,10 +5,11 @@
 import "@xyflow/react/dist/style.css";
 import "./studio.css";
 
-import { ArrowClockwise, ArrowLeft, CaretDown, FloppyDisk, FlowArrow, Lightning, ShieldWarning, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, CaretDown, FloppyDisk, FlowArrow, Lightning, List, ShieldWarning, SidebarSimple, WarningCircle, X } from "@phosphor-icons/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Drawer, DrawerButton, MOBILE, TABLET, useDrawer, type DrawerState } from "../lib/drawer";
 import type { Route } from "../router";
 import { envelopeOf, errorMessage, studioApi, type StudioApi } from "./api";
 import { Canvas } from "./Canvas";
@@ -37,6 +38,10 @@ export function StudioPage({ route, navigate }: Props) {
   }, [route.flow]);
 
   const apiQ = useQuery({ queryKey: ["studio-api", workspace, !!route.mock], queryFn: () => studioApi(workspace!, !!route.mock), enabled: !!workspace, staleTime: Infinity, retry: false });
+  // Narrow screens: the inspector, then the flow list, become drawers opened from the top bar.
+  const flowsDrawer = useDrawer(MOBILE);
+  const inspectorDrawer = useDrawer(TABLET);
+  const ready = !!workspace && !!apiQ.data;
 
   return (
     <div className="sf-shell">
@@ -44,6 +49,11 @@ export function StudioPage({ route, navigate }: Props) {
         <button type="button" className="sf-back" onClick={() => navigate({ page: "chat", flow: null, loc: null, mock: false })} title="Back to the sessions">
           <ArrowLeft size={13} aria-hidden />
         </button>
+        {ready && (
+          <DrawerButton target="sf-flows" state={flowsDrawer} label="Flows" className="side-toggle">
+            <List size={18} aria-hidden />
+          </DrawerButton>
+        )}
         <span className="brand">
           <FlowArrow size={16} aria-hidden />
           Studio
@@ -61,6 +71,12 @@ export function StudioPage({ route, navigate }: Props) {
             <Lightning size={12} aria-hidden /> instinct · System One API
           </span>
         </div>
+        {ready && (
+          <DrawerButton target="sf-inspector" state={inspectorDrawer} label="Inspector: the selected card" className="panel-toggle">
+            <SidebarSimple size={16} style={{ transform: "scaleX(-1)" }} aria-hidden />
+            <span className="bar-btn-text">Inspector</span>
+          </DrawerButton>
+        )}
       </header>
       {!workspace ? (
         <Center title="Choose a workspace first">Flows are read per workspace. Open the Studio from a workspace in the chat page.</Center>
@@ -70,7 +86,7 @@ export function StudioPage({ route, navigate }: Props) {
         <Center title="">Loading the flows…</Center>
       ) : (
         <ReactFlowProvider>
-          <Studio key={`${workspace}:${apiQ.data.mocked}`} api={apiQ.data} route={route} navigate={navigate} />
+          <Studio key={`${workspace}:${apiQ.data.mocked}`} api={apiQ.data} route={route} navigate={navigate} flowsDrawer={flowsDrawer} inspectorDrawer={inspectorDrawer} />
         </ReactFlowProvider>
       )}
     </div>
@@ -86,7 +102,7 @@ function Center({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pick<Props, "navigate">) {
+function Studio({ api, route, navigate, flowsDrawer, inspectorDrawer }: { api: StudioApi; route: Route; flowsDrawer: DrawerState; inspectorDrawer: DrawerState } & Pick<Props, "navigate">) {
   const qc = useQueryClient();
   const ws = route.workspace!;
   const k = (...parts: unknown[]) => ["studio", ws, api.mocked, ...parts];
@@ -112,6 +128,9 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
   const runsQ = useQuery({ queryKey: k("runs", current?.name), queryFn: () => api.runs(current!.name).then((b) => b.runs), enabled: !!current });
 
   const [selected, setSelected] = useState(TRIGGER_ID);
+  // Opening another flow from the drawer shows it.
+  const { setOpen: closeFlows } = flowsDrawer;
+  useEffect(() => closeFlows(false), [route.flow, route.loc, closeFlows]);
   const [view, setView] = useState<"canvas" | "toml">("canvas");
   const [notice, setNotice] = useState<string | null>(null);
   const [run, setRun] = useState<RunRecord | null>(null);
@@ -312,6 +331,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
       ))}
       </div>
       <div className="sf-grid">
+        <Drawer id="sf-flows" side="left" state={flowsDrawer} label="Flows">
         <FlowList
           flows={flows}
           health={health.data?.flows ?? []}
@@ -322,10 +342,11 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
           }}
           onToggle={onToggle}
           toggling={toggling}
-          onNew={() => setCreating(true)}
+          onNew={() => (flowsDrawer.setOpen(false), setCreating(true))}
           def={def}
           editConstants={edit ? (f) => edit((d) => ({ ...d, constants: f(d.constants) })) : null}
         />
+        </Drawer>
 
         <main className="sf-main">
           {!doc ? (
@@ -395,11 +416,13 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
           )}
         </main>
 
-        {def ? (
-          <Inspector def={def} catalogue={catalogue.data} selected={selected} onSelect={setSelected} edit={edit} run={run} replay={replay} diagnostics={state.diagnostics} payload={payload.value} />
-        ) : (
-          <aside className="sf-inspector" />
-        )}
+        <Drawer id="sf-inspector" side="right" state={inspectorDrawer} label="Inspector">
+          {def ? (
+            <Inspector def={def} catalogue={catalogue.data} selected={selected} onSelect={setSelected} edit={edit} run={run} replay={replay} diagnostics={state.diagnostics} payload={payload.value} />
+          ) : (
+            <aside className="sf-inspector" />
+          )}
+        </Drawer>
       </div>
       {creating && <NewFlowDialog api={api} flows={flows} catalogue={catalogue.data} onClose={() => setCreating(false)} onCreated={onCreated} />}
     </>

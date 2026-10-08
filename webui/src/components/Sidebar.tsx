@@ -76,7 +76,7 @@ export function Sidebar({ route, navigate, expansion, onRemove }: Props) {
             void openFolder(value.replace(/(.)\/+$/, "$1"));
           }}
         >
-          <input autoFocus className="mono" placeholder="/absolute/path" aria-label="Absolute path of a folder" aria-invalid={openError ? true : undefined} value={path} onChange={(e) => (setPath(e.target.value), setOpenError(null))} onKeyDown={(e) => e.key === "Escape" && setAdding(false)} />
+          <input autoFocus className="mono" placeholder="/absolute/path" aria-label="Absolute path of a folder" aria-invalid={openError ? true : undefined} value={path} onChange={(e) => (setPath(e.target.value), setOpenError(null))} onKeyDown={(e) => e.key === "Escape" && (e.preventDefault(), setAdding(false))} />
           <button type="submit" className="btn" disabled={opening}>
             Open
           </button>

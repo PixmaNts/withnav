@@ -78,7 +78,7 @@ fn body(state: &AppState, ws: &std::path::Path) -> Result<Value, Box<Response>> 
         } else {
             raw.and_then(|_| editor::validate(&key,&value,&catalog,&agents,&tiers(state,&catalog,&value)).err())
         };
-        json!({"key":key,"value":value,"default":editor::default_value(&key),"set":raw.is_some(),"error":error,"applies":editor::applies(&key)})
+        json!({"key":key,"label":editor::label(&key),"description":editor::description(&key),"value":value,"default":editor::default_value(&key),"set":raw.is_some(),"error":error,"applies":editor::applies(&key)})
     }).collect();
     let mut gateways = Vec::new();
     for (name, p) in &catalog.providers {

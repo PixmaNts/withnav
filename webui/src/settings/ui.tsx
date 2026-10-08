@@ -10,7 +10,7 @@ export function Applies({ body, keyName, className }: { body: SettingsBody; keyN
   if (!text) return null;
   const icon = applies === "restart" ? <ArrowClockwise size={11} aria-hidden /> : applies === "live" ? <Lightning size={11} aria-hidden /> : <Clock size={11} aria-hidden />;
   return (
-    <span className={`st-applies ${applies}${className ? ` ${className}` : ""}`} title={applies === "restart" ? "Navai builds its layers when it starts: the running server keeps the current model until it restarts." : applies === "new_sessions" ? "Sessions already open keep the value they started with." : applies === "live" ? "Other open WebUI tabs and terminal clients pick it up when they next start." : undefined}>
+    <span className={`st-applies ${applies}${className ? ` ${className}` : ""}`} title={applies === "restart" ? "WithNav builds its layers when it starts: the running server keeps the current model until it restarts." : applies === "new_sessions" ? "Sessions already open keep the value they started with." : applies === "live" ? "Other open WebUI tabs and terminal clients pick it up when they next start." : undefined}>
       {icon} {text}
     </span>
   );

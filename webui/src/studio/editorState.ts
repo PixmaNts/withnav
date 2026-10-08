@@ -25,6 +25,8 @@ export const emptyEditor: EditorState = { key: "", generation: 0, validationGene
 export const editorRequest = (state: EditorState): EditorRequest => ({ key: state.key, generation: state.generation });
 
 export function fromDoc(doc: FlowDocument, key: string, generation: number): EditorState {
+  doc = JSON.parse(JSON.stringify(doc), (key, value) => key === "action" && value === "ask_driver" ? "ask_captain" : value);
+  doc.toml = doc.toml.replace(/(action\s*=\s*["'])ask_driver(["'])/g, "$1ask_captain$2");
   return { ...emptyEditor, key, generation, doc, def: doc.definition, toml: doc.toml, diagnostics: doc.errors, tomlErrors: doc.errors };
 }
 

@@ -62,6 +62,7 @@ export interface Permission {
 export type Item =
   | { kind: "driver"; key: string; text: string; skill?: string }
   | { kind: "wake"; key: string; text: string; note: WakeNote }
+  | { kind: "beacon"; key: string; text: string }
   | { kind: "subagent-result"; key: string; text: string; source: string; agent?: string; outcome?: string; childId?: string }
   | Turn
   /** A permission asked outside any turn shown here (a stream cut mid-turn). */
@@ -128,8 +129,8 @@ export const emptyView = (): SessionView => ({
 const str = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback);
 
 export function authorOf(source: string): "driver" | "navigator" | "subagent" {
-  if (source.startsWith("user:") && source !== "user:subagent") return "driver";
-  if (source === "navigator" || source.startsWith("navigator:")) return "navigator";
+  if (source === "captain" || source === "driver" || source.startsWith("captain:") || source.startsWith("user:") && source !== "user:subagent") return "driver";
+  if (source === "nav" || source.startsWith("nav:") || source === "navigator" || source.startsWith("navigator:")) return "navigator";
   return "subagent";
 }
 
@@ -163,8 +164,10 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       const text = str(p.content);
       const key = `m:${envelope.seq}`;
       const author = authorOf(source);
-      if (author === "driver") {
-        const skill = p.selected_skill?.origin === "driver" ? str(p.selected_skill?.name) || undefined : undefined;
+      if (source === "metacognition" || source === "metacognition:remark") {
+        next.items = [...next.items, { kind: "beacon", key, text }];
+      } else if (author === "driver") {
+        const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
         next.items = [...next.items, { kind: "driver", key, text, skill }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];
       else next.items = [...next.items, { kind: "subagent-result", key, source, ...subagentResult(text, p) }];
@@ -412,7 +415,7 @@ export function reduceAll(view: SessionView, envelopes: Envelope[]): SessionView
 /** The transcript line for a bypass change, in the TUI's words; `by` is the server's origin tag. */
 function bypassNotice(enabled: boolean, by: string): string {
   if (by === "system:resume") return "Bypass off: the session was reopened";
-  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (navai run --yes)" : "";
+  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (nav run --yes)" : "";
   return enabled
     ? `Bypass on${from}: ordinary permission prompts are skipped; protected requests still ask`
     : `Bypass off${from}`;

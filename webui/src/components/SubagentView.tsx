@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -82,7 +83,7 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
           <ArrowLeft size={13} aria-hidden /> {parentTitle}
         </a>
         <span aria-hidden>›</span>
-        <span style={{ color: "var(--pu)" }}>@{child?.agent ?? summary.data?.agent ?? "subagent"}</span>
+        <span style={{ color: "var(--pu)" }}><Crew id={child?.agent ?? summary.data?.agent ?? "subagent"} /></span>
         <span className={`pill ${status === "done" ? "done" : status === "failed" ? "failed" : status === "stopped" ? "stopped" : ""}`}>
           {status === "doubt" ? "paused · watchdog" : status}
           {time ? ` · ${time}` : ""}
@@ -90,7 +91,7 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
       </div>
       <div className="task-card">
         <div className="msg-driver" style={{ minWidth: 0 }}>
-          <div className="byline">{child ? `Delegation · from ${child.spawnedBy}` : "Driver · Delegation"}</div>
+          <div className="byline">{child ? `Delegation · from ${child.spawnedBy}` : "Captain · Delegation"}</div>
           <div className="label">TASK</div>
           <div className="goal">{goal || <span className="muted">Not known yet.</span>}</div>
         </div>

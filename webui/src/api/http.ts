@@ -1,11 +1,12 @@
 // Bearer-token HTTP access to `/v1/*`.
 //
-// `navai web` opens `http://127.0.0.1:<port>/#token=<token>`. The token is read
+// `nav web` opens `http://127.0.0.1:<port>/#token=<token>`. The token is read
 // from the hash once, kept in sessionStorage (so a reload in the same tab keeps
 // working, a new tab does not inherit it) and stripped from the address bar so
 // it never lands in history or a screenshot. In dev there is no token.
 
-const TOKEN_KEY = "navai.token";
+import { migratedValue } from "../lib/storage";
+const TOKEN_KEY = "withnav.token";
 
 export function adoptTokenFromHash(): void {
   // The server's token is two lowercase ULIDs (Crockford base32), not hex:
@@ -17,7 +18,7 @@ export function adoptTokenFromHash(): void {
 }
 
 export function token(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+  return migratedValue(sessionStorage, TOKEN_KEY, "navai.token");
 }
 
 /** Every listener is told once when the server answers 401. */
@@ -58,7 +59,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   try {
     response = await fetch(path, { ...init, headers });
   } catch (error) {
-    throw new HttpError(0, `The Navai server is unreachable (${error instanceof Error ? error.message : String(error)}).`);
+    throw new HttpError(0, `The WithNav server is unreachable (${error instanceof Error ? error.message : String(error)}).`);
   }
   if (response.status === 401) {
     reportUnauthorized();

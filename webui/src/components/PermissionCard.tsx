@@ -124,7 +124,7 @@ function Outcome({ perm, site }: { perm: Permission; site: boolean }) {
     case "allow_folder":
       return <div className="outcome"><span className="ok">✓</span> Allowed for this {site ? "site" : "folder"}.</div>;
     case "deny":
-      return <div className="outcome"><span className="bad">✕</span> Denied.{perm.message && perm.message !== "the user denied this tool call" ? ` ${perm.message}` : " Cognition proposes an alternative."}</div>;
+      return <div className="outcome"><span className="bad">✕</span> Denied.{perm.message && perm.message !== "the user denied this tool call" ? ` ${perm.message}` : " Nav proposes an alternative."}</div>;
     case "cancelled":
       return <div className="outcome">Cancelled: the turn stopped before an answer.</div>;
     case "expired":

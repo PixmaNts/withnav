@@ -1616,3 +1616,7 @@ a:hover {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+.brand, h1, h2, h3, .st-box-head .title { font-family: var(--font-brand); font-weight: 600; }
+.crew { display: inline-flex; align-items: center; gap: 5px; color: var(--crew-color); }
+.crew svg { flex-shrink: 0; }

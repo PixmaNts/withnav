@@ -1,6 +1,6 @@
 # WithNav — VS Code extension
 
-Pair-programming navigator client. Launches the `withnav-lsp` language server over stdio,
+WithNav pair-programming companion client. Launches the `withnav-lsp` language server over stdio,
 renders its end-of-line remarks, offers inline suggestions from the reflex layer, forwards
 diagnostics and user feedback, and hosts the Cognition chat view.
 
@@ -23,14 +23,14 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 - **Suggestions**: ghost text from the reflex layer, as native inline completion. Turn them off with
   `withnav.reflex.enabled`.
 - **Cognition chat**: a webview in the WithNav activity-bar container (view id `withnav.chat`, named
-  "Cognition"). It talks to the session server that `withnav-lsp` runs over HTTP and SSE. It streams
+  "Nav"). It talks to the session server that `withnav-lsp` runs over HTTP and SSE. It streams
   the conversation, lists past conversations of the workspace to resume, and has a model picker for
   new and open conversations (switches during a running turn apply after it finishes) and a gauge of the next request’s estimated context against the model’s window; hover or focus it for the breakdown, input budget and last request’s count.
   Type `/` for a keyboard-accessible command palette: `/model`, `/variant`, `/agent`, `/compact`,
   `/context`, `/skills`, `/stop`, `/new` and `/help`. `/skills` fills a selected skill into your
   next request; command outcomes appear as notices. Commands never attach editor context;
   `//text` sends the literal `/text`. Unknown or refused commands keep your draft.
-  Navigator wakes appear in it as messages from the navigator. It sends the open file and selection
+  Nav wakes appear in it as messages from Nav. It sends the open file and selection
   as editor context.
 - **Subagents in chat:** see delegated goals and live states beneath the conversation. Open a
   subagent's read-only transcript in a separate editor tab without leaving the parent chat. Stop or continue a parked subagent
@@ -67,8 +67,8 @@ package; `.vscodeignore` excludes them). `vsce package` triggers `npm run compil
 - Activation: `onStartupFinished`; the client uses document selector `[{ scheme: "file" }]`.
 - Server notifications handled: `withnav/remark`, `withnav/clear`, `withnav/status`.
 - Client notifications sent: `withnav/feedback`, `withnav/diagnostics` (debounced 500 ms
-  per uri, `file` scheme only, excluding the navigator's own diagnostics), `withnav/intent`.
-- Settings moved from `navigator.*` to `withnav.*`; a value still set under the old `navigator.*` key is honored until a `withnav.*` one is set. Configuration lives under `withnav.*` settings, sent as `initializationOptions` and via
+  per uri, `file` scheme only, excluding Nav's own diagnostics), `withnav/intent`.
+- Settings use `withnav.*`; explicit `navai.*` values are honored when the new key is unset, with a one-time migration notice. Configuration lives under `withnav.*` settings, sent as `initializationOptions` and via
   `workspace/didChangeConfiguration`. Setting `withnav.enabled` to false stops the server;
   toggling it back on restarts it (a failed start is retried on the next settings change).
 - If the server binary can't start, the status bar shows `$(error) WithNav` with the reason
@@ -81,7 +81,7 @@ package; `.vscodeignore` excludes them). `vsce package` triggers `npm run compil
 | `withnav.markUseful` | Ctrl+Alt+Y | Rate the current remark "useful", then clear it |
 | `withnav.markNoise` | Ctrl+Alt+N | Rate the current remark "noise", then clear it |
 | `withnav.dismiss` | Ctrl+Alt+D | Send "dismissed", then clear it |
-| `withnav.setIntent` | click status bar | Tell the navigator your current goal |
+| `withnav.setIntent` | click status bar | Tell Nav your current goal |
 | `withnav.focusChat` | command palette ("WithNav: Focus Cognition Chat") | Open and focus the Cognition chat view |
 
 Keybindings are active only when a remark is visible (`withnav.remarkVisible` context key).
@@ -97,9 +97,9 @@ Keybindings are active only when a remark is visible (`withnav.remarkVisible` co
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `withnav.enabled` | `true` | Enable the navigator |
+| `withnav.enabled` | `true` | Enable Nav |
 | `withnav.serverPath` | `withnav-lsp` | Server binary (PATH or absolute) |
-| `withnav.idleMs` | `3000` | Idle delay before the navigator may speak |
+| `withnav.idleMs` | `3000` | Idle delay before Nav may speak |
 | `withnav.minChangedLines` | `3` | Minimum changed lines to consider speaking |
 | `withnav.cooldownMs` | `20000` | Cooldown between remarks on one file |
 | `withnav.reflex.enabled` | `true` | Offer inline suggestions from the reflex layer |

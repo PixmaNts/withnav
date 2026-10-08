@@ -64,7 +64,7 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
   trigger.setAttribute("aria-haspopup", "true");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("aria-controls", "conv-panel");
-  const titleText = node("span", "conv-title", NEW_TITLE);
+  const titleText = node("span", "conv-title", `Nav · ${NEW_TITLE}`);
   trigger.append(titleText, icon("M4.5 6.5 8 10l3.5-3.5"));
 
   const create = node("button", "icon-button conv-new");
@@ -103,7 +103,7 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
 
   function setTitle(title: string): void {
     currentTitle = title.trim() || (currentId ? "Untitled" : NEW_TITLE);
-    titleText.textContent = currentTitle;
+    titleText.textContent = `Nav · ${currentTitle}`;
     trigger.title = `${currentTitle} · Show conversations`;
     trigger.setAttribute("aria-label", `${currentTitle}. Show conversations`);
   }

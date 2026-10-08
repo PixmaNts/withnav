@@ -105,7 +105,7 @@ export class CognitionBackend implements ChatBackend {
   async toggleBypassPermissions(): Promise<void> { await this.setBypassPermissions(!this.state.bypass); }
   private async setBypassPermissions(enabled: boolean, operation?: ComposerOperation): Promise<void> {
     const origin = this.state;
-    if (origin.readOnly || origin.starting) throw new Error("Bypass controls are uwithnavlable in this view.");
+    if (origin.readOnly || origin.starting) throw new Error("Bypass controls are unavailable in this view.");
     if (origin.bypassPending) throw new Error("Bypass change is already pending.");
     origin.bypassPending = true; this.publishBypass();
     try {
@@ -172,7 +172,7 @@ export class CognitionBackend implements ChatBackend {
     this.emitAssignments(); this.emitModels();
   }
   async selectAgent(id: string): Promise<void> {
-    if (this.isReadOnly() || this.state.starting) throw new Error("Agent selection uwithnavlable here.");
+    if (this.isReadOnly() || this.state.starting) throw new Error("Agent selection unavailable here.");
     if (!this.agents.some(a => a.id === id)) throw new Error("Unknown primary agent");
     if (this.currentConversationId()) { await this.runComposerCommand(`/agent ${id}`); return; }
     this.state.agent = id; this.state.modelOverride = undefined; this.state.startVariant = undefined;
@@ -1299,7 +1299,7 @@ export class CognitionBackend implements ChatBackend {
           }
         }
       }
-    } catch { /* The card explicitly says when full arguments are uwithnavlable. */ }
+    } catch { /* The card explicitly says when full arguments are unavailable. */ }
     finally { clearTimeout(timer); abort.signal.removeEventListener("abort", cancel); abort.abort(); await reader?.cancel().catch(() => undefined); }
   }
 

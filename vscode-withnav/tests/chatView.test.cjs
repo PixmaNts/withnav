@@ -169,8 +169,8 @@ test('compaction real host/page starts immediately, survives deferred acceptance
 test('compaction correlated failure replaces progress and frees composer',async t=>{
   const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C',ok:true})));
-  send('/compact');await tick();event('command.result',{name:'compact',operation_id:'C',ok:false,error:'Summary uwithnavlable'});
-  assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Summary uwithnavlable/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  send('/compact');await tick();event('command.result',{name:'compact',operation_id:'C',ok:false,error:'Summary unavailable'});
+  assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Summary unavailable/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
 });
 test('compaction pending progress survives recreated host view',async t=>{
   const {b,send,tick}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});

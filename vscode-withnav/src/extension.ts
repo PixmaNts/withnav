@@ -326,7 +326,7 @@ function sendFeedback(verdict: Verdict) {
 
 async function promptForIntent() {
   const text = await vscode.window.showInputBox({
-    prompt: "Tell the navigator what you are working on",
+    prompt: "Set the Course — what are you working on?",
     placeHolder: "e.g. refactor the trigger policy to skip test files",
     ignoreFocusOut: false,
   });
@@ -408,8 +408,8 @@ function refreshStatusBar() {
     text = "$(sync~spin) WithNav";
     tooltip = "WithNav is thinking…";
   } else {
-    text = "$(eye) WithNav";
-    tooltip = "WithNav idle — click to set your current intent";
+    text = "Nav · drift —";
+    tooltip = "Nav idle — click to set your current intent";
   }
   statusItem.text = text;
   statusItem.tooltip = tooltip;

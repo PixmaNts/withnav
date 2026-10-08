@@ -6,7 +6,7 @@
 export const CHAT_VIEW_ID = "withnav.chat";
 
 /** Who wrote a message shown in the chat. */
-export type Author = "driver" | "cognition" | "navigator" | "subagent";
+export type Author = "captain" | "nav" | "driver" | "cognition" | "navigator" | "subagent";
 
 export type PermissionDecision = "allow_once" | "allow_folder" | "deny";
 export interface PermissionCard {
@@ -24,7 +24,7 @@ export interface PermissionCard {
 }
 export interface PermissionEvidence {
   policy_version: number;
-  source: "jev" | "metacognition" | "driver";
+  source: "jev" | "metacognition" | "captain" | "driver";
   reason?: string;
   verdicts?: unknown;
   overrides?: unknown;

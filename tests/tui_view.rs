@@ -1303,7 +1303,7 @@ fn sidebar_lists_tabs_with_state_unread_and_active_tint() {
         "short id for an untitled tab"
     );
     assert!(row_text(&t, 3, 22).contains('●'), "unread mark");
-    assert!(row_text(&t, 4, 22).contains("build · running"));
+    assert!(row_text(&t, 4, 22).contains("◎ Nav · running"));
     assert!(row_text(&t, 5, 22).contains("3 new conversation"));
     assert!(row_text(&t, 23, 22).contains("alt+b hide bar"));
     let buffer = t.backend().buffer();
@@ -1365,7 +1365,7 @@ fn sidebar_shows_waiting_and_error_states() {
     let t = cells(&s, &ui, (100, 24));
     let theme = Theme::default();
     assert!(row_text(&t, 4, 22).contains("◎ Nav · waiting"));
-    assert!(row_text(&t, 6, 22).contains("build · error"));
+    assert!(row_text(&t, 6, 22).contains("◎ Nav · error"));
     let err_x = row_text(&t, 6, 22).find("error").unwrap();
     let err_x = row_text(&t, 6, 22)[..err_x].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(err_x, 6)].fg, theme.red);

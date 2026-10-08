@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav                                ▌◎ Nav /build  — · assigned · — / — 
+ Conversations       │ ◆ withnav                                       ▌◎ Nav  — · assigned · — / — 
  6 starting…         │──────────────────────────────────────────────────────────────────────────────
    ◎ Nav · idle      │                                                                              
  7 starting…         │                                                                              

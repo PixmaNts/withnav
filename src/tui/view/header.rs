@@ -137,13 +137,15 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme)
     // Right: the agent and the model_id always (each cut to a share of the row); then the gauge,
     // the variant and the model.
     let total = usize::from(area.width);
+    let agent_label = if total < 80 {
+        super::sidebar::agent_label(agent)
+    } else {
+        format!("{} /{agent}", super::sidebar::agent_label(agent))
+    };
     let lead = vec![
         Span::styled("▌", agent_style),
         Span::styled(
-            fit_end(
-                &format!("{} /{agent}", super::sidebar::agent_label(agent)),
-                (total / 5).max(8),
-            ),
+            fit_end(&agent_label, (total / 5).max(8)),
             agent_style.add_modifier(Modifier::BOLD),
         ),
         Span::styled(

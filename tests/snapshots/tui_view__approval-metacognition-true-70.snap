@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: shown
 ---
- ◆ withnav                        ▌◎ Nav /build  — · assigned · — / — 
+ ◆ withnav                               ▌◎ Nav  — · assigned · — / — 
 ──────────────────────────────────────────────────────────────────────
  │ ▾ ✓ bash · auto · metacognition cargo test parser  ok  1.42 s  exit
  │  101                                                               

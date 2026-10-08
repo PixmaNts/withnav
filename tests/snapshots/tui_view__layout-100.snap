@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav  feat/tui-design ●14  ▌◎ Nav /build  cognition · ~41k / 200k · 21% 
+ Conversations       │ ◆ withnav  feat/tui-design ●14         ▌◎ Nav  cognition · ~41k / 200k · 21% 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · idle      │ │ ▸ Captain                                                                  
                      │ │  Explain the failure, then fix it.                                         

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav                     ▌◎ Nav /build  cognition · assigned · — / 200k 
+ Conversations       │ ◆ withnav                            ▌◎ Nav  cognition · assigned · — / 200k 
 ▌1 new conversation  │──────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · idle      │                                                                              
                      │                                                                              

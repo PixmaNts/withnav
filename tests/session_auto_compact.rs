@@ -454,16 +454,15 @@ async fn a_switch_that_cannot_be_made_to_fit_is_refused_without_compacting() {
     assert!(checkpoint.is_none());
 }
 
-// Given a switch whose summary the old model cannot write
+const SERVER_ERROR: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n";
+
+// Given a switch whose summary neither the old model nor the destination can write
 // Then the switch fails, nothing changed, and the conversation is unchanged
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_switch_whose_summary_fails_changes_nothing() {
     let env = env();
-    let a = spawn_responding_provider(1, |_, _| {
-        b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n".to_vec()
-    })
-    .await;
-    let b = spawn_capturing_provider(vec![]).await;
+    let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
+    let b = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 8).await;
 
@@ -476,6 +475,35 @@ async fn a_switch_whose_summary_fails_changes_nothing() {
     assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
     assert!(stored(&state, id, "context.compacted").await.is_empty());
+}
+
+// Given a conversation on a model that is failing (its provider answers 500)
+// When /model moves it to a smaller window the conversation does not fit
+// Then the destination writes the summary, the switch goes through, and the
+//      next request goes to the destination with that summary
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_off_a_broken_model_lets_the_destination_write_the_summary() {
+    let env = env();
+    let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
+    let b = spawn_capturing_provider(vec![answer(SUMMARY), answer("from the small model")]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 8).await;
+
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["compacted"]["generation"], 1);
+    assert_eq!(a.bodies().len(), 1, "the broken model was tried first");
+    let summary_request = body(&b, 0);
+    assert_eq!(summary_request["model"], "model-b");
+    assert!(summary_request.get("tools").is_none());
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
+    assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
+
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "go on").await;
+    collect_until(sub, |e| e.kind == "turn.end").await;
+    assert_eq!(a.bodies().len(), 1, "the broken model is not used again");
+    assert!(all_text(&body(&b, 1)).contains("Goal: finish the parser."));
 }
 
 // Given a manual /compact

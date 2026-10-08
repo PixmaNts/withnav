@@ -301,22 +301,51 @@ pub(super) async fn summarize(
     .await
 }
 
+/// The model that writes a summary: the session's own for `/compact`, and for
+/// a switch first the old one, then the destination when the old one fails.
+pub(super) struct Writer<'a> {
+    pub(super) provider: &'a crate::provider::config::ProviderConfig,
+    pub(super) api_key: String,
+    pub(super) model: &'a str,
+    pub(super) variant: Option<&'a crate::provider::config::Variant>,
+    pub(super) max_tokens: Option<u64>,
+}
+
 pub(super) async fn summarize_with_components(
     actor: &AgentActor,
     status: &RuntimeStatus,
     cancel: &CancellationToken,
     transcript: &[ChatMessage],
     goal: Goal<'_>,
-    components: crate::agent::compaction::Components<'_>,
+    components: compaction::Components<'_>,
 ) -> Result<Summarized, Failure> {
     let variant = status.active_variant().map(|(_, variant)| variant);
+    let writer = Writer {
+        provider: &actor.provider,
+        api_key: actor.api_key.clone(),
+        model: &actor.model,
+        variant: variant.as_ref(),
+        max_tokens: actor.max_tokens,
+    };
+    summarize_written_by(actor, writer, cancel, transcript, goal, components).await
+}
+
+/// [`summarize_with_components`] with the summary written by `writer`.
+pub(super) async fn summarize_written_by(
+    actor: &AgentActor,
+    writer: Writer<'_>,
+    cancel: &CancellationToken,
+    transcript: &[ChatMessage],
+    goal: Goal<'_>,
+    components: compaction::Components<'_>,
+) -> Result<Summarized, Failure> {
     let prepared = compaction::prepare(
         PrepareInput {
-            provider: &actor.provider,
-            api_key: actor.api_key.clone(),
-            model: &actor.model,
-            variant: variant.as_ref(),
-            max_tokens: actor.max_tokens,
+            provider: writer.provider,
+            api_key: writer.api_key,
+            model: writer.model,
+            variant: writer.variant,
+            max_tokens: writer.max_tokens,
             transcript,
             current: actor.compaction.as_ref(),
             components,

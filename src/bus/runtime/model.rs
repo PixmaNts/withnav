@@ -261,7 +261,7 @@ pub(super) async fn run(
             actor,
             status,
             cancel,
-            &target.alias,
+            &target,
             floor,
             budget,
             destination_role.as_ref(),
@@ -419,18 +419,26 @@ pub(super) async fn run(
 /// Compacts the conversation with the model it is on now, so that it fits
 /// `budget`, the input budget of the model it is about to move to. The
 /// estimate is the destination's: its reasoning policy applies (`floor`).
+///
+/// When the model it is on cannot answer (a revoked key, an outage, a rate
+/// limit: often the very reason for switching), the destination writes the
+/// summary instead, so the Captain is not stuck on a broken model. Only a
+/// provider failure falls back: a plan that cannot fit would not fit either way,
+/// and a stop is a stop. The destination reads the part to summarize through its
+/// own window, so that is the budget the request must fit on that retry.
 async fn compact_for_target(
     actor: &AgentActor,
     status: &StdArc<RuntimeStatus>,
     cancel: &CancellationToken,
-    alias: &str,
+    target: &ModelTarget,
     floor: usize,
     budget: u64,
     role: Option<&Arc<crate::agent::definitions::AgentDefinition>>,
 ) -> Result<super::compact::Summarized, String> {
-    use super::compact::{summarize_with_components, Failure, Goal};
+    use super::compact::{summarize_with_components, summarize_written_by, Failure, Goal, Writer};
     use crate::agent::compaction::{Aim, CompactionError};
 
+    let alias = target.alias.as_str();
     let source_budget = status
         .context_snapshot()
         .map(|snapshot| snapshot.input_budget)
@@ -451,21 +459,39 @@ async fn compact_for_target(
     };
     let message = destination_message(actor, role);
     let tools = actor.effective_tool_schemas_for_role(role.map(Arc::as_ref));
-    let summarized = summarize_with_components(
-        actor,
-        status,
-        cancel,
-        &seen_by_target,
-        goal,
-        crate::agent::compaction::Components {
-            system_prompt: message.as_deref(),
-            rules: actor.rules.message(),
-            skills: actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
-            tools: &tools,
-        },
-    )
-    .await
-    .map_err(|e| match e {
+    let components = || crate::agent::compaction::Components {
+        system_prompt: message.as_deref(),
+        rules: actor.rules.message(),
+        skills: actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
+        tools: &tools,
+    };
+    let mut written =
+        summarize_with_components(actor, status, cancel, &seen_by_target, goal, components()).await;
+    if let Err(Failure::Compaction(CompactionError::Provider(why))) = &written {
+        tracing::warn!(%why, alias, "the current model cannot write the switch summary; the destination does");
+        let variant = target.variant.as_ref().map(|(_, variant)| variant);
+        let writer = Writer {
+            provider: &target.provider,
+            api_key: target.api_key.clone(),
+            model: &target.model,
+            variant,
+            max_tokens: target.max_tokens,
+        };
+        let destination_goal = Goal {
+            source_budget: budget,
+            ..goal
+        };
+        written = summarize_written_by(
+            actor,
+            writer,
+            cancel,
+            &seen_by_target,
+            destination_goal,
+            components(),
+        )
+        .await;
+    }
+    written.map_err(|e| match e {
         Failure::Compaction(CompactionError::Cancelled) => super::compact::CANCELLED.to_string(),
         Failure::Compaction(
             e @ (CompactionError::Capacity { .. }
@@ -473,8 +499,7 @@ async fn compact_for_target(
             | CompactionError::SummaryInputTooLarge { .. }),
         ) => refused(e.to_string()),
         other => format!("the compaction before the switch failed: {other}"),
-    })?;
-    Ok(summarized)
+    })
 }
 
 fn destination_breakdown(

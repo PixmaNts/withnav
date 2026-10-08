@@ -701,7 +701,7 @@ async fn a_failed_save_is_shown_and_picking_again_retries() {
 
     // Once the cause is gone, confirming the same theme again saves it.
     std::fs::remove_dir_all(crate::settings::path(dir.path())).unwrap();
-    pick_theme(&mut runtime, 0);
+    pick_theme(&mut runtime, 1);
     assert_eq!(runtime.ui.theme, ThemeId::AyuLight);
     runtime.executor().flush_saves().await;
     assert_eq!(

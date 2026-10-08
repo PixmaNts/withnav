@@ -19,6 +19,25 @@ use withnav::{
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn selected_skills_accept_current_and_legacy_human_origins() {
+    for origin in ["captain", "driver"] {
+        let mut s = st();
+        subagent_event(
+            &mut s,
+            1,
+            "message.received",
+            json!({
+                "source": origin, "content": "use the skill",
+                "selected_skill": {"origin": origin, "name": "rust"}
+            }),
+        );
+        assert!(s.conversation.blocks.iter().any(|block| matches!(
+            &block.kind, BlockKind::Notice(text) if text == "skill: rust · selected by Captain"
+        )));
+    }
+}
+
+#[test]
 fn bypass_is_acknowledged_pending_and_scoped_to_the_tab() {
     let mut s = subagent_parent();
     let mut ui = UiState::default();

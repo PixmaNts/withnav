@@ -178,6 +178,7 @@ pub(crate) fn state_bounded(
             append(&mut out, " [cut]", cap)?;
         }
     }
+    debug_assert!(values.is_empty() || !out.is_empty());
     Ok(out)
 }
 pub fn params(

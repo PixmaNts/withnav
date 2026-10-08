@@ -41,6 +41,7 @@ pub struct RunOptions {
 pub struct RunOutcome {
     pub result: RunResult,
     pub trace: RunRecord,
+    pub provider_outage: bool,
 }
 #[derive(Debug, Clone)]
 pub enum RunResult {
@@ -106,6 +107,7 @@ struct Evaluation<'a> {
     status: Vec<Status>,
     cache: BTreeMap<String, InputValue>,
     collected_bytes: usize,
+    provider_outage: bool,
     deadline: Instant,
 }
 impl<'a> Evaluation<'a> {
@@ -168,6 +170,7 @@ impl<'a> Evaluation<'a> {
             status: vec![Status::Pending; compiled.definition.node.len()],
             cache: BTreeMap::new(),
             collected_bytes: 0,
+            provider_outage: false,
             deadline,
         }
     }
@@ -851,6 +854,7 @@ impl<'a> Evaluation<'a> {
         RunOutcome {
             result,
             trace: self.trace,
+            provider_outage: self.provider_outage,
         }
     }
 }
@@ -877,7 +881,9 @@ fn decision_failure(error: DecisionError) -> Failure {
     let kind = match error {
         DecisionError::Timeout => FailureKind::Timeout,
         DecisionError::Cancelled => FailureKind::Cancelled,
-        DecisionError::ProviderError => FailureKind::ProviderError,
+        DecisionError::ProviderError
+        | DecisionError::ProviderRejected(_)
+        | DecisionError::ProviderStatus(_) => FailureKind::ProviderError,
         DecisionError::InvalidAnswer(_) => FailureKind::InvalidAnswer,
         DecisionError::Limit => FailureKind::Limit,
     };
@@ -1127,7 +1133,10 @@ async fn execute(
         };
         e.check(cancel)?;
         e.trace.batches[batch].duration_ms = duration;
-        let response = response.map_err(decision_failure)?;
+        let response = response.map_err(|error| {
+            e.provider_outage |= error.is_outage();
+            decision_failure(error)
+        })?;
         if serde_json::to_vec(&response).map_or(true, |bytes| {
             bytes.len() > e.compiled.catalogue.limits.response_bytes.min(262144)
         }) {
@@ -1360,7 +1369,10 @@ pub fn replay(
                     &Questions::from([(node.id.clone(), question)]),
                     &Answers::from([(node.id.clone(), answer.clone())]),
                 )
-                .map_err(decision_failure)?;
+                .map_err(|error| {
+                    e.provider_outage |= error.is_outage();
+                    decision_failure(error)
+                })?;
                 let id = format!("b{}", e.trace.batches.len() + 1);
                 e.trace.nodes[i].batch_id = Some(id.clone());
                 e.trace.batches.push(BatchRecord {

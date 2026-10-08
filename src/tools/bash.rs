@@ -168,18 +168,21 @@ where
     let handle = tokio::spawn(async move {
         let mut buf = Vec::new();
         let mut r = BufReader::new(reader);
-        let mut chunk = [0u8; 8192];
+        let mut chunk = [0u8; 64 * 1024];
         loop {
-            match r.read(&mut chunk).await {
+            // Drain excess output in larger reads without slowing the command or
+            // closing its pipe (which could deliver SIGPIPE).
+            let read_size = if buf.len() < DEFAULT_MAX_OUTPUT_BYTES * 2 {
+                8192
+            } else {
+                chunk.len()
+            };
+            match r.read(&mut chunk[..read_size]).await {
                 Ok(0) => break,
                 Ok(n) => {
                     if buf.len() < DEFAULT_MAX_OUTPUT_BYTES * 2 {
                         let remaining = DEFAULT_MAX_OUTPUT_BYTES * 2 - buf.len();
                         buf.extend_from_slice(&chunk[..n.min(remaining)]);
-                    } else {
-                        // Keep the pipe open so verbose commands can finish without SIGPIPE,
-                        // but apply backpressure once their retained output is full.
-                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 }
                 Err(_) => break,

@@ -6,9 +6,9 @@ requests land in `develop`.
 
 ### Fixed
 
-- **Verbose shell commands stop burning CPU after their output buffer fills.**
-  Excess output is drained with backpressure rather than in a tight loop, without closing
-  the pipe on commands that still need to finish. Retained bytes never exceed the buffer cap.
+- **Verbose shell commands drain excess output in larger chunks.**
+  Once the output buffer fills, larger discard reads reduce reader overhead without artificial
+  delays or closing the pipe. Retained bytes never exceed the buffer cap.
 
 - **Shell cancellation only signals positive process group ids.**
   Child ids are checked before conversion, and termination rejects nonpositive ids so an invalid

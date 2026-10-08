@@ -293,7 +293,7 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
         .strip_prefix(&existing)
         .map_err(|_| ToolError::PathTraversal(candidate.to_path_buf()))?;
 
-    let mut resolved = canon_existing;
+    let mut resolved = canon_existing.clone();
     for comp in tail.components() {
         match comp {
             Component::Normal(seg) => resolved.push(seg),
@@ -303,6 +303,11 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     }
 
     if !roots.iter().any(|root| {
+        // The candidate ancestor was already canonicalized above. Reuse that
+        // result when it is also a permission root, without caching mutable links.
+        if root == &existing {
+            return resolved.starts_with(&canon_existing);
+        }
         root.canonicalize()
             .map(|r| resolved.starts_with(&r))
             .unwrap_or(false)
@@ -433,6 +438,19 @@ mod tests {
         );
         assert!(validate_path(&[], relative).is_err());
         assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
+    }
+
+    #[test]
+    fn validate_path_reuses_symlink_root_ancestor_for_new_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let alias = tmp.path().join("alias");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        assert_eq!(
+            validate_path(std::slice::from_ref(&alias), &alias.join("new/file")).unwrap(),
+            root.canonicalize().unwrap().join("new/file")
+        );
     }
 
     #[test]

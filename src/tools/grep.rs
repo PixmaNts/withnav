@@ -140,6 +140,10 @@ async fn rg_search(
     cancel: &CancellationToken,
 ) -> Result<ToolResult, ToolError> {
     let mut command = rg_command(pattern, root);
+    regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
+        code: "invalid_regex".into(),
+        message: error.to_string(),
+    })?;
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -480,6 +484,22 @@ pub(super) fn builtin_sync(pattern: &str, root: &Path) -> Result<ToolResult, Too
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn invalid_regex_is_denied_by_both_engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        for engine in [Engine::Rg, Engine::Builtin] {
+            let error = search_with(
+                engine,
+                "(".into(),
+                tmp.path().to_path_buf(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, ToolError::Denied { code, .. } if code == "invalid_regex"));
+        }
+    }
     #[tokio::test]
     async fn rg_match_limit_reports_partial_instead_of_silently_dropping_extra_match() {
         let tmp = tempfile::tempdir().unwrap();

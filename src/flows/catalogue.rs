@@ -18,7 +18,7 @@ pub fn catalogue() -> Catalogue {
     let strings = |names: &[&str]| names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     let mut actions = vec![];
     for (name, param, priority, triggers) in [
-        ("ask_driver", Some("note"), Some(1), &all[5..6]),
+        ("ask_captain", Some("note"), Some(1), &all[5..6]),
         ("deny", Some("note"), Some(2), &all[5..6]),
         ("inject_note", Some("text"), None, &all[..]),
         ("log", Some("text"), None, &all[..]),
@@ -166,7 +166,7 @@ pub fn catalogue() -> Catalogue {
                     .collect(),
                 sample_payload,
                 default_fallback: (name == "tool.pre_call").then(|| FallbackAction {
-                    action: "ask_driver".into(),
+                    action: "ask_captain".into(),
                     params: BTreeMap::from([(
                         "note".into(),
                         json!("Flow failed: {failure_message}"),

@@ -2933,7 +2933,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn protected_config_mutations_ask_driver_despite_optimistic_reviewers() {
+    async fn protected_config_mutations_ask_captain_despite_optimistic_reviewers() {
         let tmp = tempfile::tempdir().unwrap();
         let mut actor = plan_actor(None, "http://unused");
         as_build(&mut actor);

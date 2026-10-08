@@ -14,10 +14,10 @@ tool = "event.tool"
 MIN_YES = 0.75
 
 [fallback]
-on_failure = { action = "ask_driver", params = { note = "Flow failed: {failure_message}" } }
+on_failure = { action = "ask_captain", params = { note = "Flow failed: {failure_message}" } }
 on_timeout = { action = "no_objection", params = {} }
-on_provider_error = { action = "ask_driver", params = { note = "Instinct unavailable" } }
-on_invalid_answer = { action = "ask_driver", params = { note = "Invalid instinct answer" } }
+on_provider_error = { action = "ask_captain", params = { note = "Instinct unavailable" } }
+on_invalid_answer = { action = "ask_captain", params = { note = "Invalid instinct answer" } }
 
 [[node]]
 id = "effect"
@@ -99,7 +99,7 @@ action = "no_objection"
 [[node]]
 id = "ask"
 type = "action"
-action = "ask_driver"
+action = "ask_captain"
 [node.inputs]
 effect = "answer.effect"
 asked_for = "answer.asked_for"

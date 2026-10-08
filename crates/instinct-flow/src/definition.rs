@@ -71,6 +71,7 @@ pub enum NodeKind {
         assign: BTreeMap<String, String>,
     },
     Action {
+        #[serde(deserialize_with = "captain_action")]
         action: String,
         params: BTreeMap<String, Value>,
     },
@@ -161,9 +162,20 @@ impl NodeKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FallbackAction {
+    #[serde(deserialize_with = "captain_action")]
     pub action: String,
     pub params: BTreeMap<String, Value>,
     pub then: Option<Box<FallbackAction>>,
+}
+/// Keep accepting the previous human-action spelling in saved flows and runs.
+pub(crate) fn captain_action<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let action = String::deserialize(d)?;
+    if action == "ask_driver" {
+        eprintln!("ask_driver is deprecated; use ask_captain");
+        Ok("ask_captain".into())
+    } else {
+        Ok(action)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

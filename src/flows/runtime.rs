@@ -360,7 +360,7 @@ mod tests {
     async fn deny_wins_over_ask_and_outage_is_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
-        for (name, action) in [("ask", "ask_driver"), ("deny", "deny")] {
+        for (name, action) in [("ask", "ask_captain"), ("deny", "deny")] {
             store
                 .save(
                     name,
@@ -807,13 +807,13 @@ impl FlowRuntime {
                     .to_owned();
                 match action.action.as_str() {
                     "deny" => VerdictLike::Deny { note },
-                    "ask_driver" => {
+                    "ask_captain" => {
                         let origin = outcomes.iter().find(|o| {
                             o.trace
                                 .actions
                                 .iter()
                                 .chain(&o.trace.fallback_actions)
-                                .any(|a| a.action == "ask_driver")
+                                .any(|a| a.action == "ask_captain")
                         });
                         VerdictLike::AskDriver {
                             note,

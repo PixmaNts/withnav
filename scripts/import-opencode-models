@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Navai's models.json and auth.json from the OpenCode config.
+"""Build WithNav's models.json and auth.json from the OpenCode config.
 
 Reads ~/.config/opencode/opencode.jsonc (or --opencode PATH), takes every
 model of every openai-compatible provider, and writes catalog names of the
@@ -25,12 +25,12 @@ What it imports:
     Duplicate JSON keys and conflicting legacy catalog models are refused.
   - `apiKey` as a literal goes to auth.json (0600). `apiKey` as `{env:NAME}`
     becomes `"api_key_env": "NAME"` in models.json, nothing is stored for it,
-    and a key already stored in auth.json for that provider is REMOVED (Navai
+    and a key already stored in auth.json for that provider is REMOVED (WithNav
     prefers a stored key over the environment, so it would hide `{env:NAME}`).
     Other providers' entries are kept. Any other `{...}` reference (such as
     `{file:...}`) is refused.
   - A `baseURL` with credentials (`user:pass@`) or a query string with a
-    key-like parameter is refused: Navai would write it to models.json.
+    key-like parameter is refused: WithNav would write it to models.json.
 
 Everything is checked before anything is written. Each file is written to a
 temporary file in the same directory and renamed over the old one, so each
@@ -241,7 +241,7 @@ def check_base_url(pname: str, base: str) -> str:
         if KEYLIKE.search(name):
             raise ImportError_(
                 f"provider '{pname}': baseURL has a key-like query parameter; "
-                "Navai would store it in models.json")
+                "WithNav would store it in models.json")
     return base.rstrip("/")
 
 
@@ -353,7 +353,7 @@ def update_auth(auth: dict, keys: dict, env_providers: set):
     """The new auth.json content and the providers whose stored key was removed.
 
     A provider whose key is an `{env:NAME}` reference loses its stored entry:
-    Navai prefers a stored key over the environment.
+    WithNav prefers a stored key over the environment.
     """
     new = {k: v for k, v in auth.items() if k not in env_providers}
     removed = sorted(k for k in env_providers if k in auth)
@@ -471,11 +471,11 @@ def self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config-dir", default=os.path.expanduser("~/.config/navai"))
+    ap.add_argument("--config-dir", default=os.path.expanduser("~/.config/withnav"))
     ap.add_argument("--opencode", default=os.path.expanduser("~/.config/opencode/opencode.jsonc"))
     ap.add_argument("--with-windows", action="store_true",
                     help="copy context_window from the OpenCode config instead of letting "
-                         "Navai discover it")
+                         "WithNav discover it")
     ap.add_argument("--dry-run", action="store_true",
                     help="print a summary and write nothing")
     ap.add_argument("--self-test", action="store_true", help="run the built-in tests and exit")
@@ -535,7 +535,7 @@ def main() -> int:
           + (f" and {auth_path} (keys stored: {sorted(keys)})" if "auth.json" in files else ""))
     if removed:
         print(f"removed the stored key of {removed} from {auth_path}: its apiKey is an "
-              "{env:NAME} reference, and Navai prefers a stored key over the environment")
+              "{env:NAME} reference, and WithNav prefers a stored key over the environment")
     return 0
 
 

@@ -23,16 +23,17 @@ pub mod task;
 
 /// Legacy reserved argument name. Every model ingress rejects it; approved
 /// destinations travel only in the host's dispatch context.
-pub const BOUND_ARG: &str = "navai_bound_destination";
+pub const BOUND_ARG: &str = "withnav_bound_destination";
 pub const OUTSIDE_SEARCH: &str =
     "outside the project: use `read` on a specific file, or a `bash` command, which are reviewed";
 
 /// Model arguments cannot supply host bindings or scratch identities.
 pub fn reject_reserved_args(args: &Value) -> Result<(), ToolError> {
-    if args
-        .as_object()
-        .is_some_and(|object| object.keys().any(|key| key.starts_with("navai_")))
-    {
+    if args.as_object().is_some_and(|object| {
+        object
+            .keys()
+            .any(|key| key.starts_with("withnav_") || key.starts_with("navai_"))
+    }) {
         return Err(ToolError::Denied {
             code: "invalid_args".into(),
             message: "reserved tool argument".into(),

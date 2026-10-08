@@ -517,7 +517,7 @@ impl LspClient {
     }
 
     /// Reads messages until one matches method; returns it. Other messages
-    /// (e.g. navigator/status) are skipped but recorded in `seen`.
+    /// (e.g. withnav/status) are skipped but recorded in `seen`.
     pub async fn expect(&mut self, method: &str, seen: &mut Vec<Value>) -> Value {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
@@ -534,14 +534,14 @@ impl LspClient {
         })
     }
 
-    /// Reads notifications until a `navigator/status` with the given state
+    /// Reads notifications until a `withnav/status` with the given state
     /// arrives; other notifications are skipped. This is the synchronization
     /// point for tests that expect no remark (silent) or an error.
     pub async fn expect_status(&mut self, state: &str) -> Value {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let msg = self.recv().await;
-                if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                if msg.get("method").and_then(|m| m.as_str()) == Some("withnav/status")
                     && msg["params"]["state"].as_str() == Some(state)
                 {
                     return msg;
@@ -549,15 +549,15 @@ impl LspClient {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("timed out waiting for navigator/status {state}"))
+        .unwrap_or_else(|_| panic!("timed out waiting for withnav/status {state}"))
     }
 
-    /// Reads messages until a `navigator/status` with one of `states`.
+    /// Reads messages until a `withnav/status` with one of `states`.
     pub async fn expect_status_in(&mut self, states: &[&str]) -> Value {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let msg = self.recv().await;
-                if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                if msg.get("method").and_then(|m| m.as_str()) == Some("withnav/status")
                     && msg["params"]["state"]
                         .as_str()
                         .is_some_and(|s| states.contains(&s))
@@ -567,7 +567,7 @@ impl LspClient {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("timed out waiting for navigator/status in {states:?}"))
+        .unwrap_or_else(|_| panic!("timed out waiting for withnav/status in {states:?}"))
     }
 
     /// Collects every message readable within a virtual-time window, then
@@ -674,7 +674,7 @@ impl LspClient {
     pub async fn sync_notifications(&mut self) -> Vec<Value> {
         self.request(
             10,
-            "navigator/inlineCompletion",
+            "withnav/inlineCompletion",
             json!({
                 "uri": URI, "version": 0, "line": 0, "character": 0,
             }),

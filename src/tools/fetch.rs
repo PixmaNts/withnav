@@ -74,7 +74,7 @@ impl FetchTool {
         let client = CLIENT
             .get_or_init(|| {
                 Client::builder()
-                    .user_agent(concat!("navai/", env!("CARGO_PKG_VERSION")))
+                    .user_agent(concat!("withnav/", env!("CARGO_PKG_VERSION")))
                     .redirect(reqwest::redirect::Policy::none())
                     .connect_timeout(Duration::from_secs(FETCH_MAX_TIMEOUT_SECS))
                     .build()
@@ -87,7 +87,7 @@ impl FetchTool {
         }
     }
 
-    /// Converts HTML with this program (the `navai` binary or a copy of it)
+    /// Converts HTML with this program (the `withnav` binary or a copy of it)
     /// instead of the running executable.
     pub fn with_converter(mut self, program: impl Into<PathBuf>) -> Self {
         self.converter = Some(program.into());
@@ -492,7 +492,7 @@ const CONVERT_MAX_CPU_SECS: u64 = 10;
 /// Output read from the child: the tool output bound plus a margin for the
 /// note and for the cut.
 const CONVERT_MAX_OUTPUT_BYTES: usize = DEFAULT_MAX_OUTPUT_BYTES + 4096;
-/// The subcommand of the `navai` binary that runs the converter.
+/// The subcommand of the `withnav` binary that runs the converter.
 pub const CONVERT_SUBCOMMAND: &str = "internal-html-convert";
 
 const UNSAFE_NOTE: &str = "the page could not be converted safely; plain text shown";
@@ -961,11 +961,11 @@ mod tests {
         }
     }
 
-    /// Unit tests have no `navai` binary to convert with; HTML comes back as
+    /// Unit tests have no `withnav` binary to convert with; HTML comes back as
     /// flattened text. The conversion child is covered by `tests/fetch_convert.rs`.
     async fn call(args: Value) -> ToolResult {
         FetchTool::new()
-            .with_converter("/nonexistent/navai")
+            .with_converter("/nonexistent/withnav")
             .call(args, CancellationToken::new(), &cx())
             .await
             .unwrap()
@@ -1019,16 +1019,16 @@ mod tests {
         assert_eq!(code(&res), "invalid_args");
     }
 
-    // Given the Navai user agent requirement
+    // Given the WithNav user agent requirement
     // When fetched
-    // Then the request carries `navai/<version>` and no authorization
+    // Then the request carries `withnav/<version>` and no authorization
     #[tokio::test]
-    async fn sends_the_navai_user_agent_and_no_auth() {
+    async fn sends_the_withnav_user_agent_and_no_auth() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(header(
                 "user-agent",
-                concat!("navai/", env!("CARGO_PKG_VERSION")),
+                concat!("withnav/", env!("CARGO_PKG_VERSION")),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_raw("ok", "text/plain"))
             .mount(&server)
@@ -1440,7 +1440,7 @@ mod tests {
         let out = convert_html(
             PAGE.to_string(),
             Format::Markdown,
-            Some(Path::new("/nonexistent/navai")),
+            Some(Path::new("/nonexistent/withnav")),
             Duration::from_secs(5),
         )
         .await;

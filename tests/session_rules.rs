@@ -219,18 +219,18 @@ async fn resume_reloads_the_rules_once() {
     assert_eq!(rules_count, 1, "{sent:?}");
 }
 
-// Given the `navai run` binary with a temporary HOME holding an AGENTS.md
+// Given the `nav run` binary with a temporary HOME holding an AGENTS.md
 // When it runs a one-shot task against a scripted provider
 // Then the request it sends carries that file as the rules message
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_sends_the_rules_too() {
+async fn withnav_run_sends_the_rules_too() {
     let env = env();
     let provider = provider(&["done"]).await;
     let config = TestServerConfig::mock(&env.root, &provider.url);
     config.config();
-    std::fs::create_dir_all(env.root.join("config/navai")).unwrap();
+    std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
     std::fs::write(
-        env.root.join("config/navai/config.json"),
+        env.root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
@@ -257,6 +257,6 @@ async fn navai_run_sends_the_rules_too() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert!(sent[1].1.contains("/tmp/navai"));
+    assert!(sent[1].1.contains("/tmp/withnav"));
     assert!(sent[2].1.contains("global rule") && sent[2].1.contains("project rule"));
 }

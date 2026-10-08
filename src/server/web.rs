@@ -1,6 +1,6 @@
 //! The routes only the browser client needs: its static files (embedded in the binary), the
 //! workspace list and a workspace's intent record. The files are served only when the server was
-//! started by `navai web` ([`WebConfig`](super::WebConfig)); `/v1/workspaces` and `/v1/intent` are
+//! started by `nav web` ([`WebConfig`](super::WebConfig)); `/v1/workspaces` and `/v1/intent` are
 //! ordinary bearer-protected API routes of every server.
 
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ pub(super) fn is_public_asset_path(path: &str) -> bool {
     path != "/v1" && !path.starts_with("/v1/")
 }
 
-/// The router fallback of a `navai web` server: the file at the request path, else `index.html`
+/// The router fallback of a `nav web` server: the file at the request path, else `index.html`
 /// so the app's own router can show the page. Unknown `/v1/` paths stay 404.
 pub(super) async fn serve_asset(method: Method, uri: Uri) -> Response {
     let path = uri.path();
@@ -104,7 +104,7 @@ struct WorkspaceEntry {
     dirty: Option<usize>,
 }
 
-/// `GET /v1/workspaces`: the workspaces `navai web` was launched with, then the others the
+/// `GET /v1/workspaces`: the workspaces `nav web` was launched with, then the others the
 /// history knows that still exist on disk, most recently active first.
 pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
     let stored = match state.history().workspaces().await {
@@ -226,7 +226,7 @@ pub(super) async fn hide_workspace(
     }) {
         return (StatusCode::CONFLICT, Json(json!({
             "reason": "launched",
-            "error": "this workspace was opened by navai web on the command line and cannot be hidden"
+            "error": "this workspace was opened by nav web on the command line and cannot be hidden"
         }))).into_response();
     }
     let delete = match params.get("sessions").map(String::as_str) {

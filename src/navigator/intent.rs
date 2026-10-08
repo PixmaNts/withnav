@@ -112,7 +112,7 @@ pub fn write_intent_sections(
     workspace: &Path,
     sections: &IntentSections,
 ) -> std::io::Result<PathBuf> {
-    let dir = crate::paths::workspace_dir(workspace);
+    let dir = workspace.join(".withnav");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("intent.md");
     // Only a missing record starts empty. Any other failure (permissions,

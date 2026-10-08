@@ -166,7 +166,7 @@ impl TestServerConfig {
         self
     }
 
-    /// Serves the browser client's files too, as `navai web` does, with these launch workspaces.
+    /// Serves the browser client's files too, as `nav web` does, with these launch workspaces.
     pub fn web(mut self, launch_workspaces: Vec<PathBuf>) -> Self {
         self.web = Some(withnav::server::WebConfig { launch_workspaces });
         self
@@ -285,7 +285,7 @@ impl TestServerConfig {
 
     /// Like [`Self::state`], with editor hooks.
     pub fn navigator_state(&self) -> AppState {
-        self.withnav_state_with_conversation(None)
+        self.navigator_state_with_conversation(None)
     }
 
     /// [`Self::navigator_state`] sharing the navigator's conversation feed.

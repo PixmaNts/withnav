@@ -11,7 +11,7 @@
 //! - `GET /v1/settings?workspace=` -> `{revision,paths,fields,gateways}`; no keys or header values.
 //! - `PUT /v1/settings?workspace=` accepts `{revision,key,value}`; null removes, stale revisions
 //!   return 409 reason `stale`, invalid choices 400 reason `invalid`. Writes are serialized and atomic.
-//!   `restart`: after Navai restarts (conservative for layers). `new_sessions`: next use, including
+//!   `restart`: after WithNav restarts (conservative for layers). `new_sessions`: next use, including
 //!   new sessions, model/agent switches and newly started subagents; running turns keep their values.
 //!   `live`: changing client applies at once; other open clients on their next start.
 //! - `POST /v1/gateways/{name}/test?workspace=` -> `{ok,status,latency_ms,model_count,error}`;
@@ -40,7 +40,7 @@
 //!   If the consuming turn's pinned agent disables skills, the whole command is refused before
 //!   transcript mutation; `command.result` carries its command id as operation id and correlation.
 //! - `GET  /v1/workspaces`    -> `{workspaces:[{path,name,launched,session_count,updated_at?,branch?,dirty?}]}`:
-//!   the workspaces `navai web` was started with (`launched:true`, argument order), then the
+//!   the workspaces `nav web` was started with (`launched:true`, argument order), then the
 //!   history's other workspaces that still exist, newest activity first; child sessions are not counted.
 //!   Hidden history workspaces are omitted; creating a session makes its workspace visible again.
 //! - `DELETE /v1/workspaces?path=<abs>` -> 204, hides without deleting sessions.
@@ -49,7 +49,7 @@
 //! - `POST /v1/workspaces?path=<abs>` -> 204, idempotently unhides an existing directory.
 //! - `GET  /v1/intent?workspace=<abs path>` -> `{exists,intent,plan,decisions,active_spec,raw}`
 //!   from `.withnav/intent.md` (nullable strings; 400 without an absolute `workspace`)
-//! - Every other path, only when started by `navai web` (`ServerConfig.web`): the embedded browser
+//! - Every other path, only when started by `nav web` (`ServerConfig.web`): the embedded browser
 //!   client's files, `index.html` for unknown non-`/v1/` paths; no token needed, unknown `/v1/` paths stay 404.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`

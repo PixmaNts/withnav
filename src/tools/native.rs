@@ -434,7 +434,7 @@ mod tests {
         for tool in [&ReadTool as &dyn Tool, &GrepTool as &dyn Tool] {
             let error = tool
                 .call(
-                    json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                    json!({"path":"/etc/hostname","pattern":".","withnav_bound_destination":true}),
                     CancellationToken::new(),
                     &cx,
                 )

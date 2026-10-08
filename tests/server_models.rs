@@ -128,7 +128,7 @@ async fn provider_response_diagnostic_does_not_echo_endpoint_or_key() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agent() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9").withnav_state();
+    let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9").navigator_state();
 
     std::fs::write(
         tmp.path().join("models.json"),
@@ -227,7 +227,7 @@ async fn get_models_from(
     base_url: &str,
     write: fn(&std::path::Path, &str),
 ) -> Value {
-    let state = TestServerConfig::mock(root, base_url).withnav_state();
+    let state = TestServerConfig::mock(root, base_url).navigator_state();
     write(root, base_url);
     let (addr, task) = spawn_server(state).await;
     let body = reqwest::Client::new()

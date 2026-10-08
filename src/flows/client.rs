@@ -25,11 +25,11 @@ impl DecisionClient for UnavailableClient {
     }
 }
 
-pub struct NavaiDecisionClient {
+pub struct WithNavDecisionClient {
     client: instinct_flow::SystemOneClient,
     identity: ClientIdentity,
 }
-impl NavaiDecisionClient {
+impl WithNavDecisionClient {
     pub fn new(
         models: &crate::provider::config::ModelsConfig,
         config: &Path,
@@ -64,7 +64,7 @@ impl NavaiDecisionClient {
         Ok(Self { client, identity })
     }
 }
-impl DecisionClient for NavaiDecisionClient {
+impl DecisionClient for WithNavDecisionClient {
     fn capabilities(&self) -> Capabilities {
         Capabilities { images: false }
     }

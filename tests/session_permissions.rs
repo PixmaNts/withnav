@@ -598,10 +598,10 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     assert!(next.contains("carry on"));
 }
 
-fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
-    std::fs::create_dir_all(env.root.join("config/navai")).unwrap();
+fn run_withnav(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
     std::fs::write(
-        env.root.join("config/navai/config.json"),
+        env.root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
@@ -619,11 +619,11 @@ fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
         .expect("run the binary")
 }
 
-// Given `navai run` reaching a gated call
+// Given `nav run` reaching a gated call
 // Then it stops with `permission_required` and exit 3, never hanging or
 //      approving; with --yes the session's bypass lets ordinary work finish
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_stops_on_a_permission_request_unless_yes() {
+async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     let env = env();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![
@@ -644,7 +644,7 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models_a, &["--prompt", "write a.txt"])
+        run_withnav(&env, &models_a, &["--prompt", "write a.txt"])
     })
     .await
     .unwrap();
@@ -663,7 +663,7 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models, &["--yes", "--prompt", "write a.txt"])
+        run_withnav(&env, &models, &["--yes", "--prompt", "write a.txt"])
     })
     .await
     .unwrap();
@@ -671,11 +671,11 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w2");
 }
 
-// Given `navai run --yes` whose model writes a credentials file
+// Given `nav run --yes` whose model writes a credentials file
 // Then the hard floor holds: it prints the request with its reason, exits 3
 //      and writes nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
+async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
     let env = env();
     let target = env.ws.join("auth.json");
     let provider = provider(vec![one_write("w1", &target), done("never")]).await;
@@ -689,7 +689,7 @@ async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models, &["--yes", "--prompt", "write auth.json"])
+        run_withnav(&env, &models, &["--yes", "--prompt", "write auth.json"])
     })
     .await
     .unwrap();
@@ -708,11 +708,11 @@ async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
     );
 }
 
-// Given `navai run --yes` where a child session reaches the hard floor
+// Given `nav run --yes` where a child session reaches the hard floor
 // Then the mirrored request ends the whole run with exit 3, and the child
 //      writes nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
+async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     let env = env();
     let agents = env.ws.join(".withnav/agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -754,7 +754,7 @@ async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models, &["--yes", "--prompt", "delegate"])
+        run_withnav(&env, &models, &["--yes", "--prompt", "delegate"])
     })
     .await
     .unwrap();

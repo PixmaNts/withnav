@@ -1,4 +1,4 @@
-//! Process wiring for the `navai-lsp` binary: builds the model layers
+//! Process wiring for the `withnav-lsp` binary: builds the model layers
 //! from models.json and auth.json, starts the in-process cognition chat
 //! server, assembles the [`NavigatorDeps`] and serves the Language Server
 //! over stdio. A layer whose alias, key or config is missing is disabled
@@ -496,9 +496,9 @@ async fn spawn_cognition_server(
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
-    // Conversation history: one SQLite file in Navai's data dir.
+    // Conversation history: one SQLite file in WithNav's data dir.
     let history_db = crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))?;
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
         models_path: Some(models_path.to_path_buf()),

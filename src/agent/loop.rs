@@ -568,7 +568,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
     if super::permission_gate::protected_call(actor, call, &needed) {
         let mut request = PermissionRequest::new(call, needed.scope, agent);
         request.reason =
-            "Navai configuration is driver-only; approve this call once or deny".into();
+            "WithNav configuration is Captain-only; approve this call once or deny".into();
         return Gated::Ask(Box::new(request), needed.destination);
     }
     if matches!(
@@ -2815,7 +2815,7 @@ mod tests {
             let call = ToolCall {
                 id: tool.into(),
                 name: tool.into(),
-                args: serde_json::json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                args: serde_json::json!({"path":"/etc/hostname","pattern":".","withnav_bound_destination":true}),
                 args_valid: true,
             };
             assert!(
@@ -3837,14 +3837,15 @@ mod tests {
         std::fs::create_dir(&actual).unwrap();
         let alias = actor.tool_context.workspace.join("alias");
         std::os::unix::fs::symlink(&actual, &alias).unwrap();
-        actor.protected_config_root =
-            Some(super::super::permissions::resolve_protected_root(&alias.join("navai")).unwrap());
-        actor.protected_config_spelling = Some(alias.join("navai"));
+        actor.protected_config_root = Some(
+            super::super::permissions::resolve_protected_root(&alias.join("withnav")).unwrap(),
+        );
+        actor.protected_config_spelling = Some(alias.join("withnav"));
         for tool in ["write", "edit", "bash"] {
             let args = if tool == "bash" {
-                serde_json::json!({"command":format!("echo x > {}/navai/models.json", alias.display())})
+                serde_json::json!({"command":format!("echo x > {}/withnav/models.json", alias.display())})
             } else {
-                serde_json::json!({"path":alias.join("navai/models.json"),"content":"new","old_string":"old","new_string":"new"})
+                serde_json::json!({"path":alias.join("withnav/models.json"),"content":"new","old_string":"old","new_string":"new"})
             };
             let call = ToolCall {
                 id: "c".into(),

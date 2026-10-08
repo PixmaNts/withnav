@@ -59,7 +59,7 @@ impl LanguageServer for NavigatorBackend {
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name: "navai-navigator".to_string(),
+                name: "withnav-navigator".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
             ..InitializeResult::default()

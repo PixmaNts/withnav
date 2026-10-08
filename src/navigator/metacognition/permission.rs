@@ -153,7 +153,7 @@ mod tests {
     }
     #[test]
     fn live_write_rejection_shape_is_a_real_verdict() {
-        let review = parse_review(r#"{"decision":"reject","reason":"Write target /tmp/opencode/e2e-out/x.txt is outside all writable roots (/tmp/opencode/e2e, /home/pixma/.config/navai, /tmp/navai) and outside scratch root /tmp/navai. No human approval; write may overwrite an existing file with unknown prior contents."}"#).unwrap();
+        let review = parse_review(r#"{"decision":"reject","reason":"Write target /tmp/opencode/e2e-out/x.txt is outside all writable roots (/tmp/opencode/e2e, /home/pixma/.config/withnav, /tmp/withnav) and outside scratch root /tmp/withnav. No human approval; write may overwrite an existing file with unknown prior contents."}"#).unwrap();
         assert_eq!(
             review.decision,
             crate::agent::permission_gate::ReviewDecision::Reject

@@ -204,7 +204,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
 }
 
 /// Subprocess capture of the REAL production stderr: run the actual
-/// `navai run` binary against a mock provider that returns HTTP 500, and
+/// `nav run` binary against a mock provider that returns HTTP 500, and
 /// assert the process stderr carries the `error:` line and the process exits
 /// 1. This exercises the `exit_code_for` -> `eprint!(terminal_stderr_line)`
 /// path end-to-end, so deleting the production `eprint!` would FAIL this test
@@ -238,9 +238,9 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     std::fs::create_dir_all(root.join("ws")).unwrap();
     let data_home = root.join("data");
     let config_home = root.join("config");
-    std::fs::create_dir_all(config_home.join("navai")).unwrap();
+    std::fs::create_dir_all(config_home.join("withnav")).unwrap();
     std::fs::write(
-        config_home.join("navai/config.json"),
+        config_home.join("withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/m"}}}"#,
     )
     .unwrap();
@@ -355,7 +355,7 @@ fn cancel_placeholder() -> CancellationToken {
     CancellationToken::new()
 }
 
-/// A chat alias without a window is refused at `navai run` startup with the
+/// A chat alias without a window is refused at `nav run` startup with the
 /// usual `error:` line naming the models.json to fix, and exits 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_binary_refuses_an_alias_without_a_known_window() {
@@ -384,9 +384,9 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("ws")).unwrap();
-    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        root.join("config/navai/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/m"}}}"#,
     )
     .unwrap();

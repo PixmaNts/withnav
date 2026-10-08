@@ -7,7 +7,7 @@
 //! ```
 //!
 //! The API key resolves from the auth store (`inception` entry of
-//! `~/.config/navai/auth.json`); it is never printed.
+//! `~/.config/withnav/auth.json`); it is never printed.
 
 use std::sync::Arc;
 use std::time::Duration;

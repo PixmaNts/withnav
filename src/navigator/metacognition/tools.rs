@@ -203,7 +203,7 @@ mod tests {
             let call = crate::provider::ToolCall {
                 id: tool.into(),
                 name: tool.into(),
-                args: serde_json::json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                args: serde_json::json!({"path":"/etc/hostname","pattern":".","withnav_bound_destination":true}),
                 args_valid: true,
             };
             let output = commenter.execute_tool(&ctx, &call).await;

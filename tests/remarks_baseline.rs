@@ -145,7 +145,7 @@ async fn diagnostics_update_context_without_a_builtin_trigger_or_log_record() {
     .await;
     nav.open_and_edit().await;
     nav.notify(
-        "navigator/diagnostics",
+        "withnav/diagnostics",
         json!({
             "uri": URI,
             "items": [{"line": 1, "severity": "error", "message": "synthetic type error"}],
@@ -153,7 +153,7 @@ async fn diagnostics_update_context_without_a_builtin_trigger_or_log_record() {
     )
     .await;
     let seen = nav.sync_notifications().await;
-    assert!(seen.iter().all(|msg| msg["method"] != "navigator/remark"));
+    assert!(seen.iter().all(|msg| msg["method"] != "withnav/remark"));
     assert_eq!(model.calls(), 0);
     assert!(triggers(&nav).is_empty());
     nav.did_save(URI).await;

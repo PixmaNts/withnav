@@ -1,5 +1,5 @@
 //! The `fetch` tool converts HTML in a limited child process: these tests
-//! run it against the built `navai` binary with hostile pages.
+//! run it against the built `withnav` binary with hostile pages.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

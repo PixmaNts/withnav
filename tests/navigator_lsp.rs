@@ -55,7 +55,7 @@ async fn failed_legacy_conversion_is_warned_once_after_initialized() {
         .all(|message| message["method"] != "window/showMessage"));
 }
 
-/// After a 5-line change and 3 s idle, one navigator/remark arrives.
+/// After a 5-line change and 3 s idle, one withnav/remark arrives.
 #[tokio::test]
 async fn idle_after_big_edit_emits_remark() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Remark(
@@ -67,7 +67,7 @@ async fn idle_after_big_edit_emits_remark() {
 
     tokio::time::sleep(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     let params = &remark["params"];
     assert_eq!(params["uri"], URI);
     assert_eq!(params["line"], 1);
@@ -111,7 +111,7 @@ async fn skips_logs_light_or_not_at_all() {
     .await;
     client.open_base().await;
     client
-        .notify("navigator/diagnostics", json!({"uri": URI, "items": []}))
+        .notify("withnav/diagnostics", json!({"uri": URI, "items": []}))
         .await;
     client
         .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
@@ -143,7 +143,7 @@ async fn cooldown_suppresses_second_remark() {
     client.open_and_edit().await;
     tokio::time::sleep(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
-    let first = client.expect("navigator/remark", &mut seen).await;
+    let first = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(first["params"]["text"], "first");
     client.expect_status("idle").await;
 
@@ -160,7 +160,7 @@ async fn cooldown_suppresses_second_remark() {
     let bigger2 = format!("{}\n// d\n// e\n// f\n", big_edit());
     client.did_change(URI, &bigger2, 4).await;
     tokio::time::sleep(Duration::from_millis(3001)).await;
-    let second = client.expect("navigator/remark", &mut seen).await;
+    let second = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(second["params"]["text"], "second");
 }
 
@@ -181,7 +181,7 @@ async fn a_one_line_call_for_help_in_a_comment_reaches_the_metacognition() {
         .await;
     tokio::time::sleep(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "what part is stuck?");
     assert_eq!(mock.calls(), 1);
     let records = client.log_text();
@@ -202,7 +202,7 @@ async fn silent_answer_emits_no_remark() {
     assert!(!records.contains("\"kind\":\"remark\""));
 }
 
-/// Commenter error emits navigator/status error and the server stays alive.
+/// Commenter error emits withnav/status error and the server stays alive.
 #[tokio::test]
 async fn commenter_error_emits_status_error_and_survives() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Fail("provider exploded")])).await;
@@ -245,7 +245,7 @@ async fn typing_does_not_cancel_a_remark_and_its_line_follows_the_edits() {
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "x is unused");
     assert_eq!(
         remark["params"]["line"], 3,
@@ -272,7 +272,7 @@ async fn a_remark_on_a_line_edited_meanwhile_is_dropped() {
     gate.cancel();
     let msgs = client.collect_for(Duration::from_millis(100)).await;
     assert!(
-        msgs.iter().all(|m| m["method"] != "navigator/remark"),
+        msgs.iter().all(|m| m["method"] != "withnav/remark"),
         "a remark about a rewritten line leaked: {msgs:?}"
     );
     let records = client.log_text();
@@ -313,11 +313,11 @@ async fn a_newer_trigger_supersedes_the_remark_in_flight() {
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "new");
     let rest = client.collect_for(Duration::from_millis(100)).await;
     assert!(
-        rest.iter().all(|m| m["method"] != "navigator/remark"),
+        rest.iter().all(|m| m["method"] != "withnav/remark"),
         "the superseded remark leaked: {rest:?}"
     );
     assert!(client.log_text().contains("\"delivered\":\"cancelled\""));
@@ -340,11 +340,11 @@ async fn closing_the_document_cancels_the_remark_in_flight() {
         )
         .await;
     let mut seen = Vec::new();
-    client.expect("navigator/clear", &mut seen).await;
+    client.expect("withnav/clear", &mut seen).await;
     gate.cancel();
     let msgs = client.collect_for(Duration::from_millis(100)).await;
     assert!(
-        msgs.iter().all(|m| m["method"] != "navigator/remark"),
+        msgs.iter().all(|m| m["method"] != "withnav/remark"),
         "a remark was delivered for a closed document: {msgs:?}"
     );
     let records = client.log_text();
@@ -364,7 +364,7 @@ async fn save_triggers_immediately() {
     // No time advance: save must trigger on its own.
     client.did_save(URI).await;
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "watch the unwrap");
 }
 
@@ -374,7 +374,7 @@ async fn feedback_is_written_to_log() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
     client
         .notify(
-            "navigator/feedback",
+            "withnav/feedback",
             json!({"id": "abc123", "verdict": "useful"}),
         )
         .await;
@@ -386,7 +386,7 @@ async fn feedback_is_written_to_log() {
     assert!(records.contains("\"id\":\"abc123\""));
 }
 
-/// didClose clears state and notifies navigator/clear.
+/// didClose clears state and notifies withnav/clear.
 #[tokio::test]
 async fn did_close_clears_remark() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
@@ -398,7 +398,7 @@ async fn did_close_clears_remark() {
         )
         .await;
     let mut seen = Vec::new();
-    let clear = client.expect("navigator/clear", &mut seen).await;
+    let clear = client.expect("withnav/clear", &mut seen).await;
     assert_eq!(clear["params"]["uri"], URI);
 }
 
@@ -441,7 +441,7 @@ async fn config_update_changes_idle_threshold() {
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(mock.calls(), 1, "fired at the new 1 s delay");
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "cfg-driven");
 }
 
@@ -457,17 +457,20 @@ async fn disabled_config_suppresses_evaluation() {
     assert_eq!(mock.calls(), 0);
 }
 
-/// navigator/intent and navigator/diagnostics are accepted and stored
+/// withnav/intent and withnav/diagnostics are accepted and stored
 /// (observable through the log's remark after a trigger).
 #[tokio::test]
 async fn intent_and_diagnostics_are_accepted() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Silent])).await;
     client
-        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .notify("navigator/intent", json!({"text": "legacy parser intent"}))
+        .await;
+    client
+        .notify("withnav/intent", json!({"text": "fix the parser"}))
         .await;
     client
         .notify(
-            "navigator/diagnostics",
+            "withnav/diagnostics",
             json!({
                 "uri": URI,
                 "items": [{"line": 1, "severity": "error", "message": "mismatched types"}]
@@ -489,7 +492,7 @@ async fn intent_and_diagnostics_are_accepted() {
     assert!(resp.get("result").is_some(), "server broken: {resp}");
 }
 
-/// navigator/inlineCompletion answers with an item and request id from the
+/// withnav/inlineCompletion answers with an item and request id from the
 /// reflex service, including the result range.
 #[tokio::test]
 async fn inline_completion_answers_empty_items() {
@@ -503,7 +506,7 @@ async fn inline_completion_answers_empty_items() {
         .send(&json!({
             "jsonrpc": "2.0",
             "id": 21,
-            "method": "navigator/inlineCompletion",
+            "method": "withnav/inlineCompletion",
             "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
         }))
         .await;
@@ -530,7 +533,7 @@ async fn a_debounced_inline_completion_is_not_logged_as_a_model_call() {
             .send(&json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "method": "navigator/inlineCompletion",
+                "method": "withnav/inlineCompletion",
                 "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
             }))
             .await;
@@ -554,13 +557,13 @@ async fn a_debounced_inline_completion_is_not_logged_as_a_model_call() {
     assert_eq!(reflex_calls, 1, "{records}");
 }
 
-/// navigator/reflexShown is accepted and logged as a reflex_shown record.
+/// withnav/reflexShown is accepted and logged as a reflex_shown record.
 #[tokio::test]
 async fn reflex_shown_is_logged() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
     client
         .notify(
-            "navigator/reflexShown",
+            "withnav/reflexShown",
             json!({"requestId": "req1", "shownAtMs": 1759000000123u64}),
         )
         .await;
@@ -573,7 +576,7 @@ async fn reflex_shown_is_logged() {
 }
 
 /// With `server_info` in the deps, `initialized` delivers
-/// `navigator/serverInfo` with exactly those values: the extension learns
+/// `withnav/serverInfo` with exactly those values: the extension learns
 /// the cognition chat server's port and bearer token.
 #[tokio::test]
 async fn server_info_arrives_after_initialized_with_the_configured_values() {
@@ -585,12 +588,12 @@ async fn server_info_arrives_after_initialized_with_the_configured_values() {
     })
     .await;
     let mut seen = Vec::new();
-    let info = client.expect("navigator/serverInfo", &mut seen).await;
+    let info = client.expect("withnav/serverInfo", &mut seen).await;
     assert_eq!(info["params"]["port"], 45678);
     assert_eq!(info["params"]["token"], "tok-123");
 }
 
-/// Without `server_info` in the deps, NO `navigator/serverInfo` ever leaves
+/// Without `server_info` in the deps, NO `withnav/serverInfo` ever leaves
 /// the server (the chat stays unannounced when its server failed to bind).
 #[tokio::test]
 async fn without_server_info_no_notification_is_sent() {
@@ -601,7 +604,7 @@ async fn without_server_info_no_notification_is_sent() {
     let msgs = client.collect_for(Duration::from_millis(100)).await;
     assert!(
         msgs.iter()
-            .all(|m| m.get("method").and_then(|m| m.as_str()) != Some("navigator/serverInfo")),
+            .all(|m| m.get("method").and_then(|m| m.as_str()) != Some("withnav/serverInfo")),
         "no serverInfo without server_info deps: {msgs:?}"
     );
 }
@@ -612,7 +615,7 @@ impl LspClient {
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
-            "method": "navigator/inlineCompletion",
+            "method": "withnav/inlineCompletion",
             "params": {"uri": URI, "version": version, "line": 0, "character": 4}
         }))
         .await;
@@ -649,7 +652,10 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
     })
     .await;
     client
-        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .notify("navigator/intent", json!({"text": "legacy parser intent"}))
+        .await;
+    client
+        .notify("withnav/intent", json!({"text": "fix the parser"}))
         .await;
     client.open_base().await;
 
@@ -722,7 +728,10 @@ async fn reflex_context_refresh_failure_keeps_the_previous_context() {
     })
     .await;
     client
-        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .notify("navigator/intent", json!({"text": "legacy parser intent"}))
+        .await;
+    client
+        .notify("withnav/intent", json!({"text": "fix the parser"}))
         .await;
     client.open_base().await;
 
@@ -761,7 +770,10 @@ async fn reflex_context_empty_answers_are_logged_once() {
     })
     .await;
     client
-        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .notify("navigator/intent", json!({"text": "legacy parser intent"}))
+        .await;
+    client
+        .notify("withnav/intent", json!({"text": "fix the parser"}))
         .await;
     client.open_base().await;
 
@@ -845,7 +857,7 @@ async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_a
 
     feed.observe(&turn_end_event(session_id)).await;
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["uri"], URI);
     assert_eq!(remark["params"]["text"], "the cache is back");
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -972,7 +984,7 @@ async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "the cache");
     let outcomes = delivered(&client);
     assert!(
@@ -994,7 +1006,7 @@ async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
     client.did_change(URI, &with_help(&[]), 2).await;
     client.did_save(URI).await;
     let mut seen = Vec::new();
-    let first = client.expect("navigator/remark", &mut seen).await;
+    let first = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(first["params"]["text"], "first answer");
     client.expect_status("idle").await;
 
@@ -1011,7 +1023,7 @@ async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
     client.did_change(URI, &base_text(), 4).await;
     client.did_change(URI, &with_help(&[]), 5).await;
     client.did_save(URI).await;
-    let second = client.expect("navigator/remark", &mut seen).await;
+    let second = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(second["params"]["text"], "second answer");
     assert_eq!(mock.calls(), 2);
 }
@@ -1050,7 +1062,7 @@ async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_diff
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "ordinary");
     assert!(delivered(&client).iter().any(|(d, _)| d == "cancelled"));
 }

@@ -144,7 +144,7 @@ async fn workspace_mutations_require_auth_and_existing_absolute_directories_and_
     assert!(body["error"]
         .as_str()
         .unwrap()
-        .contains("opened by navai web on the command line"));
+        .contains("opened by nav web on the command line"));
     state.close_all().await;
 }
 

@@ -1,0 +1,82 @@
+# Built-in default decision pipeline (overridable via .navigator/pipeline.toml).
+[instinct]
+model = "instinct"            # models.json alias
+
+[[trigger]]
+on = ["save", "idle"]         # save | idle | diagnostics | conversation
+state = "prompts/state.md"    # template rendering the state sent to the instinct
+# The remark rate limit is the remark branch's own `since_last_remark_ms`
+# condition, so a wake is never skipped because a remark was just written.
+prefilter = { min_changed_lines = 1, cooldown_ms = 0, wake_cooldown_ms = 120000, bypass_on_help_call = true }
+
+[trigger.questions.worth_attention]
+type = "noul"
+instructions = "Is there a concrete local correction or next step worth saying now? Incomplete code can still merit help. Do not score routine unfinished syntax, or a feature not implemented yet, as a problem by itself."
+
+[trigger.questions.route]
+type = "choice"
+instructions = "Who should handle this?"
+criteria = { silent = "Nothing worth saying", metacognition = "A short local remark on the code", cognition = "A deeper discussion about design or intent" }
+
+[trigger.questions.drift]
+type = "noul"
+instructions = "Does an observable decision in the code conflict with the stated intent? Missing implementation, compile errors and copied scaffolding being adapted are not drift."
+
+[trigger.questions.contradicts_conversation]
+type = "noul"
+instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the Captain stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
+
+# Whether the code compiles says nothing about whether the Captain needs
+# help: the instinct judges "still typing" and "stuck" instead.
+[trigger.questions.unfinished]
+type = "noul"
+instructions = "Is this an edit the Captain is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
+
+[trigger.questions.stuck]
+type = "noul"
+instructions = "Has the Captain tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
+
+# A comment that calls on the navigator ("help", "aide", a question) gets an
+# answer whatever the scores say; the prefilter let it past the size limit.
+[[trigger.branch]]
+when = "called_for_help"
+action = "remark"
+prompt = "prompts/help_remark.md"
+
+# A captain who looks stuck gets the chat, whether the code compiles or not.
+[[trigger.branch]]
+when = "stuck > 0.8"
+action = "wake_cognition"
+
+[[trigger.branch]]
+when = "unfinished < 0.5 && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))"
+action = "wake_cognition"
+
+[[trigger.branch]]
+when = "worth_attention > 0.8 && route != \"silent\" && since_last_remark_ms >= 45000"
+action = "remark"
+prompt = "prompts/remark.md"
+
+[[trigger.branch]]
+when = "true"
+action = "silent"
+
+# A captain turn ended in the conversation: is the code in the focused file at
+# odds with what was just agreed? min_changed_lines does not apply here.
+[[trigger]]
+on = ["conversation"]
+state = "prompts/conversation_state.md"
+prefilter = { cooldown_ms = 30000 }
+
+[trigger.questions.code_contradicts_conversation]
+type = "noul"
+instructions = "Does the code in this file already conflict with an explicit goal or agreement the Captain stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
+
+[[trigger.branch]]
+when = "has_conversation && code_contradicts_conversation > 0.8"
+action = "remark"
+prompt = "prompts/conversation_remark.md"
+
+[[trigger.branch]]
+when = "true"
+action = "silent"

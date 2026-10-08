@@ -1,8 +1,8 @@
 // Dev-only stand-in for `GET/PUT /v1/settings` and `POST /v1/gateways/{name}/test`
 // (`.scratch/settings/contract.md`), used only while the server answers 404.
 //
-// It starts from the real `config.json` and `models.json` of `NAVAI_CONFIG_DIR`
-// (default `~/.config/navai`), keeps every change in memory and never writes a
+// It starts from the real `config.json` and `models.json` of `WITHNAV_CONFIG_DIR`
+// (default `~/.config/withnav`), keeps every change in memory and never writes a
 // file. Catalogue checks use the real server's `GET /v1/models` and
 // `GET /v1/agents`, so a model or agent that does not exist is refused as the
 // server would. `auth.json` is only checked for a gateway name, never read for
@@ -11,14 +11,14 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { devConfigDir } from "./legacyConfig.ts";
 import { join } from "node:path";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
-const configDir = process.env.NAVAI_CONFIG_DIR ?? join(homedir(), ".config", "navai");
-const THEMES = ["ayu-dark", "ayu-light", "nord-dark", "nord-light"];
+const configDir = devConfigDir();
+const THEMES = ["ayu-dark", "ayu-light", "nord-dark", "nord-light", "tide-dark", "tide-light", "moss-dark", "moss-light"];
 const LAYER_API: Record<string, string> = { reflex: "fim", instinct: "systemone", metacognition: "chat" };
 const MAX_SECS = 31_536_000;
 
@@ -88,7 +88,7 @@ async function body(target: string, workspace: string, auth: string) {
     field("default_agent", "build", "new_sessions"),
     ...agents.map((a: Json) => field(`agents.${a.id}`, null, "new_sessions", asChoice)),
     field("permissions.automatic_review", true, "new_sessions"),
-    field("permissions.scratch_dirs", [`${process.env.XDG_RUNTIME_DIR ?? "/run/user/1000"}/navai`, "/tmp/navai"], "new_sessions"),
+    field("permissions.scratch_dirs", [`${process.env.XDG_RUNTIME_DIR ?? "/run/user/1000"}/withnav`, "/tmp/withnav"], "new_sessions"),
     field("subagents.max_concurrent", 4, "new_sessions"),
     field("subagents.watchdog_interval_secs", 300, "new_sessions"),
     field("agent.watchdog_interval_secs", 300, "new_sessions"),
@@ -110,7 +110,7 @@ async function body(target: string, workspace: string, auth: string) {
   }));
   return {
     revision: revision(cfg),
-    paths: { config: join(configDir, "config.json"), models: join(configDir, "models.json"), agents: [join(configDir, "agents"), join(workspace, ".navai", "agents")] },
+    paths: { config: join(configDir, "config.json"), models: join(configDir, "models.json"), agents: [join(configDir, "agents"), join(workspace, ".withnav", "agents")] },
     fields,
     gateways,
   };
@@ -148,7 +148,7 @@ async function validate(target: string, workspace: string, auth: string, key: st
 function send(res: ServerResponse, status: number, value: Json) {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");
-  res.setHeader("x-navai-dev-fallback", "settings");
+  res.setHeader("x-withnav-dev-fallback", "settings");
   res.end(JSON.stringify(value));
 }
 

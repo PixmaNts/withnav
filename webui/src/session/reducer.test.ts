@@ -4,7 +4,7 @@ import { SseDecoder } from "../api/sse";
 import type { Envelope } from "../api/types";
 import { emptyView, openPermissions, reduce, reduceAll, type Turn } from "./reducer";
 
-/** A real stream captured from `navai serve` 0.5.0: build lists files, then writes one. */
+/** A recorded 0.5.0 server stream: build lists files, then writes one. */
 function fixture(name: string): Envelope[] {
   const raw = readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), "utf8");
   return new SseDecoder().push(raw).map((frame) => JSON.parse(frame.data) as Envelope);
@@ -18,9 +18,9 @@ function env(kind: string, payload: object, at = "2026-10-06T10:00:00.000Z"): En
 const turns = (items: ReturnType<typeof emptyView>["items"]) => items.filter((i): i is Turn => i.kind === "turn");
 
 describe("transcript projection", () => {
-  it("projects a recorded live stream: driver message, tools in order, final text", () => {
+  it("projects a recorded live stream: Captain message, tools in order, final text", () => {
     const view = reduceAll(emptyView(), fixture("write-file.sse"));
-    expect(view.items.map((i) => i.kind)).toEqual(["driver", "turn"]);
+    expect(view.items.map((i) => i.kind)).toEqual(["captain", "turn"]);
     const [turn] = turns(view.items);
     expect(turn!.status).toBe("done");
     expect(turn!.parts.map((p) => p.type)).toEqual(["tools", "text"]);
@@ -40,13 +40,13 @@ describe("transcript projection", () => {
   });
 
   it("keeps a turn that yielded for a permission in one block, and running until it is answered", () => {
-    // Recorded replay: edit, then a bash call gated for the driver, denied.
+    // Recorded replay: edit, then a bash call gated for the Captain, denied.
     const events = fixture("permission-denied.sse");
     const waiting = reduceAll(emptyView(), events.filter((e) => e.seq <= 31));
     expect(waiting.activity).toBe("running");
     expect(openPermissions(waiting).map((p) => p.tool)).toEqual(["bash"]);
     const done = reduceAll(emptyView(), events);
-    expect(done.items.map((i) => i.kind)).toEqual(["driver", "turn"]);
+    expect(done.items.map((i) => i.kind)).toEqual(["captain", "turn"]);
     const [turn] = turns(done.items);
     expect(turn!.parts.map((p) => p.type)).toEqual(["tools", "permission", "text"]);
     expect(Object.values(done.permissions)[0]!.resolution).toBe("deny");
@@ -90,14 +90,14 @@ describe("transcript projection", () => {
     expect(openPermissions(view)).toEqual([]);
   });
 
-  it("labels messages by author: driver, navigator wake, subagent result", () => {
+  it("labels messages by author: Captain, Nav wake, subagent result", () => {
     seq = 0;
     const view = reduceAll(emptyView(), [
-      env("message.received", { command_id: "a", source: "user:http", target: "agent:main", mode: "next-turn", content: "hi", selected_skill: { name: "git", origin: "driver" } }),
+      env("message.received", { command_id: "a", source: "user:http", target: "agent:main", mode: "next-turn", content: "hi", selected_skill: { name: "git", origin: "captain" } }),
       env("message.received", { command_id: "b", source: "navigator", target: "agent:main", mode: "next-turn", content: "Navigator noticed: drift from the intent (0.86) in src/config.rs:42\n```diff\n+x\n```" }),
-      env("message.received", { command_id: "c", source: "subagent:explore", target: "agent:main", mode: "next-turn", content: "found it" }),
+      env("message.received", { command_id: "c", source: "subagent:vigie", target: "agent:main", mode: "next-turn", content: "found it" }),
     ]);
-    expect(view.items.map((i) => i.kind)).toEqual(["driver", "wake", "subagent-result"]);
+    expect(view.items.map((i) => i.kind)).toEqual(["captain", "wake", "subagent-result"]);
     expect(view.items[0]).toMatchObject({ skill: "git" });
     expect(view.items[1]).toMatchObject({ note: { reason: "drift from the intent", score: "0.86", path: "src/config.rs", line: 42, diff: "+x" } });
   });
@@ -106,10 +106,10 @@ describe("transcript projection", () => {
     seq = 0;
     let view = reduceAll(emptyView(), [
       env("session.agent_changed", { agent: "plan", previous: "build" }),
-      env("subagent.spawned", { parent_session_id: "S", child_session_id: "C", agent: "explore", goal: "map callers", tool_call_id: "t1" }, "2026-10-06T10:00:00.000Z"),
+      env("subagent.spawned", { parent_session_id: "S", child_session_id: "C", agent: "vigie", goal: "map callers", tool_call_id: "t1" }, "2026-10-06T10:00:00.000Z"),
     ]);
-    expect(view.children.C).toMatchObject({ agent: "explore", status: "running", spawnedBy: "plan" });
-    view = reduce(view, env("subagent.done", { parent_session_id: "S", child_session_id: "C", agent: "explore", outcome: "done", notification_id: "N" }, "2026-10-06T10:00:42.000Z"));
+    expect(view.children.C).toMatchObject({ agent: "vigie", status: "running", spawnedBy: "plan" });
+    view = reduce(view, env("subagent.done", { parent_session_id: "S", child_session_id: "C", agent: "vigie", outcome: "done", notification_id: "N" }, "2026-10-06T10:00:42.000Z"));
     expect(view.children.C).toMatchObject({ status: "done", endedAt: "2026-10-06T10:00:42.000Z" });
   });
 

@@ -2,7 +2,7 @@ use crate::error::ServerError;
 use crate::session::service::{Service, SessionId};
 
 impl Service {
-    /// Root cognition may decide only its own watchdog doubt; permissions stay with the driver.
+    /// Root cognition may decide only its own watchdog doubt; permissions stay with the Captain.
     pub async fn decide_subagent(
         &self,
         parent: SessionId,

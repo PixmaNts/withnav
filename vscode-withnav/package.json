@@ -1,0 +1,166 @@
+{
+  "name": "withnav",
+  "displayName": "WithNav",
+  "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
+  "version": "0.7.0",
+  "publisher": "pixmants",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PixmaNts/withnav.git"
+  },
+  "homepage": "https://github.com/PixmaNts/withnav#readme",
+  "bugs": {
+    "url": "https://github.com/PixmaNts/withnav/issues"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "icon": "media/withnav-icon.png",
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "withnav",
+          "title": "WithNav",
+          "icon": "media/withnav.svg"
+        }
+      ]
+    },
+    "views": {
+      "withnav": [
+        {
+          "id": "withnav.chat",
+          "name": "Nav",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "withnav.toggleBypassPermissions", "title": "WithNav: Toggle Bypass Permissions" },
+      {
+        "command": "withnav.openSettings",
+        "title": "Open Settings",
+        "category": "WithNav",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "withnav.focusChat",
+        "title": "Focus Nav Chat",
+        "category": "WithNav"
+      },
+      {
+        "command": "withnav.markUseful",
+        "title": "Mark Last Remark as Useful",
+        "category": "WithNav"
+      },
+      {
+        "command": "withnav.markNoise",
+        "title": "Mark Last Remark as Noise",
+        "category": "WithNav"
+      },
+      {
+        "command": "withnav.dismiss",
+        "title": "Dismiss Current Remark",
+        "category": "WithNav"
+      },
+      {
+        "command": "withnav.setIntent",
+        "title": "Set the Course",
+        "category": "WithNav"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "withnav.openSettings",
+          "when": "view == withnav.chat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "withnav.markUseful",
+        "key": "ctrl+alt+y",
+        "when": "withnav.remarkVisible"
+      },
+      {
+        "command": "withnav.markNoise",
+        "key": "ctrl+alt+n",
+        "when": "withnav.remarkVisible"
+      },
+      {
+        "command": "withnav.dismiss",
+        "key": "ctrl+alt+d",
+        "when": "withnav.remarkVisible"
+      }
+    ],
+    "configuration": {
+      "title": "WithNav",
+      "properties": {
+        "withnav.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable WithNav and keep its language server running."
+        },
+        "withnav.serverPath": {
+          "type": "string",
+          "default": "withnav-lsp",
+          "description": "Path to the withnav-lsp server binary (absolute path, or a command found on PATH)."
+        },
+        "withnav.idleMs": {
+          "type": "integer",
+          "default": 3000,
+          "minimum": 0,
+          "description": "Idle delay after the last edit before WithNav may speak."
+        },
+        "withnav.minChangedLines": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "description": "Minimum number of changed lines since the last remark for WithNav to consider speaking."
+        },
+        "withnav.cooldownMs": {
+          "type": "integer",
+          "default": 20000,
+          "minimum": 0,
+          "description": "Minimum delay between two remarks on the same file."
+        },
+        "withnav.reflex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline-completion suggestions from the reflex layer."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "pretest": "npm run compile",
+    "test": "node test-build.mjs && node --test tests/*.test.cjs",
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p tsconfig.json && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json",
+    "package": "vsce package --allow-missing-repository",
+    "package:dry-run": "vsce ls"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.6.0"
+  }
+}

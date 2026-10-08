@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use navai::bus::event::EventEnvelope;
-use navai::provider::openai::ChatMessage;
-use navai::server::AppState;
+use withnav::bus::event::EventEnvelope;
+use withnav::provider::openai::ChatMessage;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{collect_until, send_text, TestServerConfig};
@@ -89,7 +89,7 @@ async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(events) => {
+        withnav::bus::ResumeOutcome::Replay(events) => {
             events.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -389,7 +389,7 @@ async fn a_deferred_compact_is_cancelled_with_its_own_id_when_the_session_stops(
         .unwrap()
         .contains("nothing was compacted"));
     let sub = state.subscribe(id, None).await.unwrap();
-    let navai::bus::ResumeOutcome::Replay(all) = sub.replay else {
+    let withnav::bus::ResumeOutcome::Replay(all) = sub.replay else {
         panic!("replay expected")
     };
     let seq_of = |kind: &str| all.iter().rev().find(|e| e.kind == kind).map(|e| e.seq);

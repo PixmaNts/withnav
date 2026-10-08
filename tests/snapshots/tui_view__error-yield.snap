@@ -2,9 +2,9 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project               ▌build  cognition · assigned · — / 200k 
+ Conversations       │ ◆ withnav  ~/dev/project           ▌◎ build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · waiting   │ │ ERROR                                                                      
+▌  ◎ Nav · waiting   │ │ ERROR                                                                      
                      │ │  Permission denied                                                         
                      │ │                                                                            
                      │ │ QUESTION · awaiting answer                                                 

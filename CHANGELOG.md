@@ -4,6 +4,86 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-08
+
+Navai is now **WithNav**. Nav is your single point of contact, with a crew behind it: Vigie scouts
+and cites its sources, Lux weighs hard decisions, Mousse handles small local edits, and the
+Cartographe and the Sondeur come on demand. You are the Captain. The CLI is `nav`, the language
+server `withnav-lsp`, the extension `pixmants.withnav`, and Tide Dark is the default theme. Your
+config and data move to `withnav` on first start; every old name, directory, variable and agent id
+keeps working with a warning until 0.8. This release also brings InstinctFlow: draw the flows the
+instinct runs, in the new Studio, and the legacy decision pipeline is gone.
+
+### Rebrand to WithNav
+
+Write new names throughout 0.7; legacy readers warn or give a migration hint.
+Removal of the deprecated names is planned for 0.8 ([ADR 0014](docs/adr/0014-rebrand-withnav.md)).
+
+- **Product and crate:** Navai → WithNav (withnav.dev), crate `rust-agent` → `withnav`.
+  No old crate alias. The GitHub repository moves to `github.com/PixmaNts/withnav`
+  (the old URL redirects); the internal `src/navigator/` module stays.
+- **Binaries:** `navai` → `nav` (deprecated `navai` alias prints a notice and runs `nav`);
+  `navai-lsp` → `withnav-lsp` (update the configured server path; no old LSP executable alias).
+- **Project directory:** `.navai/` / `.navigator/` → `.withnav/`, including `intent.md`,
+  `agents/`, `flows/` and legacy `pipeline.toml` / `prompts/`. When `.withnav/` is absent,
+  read `.navai/` then `.navigator/`. New Mermaid charts go in `.withnav/charts/`.
+- **Config/data directories:** `~/.config/navai/` → `~/.config/withnav/` and
+  `~/.local/share/navai/` → `~/.local/share/withnav/`. Move legacy files on first start
+  without overwriting new ones; existing older `rust-agent` / `navigator` migrations remain.
+- **Scratch paths:** `$XDG_RUNTIME_DIR/navai`, `~/.cache/navai/scratch` and
+  `<temp_dir>/navai` → the corresponding `withnav` paths, retaining old-path compatibility in 0.7.
+- **Data filenames:** `navai.db` → `withnav.db`, `navai.jsonl` → `withnav.jsonl`;
+  move on first start when only the old file exists, keeping database sidecars together.
+- **Environment:** `NAVAI_*` → `WITHNAV_*`, with the old variable read and warned about
+  when its new counterpart is unset. This includes `NAVAI_CONFIG_DIR`, `NAVAI_SERVER`,
+  `NAVAI_SERVER_TOKEN`, `NAVAI_TOKEN`, `NAVAI_WORKSPACES`, `NAVAI_MAX_STEPS`,
+  `NAVAI_BASH_GRACE_MS` and `NAVAI_HTML_CONVERTER`, each becoming the same suffix
+  under `WITHNAV_`. Provider-specific API-key variables are unchanged.
+- **VS Code:** `vscode-navigator/` → `vscode-withnav/`, extension id `pixmants.navai`
+  → `pixmants.withnav`, view container `navigator` → `withnav`; install the new extension
+  (no duplicate folder or extension-id alias). Settings `navai.*` → `withnav.*`, falling
+  back when the new setting is unset. Commands `navigator.*` / `navai.*` → `withnav.*`;
+  use new command ids. The previously removed `navai.modelAlias` stays removed.
+- **LSP:** `navigator/serverInfo`, `navigator/remark`, `navigator/clear`, `navigator/status`,
+  `navigator/feedback`, `navigator/diagnostics`, `navigator/intent`, `navigator/reflexShown`
+  and `navigator/inlineCompletion` → the same suffix under `withnav/`. The server accepts
+  both prefixes for requests/notifications and sends only `withnav/*`; clients use the new prefix.
+- **Human and wire values:** driver → the Captain; `driver` → `captain` in event authors,
+  `approved_by`, permission-gate `source`, `origin`, `selected_by` and conversation digest
+  authors. Readers accept both; new records write `captain`.
+- **Flow action:** `ask_driver` → `ask_captain`; old TOML actions still parse.
+- **Agent ids:** `build` and `plan` remain Nav; `explore` / `librarian` → `vigie`,
+  `review` / `oracle` → `lux`, `explorer` → `mousse`. Old ids resolve as deprecated aliases
+  with warnings. New `cartographe` and `sondeur` are on demand, with no old aliases.
+- **Crew and labels:** Nav · The Navigator, Vigie · The Lookout, Lux · The Expert Advisor,
+  Mousse · The Lightweight Deckhand, Cartographe · The Cartographer and Sondeur · The Deep Diver.
+  Metacognition remarks are Beacons signed by Nav. Layer technical names stay unchanged:
+  Reflex · Completion, Instinct · Triage, Metacognition · Beacon, Cognition · Nav and the crew.
+  Feature labels are Logbook · Activity history, Voyage · Session, Safe Harbor · Checkpoint.
+- **Default theme:** Tide Dark when no theme choice is saved; saved choices remain intact.
+
+### Added
+
+- **InstinctFlow.** Draw flows the instinct runs on WithNav's events: a trigger, decisions
+  (noul, choice, score), expressions and actions, wired as a graph. Flows live in
+  `.withnav/flows/` (after you trust the workspace) or `~/.config/withnav/flows/`; Save writes the
+  file and Reload makes it run. A blocking `tool.pre_call` flow can deny a tool call or ask you,
+  never allow one past the normal permission review, and bypass never answers it.
+  `message.received` and `turn.end` flows can inject a note or wake the cognition, marked as
+  coming from a flow. See [the Captain's guide](docs/instinct-flow.md).
+- **The Studio** (`#/studio` in the browser): canvas and TOML views of the same file, an inspector
+  per node, Run sample against the instinct, Replay of recorded runs without a model call, and
+  24-hour health per flow.
+- **`instinct-flow`**, a standalone engine crate and command (`validate`, `run`, `replay`) that
+  runs without WithNav, and `nav flows catalogue`, which prints WithNav's triggers, inputs and
+  actions.
+
+### Removed
+
+- The legacy navigator decision pipeline and fallback evaluator. Built-in editor flows now own
+  triggers exclusively; custom `pipeline.toml` files are converted once with originals retained.
+  Offline replay uses flows only (`--flows` remains accepted; `--pipeline` and `--reask` are removed).
+
 ## [0.6.1] - 2026-10-07
 
 Navai gets a bypass mode: one session can skip ordinary permission prompts, from the terminal,

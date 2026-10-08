@@ -12,12 +12,10 @@ use crate::navigator::document::reanchor_line;
 use crate::navigator::log::{excerpt, DeliveryOutcome, LogRecord, PendingTrigger};
 use crate::navigator::lsp::protocol::{RemarkNotification, RemarkParams};
 use crate::navigator::metacognition::{RemarkContext, HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
-use crate::navigator::pipeline::TriggerKind;
 use crate::navigator::ports::ModelError;
-use crate::navigator::WakeOutcome;
+use crate::navigator::TriggerKind;
 
 use super::trigger::TriggerContext;
-use super::wake::{relative_path, wake_message, WakeReason};
 use super::Runtime;
 
 impl Runtime {
@@ -217,80 +215,5 @@ impl Runtime {
                 }
             }
         }
-    }
-
-    /// Delivers a `wake_cognition` branch: builds the wake message from
-    /// what the instinct judged and posts it to the active conversation
-    /// through the feed. The guard is the feed's: while the cognition
-    /// waits on the driver's `ask` answer, the wake is queued (latest
-    /// wins) and delivered right after the driver's next message.
-    pub(super) async fn deliver_wake(
-        self: &Arc<Self>,
-        uri: String,
-        ctx: TriggerContext,
-        pending: PendingTrigger,
-        reason: WakeReason,
-    ) {
-        const UNAVAILABLE: DeliveryOutcome = DeliveryOutcome::None {
-            reason: "cognition_unavailable",
-        };
-        let Some(feed) = self.conversation.clone() else {
-            pending.finish(&self.log, UNAVAILABLE);
-            self.set_status("idle", None).await;
-            return;
-        };
-        if feed.active_session().is_none() {
-            pending.finish(&self.log, UNAVAILABLE);
-            self.set_status("idle", None).await;
-            return;
-        }
-        let workspace = self.workspace.lock().await.clone();
-        let message = wake_message(
-            &reason,
-            &relative_path(&ctx.uri, workspace.as_deref()),
-            ctx.first_changed_line,
-            &ctx.diff,
-            &ctx.intent_text,
-        );
-        let outcome = feed.post_wake(&message).await;
-        if matches!(outcome, WakeOutcome::Posted(_) | WakeOutcome::Queued(_)) {
-            // A wake consumes the edit like a remark does: stamp the wake
-            // clock and rebase, or the idle trigger right after the save
-            // wakes the cognition a second time about the same change
-            // (observed 2026-10-01: two identical wakes 1.5 s apart). The
-            // remark clock is left alone: wakes and remarks are rate-limited
-            // apart, and a wake must not silence the next remark.
-            let mut state = self.documents.lock().await;
-            if let Some(doc) = state.get_mut(&uri) {
-                doc.last_wake = Some(Instant::now());
-                doc.rebase_to(&ctx.text);
-            }
-        }
-        match outcome {
-            WakeOutcome::Posted(session_id) => {
-                pending.finish(
-                    &self.log,
-                    DeliveryOutcome::Wake {
-                        session: session_id.to_string(),
-                    },
-                );
-            }
-            WakeOutcome::Queued(session_id) => {
-                pending.finish(
-                    &self.log,
-                    DeliveryOutcome::WakeQueued {
-                        session: session_id.to_string(),
-                    },
-                );
-            }
-            // The session exists but refused the post (stopping, full
-            // inbox): an honest outcome, logged for tuning like any skip.
-            WakeOutcome::Failed(_, error) => {
-                tracing::warn!(uri = %uri, error = %error, "wake post failed");
-                pending.finish(&self.log, UNAVAILABLE);
-            }
-            WakeOutcome::NoSession => pending.finish(&self.log, UNAVAILABLE),
-        }
-        self.set_status("idle", None).await;
     }
 }

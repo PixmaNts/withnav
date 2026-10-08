@@ -59,7 +59,7 @@ impl LanguageServer for NavigatorBackend {
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name: "navai-navigator".to_string(),
+                name: "withnav-navigator".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
             ..InitializeResult::default()
@@ -73,6 +73,7 @@ impl LanguageServer for NavigatorBackend {
     /// `initialized`: announce the cognition chat server's endpoint when the
     /// binary started one, so the extension can bridge the chat panel.
     async fn initialized(&self, _params: InitializedParams) {
+        self.runtime.report_startup_warnings().await;
         self.runtime.announce_server_info().await;
     }
 
@@ -113,7 +114,7 @@ impl NavigatorBackend {
         self.runtime.on_intent(params).await;
     }
 
-    /// `navigator/inlineCompletion`: ghost-text request from the extension's
+    /// `withnav/inlineCompletion`: ghost-text request from the extension's
     /// inline-completion provider. The reflex layer answers or returns an
     /// empty item list.
     pub async fn inline_completion(
@@ -140,6 +141,14 @@ pub fn build_service(deps: NavigatorDeps) -> (LspService<NavigatorBackend>, Clie
             NavigatorBackend::inline_completion,
         )
         .custom_method("navigator/reflexShown", NavigatorBackend::reflex_shown)
+        .custom_method("withnav/feedback", NavigatorBackend::feedback)
+        .custom_method("withnav/diagnostics", NavigatorBackend::diagnostics)
+        .custom_method("withnav/intent", NavigatorBackend::intent)
+        .custom_method(
+            "withnav/inlineCompletion",
+            NavigatorBackend::inline_completion,
+        )
+        .custom_method("withnav/reflexShown", NavigatorBackend::reflex_shown)
         .finish()
 }
 

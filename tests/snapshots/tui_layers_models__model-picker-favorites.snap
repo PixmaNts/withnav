@@ -1,8 +1,9 @@
 ---
 source: tests/tui_layers_models.rs
+assertion_line: 885
 expression: "lines.join(\"\\n\")"
 ---
- ◆ navai                        build  — · assigned · — / — 
+ ◆ withnav                    ◎ build  — · assigned · — / — 
 ────────────────────────────────────────────────────────────
   ┌─────────────────── Choose a model ───────────────────┐  
   │ ❯ filter models…                                     │  

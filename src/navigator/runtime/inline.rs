@@ -13,7 +13,7 @@ use crate::navigator::reflex::to_result;
 use super::Runtime;
 
 impl Runtime {
-    /// `navigator/inlineCompletion`: ghost-text request from the extension's
+    /// `withnav/inlineCompletion`: ghost-text request from the extension's
     /// inline-completion provider. The reflex layer answers or returns an
     /// empty item list.
     pub(crate) async fn inline_completion(

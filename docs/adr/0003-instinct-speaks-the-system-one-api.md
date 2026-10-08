@@ -12,3 +12,6 @@ $0.00001.
 
 Calls stay off the hot keystroke path budget-wise (hosted, ~0.35 s), so the instinct is evaluated on
 triggers, not on every keystroke. The code sent as state leaves the machine.
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

@@ -1,12 +1,12 @@
 //! Agent definitions: the roles a session can run as. A primary agent is the
-//! one a driver talks to (`build`, `plan`, or a custom one); a subagent is
+//! one the Captain talks to (`build`, `plan`, or a custom one); a subagent is
 //! one another agent delegates to. A definition is a role prompt, an optional
 //! model, a tool allow/deny map and an access level; it says what the agent
 //! is for, not what it may execute.
 //!
 //! Sources, later ones replacing earlier ones that carry the same id:
 //! the built-ins, `<home>/.config/opencode/agents/*.md` (only read),
-//! `<navai config dir>/agents/*.md`, and `.navai/agents/*.md` of the project
+//! `<withnav config dir>/agents/*.md`, and `.withnav/agents/*.md` of the project
 //! (the worktree root down to the workspace, nearer directories last).
 //! `build` and `plan` are reserved: a file with one of those names never
 //! replaces the built-in and is reported.
@@ -43,6 +43,29 @@ const MAX_ID_CHARS: usize = 64;
 pub const BUILD: &str = "build";
 /// The id of the planning agent.
 pub const PLAN: &str = "plan";
+
+/// Compatibility names accepted throughout the 0.7 series.
+pub const AGENT_ALIASES: &[(&str, &str)] = &[
+    ("explore", "vigie"),
+    ("librarian", "vigie"),
+    ("review", "lux"),
+    ("oracle", "lux"),
+    ("explorer", "mousse"),
+];
+
+/// Resolves a legacy id and emits one deprecation line per resolution.
+pub fn canonical_agent_id(id: &str) -> &str {
+    if let Some((_, canonical)) = AGENT_ALIASES.iter().find(|(old, _)| *old == id) {
+        tracing::warn!(
+            agent = id,
+            replacement = canonical,
+            "deprecated agent id; use the replacement"
+        );
+        canonical
+    } else {
+        id
+    }
+}
 
 /// An agent's name: lowercase letters, digits, `-` and `_`, starting with a
 /// letter or a digit.
@@ -103,7 +126,7 @@ impl fmt::Display for AgentId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
-    /// A driver can select it for a session.
+    /// The Captain can select it for a session.
     Primary,
     /// Another agent can delegate to it.
     Subagent,
@@ -165,9 +188,9 @@ pub enum AgentSource {
     Builtin,
     /// `<home>/.config/opencode/agents`: only read.
     OpenCode(PathBuf),
-    /// `<navai config dir>/agents`.
+    /// `<withnav config dir>/agents`.
     User(PathBuf),
-    /// `.navai/agents` of the project.
+    /// `.withnav/agents` of the project.
     Project(PathBuf),
 }
 
@@ -189,6 +212,45 @@ pub struct AgentDefinition {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+impl AgentDefinition {
+    /// Cartographe's write exception is confined to Mermaid chart files.
+    /// Call before permission review and again at dispatch: approval must not broaden it.
+    pub fn validate_write_scope(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        if self.id.as_str() != "cartographe" || !matches!(tool, "write" | "edit") {
+            return Ok(());
+        }
+        let raw = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing string argument: path")?;
+        let path = Path::new(raw);
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        let resolved = crate::tools::validate_path(&[workspace.to_path_buf()], &candidate)
+            .map_err(|e| e.to_string())?;
+        let root = workspace
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .join(".withnav/charts");
+        if !resolved.starts_with(&root)
+            || !resolved
+                .extension()
+                .is_some_and(|e| e == "mmd" || e == "mermaid")
+        {
+            return Err("cartographe may only write Mermaid charts under .withnav/charts/".into());
+        }
+        Ok(())
+    }
+}
+
 /// A problem found while loading, never fatal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -201,7 +263,7 @@ pub struct Diagnostic {
 pub struct AgentRoots {
     /// The home directory holding `.config/opencode/agents`.
     pub home: Option<PathBuf>,
-    /// Navai's config directory holding `agents`.
+    /// WithNav's config directory holding `agents`.
     pub config_dir: Option<PathBuf>,
 }
 
@@ -242,7 +304,7 @@ impl Agents {
             // A project's agents stay inside the project: a link out of it
             // would let a repository pull a prompt from anywhere.
             agents.load_dir(
-                &dir.join(".navai").join("agents"),
+                &crate::paths::workspace_dir(&dir).join("agents"),
                 Some(&dir),
                 AgentSource::Project,
             );
@@ -251,7 +313,7 @@ impl Agents {
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<AgentDefinition>> {
-        self.by_id.get(id)
+        self.by_id.get(canonical_agent_id(id))
     }
 
     /// Every agent, by id.
@@ -259,7 +321,7 @@ impl Agents {
         self.by_id.values()
     }
 
-    /// The agents a driver can select, by id.
+    /// The agents the Captain can select, by id.
     pub fn primary(&self) -> impl Iterator<Item = &Arc<AgentDefinition>> {
         self.all().filter(|a| a.mode.is_primary())
     }
@@ -307,7 +369,17 @@ impl Agents {
                     && std::fs::metadata(path).is_ok_and(|m| m.is_file())
             })
             .collect();
-        files.sort();
+        // Canonical files win over legacy filenames within the same source.
+        files.sort_by_key(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            (
+                !AGENT_ALIASES.iter().any(|(old, _)| *old == stem),
+                path.clone(),
+            )
+        });
         if files.len() > MAX_FILES {
             files.truncate(MAX_FILES);
             self.diagnostics.push(Diagnostic {
@@ -344,6 +416,26 @@ impl Agents {
     }
 
     fn add(&mut self, path: &Path, mut definition: AgentDefinition) {
+        let legacy_name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| AGENT_ALIASES.iter().any(|(old, _)| *old == stem));
+        if legacy_name
+            && self
+                .by_id
+                .get(definition.id.as_str())
+                .is_some_and(|existing| match &existing.source {
+                    AgentSource::Builtin => false,
+                    AgentSource::OpenCode(path)
+                    | AgentSource::User(path)
+                    | AgentSource::Project(path) => {
+                        path.file_stem().and_then(|stem| stem.to_str())
+                            == Some(definition.id.as_str())
+                    }
+                })
+        {
+            return;
+        }
         if definition.id.is_reserved() {
             self.diagnostics.push(Diagnostic {
                 path: path.to_path_buf(),
@@ -397,39 +489,61 @@ fn builtin_definitions() -> Vec<AgentDefinition> {
     vec![
         make(
             BUILD,
-            "Implements the task, verifies it and reports",
+            "Nav · The Navigator: implements the task, verifies it and reports",
             AgentMode::Primary,
-            // The system contract every request starts with already is the
-            // build stance (implement, verify, report): `build` adds no role
-            // text, so a session on the default agent sends the same
-            // requests it always did.
-            "",
+            include_str!("builtin/build.md"),
             BTreeMap::new(),
             AgentAccess::Full,
         ),
         make(
             PLAN,
-            "Researches, writes markdown plans and delegates; never changes code",
+            "Nav · The Navigator: researches and proposes read-only plans",
             AgentMode::Primary,
             include_str!("builtin/plan.md"),
             BTreeMap::new(),
             AgentAccess::Full,
         ),
         make(
-            "explore",
-            "Read-only codebase exploration",
+            "vigie",
+            "Vigie · The Lookout: read-only code, documentation and web research with sources",
             AgentMode::Subagent,
-            include_str!("builtin/explore.md"),
+            include_str!("builtin/vigie.md"),
             read_only_tools.clone(),
             AgentAccess::ReadOnly,
         ),
         make(
-            "review",
-            "Read-only code review",
-            AgentMode::Subagent,
-            include_str!("builtin/review.md"),
-            read_only_tools,
+            "lux",
+            "Lux · The Expert Advisor: read-only analysis of decisions, risks and trade-offs",
+            AgentMode::All,
+            include_str!("builtin/lux.md"),
+            read_only_tools.clone(),
             AgentAccess::ReadOnly,
+        ),
+        make(
+            "mousse",
+            "Mousse · The Lightweight Deckhand: small, local, low-risk edits after permission review",
+            AgentMode::Subagent,
+            include_str!("builtin/mousse.md"),
+            BTreeMap::new(),
+            AgentAccess::Full,
+        ),
+        make(
+            "cartographe",
+            "Cartographe · The Cartographer: on-demand diagrams of modules, dependencies and data flows",
+            AgentMode::Subagent,
+            include_str!("builtin/cartographe.md"),
+            ["edit", "bash", "ask", "task", "steer_subagent", "decide_subagent", "intent"]
+                .into_iter().map(|name| (name.to_string(), false)).collect(),
+            AgentAccess::Full,
+        ),
+        make(
+            "sondeur",
+            "Sondeur · The Deep Diver: on-demand root-cause investigation with reviewed tests and profiling",
+            AgentMode::Subagent,
+            include_str!("builtin/sondeur.md"),
+            ["write", "edit", "ask", "task", "steer_subagent", "decide_subagent", "intent"]
+                .into_iter().map(|name| (name.to_string(), false)).collect(),
+            AgentAccess::Full,
         ),
     ]
 }
@@ -452,7 +566,7 @@ fn read_file(path: &Path, target: &Path, source: AgentSource) -> Result<AgentDef
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
-    let id = AgentId::parse(stem)?;
+    let id = AgentId::parse(canonical_agent_id(stem))?;
     let file = std::fs::File::open(target).map_err(|e| format!("cannot be read: {e}"))?;
     let mut text = String::new();
     file.take(MAX_FILE_BYTES as u64 + 1)

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>body{margin:0} a{color:inherit;text-decoration:none} a:hover{text-decoration:underline;text-underline-offset:3px} *{box-sizing:border-box} ::selection{background:color-mix(in srgb,#5ac6ea 30%,transparent)}</style>
+</helmet>
+<div style="{{ themeVars }};background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:16px;line-height:1.6;min-height:100vh">
+
+  <header style="position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--bd)">
+    <div style="max-width:1120px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+      <a href="#top" aria-label="WithNav" style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:7.8px;flex:none"><svg viewBox="0 0 64 64" width="27.3" height="27.3" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:20.8px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></a>
+      <nav style="display:flex;gap:20px;font-size:14.5px;color:var(--mu)">
+        <a href="#crew">{{ t.navCrew }}</a><a href="#layers">{{ t.navLayers }}</a><a href="#clients">{{ t.navClients }}</a><a href="/docs/latest/">{{ t.navDocs }}</a><a href="https://github.com/PixmaNts/Navai/blob/main/CHANGELOG.md">{{ t.navChangelog }}</a>
+      </nav>
+      <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
+        <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden;font-size:12.5px"><button onClick="{{ setEn }}" style="{{ langEn }}">EN</button><button onClick="{{ setFr }}" style="{{ langFr }}">FR</button></div>
+        <button onClick="{{ toggleTheme }}" aria-label="theme" style="background:transparent;border:1px solid var(--bd);color:var(--mu);border-radius:6px;padding:4px 9px;cursor:pointer;font-size:14px;display:flex"><i class="{{ themeIcon }}"></i></button>
+        <a href="https://github.com/PixmaNts/Navai" style="display:flex;gap:7px;align-items:center;border:1px solid var(--ac);color:var(--at);border-radius:6px;padding:5px 12px;font-size:14px;text-decoration:none"><i class="ph ph-github-logo" style="font-size:16px"></i>GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <section id="top" style="max-width:1120px;margin:0 auto;padding:88px 24px 72px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:56px;align-items:center">
+    <div style="display:flex;flex-direction:column;gap:22px;align-items:stretch;min-width:0">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:13px">
+        <span style="border:1px solid var(--bd);border-radius:20px;padding:2px 11px;white-space:nowrap;color:var(--mu)">v0.6.1</span>
+        <span style="border:1px solid color-mix(in srgb,var(--gr) 55%,transparent);border-radius:20px;padding:2px 11px;white-space:nowrap;color:var(--gr)">{{ t.badgeOss }}</span>
+        <span style="border:1px solid var(--bd);border-radius:20px;padding:2px 11px;white-space:nowrap;color:var(--mu)">{{ t.badgeRust }}</span>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;letter-spacing:0.14em;color:var(--mu)">WITHNAV</div>
+      <h1 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(42px,5.8vw,70px);line-height:1.02;letter-spacing:-0.03em"><span style="display:block">{{ t.heroTitle }}</span><span style="display:block;color:var(--nav)">{{ t.heroTitle2 }}</span></h1>
+      <p style="margin:0;font-size:18.5px;color:var(--mu);max-width:540px;text-wrap:pretty">{{ t.heroSub }}</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+        <a href="/docs/latest/" style="background:var(--nav);color:var(--bg);border-radius:7px;padding:10px 18px;font-weight:500;text-decoration:none;white-space:nowrap">{{ t.ctaDocs }}</a>
+        <a href="#crew" style="border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:10px 18px;font-weight:500;text-decoration:none;white-space:nowrap">{{ t.ctaSource }}</a>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--mu);background:var(--pn);border:1px solid var(--bd);border-radius:7px;padding:9px 14px;display:flex;gap:10px;align-self:flex-start;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis"><span style="color:var(--ac)">$</span><span style="color:var(--tx)">cargo build --release --bins &amp;&amp; nav tui</span></div>
+    </div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.7;background:var(--pn);border:1px solid var(--bd);border-radius:10px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.45)">
+      <div style="display:flex;gap:14px;padding:8px 14px;border-bottom:1px solid var(--bd);color:var(--mu);flex-wrap:wrap"><span><span style="color:var(--nav)">◆</span> <span style="color:var(--tx)">withnav</span></span><span>~/dev/rust-agent</span><span>develop ●3</span><span style="margin-left:auto;color:var(--ac)">▌build</span></div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:11px">
+        <div><span style="color:var(--tx)">▌captain</span><div style="color:var(--tx)">{{ t.demoDriver }} <span style="color:var(--bl)">Config::load(p)</span>.</div></div>
+        <div><span style="color:var(--nav)">▌nav</span><div>{{ t.demoCog }}</div>
+          <div style="color:var(--mu);padding-left:14px"><span style="color:var(--gr)">✓</span> grep "from_str" · 7 matches</div>
+          <div style="color:var(--mu);padding-left:14px"><span style="color:var(--vig)">⠹</span> <span style="color:var(--vig)">vigie</span> · {{ t.demoVig }}</div>
+        </div>
+        <div style="border-left:2px solid var(--nav);padding:4px 0 4px 12px;background:linear-gradient(90deg,color-mix(in srgb,var(--nav) 12%,transparent),transparent 75%)"><div style="color:var(--nav)">◇ {{ t.demoBeacon }} · nav · config.rs:42</div><div>{{ t.demoRemark }}</div><div style="color:var(--mu);font-size:12px;margin-top:3px">[y] useful   [n] noise   [d] dismiss</div></div>
+        <div style="border-left:2px solid var(--lux);padding:4px 0 4px 12px"><div style="color:var(--lux)">✋ {{ t.demoConfirm }}</div><div style="color:var(--mu)">{{ t.demoWake }}</div></div>
+      </div>
+      <div style="border-top:1px solid var(--bd);padding:8px 14px;color:var(--mu)"><span style="color:var(--ac)">❯</span> <span style="opacity:.7">@file /command !shell</span></div>
+    </div>
+  </section>
+
+  <section id="crew" style="border-top:1px solid var(--bd)">
+    <div style="max-width:1120px;margin:0 auto;padding:80px 24px;display:flex;flex-direction:column;gap:36px">
+      <div style="display:flex;flex-direction:column;gap:10px;max-width:660px">
+        <div style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--nav)">{{ t.crewKicker }}</div>
+        <h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.1;letter-spacing:-0.02em;text-wrap:balance">{{ t.crewTitle }}</h2>
+        <p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.crewSub }}</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:14px">
+        <sc-for list="{{ crew }}" as="p" hint-placeholder-count="4">
+          <div style="border:1px solid var(--bd);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:12px;background:var(--pn)">
+            <dc-import name="WithNavGlyph" glyph="{{ p.g }}" size="40" hint-size="40px,40px"></dc-import>
+            <div style="display:flex;flex-direction:column;line-height:1.3"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:24px;letter-spacing:-0.02em;color:{{ p.col }}">{{ p.name }}</span><span style="font-size:14px;color:var(--mu)">{{ p.role }}</span></div>
+            <p style="margin:0;font-size:15px;text-wrap:pretty;flex:1">{{ p.body }}</p>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--mu);border-top:1px solid var(--bd);padding-top:10px">
+              <span style="display:flex;gap:8px;align-items:center">{{ t.cost }}<span style="display:flex;gap:3px"><sc-for list="{{ p.cost }}" as="d" hint-placeholder-count="3"><span style="width:14px;height:5px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></span></span>
+              <span style="display:flex;gap:6px;align-items:center"><i class="{{ p.rIcon }}"></i>{{ p.rights }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:14px;color:var(--mu)">{{ t.crewExtLabel }}</span>
+        <sc-for list="{{ crewExt }}" as="p" hint-placeholder-count="2"><span style="display:inline-flex;gap:9px;align-items:center;border:1px dashed var(--bd);border-radius:10px;padding:8px 12px"><dc-import name="WithNavGlyph" glyph="{{ p.g }}" size="20" hint-size="20px,20px"></dc-import><span style="display:flex;flex-direction:column;line-height:1.3"><span style="font-weight:600;font-size:14.5px;color:{{ p.col }}">{{ p.name }}</span><span style="font-size:12.5px;color:var(--mu)">{{ p.body }}</span></span></span></sc-for>
+      </div>
+      <p style="margin:0;font-size:15px;color:var(--mu);font-style:italic">{{ t.crewNote }}</p>
+    </div>
+  </section>
+
+  <section id="layers" style="border-top:1px solid var(--bd);background:var(--pn)">
+    <div style="max-width:1120px;margin:0 auto;padding:80px 24px;display:flex;flex-direction:column;gap:36px">
+      <div style="display:flex;flex-direction:column;gap:10px;max-width:640px">
+        <div style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--at)">{{ t.layersKicker }}</div>
+        <h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.1;letter-spacing:-0.02em;text-wrap:balance">{{ t.layersTitle }}</h2>
+        <p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.layersSub }}</p>
+      </div>
+      <div style="display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--bg)">
+        <div style="display:grid;grid-template-columns:minmax(150px,200px) minmax(0,1fr) minmax(120px,170px);gap:20px;padding:18px 22px;align-items:baseline;background:color-mix(in srgb,var(--lh) 9%,transparent);border-bottom:1px solid var(--bd)">
+          <div style="display:flex;gap:9px;align-items:center;font-family:'Bricolage Grotesque',sans-serif;font-size:22px;font-weight:600;color:var(--lh)"><svg viewBox="0 0 12 20" style="width:9px;height:15px;flex:none"><polygon points="6,0 12,10 6,20 0,10" fill="var(--lh)"></polygon></svg>{{ t.driverName }}</div>
+          <div style="text-wrap:pretty">{{ t.driverDesc }}</div>
+          <div style="font-size:13px;color:var(--mu)">{{ t.driverWhen }}</div>
+        </div>
+        <sc-for list="{{ t.layers }}" as="l" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:minmax(150px,200px) minmax(0,1fr) minmax(120px,170px);gap:20px;padding:18px 22px;align-items:baseline;border-bottom:1px solid var(--bd)">
+            <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:'Bricolage Grotesque',sans-serif;font-size:22px;font-weight:600">{{ l.name }}</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--at)">api · {{ l.api }}</span></div>
+            <div style="color:var(--tx);text-wrap:pretty">{{ l.desc }}</div>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mu)"><span>{{ l.when }}</span><div style="height:3px;border-radius:2px;background:var(--bd)"><div style="height:3px;border-radius:2px;background:var(--la);width:{{ l.depth }}"></div></div></div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size:13px;color:var(--mu)">{{ t.layersNote }}</div>
+    </div>
+  </section>
+
+  <section style="max-width:1120px;margin:0 auto;padding:80px 24px;display:flex;flex-direction:column;gap:36px">
+    <div style="display:flex;flex-direction:column;gap:10px;max-width:640px">
+      <div style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--at)">{{ t.collabKicker }}</div>
+      <h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.1;letter-spacing:-0.02em;text-wrap:balance">{{ t.collabTitle }}</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:32px">
+      <sc-for list="{{ t.points }}" as="p" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column;gap:10px;padding-top:18px;border-top:1px solid var(--bd)">
+          <i class="{{ p.icon }}" style="font-size:22px;color:var(--at)"></i>
+          <h3 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:21px;line-height:1.25">{{ p.title }}</h3>
+          <p style="margin:0;color:var(--mu);text-wrap:pretty">{{ p.body }}</p>
+          <code style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--or)">{{ p.code }}</code>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <section id="clients" style="border-top:1px solid var(--bd);background:var(--pn)">
+    <div style="max-width:1120px;margin:0 auto;padding:80px 24px;display:flex;flex-direction:column;gap:36px">
+      <div style="display:flex;flex-direction:column;gap:10px;max-width:640px">
+        <div style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--at)">{{ t.clientsKicker }}</div>
+        <h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.1;letter-spacing:-0.02em;text-wrap:balance">{{ t.clientsTitle }}</h2>
+        <p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.clientsSub }}</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:14px">
+        <sc-for list="{{ t.clients }}" as="c" hint-placeholder-count="4">
+          <div style="background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:18px;display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;gap:9px;align-items:center"><i class="{{ c.icon }}" style="font-size:20px;color:var(--at)"></i><span style="font-weight:600">{{ c.name }}</span></div>
+            <p style="margin:0;color:var(--mu);font-size:14.5px;text-wrap:pretty;flex:1">{{ c.body }}</p>
+            <code style="font-family:'JetBrains Mono',monospace;font-size:12.5px;background:var(--pn);border:1px solid var(--bd);border-radius:5px;padding:5px 9px;color:var(--tx);display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{ c.cmd }}</code>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:28px;align-items:start;margin-top:12px">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <h3 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:24px">{{ t.apiTitle }}</h3>
+          <p style="margin:0;color:var(--mu);text-wrap:pretty">{{ t.apiBody }}</p>
+          <a href="/docs/latest/en/api/overview.html" style="color:var(--at);font-weight:500">{{ t.apiLink }} →</a>
+        </div>
+        <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.7;background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:16px 18px;overflow:auto;color:var(--tx)"><span style="color:var(--mu)"># {{ t.apiC1 }}</span>
+curl -s -H "Authorization: Bearer $WITHNAV_SERVER_TOKEN" \
+  -d '{"workspace":"'$PWD'"}' <span style="color:var(--bl)">127.0.0.1:7310/v1/sessions</span>
+
+<span style="color:var(--mu)"># {{ t.apiC2 }}</span>
+curl -N -H "Authorization: Bearer $WITHNAV_SERVER_TOKEN" \
+  <span style="color:var(--bl)">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
+<span style="color:var(--pu)">event:</span> llm.delta  <span style="color:var(--pu)">event:</span> tool.pre_call  <span style="color:var(--pu)">event:</span> permission.requested</pre>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:1120px;margin:0 auto;padding:80px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:40px;align-items:center">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--at)">{{ t.modelsKicker }}</div>
+      <h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.1;letter-spacing:-0.02em;text-wrap:balance">{{ t.modelsTitle }}</h2>
+      <p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.modelsBody }}</p>
+    </div>
+    <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.75;background:var(--pn);border:1px solid var(--bd);border-radius:10px;padding:16px 18px;overflow:auto;color:var(--tx)"><span style="color:var(--mu)">// ~/.config/withnav/config.json</span>
+{
+  <span style="color:var(--bl)">"layers"</span>: {
+    <span style="color:var(--bl)">"reflex"</span>: <span style="color:var(--gr)">"inception/mercury-edit-2"</span>,
+    <span style="color:var(--bl)">"instinct"</span>: <span style="color:var(--gr)">"omniroute/typesafe/jev-1.13"</span>,
+    <span style="color:var(--bl)">"metacognition"</span>: { <span style="color:var(--bl)">"model"</span>: <span style="color:var(--gr)">"omniroute/combo/deepseek-v4-flash"</span>, <span style="color:var(--bl)">"variant"</span>: <span style="color:var(--gr)">"low"</span> }
+  },
+  <span style="color:var(--bl)">"default_agent"</span>: <span style="color:var(--gr)">"build"</span>,
+  <span style="color:var(--bl)">"agents"</span>: { <span style="color:var(--bl)">"build"</span>: { <span style="color:var(--bl)">"model"</span>: <span style="color:var(--gr)">"omniroute/cc/claude-opus-5-5"</span> } }
+}</pre>
+  </section>
+
+  <section style="border-top:1px solid var(--bd);background:linear-gradient(180deg,var(--pn),var(--bg))">
+    <div style="max-width:1120px;margin:0 auto;padding:88px 24px;display:flex;flex-direction:column;gap:18px;align-items:stretch">
+      <h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(34px,4.4vw,52px);line-height:1.05;letter-spacing:-0.025em;max-width:760px;text-wrap:balance">{{ t.ossTitle }}</h2>
+      <p style="margin:0;color:var(--mu);font-size:17.5px;max-width:620px;text-wrap:pretty">{{ t.ossBody }}</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+        <a href="https://github.com/PixmaNts/Navai" style="border:1px solid var(--ac);color:var(--at);border-radius:7px;padding:10px 18px;font-weight:500;text-decoration:none;white-space:nowrap;display:flex;gap:8px;align-items:center;background:color-mix(in srgb,var(--ac) 10%,transparent)"><i class="ph ph-github-logo"></i>github.com/PixmaNts/Navai</a>
+        <a href="https://github.com/PixmaNts/Navai/blob/main/AGENTS.md" style="border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:10px 18px;font-weight:500;text-decoration:none;white-space:nowrap">{{ t.ossContrib }}</a>
+      </div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:13.5px;color:var(--mu);margin-top:8px"><span>MIT</span><span>Apache-2.0</span><span>Rust · TypeScript</span><span>{{ t.ossLocal }}</span></div>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid var(--bd)">
+    <div style="max-width:1120px;margin:0 auto;padding:26px 24px;display:flex;gap:20px;align-items:center;flex-wrap:wrap;font-size:14px;color:var(--mu)">
+      <span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:5.4px;flex:none"><svg viewBox="0 0 64 64" width="18.9" height="18.9" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--mu)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:14.4px;letter-spacing:-0.02em;line-height:1;color:var(--mu)">WithNav</span></span>
+      <span>{{ t.footer }}</span>
+      <div style="margin-left:auto;display:flex;gap:18px"><a href="/docs/latest/">{{ t.navDocs }}</a><a href="https://github.com/PixmaNts/Navai/blob/main/CHANGELOG.md">{{ t.navChangelog }}</a><a href="https://github.com/PixmaNts/Navai">GitHub</a></div>
+    </div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;lang&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;en&quot;, &quot;fr&quot;], &quot;default&quot;: &quot;en&quot;, &quot;tsType&quot;: &quot;'en' | 'fr'&quot;}, &quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark' | 'light'&quot;}}">
+class Component extends DCLogic {
+  state = { lang: null, dark: null };
+  renderVals() {
+    const lang = this.state.lang ?? this.props.lang ?? 'en';
+    const dark = this.state.dark ?? ((this.props.theme ?? 'dark') === 'dark');
+    const TD = { bg: '#061115', pn: '#0a171b', sf: '#101e23', bd: '#213135', tx: '#d5e1e1', mu: '#87999e', ac: '#5ecbcb', at: '#5ecbcb', gr: '#81d584', rd: '#ee6570', bl: '#6cb2ec', pu: '#b59be6', or: '#f69370', lh: '#d5e1e1', la: '#5ecaed', nav: '#5ecaed', lux: '#f8ca65', mou: '#f89177', vig: '#72d8b3', car: '#dca3e5', son: '#a3b3f8' };
+    const TL = { bg: '#f2f8f8', pn: '#e9f2f3', sf: '#fbfefe', bd: '#cddbdc', tx: '#1f3137', mu: '#53676c', ac: '#1d9999', at: '#00696f', gr: '#2e7c35', rd: '#c53443', bl: '#0f68a2', pu: '#6f4fa1', or: '#c1552c', lh: '#1f3137', la: '#036b9a', nav: '#036b9a', lux: '#8f5d04', mou: '#b14328', vig: '#107460', car: '#85468f', son: '#4d5aac' };
+    const T = dark ? TD : TL;
+    const themeVars = Object.entries(T).map(([k, v]) => `--${k}:${v}`).join(';');
+    const C = {
+      en: {
+        navCrew: 'Crew', navLayers: 'Layers', navClients: 'Clients', navDocs: 'Docs', navChangelog: 'Changelog',
+        badgeOss: 'Free and open source', badgeRust: 'Written in Rust',
+        heroTitle: 'You set the course.', heroTitle2: 'Nav lights the way.',
+        heroSub: 'An AI crew that helps you explore, understand and evolve your code—without taking the helm away from you.',
+        ctaDocs: 'Set the Course', ctaSource: 'Meet the Crew', demoVig: 'scouting · read-only', demoBeacon: 'beacon', demoConfirm: 'confirm the route · 3 files',
+        demoDriver: 'Swap the toml parser for an incremental one. Keep', demoCog: "I'll map the call sites first, then edit.",
+        demoRemark: 'A second parameter breaks "public API unchanged" in the intent record.', demoWake: 'Nothing is written until you approve.',
+        crewKicker: 'The Crew', crewTitle: 'One point of contact. Three specialists when needed.', crewSub: 'You talk to Nav. Nav proposes a route and brings in the Lookout, Lux or Mousse when the task calls for it. You always see who is working, why, and what they may change.', cost: 'Cost', crewExtLabel: 'On demand:', crewNote: 'I remain in control, but I no longer navigate alone.',
+        layersKicker: 'Under the hood · four layers', layersTitle: 'Fast layers watch. Slow layers think. You decide.',
+        layersSub: 'Each layer has its own model and its own job. The quick ones are always on and cheap; the deep ones speak only when it is worth it.',
+        driverName: 'Captain', driverDesc: 'You. You keep the helm, give each remark a verdict and decide what gets done. Nav does the work only when you hand it over.', driverWhen: 'always in charge',
+        layers: [
+          { name: 'Reflex', api: 'fim', desc: 'Ghost-text suggestions in the editor, accepted with Tab.', when: 'as you type', depth: '12%' },
+          { name: 'Instinct', api: 'systemone', desc: 'Typed decisions: is this worth saying, is this tool call safe, is this subagent stuck.', when: 'on every trigger', depth: '36%' },
+          { name: 'Metacognition', api: 'chat', desc: 'Short remarks beside your code, permission review, and a wake for Nav when the code contradicts what you agreed.', when: 'when it matters', depth: '64%' },
+          { name: 'Cognition', api: 'chat · agents', desc: 'Where Nav and the crew run: build and plan modes, Vigie, Lux and Mousse in the background, tools, skills and rules.', when: 'when you ask', depth: '100%' }
+        ],
+        layersNote: 'Any OpenAI-compatible gateway. One model per lower layer, one per agent, all in config.json.',
+        collabKicker: 'You keep the helm', collabTitle: 'Built to work with you, not instead of you.',
+        points: [
+          { icon: 'ph ph-compass', title: 'An intent record you share', body: 'Nav writes the intent, route and decisions as they settle. When the code drifts from them, Nav says so beside the line.', code: '.withnav/intent.md' },
+          { icon: 'ph ph-shield-check', title: 'Every change is reviewed', body: 'Each write, edit and shell command is classified by instinct, escalated to metacognition when risky, and asked to you when nobody can clear it.', code: 'allow once · deny' },
+          { icon: 'ph ph-chat-circle-text', title: 'Remarks you can rate', body: 'Mark a remark useful or noise. Verdicts are logged and a candidate pipeline can be replayed against them before you switch.', code: 'useful · noise · dismissed' }
+        ],
+        clientsKicker: 'One core, every surface', clientsTitle: 'The same sessions in your terminal, editor and browser.',
+        clientsSub: 'Every client talks to one local session server. Settings in any of them write the same config.json.',
+        clients: [
+          { icon: 'ph ph-terminal-window', name: 'Terminal', body: 'Tabs, a command palette, a model picker, subagents and Settings, in Ratatui.', cmd: 'nav tui' },
+          { icon: 'ph ph-code', name: 'VS Code', body: 'Inline suggestions, remarks on the line, and the Nav panel beside your code.', cmd: 'pixmants.withnav' },
+          { icon: 'ph ph-browser', name: 'Browser', body: 'Workspaces and sessions on a private local link that changes on every run.', cmd: 'nav web' },
+          { icon: 'ph ph-lightning', name: 'One task', body: 'Run one task and exit, with exit codes for scripts and CI.', cmd: 'nav run -p "…"' }
+        ],
+        apiTitle: 'Or build your own client', apiBody: 'HTTP for commands, Server-Sent Events for the stream, replayable from any sequence number. Loopback by default, with a bearer token.', apiLink: 'API reference',
+        apiC1: 'start a session', apiC2: 'follow it',
+        modelsKicker: 'Your models', modelsTitle: 'Bring the gateways you already use.',
+        modelsBody: 'models.json lists what you can reach, named gateway/id. config.json says which model each layer and agent uses. Change it from /config, VS Code or the browser; a session can override its own model without touching the file.',
+        ossTitle: 'Free and open source, dual-licensed MIT or Apache-2.0.', ossBody: 'WithNav is developed in the open on GitHub. Read the code, open an issue, or send a pull request to develop.',
+        ossContrib: 'How to contribute', ossLocal: 'Runs on your machine', footer: 'MIT OR Apache-2.0 · WithNav contributors'
+      },
+      fr: {
+        navCrew: 'Équipage', navLayers: 'Couches', navClients: 'Clients', navDocs: 'Docs', navChangelog: 'Journal',
+        badgeOss: 'Libre et open source', badgeRust: 'Écrit en Rust',
+        heroTitle: 'Vous fixez le cap.', heroTitle2: 'Nav éclaire la voie.',
+        heroSub: 'Un équipage d\u2019agents IA pour explorer, comprendre et faire évoluer votre code, sans jamais vous retirer la barre.',
+        ctaDocs: 'Fixer le cap', ctaSource: 'Rencontrer l\u2019équipage', demoVig: 'reconnaissance · lecture seule', demoBeacon: 'balise', demoConfirm: 'confirmer la route · 3 fichiers',
+        demoDriver: 'Remplace le parser toml par un parser incrémental. Garde', demoCog: 'Je repère d\u2019abord les appels, puis je modifie.',
+        demoRemark: 'Un second paramètre casse « API publique inchangée » dans l\u2019intent record.', demoWake: 'Rien n\u2019est écrit avant ta validation.',
+        crewKicker: 'L\u2019Équipage', crewTitle: 'Un seul interlocuteur. Trois spécialistes quand il le faut.', crewSub: 'Vous parlez à Nav. Nav propose une route et fait intervenir la Vigie, Lux ou Mousse quand la tâche le demande. Vous voyez toujours qui travaille, pourquoi, et ce qu\u2019il peut modifier.', cost: 'Coût', crewExtLabel: 'À la demande :', crewNote: 'Je reste aux commandes, mais je ne navigue plus seul.',
+        layersKicker: 'Sous le capot · quatre couches', layersTitle: 'Les couches rapides observent. Les lentes réfléchissent. Vous décidez.',
+        layersSub: 'Chaque couche a son modèle et son rôle. Les plus rapides sont toujours actives et peu coûteuses ; les plus profondes ne parlent que quand cela en vaut la peine.',
+        driverName: 'Capitaine', driverDesc: 'Vous. Vous gardez la barre, donnez un verdict à chaque remarque et décidez de ce qui se fait. Nav ne fait le travail que si vous le lui confiez.', driverWhen: 'toujours aux commandes',
+        layers: [
+          { name: 'Reflex', api: 'fim', desc: 'Suggestions en texte fantôme dans l\u2019éditeur, acceptées avec Tab.', when: 'pendant la frappe', depth: '12%' },
+          { name: 'Instinct', api: 'systemone', desc: 'Décisions typées : faut-il le dire, cet appel d\u2019outil est-il sûr, ce sous-agent est-il bloqué.', when: 'à chaque déclencheur', depth: '36%' },
+          { name: 'Metacognition', api: 'chat', desc: 'Courtes remarques à côté du code, relecture des permissions, et un wake pour Nav quand le code contredit ce qui a été convenu.', when: 'quand ça compte', depth: '64%' },
+          { name: 'Cognition', api: 'chat · agents', desc: 'Là où tournent Nav et l\u2019équipage : modes build et plan, Vigie, Lux et Mousse en arrière-plan, outils, skills et règles.', when: 'quand vous demandez', depth: '100%' }
+        ],
+        layersNote: 'Toute passerelle compatible OpenAI. Un modèle par couche basse, un par agent, tout dans config.json.',
+        collabKicker: 'Vous gardez la barre', collabTitle: 'Conçu pour travailler avec vous, pas à votre place.',
+        points: [
+          { icon: 'ph ph-compass', title: 'Un intent record partagé', body: 'Nav écrit l\u2019intention, la route et les décisions à mesure qu\u2019elles se fixent. Quand le code s\u2019en écarte, Nav le signale à côté de la ligne.', code: '.withnav/intent.md' },
+          { icon: 'ph ph-shield-check', title: 'Chaque changement est relu', body: 'Chaque écriture, modification et commande shell est classée par l\u2019instinct, transmise à la metacognition si elle est risquée, et vous est demandée si personne ne peut la valider.', code: 'autoriser une fois · refuser' },
+          { icon: 'ph ph-chat-circle-text', title: 'Des remarques que vous notez', body: 'Marquez une remarque utile ou bruit. Les verdicts sont enregistrés, et un pipeline candidat peut être rejoué sur eux avant de l\u2019adopter.', code: 'utile · bruit · ignorée' }
+        ],
+        clientsKicker: 'Un cœur, toutes les surfaces', clientsTitle: 'Les mêmes sessions dans le terminal, l\u2019éditeur et le navigateur.',
+        clientsSub: 'Chaque client parle à un même serveur de sessions local. Les Réglages de chacun écrivent le même config.json.',
+        clients: [
+          { icon: 'ph ph-terminal-window', name: 'Terminal', body: 'Onglets, palette de commandes, choix du modèle, sous-agents et Réglages, en Ratatui.', cmd: 'nav tui' },
+          { icon: 'ph ph-code', name: 'VS Code', body: 'Suggestions inline, remarques sur la ligne et le panneau Nav à côté du code.', cmd: 'pixmants.withnav' },
+          { icon: 'ph ph-browser', name: 'Navigateur', body: 'Espaces de travail et sessions sur un lien local privé, nouveau à chaque lancement.', cmd: 'nav web' },
+          { icon: 'ph ph-lightning', name: 'Une tâche', body: 'Lancez une tâche puis quittez, avec des codes de sortie pour les scripts et la CI.', cmd: 'nav run -p "…"' }
+        ],
+        apiTitle: 'Ou créez votre propre client', apiBody: 'HTTP pour les commandes, Server-Sent Events pour le flux, rejouable depuis n\u2019importe quelle séquence. En loopback par défaut, avec un jeton.', apiLink: 'Référence de l\u2019API',
+        apiC1: 'démarrer une session', apiC2: 'la suivre',
+        modelsKicker: 'Vos modèles', modelsTitle: 'Utilisez les passerelles que vous avez déjà.',
+        modelsBody: 'models.json liste ce qui est accessible, nommé passerelle/id. config.json dit quel modèle utilise chaque couche et chaque agent. Modifiez-le depuis /config, VS Code ou le navigateur ; une session peut changer son propre modèle sans toucher au fichier.',
+        ossTitle: 'Libre et open source, sous double licence MIT ou Apache-2.0.', ossBody: 'WithNav se développe en public sur GitHub. Lisez le code, ouvrez une issue ou proposez une pull request sur develop.',
+        ossContrib: 'Comment contribuer', ossLocal: 'Tourne sur votre machine', footer: 'MIT OR Apache-2.0 · contributeurs de WithNav'
+      }
+    };
+    const fr = lang === 'fr', L = (a, b) => fr ? a : b;
+    const dots = (n, c) => [0, 1, 2].map(i => ({ bg: i < n ? c : 'var(--bd)' }));
+    const crew = [
+      { g: 'nav', col: 'var(--nav)', name: 'Nav', role: L('Le Navigateur', 'The Navigator'), body: L('Comprend le cap, propose une route, coordonne l\u2019équipage et demande confirmation avant les décisions importantes.', 'Understands the course, proposes a route, coordinates the crew and asks before important decisions.'), cost: dots(2, 'var(--nav)'), rIcon: 'ph ph-pencil-simple', rights: L('Modifie après confirmation', 'Edits after confirmation') },
+      { g: 'vigie', col: 'var(--vig)', name: 'Vigie', role: L('L\u2019Exploratrice', 'The Lookout'), body: L('Explore la codebase, la documentation et le Web. Sépare ce qu\u2019elle a vu de ce qu\u2019elle suppose, et cite ses sources.', 'Scouts the codebase, docs and web. Separates what it saw from what it assumes, and cites its sources.'), cost: dots(1, 'var(--vig)'), rIcon: 'ph ph-eye', rights: L('Lecture seule', 'Read-only') },
+      { g: 'lux', col: 'var(--lux)', name: 'Lux', role: L('Le Conseiller expert', 'The Expert Advisor'), body: L('Quand la route devient incertaine, demandez à Lux : architecture, risques, revues et debugging difficile.', 'When the route becomes uncertain, ask Lux: architecture, risks, reviews and hard debugging.'), cost: dots(3, 'var(--lux)'), rIcon: 'ph ph-eye', rights: L('Lecture seule · recommande', 'Read-only · recommends') },
+      { g: 'mousse', col: 'var(--mou)', name: 'Mousse', role: L('L\u2019Équipier léger', 'The Lightweight Deckhand'), body: L('Petit modèle, coup de main rapide : renommages, formatage, tests basiques. Repasse la main quand ça le dépasse.', 'Small model, quick hand: renames, formatting, basic tests. Hands back when a task is beyond it.'), cost: dots(1, 'var(--mou)'), rIcon: 'ph ph-pencil-simple', rights: L('Local · après validation', 'Local · after approval') }
+    ];
+    const crewExt = [
+      { g: 'cartographe', col: 'var(--car)', name: 'Cartographe', body: L('Cartographie modules, dépendances et flux', 'Charts modules, dependencies and flows') },
+      { g: 'sondeur', col: 'var(--son)', name: 'Sondeur', body: L('Cherche les causes profondes', 'Looks for root causes') }
+    ];
+    const seg = (on) => `background:${on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent'};color:${on ? 'var(--tx)' : 'var(--mu)'};border:0;padding:4px 10px;cursor:pointer;font:inherit`;
+    return {
+      t: C[lang], crew, crewExt, themeVars, themeIcon: dark ? 'ph ph-sun' : 'ph ph-moon',
+      langEn: seg(lang === 'en'), langFr: seg(lang === 'fr'),
+      setEn: () => this.setState({ lang: 'en' }), setFr: () => this.setState({ lang: 'fr' }),
+      toggleTheme: () => this.setState({ dark: !dark })
+    };
+  }
+}
+</script>
+</body>
+</html>

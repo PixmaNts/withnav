@@ -1,8 +1,11 @@
 //! Reducer tests over JSONL fixtures built from the crate's real event types.
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
-use navai::tui::protocol::{ContextSnapshot, ModelIdentity};
-use navai::{
+use serde::Serialize;
+use serde_json::{json, Value};
+use ulid::Ulid;
+use withnav::tui::protocol::{ContextSnapshot, ModelIdentity};
+use withnav::{
     bus::event::*,
     provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
@@ -12,11 +15,27 @@ use navai::{
         state::*,
     },
 };
-use serde::Serialize;
-use serde_json::{json, Value};
-use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
+
+#[test]
+fn selected_skills_accept_current_and_legacy_human_origins() {
+    for origin in ["captain", "driver"] {
+        let mut s = st();
+        subagent_event(
+            &mut s,
+            1,
+            "message.received",
+            json!({
+                "source": origin, "content": "use the skill",
+                "selected_skill": {"origin": origin, "name": "rust"}
+            }),
+        );
+        assert!(s.conversation.blocks.iter().any(|block| matches!(
+            &block.kind, BlockKind::Notice(text) if text == "skill: rust · selected by Captain"
+        )));
+    }
+}
 
 #[test]
 fn bypass_is_acknowledged_pending_and_scoped_to_the_tab() {
@@ -267,7 +286,7 @@ fn interrupted_steering_keeps_watched_and_open_children_running_then_parked() {
             let mut ui = UiState::default();
             if opened {
                 handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
-                let metadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","actor_state":"active","agent":"explore","current_seq":0,"parent_session_id":Ulid(1),"promptable":false,"child_status":"running"})).unwrap();
+                let metadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","actor_state":"active","agent":"vigie","current_seq":0,"parent_session_id":Ulid(1),"promptable":false,"child_status":"running"})).unwrap();
                 let generation = s.generation.clone();
                 update(
                     &mut s,
@@ -376,7 +395,7 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
         assert_eq!(s.active_child_status(), projected);
         subagent_event(&mut s, 11, "turn.start", json!({"turn_id":"late"}));
         assert_eq!(s.active_child_status(), projected);
-        let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"explore","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
+        let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"vigie","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
         let generation = s.generation.clone();
         update(
             &mut s,
@@ -392,11 +411,6 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
 
 #[tokio::test]
 async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
-    use navai::tui::{
-        client::Client,
-        input::Editor,
-        runtime::{Context, Executor},
-    };
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -404,6 +418,11 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
+    };
+    use withnav::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
     };
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -438,7 +457,7 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
 #[test]
 fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
     let mut s = subagent_parent();
-    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"explore","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"vigie","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     let list = ClientEvent::Sessions {
         generation: Generation(0),
         result: Ok(SessionListBody {
@@ -479,7 +498,7 @@ fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
         &mut s,
         2,
         "subagent.spawned",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","goal":"Read tests"}),
     );
     assert_eq!(s.children[0].status, ChildStatus::Done);
 }
@@ -543,7 +562,7 @@ fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
         &mut s,
         2,
         "subagent.done",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"failed"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","outcome":"failed"}),
     );
     assert!(
         matches!(&s.conversation.blocks.last().unwrap().kind, BlockKind::Notice(text) if text.contains("alt+s open transcript"))
@@ -556,7 +575,7 @@ fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
 #[test]
 fn session_list_and_metadata_strip_terminal_controls_before_display() {
     let mut s = subagent_parent();
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mexplore\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mvigie\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -567,10 +586,10 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
         },
     )
     .unwrap();
-    assert_eq!(s.children[0].name, "explore");
+    assert_eq!(s.children[0].name, "vigie");
     assert_eq!(s.sessions[0].title.as_deref(), Some("Goal"));
     let mut metadata = s.session.clone().unwrap();
-    metadata.agent = Some("\u{1b}[31mreview\u{1b}[0m".into());
+    metadata.agent = Some("\u{1b}[31mlux\u{1b}[0m".into());
     metadata.model = "\u{1b}[31mfast\u{1b}[0m".into();
     update(
         &mut s,
@@ -580,7 +599,7 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
         },
     )
     .unwrap();
-    assert_eq!(s.agent_name(), "review");
+    assert_eq!(s.agent_name(), "lux");
     assert_eq!(s.selected_model_id.as_deref(), Some("fast"));
 }
 
@@ -649,7 +668,7 @@ fn a_terminal_list_status_updates_a_child_without_an_open_parent() {
 
 #[tokio::test]
 async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completion() {
-    use navai::tui::{
+    use withnav::tui::{
         client::Client,
         input::Editor,
         runtime::{Context, Executor},
@@ -662,7 +681,7 @@ async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completio
         ..Default::default()
     });
     s.active = 1;
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"explore","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"vigie","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
     let effects = update(
         &mut s,
         ClientEvent::Sessions {
@@ -693,7 +712,7 @@ async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completio
         &mut s,
         1,
         "subagent.done",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","outcome":"done"}),
     );
     assert!(effects.contains(&Effect::UnwatchChild(Ulid(2).to_string())));
     for effect in effects {
@@ -711,7 +730,7 @@ fn a_child_spawn_event_on_its_own_stream_adds_no_self_child() {
         &mut s,
         1,
         "subagent.spawned",
-        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","goal":"Read tests"}),
     );
     assert!(s.children.is_empty());
     assert!(effects.is_empty());
@@ -726,7 +745,7 @@ fn startup_child_metadata_opens_read_only_without_resume() {
         Action::ResumeSession("child".into()),
     );
     assert_eq!(effects, vec![Effect::FetchMetadata("child".into())]);
-    let metadata = serde_json::from_value(json!({"session_id":"child","actor_state":"active","workspace":"/ws","model":"fast","agent":"explore","current_seq":0,"parent_session_id":"parent","promptable":false,"child_status":"running"})).unwrap();
+    let metadata = serde_json::from_value(json!({"session_id":"child","actor_state":"active","workspace":"/ws","model":"fast","agent":"vigie","current_seq":0,"parent_session_id":"parent","promptable":false,"child_status":"running"})).unwrap();
     let generation = s.generation.clone();
     let effects = update(
         &mut s,
@@ -748,11 +767,11 @@ fn startup_child_metadata_opens_read_only_without_resume() {
 
 #[tokio::test]
 async fn child_controls_and_permission_answers_use_the_owner_routes() {
-    use navai::tui::client::Client;
     use wiremock::{
         matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
     };
+    use withnav::tui::client::Client;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/sessions/child/stop"))
@@ -850,7 +869,7 @@ fn subagent_event(s: &mut State, seq: u64, kind: &str, payload: Value) -> Vec<Ef
 }
 
 fn spawn_subagent(s: &mut State, delivery: Option<&str>) {
-    let mut payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"explore", "goal":"Read the parser tests", "tool_call_id":"task-1"});
+    let mut payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"vigie", "goal":"Read the parser tests", "tool_call_id":"task-1"});
     if let Some(delivery) = delivery {
         payload["delivery"] = json!(delivery);
     }
@@ -864,7 +883,7 @@ fn subagents_replay_running_and_every_terminal_outcome() {
         let mut s = subagent_parent();
         spawn_subagent(&mut s, None);
         assert_eq!(s.children[0].status, ChildStatus::Running);
-        let payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"explore", "outcome":outcome,"notification_id":Ulid(3), "reason":"server reported this"});
+        let payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"vigie", "outcome":outcome,"notification_id":Ulid(3), "reason":"server reported this"});
         subagent_event(&mut s, 2, "subagent.done", payload.clone());
         let children = s.children.clone();
         let blocks = s.conversation.blocks.clone();
@@ -909,7 +928,7 @@ fn optional_subagent_delivery_and_watchdog_fields_are_tolerated() {
             &mut s,
             4,
             "subagent.done",
-            json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done","delivery":delivery}),
+            json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"vigie","outcome":"done","delivery":delivery}),
         );
         subagent_event(
             &mut s,
@@ -986,7 +1005,7 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
                     actor_state: "active".into(),
                     workspace: "/ws".into(),
                     model: "fast".into(),
-                    agent: Some("explore".into()),
+                    agent: Some("vigie".into()),
                     variant: None,
                     parent_session_id: None,
                     promptable: true,
@@ -1033,14 +1052,14 @@ fn child_permission_is_labelled_and_answered_on_the_parent() {
         &mut s,
         2,
         "permission.requested",
-        json!({"request_id":"request-1","tool_call_id":"child-call","tool":"bash","arguments":"{\"command\":\"cargo test\"}","scope":{"kind":"folder","value":"/ws"},"agent":"explore","reason":"needs approval","child_session_id":Ulid(2)}),
+        json!({"request_id":"request-1","tool_call_id":"child-call","tool":"bash","arguments":"{\"command\":\"cargo test\"}","scope":{"kind":"folder","value":"/ws"},"agent":"vigie","reason":"needs approval","child_session_id":Ulid(2)}),
     );
     assert_eq!(s.children[0].status, ChildStatus::Permission);
     assert!(s
         .open_permission()
         .unwrap()
         .reason
-        .contains("subagent explore"));
+        .contains("subagent vigie"));
     let answer = PermissionAnswer {
         decision: "allow_once".into(),
         message: None,
@@ -1095,7 +1114,7 @@ fn child_budget_events_update_the_sidebar_without_opening_a_transcript() {
 #[test]
 fn session_list_seeds_real_children_without_inventing_goals() {
     let mut s = subagent_parent();
-    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"title":"Not a delegated goal","created_at":"now","updated_at":"now","message_count":1,"agent":"review","live":false,"parent_session_id":Ulid(1),"child_status":"stopped","promptable":false})).unwrap();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"title":"Not a delegated goal","created_at":"now","updated_at":"now","message_count":1,"agent":"lux","live":false,"parent_session_id":Ulid(1),"child_status":"stopped","promptable":false})).unwrap();
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -1106,7 +1125,7 @@ fn session_list_seeds_real_children_without_inventing_goals() {
         },
     )
     .unwrap();
-    assert_eq!(s.children[0].name, "review");
+    assert_eq!(s.children[0].name, "lux");
     assert_eq!(s.children[0].status, ChildStatus::Stopped);
     assert!(s.children[0].goal.is_empty());
 }
@@ -1741,7 +1760,7 @@ fn resumed_ev(s: &State, id: &str) -> ClientEvent {
 fn catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "a".into(),
@@ -1750,7 +1769,7 @@ fn catalog() -> Vec<ModelEntry> {
             ..Default::default()
         },
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "b".into(),
@@ -1781,7 +1800,7 @@ fn models_now(s: &mut State, default: Option<String>) -> Result<Vec<Effect>, Pro
             }),
         },
     )?;
-    if !navai::tui::reducer::occupied(s) {
+    if !withnav::tui::reducer::occupied(s) {
         let chosen = default.unwrap_or_else(|| "a".into());
         update(
             s,
@@ -2719,7 +2738,7 @@ fn a_background_creation_subscribes_for_its_own_tab() {
     let (mut s, mut ui) = (st(), ui());
     handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
     let first = s.generation.clone();
-    // the driver opens another tab before the server answers
+    // the Captain opens another tab before the server answers
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert_eq!(s.active, 1);
     let fx = update(
@@ -3307,7 +3326,7 @@ fn a_message_sent_during_a_resume_reaches_the_resumed_conversation() {
     assert_eq!(sent.1, 3);
     assert!(matches!(
         &sent.0.content[..],
-        [navai::bus::command::ContentBlock::Text { text }] if text == "hello again"
+        [withnav::bus::command::ContentBlock::Text { text }] if text == "hello again"
     ));
     // a second message while the first waited would have been refused, not lost silently
     let (mut s, mut ui) = (st(), self::ui());
@@ -3384,8 +3403,8 @@ fn a_catalog_answer_reaches_every_tab() {
     assert_eq!(s.tabs[1].context_window, None);
 }
 
-// Given a tab whose conversation is still being resumed, holding a message the driver sent
-// When the driver closes the tab, then the server's late answer arrives
+// Given a tab whose conversation is still being resumed, holding a message the Captain sent
+// When the Captain closes the tab, then the server's late answer arrives
 // Then the close is refused with a notice and the tab stays, so the held message is sent
 //      to the resumed conversation instead of being lost
 #[test]
@@ -3416,7 +3435,7 @@ fn a_tab_holding_a_message_for_a_pending_resume_cannot_be_closed() {
     assert!(fx.iter().any(|e| matches!(
         e,
         Effect::SendAt { request, .. }
-            if matches!(&request.content[..], [navai::bus::command::ContentBlock::Text { text }] if text == "keep me")
+            if matches!(&request.content[..], [withnav::bus::command::ContentBlock::Text { text }] if text == "keep me")
     )));
 }
 
@@ -3471,7 +3490,7 @@ fn context_compacted_pushes_a_one_line_notice() {
 
 #[test]
 fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
-    use navai::tui::commands::{route, Routed};
+    use withnav::tui::commands::{route, Routed};
     let server = |name: &str, arguments: &str| Routed::Server {
         name: name.into(),
         arguments: arguments.into(),
@@ -3794,7 +3813,7 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
 fn variant_catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "opus".into(),
@@ -3805,7 +3824,7 @@ fn variant_catalog() -> Vec<ModelEntry> {
             ..Default::default()
         },
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "flash".into(),
@@ -3883,7 +3902,7 @@ fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
 #[test]
 fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use navai::tui::input::{route_key, Editor};
+    use withnav::tui::input::{route_key, Editor};
     let (mut s, mut ui) = (with_variants(), ui());
     s.selected_model_id = Some("opus".into());
     created_now(&mut s, "S1").unwrap();
@@ -3963,10 +3982,10 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     let Effect::ShowVariants { current } = &fx[0] else {
         unreachable!()
     };
-    navai::tui::reducer::show_variants(&s, &mut ui, current.as_deref());
+    withnav::tui::reducer::show_variants(&s, &mut ui, current.as_deref());
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(ui.variant_pick, Some(VariantPick::Current));
-    let (rows, _) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    let (rows, _) = withnav::tui::commands::variant_choices(&s, &VariantPick::Current);
     assert_eq!(rows, ["low", "max", "off", "inherit"]);
     assert_eq!(
         rows[ui.selection["Variants"]], "max",
@@ -4088,7 +4107,7 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
 
 #[test]
 fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
-    use navai::tui::commands::{route, Routed};
+    use withnav::tui::commands::{route, Routed};
     let mode = Mode::NextTurn;
     // only a slash in the first column makes a command
     assert_eq!(route("  /stop", mode), Routed::Message("  /stop".into()));
@@ -4155,7 +4174,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     assert!(s.catalog.is_empty());
     // before any answer, and with an offer of nothing: `off` is still there
     assert_eq!(
-        navai::tui::commands::variant_choices(&s, &VariantPick::Current),
+        withnav::tui::commands::variant_choices(&s, &VariantPick::Current),
         (vec!["off".to_string(), "inherit".to_string()], 0)
     );
     let answer = ClientEvent::CommandRan {
@@ -4172,7 +4191,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     };
     handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     update(&mut s, answer).unwrap();
-    let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    let (rows, start) = withnav::tui::commands::variant_choices(&s, &VariantPick::Current);
     assert_eq!(
         (rows, start),
         (vec!["high".into(), "off".into(), "inherit".into()], 0)
@@ -4251,7 +4270,7 @@ fn permission_script(request: u128) -> Script {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: json!({"path": "/ws/a.txt", "content": "one\ntwo"}).to_string(),
-            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/ws".into()),
             agent: "build".into(),
             reason: "write changes a file".into(),
         },
@@ -4359,7 +4378,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: json!({"path": "/elsewhere/a.txt", "content": "one\ntwo"}).to_string(),
-            scope: navai::agent::permissions::Scope::Folder("/elsewhere".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/elsewhere".into()),
             agent: "build".into(),
             reason: "write changes a file".into(),
         },
@@ -4407,7 +4426,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: "{}".into(),
-            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/ws".into()),
             agent: "build".into(),
             reason: String::new(),
         },
@@ -4442,7 +4461,10 @@ fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     let background = &s.tabs[0];
     assert!(background.open_permission().is_some());
     assert!(background.unread);
-    assert_eq!(navai::tui::view::sidebar::tab_state(background), "waiting");
+    assert_eq!(
+        withnav::tui::view::sidebar::tab_state(background),
+        "waiting"
+    );
     assert!(s.open_permission().is_none(), "the tab on screen has none");
 }
 
@@ -4488,7 +4510,7 @@ fn an_accepted_answer_waiting_for_its_resolution_is_not_sent_again() {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: "{}".into(),
-            scope: navai::agent::permissions::Scope::Folder("/other".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/other".into()),
             agent: "build".into(),
             reason: String::new(),
         },
@@ -4611,7 +4633,7 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
 fn git_now(s: &mut State, branch: Option<&str>) -> Vec<Effect> {
     let ev = ClientEvent::Git {
         generation: s.generation.clone(),
-        status: branch.map(|b| navai::workspace::git::GitStatus {
+        status: branch.map(|b| withnav::workspace::git::GitStatus {
             branch: Some(b.into()),
             dirty: 2,
             files: vec![],
@@ -4658,7 +4680,7 @@ fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
     let first = s.generation.clone();
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert_eq!(s.active, 1);
-    let status = |branch: &str| navai::workspace::git::GitStatus {
+    let status = |branch: &str| withnav::workspace::git::GitStatus {
         branch: Some(branch.into()),
         dirty: 1,
         files: vec![],
@@ -4735,7 +4757,7 @@ fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
 }
 
 #[test]
-fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
+fn no_switch_is_sent_while_the_agent_waits_for_the_captain() {
     let (mut s, mut ui) = (st(), ui());
     models_now(&mut s, Some("a".into())).unwrap();
     created_now(&mut s, "S1").unwrap();
@@ -4829,7 +4851,7 @@ fn switching() -> (State, UiState) {
     let (mut s, mut ui) = (st(), ui());
     models_now(&mut s, Some("a".into())).unwrap();
     s.catalog.push(ModelEntry {
-        api: navai::tui::protocol::ApiKind::Chat,
+        api: withnav::tui::protocol::ApiKind::Chat,
         name: "c".into(),
         ..Default::default()
     });
@@ -5244,7 +5266,7 @@ fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
         generation: s.generation.clone(),
         result: Ok(ModelsBody {
             models: vec![ModelEntry {
-                api: navai::tui::protocol::ApiKind::Chat,
+                api: withnav::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "luna".into(),
@@ -5333,10 +5355,10 @@ fn approval_evidence_survives_live_and_replay() {
                 .iter()
                 .find(|b| matches!(b.kind, BlockKind::ToolCall { .. }))
                 .unwrap();
-            assert!(navai::tui::view::tool::header(
+            assert!(withnav::tui::view::tool::header(
                 &block.kind,
                 0,
-                &navai::tui::theme::ThemeId::default().palette()
+                &withnav::tui::theme::ThemeId::default().palette()
             )
             .spans
             .iter()

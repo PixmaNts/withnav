@@ -2,9 +2,9 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project           ▌build  cognition · assigned · 12.4k / 200k 
+ Conversations       │ ◆ withnav  ~/dev/project       ▌◎ build  cognition · assigned · 12.4k / 200k 
 ▌1 Fix parse┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐────────────
-▌  build · i│ /skills                 choose a skill; enter fills /skill <name>        │            
+▌  ◎ Nav · i│ /skills                 choose a skill; enter fills /skill <name>        │            
             │ enter                   send / choose                                    │            
             │ alt+enter / ctrl+j      newline                                          │            
             │ ctrl+p / /              commands                                         │            

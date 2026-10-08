@@ -68,10 +68,10 @@ impl LlmCommenter {
                             |resolved| crate::agent::permission_gate::sensitive_read(&resolved),
                         )
                 }) {
-                    return "error: sensitive file requires driver review".into();
+                    return "error: sensitive file requires captain review".into();
                 }
                 // An open buffer wins over disk: unsaved edits are what
-                // the driver actually sees.
+                // the Captain actually sees.
                 if let Some(buffer) = args
                     .get("path")
                     .and_then(|p| p.as_str())
@@ -203,7 +203,7 @@ mod tests {
             let call = crate::provider::ToolCall {
                 id: tool.into(),
                 name: tool.into(),
-                args: serde_json::json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                args: serde_json::json!({"path":"/etc/hostname","pattern":".","withnav_bound_destination":true}),
                 args_valid: true,
             };
             let output = commenter.execute_tool(&ctx, &call).await;

@@ -8,6 +8,7 @@ mod actor;
 mod catalog;
 mod commands;
 mod config;
+mod flows;
 mod guard;
 mod hooks;
 mod instance;
@@ -17,7 +18,7 @@ pub mod preflight;
 mod rules_log;
 mod run_command;
 mod sender;
-mod service;
+pub(crate) mod service;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use service::ChildPreparationBarrier;

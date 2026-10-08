@@ -17,8 +17,8 @@ pub mod progress;
 mod steering;
 mod watchdog;
 pub use delivery::BoundaryEligible;
+pub use delivery::CaptainCommit;
 pub use delivery::Delivery;
-pub use delivery::DriverCommit;
 pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
@@ -105,7 +105,7 @@ pub struct RuntimeStatus {
     /// and is then given every later change.
     pub bypass_gate: tokio::sync::Mutex<()>,
     #[cfg(debug_assertions)]
-    pub(crate) driver_task_probe: Mutex<Option<String>>,
+    pub(crate) captain_task_probe: Mutex<Option<String>>,
     #[cfg(test)]
     policy_pin_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     /// Parks the runtime after a permission request was published and
@@ -116,7 +116,7 @@ pub struct RuntimeStatus {
     pub watchdog_goal: Mutex<String>,
     pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
     pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pub awaiting_fresh_driver: std::sync::atomic::AtomicBool,
+    pub awaiting_fresh_captain: std::sync::atomic::AtomicBool,
     pub activity: progress::Activity,
     #[cfg(debug_assertions)]
     negative_eligibility_barrier:
@@ -124,13 +124,13 @@ pub struct RuntimeStatus {
     #[cfg(test)]
     initial_watchdog_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     boundary_eligible: Mutex<Option<delivery::EligibleCell>>,
-    queued_driver: Arc<std::sync::atomic::AtomicUsize>,
+    queued_captain: Arc<std::sync::atomic::AtomicUsize>,
     boundary_deferred: std::sync::atomic::AtomicBool,
     pending_notice: Mutex<Option<delivery::NoticeCell>>,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
-    driver_commit: Mutex<Option<delivery::DriverCommitCell>>,
+    captain_commit: Mutex<Option<delivery::CaptainCommitCell>>,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -149,16 +149,18 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
-    pub fn install_driver_commit(&self, commit: DriverCommit) {
-        *self.driver_commit.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(delivery::DriverCommitCell(commit));
+    pub fn install_captain_commit(&self, commit: CaptainCommit) {
+        *self
+            .captain_commit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(delivery::CaptainCommitCell(commit));
     }
-    async fn commit_driver(
+    async fn commit_captain(
         &self,
         transcript: Vec<crate::provider::openai::ChatMessage>,
     ) -> Result<(), String> {
         let commit = self
-            .driver_commit
+            .captain_commit
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
@@ -166,12 +168,12 @@ impl RuntimeStatus {
         if let Some(commit) = commit {
             commit(transcript).await?;
         }
-        self.awaiting_fresh_driver
+        self.awaiting_fresh_captain
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
     fn progress_parked(&self) -> bool {
-        self.awaiting_fresh_driver
+        self.awaiting_fresh_captain
             .load(std::sync::atomic::Ordering::Acquire)
             || self
                 .budget_parked
@@ -219,8 +221,8 @@ impl RuntimeStatus {
             None => false,
         }
     }
-    pub(crate) fn queue_driver(&self) {
-        self.queued_driver
+    pub(crate) fn queue_captain(&self) {
+        self.queued_captain
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
     pub fn install_pending_notice(&self, callback: PendingNotice) {
@@ -244,8 +246,10 @@ impl RuntimeStatus {
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
         let id = Ulid::new();
         if !self.steering.admit(steering::Operation {
+            wake: true,
             id,
             content: text,
+            provenance: crate::provider::openai::UserProvenance::Parent,
             interrupt,
         }) {
             return false;
@@ -258,6 +262,15 @@ impl RuntimeStatus {
                 Control::Steer
             })
             .is_ok()
+    }
+    pub fn flow_note(&self, text: String, flow: String, run_id: String) -> bool {
+        self.queue_flow_note(text, flow, run_id, true)
+    }
+    pub fn queue_flow_note(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
+        if !self.steering.admit_flow(text, flow, run_id, wake) {
+            return false;
+        }
+        !wake || self.controls.tx.send(Control::Steer).is_ok()
     }
     pub fn continue_budget(&self) -> bool {
         if self
@@ -509,9 +522,9 @@ impl RuntimeStatus {
         #[cfg(debug_assertions)]
         {
             *self
-                .driver_task_probe
+                .captain_task_probe
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = actor.driver_task.clone();
+                .unwrap_or_else(|error| error.into_inner()) = actor.captain_task.clone();
         }
         self.watchdog.transition(false);
         self.selection.end_turn(actor.has_pending());
@@ -602,9 +615,9 @@ impl RuntimeStatus {
         #[cfg(debug_assertions)]
         {
             *self
-                .driver_task_probe
+                .captain_task_probe
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = actor.driver_task.clone();
+                .unwrap_or_else(|error| error.into_inner()) = actor.captain_task.clone();
         }
         self.selection.set_ask_pending(actor.has_pending());
     }
@@ -615,7 +628,7 @@ impl RuntimeStatus {
 /// the runtime reads it back once the run future is dropped.
 ///
 /// Publishing has collapse semantics: on the FIRST publish failure the error
-/// is retained for the turn driver and later publishes become silent no-ops
+/// is retained for the turn captain and later publishes become silent no-ops
 /// (the session is collapsed; the runtime tears it down).
 struct TurnPublisher {
     sequencer: Sequencer,
@@ -850,7 +863,7 @@ async fn runtime_loop(
     let mut delivery_waiting = false;
     let mut replacement_waiting = false;
     let mut restart_waiting = false;
-    inbox.track_driver(status.queued_driver.clone());
+    inbox.track_captain(status.queued_captain.clone());
     let boundary_status = status.clone();
     actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
         let status = boundary_status.clone();
@@ -872,11 +885,11 @@ async fn runtime_loop(
             if cancel.is_cancelled() {
                 return Ok(BoundaryResult::Interrupted);
             }
-            let driver_queued = status
-                .queued_driver
+            let captain_queued = status
+                .queued_captain
                 .load(std::sync::atomic::Ordering::Acquire)
                 > 0;
-            if driver_queued {
+            if captain_queued {
                 if status.result_eligible().await {
                     status
                         .boundary_deferred
@@ -896,7 +909,7 @@ async fn runtime_loop(
                     }
                 }
                 // Eligibility and consumption otherwise read different outbox
-                // snapshots. A later completion must not overtake this driver.
+                // snapshots. A later completion must not overtake this captain.
                 let transcript = status.steering.apply(transcript);
                 if !status.watchdog.boundary(&cancel).await {
                     return Ok(BoundaryResult::Watchdog(transcript));
@@ -955,7 +968,7 @@ async fn runtime_loop(
                     Control::Steer => {
 
                         if actor.has_pending() || status.progress_parked()
-                            || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
+                            || !status.steering.has_wake() { continue; }
                         actor.transcript = status.steering.apply(actor.transcript.clone());
                         Some(Inbound::Continue)
                     }
@@ -966,7 +979,7 @@ async fn runtime_loop(
                         continue;
                     }
                     Control::Continue => {
-                        if status.awaiting_fresh_driver.load(std::sync::atomic::Ordering::Acquire) || status.watchdog.root_hold().is_some() { continue; }
+                        if status.awaiting_fresh_captain.load(std::sync::atomic::Ordering::Acquire) || status.watchdog.root_hold().is_some() { continue; }
                         Some(Inbound::Continue)
                     },
                     Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, Some((&actor, &inbox))).await; continue; }
@@ -1027,7 +1040,7 @@ async fn runtime_loop(
         let Some(inbound) = inbound else {
             break;
         };
-        // Parked progress never pins policy for autonomous-only input. Driver skill
+        // Parked progress never pins policy for autonomous-only input. Captain skill
         // validation still needs the role pin before any mutation or durable delivery.
         if matches!(inbound, Inbound::Batch(_)) && status.progress_parked() {
             inbox.hold_autonomous();
@@ -1088,8 +1101,8 @@ async fn runtime_loop(
                             )
                         });
                     }
-                    if let Err(error) = status.commit_driver(actor.transcript.clone()).await {
-                        tracing::error!(%error, "driver checkpoint commit failed");
+                    if let Err(error) = status.commit_captain(actor.transcript.clone()).await {
+                        tracing::error!(%error, "captain checkpoint commit failed");
                         status.release_pin(&actor);
                         break;
                     }
@@ -1141,7 +1154,7 @@ async fn runtime_loop(
         *status
             .watchdog_goal
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = actor.driver_task.clone().unwrap_or_default();
+            .unwrap_or_else(|e| e.into_inner()) = actor.captain_task.clone().unwrap_or_default();
         actor.variant = status.consume_turn().map(|(_, variant)| variant);
         // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
@@ -1549,14 +1562,7 @@ async fn runtime_loop(
             } else if !delivery_waiting {
                 restart_waiting = true;
             }
-        } else if !actor.has_pending()
-            && !status
-                .steering
-                .queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty()
-        {
+        } else if !actor.has_pending() && status.steering.has_wake() {
             let _ = status.controls.tx.send(Control::Steer);
         }
 
@@ -1675,7 +1681,7 @@ pub(crate) fn publish_resolved(
         task_id,
         request,
         resolution,
-        crate::agent::permissions::PermissionOrigin::Driver,
+        crate::agent::permissions::PermissionOrigin::Captain,
     );
 }
 
@@ -1754,10 +1760,10 @@ fn permission_requested(
         agent: request.agent.clone(),
         reason: request.reason.clone(),
     });
-    payload["requires_driver"] = serde_json::json!(request.requires_driver);
+    payload["requires_captain"] = serde_json::json!(request.requires_captain);
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
-            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"driver","reason":request.reason,"truncated":false}));
+            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
     }
     payload
 }
@@ -1841,12 +1847,135 @@ mod tests {
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::EventEnvelope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
+    use crate::provider::openai::ChatMessage;
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
 
     #[tokio::test]
-    async fn skill_driver_validation_preserves_parked_state_until_real_turn_consumption() {
+    async fn turn_end_flow_note_does_not_start_a_turn_but_wake_starts_one_without_recursion() {
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![http_sse(&sse_body(&[done])); 3]).await;
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_live().await.unwrap().receiver;
+        let status = Arc::new(RuntimeStatus::default());
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor(server.url.clone(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "captain task")).await.unwrap();
+        drain_until(&mut live, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        assert!(status.queue_flow_note(
+            "next boundary".into(),
+            "review".into(),
+            "note".into(),
+            false
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+        assert!(status.queue_flow_note("wake".into(), "review".into(), "wake".into(), true));
+        let events = drain_until(&mut live, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
+        assert!(!events.iter().any(|e| e.kind == "message.received"));
+        assert!(status.queue_flow_note(
+            "recursive wake".into(),
+            "review".into(),
+            "again".into(),
+            true
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 2);
+        cancel.cancel();
+        let actor = task.await.unwrap();
+        assert_eq!(actor.captain_task.as_deref(), Some("captain task"));
+        assert_eq!(
+            actor
+                .transcript
+                .iter()
+                .filter(|m| matches!(
+                    m,
+                    ChatMessage::User {
+                        provenance: crate::provider::openai::UserProvenance::Flow { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn flow_wake_never_answers_a_pending_permission() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let server = spawn_mock(vec![http_sse(&sse_body(&[toolcall]))]).await;
+        let agents = Arc::new(Agents::builtin());
+        let build = agents.get("build").unwrap().clone();
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents, build,
+        )));
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_live().await.unwrap().receiver;
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor(server.url.clone(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "captain task")).await.unwrap();
+        drain_until(&mut live, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let permission = status.pending_permission().expect("permission pending");
+        assert!(status.queue_flow_note(
+            "allow once".into(),
+            "review".into(),
+            "capture".into(),
+            true
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(status.pending_permission(), Some(permission));
+        assert!(!status.permission_claimed());
+        cancel.cancel();
+        let actor = task.await.unwrap();
+        assert_eq!(actor.captain_task.as_deref(), Some("captain task"));
+    }
+
+    #[tokio::test]
+    async fn skill_captain_validation_preserves_parked_state_until_real_turn_consumption() {
         use crate::agent::{definitions::Agents, selection::AgentSelection};
         for refuse in [false, true] {
             let server = spawn_mock(vec![http_sse(&sse_body(&["{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]} "]))]).await;
@@ -1866,13 +1995,13 @@ mod tests {
             let token = status.watchdog.publish_root_hold().unwrap().token;
             status.watchdog.transition(false);
             status
-                .awaiting_fresh_driver
+                .awaiting_fresh_captain
                 .store(true, std::sync::atomic::Ordering::Release);
             *status.watchdog_goal.lock().unwrap() = "old goal".into();
             status.activity.0.lock().unwrap().steps = 9;
             let checkpoint_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let count = checkpoint_count.clone();
-            status.install_driver_commit(Arc::new(move |_| {
+            status.install_captain_commit(Arc::new(move |_| {
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 Box::pin(async { Ok(()) })
             }));
@@ -1890,7 +2019,7 @@ mod tests {
                 None,
                 status.clone(),
             );
-            let mut command = text_command(id, "new driver task");
+            let mut command = text_command(id, "new captain task");
             command.content.push(ContentBlock::LoadedSkill {
                 name: "review".into(),
                 content: "review instructions".into(),
@@ -1904,7 +2033,7 @@ mod tests {
                 }
                 assert_eq!(status.watchdog.root_hold().unwrap().token, token);
                 assert!(status
-                    .awaiting_fresh_driver
+                    .awaiting_fresh_captain
                     .load(std::sync::atomic::Ordering::Acquire));
                 assert_eq!(status.activity.0.lock().unwrap().steps, 9);
                 assert_eq!(*status.watchdog_goal.lock().unwrap(), "old goal");
@@ -1925,7 +2054,7 @@ mod tests {
             }
             assert!(status.watchdog.root_hold().is_none());
             assert!(!status
-                .awaiting_fresh_driver
+                .awaiting_fresh_captain
                 .load(std::sync::atomic::Ordering::Acquire));
             assert_eq!(status.activity.0.lock().unwrap().steps, 1);
             assert_eq!(
@@ -1933,7 +2062,7 @@ mod tests {
                 if refuse {
                     "accepted plain correction"
                 } else {
-                    "new driver task"
+                    "new captain task"
                 }
             );
             assert_eq!(
@@ -1966,7 +2095,9 @@ mod tests {
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
-                requires_driver: false,
+                origin: Default::default(),
+                flow_regates: 0,
+                requires_captain: false,
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),
@@ -2011,7 +2142,7 @@ mod tests {
         let (reply, response) = tokio::sync::oneshot::channel();
         answers
             .send(crate::bus::inbox::PermissionAnswer {
-                origin: crate::agent::permissions::PermissionOrigin::Driver,
+                origin: crate::agent::permissions::PermissionOrigin::Captain,
                 request_id,
                 decision: PermissionDecision::Deny {
                     message: "no".into(),
@@ -2079,7 +2210,7 @@ mod tests {
             })
         }));
         let (tx, mut inbox) = ActorInbox::channel();
-        let mut denied = text_command(id, "REJECTED DRIVER INPUT");
+        let mut denied = text_command(id, "REJECTED CAPTAIN INPUT");
         denied.content.push(ContentBlock::LoadedSkill {
             name: "review".into(),
             content: "REJECTED SKILL BODY".into(),
@@ -2107,7 +2238,7 @@ mod tests {
         let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();
         let raw = serde_json::to_string(&restored).unwrap();
         assert!(raw.contains("accepted sibling") && raw.contains("child completion"));
-        assert!(!raw.contains("REJECTED DRIVER INPUT") && !raw.contains("REJECTED SKILL BODY"));
+        assert!(!raw.contains("REJECTED CAPTAIN INPUT") && !raw.contains("REJECTED SKILL BODY"));
     }
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -2147,8 +2278,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hold_during_interrupt_notice_await_does_not_cancel_continue_or_driver_turn() {
-        for driver in [false, true] {
+    async fn hold_during_interrupt_notice_await_does_not_cancel_continue_or_captain_turn() {
+        for captain in [false, true] {
             let server = spawn_mock(vec![http_sse(&sse_body(&[r#"{"choices":[{"index":0,"delta":{"content":"finished"},"finish_reason":"stop"}]}"#]))]).await;
             let status = Arc::new(RuntimeStatus::default());
             let delivery_entered = Arc::new(tokio::sync::Notify::new());
@@ -2209,7 +2340,7 @@ mod tests {
                     break;
                 }
             }
-            if driver {
+            if captain {
                 tx.send(text_command(id, "replacement task")).await.unwrap();
             } else {
                 let hold = status.watchdog.root_hold().unwrap();
@@ -2290,13 +2421,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_driver_boundary_keeps_consumed_steer_and_the_remaining_budget() {
+    async fn queued_captain_boundary_keeps_consumed_steer_and_the_remaining_budget() {
         let status = Arc::new(RuntimeStatus::default());
         let reached = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         status.pause_negative_eligibility(reached.clone(), release.clone());
-        status.queue_driver();
-        status.queue_driver();
+        status.queue_captain();
+        status.queue_captain();
         let (tx, inbox) = ActorInbox::channel();
         let id = Ulid::new();
         let cancel = CancellationToken::new();
@@ -2386,11 +2517,11 @@ mod tests {
         task.await.unwrap();
     }
 
-    // Given a driver answer that claimed the waiting request
+    // Given a captain answer that claimed the waiting request
     // When bypass is turned on before the runtime reads that answer
-    // Then the request is resolved once, by the driver, without a bypass mark
+    // Then the request is resolved once, by the Captain, without a bypass mark
     #[tokio::test]
-    async fn a_driver_answer_admitted_before_bypass_keeps_its_claim_and_provenance() {
+    async fn a_captain_answer_admitted_before_bypass_keeps_its_claim_and_provenance() {
         use crate::agent::{definitions::Agents, selection::AgentSelection};
         let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
         let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
@@ -2425,12 +2556,12 @@ mod tests {
         tx.send(text_command(id, "run echo")).await.unwrap();
         reached.notified().await;
         let request_id = status.pending_permission().expect("request waits");
-        // The driver claims first and its answer is queued; then bypass turns on.
+        // The captain claims first and its answer is queued; then bypass turns on.
         assert!(status.claim_permission(request_id));
         let (reply, accepted) = tokio::sync::oneshot::channel();
         inbox_answers
             .try_send(crate::bus::inbox::PermissionAnswer {
-                origin: crate::agent::permissions::PermissionOrigin::Driver,
+                origin: crate::agent::permissions::PermissionOrigin::Captain,
                 request_id,
                 decision: PermissionDecision::AllowOnce,
                 reply,
@@ -2522,7 +2653,7 @@ mod tests {
                 None,
                 status.clone(),
             );
-            tx.send(text_command(id, "driver goal")).await.unwrap();
+            tx.send(text_command(id, "captain goal")).await.unwrap();
             reached.notified().await;
             assert!(status.steer("queued guidance".into(), false));
             let generation = status.watchdog.generation().unwrap();

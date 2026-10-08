@@ -1,3 +1,4 @@
+pub mod entry;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -13,15 +14,15 @@ pub const EXIT_DONE: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
 pub const EXIT_YIELDED: i32 = 2;
 pub const EXIT_INTERRUPTED: i32 = 130;
-/// A tool call needs approval and nobody can give it: `navai run` never
+/// A tool call needs approval and nobody can give it: `nav run` never
 /// approves on its own.
 pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "navai",
+    name = "nav",
     version,
-    about = "A personal, minimal-but-complete coding agent in Rust",
+    about = "WithNav: you set the course, Nav lights the way. A pair-programming crew for your code",
     propagate_version = true
 )]
 pub struct Cli {
@@ -31,6 +32,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Inspect the host flow schema.
+    Flows {
+        #[command(subcommand)]
+        command: FlowCommand,
+    },
     Run(RunArgs),
     Serve(ServeArgs),
     Auth(AuthArgs),
@@ -41,6 +47,11 @@ pub enum Commands {
     /// a resource-limited child process.
     #[command(name = "internal-html-convert", hide = true)]
     InternalHtmlConvert(HtmlConvertArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FlowCommand {
+    Catalogue,
 }
 
 #[derive(Args, Debug)]
@@ -73,7 +84,7 @@ pub struct TuiArgs {
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
     /// Connect to a running server instead of starting one. If it needs a bearer token, set
-    /// NAVAI_SERVER_TOKEN.
+    /// WITHNAV_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
 }
@@ -137,7 +148,7 @@ pub struct RunArgs {
     pub variant: Option<String>,
     /// UNSAFE: turn on bypass for the run, so ordinary permission prompts
     /// (`write`, `edit`, `bash`, `fetch`) run without asking. Protected
-    /// requests (Navai's own config, credentials and keys) still stop the run
+    /// requests (WithNav's own config, credentials and keys) still stop the run
     /// with `permission_required` and exit code 3, as every request does
     /// without this flag.
     #[arg(long)]
@@ -165,6 +176,15 @@ pub fn init_tracing() {
 
 pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
+        Commands::Flows {
+            command: FlowCommand::Catalogue,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::flows::catalogue::catalogue())?
+            );
+            Ok(EXIT_DONE)
+        }
         Commands::Run(args) => run_command(args).await,
         Commands::Serve(args) => serve_command(args).await,
         Commands::Auth(args) => auth_command(args),
@@ -371,7 +391,7 @@ async fn post_prompt(
 /// A `permission.requested` ends the run with [`EXIT_PERMISSION_REQUIRED`] and
 /// a `permission_required: <tool> <scope>: <reason>` line on stderr. Nothing
 /// is ever approved here: with `--yes` the session's bypass already answered
-/// the ordinary requests, so one that arrives is one the driver must decide.
+/// the ordinary requests, so one that arrives is one the Captain must decide.
 async fn render_until_terminal(
     sub: &mut crate::session::Subscription,
     renderer: &mut Renderer,
@@ -449,9 +469,9 @@ pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     }
 }
 
-/// The shared conversation database, in Navai's data dir.
+/// The shared conversation database, in WithNav's data dir.
 fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
-    crate::paths::history_db().ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))
+    crate::paths::history_db().ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))
 }
 
 async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {

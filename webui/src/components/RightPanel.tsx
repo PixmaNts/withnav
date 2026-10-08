@@ -1,4 +1,4 @@
-import { ArrowElbowDownRight, Hammer, Notebook, Robot } from "@phosphor-icons/react";
+import { Crew } from "./Crew";
 import { Fragment } from "react";
 import { useIntent, useSkills } from "../api/queries";
 import type { AgentEntry } from "../api/types";
@@ -8,7 +8,7 @@ import type { Chat } from "../session/useChat";
 export type PanelTab = "intent" | "agents" | "extensions";
 const TABS: [PanelTab, string][] = [
   ["intent", "Intent"],
-  ["agents", "Agents"],
+  ["agents", "Crew"],
   ["extensions", "Extensions"],
 ];
 
@@ -33,7 +33,7 @@ export function RightPanel({ tab, setTab, workspace, chat, onOpenChild }: { tab:
 
 function IntentTab({ workspace }: { workspace: string | null }) {
   const intent = useIntent(workspace);
-  const label = <div className="label">INTENT RECORD · .navigator/intent.md</div>;
+  const label = <div className="label">INTENT RECORD · .withnav/intent.md</div>;
   if (!workspace) return <>{label}<div className="panel-empty">Choose a workspace to see its intent record.</div></>;
   if (intent.isError) return <>{label}<div className="panel-empty">The intent record is not available from this server.</div></>;
   if (!intent.data) return label;
@@ -42,7 +42,7 @@ function IntentTab({ workspace }: { workspace: string | null }) {
       <>
         {label}
         <div className="panel-empty">
-          No intent record in this workspace yet. In an editor session, the cognition writes one when an intent, a plan or a decision is settled. You can also create <span className="mono">.navigator/intent.md</span> by hand.
+          No intent record in this workspace yet. In an editor session, Nav writes one when an intent, a plan or a decision is settled. You can also create <span className="mono">.withnav/intent.md</span> by hand.
         </div>
       </>
     );
@@ -72,11 +72,11 @@ function IntentTab({ workspace }: { workspace: string | null }) {
   );
 }
 
-const ICON: Record<string, typeof Hammer> = { build: Hammer, plan: Notebook };
+
 
 function AgentsTab({ chat, onOpenChild }: { chat: Chat; onOpenChild: (id: string) => void }) {
   const agents = chat.agents?.agents ?? [];
-  if (!chat.agents) return <div className="panel-empty">Loading agents…</div>;
+   if (!chat.agents) return <div className="panel-empty">Loading the crew…</div>;
   const primaries = agents.filter((a) => a.mode === "primary" || a.mode === "all");
   const subagents = agents.filter((a) => a.mode === "subagent");
   const children = Object.values(chat.view.children);
@@ -96,7 +96,7 @@ function AgentsTab({ chat, onOpenChild }: { chat: Chat; onOpenChild: (id: string
         </Fragment>
       ))}
       {!subagents.length && <div className="panel-empty">No subagent is defined.</div>}
-      <div className="label" style={{ marginTop: 4 }}>AGENT FILES · .navai/agents/*.md</div>
+      <div className="label" style={{ marginTop: 4 }}>AGENT FILES · .withnav/agents/*.md</div>
     </div>
   );
 }
@@ -108,13 +108,13 @@ function modelLine(a: AgentEntry): string {
 }
 
 function AgentCard({ a, active, isDefault, sub, running, chat }: { a: AgentEntry; active?: boolean; isDefault?: boolean; sub?: boolean; running?: number; chat: Chat }) {
-  const Icon = sub ? ArrowElbowDownRight : ICON[a.id] ?? Robot;
+
   const live = active ? { model: chat.selection.model, variant: chat.selection.variant } : null;
   return (
     <div className={`card${sub ? " sub" : ""}${active ? " active" : ""}${a.id === "plan" ? " plan" : ""}`}>
       <div className="head">
-        <Icon size={14} style={{ color: active ? (a.id === "plan" ? "var(--bl)" : "var(--ac)") : undefined }} aria-hidden />
-        {a.id}
+        
+        <Crew id={a.id} />
         <span className={sub && running ? "" : "muted"} style={sub && running ? { color: "var(--pu)" } : undefined}>
           · {sub ? `subagent${running ? ` · ${running} running` : ""}` : `primary${active ? " · active" : ""}${isDefault ? " · default" : ""}`}
         </span>
@@ -132,7 +132,7 @@ function ChildCard({ c, onOpen }: { c: Child; onOpen: () => void }) {
   return (
     <button type="button" className="card sub" style={{ marginLeft: 36, textAlign: "left", background: "transparent", color: "inherit" }} onClick={onOpen}>
       <div className="head">
-        <span style={{ color: "var(--pu)" }}>@{c.agent}</span>
+        <span style={{ color: "var(--pu)" }}><Crew id={c.agent} /></span>
         <span className="muted">· {c.status} · spawned by {c.spawnedBy}</span>
       </div>
       <div className="desc" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{c.goal}</div>

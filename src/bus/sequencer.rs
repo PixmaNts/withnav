@@ -551,7 +551,7 @@ fn message_received_candidate(command: &PendingCommand) -> Candidate {
             selected_skill: command.selected_skill.as_ref().map(|name| {
                 crate::bus::event::SelectedSkill {
                     name: name.clone(),
-                    origin: "driver".into(),
+                    origin: "captain".into(),
                 }
             }),
         })

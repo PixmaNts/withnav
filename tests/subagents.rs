@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use navai::bus::event::EventKind;
-use navai::server::AppState;
-use navai::tools::Tool;
 use serde_json::{json, Value};
+use withnav::bus::event::EventKind;
+use withnav::server::AppState;
+use withnav::tools::Tool;
 
 mod common;
 use common::deadline::Deadline;
@@ -42,7 +42,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     if cleanup {
         fx.state.fail_child_start(false);
         fx.state.pause_child_cleanup(barrier.clone());
@@ -52,7 +52,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
     let service = fx.state.service();
     let spawn = tokio::spawn(async move {
         service
-            .create_child_session(parent, "explore", "inspect")
+            .create_child_session(parent, "vigie", "inspect")
             .bounded(file!(), line!())
             .await
     });
@@ -197,12 +197,12 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_child_publication(barrier.clone());
     let service = fx.state.service();
     let spawn = tokio::spawn(async move {
         service
-            .create_child_session(parent, "explore", "inspect")
+            .create_child_session(parent, "vigie", "inspect")
             .bounded(file!(), line!())
             .await
     });
@@ -257,7 +257,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         fx.state.fail_child_start(publication);
         assert!(fx
             .state
-            .create_child_session(parent, "explore", "inspect")
+            .create_child_session(parent, "vigie", "inspect")
             .bounded(file!(), line!())
             .await
             .is_err());
@@ -292,10 +292,10 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         assert!(link.terminal_reason.unwrap().contains("injected child"));
         assert!(matches!(
             fx.state
-                .send(common::server::driver_command(child, "retry".into()))
+                .send(common::server::captain_command(child, "retry".into()))
                 .bounded(file!(), line!())
                 .await,
-            Err(navai::error::ServerError::ResumeRequired)
+            Err(withnav::error::ServerError::ResumeRequired)
         ));
         assert_eq!(
             replay.iter().filter(|e| e.kind == "subagent.done").count(),
@@ -324,7 +324,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
         .await
         .unwrap();
     fx.state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "parent request".into(),
         ))
@@ -343,7 +343,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
     std::fs::write(&path, config.to_string()).unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "child request")
+        .create_child_session(parent, "vigie", "child request")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -383,7 +383,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -487,7 +487,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -511,7 +511,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
         .unwrap()
         .unwrap()
         .last_seq;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_resume_registration(barrier.clone());
     let service = fx.state.service();
     let ws = fx.ws.clone();
@@ -590,7 +590,7 @@ async fn paused_child_admission(resume: bool) {
     let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[&tool_call_chunk(
         "paused-task",
         "task",
-        &json!({"agent":"explore","prompt":"inspect"}),
+        &json!({"agent":"vigie","prompt":"inspect"}),
     )]))])
     .bounded(file!(), line!())
     .await;
@@ -603,10 +603,10 @@ async fn paused_child_admission(resume: bool) {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_child_preparation(barrier.clone());
     fx.state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "spawn a child".into(),
         ))
@@ -703,7 +703,7 @@ fn fixture_at(provider_url: &str) -> Fx {
 fn install_agents(root: &Path, ws: &Path) {
     let home = root.join("home");
     let cfg = root.join("cfg/agents");
-    let project = ws.join(".navai/agents");
+    let project = ws.join(".withnav/agents");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&project).unwrap();
@@ -751,7 +751,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
         std::fs::remove_file(settings).unwrap();
         let child = fx
             .state
-            .create_child_session(parent, "writer", "the driver approved this")
+            .create_child_session(parent, "writer", "the Captain approved this")
             .await
             .unwrap();
         let mut requested = None;
@@ -772,7 +772,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
         assert_eq!(
             fx.state
                 .history()
-                .latest_driver_message(child)
+                .latest_captain_message(child)
                 .await
                 .unwrap(),
             None
@@ -781,7 +781,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
     }
 }
 
-async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
+async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
     fx.state
         .history()
         .flush()
@@ -796,7 +796,7 @@ async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope
         .unwrap()
         .replay
     {
-        navai::bus::ResumeOutcome::Replay(events) => events,
+        withnav::bus::ResumeOutcome::Replay(events) => events,
         other => panic!("expected replay: {other:?}"),
     }
 }
@@ -868,7 +868,7 @@ async fn permission_parked_child_keeps_capacity_until_stopped() {
             .create_child_session(parent, "writer", "another")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::SubagentCapacity { .. })
+        Err(withnav::error::ServerError::SubagentCapacity { .. })
     ));
     fx.state
         .close_session(child)
@@ -907,7 +907,7 @@ async fn forbidden_child_calls_are_denied_before_permissions() {
     let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
-        fx.ws.join(".navai/agents/writer.md"),
+        fx.ws.join(".withnav/agents/writer.md"),
         "---\nmode: subagent\ntools:\n  write: false\n---\nResearch without writes.",
     )
     .unwrap();
@@ -984,7 +984,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "inspect sources")
+        .create_child_session(parent, "vigie", "inspect sources")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1030,7 +1030,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     assert!(!child_row.promptable);
     assert_eq!(
         fx.state
-            .create_child_session(child, "explore", "nested")
+            .create_child_session(child, "vigie", "nested")
             .bounded(file!(), line!())
             .await
             .unwrap_err()
@@ -1044,7 +1044,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
             .await
             .unwrap()
             .agent,
-        "explore"
+        "vigie"
     );
     fx.state
         .close_session(child)
@@ -1137,7 +1137,7 @@ async fn capacity_error_has_clear_machine_and_model_message() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "first")
+        .create_child_session(parent, "vigie", "first")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1162,13 +1162,13 @@ async fn capacity_error_has_clear_machine_and_model_message() {
     assert_eq!(fx.state.reserved_child_count(parent), 1);
     let err = fx
         .state
-        .create_child_session(parent, "explore", "second")
+        .create_child_session(parent, "vigie", "second")
         .bounded(file!(), line!())
         .await
         .unwrap_err();
     assert!(matches!(
         err,
-        navai::error::ServerError::SubagentCapacity { capacity: 1 }
+        withnav::error::ServerError::SubagentCapacity { capacity: 1 }
     ));
     assert_eq!(
         err.to_string(),
@@ -1206,7 +1206,7 @@ async fn child_depth_has_no_task_registry_entry() {
             .create_child_session(child, "writer", "nested")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
     let metadata = fx
         .state
@@ -1237,7 +1237,7 @@ async fn parent_sse_replay_contains_spawned_and_done_after_completion() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "review")
+        .create_child_session(parent, "vigie", "review")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1297,7 +1297,7 @@ async fn child_slot_is_released_after_terminal_result() {
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "finish")
+        .create_child_session(parent, "vigie", "finish")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1326,7 +1326,7 @@ async fn child_slot_is_released_after_terminal_result() {
     assert!(matches!(link.status.as_str(), "done" | "failed"));
     let next = fx
         .state
-        .create_child_session(parent, "explore", "second task")
+        .create_child_session(parent, "vigie", "second task")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1357,7 +1357,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
         .await
         .unwrap();
     let children = futures::future::join_all(
-        (0..4).map(|_| fx.state.create_child_session(parent, "explore", "inspect")),
+        (0..4).map(|_| fx.state.create_child_session(parent, "vigie", "inspect")),
     )
     .bounded(file!(), line!())
     .await
@@ -1377,10 +1377,10 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     }
     assert!(matches!(
         fx.state
-            .create_child_session(parent, "explore", "fifth")
+            .create_child_session(parent, "vigie", "fifth")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::SubagentCapacity { capacity: 4 })
+        Err(withnav::error::ServerError::SubagentCapacity { capacity: 4 })
     ));
     let finished = streams.drain(..2).collect::<Vec<_>>();
     futures::future::join_all(finished.into_iter().map(|stream| async move {
@@ -1411,7 +1411,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     .unwrap();
     let replacements = futures::future::join_all((0..2).map(|_| {
         fx.state
-            .create_child_session(parent, "explore", "replacement")
+            .create_child_session(parent, "vigie", "replacement")
     }))
     .bounded(file!(), line!())
     .await
@@ -1431,16 +1431,16 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     assert_eq!(fx.state.reserved_child_count(parent), 4);
     assert!(matches!(
         fx.state
-            .create_child_session(parent, "explore", "fifth again")
+            .create_child_session(parent, "vigie", "fifth again")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::SubagentCapacity { capacity: 4 })
+        Err(withnav::error::ServerError::SubagentCapacity { capacity: 4 })
     ));
     fx.state.close_all().bounded(file!(), line!()).await;
 }
 
 #[tokio::test]
-async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited() {
+async fn child_prompt_is_not_attributed_as_captain_task_or_transcript_inherited() {
     let fx = fixture();
     install_agents(&fx.root, &fx.ws);
     let parent = fx
@@ -1450,7 +1450,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
         .await
         .unwrap();
     fx.state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "parent history".into(),
         ))
@@ -1459,7 +1459,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "only child prompt")
+        .create_child_session(parent, "vigie", "only child prompt")
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1498,7 +1498,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
                 http_sse(&sse_body(&[&tool_call_chunk(
                     "spawn-1",
                     "task",
-                    &json!({"agent":"explore","prompt":"inspect"}),
+                    &json!({"agent":"vigie","prompt":"inspect"}),
                 )]))
             } else {
                 http_sse(&sse_body(&[&text_chunk(if i == 1 {
@@ -1520,8 +1520,8 @@ async fn task_ack_returns_before_child_turn_finishes() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let task = navai::tools::task::TaskTool::new(fx.state.service(), parent);
-    let cx = navai::tools::ToolContext {
+    let task = withnav::tools::task::TaskTool::new(fx.state.service(), parent);
+    let cx = withnav::tools::ToolContext {
         binding: None,
         workspace: fx.ws.clone(),
         writable_roots: vec![fx.ws.clone()],
@@ -1529,7 +1529,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
     };
     let result = task
         .call(
-            json!({"agent":"explore","prompt":"inspect"}),
+            json!({"agent":"vigie","prompt":"inspect"}),
             tokio_util::sync::CancellationToken::new(),
             &cx,
         )
@@ -1693,11 +1693,11 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
         .unwrap();
     let child = fx
         .state
-        .create_child_session(parent, "explore", "read")
+        .create_child_session(parent, "vigie", "read")
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let app = navai::server::app(fx.state.clone());
+    let app = withnav::server::app(fx.state.clone());
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -1732,7 +1732,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
         .bounded(file!(), line!())
         .await
         .unwrap_err();
-    assert!(matches!(direct, navai::error::ServerError::ChildReadOnly));
+    assert!(matches!(direct, withnav::error::ServerError::ChildReadOnly));
     let resume = app
         .clone()
         .oneshot(
@@ -1773,7 +1773,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
 
 // ---- session bypass and children ----
 
-async fn bypass_events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
+async fn bypass_events(fx: &Fx, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
     events(fx, id)
         .bounded(file!(), line!())
         .await
@@ -1793,7 +1793,11 @@ async fn bypass_of(fx: &Fx, id: ulid::Ulid) -> bool {
 
 async fn set_bypass(fx: &Fx, id: ulid::Ulid, enabled: bool) {
     fx.state
-        .set_bypass(id, enabled, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(
+            id,
+            enabled,
+            withnav::bus::runtime::bypass::BypassOrigin::Http,
+        )
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1898,10 +1902,14 @@ async fn parent_changes_reach_live_children_both_ways_and_no_unrelated_root() {
     // A child cannot be toggled by hand.
     assert!(matches!(
         fx.state
-            .set_bypass(child, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+            .set_bypass(
+                child,
+                true,
+                withnav::bus::runtime::bypass::BypassOrigin::Http
+            )
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
     // A child that ended is simply not followed.
     fx.state
@@ -1931,7 +1939,7 @@ async fn a_toggle_during_child_registration_is_never_missed() {
             .bounded(file!(), line!())
             .await
             .unwrap();
-        let barrier = navai::session::ChildPreparationBarrier::default();
+        let barrier = withnav::session::ChildPreparationBarrier::default();
         if inside_gate {
             fx.state.pause_child_bypass_gate(barrier.clone());
         } else {
@@ -1957,7 +1965,7 @@ async fn a_toggle_during_child_registration_is_never_missed() {
                 .set_bypass(
                     parent,
                     true,
-                    navai::bus::runtime::bypass::BypassOrigin::Http,
+                    withnav::bus::runtime::bypass::BypassOrigin::Http,
                 )
                 .bounded(file!(), line!())
                 .await
@@ -2002,7 +2010,7 @@ async fn failed_durable_toggle_enables_nothing_in_the_tree() {
         .set_bypass(
             parent,
             true,
-            navai::bus::runtime::bypass::BypassOrigin::Http
+            withnav::bus::runtime::bypass::BypassOrigin::Http
         )
         .bounded(file!(), line!())
         .await
@@ -2031,23 +2039,23 @@ async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() 
     let stray = ulid::Ulid::new();
     fx.state.history().append_event(
         stray,
-        navai::bus::event::EventEnvelope::new(
+        withnav::bus::event::EventEnvelope::new(
             stray,
             0,
-            navai::bus::event::EventKind::SessionStart,
+            withnav::bus::event::EventKind::SessionStart,
             json!({}),
         ),
     );
     assert!(fx.state.history().flush().await.is_err());
     let first = fx
         .state
-        .set_bypass(id, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(id, true, withnav::bus::runtime::bypass::BypassOrigin::Http)
         .bounded(file!(), line!())
         .await
         .expect("its own append committed");
     let second = fx
         .state
-        .set_bypass(id, false, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(id, false, withnav::bus::runtime::bypass::BypassOrigin::Http)
         .bounded(file!(), line!())
         .await
         .expect("and the next one");
@@ -2068,7 +2076,7 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let child_gate = navai::session::ChildPreparationBarrier::default();
+    let child_gate = withnav::session::ChildPreparationBarrier::default();
     service.pause_child_bypass_gate(child_gate.clone());
     let spawning = service.clone();
     let first_child = tokio::spawn(async move {
@@ -2083,7 +2091,7 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
         .await;
 
     // Another publication is outstanding before the root's sequencer pauses.
-    let registration = navai::session::ChildPreparationBarrier::default();
+    let registration = withnav::session::ChildPreparationBarrier::default();
     service.pause_child_registration(registration.clone());
     let spawning = service.clone();
     let publication = tokio::spawn(async move {
@@ -2098,13 +2106,13 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
         .await;
 
     // The toggle acquires the gate as soon as the first child releases it.
-    let root_commit = navai::session::ChildPreparationBarrier::default();
+    let root_commit = withnav::session::ChildPreparationBarrier::default();
     service.pause_bypass_commit(root_commit.clone());
     service.fail_bypass_commit_after(1);
     let toggle = service.set_bypass(
         parent,
         true,
-        navai::bus::runtime::bypass::BypassOrigin::Http,
+        withnav::bus::runtime::bypass::BypassOrigin::Http,
     );
     tokio::pin!(toggle);
     assert!(
@@ -2133,12 +2141,12 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
     registration.release.notify_one();
 
     // Hold the lifecycle gate without marking the live child stopping yet.
-    let claim = navai::session::ChildPreparationBarrier::default();
+    let claim = withnav::session::ChildPreparationBarrier::default();
     service.pause_lifecycle_claim(claim.clone());
     let stopping = service.clone();
     let stop = tokio::spawn(async move { stopping.close_session(parent).await });
     claim.reached.notified().bounded(file!(), line!()).await;
-    let child_commit = navai::session::ChildPreparationBarrier::default();
+    let child_commit = withnav::session::ChildPreparationBarrier::default();
     service.pause_bypass_commit(child_commit.clone());
     root_commit.release.notify_one();
     tokio::select! {
@@ -2200,7 +2208,7 @@ async fn a_child_that_cannot_follow_the_toggle_is_stopped() {
         .set_bypass(
             parent,
             true,
-            navai::bus::runtime::bypass::BypassOrigin::Http,
+            withnav::bus::runtime::bypass::BypassOrigin::Http,
         )
         .bounded(file!(), line!())
         .await

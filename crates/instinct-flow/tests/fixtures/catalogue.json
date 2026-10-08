@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "triggers": [
+    {
+      "name": "tool.pre_call",
+      "can_block": true,
+      "payload_fields": [
+        {
+          "name": "tool",
+          "value_type": "string",
+          "required": true
+        },
+        {
+          "name": "args",
+          "value_type": "object",
+          "required": true
+        },
+        {
+          "name": "call_id",
+          "value_type": "string",
+          "required": true
+        }
+      ],
+      "allowed_actions": [
+        "ask_captain",
+        "deny",
+        "log",
+        "no_objection"
+      ],
+      "sample_payload": {
+        "tool": "write",
+        "args": {},
+        "call_id": "sample"
+      },
+      "default_fallback": {
+        "action": "ask_captain",
+        "params": {
+          "note": "Flow failed: {failure_message}"
+        },
+        "then": null
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "name": "conversation.last_captain",
+      "input_type": "text",
+      "value_type": "string",
+      "source": "conversation",
+      "triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "intent.record",
+      "input_type": "text",
+      "value_type": "string",
+      "source": "intent",
+      "triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "session.agent",
+      "input_type": "text",
+      "value_type": "string",
+      "source": "session",
+      "triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "workspace.dirty_files",
+      "input_type": "text",
+      "value_type": "array",
+      "source": "workspace",
+      "triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "workspace.root",
+      "input_type": "text",
+      "value_type": "string",
+      "source": "workspace",
+      "triggers": [
+        "tool.pre_call"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "name": "ask_captain",
+      "kind": "verdict",
+      "priority": 1,
+      "params": [
+        {
+          "name": "note",
+          "value_type": "string",
+          "required": true
+        }
+      ],
+      "allowed_triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "deny",
+      "kind": "verdict",
+      "priority": 2,
+      "params": [
+        {
+          "name": "note",
+          "value_type": "string",
+          "required": true
+        }
+      ],
+      "allowed_triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "log",
+      "kind": "effect",
+      "priority": null,
+      "params": [
+        {
+          "name": "text",
+          "value_type": "string",
+          "required": true
+        }
+      ],
+      "allowed_triggers": [
+        "tool.pre_call"
+      ]
+    },
+    {
+      "name": "no_objection",
+      "kind": "verdict",
+      "priority": 0,
+      "params": [],
+      "allowed_triggers": [
+        "tool.pre_call"
+      ]
+    }
+  ],
+  "limits": {}
+}

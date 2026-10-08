@@ -25,7 +25,7 @@ pub(super) fn permission_judge(
 }
 
 /// Builds the guard for a session, or `None` when instinct is unavailable.
-/// Then a guarded agent's exceptions go to the driver
+/// Then a guarded agent's exceptions go to the Captain
 /// with "Jev is not available" as the reason: the session still works.
 pub(super) fn jev_guard(
     models_path: Option<&Path>,

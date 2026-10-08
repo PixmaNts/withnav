@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { ArrowUp, Stop } from "@phosphor-icons/react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { CommandInfo, ContextSnapshot } from "../api/types";
@@ -175,7 +176,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           rows={1}
           value={text}
           disabled={!!disabled}
-          placeholder={disabled ?? "Message cognition…  /skill  /command"}
+          placeholder={disabled ?? "What course would you like to set?  /skill  /command"}
           onChange={(e) => {
             setText(e.target.value);
             setSlashDismissed(false);
@@ -183,8 +184,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           onKeyDown={onKey}
         />
         <div className="composer-row">
-          <button type="button" className="chip" onClick={props.onToggleAgent} disabled={!!disabled} title="Switch build / plan (Tab on an empty message)">
-            {agent} ▾
+          <button type="button" className="chip" onClick={props.onToggleAgent} disabled={!!disabled} title="Switch Nav between work and route planning (Tab on an empty message)">
+            <Crew id={agent} /> ▾
           </button>
           <button
             type="button"
@@ -203,7 +204,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
             aria-pressed={delegate}
             onClick={() => setDelegate(!delegate)}
             disabled={!!disabled}
-            title="Ask the cognition to do this work itself instead of guiding you through it"
+            title="Ask Nav to do this work itself instead of guiding you through it"
           >
             Delegate
           </button>
@@ -224,7 +225,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
               style={running ? { marginLeft: 0 } : undefined}
               onClick={() => void submit()}
               disabled={!text.trim() || sending || !!disabled}
-              title={running ? "Queued: the cognition reads it when this turn ends" : undefined}
+              title={running ? "Queued: Nav reads it when this turn ends" : undefined}
             >
               <ArrowUp size={12} aria-hidden /> Send
             </button>

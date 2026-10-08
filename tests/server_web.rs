@@ -1,4 +1,4 @@
-//! The browser client's server surface: the embedded static files (only for a `navai web`
+//! The browser client's server surface: the embedded static files (only for a `nav web`
 //! server, never behind the token), `GET /v1/workspaces` and `GET /v1/intent`.
 
 use axum::body::Body;
@@ -7,7 +7,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use navai::server::{app, AppState};
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::TestServerConfig;
@@ -155,7 +155,7 @@ async fn api_paths_keep_the_token_and_never_return_the_page() {
     assert_eq!(status, StatusCode::OK);
 }
 
-// Given an ordinary server (not started by `navai web`)
+// Given an ordinary server (not started by `nav web`)
 // When `/` is requested
 // Then nothing is served there, token or not
 #[tokio::test]
@@ -225,7 +225,7 @@ async fn workspaces_list_launched_first_then_history_and_skip_missing() {
     }
 }
 
-// Given a server that was not started by `navai web`
+// Given a server that was not started by `nav web`
 // When /v1/workspaces is read
 // Then only the history's workspaces are listed, none launched
 #[tokio::test]
@@ -254,10 +254,10 @@ async fn intent_reports_present_absent_and_missing_query() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let with = tmp.path().join("with");
     let without = tmp.path().join("without");
-    std::fs::create_dir_all(with.join(".navigator")).expect("dir");
+    std::fs::create_dir_all(with.join(".withnav")).expect("dir");
     std::fs::create_dir_all(&without).expect("dir");
     std::fs::write(
-        with.join(".navigator/intent.md"),
+        with.join(".withnav/intent.md"),
         "## Intent\nShip the web client\n\n## Plan\n1. build\n",
     )
     .expect("intent");

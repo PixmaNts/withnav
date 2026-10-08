@@ -45,7 +45,7 @@ pub enum BlockKind {
     YieldQuestion(String),
     Error(String),
     Notice(String),
-    /// A gated tool call waiting for the driver's decision, then how it ended.
+    /// A gated tool call waiting for the Captain's decision, then how it ended.
     Permission(PermissionPrompt),
     /// The outcome of a server command: its name, whether it ran, and what it answered.
     Command {
@@ -136,7 +136,7 @@ pub struct TabView {
     pub expanded: std::collections::HashSet<String>,
 }
 
-/// One open conversation: its projection, its session, its model and what the driver left in it.
+/// One open conversation: its projection, its session, its model and what the Captain left in it.
 /// Every tab has its own `generation`, so the events of its stream and of its requests reach it and
 /// no other tab.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -543,7 +543,7 @@ pub struct UiState {
     pub screen: super::config::Screen,
     pub settings_target: Option<super::config::SettingsTarget>,
     pub collapsed_models: std::collections::HashSet<String>,
-    /// Models the driver marked as favorites, saved in the settings. Kept even when a model is
+    /// Models the Captain marked as favorites, saved in the settings. Kept even when a model is
     /// no longer in the catalogue; the picker only lists those it knows.
     pub favorite_models: std::collections::BTreeSet<String>,
     pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
@@ -574,9 +574,9 @@ pub struct UiState {
     pub palette_typed: bool,
     /// What the variant list is choosing for, while it is open.
     pub variant_pick: Option<VariantPick>,
-    /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).
+    /// The tab sidebar is hidden by the Captain (it also hides itself on narrow terminals).
     pub sidebar_hidden: bool,
-    /// The right column: `None` follows the terminal width, `Some` is the driver's choice.
+    /// The right column: `None` follows the terminal width, `Some` is the Captain's choice.
     pub panel_shown: Option<bool>,
     /// Whether the right column was on screen at the last draw: the toggle flips what was seen.
     pub panel_drawn: bool,

@@ -3,12 +3,12 @@
 //! while the session lives, served on resume when discovery is down, and
 //! never moved to another model by a retargeted alias.
 
-use navai::error::ServerError;
-use navai::session::Service;
 use serde_json::{json, Value};
 use ulid::Ulid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use withnav::error::ServerError;
+use withnav::session::Service;
 
 mod common;
 use common::server::TestServerConfig;
@@ -165,7 +165,7 @@ async fn a_removed_canonical_model_never_rebinds_a_saved_session() {
     assert!(
         matches!(
             err,
-            ServerError::Model(navai::error::ProviderError::UnknownModel(_))
+            ServerError::Model(withnav::error::ProviderError::UnknownModel(_))
         ),
         "{err:?}"
     );
@@ -393,7 +393,7 @@ async fn a_lost_endpoint_completion_is_an_error() {
         )
         .expect("the other process wins");
 
-    let mut ours: navai::provider::catalog::ModelResolution =
+    let mut ours: withnav::provider::catalog::ModelResolution =
         serde_json::from_value(legacy).expect("resolution");
     ours.endpoint = base(&server);
     let err = service

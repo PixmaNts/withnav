@@ -1,7 +1,8 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use navai::tui::{
+use serde_json::{json, Value};
+use withnav::tui::{
     client::Client,
     config::*,
     input::{route_key, Editor},
@@ -10,7 +11,6 @@ use navai::tui::{
     state::{State, UiState},
     theme::ThemeId,
 };
-use serde_json::{json, Value};
 
 fn body(revision: &str) -> SettingsBody {
     serde_json::from_value(json!({"revision": revision, "paths": {"config":"/cfg/config.json","models":null,"agents":[]}, "gateways":[], "fields": [
@@ -105,10 +105,10 @@ fn picker_filters_api_and_stages_assignment() {
     action(&mut s, &mut ui, ConfigAction::Jump(Section::Layers));
     action(&mut s, &mut ui, ConfigAction::Edit);
     assert_eq!(ui.settings_target.as_ref().unwrap().api, ApiKind::Fim);
-    let names: Vec<_> = navai::tui::catalog::rows(&s.catalog, &ui)
+    let names: Vec<_> = withnav::tui::catalog::rows(&s.catalog, &ui)
         .iter()
         .filter_map(|r| match r {
-            navai::tui::catalog::Row::Model(m) => Some(m.name.clone()),
+            withnav::tui::catalog::Row::Model(m) => Some(m.name.clone()),
             _ => None,
         })
         .collect();
@@ -171,7 +171,7 @@ async fn write_carries_revision_and_theme_applies_live() {
         .collect();
     assert_eq!(requests[0]["revision"], "r0");
     assert_eq!(requests[1]["revision"], "r1");
-    let mut runtime = navai::tui::runtime::Runtime::new(&navai::tui::TuiOptions {
+    let mut runtime = withnav::tui::runtime::Runtime::new(&withnav::tui::TuiOptions {
         url: client.base_url,
         token: None,
         workspace: "/workspace".into(),
@@ -481,7 +481,7 @@ fn stay_and_discard_cancel_pending_leave_write_and_discard_clears_row_errors() {
 #[tokio::test]
 async fn runtime_routes_y_to_settings_scratch_editor_and_filter_not_transcript_selection() {
     use crossterm::event::Event;
-    use navai::tui::{runtime::Runtime, state::Focus, TuiOptions};
+    use withnav::tui::{runtime::Runtime, state::Focus, TuiOptions};
     let mut runtime = Runtime::new(&TuiOptions {
         url: "http://127.0.0.1:1".into(),
         token: None,

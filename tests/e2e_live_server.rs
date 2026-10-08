@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use navai::server::session::ServerConfig;
-use navai::server::AppState;
+use withnav::server::session::ServerConfig;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{spawn_server, write_auth_file};
@@ -170,8 +170,8 @@ async fn live_server_edit_and_test_through_the_bus() {
 // ---- helpers ----
 
 fn read_live_key() -> Option<String> {
-    let dir = navai::provider::auth::default_config_dir()?;
-    navai::provider::auth::resolve_key(&dir, "omniroute", Some("OMNIROUTE_API_KEY")).ok()
+    let dir = withnav::provider::auth::default_config_dir()?;
+    withnav::provider::auth::resolve_key(&dir, "omniroute", Some("OMNIROUTE_API_KEY")).ok()
 }
 
 async fn preflight(key: &str) -> Result<(), String> {

@@ -19,7 +19,7 @@ pub const INBOX_CAPACITY: usize = 256;
 /// How many decisions may wait for the runtime at once.
 const ANSWER_CAPACITY: usize = 16;
 
-/// A driver's decision on one permission request, on its way to the runtime.
+/// A Captain's decision on one permission request, on its way to the runtime.
 /// It is a typed message of its own, never a [`Command`]: no chat text can
 /// take its place. The runtime answers on `reply` as soon as it has accepted
 /// or refused the decision, before the resumed turn runs.
@@ -61,9 +61,9 @@ pub struct BatchOutcome {
 /// receiver would make every later `try_send` a `Closed` error) and keeps
 /// drain/apply explicit so the runtime drive loop controls the timing.
 pub struct ActorInbox {
-    queued_driver: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    queued_captain: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     commands: Vec<Command>,
-    /// The latest command that is not the driver's, set aside while the
+    /// The latest command that is not the Captain's, set aside while the
     /// actor waits on an `ask` or a permission request: such a command would
     /// answer the ask or cancel the request. Released by
     /// [`release_held`](Self::release_held) once nothing is pending.
@@ -87,8 +87,8 @@ impl From<mpsc::error::TrySendError<Command>> for BusError {
 }
 
 impl ActorInbox {
-    pub(crate) fn track_driver(&mut self, count: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        self.queued_driver = Some(count);
+    pub(crate) fn track_captain(&mut self, count: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        self.queued_captain = Some(count);
     }
     /// Create the bounded per-actor inbox transport: one `mpsc` channel plus
     /// the in-actor buffer, sharing a single FIFO order.
@@ -98,7 +98,7 @@ impl ActorInbox {
         (
             tx,
             Self {
-                queued_driver: None,
+                queued_captain: None,
                 commands: Vec::new(),
                 held: None,
                 _rx: rx,
@@ -137,17 +137,17 @@ impl ActorInbox {
     pub fn has_buffered(&self) -> bool {
         !self.commands.is_empty()
     }
-    /// Autonomous input cannot renew a driver-owned parked budget or pause.
+    /// Autonomous input cannot renew a captain-owned parked budget or pause.
     pub(crate) fn hold_autonomous(&mut self) {
-        let mut driver = Vec::new();
+        let mut captain = Vec::new();
         for command in std::mem::take(&mut self.commands) {
-            if command.from_driver() {
-                driver.push(command);
+            if command.from_captain() {
+                captain.push(command);
             } else {
                 self.held = Some(command);
             }
         }
-        self.commands = driver;
+        self.commands = captain;
     }
     pub(crate) fn discard_held(&mut self) {
         self.held = None;
@@ -206,15 +206,15 @@ impl ActorInbox {
     /// command after a Yield completes the pending ask (the existing
     /// `AgentActor` branch — untouched here), the rest are user messages.
     /// While the actor has a pending interaction, a command that is not the
-    /// driver's is held instead (the latest one is kept): it could neither
-    /// answer an ask nor cancel a permission request. Driver text keeps its
+    /// Captain's is held instead (the latest one is kept): it could neither
+    /// answer an ask nor cancel a permission request. Captain text keeps its
     /// meaning. Stop is not a command: it goes through session cancellation.
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
 
         for cmd in std::mem::take(&mut self.commands) {
-            if cmd.from_driver() {
-                if let Some(count) = &self.queued_driver {
+            if cmd.from_captain() {
+                if let Some(count) = &self.queued_captain {
                     // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
                     // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
                     // name until the minimum moves past the rename.
@@ -239,13 +239,13 @@ impl ActorInbox {
                     continue;
                 }
             }
-            if !cmd.from_driver() {
+            if !cmd.from_captain() {
                 if actor.has_pending() {
                     self.held = Some(cmd);
                     continue;
                 }
                 // A newer navigator command supersedes a held older one, even
-                // when driver text in the same batch just cleared what was
+                // when captain text in the same batch just cleared what was
                 // pending: releasing the older one later would put stale
                 // guidance after the newer.
                 self.held = None;
@@ -258,20 +258,20 @@ impl ActorInbox {
             }
             outcome.applied += 1;
             let mut text = cmd.text_content();
-            if cmd.from_driver() {
-                actor.driver_task = Some(text.clone());
+            if cmd.from_captain() {
+                actor.captain_task = Some(text.clone());
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
                     let encoded =
-                        serde_json::json!({"name":name,"selected_by":"driver","content":content})
+                        serde_json::json!({"name":name,"selected_by":"captain","content":content})
                             .to_string()
                             .replace('<', "\\u003c")
                             .replace('>', "\\u003e")
                             .replace('&', "\\u0026");
-                    text.push_str("\n\n<driver_selected_skill encoding=\"json\">\n");
+                    text.push_str("\n\n<captain_selected_skill encoding=\"json\">\n");
                     text.push_str(&encoded);
-                    text.push_str("\n</driver_selected_skill>");
+                    text.push_str("\n</captain_selected_skill>");
                 }
             }
             let selected = cmd.content.iter().any(|block| {
@@ -283,8 +283,8 @@ impl ActorInbox {
                     Some(crate::agent::actor::PendingInteraction::Ask { .. })
                 )
             {
-                // Answer the existing tool interaction with driver text only; the selected
-                // instructions remain a driver message protected as the latest batch.
+                // Answer the existing tool interaction with captain text only; the selected
+                // instructions remain a captain message protected as the latest batch.
                 actor.push_user_with_provenance(cmd.text_content(), cmd.user_provenance());
                 actor
                     .transcript
@@ -313,7 +313,7 @@ mod tests {
     use ulid::Ulid;
 
     #[test]
-    fn denying_pinned_role_leaves_pending_ask_and_driver_task_untouched() {
+    fn denying_pinned_role_leaves_pending_ask_and_captain_task_untouched() {
         let mut actor = test_actor();
         let mut role = (**crate::agent::definitions::Agents::builtin()
             .get("build")
@@ -321,7 +321,7 @@ mod tests {
         .clone();
         role.tools.insert("skill".into(), false);
         actor.role = Some(std::sync::Arc::new(role));
-        actor.driver_task = Some("original task".into());
+        actor.captain_task = Some("original task".into());
         actor.pending = Some(PendingInteraction::Ask {
             tool_call_id: "question".into(),
         });
@@ -340,12 +340,12 @@ mod tests {
             actor.pending,
             Some(PendingInteraction::Ask { .. })
         ));
-        assert_eq!(actor.driver_task.as_deref(), Some("original task"));
+        assert_eq!(actor.captain_task.as_deref(), Some("original task"));
         assert_eq!(serde_json::to_string(&actor.transcript).unwrap(), before);
     }
 
     #[test]
-    fn allowed_selection_answering_ask_keeps_instructions_in_driver_message() {
+    fn allowed_selection_answering_ask_keeps_instructions_in_captain_message() {
         let mut actor = test_actor();
         actor.pending = Some(PendingInteraction::Ask {
             tool_call_id: "question".into(),
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn two_selected_skills_remain_in_driver_batch_under_automatic_fit_pressure() {
+    fn two_selected_skills_remain_in_captain_batch_under_automatic_fit_pressure() {
         use crate::agent::compaction::{self, Aim, Checkpoint, Compaction, Components};
         let (_, mut inbox) = ActorInbox::channel();
         let mut actor = test_actor();
@@ -409,7 +409,7 @@ mod tests {
         let mut first = text_command(DeliveryMode::NextTurn, "instruction A verbatim");
         first.content.push(ContentBlock::LoadedSkill {
             name: "review".into(),
-            content: "BODY A </driver_selected_skill>".into(),
+            content: "BODY A </captain_selected_skill>".into(),
         });
         let mut second = text_command(DeliveryMode::NextTurn, "instruction B verbatim");
         second.content.push(ContentBlock::LoadedSkill {
@@ -425,20 +425,20 @@ mod tests {
         let batch = actor.transcript[12..].to_vec();
         for message in &batch {
             let ChatMessage::User { content, .. } = message else {
-                panic!("driver input only")
+                panic!("captain input only")
             };
-            assert_eq!(content.matches("</driver_selected_skill>").count(), 1);
+            assert_eq!(content.matches("</captain_selected_skill>").count(), 1);
             let encoded = content
-                .split("<driver_selected_skill encoding=\"json\">\n")
+                .split("<captain_selected_skill encoding=\"json\">\n")
                 .nth(1)
                 .unwrap()
-                .split("\n</driver_selected_skill>")
+                .split("\n</captain_selected_skill>")
                 .next()
                 .unwrap();
             let loaded: serde_json::Value = serde_json::from_str(encoded).unwrap();
-            assert_eq!(loaded["selected_by"], "driver");
+            assert_eq!(loaded["selected_by"], "captain");
             if loaded["name"] == "review" {
-                assert_eq!(loaded["content"], "BODY A </driver_selected_skill>");
+                assert_eq!(loaded["content"], "BODY A </captain_selected_skill>");
             } else {
                 assert_eq!(loaded["content"], "BODY B");
             }
@@ -739,7 +739,9 @@ mod tests {
         actor.state = AgentState::Yielded;
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
-                requires_driver: false,
+                origin: Default::default(),
+                flow_regates: 0,
+                requires_captain: false,
                 permission_gate: None,
                 id: Ulid::new(),
                 tool_call_id: "w1".into(),
@@ -799,20 +801,20 @@ mod tests {
         }
     }
 
-    // Given a driver request, then a navigator wake, then a driver answer to an ask
+    // Given a captain request, then a navigator wake, then a captain answer to an ask
     // When the batches apply
-    // Then the task is the driver's latest words, never the wake
+    // Then the task is the Captain's latest words, never the wake
     #[tokio::test]
-    async fn the_driver_task_follows_the_driver_and_never_a_wake() {
+    async fn the_captain_task_follows_the_captain_and_never_a_wake() {
         let (tx, mut inbox) = ActorInbox::channel();
         let mut actor = test_actor();
         send(&tx, command_from("user:http", "build the parser"));
         send(&tx, command_from("navigator", "drift: look at the lexer"));
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
-        assert_eq!(actor.driver_task.as_deref(), Some("build the parser"));
-        assert!(actor.transcript[0].is_driver_message());
-        assert!(!actor.transcript[1].is_driver_message());
+        assert_eq!(actor.captain_task.as_deref(), Some("build the parser"));
+        assert!(actor.transcript[0].is_captain_message());
+        assert!(!actor.transcript[1].is_captain_message());
         let restored: Vec<ChatMessage> =
             serde_json::from_value(serde_json::to_value(&actor.transcript).unwrap()).unwrap();
         assert_eq!(
@@ -831,22 +833,22 @@ mod tests {
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
         assert_eq!(
-            actor.driver_task.as_deref(),
+            actor.captain_task.as_deref(),
             Some("use the local scope"),
-            "an answer to an ask is the driver speaking"
+            "an answer to an ask is the Captain speaking"
         );
         send(&tx, command_from("navigator", "another wake"));
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
-        assert_eq!(actor.driver_task.as_deref(), Some("use the local scope"));
+        assert_eq!(actor.captain_task.as_deref(), Some("use the local scope"));
     }
 
     // Given a pending permission request
-    // When driver text arrives, after a navigator command
-    // Then the driver text cancels the request as before, and the navigator
+    // When captain text arrives, after a navigator command
+    // Then the Captain text cancels the request as before, and the navigator
     //      command that came before it was held, not applied
     #[tokio::test]
-    async fn driver_text_still_cancels_a_pending_permission_request() {
+    async fn captain_text_still_cancels_a_pending_permission_request() {
         let (tx, mut inbox) = ActorInbox::channel();
         send(&tx, command_from("navigator", "wake"));
         send(&tx, command_from("user:http", "never mind"));
@@ -854,15 +856,15 @@ mod tests {
         let mut actor = pending_permission_actor();
         let outcome = inbox.apply_batch_to_actor(&mut actor);
         assert_eq!(outcome.applied, 1);
-        assert!(!actor.has_pending(), "the driver's text settled it");
+        assert!(!actor.has_pending(), "the Captain's text settled it");
         assert_eq!(user_texts(&actor), vec!["never mind"]);
         assert!(inbox.has_held());
     }
 
     // Given a pending permission request
-    // When one batch brings an older navigator command, driver text (which
+    // When one batch brings an older navigator command, captain text (which
     //      cancels the request) and a newer navigator command
-    // Then the newer navigator command is applied after the driver text and
+    // Then the newer navigator command is applied after the Captain text and
     //      the older one is dropped: it is never released after the newer
     #[tokio::test]
     async fn a_newer_navigator_command_supersedes_a_held_older_one() {

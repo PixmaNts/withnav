@@ -88,7 +88,7 @@ export function fallbacks(target: string, workspaces: string[]): Connect.NextHan
         for (const send of listeners.get(id) ?? []) send(frame);
       }
       res.setHeader("content-type", "application/json");
-      res.setHeader("x-navai-dev-fallback", "bypass");
+      res.setHeader("x-withnav-dev-fallback", "bypass");
       res.end(JSON.stringify({ enabled, changed, bypass_seq: state.seq }));
       return;
     }
@@ -153,7 +153,7 @@ export function fallbacks(target: string, workspaces: string[]): Connect.NextHan
       return;
     }
     res.setHeader("content-type", "application/json");
-    res.setHeader("x-navai-dev-fallback", route);
+    res.setHeader("x-withnav-dev-fallback", route);
     if (route === "workspaces") {
       res.end(JSON.stringify({ workspaces: await Promise.all(workspaces.map((path) => workspace(target, path))) }));
       return;

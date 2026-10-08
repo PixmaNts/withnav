@@ -4,7 +4,7 @@
 use super::Skill;
 
 /// The most estimated tokens (bytes / 4) the message may take. Deliberately
-/// larger than a minimal catalog would need: the driver's own library holds
+/// larger than a minimal catalog would need: the Captain's own library holds
 /// about 110 skills of up to [`MAX_DESCRIPTION_CHARS`] characters each, and
 /// every one that does not fit is invisible to the model.
 pub const MAX_TOKENS: usize = 8192;

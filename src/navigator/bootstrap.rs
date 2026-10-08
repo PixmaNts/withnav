@@ -1,4 +1,4 @@
-//! Process wiring for the `navai-lsp` binary: builds the model layers
+//! Process wiring for the `withnav-lsp` binary: builds the model layers
 //! from models.json and auth.json, starts the in-process cognition chat
 //! server, assembles the [`NavigatorDeps`] and serves the Language Server
 //! over stdio. A layer whose alias, key or config is missing is disabled
@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use crate::navigator::log::NavLog;
 use crate::navigator::metacognition::LlmCommenter;
-use crate::navigator::models::{DecisionAdapter, FimAdapter};
-use crate::navigator::ports::{DecisionModel, FimModel};
+use crate::navigator::models::FimAdapter;
+use crate::navigator::ports::FimModel;
 use crate::navigator::{
     self, ConversationFeed, Metacognition, ModelError, NavigatorDeps, Remark, RemarkContext,
     ServerInfoParams,
@@ -34,7 +34,6 @@ pub fn load_models(explicit: Option<&Path>) -> anyhow::Result<ModelsConfig> {
 
 struct Layers {
     fim: Option<Arc<dyn FimModel>>,
-    decision: Option<Arc<dyn DecisionModel>>,
     reflex_model: Option<String>,
     instinct_model: Option<String>,
     metacognition_model: Option<String>,
@@ -52,7 +51,6 @@ fn build_layers_from(
 ) -> Layers {
     let mut layers = Layers {
         fim: None,
-        decision: None,
         reflex_model: None,
         instinct_model: None,
         metacognition_model: None,
@@ -93,11 +91,10 @@ fn build_layers_from(
         }
     }
 
-    // Pipeline labels never override the configured instinct assignment.
+    // Check the instinct assignment used by the native flow host.
     match crate::provider::layers::instinct(models, config_dir, clients.clone()) {
         Ok(client) => {
             layers.instinct_model = Some(client.model().to_string());
-            layers.decision = Some(Arc::new(DecisionAdapter(client)));
         }
         Err(e) => {
             tracing::error!("instinct disabled: {e}");
@@ -322,10 +319,11 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // Admission, layers and cognition all use the initialize workspace catalog.
     let workspace = Some(initialized_workspace);
     let user_dir = navigator::default_user_dir();
+    let root = workspace.clone().unwrap_or_else(|| PathBuf::from("."));
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
     // loopback ephemeral port with a per-process bearer token, announced as
-    // `navigator/serverInfo`. It lives exactly as long as the LSP session:
+    // `withnav/serverInfo`. It lives exactly as long as the LSP session:
     // when `navigator::serve` returns (exit/EOF) the shutdown trigger fires,
     // every session is closed and the server drains so the process exits.
     // The SAME conversation hub goes to the session server (sessions
@@ -337,12 +335,26 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         Err(e) => {
             // A failed bind or an unopenable history database must not take
             // the navigator down: run the LSP without the chat (no
-            // serverInfo notification) and say so in `navigator/status`.
+            // serverInfo notification) and say so in `withnav/status`.
             tracing::error!("cognition chat server unavailable: {e}");
             layers.disabled.push(format!("chat: {e}"));
             None
         }
     };
+    let flow_host = http
+        .as_ref()
+        .map(|http| http.flows.clone())
+        .unwrap_or_else(|| {
+            Arc::new(crate::flows::host::Host::new(
+                config_dir.clone(),
+                crate::paths::data_dir().unwrap_or_else(|| config_dir.join("data")),
+                Some(preflight.models_path().to_path_buf()),
+            ))
+        });
+    let flow_factory = flow_host.runtime(&root).map(|runtime| {
+        Arc::new(move |effects| runtime.with_effects_adapter(effects))
+            as Arc<crate::navigator::FlowFactory>
+    });
 
     let mut deps = NavigatorDeps::new(layers.metacognition(), log_path)
         .with_dirs(workspace, user_dir)
@@ -353,14 +365,18 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
             layers.metacognition_model.clone(),
         )
         .with_disabled_layers(layers.disabled.clone());
+    deps.flows = flow_factory;
+    deps.startup_warnings = flow_host
+        .store(root.clone())
+        .migration_diagnostics()
+        .into_iter()
+        .map(|diagnostic| diagnostic.message)
+        .collect();
     if let Some(info) = http.as_ref().map(|h| h.info.clone()) {
         deps = deps.with_server_info(info);
     }
     if let Some(fim) = layers.fim {
         deps = deps.with_fim(fim);
-    }
-    if let Some(decision) = layers.decision {
-        deps = deps.with_decision(decision);
     }
     if let Some(llm) = layers.metacognition {
         deps = deps.with_reflex_context(llm);
@@ -379,6 +395,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         let _ = http.shutdown.send(());
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;
     }
+    let _ = tokio::task::spawn_blocking(move || flow_host.shutdown()).await;
     Ok(())
 }
 
@@ -462,6 +479,7 @@ struct CognitionHttp {
     task: tokio::task::JoinHandle<()>,
     shutdown: tokio::sync::oneshot::Sender<()>,
     info: ServerInfoParams,
+    flows: Arc<crate::flows::host::Host>,
 }
 
 /// The in-process cognition server: an [`AppState`] over the same models
@@ -478,9 +496,9 @@ async fn spawn_cognition_server(
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
-    // Conversation history: one SQLite file in Navai's data dir.
+    // Conversation history: one SQLite file in WithNav's data dir.
     let history_db = crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))?;
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
         models_path: Some(models_path.to_path_buf()),
@@ -499,6 +517,7 @@ async fn spawn_cognition_server(
     )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
+    let flows = state.service().flows.clone();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {
@@ -512,6 +531,7 @@ async fn spawn_cognition_server(
         task,
         shutdown: shutdown_tx,
         info: ServerInfoParams { port, token },
+        flows,
     })
 }
 
@@ -523,7 +543,7 @@ fn bearer_token() -> String {
 }
 
 /// Stand-in used when the metacognition layer could not be built: every
-/// remark call errors, which surfaces as `navigator/status` error instead
+/// remark call errors, which surfaces as `withnav/status` error instead
 /// of a crash.
 struct FailingCommenter {
     message: String,
@@ -715,7 +735,10 @@ mod tests {
     async fn an_unresolved_metacognition_disables_only_the_remarks() {
         let (_dir, layers) = layers(&config(None));
         assert!(layers.fim.is_some(), "FIM is not touched");
-        assert!(layers.decision.is_some(), "the instinct is not touched");
+        assert!(
+            layers.instinct_model.is_some(),
+            "the instinct is not touched"
+        );
         assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
         let cancel = tokio_util::sync::CancellationToken::new();
         for _ in 0..2 {
@@ -740,7 +763,7 @@ mod tests {
         let (_dir, layers) = layers(&config(Some(128_000)));
         assert!(layers.metacognition.is_some());
         assert_eq!(layers.metacognition_model.as_deref(), Some("m-chat"));
-        assert!(layers.fim.is_some() && layers.decision.is_some());
+        assert!(layers.fim.is_some() && layers.instinct_model.is_some());
         assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
     }
 

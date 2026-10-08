@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use navai::agent::prompt::build_request;
-use navai::provider::catalog::{resolve_chat, ModelCatalog, ResolvedChat};
-use navai::provider::client::ModelClient;
-use navai::provider::config::{ModelsConfig, ProviderConfig};
-use navai::provider::openai::ChatMessage;
-use navai::provider::openai::ClientCache;
 use tokio_util::sync::CancellationToken;
+use withnav::agent::prompt::build_request;
+use withnav::provider::catalog::{resolve_chat, ModelCatalog, ResolvedChat};
+use withnav::provider::client::ModelClient;
+use withnav::provider::config::{ModelsConfig, ProviderConfig};
+use withnav::provider::openai::ChatMessage;
+use withnav::provider::openai::ClientCache;
 
 mod common;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};
@@ -72,7 +72,7 @@ async fn resolve(alias: &str, tiers: &[&str]) -> ResolvedChat {
 
 /// Sends one request through `ModelClient::chat` and returns the body the
 /// provider received.
-async fn send(variant: Option<&navai::provider::config::Variant>) -> String {
+async fn send(variant: Option<&withnav::provider::config::Variant>) -> String {
     let server = spawn_capturing_provider(vec![http_sse(&sse_body(&[DONE]))]).await;
     let provider = ProviderConfig {
         base_url: server.url.clone(),

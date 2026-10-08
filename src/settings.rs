@@ -103,7 +103,7 @@ impl Settings {
                 let private = private_scratch_root(runtime.as_deref(), &home);
                 Ok(unique_roots(vec![
                     private,
-                    std::env::temp_dir().join("navai"),
+                    std::env::temp_dir().join("withnav"),
                 ]))
             }
             Some(Value::Array(values)) => values
@@ -251,8 +251,8 @@ impl Settings {
 fn private_scratch_root(runtime: Option<&Path>, home: &Path) -> PathBuf {
     let usable = runtime.filter(|path| crate::agent::scratch::private_runtime_usable(path));
     usable
-        .map(|path| path.join("navai"))
-        .unwrap_or_else(|| home.join(".cache/navai/scratch"))
+        .map(|path| path.join("withnav"))
+        .unwrap_or_else(|| home.join(".cache/withnav/scratch"))
 }
 
 fn unique_roots(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -329,7 +329,7 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
 }
 
 /// Reads, edits and writes the settings while holding an exclusive advisory lock on
-/// `config.json.lock`, so two Navai processes (a TUI saving its theme, a WebUI saving a
+/// `config.json.lock`, so two WithNav processes (a TUI saving its theme, a WebUI saving a
 /// setting) cannot lose each other's changes. `edit` gets the settings and the revision of the
 /// bytes they were parsed from; an error from it leaves the file untouched. Programs that edit
 /// `config.json` without taking the lock are outside this guarantee.
@@ -442,35 +442,35 @@ mod tests {
         std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
             private_scratch_root(Some(&runtime), &home),
-            runtime.join("navai")
+            runtime.join("withnav")
         );
         std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o750)).unwrap();
         assert_eq!(
             private_scratch_root(Some(&runtime), &home),
-            home.join(".cache/navai/scratch")
+            home.join(".cache/withnav/scratch")
         );
         assert_eq!(
             private_scratch_root(None, &home),
-            home.join(".cache/navai/scratch")
+            home.join(".cache/withnav/scratch")
         );
         assert_eq!(
             private_scratch_root(Some(Path::new("relative")), &home),
-            home.join(".cache/navai/scratch")
+            home.join(".cache/withnav/scratch")
         );
         assert_eq!(
             private_scratch_root(Some(&temp.path().join("missing")), &home),
-            home.join(".cache/navai/scratch")
+            home.join(".cache/withnav/scratch")
         );
         std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
         let alias = temp.path().join("alias");
         std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
         assert_eq!(
             private_scratch_root(Some(&alias.join("runtime")), &home),
-            home.join(".cache/navai/scratch")
+            home.join(".cache/withnav/scratch")
         );
         assert_eq!(
-            unique_roots(vec![runtime.join("navai"), runtime.join("navai/")]),
-            vec![runtime.join("navai")]
+            unique_roots(vec![runtime.join("withnav"), runtime.join("withnav/")]),
+            vec![runtime.join("withnav")]
         );
     }
     #[test]
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn saving_creates_the_directory_and_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("navai");
+        let nested = dir.path().join("withnav");
         save_tui_theme(&nested, "ayu-light").unwrap();
         assert_eq!(load(&nested).unwrap().tui_theme(), Some("ayu-light"));
     }

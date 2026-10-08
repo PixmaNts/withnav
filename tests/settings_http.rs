@@ -10,7 +10,7 @@ async fn settings_locked_put_keeps_runtime_responsive() {
     let state = TestServerConfig::unreachable(dir.path())
         .bearer_token("secret")
         .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/settings?workspace={}", dir.path().display());
     let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
     let path = dir.path().join("cfg/config.json.lock");
@@ -90,7 +90,7 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         .variants(json!({"high":{}}), None)
         .bearer_token("secret")
         .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/settings?workspace={}", dir.path().display());
     assert_eq!(request(&app, "GET", &uri, Value::Null, false).await.0, 401);
     let path = dir.path().join("cfg/config.json");
@@ -133,7 +133,7 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         ("permissions.scratch_dirs", json!(["relative"])),
         ("agent.watchdog_interval_secs", json!(31536001)),
         ("tui.theme", json!("bad")),
-        ("default_agent", json!("explore")),
+        ("default_agent", json!("vigie")),
         ("agents.build", json!({"model":"missing/m"})),
         ("layers.reflex", json!({"model":"mock/mock-model"})),
         (
@@ -199,17 +199,17 @@ async fn settings_gateway_base_url_never_carries_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let state = TestServerConfig::mock(
         dir.path(),
-        "http://navaiuser:s3cretpass@127.0.0.1:9/v1?api_key=k3yvalue#frag",
+        "http://withnavuser:s3cretpass@127.0.0.1:9/v1?api_key=k3yvalue#frag",
     )
     .bearer_token("secret")
     .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/settings?workspace={}", dir.path().display());
     let (status, body) = request(&app, "GET", &uri, Value::Null, true).await;
     assert_eq!(status, 200);
     assert_eq!(body["gateways"][0]["base_url"], "http://127.0.0.1:9/v1");
     let text = body.to_string();
-    for secret in ["navaiuser", "s3cretpass", "k3yvalue", "frag"] {
+    for secret in ["withnavuser", "s3cretpass", "k3yvalue", "frag"] {
         assert!(!text.contains(secret), "{secret} leaked in {text}");
     }
 }
@@ -225,7 +225,7 @@ async fn gateway_probe_never_returns_credentials_or_upstream_body() {
     let state = TestServerConfig::mock(dir.path(), &mock.uri())
         .bearer_token("secret")
         .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/gateways/mock/test?workspace={}", dir.path().display());
     Mock::given(method("GET"))
         .and(path("/models"))

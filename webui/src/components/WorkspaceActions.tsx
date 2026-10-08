@@ -18,7 +18,7 @@ export interface RemoveRequest {
 
 /** Why a workspace cannot be removed, or undefined when it can. */
 export function launchedReason(ws: WorkspaceEntry): string | undefined {
-  return ws.launched ? "navai web was started with this folder, so it stays in the list while the server runs." : undefined;
+  return ws.launched ? "nav web was started with this folder, so it stays in the list while the server runs." : undefined;
 }
 
 /** Where to go once `removed` leaves the list: the next one, else the previous one, else nowhere. */
@@ -140,7 +140,7 @@ export function WorkspaceMenu({ ws, count, onRemove }: { ws: WorkspaceEntry; cou
 /** Words for an error the server gave back; the server's own message when there is no better one. */
 function removalError(error: unknown): string {
   if (error instanceof HttpError) {
-    if (error.reason === "launched") return "navai web was started with this folder, so it cannot leave the list while the server runs.";
+    if (error.reason === "launched") return "nav web was started with this folder, so it cannot leave the list while the server runs.";
     if (error.status === 0) return error.message;
     return `The server refused: ${error.message}`;
   }

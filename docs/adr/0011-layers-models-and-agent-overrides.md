@@ -4,6 +4,9 @@ Date: 2026-10-05
 
 Status: Accepted — implemented for v0.5.0
 
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.
+
 Model aliases mixed catalog identities with the driver's choices and made a role look like a
 model. We separate those concepts so catalog refreshes cannot change assignments, and a driver
 can change one agent's model in one conversation without changing other work.

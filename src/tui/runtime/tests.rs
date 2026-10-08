@@ -651,6 +651,7 @@ fn pick_theme(runtime: &mut Runtime, steps: usize) {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
     runtime.dispatch(Action::OpenOverlay(crate::tui::protocol::Overlay::Themes));
+    runtime.ui.selection.insert("Themes".into(), 0);
     for _ in 0..steps {
         runtime.handle_terminal_event(press(KeyCode::Down));
     }
@@ -661,7 +662,7 @@ fn pick_theme(runtime: &mut Runtime, steps: usize) {
 async fn a_picked_theme_is_saved_and_restored_at_the_next_start() {
     let dir = tempfile::tempdir().unwrap();
     let mut runtime = Runtime::new(&options_in(dir.path()));
-    assert_eq!(runtime.ui.theme, ThemeId::AyuDark);
+    assert_eq!(runtime.ui.theme, ThemeId::TideDark);
     pick_theme(&mut runtime, 3);
     assert_eq!(runtime.ui.theme, ThemeId::NordLight);
     runtime.executor().flush_saves().await;
@@ -700,7 +701,7 @@ async fn a_failed_save_is_shown_and_picking_again_retries() {
 
     // Once the cause is gone, confirming the same theme again saves it.
     std::fs::remove_dir_all(crate::settings::path(dir.path())).unwrap();
-    pick_theme(&mut runtime, 0);
+    pick_theme(&mut runtime, 1);
     assert_eq!(runtime.ui.theme, ThemeId::AyuLight);
     runtime.executor().flush_saves().await;
     assert_eq!(

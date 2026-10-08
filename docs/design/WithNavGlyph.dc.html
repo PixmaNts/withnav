@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<span style="display:inline-flex;line-height:0;flex:none">
+<sc-if value="{{ isA }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="WithNav"><circle cx="32" cy="17" r="14" fill="none" stroke="{{ navC }}" stroke-width="2.4" opacity=".45"></circle><circle cx="32" cy="17" r="9.5" fill="none" stroke="{{ navC }}" stroke-width="2.4" opacity=".75"></circle><circle cx="32" cy="17" r="5" fill="none" stroke="{{ navC }}" stroke-width="2.4"></circle><circle cx="32" cy="17" r="2.2" fill="{{ navC }}"></circle><polygon points="32,29 38.5,45 25.5,45" fill="{{ ink }}"></polygon><polygon points="25.5,45 38.5,45 32,62" fill="{{ ink }}" opacity=".5"></polygon></svg></sc-if>
+<sc-if value="{{ isAs }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="WithNav"><circle cx="32" cy="16" r="12" fill="none" stroke="{{ navC }}" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="{{ navC }}"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="{{ ink }}"></polygon></svg></sc-if>
+<sc-if value="{{ isB }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="WithNav"><rect x="8" y="8" width="11" height="48" rx="2.5" fill="{{ ink }}"></rect><rect x="45" y="8" width="11" height="48" rx="2.5" fill="{{ ink }}"></rect><polygon points="19,8 45,34 45,56 19,19" fill="{{ luxC }}"></polygon></svg></sc-if>
+<sc-if value="{{ isC }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="WithNav"><polyline points="11,15 29,32 11,49" fill="none" stroke="{{ ink }}" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"></polyline><rect x="35" y="42" width="20" height="8" rx="2" fill="{{ luxC }}"></rect><path d="M35 33 Q45 23 55 33" fill="none" stroke="{{ luxC }}" stroke-width="3.5" stroke-linecap="round" opacity=".55"></path><path d="M40 37.5 Q45 33 50 37.5" fill="none" stroke="{{ luxC }}" stroke-width="3.5" stroke-linecap="round"></path></svg></sc-if>
+<sc-if value="{{ isNav }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Nav"><circle cx="32" cy="32" r="27" fill="none" stroke="{{ navC }}" stroke-width="{{ sw }}" opacity=".5"></circle><g transform="rotate(30 32 32)"><polygon points="32,11 38.5,32 25.5,32" fill="{{ navC }}"></polygon><polygon points="25.5,32 38.5,32 32,53" fill="{{ navC }}" opacity=".45"></polygon></g></svg></sc-if>
+<sc-if value="{{ isLux }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Lux"><polygon points="32,5 60,56 4,56" fill="none" stroke="{{ luxC }}" stroke-width="{{ sw }}" stroke-linejoin="round" opacity=".5"></polygon><path d="M32 24 L35.2 35.8 L47 39 L35.2 42.2 L32 54 L28.8 42.2 L17 39 L28.8 35.8Z" fill="{{ luxC }}"></path></svg></sc-if>
+<sc-if value="{{ isMou }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Mousse"><rect x="5" y="5" width="54" height="54" rx="15" fill="none" stroke="{{ mouC }}" stroke-width="{{ sw }}" opacity=".5"></rect><circle cx="26" cy="32" r="9.5" fill="none" stroke="{{ mouC }}" stroke-width="5.5"></circle><circle cx="38" cy="32" r="9.5" fill="none" stroke="{{ mouC }}" stroke-width="5.5"></circle></svg></sc-if>
+<sc-if value="{{ isVig }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Vigie"><rect x="2" y="16" width="60" height="32" rx="16" fill="none" stroke="{{ vigC }}" stroke-width="{{ sw }}" opacity=".5"></rect><path d="M13 32 Q32 18 51 32 Q32 46 13 32Z" fill="none" stroke="{{ vigC }}" stroke-width="4.5" stroke-linejoin="round"></path><circle cx="32" cy="32" r="5" fill="{{ vigC }}"></circle></svg></sc-if>
+<sc-if value="{{ isCar }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Cartographe"><polygon points="60,32 46,7.75 18,7.75 4,32 18,56.25 46,56.25" fill="none" stroke="{{ carC }}" stroke-width="{{ sw }}" stroke-linejoin="round" opacity=".5"></polygon><polyline points="18,41 30,23 46,36" fill="none" stroke="{{ carC }}" stroke-width="3.5" stroke-linejoin="round"></polyline><circle cx="18" cy="41" r="5" fill="{{ carC }}"></circle><circle cx="30" cy="23" r="5" fill="{{ carC }}"></circle><circle cx="46" cy="36" r="5" fill="{{ carC }}"></circle></svg></sc-if>
+<sc-if value="{{ isSon }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Sondeur"><rect x="16" y="2" width="32" height="60" rx="16" fill="none" stroke="{{ sonC }}" stroke-width="{{ sw }}" opacity=".5"></rect><path d="M23 15 Q32 9 41 15" fill="none" stroke="{{ sonC }}" stroke-width="4" stroke-linecap="round"></path><line x1="32" y1="13" x2="32" y2="38" stroke="{{ sonC }}" stroke-width="4" stroke-linecap="round"></line><polygon points="32,36 39,45.5 32,55 25,45.5" fill="{{ sonC }}"></polygon></svg></sc-if>
+<sc-if value="{{ isCap }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 64 64" width="{{ size }}" height="{{ size }}" role="img" aria-label="Captain"><path d="M32 7 L48 55 L32 45 L16 55Z" fill="{{ ink }}"></path></svg></sc-if>
+</span>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:80,&quot;height&quot;:80},&quot;glyph&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mark-a&quot;,&quot;mark-b&quot;,&quot;mark-c&quot;,&quot;nav&quot;,&quot;lux&quot;,&quot;mousse&quot;,&quot;vigie&quot;,&quot;captain&quot;],&quot;default&quot;:&quot;mark-a&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;size&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:32,&quot;tsType&quot;:&quot;number&quot;},&quot;mono&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const n = this.props.glyph ?? 'mark-a', s = +(this.props.size ?? 32), m = !!this.props.mono;
+    const c = (v) => m ? 'currentColor' : `var(--${v})`;
+    return {
+      size: s, sw: s <= 20 ? 6 : 4,
+      isA: n === 'mark-a' && s > 20, isAs: n === 'mark-a' && s <= 20, isB: n === 'mark-b', isC: n === 'mark-c',
+      isNav: n === 'nav', isLux: n === 'lux', isMou: n === 'mousse', isVig: n === 'vigie', isCap: n === 'captain', isCar: n === 'cartographe', isSon: n === 'sondeur', carC: c('car'), sonC: c('son'),
+      ink: c('tx'), navC: c('nav'), luxC: c('lux'), mouC: c('mou'), vigC: c('vig')
+    };
+  }
+}
+</script>
+</body>
+</html>

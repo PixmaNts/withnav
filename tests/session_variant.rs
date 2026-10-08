@@ -7,9 +7,9 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::error::ServerError;
-use navai::server::{app, AppState};
-use navai::session::VariantChoice;
+use withnav::error::ServerError;
+use withnav::server::{app, AppState};
+use withnav::session::VariantChoice;
 
 mod common;
 use common::server::{collect_until, request_json, send_text, wait_for, TestServerConfig};
@@ -62,7 +62,7 @@ async fn child_inherits_parent_variant_and_saved_resolution() {
     models["models"]["mock/mock-model"]["variants"]["low"] = json!({"reasoning_effort":"high"});
     std::fs::write(path, models.to_string()).unwrap();
     let child = state
-        .create_child_session(parent, "explore", "inspect")
+        .create_child_session(parent, "vigie", "inspect")
         .await
         .unwrap();
     let after = state.history().meta(child).await.unwrap().unwrap();
@@ -432,17 +432,17 @@ async fn a_cleared_variant_sends_no_override() {
     assert!(body.get("reasoning_effort").is_none(), "{body}");
 }
 
-// Given `navai run --variant high` and `--variant off`
+// Given `nav run --variant high` and `--variant off`
 // Then the request body carries the variant, or none; an unknown one fails the run
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_variant_reaches_the_wire() {
+async fn withnav_run_variant_reaches_the_wire() {
     let provider = spawn_capturing_provider(vec![done_body(), done_body()]).await;
     let (tmp, ws) = tmp_ws();
     let cfg = config(tmp.path(), &provider.url, None);
     cfg.config();
-    std::fs::create_dir_all(tmp.path().join("config/navai")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("config/withnav")).unwrap();
     std::fs::write(
-        tmp.path().join("config/navai/config.json"),
+        tmp.path().join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
@@ -450,13 +450,13 @@ async fn navai_run_variant_reaches_the_wire() {
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
         tokio::task::spawn_blocking(move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
                 .args(["run", "--workspace"])
                 .arg(&ws)
                 .arg("--models")
                 .arg(&models)
                 .args(["--variant", variant, "--prompt", "go"])
-                .env("NAVAI_TEST_KEY", "test-key")
+                .env("WITHNAV_TEST_KEY", "test-key")
                 .env("HOME", root.join("home"))
                 .env("XDG_DATA_HOME", root.join("data"))
                 .env("XDG_CONFIG_HOME", root.join("config"))
@@ -749,7 +749,7 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
     let mut session = cfg.config().split().0;
     std::fs::copy(cfg.models_path(), ws.join("models.json")).unwrap();
     session.models_path = None;
-    let service = navai::session::Service::new(session).expect("service");
+    let service = withnav::session::Service::new(session).expect("service");
     let id = service
         .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await

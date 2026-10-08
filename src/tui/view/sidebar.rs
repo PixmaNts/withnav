@@ -26,11 +26,35 @@ pub fn shown(ui: &UiState, width: u16) -> bool {
 
 /// The colour of an agent's name: plan in blue, build (and any other) in the accent.
 pub fn agent_style(agent: &str, theme: &Theme) -> Style {
-    if agent == crate::tui::state::PLAN_AGENT {
-        theme.code_ref()
-    } else {
-        theme.accent()
+    let color = match identity(agent).1 {
+        "vigie" => theme.vigie,
+        "lux" => theme.lux,
+        "mousse" => theme.mousse,
+        "cartographe" => theme.cartographe,
+        "sondeur" => theme.sondeur,
+        "Captain" => theme.text,
+        _ => theme.nav,
+    };
+    Style::default().fg(color)
+}
+
+/// One display identity table; wire ids remain unchanged for old sessions.
+pub fn identity(agent: &str) -> (&str, &str) {
+    match agent {
+        "build" | "plan" | "nav" | "assistant" => ("◎", "Nav"),
+        "vigie" | "explore" | "librarian" => ("◉", "vigie"),
+        "lux" | "review" | "oracle" => ("✦", "lux"),
+        "mousse" | "explorer" => ("▪", "mousse"),
+        "cartographe" => ("⬡", "cartographe"),
+        "sondeur" => ("↧", "sondeur"),
+        "captain" | "driver" | "user" => ("▸", "Captain"),
+        _ => ("◎", agent),
     }
+}
+
+pub fn agent_label(agent: &str) -> String {
+    let (glyph, name) = identity(agent);
+    format!("{glyph} {name}")
 }
 
 /// What a tab is doing, in the words the sidebar uses.
@@ -167,7 +191,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             Paragraph::new(Line::from(vec![
                 Span::styled("   ", theme.muted()),
                 Span::styled(
-                    tab.agent_name().to_string(),
+                    agent_label(tab.agent_name()),
                     agent_style(tab.agent_name(), theme),
                 ),
                 Span::styled(" · ", theme.muted()),
@@ -188,8 +212,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             }
             frame.render_widget(
                 Paragraph::new(Span::styled(
-                    fit(&format!("   └ {}", child.name), usize::from(inner.width)),
-                    theme.subagent(),
+                    fit(
+                        &format!("   └ {}", agent_label(&child.name)),
+                        usize::from(inner.width),
+                    ),
+                    agent_style(&child.name, theme),
                 )),
                 Rect::new(inner.x, y + 2 + n as u16 * 3, inner.width, 1),
             );
@@ -238,6 +265,29 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                     Span::styled(format!(" {label}"), theme.muted()),
                 ])),
                 Rect::new(inner.x, rows_bottom + 1 + n as u16, inner.width, 1),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_agents_keep_their_crew_identity() {
+        for (old, new) in [
+            ("explore", "vigie"),
+            ("librarian", "vigie"),
+            ("review", "lux"),
+            ("oracle", "lux"),
+            ("explorer", "mousse"),
+            ("driver", "captain"),
+        ] {
+            assert_eq!(agent_label(old), agent_label(new));
+            assert_eq!(
+                agent_style(old, &Theme::default()),
+                agent_style(new, &Theme::default())
             );
         }
     }

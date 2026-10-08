@@ -1,4 +1,4 @@
-/* The Settings page. Sizes follow docs/design/Navai Settings.dc.html ("Settings · WebUI"):
+/* The Settings page. Sizes follow docs/design/WithNav Settings.dc.html ("Settings · WebUI"):
    230px sidebar, 22/30px content padding, 8px card radii, 6px input radii, 11.5px labels. */
 
 .st-shell {
@@ -253,7 +253,7 @@
 .st-applies svg {
   flex-shrink: 0;
 }
-/* Restarting is the one the driver must act on: only its mark takes a colour. */
+/* Restarting is the one the Captain must act on: only its mark takes a colour. */
 .st-applies.restart svg {
   color: var(--or);
 }

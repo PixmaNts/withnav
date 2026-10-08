@@ -1,5 +1,5 @@
 //! The permission gate through the session service and the HTTP surface: a
-//! gated tool call yields the turn, the driver answers with a typed decision,
+//! gated tool call yields the turn, the Captain answers with a typed decision,
 //! and the decision (never chat text) resumes it.
 
 use std::path::{Path, PathBuf};
@@ -8,9 +8,9 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::bus::event::EventEnvelope;
-use navai::server::{app, AppState};
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{request_json, TestServerConfig};
@@ -101,7 +101,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
         .send(Command {
             command_id: ulid::Ulid::new(),
             session_id: id,
-            source_actor_id: navai::navigator::NAVIGATOR_ACTOR_ID.to_string(),
+            source_actor_id: withnav::navigator::NAVIGATOR_ACTOR_ID.to_string(),
             target_actor_id: "agent:main".to_string(),
             mode: DeliveryMode::NextTurn,
             content: vec![ContentBlock::Text {
@@ -118,7 +118,7 @@ async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(all) => {
+        withnav::bus::ResumeOutcome::Replay(all) => {
             all.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -165,7 +165,7 @@ fn body_of(provider: &CapturingProvider, n: usize) -> String {
     provider.bodies()[n].clone()
 }
 
-// Given a write, when the driver allows it once
+// Given a write, when the Captain allows it once
 // Then the call runs once, its real result is what the next model request
 //      carries, and the request is stored with its resolution
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -257,7 +257,7 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "not a decision");
 }
 
-fn authenticated_router(state: navai::server::AppState) -> axum::Router {
+fn authenticated_router(state: withnav::server::AppState) -> axum::Router {
     app(state).layer(axum::middleware::from_fn(
         |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
             request
@@ -314,7 +314,7 @@ async fn bypass_leaves_pending_sensitive_request_open() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "write credentials").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
-    assert_eq!(requested[0].payload["requires_driver"], true);
+    assert_eq!(requested[0].payload["requires_captain"], true);
     let (status, body) = request_json(
         &router,
         "POST",
@@ -330,10 +330,10 @@ async fn bypass_leaves_pending_sensitive_request_open() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
+async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
     let env = env();
-    let target = env.ws.join("driver.txt");
-    let provider = provider(vec![one_write("driver-write", &target), done("written")]).await;
+    let target = env.ws.join("captain.txt");
+    let provider = provider(vec![one_write("captain-write", &target), done("written")]).await;
     let state = config(&env, &provider).bearer_token("test-token").state();
     let router = authenticated_router(state.clone());
     let id = state.create_session(&env.ws, None, false).await.unwrap();
@@ -361,7 +361,7 @@ async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
     assert!(resolved[0].payload.get("approved_by").is_none());
     assert_eq!(
         std::fs::read_to_string(target).unwrap(),
-        "from driver-write"
+        "from captain-write"
     );
     state.close_session(id).await.unwrap();
 }
@@ -598,20 +598,20 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     assert!(next.contains("carry on"));
 }
 
-fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
-    std::fs::create_dir_all(env.root.join("config/navai")).unwrap();
+fn run_withnav(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
     std::fs::write(
-        env.root.join("config/navai/config.json"),
+        env.root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
         .arg(&env.ws)
         .arg("--models")
         .arg(models)
         .args(extra)
-        .env("NAVAI_TEST_KEY", "test-key")
+        .env("WITHNAV_TEST_KEY", "test-key")
         .env("HOME", env.root.join("home"))
         .env("XDG_DATA_HOME", env.root.join("data"))
         .env("XDG_CONFIG_HOME", env.root.join("config"))
@@ -619,11 +619,11 @@ fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
         .expect("run the binary")
 }
 
-// Given `navai run` reaching a gated call
+// Given `nav run` reaching a gated call
 // Then it stops with `permission_required` and exit 3, never hanging or
 //      approving; with --yes the session's bypass lets ordinary work finish
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_stops_on_a_permission_request_unless_yes() {
+async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     let env = env();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![
@@ -644,7 +644,7 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models_a, &["--prompt", "write a.txt"])
+        run_withnav(&env, &models_a, &["--prompt", "write a.txt"])
     })
     .await
     .unwrap();
@@ -663,7 +663,7 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models, &["--yes", "--prompt", "write a.txt"])
+        run_withnav(&env, &models, &["--yes", "--prompt", "write a.txt"])
     })
     .await
     .unwrap();
@@ -671,11 +671,11 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w2");
 }
 
-// Given `navai run --yes` whose model writes a credentials file
+// Given `nav run --yes` whose model writes a credentials file
 // Then the hard floor holds: it prints the request with its reason, exits 3
 //      and writes nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
+async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
     let env = env();
     let target = env.ws.join("auth.json");
     let provider = provider(vec![one_write("w1", &target), done("never")]).await;
@@ -689,7 +689,7 @@ async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models, &["--yes", "--prompt", "write auth.json"])
+        run_withnav(&env, &models, &["--yes", "--prompt", "write auth.json"])
     })
     .await
     .unwrap();
@@ -708,13 +708,13 @@ async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
     );
 }
 
-// Given `navai run --yes` where a child session reaches the hard floor
+// Given `nav run --yes` where a child session reaches the hard floor
 // Then the mirrored request ends the whole run with exit 3, and the child
 //      writes nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
+async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     let env = env();
-    let agents = env.ws.join(".navai/agents");
+    let agents = env.ws.join(".withnav/agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
         agents.join("writer.md"),
@@ -754,7 +754,7 @@ async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
             root: root_env,
             ws,
         };
-        run_navai(&env, &models, &["--yes", "--prompt", "delegate"])
+        run_withnav(&env, &models, &["--yes", "--prompt", "delegate"])
     })
     .await
     .unwrap();
@@ -924,7 +924,7 @@ async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
         .answer_permission(
             id,
             request,
-            navai::agent::permissions::PermissionDecision::AllowOnce,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
         )
         .await
         .expect("answer");
@@ -932,8 +932,8 @@ async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
 
 // Given a model message with two writes, and a navigator wake posted while
 //       the first request waits
-// When the driver approves the first, the second raises its own request, and
-//      the driver approves that too
+// When the Captain approves the first, the second raises its own request, and
+//      the Captain approves that too
 // Then no request is cancelled, both files are written, and the wake runs
 //      as its own turn only after the turn that held the requests has ended
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -990,7 +990,7 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
 
 // Given a write whose destination moves while its approval waits, and a wake
 //       posted behind the request
-// When the driver approves the first request and the call asks again
+// When the Captain approves the first request and the call asks again
 // Then the fresh request is not cancelled by the held wake, and the wake runs
 //      after the turn
 #[cfg(unix)]

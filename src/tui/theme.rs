@@ -8,19 +8,27 @@ pub const SELECTION_TINT: f32 = 0.15;
 /// A theme the user can pick; its `id` is what the settings file stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ThemeId {
-    #[default]
     AyuDark,
     AyuLight,
     NordDark,
     NordLight,
+    #[default]
+    TideDark,
+    TideLight,
+    MossDark,
+    MossLight,
 }
 
 impl ThemeId {
-    pub const ALL: [ThemeId; 4] = [
+    pub const ALL: [ThemeId; 8] = [
         ThemeId::AyuDark,
         ThemeId::AyuLight,
         ThemeId::NordDark,
         ThemeId::NordLight,
+        ThemeId::TideDark,
+        ThemeId::TideLight,
+        ThemeId::MossDark,
+        ThemeId::MossLight,
     ];
 
     /// The stable id written in `config.json`.
@@ -29,6 +37,10 @@ impl ThemeId {
             ThemeId::AyuDark => "ayu-dark",
             ThemeId::AyuLight => "ayu-light",
             ThemeId::NordDark => "nord-dark",
+            ThemeId::TideDark => "tide-dark",
+            ThemeId::TideLight => "tide-light",
+            ThemeId::MossDark => "moss-dark",
+            ThemeId::MossLight => "moss-light",
             ThemeId::NordLight => "nord-light",
         }
     }
@@ -38,6 +50,10 @@ impl ThemeId {
             ThemeId::AyuDark => "Ayu Dark",
             ThemeId::AyuLight => "Ayu Light",
             ThemeId::NordDark => "Nord Dark",
+            ThemeId::TideDark => "Tide Dark",
+            ThemeId::TideLight => "Tide Light",
+            ThemeId::MossDark => "Moss Dark",
+            ThemeId::MossLight => "Moss Light",
             ThemeId::NordLight => "Nord Light",
         }
     }
@@ -47,7 +63,10 @@ impl ThemeId {
     }
 
     pub fn is_light(self) -> bool {
-        matches!(self, ThemeId::AyuLight | ThemeId::NordLight)
+        matches!(
+            self,
+            ThemeId::AyuLight | ThemeId::NordLight | ThemeId::TideLight | ThemeId::MossLight
+        )
     }
 
     pub fn palette(self) -> Theme {
@@ -55,6 +74,10 @@ impl ThemeId {
             ThemeId::AyuDark => Theme::ayu_dark(),
             ThemeId::AyuLight => Theme::ayu_light(),
             ThemeId::NordDark => Theme::nord_dark(),
+            ThemeId::TideDark => Theme::tide_dark(),
+            ThemeId::TideLight => Theme::tide_light(),
+            ThemeId::MossDark => Theme::moss_dark(),
+            ThemeId::MossLight => Theme::moss_light(),
             ThemeId::NordLight => Theme::nord_light(),
         }
     }
@@ -79,6 +102,12 @@ pub struct Theme {
     pub blue: Color,
     pub purple: Color,
     pub orange: Color,
+    pub nav: Color,
+    pub vigie: Color,
+    pub lux: Color,
+    pub mousse: Color,
+    pub cartographe: Color,
+    pub sondeur: Color,
 }
 
 const fn hex(rgb: u32) -> Color {
@@ -98,7 +127,7 @@ pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::ayu_dark()
+        Self::tide_dark()
     }
 }
 
@@ -120,6 +149,12 @@ impl Theme {
             blue: hex(0x59c2ff),
             purple: hex(0xd2a6ff),
             orange: hex(0xff8f40),
+            nav: hex(0x5ecaed),
+            vigie: hex(0x72d8b3),
+            lux: hex(0xf8ca65),
+            mousse: hex(0xf89177),
+            cartographe: hex(0xdca3e5),
+            sondeur: hex(0xa3b3f8),
         }
     }
 
@@ -140,6 +175,12 @@ impl Theme {
             blue: hex(0x1a7bbf),
             purple: hex(0x8052b8),
             orange: hex(0xc25d00),
+            nav: hex(0x036b9a),
+            vigie: hex(0x107460),
+            lux: hex(0x8f5d04),
+            mousse: hex(0xb14328),
+            cartographe: hex(0x85468f),
+            sondeur: hex(0x4d5aac),
         }
     }
 
@@ -160,6 +201,12 @@ impl Theme {
             blue: hex(0x81a1c1),
             purple: hex(0xb48ead),
             orange: hex(0xd08770),
+            nav: hex(0x5ecaed),
+            vigie: hex(0x72d8b3),
+            lux: hex(0xf8ca65),
+            mousse: hex(0xf89177),
+            cartographe: hex(0xdca3e5),
+            sondeur: hex(0xa3b3f8),
         }
     }
 
@@ -180,6 +227,116 @@ impl Theme {
             blue: hex(0x3f6591),
             purple: hex(0x7d5a78),
             orange: hex(0xa85a3f),
+            nav: hex(0x036b9a),
+            vigie: hex(0x107460),
+            lux: hex(0x8f5d04),
+            mousse: hex(0xb14328),
+            cartographe: hex(0x85468f),
+            sondeur: hex(0x4d5aac),
+        }
+    }
+
+    pub const fn tide_dark() -> Self {
+        Self {
+            id: ThemeId::TideDark,
+            bg: hex(0x061115),
+            panel: hex(0x0a171b),
+            surface: hex(0x101e23),
+            border: hex(0x213135),
+            text: hex(0xd5e1e1),
+            muted: hex(0x87999e),
+            accent: hex(0x5ecbcb),
+            accent_text: hex(0x5ecbcb),
+            on_accent: hex(0x061115),
+            green: hex(0x81d584),
+            red: hex(0xee6570),
+            blue: hex(0x6cb2ec),
+            purple: hex(0xb59be6),
+            orange: hex(0xf69370),
+            nav: hex(0x5ecaed),
+            vigie: hex(0x72d8b3),
+            lux: hex(0xf8ca65),
+            mousse: hex(0xf89177),
+            cartographe: hex(0xdca3e5),
+            sondeur: hex(0xa3b3f8),
+        }
+    }
+
+    pub const fn tide_light() -> Self {
+        Self {
+            id: ThemeId::TideLight,
+            bg: hex(0xf2f8f8),
+            panel: hex(0xe9f2f3),
+            surface: hex(0xfbfefe),
+            border: hex(0xcddbdc),
+            text: hex(0x1f3137),
+            muted: hex(0x53676c),
+            accent: hex(0x1d9999),
+            accent_text: hex(0x00696f),
+            on_accent: hex(0x081e24),
+            green: hex(0x2e7c35),
+            red: hex(0xc53443),
+            blue: hex(0x0f68a2),
+            purple: hex(0x6f4fa1),
+            orange: hex(0xc1552c),
+            nav: hex(0x036b9a),
+            vigie: hex(0x107460),
+            lux: hex(0x8f5d04),
+            mousse: hex(0xb14328),
+            cartographe: hex(0x85468f),
+            sondeur: hex(0x4d5aac),
+        }
+    }
+
+    pub const fn moss_dark() -> Self {
+        Self {
+            id: ThemeId::MossDark,
+            bg: hex(0x0b100c),
+            panel: hex(0x101511),
+            surface: hex(0x161d17),
+            border: hex(0x262e27),
+            text: hex(0xe6e1cf),
+            muted: hex(0x909487),
+            accent: hex(0x75d78d),
+            accent_text: hex(0x75d78d),
+            on_accent: hex(0x0b100c),
+            green: hex(0xc8df58),
+            red: hex(0xea6a64),
+            blue: hex(0x6eb9dc),
+            purple: hex(0xbe99da),
+            orange: hex(0xebb25f),
+            nav: hex(0x5ecaed),
+            vigie: hex(0x72d8b3),
+            lux: hex(0xf8ca65),
+            mousse: hex(0xf89177),
+            cartographe: hex(0xdca3e5),
+            sondeur: hex(0xa3b3f8),
+        }
+    }
+
+    pub const fn moss_light() -> Self {
+        Self {
+            id: ThemeId::MossLight,
+            bg: hex(0xf7f5ee),
+            panel: hex(0xefede3),
+            surface: hex(0xfdfcf7),
+            border: hex(0xd7d5c7),
+            text: hex(0x293027),
+            muted: hex(0x5f665a),
+            accent: hex(0x429c5a),
+            accent_text: hex(0x197037),
+            on_accent: hex(0x141d16),
+            green: hex(0x577600),
+            red: hex(0xc13c3b),
+            blue: hex(0x136b94),
+            purple: hex(0x784d96),
+            orange: hex(0xae6700),
+            nav: hex(0x036b9a),
+            vigie: hex(0x107460),
+            lux: hex(0x8f5d04),
+            mousse: hex(0xb14328),
+            cartographe: hex(0x85468f),
+            sondeur: hex(0x4d5aac),
         }
     }
 
@@ -262,6 +419,16 @@ mod tests {
 
     #[test]
     fn every_theme_has_its_design_values() {
+        assert_eq!(Theme::default().id, ThemeId::TideDark);
+        assert_eq!(Theme::tide_dark().nav, hex(0x5ecaed));
+        assert_eq!(Theme::tide_light().vigie, hex(0x107460));
+        for id in ThemeId::ALL {
+            let theme = id.palette();
+            assert_eq!(
+                theme.lux,
+                hex(if id.is_light() { 0x8f5d04 } else { 0xf8ca65 })
+            );
+        }
         assert_eq!(Theme::ayu_dark().bg, Color::Rgb(0x0b, 0x0e, 0x14));
         assert_eq!(Theme::ayu_dark().accent, Color::Rgb(0xe6, 0xb4, 0x50));
         assert_eq!(Theme::ayu_light().accent_text, Color::Rgb(0xa3, 0x5f, 0x00));
@@ -279,7 +446,7 @@ mod tests {
             assert_eq!(theme.palette().id, theme);
         }
         assert_eq!(ThemeId::from_id("solarized"), None);
-        assert_eq!(ThemeId::default(), ThemeId::AyuDark);
+        assert_eq!(ThemeId::default(), ThemeId::TideDark);
         assert!(ThemeId::NordLight.is_light() && !ThemeId::NordDark.is_light());
     }
 

@@ -23,7 +23,18 @@
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
       "reasoning_history": "preserve",
-      "api": "chat"
+      "api": "chat",
+      "variants": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
+      }
     },
     "omniroute/combo/deepseek-v4-flash": {
       "provider": "omniroute",
@@ -31,9 +42,15 @@
       "supports_tools": true,
       "supports_parallel_tool_calls": false,
       "variants": {
-        "low": { "reasoning_effort": "low" },
-        "medium": { "reasoning_effort": "medium" },
-        "high": { "reasoning_effort": "high" }
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
       },
       "reasoning_history": "preserve",
       "api": "chat"
@@ -45,9 +62,15 @@
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
       "variants": {
-        "low": { "reasoning_effort": "low" },
-        "medium": { "reasoning_effort": "medium" },
-        "high": { "reasoning_effort": "high" }
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
       },
       "reasoning_history": "preserve"
     },
@@ -58,9 +81,15 @@
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
       "variants": {
-        "low": { "reasoning_effort": "low" },
-        "medium": { "reasoning_effort": "medium" },
-        "high": { "reasoning_effort": "high" }
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
       },
       "reasoning_history": "preserve"
     },
@@ -83,6 +112,63 @@
       "supports_parallel_tool_calls": false,
       "reasoning_history": "preserve",
       "api": "systemone"
+    },
+    "omniroute/openai/gpt-6-luna": {
+      "provider": "omniroute",
+      "model": "openai/gpt-6-luna",
+      "api": "chat",
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "variants": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
+      },
+      "reasoning_history": "preserve"
+    },
+    "omniroute/openai/gpt-6-astra": {
+      "provider": "omniroute",
+      "model": "openai/gpt-6-astra",
+      "api": "chat",
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "variants": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
+      },
+      "reasoning_history": "preserve"
+    },
+    "omniroute/opencode-go/deepseek-v4-flash": {
+      "provider": "omniroute",
+      "model": "opencode-go/deepseek-v4-flash",
+      "supports_tools": true,
+      "supports_parallel_tool_calls": false,
+      "variants": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
+      },
+      "reasoning_history": "preserve",
+      "api": "chat"
     }
   }
 }

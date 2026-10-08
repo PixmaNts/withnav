@@ -1,6 +1,12 @@
 /* Design tokens: same role names in every theme (docs/design/README.md). */
-:root,
 [data-theme="ayu-dark"] {
+  --nav: #5ecaed;
+  --lux: #f8ca65;
+  --mou: #f89177;
+  --vig: #72d8b3;
+  --car: #dca3e5;
+  --son: #a3b3f8;
+  --la: var(--nav);
   --bg: #0b0e14;
   --pn: #0f131a;
   --sf: #151a23;
@@ -19,6 +25,13 @@
   --backdrop: rgba(0, 0, 0, 0.4);
 }
 [data-theme="ayu-light"] {
+  --nav: #036b9a;
+  --lux: #8f5d04;
+  --mou: #b14328;
+  --vig: #107460;
+  --car: #85468f;
+  --son: #4d5aac;
+  --la: var(--nav);
   --bg: #fcfcfc;
   --pn: #f3f4f5;
   --sf: #ffffff;
@@ -37,6 +50,13 @@
   --backdrop: rgba(20, 24, 30, 0.28);
 }
 [data-theme="nord-dark"] {
+  --nav: #5ecaed;
+  --lux: #f8ca65;
+  --mou: #f89177;
+  --vig: #72d8b3;
+  --car: #dca3e5;
+  --son: #a3b3f8;
+  --la: var(--nav);
   --bg: #2e3440;
   --pn: #292e39;
   --sf: #3b4252;
@@ -55,6 +75,13 @@
   --backdrop: rgba(0, 0, 0, 0.4);
 }
 [data-theme="nord-light"] {
+  --nav: #036b9a;
+  --lux: #8f5d04;
+  --mou: #b14328;
+  --vig: #107460;
+  --car: #85468f;
+  --son: #4d5aac;
+  --la: var(--nav);
   --bg: #eceff4;
   --pn: #e5e9f0;
   --sf: #ffffff;
@@ -77,6 +104,112 @@
   /* Selected / active backgrounds: accent at 14–16 % over transparent. */
   --tint: color-mix(in srgb, var(--ac) 16%, transparent);
   --tint-strong: color-mix(in srgb, var(--ac) 18%, transparent);
+  --font-brand: "Bricolage Grotesque", system-ui, sans-serif;
   --font-ui: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+
+:root,
+[data-theme="tide-dark"] {
+  --nav: #5ecaed;
+  --lux: #f8ca65;
+  --mou: #f89177;
+  --vig: #72d8b3;
+  --car: #dca3e5;
+  --son: #a3b3f8;
+  --la: var(--nav);
+  --bg: #061115;
+  --pn: #0a171b;
+  --sf: #101e23;
+  --bd: #213135;
+  --tx: #d5e1e1;
+  --mu: #87999e;
+  --ac: #5ecbcb;
+  --at: #5ecbcb;
+  --acfg: #061115;
+  --gr: #81d584;
+  --rd: #ee6570;
+  --bl: #6cb2ec;
+  --pu: #b59be6;
+  --or: #f69370;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --backdrop: rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="tide-light"] {
+  --nav: #036b9a;
+  --lux: #8f5d04;
+  --mou: #b14328;
+  --vig: #107460;
+  --car: #85468f;
+  --son: #4d5aac;
+  --la: var(--nav);
+  --bg: #f2f8f8;
+  --pn: #e9f2f3;
+  --sf: #fbfefe;
+  --bd: #cddbdc;
+  --tx: #1f3137;
+  --mu: #53676c;
+  --ac: #1d9999;
+  --at: #00696f;
+  --acfg: #081e24;
+  --gr: #2e7c35;
+  --rd: #c53443;
+  --bl: #0f68a2;
+  --pu: #6f4fa1;
+  --or: #c1552c;
+  --shadow: rgba(30, 35, 45, 0.16);
+  --backdrop: rgba(20, 24, 30, 0.28);
+}
+
+[data-theme="moss-dark"] {
+  --nav: #5ecaed;
+  --lux: #f8ca65;
+  --mou: #f89177;
+  --vig: #72d8b3;
+  --car: #dca3e5;
+  --son: #a3b3f8;
+  --la: var(--nav);
+  --bg: #0b100c;
+  --pn: #101511;
+  --sf: #161d17;
+  --bd: #262e27;
+  --tx: #e6e1cf;
+  --mu: #909487;
+  --ac: #75d78d;
+  --at: #75d78d;
+  --acfg: #0b100c;
+  --gr: #c8df58;
+  --rd: #ea6a64;
+  --bl: #6eb9dc;
+  --pu: #be99da;
+  --or: #ebb25f;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --backdrop: rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="moss-light"] {
+  --nav: #036b9a;
+  --lux: #8f5d04;
+  --mou: #b14328;
+  --vig: #107460;
+  --car: #85468f;
+  --son: #4d5aac;
+  --la: var(--nav);
+  --bg: #f7f5ee;
+  --pn: #efede3;
+  --sf: #fdfcf7;
+  --bd: #d7d5c7;
+  --tx: #293027;
+  --mu: #5f665a;
+  --ac: #429c5a;
+  --at: #197037;
+  --acfg: #141d16;
+  --gr: #577600;
+  --rd: #c13c3b;
+  --bl: #136b94;
+  --pu: #784d96;
+  --or: #ae6700;
+  --shadow: rgba(30, 35, 45, 0.16);
+  --backdrop: rgba(20, 24, 30, 0.28);
 }

@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<style>body{margin:0}a{color:var(--bl)}a:hover{opacity:.8}.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace}button{font-family:inherit}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:rgba(128,128,128,.35);border-radius:4px}</style>
+</helmet>
+<div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
+<div style="min-width:1440px">
+  <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:8.4px;flex:none"><svg viewBox="0 0 64 64" width="29.4" height="29.4" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:22.4px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></div>
+    <div style="display:flex;gap:4px">
+      <sc-for list="{{ screens }}" as="s" hint-placeholder-count="2"><button onClick="{{ s.click }}" style="background:{{ s.bg }};color:{{ s.fg }};border:1px solid {{ s.bd }};border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;display:flex;gap:6px;align-items:center;white-space:nowrap"><i class="{{ s.icon }}"></i>{{ s.label }}</button></sc-for>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:12px">Theme</span>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeFams }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div><div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeModes }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
+    </div>
+  </div>
+
+<!-- ================= SETTINGS · TUI ================= -->
+<sc-if value="{{ isTuiSet }}" hint-placeholder-val="{{ true }}">
+<div class="mono" style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:180px minmax(0,1fr) 320px;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden;font-size:12.5px;line-height:1.55">
+  <div style="grid-column:1/4;display:flex;gap:16px;padding:6px 14px;border-bottom:1px solid var(--bd);background:var(--pn);color:var(--mu)">
+    <span><span style="color:var(--lh)">◆</span> <span style="color:var(--tx)">withnav</span></span><span>~/dev/rust-agent</span><span>develop ●3</span><span style="color:var(--tx)">/config</span>
+    <span style="margin-left:auto;color:{{ tsStatusCol }}">{{ tsStatus }}</span><span>~/.config/withnav/config.json · models.json</span>
+  </div>
+  <div style="border-right:1px solid var(--bd);background:var(--pn);padding:10px 0;overflow:auto;display:flex;flex-direction:column;gap:2px">
+    <div style="padding:0 12px 6px;color:var(--mu)">SETTINGS</div>
+    <sc-for list="{{ tsNav }}" as="n" hint-placeholder-count="6"><button onClick="{{ n.click }}" style="text-align:left;background:{{ n.bg }};border:0;border-left:2px solid {{ n.bd }};color:var(--tx);padding:5px 10px;font:inherit;cursor:pointer;display:flex;flex-direction:column"><span><span style="color:var(--mu)">{{ n.n }}</span> {{ n.label }} <span style="color:var(--bl)">{{ n.mod }}</span></span><span style="color:var(--mu)">{{ n.sub }}</span></button></sc-for>
+    <div style="margin-top:auto;padding:8px 12px;color:var(--mu)">1…6 section<br>tab next section<br>esc back to session</div>
+  </div>
+  <div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+    <div style="padding:10px 16px 2px;display:flex;gap:12px;align-items:baseline"><span style="color:var(--ac)">{{ tsTitle }}</span><span style="color:var(--mu)">{{ tsFile }}</span></div>
+    <div style="padding:0 16px 6px;color:var(--mu)">{{ tsDesc }}</div>
+    <div style="flex:1;overflow:auto;padding:0 0 12px">
+      <sc-for list="{{ tsRows }}" as="r" hint-placeholder-count="6">
+        <sc-if value="{{ r.head }}" hint-placeholder-val="{{ false }}"><div style="padding:10px 16px 2px 22px;color:var(--mu)"><span style="color:var(--tx)">{{ r.label }}</span>  <span style="color:{{ r.col }}">{{ r.meta }}</span></div></sc-if>
+        <sc-if value="{{ r.isRow }}" hint-placeholder-val="{{ true }}"><div onClick="{{ r.click }}" style="display:grid;grid-template-columns:12px 200px minmax(0,1fr) auto;gap:8px;padding:2px 16px 2px 6px;background:{{ r.bg }};border-left:2px solid {{ r.bd }};cursor:pointer;align-items:center"><span style="color:var(--bl)">{{ r.mod }}</span><span style="color:{{ r.kcol }}">{{ r.k }}</span><span style="color:{{ r.vcol }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.v }}</span><span style="color:var(--mu);display:flex;gap:8px;align-items:center"><sc-if value="{{ r.arrows }}" hint-placeholder-val="{{ false }}"><button onClick="{{ r.dec }}" style="background:none;border:0;color:var(--ac);font:inherit;cursor:pointer;padding:0">‹</button><button onClick="{{ r.inc }}" style="background:none;border:0;color:var(--ac);font:inherit;cursor:pointer;padding:0">›</button></sc-if>{{ r.hint }}</span></div></sc-if>
+      </sc-for>
+    </div>
+  </div>
+  <div style="border-left:1px solid var(--bd);background:var(--pn);padding:12px 14px;overflow:auto;display:flex;flex-direction:column;gap:16px">
+    <div><div style="color:var(--mu)">FOCUSED</div><div style="color:var(--ac);word-break:break-all">{{ tf.key }}</div><div style="margin-top:4px">{{ tf.desc }}</div>
+      <div style="margin-top:6px;display:grid;grid-template-columns:64px minmax(0,1fr);gap:2px 8px"><span style="color:var(--mu)">type</span><span>{{ tf.type }}</span><span style="color:var(--mu)">values</span><span style="word-break:break-word">{{ tf.allowed }}</span><span style="color:var(--mu)">saved</span><span style="word-break:break-all">{{ tf.saved }}</span></div></div>
+    <div><div style="color:var(--mu)">PENDING · {{ tsCount }}</div>
+      <sc-if value="{{ tsClean }}" hint-placeholder-val="{{ true }}"><div style="color:var(--mu)">No changes. config.json is up to date.</div></sc-if>
+      <sc-for list="{{ tsDiffs }}" as="d" hint-placeholder-count="0"><div style="margin-top:6px"><div style="color:var(--mu)">{{ d.key }}</div><div style="color:var(--rd);word-break:break-all">- {{ d.from }}</div><div style="color:var(--gr);word-break:break-all">+ {{ d.to }}</div></div></sc-for>
+      <sc-if value="{{ tsDirty }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:14px;margin-top:10px"><button onClick="{{ tsSave }}" style="background:none;border:0;color:var(--ac);font:inherit;cursor:pointer;padding:0">[ctrl+s] write</button><button onClick="{{ tsRevert }}" style="background:none;border:0;color:var(--ac);font:inherit;cursor:pointer;padding:0">[ctrl+z] revert</button></div></sc-if>
+    </div>
+    <div style="border-left:2px solid var(--ac);padding:2px 0 2px 10px;color:var(--mu)">Written for every client: TUI, WebUI and VS Code. A <span style="color:var(--tx)">/models</span> pick inside a session stays in that session and never writes here.</div>
+  </div>
+  <div style="grid-column:1/4;padding:4px 14px;background:var(--sf);color:var(--mu);display:flex;gap:6px 16px;flex-wrap:wrap;align-items:center"><span>↑↓ move</span><span>←→ change</span><span>enter pick / edit</span><span>space toggle</span><span>/ filter</span><span>ctrl+s write</span><span>ctrl+z revert</span><span>esc back</span><span style="margin-left:auto">refactor-parser · settings</span></div>
+  <sc-if value="{{ tsPick }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ tsClosePick }}" style="position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;justify-content:center;padding-top:70px">
+    <div onClick="{{ tsStop }}" style="width:700px;height:fit-content;max-height:600px;overflow:auto;background:var(--pn);border:1px solid var(--ac);border-radius:6px;padding:10px 0">
+      <div style="padding:0 14px 8px;display:flex;gap:8px"><span style="color:var(--ac)">{{ tsPickTitle }}</span><span style="margin-left:auto;color:var(--mu)">writes config.json</span></div>
+      <div style="padding:6px 14px;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);margin-bottom:4px"><span style="color:var(--ac)">❯</span> <span style="color:var(--mu)">filter models…</span></div>
+      <sc-for list="{{ tsPickRows }}" as="m" hint-placeholder-count="6"><sc-if value="{{ m.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="padding:3px 14px;cursor:pointer">{{ m.tcaret }} {{ m.label }} <span style="color:var(--mu)">· {{ m.count }}</span></div></sc-if><sc-if value="{{ m.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="padding:2px 14px 2px 30px;cursor:pointer;color:var(--mu)">{{ m.tcaret }} {{ m.label }}</div></sc-if><sc-if value="{{ m.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ m.click }}" style="padding:3px 14px 3px 48px;background:{{ m.fbg }};display:grid;grid-template-columns:16px 220px minmax(0,1fr);gap:8px;cursor:pointer"><span style="color:var(--ac)">{{ m.tmark }}</span><span>{{ m.id }}</span><span style="color:var(--mu)">{{ m.meta }}</span></div></sc-if></sc-for>
+      <div style="padding:6px 14px 0;border-top:1px solid var(--bd);margin-top:6px;color:var(--mu)">↑↓ model  enter apply  esc cancel</div>
+    </div>
+  </div>
+  </sc-if>
+</div>
+</sc-if>
+
+<!-- ================= SETTINGS · WEBUI ================= -->
+<sc-if value="{{ isWebSet }}" hint-placeholder-val="{{ false }}">
+<div style="height:820px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:230px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);overflow:hidden">
+  <div style="grid-column:1/3;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn)">
+    <span style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:5.7px;flex:none"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:15.2px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></span>
+    <span style="color:var(--mu)">Settings</span>
+    <div style="margin-left:auto;display:flex;gap:10px;align-items:center"><div style="border:1px solid var(--bd);border-radius:6px;padding:4px 10px;color:var(--mu);font-size:12px;width:220px;display:flex;gap:6px;align-items:center;background:var(--bg)"><i class="ph ph-magnifying-glass"></i>Search settings</div><span style="color:var(--gr);font-size:12px;display:flex;gap:5px;align-items:center"><i class="ph ph-check-circle"></i>Saved</span></div>
+  </div>
+  <div style="border-right:1px solid var(--bd);background:var(--pn);padding:12px 8px;display:flex;flex-direction:column;gap:2px">
+    <a href="#" style="color:var(--mu);font-size:12px;padding:2px 8px 10px;text-decoration:none;display:flex;gap:6px;align-items:center"><i class="ph ph-arrow-left"></i>Back to rust-agent</a>
+    <sc-for list="{{ webNav }}" as="n" hint-placeholder-count="5"><button onClick="{{ n.click }}" style="background:{{ n.bg }};border:0;border-left:2px solid {{ n.bd }};color:var(--tx);text-align:left;padding:8px 10px;border-radius:0 5px 5px 0;font-size:13px;cursor:pointer;display:flex;gap:9px;align-items:center"><i class="{{ n.icon }}" style="color:{{ n.ic }};font-size:16px"></i><span style="display:flex;flex-direction:column"><span>{{ n.label }}</span><span style="color:var(--mu);font-size:11px">{{ n.sub }}</span></span></button></sc-for>
+    <div style="margin-top:auto;padding:8px;color:var(--mu);font-size:11.5px;line-height:1.6" class="mono">~/.config/withnav/<br>config.json · models.json</div>
+  </div>
+  <div style="overflow:auto;padding:22px 30px">
+    <sc-if value="{{ wsProviders }}" hint-placeholder-val="{{ true }}">
+      <div style="font-size:18px;font-weight:500">Gateways</div><div style="color:var(--mu);margin:2px 0 16px">Endpoints that serve the catalogue. Models are named <span class="mono">&lt;gateway&gt;/&lt;id&gt;</span>. <span class="mono">models.json → providers · catalogue only</span></div>
+      <div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <sc-for list="{{ provCards }}" as="p" hint-placeholder-count="2"><div onClick="{{ p.click }}" style="border:1px solid {{ p.bd }};background:{{ p.bg }};border-radius:8px;padding:10px 12px;cursor:pointer"><div style="display:flex;gap:8px;align-items:center"><span style="width:7px;height:7px;border-radius:50%;background:var(--gr)"></span><span class="mono" style="font-weight:500">{{ p.k }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px">used by {{ p.n }}</span></div><div class="mono" style="color:var(--mu);font-size:11.5px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.base }}</div></div></sc-for>
+          <button style="background:transparent;border:1px dashed var(--bd);color:var(--mu);border-radius:8px;padding:9px;font-size:12.5px;cursor:pointer"><i class="ph ph-plus"></i> Add gateway</button>
+        </div>
+        <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn)">
+          <div style="padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;gap:10px;align-items:center"><span class="mono" style="font-size:15px;font-weight:500">{{ pv.k }}</span><span style="border:1px solid var(--gr);color:var(--gr);border-radius:10px;padding:0 9px;font-size:11.5px;white-space:nowrap">reachable · {{ pv.lat }}</span><span style="margin-left:auto;display:flex;gap:8px"><button style="background:transparent;border:1px solid var(--ac);color:var(--at);border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer">Test connection</button><button style="background:transparent;border:1px solid transparent;color:var(--mu);border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer">Refresh catalog</button></span></div>
+          <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:14px 18px">
+            <div style="grid-column:1/3"><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Base URL</div><div class="mono" style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg)">{{ pv.base }}</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">API key</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex;gap:8px;align-items:center"><span class="mono">{{ pv.env }}</span><span style="margin-left:auto;color:var(--gr);font-size:11.5px"><i class="ph ph-key"></i> {{ pv.keySrc }}</span></div><div style="color:var(--mu);font-size:11.5px;margin-top:4px">Read from the environment or the auth store. Never shown or logged.</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Catalog format</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex"><span class="mono">{{ pv.cat }}</span><i class="ph ph-caret-down" style="margin-left:auto;color:var(--mu)"></i></div><div style="color:var(--mu);font-size:11.5px;margin-top:4px">How the model list is read from the provider.</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Connect timeout</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex"><span class="mono">{{ pv.connect }}</span><span style="margin-left:auto;color:var(--mu)">ms</span></div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Request timeout</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex"><span class="mono">{{ pv.request }}</span><span style="margin-left:auto;color:var(--mu)">ms</span></div><div style="color:var(--mu);font-size:11.5px;margin-top:4px">The instinct always uses its own 2 s deadline.</div></div>
+            <div style="grid-column:1/3"><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Headers</div><div style="border:1px solid var(--bd);border-radius:6px;background:var(--bg)"><div style="display:grid;grid-template-columns:1fr 1fr 28px;padding:6px 10px;color:var(--mu);font-size:11.5px;border-bottom:1px solid var(--bd)"><span>Name</span><span>Value</span><span></span></div><div style="padding:8px 10px;color:var(--mu);font-size:12px">No extra headers · <span style="color:var(--at)">+ Add header</span></div></div></div>
+          </div>
+          <div style="padding:12px 16px;border-top:1px solid var(--bd)"><div style="color:var(--mu);font-size:11.5px;margin-bottom:6px">Catalogue · grouped by provider</div>
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--bg);overflow:hidden">
+            <sc-for list="{{ gwRows }}" as="r" hint-placeholder-count="6">
+              <sc-if value="{{ r.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ r.click }}" style="display:flex;gap:8px;align-items:center;padding:7px 12px;background:var(--pn);border-bottom:1px solid var(--bd);cursor:pointer;font-weight:500"><i class="{{ r.caret }}" style="color:var(--mu);font-size:11px"></i><i class="ph ph-plugs" style="color:var(--mu)"></i><span class="mono">{{ r.label }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px;font-weight:400">{{ r.count }}</span></div></sc-if>
+              <sc-if value="{{ r.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ r.click }}" style="display:flex;gap:8px;align-items:center;padding:5px 12px 5px {{ r.pad }};cursor:pointer;color:var(--mu);font-size:12px"><i class="{{ r.caret }}" style="font-size:10px"></i><span class="mono">{{ r.label }}</span><span style="margin-left:auto;font-size:11px">{{ r.count }}</span></div></sc-if>
+              <sc-if value="{{ r.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ r.click }}" style="display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 12px 5px {{ r.pad }};background:{{ r.bg }};cursor:{{ r.cur }}"><span style="color:var(--ac);font-size:11px">{{ r.mark }}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="mono" style="font-size:12.5px">{{ r.id }}</span>  <span class="mono" style="color:var(--mu);font-size:11px">{{ r.full }}</span></span><span class="mono" style="color:var(--mu);font-size:11px;white-space:nowrap">{{ r.meta }}</span></div></sc-if>
+            </sc-for>
+          </div>
+          </div>
+          <div style="padding:12px 16px;border-top:1px solid var(--bd)"><div style="color:var(--mu);font-size:11.5px;margin-bottom:6px">Used by</div><div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{ pv.uses }}" as="a" hint-placeholder-count="3"><span style="border:1px solid var(--bd);border-radius:10px;padding:2px 10px;font-size:12px"><span class="mono">{{ a.k }}</span> <span style="color:var(--mu)">· {{ a.model }}</span></span></sc-for></div></div>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ wsLayers }}" hint-placeholder-val="{{ false }}">
+      <div style="font-size:18px;font-weight:500">Layers</div><div style="color:var(--mu);margin:2px 0 16px">Reflex, instinct and metacognition run one model each. The cognition layer runs Nav and the crew, several at once as subagents. <span class="mono">config.json → layers, agents, default_agent</span></div>
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px">
+        <sc-for list="{{ layerCards }}" as="c" hint-placeholder-count="4"><div onClick="{{ c.click }}" style="border:1px solid {{ c.bd }};background:{{ c.bg }};border-radius:8px;padding:11px 12px;cursor:pointer;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;gap:7px;align-items:center"><i class="{{ c.icon }}" style="color:var(--at)"></i><span style="font-weight:500">{{ c.label }}</span><span class="mono" style="margin-left:auto;border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:10.5px;color:{{ c.apiCol }}">{{ c.api }}</span></div>
+          <div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.model }}</div>
+          <div style="color:var(--mu);font-size:11.5px">{{ c.note }}</div>
+        </div></sc-for>
+      </div>
+      <sc-if value="{{ lyFixed }}" hint-placeholder-val="{{ false }}">
+        <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn);max-width:980px">
+          <div style="padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;gap:10px;align-items:center"><span style="font-size:15px;font-weight:500">{{ ly.label }}</span><span style="color:var(--mu)">{{ ly.role }}</span><span style="margin-left:auto;border:1px solid var(--bd);border-radius:10px;padding:0 9px;font-size:11.5px;color:var(--mu);white-space:nowrap"><i class="ph ph-lock-simple"></i> one model at a time</span></div>
+          <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:14px 18px">
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Gateway › provider</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex;gap:6px"><span class="mono">{{ ly.gw }}</span><span style="color:var(--mu)">›</span><span class="mono">{{ ly.pvName }}</span><span class="mono" style="margin-left:auto;color:var(--mu);font-size:11px">{{ ly.cfgKey }}</span></div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">API</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex;gap:8px;align-items:center"><span class="mono">{{ ly.api }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px"><i class="ph ph-lock-simple"></i> fixed for this layer</span></div></div>
+            <div style="grid-column:1/3"><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Model</div><div class="mono" style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex">{{ ly.model }}<i class="ph ph-magnifying-glass" style="margin-left:auto;color:var(--mu)"></i></div><div style="color:var(--mu);font-size:11.5px;margin-top:4px">{{ ly.modelNote }}</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Context window</div><div class="mono" style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg)">{{ ly.ctx }}</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Max output tokens</div><div class="mono" style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg)">{{ ly.out }}</div></div>
+            <sc-if value="{{ ly.isMeta }}" hint-placeholder-val="{{ false }}">
+              <div style="grid-column:1/3"><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Variant · offered by this model</div>
+                <div style="display:flex;gap:4px"><sc-for list="{{ thinkOpts }}" as="o" hint-placeholder-count="4"><button onClick="{{ o.click }}" style="background:{{ o.bg }};color:{{ o.fg }};border:1px solid {{ o.bd }};border-radius:5px;padding:5px 14px;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center"><span class="mono">{{ o.label }}</span><span style="font-size:10.5px;color:var(--gr)">{{ o.tag }}</span></button></sc-for></div>
+                <div style="color:{{ thinkNoteCol }};font-size:11.5px;margin-top:6px">{{ thinkNote }}</div></div>
+            </sc-if>
+            <sc-if value="{{ ly.isReflex }}" hint-placeholder-val="{{ false }}">
+              <div style="grid-column:1/3"><div style="color:var(--mu);font-size:11.5px;margin-bottom:6px">Editors · the reflex runs only through the language server</div>
+                <div style="display:flex;gap:8px"><sc-for list="{{ ides }}" as="e" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 12px;background:var(--bg);display:flex;gap:8px;align-items:center;opacity:{{ e.op }}"><span style="width:7px;height:7px;border-radius:50%;background:{{ e.dot }}"></span>{{ e.name }}<span style="color:var(--mu);font-size:11.5px">{{ e.st }}</span></div></sc-for></div></div>
+            </sc-if>
+            <sc-if value="{{ ly.isInstinct }}" hint-placeholder-val="{{ false }}">
+              <div style="grid-column:1/3;color:var(--mu);font-size:12px;line-height:1.5">Every call has a 2 s deadline, whatever the provider timeout. Used by the role guard, the Nav pipeline and 3 InstinctFlow.</div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ lyCog }}" hint-placeholder-val="{{ true }}">
+        <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn)">
+          <div style="padding:12px 16px;border-bottom:1px solid var(--bd);display:flex;gap:12px;align-items:center"><span style="font-size:15px;font-weight:500">Cognition</span><span style="color:var(--mu)">Agents, each with its own model.</span>
+            <span style="margin-left:auto;color:var(--mu);font-size:12px">Default agent</span><div style="border:1px solid var(--ac);border-radius:6px;padding:4px 10px;background:var(--bg);display:flex;gap:8px;align-items:center;min-width:120px"><span class="mono">{{ defAgent }}</span><i class="ph ph-caret-down" style="margin-left:auto;color:var(--mu)"></i></div></div>
+          <div style="display:grid;grid-template-columns:120px 100px minmax(0,1.4fr) 100px 90px 110px;gap:10px;padding:7px 16px;color:var(--mu);font-size:11.5px;border-bottom:1px solid var(--bd)"><span>Agent</span><span>Mode</span><span>Model</span><span>Gateway</span><span>Variant</span><span></span></div>
+          <sc-for list="{{ profRows }}" as="p" hint-placeholder-count="5"><div onClick="{{ p.click }}" style="display:grid;grid-template-columns:120px 100px minmax(0,1.4fr) 100px 90px 110px;gap:10px;padding:8px 16px;border-bottom:1px solid var(--bd);background:{{ p.bg }};cursor:pointer;align-items:center">
+            <span class="mono" style="font-weight:500">{{ p.k }}</span><span style="font-size:12px;color:{{ p.modeCol }}">{{ p.mode }}</span><span class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.model }}</span><span class="mono" style="font-size:12px;color:var(--mu)">{{ p.prov }}</span><span class="mono" style="font-size:12px;color:var(--mu)">{{ p.variant }}</span>
+            <button onClick="{{ p.setDef }}" style="justify-self:end;background:none;border:1px solid {{ p.defBd }};color:{{ p.defFg }};border-radius:10px;padding:1px 9px;font-size:11px;cursor:pointer;white-space:nowrap"><i class="{{ p.defIcon }}"></i> {{ p.defTxt }}</button>
+          </div></sc-for>
+          <div style="padding:16px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 18px">
+            <div style="grid-column:1/3;display:flex;gap:10px;align-items:baseline"><span class="mono" style="font-size:14px;font-weight:500">{{ pf.k }}</span><span style="color:var(--mu)">{{ pf.desc }}</span><span class="mono" style="margin-left:auto;color:var(--mu);font-size:11.5px">{{ pf.file }}</span></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Model</div><div class="mono" style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg);display:flex">{{ pf.model }}<i class="ph ph-magnifying-glass" style="margin-left:auto;color:var(--mu)"></i></div><div style="color:var(--mu);font-size:11.5px;margin-top:4px">{{ pf.modelNote }}</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Variant · offered by this model</div><div style="display:flex;gap:4px"><sc-for list="{{ pf.variants }}" as="v" hint-placeholder-count="3"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:5px;padding:5px 12px;font-size:12px;cursor:pointer" class="mono">{{ v.label }}</button></sc-for></div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Mode</div><div style="display:flex;gap:4px"><sc-for list="{{ pf.modes }}" as="m" hint-placeholder-count="3"><span style="border:1px solid {{ m.bd }};background:{{ m.bg }};border-radius:5px;padding:5px 12px;font-size:12px">{{ m.label }}</span></sc-for></div><div style="color:var(--mu);font-size:11.5px;margin-top:4px">primary drives a conversation, subagent runs as a background flow, all does both.</div></div>
+            <div><div style="color:var(--mu);font-size:11.5px;margin-bottom:4px">Simultaneous flows</div><div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg)">Up to <span class="mono" style="color:var(--or)">{{ maxSub }}</span> subagents per session · <a href="#" onClick="{{ goSubSec }}">Subagents</a></div></div>
+          </div>
+        </div>
+      </sc-if>
+      <div style="margin-top:16px;max-width:980px"><div style="color:var(--mu);font-size:11.5px;margin-bottom:6px">{{ pickTitle }}</div>
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--bg);overflow:hidden">
+            <sc-for list="{{ pickRows }}" as="r" hint-placeholder-count="6">
+              <sc-if value="{{ r.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ r.click }}" style="display:flex;gap:8px;align-items:center;padding:7px 12px;background:var(--pn);border-bottom:1px solid var(--bd);cursor:pointer;font-weight:500"><i class="{{ r.caret }}" style="color:var(--mu);font-size:11px"></i><i class="ph ph-plugs" style="color:var(--mu)"></i><span class="mono">{{ r.label }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px;font-weight:400">{{ r.count }}</span></div></sc-if>
+              <sc-if value="{{ r.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ r.click }}" style="display:flex;gap:8px;align-items:center;padding:5px 12px 5px {{ r.pad }};cursor:pointer;color:var(--mu);font-size:12px"><i class="{{ r.caret }}" style="font-size:10px"></i><span class="mono">{{ r.label }}</span><span style="margin-left:auto;font-size:11px">{{ r.count }}</span></div></sc-if>
+              <sc-if value="{{ r.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ r.click }}" style="display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 12px 5px {{ r.pad }};background:{{ r.bg }};cursor:{{ r.cur }}"><span style="color:var(--ac);font-size:11px">{{ r.mark }}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="mono" style="font-size:12.5px">{{ r.id }}</span>  <span class="mono" style="color:var(--mu);font-size:11px">{{ r.full }}</span></span><span class="mono" style="color:var(--mu);font-size:11px;white-space:nowrap">{{ r.meta }}</span></div></sc-if>
+            </sc-for>
+          </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ wsPerm }}" hint-placeholder-val="{{ false }}">
+      <div style="font-size:18px;font-weight:500">Permissions</div><div style="color:var(--mu);margin:2px 0 16px">How mutating tool calls are cleared. <span class="mono">config.json → permissions</span></div>
+      <div style="display:flex;flex-direction:column;gap:14px;max-width:820px">
+        <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn);padding:16px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 20px">
+          <div style="font-weight:500;font-size:14px">Automatic review</div>
+          <div onClick="{{ arTog.click }}" style="width:38px;height:21px;border-radius:11px;background:{{ arTog.tbg }};position:relative;cursor:pointer"><div style="position:absolute;top:3px;left:{{ arTog.tl2 }};width:15px;height:15px;border-radius:50%;background:{{ arTog.tk }}"></div></div>
+          <div style="color:var(--mu);line-height:1.5">Each <span class="mono">bash</span>, <span class="mono">write</span> and <span class="mono">edit</span> call is reviewed before it runs. <span class="mono">fetch</span> keeps its origin grants: allow once, allow origin, or deny.</div><span></span>
+          <div style="grid-column:1/3;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px">
+            <div style="border:1px solid var(--bd);border-radius:6px;padding:9px 11px;background:var(--bg)"><div style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:500"><i class="ph ph-gauge" style="color:var(--at)"></i>1 · Instinct</div><div style="color:var(--mu);font-size:12px;line-height:1.45;margin-top:3px">Classifies effects, scope and risk. Read-only and low-risk project changes run.</div></div>
+            <div style="border:1px solid var(--bd);border-radius:6px;padding:9px 11px;background:var(--bg)"><div style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:500"><i class="ph ph-compass" style="color:var(--at)"></i>2 · Metacognition</div><div style="color:var(--mu);font-size:12px;line-height:1.45;margin-top:3px">Must approve risky or outside-project changes before they run.</div></div>
+            <div style="border:1px solid var(--bd);border-radius:6px;padding:9px 11px;background:var(--bg)"><div style="display:flex;gap:6px;align-items:center;font-size:12px;font-weight:500"><i class="ph ph-user" style="color:var(--at)"></i>3 · Captain</div><div style="color:var(--mu);font-size:12px;line-height:1.45;margin-top:3px">Decides on any doubt, timeout or reviewer failure: allow once or deny. Sensitive reads always end here.</div></div>
+          </div>
+          <div style="grid-column:1/3;display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px">
+            <div style="border:1px solid {{ arOnBd }};border-radius:6px;padding:10px 12px;background:var(--bg)"><div style="font-size:12px;font-weight:500;margin-bottom:3px">On</div><div style="color:var(--mu);font-size:12px;line-height:1.45">Instinct, then the metacognition for risky calls, then you when either is unsure.</div></div>
+            <div style="border:1px solid {{ arOffBd }};border-radius:6px;padding:10px 12px;background:var(--bg)"><div style="font-size:12px;font-weight:500;margin-bottom:3px">Off</div><div style="color:var(--mu);font-size:12px;line-height:1.45">Every bash, write and edit call is asked to you.</div></div>
+          </div>
+        </div>
+        <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn);padding:16px">
+          <div style="display:flex;align-items:center"><div style="font-weight:500;font-size:14px">Scratch directories</div><span class="mono" style="margin-left:10px;color:var(--mu);font-size:11.5px">permissions.scratch_dirs</span></div>
+          <div style="color:var(--mu);margin:4px 0 12px;line-height:1.5">Agents may write here without asking. Absolute paths only. An empty list turns scratch space off.</div>
+          <div style="display:flex;flex-direction:column;gap:5px"><sc-for list="{{ scratchRows }}" as="d" hint-placeholder-count="2"><div style="display:flex;gap:10px;align-items:center;border:1px solid var(--bd);border-radius:6px;padding:7px 10px;background:var(--bg)"><i class="ph ph-folder" style="color:var(--mu)"></i><span class="mono">{{ d.p }}</span><span style="color:var(--mu);font-size:11.5px">{{ d.note }}</span><button onClick="{{ d.remove }}" style="margin-left:auto;background:none;border:0;color:var(--mu);cursor:pointer"><i class="ph ph-x"></i></button></div></sc-for></div>
+          <div style="display:flex;gap:8px;margin-top:8px"><div style="flex:1;border:1px solid var(--bd);border-radius:6px;padding:7px 10px;color:var(--mu);background:var(--bg)" class="mono">/absolute/path</div><button onClick="{{ addScratch }}" style="background:transparent;border:1px solid var(--ac);color:var(--at);border-radius:5px;padding:4px 12px;font-size:12px;cursor:pointer">Add</button><button onClick="{{ resetScratch }}" style="background:transparent;border:1px solid transparent;color:var(--mu);border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer">Reset to default</button></div>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ wsSub }}" hint-placeholder-val="{{ false }}">
+      <div style="font-size:18px;font-weight:500">Subagents</div><div style="color:var(--mu);margin:2px 0 16px">Background children and the watchdogs that check on them. <span class="mono">config.json → subagents, agent</span></div>
+      <div style="display:flex;flex-direction:column;gap:14px;max-width:820px">
+        <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn);padding:16px">
+          <div style="display:flex;align-items:center;gap:10px"><div style="font-weight:500;font-size:14px">Max concurrent per session</div><span class="mono" style="color:var(--mu);font-size:11.5px">subagents.max_concurrent</span></div>
+          <div style="color:var(--mu);margin:4px 0 12px">Children starting, running or waiting for an answer all count. 1 to 64, default 4.</div>
+          <div style="display:flex;gap:14px;align-items:center">
+            <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden;background:var(--bg)"><button onClick="{{ subDec }}" style="background:none;border:0;color:var(--tx);width:32px;height:32px;cursor:pointer;font-size:15px">−</button><span class="mono" style="width:44px;text-align:center;line-height:32px;border-left:1px solid var(--bd);border-right:1px solid var(--bd);font-size:14px">{{ maxSub }}</span><button onClick="{{ subInc }}" style="background:none;border:0;color:var(--tx);width:32px;height:32px;cursor:pointer;font-size:15px">+</button></div>
+            <div style="display:flex;gap:4px"><sc-for list="{{ slots }}" as="s" hint-placeholder-count="4"><span style="width:18px;height:18px;border-radius:4px;border:1px solid {{ s.bd }};background:{{ s.bg }}"></span></sc-for></div>
+            <span style="color:var(--mu);font-size:12px">{{ slotNote }}</span>
+          </div>
+        </div>
+        <sc-for list="{{ watchdogs }}" as="w" hint-placeholder-count="2">
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn);padding:16px">
+            <div style="display:flex;align-items:center;gap:10px"><div style="font-weight:500;font-size:14px">{{ w.title }}</div><span class="mono" style="color:var(--mu);font-size:11.5px">{{ w.key }}</span></div>
+            <div style="color:var(--mu);margin:4px 0 12px">{{ w.desc }}</div>
+            <div style="display:flex;gap:4px"><sc-for list="{{ w.opts }}" as="o" hint-placeholder-count="5"><button onClick="{{ o.click }}" style="background:{{ o.bg }};color:{{ o.fg }};border:1px solid {{ o.bd }};border-radius:5px;padding:5px 12px;font-size:12px;cursor:pointer">{{ o.label }}</button></sc-for><span class="mono" style="margin-left:12px;align-self:center;color:var(--mu);font-size:12px">{{ w.val }}</span></div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+    <sc-if value="{{ wsApp }}" hint-placeholder-val="{{ false }}">
+      <div style="font-size:18px;font-weight:500">Appearance</div><div style="color:var(--mu);margin:2px 0 16px">Shared by the terminal client and the WebUI. <span class="mono">config.json → tui.theme</span></div>
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;max-width:980px">
+        <sc-for list="{{ themeCards }}" as="c" hint-placeholder-count="4"><div onClick="{{ c.click }}" style="border:1.5px solid {{ c.bd }};border-radius:9px;overflow:hidden;cursor:pointer;background:var(--pn)">
+          <div style="height:110px;background:{{ c.bg }};padding:10px;display:grid;grid-template-columns:34px 1fr;gap:8px;box-sizing:border-box">
+            <div style="background:{{ c.pn }};border-radius:4px"></div>
+            <div style="display:flex;flex-direction:column;gap:6px"><div style="height:7px;width:70%;border-radius:3px;background:{{ c.tx }};opacity:.8"></div><div style="height:7px;width:90%;border-radius:3px;background:{{ c.tx }};opacity:.35"></div><div style="border-left:2px solid {{ c.ac }};padding-left:6px;display:flex;flex-direction:column;gap:4px"><div style="height:6px;width:60%;border-radius:3px;background:{{ c.ac }}"></div><div style="height:6px;width:80%;border-radius:3px;background:{{ c.tx }};opacity:.35"></div></div><div style="display:flex;gap:4px;margin-top:auto"><span style="width:10px;height:10px;border-radius:50%;background:{{ c.gr }}"></span><span style="width:10px;height:10px;border-radius:50%;background:{{ c.rd }}"></span><span style="width:10px;height:10px;border-radius:50%;background:{{ c.bl }}"></span><span style="width:10px;height:10px;border-radius:50%;background:{{ c.pu }}"></span></div></div>
+          </div>
+          <div style="padding:9px 12px;display:flex;align-items:center"><span>{{ c.label }}</span><span class="mono" style="margin-left:auto;color:var(--mu);font-size:11px">{{ c.id }}</span></div>
+        </div></sc-for>
+      </div>
+    </sc-if>
+  </div>
+</div>
+</sc-if>
+
+<!-- ================= SETTINGS · VS CODE ================= -->
+<sc-if value="{{ isVsSet }}" hint-placeholder-val="{{ false }}">
+<div style="height:820px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:44px minmax(0,1fr);grid-template-rows:minmax(0,1fr) 24px;overflow:hidden">
+  <div style="background:var(--pn);display:flex;flex-direction:column;align-items:center;gap:18px;padding-top:12px;color:var(--mu);font-size:20px;border-right:1px solid var(--bd)"><i class="ph ph-files"></i><i class="ph ph-magnifying-glass"></i><i class="ph ph-git-branch"></i><i class="ph ph-compass" style="color:var(--ac)"></i><i class="ph ph-gear" style="margin-top:auto;margin-bottom:12px"></i></div>
+  <div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+    <div style="display:flex;background:var(--pn);font-size:12px;border-bottom:1px solid var(--bd)"><div style="padding:8px 14px;background:var(--bg);border-top:1px solid var(--ac);display:flex;gap:6px;align-items:center"><i class="ph ph-compass" style="color:var(--ac)"></i>WithNav Settings<i class="ph ph-x" style="color:var(--mu);margin-left:6px"></i></div><div style="padding:8px 14px;color:var(--mu)">config.rs</div><div style="padding:8px 14px;color:var(--mu)">incr.rs</div></div>
+    <div style="padding:14px 26px 10px;display:flex;gap:10px;align-items:center">
+      <div style="flex:1;border:1px solid var(--ac);border-radius:3px;padding:6px 10px;background:var(--pn);color:var(--mu);display:flex;gap:8px;align-items:center"><span>Search WithNav settings</span><span style="margin-left:auto;font-size:11.5px">{{ vsCount }} Settings</span></div>
+      <i class="ph ph-funnel" style="color:var(--mu);font-size:16px"></i><i class="ph ph-brackets-curly" title="Open config.json" style="color:var(--mu);font-size:16px"></i>
+    </div>
+    <div style="padding:0 26px;display:flex;gap:18px;border-bottom:1px solid var(--bd);font-size:12.5px"><span style="padding:6px 0;border-bottom:1px solid var(--ac)">User</span><span class="mono" style="padding:6px 0;color:var(--mu);font-size:11.5px;margin-left:auto">~/.config/withnav/config.json · models.json</span></div>
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:200px minmax(0,1fr)">
+      <div style="overflow:auto;padding:10px 0 10px 18px;font-size:12.5px">
+        <sc-for list="{{ vsToc }}" as="t" hint-placeholder-count="10"><div onClick="{{ t.click }}" style="padding:3px 8px 3px {{ t.pad }};cursor:pointer;color:{{ t.fg }};font-weight:{{ t.fw }};background:{{ t.bg }};border-radius:3px">{{ t.label }}</div></sc-for>
+        <div style="margin-top:14px;padding:3px 8px;color:var(--mu);font-size:11.5px;line-height:1.5">Editor integration (idle delay, reflex, server path) lives in <a href="#">VS Code settings › withnav.*</a></div>
+      </div>
+      <div style="overflow:auto;padding:6px 26px 30px 10px">
+        <sc-for list="{{ vsItems }}" as="it" hint-placeholder-count="6">
+          <sc-if value="{{ it.isHead }}" hint-placeholder-val="{{ false }}"><div style="font-size:19px;font-weight:600;padding:14px 0 6px 14px">{{ it.title }}</div><div style="color:var(--mu);padding:0 0 8px 14px;font-size:12.5px">{{ it.desc }}</div></sc-if>
+          <sc-if value="{{ it.isRow }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:10px 14px 14px 12px;border-left:2px solid {{ it.mod }};max-width:760px" style-hover="background:color-mix(in srgb,var(--tx) 4%,transparent)">
+              <div style="font-size:13px"><span style="color:var(--mu)">{{ it.cat }}</span> <span style="font-weight:600">{{ it.title }}</span><span style="color:var(--bl);font-size:11.5px;margin-left:6px">{{ it.modTxt }}</span></div>
+              <div style="color:var(--mu);font-size:12.5px;margin:3px 0 7px;line-height:1.45">{{ it.desc }}</div>
+              <sc-if value="{{ it.isText }}" hint-placeholder-val="{{ true }}"><div class="mono" style="width:380px;border:1px solid var(--bd);background:var(--pn);padding:4px 8px;font-size:12.5px">{{ it.val }}</div></sc-if>
+              <sc-if value="{{ it.isNum }}" hint-placeholder-val="{{ false }}"><div class="mono" style="width:160px;border:1px solid var(--bd);background:var(--pn);padding:4px 8px;font-size:12.5px">{{ it.val }}</div></sc-if>
+              <sc-if value="{{ it.isSelect }}" hint-placeholder-val="{{ false }}"><div style="width:240px;border:1px solid var(--bd);background:var(--pn);padding:4px 8px;font-size:12.5px;display:flex;align-items:center"><span class="mono">{{ it.val }}</span><i class="ph ph-caret-down" style="margin-left:auto;color:var(--mu)"></i></div></sc-if>
+              <sc-if value="{{ it.isBool }}" hint-placeholder-val="{{ false }}"><div onClick="{{ it.click }}" style="display:flex;gap:8px;align-items:center;cursor:pointer"><span style="width:16px;height:16px;border:1px solid var(--bd);background:{{ it.cbg }};border-radius:3px;display:inline-flex;align-items:center;justify-content:center;color:var(--acfg);font-size:11px">{{ it.cmark }}</span><span style="font-size:12.5px">{{ it.val }}</span></div></sc-if>
+              <sc-if value="{{ it.isList }}" hint-placeholder-val="{{ false }}"><div style="width:420px;display:flex;flex-direction:column"><sc-for list="{{ it.list }}" as="l" hint-placeholder-count="2"><div class="mono" style="padding:4px 8px;font-size:12.5px;border-bottom:1px solid var(--bd)">{{ l.p }}</div></sc-for><button style="align-self:flex-start;margin-top:8px;background:var(--ac);color:var(--acfg);border:0;padding:4px 12px;font-size:12px;cursor:pointer">Add Item</button></div></sc-if>
+              <sc-if value="{{ it.isJson }}" hint-placeholder-val="{{ false }}"><a href="#" style="font-size:12.5px">Edit in models.json</a></sc-if>
+            </div>
+          </sc-if>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  <div style="grid-column:1/3;background:var(--ac);color:var(--acfg);display:flex;gap:16px;align-items:center;padding:0 12px;font-size:11.5px"><span><i class="ph ph-git-branch"></i> develop</span><span><i class="ph ph-compass"></i> WithNav · settings saved</span><span style="margin-left:auto">withnav-lsp · connected</span></div>
+</div>
+</sc-if>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const TH = {
+  ayuDark: ['Ayu Dark', 'ayu-dark', { bg: '#0b0e14', pn: '#0f131a', sf: '#151a23', bd: '#232a36', tx: '#bfbdb6', mu: '#7b8494', ac: '#e6b450', at: '#e6b450', acfg: '#0b0e14', gr: '#aad94c', rd: '#f07178', bl: '#59c2ff', pu: '#d2a6ff', or: '#ff8f40', lh: '#e6b450', la: '#d2a6ff' }],
+  ayuLight: ['Ayu Light', 'ayu-light', { bg: '#fcfcfc', pn: '#f3f4f5', sf: '#ffffff', bd: '#dfe2e6', tx: '#4a5058', mu: '#6e7781', ac: '#ffaa33', at: '#a35f00', acfg: '#1f2328', gr: '#5c8a00', rd: '#d94f4f', bl: '#1a7bbf', pu: '#8052b8', or: '#c25d00', lh: '#a35f00', la: '#8052b8' }],
+  nordDark: ['Nord Dark', 'nord-dark', { bg: '#2e3440', pn: '#292e39', sf: '#3b4252', bd: '#434c5e', tx: '#d8dee9', mu: '#8f9bb3', ac: '#88c0d0', at: '#88c0d0', acfg: '#2e3440', gr: '#a3be8c', rd: '#bf616a', bl: '#81a1c1', pu: '#b48ead', or: '#d08770', lh: '#d08770', la: '#88c0d0' }],
+  nordLight: ['Nord Light', 'nord-light', { bg: '#eceff4', pn: '#e5e9f0', sf: '#ffffff', bd: '#d0d7e3', tx: '#2e3440', mu: '#586174', ac: '#5e81ac', at: '#3f6591', acfg: '#eceff4', gr: '#4f7a3c', rd: '#b0424d', bl: '#3f6591', pu: '#7d5a78', or: '#a85a3f', lh: '#a85a3f', la: '#3f6591' }],
+  tideDark: ['Tide Dark', 'tide-dark', { bg: '#061115', pn: '#0a171b', sf: '#101e23', bd: '#213135', tx: '#d5e1e1', mu: '#87999e', ac: '#5ecbcb', at: '#5ecbcb', acfg: '#061115', gr: '#81d584', rd: '#ee6570', bl: '#6cb2ec', pu: '#b59be6', or: '#f69370', lh: '#f69370', la: '#5ecbcb' }],
+  tideLight: ['Tide Light', 'tide-light', { bg: '#f2f8f8', pn: '#e9f2f3', sf: '#fbfefe', bd: '#cddbdc', tx: '#1f3137', mu: '#53676c', ac: '#1d9999', at: '#00696f', acfg: '#081e24', gr: '#2e7c35', rd: '#c53443', bl: '#0f68a2', pu: '#6f4fa1', or: '#c1552c', lh: '#c1552c', la: '#00696f' }],
+  mossDark: ['Moss Dark', 'moss-dark', { bg: '#0b100c', pn: '#101511', sf: '#161d17', bd: '#262e27', tx: '#e6e1cf', mu: '#909487', ac: '#75d78d', at: '#75d78d', acfg: '#0b100c', gr: '#c8df58', rd: '#ea6a64', bl: '#6eb9dc', pu: '#be99da', or: '#ebb25f', lh: '#e6e1cf', la: '#75d78d' }],
+  mossLight: ['Moss Light', 'moss-light', { bg: '#f7f5ee', pn: '#efede3', sf: '#fdfcf7', bd: '#d7d5c7', tx: '#293027', mu: '#5f665a', ac: '#429c5a', at: '#197037', acfg: '#141d16', gr: '#577600', rd: '#c13c3b', bl: '#136b94', pu: '#784d96', or: '#ae6700', lh: '#293027', la: '#197037' }]
+};
+const PROVIDERS = [
+  { k: 'omniroute', base: 'http://localhost:20128/v1', env: 'OMNIROUTE_API_KEY', cat: 'omniroute', connect: 5000, request: 600000, keySrc: 'found in environment', lat: '42 ms' },
+  { k: 'inception', base: 'https://api.inceptionlabs.ai/v1', env: 'INCEPTION_API_KEY', cat: 'none', connect: 5000, request: 600000, keySrc: 'found in auth store', lat: '188 ms' }
+];
+const CATALOG = [
+  ['omniroute', 'cc', 'claude-opus-5-5', 'chat', 200000, ['high', 'low']],
+  ['omniroute', 'zai', 'glm-5.3', 'chat', 200000, ['high', 'low']],
+  ['omniroute', 'openai', 'gpt-6-luna', 'chat', 400000, ['low', 'medium', 'high']],
+  ['omniroute', 'openai', 'gpt-6-astra', 'chat', 400000, ['medium', 'high', 'xhigh']],
+  ['omniroute', 'opencode-go', 'deepseek-v4-flash', 'chat', 128000, ['low', 'high']],
+  ['omniroute', 'combo', 'deepseek-v4-flash', 'chat', 128000, ['low', 'high']],
+  ['omniroute', 'typesafe', 'jev-1.13', 'systemone', 64000, []],
+  ['inception', '', 'mercury-edit-2', 'fim', 128000, []]
+].map(([gw, pv, id, api, ctx, vars]) => ({ gw, pv, id, api, ctx, vars, full: gw + '/' + (pv ? pv + '/' : '') + id }));
+const LAYERS = [
+  { k: 'reflex', label: 'Reflex', icon: 'ph ph-lightning', api: 'fim', prov: 'inception', model: 'inception/mercury-edit-2', out: 512, role: 'Ghost-text suggestions in the editor.', note: 'LSP only · IDE attached', modelNote: 'Only fill-in-the-middle models are offered.' },
+  { k: 'instinct', label: 'Instinct', icon: 'ph ph-gauge', api: 'systemone', prov: 'omniroute', model: 'omniroute/typesafe/jev-1.13', out: 2048, role: 'Typed decisions: InstinctFlow, permission review, pipeline.', note: 'System One decisions', modelNote: 'Only models behind the System One API are offered.' },
+  { k: 'metacognition', label: 'Metacognition', icon: 'ph ph-compass', api: 'chat', prov: 'omniroute', model: 'omniroute/combo/deepseek-v4-flash', out: 8000, role: 'Remarks, wakes, and approval of risky calls.', note: 'fast model', modelNote: 'A fast (flash) chat model works best here.' },
+  { k: 'cognition', label: 'Cognition', icon: 'ph ph-brain', api: 'chat', note: '5 agents' }
+];
+const AGENTS = [
+  { k: 'build', mode: 'primary', model: 'omniroute/cc/claude-opus-5-5', prov: 'omniroute', v: 'high', desc: 'Implements, verifies, reports.' },
+  { k: 'plan', mode: 'primary', model: 'omniroute/zai/glm-5.3', prov: 'omniroute', v: 'high', desc: 'Researches, writes markdown plans, delegates.' },
+  { k: 'vigie', mode: 'subagent', model: 'omniroute/openai/gpt-6-luna', prov: 'omniroute', v: 'medium', desc: 'The Lookout: codebase, docs and web. Read-only.' },
+  { k: 'mousse', mode: 'subagent', model: 'omniroute/opencode-go/deepseek-v4-flash', prov: 'omniroute', v: 'low', desc: 'Lightweight Deckhand: renames, formatting, basic tests.' }, { k: 'cartographe', mode: 'subagent', model: 'omniroute/openai/gpt-6-luna', prov: 'omniroute', v: 'medium', desc: 'The Cartographer: modules, dependencies, data flows, diagrams. Read-only.' }, { k: 'sondeur', mode: 'subagent', model: 'omniroute/cc/claude-opus-5-5', prov: 'omniroute', v: 'high', desc: 'The Deep Diver: root causes, logs, performance. Runs diagnostics after approval.' },
+  { k: 'lux', mode: 'all', model: 'omniroute/openai/gpt-6-astra', prov: 'omniroute', v: 'high', desc: 'Expert Advisor: architecture, risks, reviews, hard debugging.' }
+];
+const byFull = (f) => CATALOG.find((m) => m.full === f);
+const TYPE = {
+  trigger: ['TRIGGER', 'ph ph-lightning', 'var(--at)'], input: ['SUB-FLOW INPUT', 'ph ph-sign-in', 'var(--mu)'], output: ['RETURN', 'ph ph-sign-out', 'var(--gr)'],
+  noul: ['NOUL', 'ph ph-gauge', 'var(--bl)'], choice: ['CHOICE', 'ph ph-git-fork', 'var(--at)'], score: ['SCORE', 'ph ph-chart-bar', 'var(--or)'],
+  expr: ['EXPRESSION', 'ph ph-function', 'var(--pu)'], sub: ['SUB-FLOW', 'ph ph-flow-arrow', 'var(--gr)']
+};
+const EFF = {
+  allow: ['Allow tool call', 'ph ph-check-circle', 'var(--gr)'], deny: ['Deny tool call + inject note', 'ph ph-prohibit', 'var(--rd)'], ask: ['Ask the Captain', 'ph ph-hand', 'var(--or)'],
+  inject: ['Inject note for Nav', 'ph ph-chat-text', 'var(--bl)'], compact: ['Trigger compaction', 'ph ph-arrows-in', 'var(--at)'], switch: ['Switch agent', 'ph ph-swap', 'var(--bl)'],
+  model: ['Switch variant', 'ph ph-cpu', 'var(--bl)'], spawn: ['Spawn subagent', 'ph ph-tree-structure', 'var(--pu)'], setvar: ['Set variable', 'ph ph-brackets-curly', 'var(--tx)'],
+  log: ['Log only', 'ph ph-note', 'var(--mu)'], remark: ['Show remark', 'ph ph-compass', 'var(--at)'], wake: ['Wake Nav', 'ph ph-bell-ringing', 'var(--rd)'], skill: ['Run skill / command', 'ph ph-sparkle', 'var(--gr)']
+};
+const P = (k, l, to) => ({ k, l, to });
+const FLOWS = {
+  guard: {
+    name: 'guard-mutations', on: 'tool.pre_call', when: 'tool in ["bash", "write", "edit", "fetch"]', block: true, budget: 800, timeout: 'ask Captain', file: '.withnav/flows/guard-mutations.toml',
+    sample: 'tool.pre_call · bash "cargo fmt && git add -A" · agent build', ms: 614, calls: 2, cost: '$0.00002', tokens: '812 tok in',
+    sampleJson: '{\n  "event": "tool.pre_call",\n  "tool": "bash",\n  "args": { "command": "cargo fmt && git add -A" },\n  "call_id": "call_7f3",\n  "session": { "agent": "build" }\n}',
+    nodes: [
+      { id: 't', t: 'trigger', name: 'tool.pre_call', x: 16, y: 230, w: 190, body: 'when tool in bash, write, edit, fetch', ports: [P('event', 'event', ['effect'])], run: { txt: 'bash · cargo fmt && git add -A', taken: 'event' } },
+      { id: 'effect', t: 'choice', name: 'effect', x: 226, y: 200, w: 220, body: 'What will this call do to the workspace?', inputs: ['event.tool', 'event.args', 'session.agent'],
+        opts: [['read_only', 'Only reads files or prints information.'], ['local_change', 'Changes files inside the workspace.'], ['network', 'Reaches a host outside the machine.'], ['destructive', 'Deletes, force-pushes or rewrites history.']],
+        ports: [P('read_only', 'read_only', ['allow']), P('local_change', 'local_change', ['asked']), P('network', 'network', ['host']), P('destructive', 'destructive', ['blast'])],
+        run: { txt: 'local_change · 0.81', ms: 318, cost: '$0.00001', taken: 'local_change', probs: { read_only: 0.06, local_change: 0.81, network: 0.02, destructive: 0.11 }, raw: '{\n  "type": "choice",\n  "choice": "local_change",\n  "probabilities": {\n    "read_only": 0.06, "local_change": 0.81,\n    "network": 0.02, "destructive": 0.11\n  },\n  "confidence": 0.81\n}' } },
+      { id: 'asked', t: 'noul', name: 'asked_for', x: 476, y: 30, w: 220, th: 0.75, body: 'Did the Captain or the intent record ask for this change?', inputs: ['conversation.last_captain', 'intent.record', 'event.args'],
+        ports: [P('yes', 'yes ≥ 0.75', ['allow']), P('no', 'no', ['expr'])], run: { txt: 'noul 0.31 → no', ms: 296, cost: '$0.00001', taken: 'no', noul: 0.31, raw: '{\n  "type": "noul",\n  "noul": 0.31\n}' } },
+      { id: 'host', t: 'sub', name: 'trusted-host', x: 476, y: 250, w: 220, body: 'Is the target host on the allow list or a known docs site?', inputs: ['event.args.url'], ports: [P('trusted', 'trusted', ['allow']), P('unknown', 'unknown', ['ask'])] },
+      { id: 'blast', t: 'score', name: 'blast_radius', x: 476, y: 450, w: 220, body: 'How far could this reach if it goes wrong?', inputs: ['event.args', 'workspace.root', 'workspace.dirty_files'], levels: ['one file', 'one folder', 'whole repo', 'outside the repo'], thl: 2,
+        ports: [P('hi', '≥ whole repo', ['deny']), P('lo', 'below', ['ask'])] },
+      { id: 'expr', t: 'expr', name: 'plan_overreach', x: 726, y: 120, w: 210, body: 'asked_for < 0.4 && session.agent == "plan"', expr: 'asked_for < 0.4 && session.agent == "plan"', scope: ['effect', 'asked_for', 'session.agent', 'vars.risk_budget'],
+        ports: [P('true', 'true', ['deny']), P('false', 'false', ['ask'])], run: { txt: 'false · agent is build', ms: 0, cost: '$0', taken: 'false', raw: 'asked_for = 0.31   → true\nsession.agent = "build" → false\nresult: false' } },
+      { id: 'allow', t: 'action', eff: 'allow', name: 'allow', x: 966, y: 30, w: 180, body: 'Run the call without asking.', params: [['reason', 'logged with the answers']] },
+      { id: 'ask', t: 'action', eff: 'ask', name: 'ask', x: 966, y: 260, w: 180, body: 'Allow once or deny, with Instinct\'s reason shown.', params: [['choices', 'allow once · deny (fetch: allow origin)'], ['reason', 'effect = {{effect}}, asked_for = {{asked_for}}']], run: { txt: 'prompt shown to the Captain', raw: 'permission.requested emitted\nreason: "local change not asked for (0.31)"' } },
+      { id: 'deny', t: 'action', eff: 'deny', name: 'deny', x: 966, y: 470, w: 180, body: 'Deny, then tell Nav why.', params: [['note', 'Not allowed in plan. Propose the change\nin the plan instead.'], ['delivery', 'next-turn']] }
+    ]
+  },
+  compact: {
+    name: 'compaction-advisor', on: 'context.updated', when: 'used_pct >= 70', block: false, budget: 1500, timeout: 'skip', file: '.withnav/flows/compaction-advisor.toml',
+    sample: 'context.updated · 176k / 200k (88 %) · agent build', ms: 629, calls: 2, cost: '$0.00002', tokens: '1 304 tok in',
+    sampleJson: '{\n  "event": "context.updated",\n  "used_tokens": 176000,\n  "context_window": 200000,\n  "used_pct": 88,\n  "breakdown": { "transcript": 151000, "tools": 18000, "system": 7000 }\n}',
+    nodes: [
+      { id: 't', t: 'trigger', name: 'context.updated', x: 16, y: 200, w: 190, body: 'when used ≥ 70 % of the context window', ports: [P('event', 'event', ['brk'])], run: { txt: '176k / 200k · 88 %', taken: 'event' } },
+      { id: 'brk', t: 'noul', name: 'natural_break', x: 226, y: 170, w: 220, th: 0.7, body: 'Is the conversation at a natural break: task done, topic switch, or waiting on the Captain?', inputs: ['conversation.last_turns', 'session.agent', 'event.used_pct'],
+        ports: [P('yes', 'yes ≥ 0.70', ['compact']), P('no', 'no', ['urg'])], run: { txt: 'noul 0.22 → no', ms: 288, cost: '$0.00001', taken: 'no', noul: 0.22, raw: '{\n  "type": "noul",\n  "noul": 0.22\n}' } },
+      { id: 'compact', t: 'action', eff: 'compact', name: 'compact', x: 476, y: 30, w: 200, body: 'Summarise older turns; keep the intent record and open tasks.', params: [['keep', 'intent record, open tasks, last 4 turns']], ports: [P('then', 'then', ['var'])] },
+      { id: 'var', t: 'action', eff: 'setvar', name: 'count', x: 726, y: 30, w: 190, body: 'compactions_today += 1', params: [['name', 'compactions_today'], ['scope', 'session'], ['value', '{{vars.compactions_today}} + 1']] },
+      { id: 'urg', t: 'score', name: 'urgency', x: 476, y: 300, w: 220, body: 'How urgent is compaction given the remaining context and the work in flight?', inputs: ['event.used_pct', 'event.breakdown', 'session.model'], levels: ['low', 'medium', 'high', 'critical'], thl: 2,
+        ports: [P('hi', '≥ high', ['exp']), P('lo', 'below', ['log'])], run: { txt: 'score 2.4 · high', ms: 341, cost: '$0.00001', taken: 'hi', lp: [0.03, 0.12, 0.27, 0.58], raw: '{\n  "type": "score",\n  "score": 2.4,\n  "legend": { "0": "low", "1": "medium",\n              "2": "high", "3": "critical" },\n  "probabilities": { "0": 0.03, "1": 0.12,\n                     "2": 0.27, "3": 0.58 },\n  "confidence": 0.58\n}' } },
+      { id: 'exp', t: 'expr', name: 'should_nudge', x: 726, y: 260, w: 210, body: 'vars.compactions_today < 5 && session.agent == "build"', expr: 'vars.compactions_today < 5 && session.agent == "build"', scope: ['natural_break', 'urgency', 'session.agent', 'vars.compactions_today'],
+        ports: [P('true', 'true', ['note']), P('false', 'false', ['log'])], run: { txt: 'true', ms: 0, cost: '$0', taken: 'true', raw: 'vars.compactions_today = 1 → true\nsession.agent = "build"   → true\nresult: true' } },
+      { id: 'note', t: 'action', eff: 'inject', name: 'nudge', x: 966, y: 240, w: 180, body: '"Context at 88 %. Finish this step; I\'ll compact after it."', params: [['text', 'Context at {{event.used_pct}} %. Finish this\nstep; I\'ll compact after it.'], ['delivery', 'next-turn']], run: { txt: 'queued for next turn', raw: 'note queued · delivery next-turn' } },
+      { id: 'log', t: 'action', eff: 'log', name: 'log', x: 966, y: 450, w: 180, body: 'Write answers to the trigger log.', params: [['log', '.withnav/log/triggers.jsonl']] }
+    ]
+  },
+  route: {
+    name: 'route-agent', on: 'message.received', when: 'author == "captain"', block: true, budget: 600, timeout: 'keep agent', file: '.withnav/flows/route-agent.toml',
+    sample: 'message.received · "Can you review the diff in incr.rs before I commit?"', ms: 305, calls: 1, cost: '$0.00001', tokens: '640 tok in',
+    sampleJson: '{\n  "event": "message.received",\n  "author": "captain",\n  "text": "Can you review the diff in incr.rs\n           before I commit?",\n  "session": { "agent": "build" }\n}',
+    nodes: [
+      { id: 't', t: 'trigger', name: 'message.received', x: 16, y: 200, w: 190, body: 'when author == "captain"', ports: [P('event', 'event', ['kind'])], run: { txt: '"Can you review the diff…"', taken: 'event' } },
+      { id: 'kind', t: 'choice', name: 'request_kind', x: 226, y: 170, w: 220, body: 'What is the Captain asking for right now?', inputs: ['event.text', 'session.agent', 'intent.record'],
+        opts: [['question', 'Wants an answer, no change to the code.'], ['plan', 'Wants a plan or a design before any edit.'], ['implement', 'Wants code written or changed now.'], ['review', 'Wants existing changes checked.']],
+        ports: [P('question', 'question', ['keep']), P('plan', 'plan', ['plan']), P('implement', 'implement', ['build']), P('review', 'review', ['review'])],
+        run: { txt: 'review · 0.88', ms: 305, cost: '$0.00001', taken: 'review', probs: { question: 0.07, plan: 0.03, implement: 0.02, review: 0.88 }, raw: '{\n  "type": "choice",\n  "choice": "review",\n  "probabilities": {\n    "question": 0.07, "plan": 0.03,\n    "implement": 0.02, "review": 0.88\n  },\n  "confidence": 0.88\n}' } },
+      { id: 'keep', t: 'action', eff: 'log', name: 'keep', x: 476, y: 20, w: 200, body: 'Answer with the current agent.', params: [['log', 'request_kind = question']] },
+      { id: 'plan', t: 'action', eff: 'switch', name: 'to_plan', x: 476, y: 170, w: 200, body: 'session.agent = plan from this turn on.', params: [['agent', 'plan']] },
+      { id: 'build', t: 'action', eff: 'switch', name: 'to_build', x: 476, y: 320, w: 200, body: 'session.agent = build.', params: [['agent', 'build']], ports: [P('then', 'then', ['model'])] },
+      { id: 'model', t: 'action', eff: 'model', name: 'effort_high', x: 726, y: 320, w: 200, body: 'build agent · variant high for this turn.', params: [['agent', 'build'], ['variant', 'high'], ['scope', 'this turn']] },
+      { id: 'review', t: 'action', eff: 'spawn', name: 'spawn_lux', x: 476, y: 490, w: 200, body: 'lux reviews the staged diff. Delivery next-turn.', params: [['agent', 'lux'], ['task', 'Review the staged diff of {{workspace.dirty_files}}'], ['delivery', 'next-turn']], run: { txt: 'lux spawned', raw: 'subagent.spawned · lux · next-turn' } }
+    ]
+  },
+  trusted: {
+    name: 'trusted-host', sub: true, file: '.withnav/flows/trusted-host.toml', budget: 0,
+    sample: 'input · host = "docs.rs"', ms: 279, calls: 1, cost: '$0.00001', tokens: '210 tok in', sampleJson: '{ "host": "docs.rs", "url": "https://docs.rs/toml_edit" }',
+    nodes: [
+      { id: 'in', t: 'input', name: 'input', x: 16, y: 200, w: 190, body: 'host: string · url: string', ports: [P('in', 'in', ['kind'])], run: { txt: 'host = docs.rs', taken: 'in' } },
+      { id: 'kind', t: 'choice', name: 'host_kind', x: 226, y: 160, w: 220, body: 'What kind of host is this?', inputs: ['input.host', 'input.url'],
+        opts: [['docs_site', 'Documentation of a language or library.'], ['package_registry', 'crates.io, npm or a similar registry.'], ['project_api', 'An API this project already calls.'], ['unknown', 'None of the above.']],
+        ports: [P('docs_site', 'docs_site', ['outT']), P('package_registry', 'package_registry', ['outT']), P('project_api', 'project_api', ['outT']), P('unknown', 'unknown', ['safe'])],
+        run: { txt: 'docs_site · 0.93', ms: 279, cost: '$0.00001', taken: 'docs_site', probs: { docs_site: 0.93, package_registry: 0.04, project_api: 0.01, unknown: 0.02 }, raw: '{\n  "type": "choice",\n  "choice": "docs_site",\n  "confidence": 0.93\n}' } },
+      { id: 'safe', t: 'noul', name: 'looks_safe', x: 476, y: 340, w: 220, th: 0.8, body: 'Is fetching this URL low risk for the workspace?', inputs: ['input.url', 'workspace.root'], ports: [P('yes', 'yes ≥ 0.80', ['outT']), P('no', 'no', ['outU'])] },
+      { id: 'outT', t: 'output', name: 'trusted', x: 726, y: 120, w: 180, body: 'Returned to the caller as port "trusted".', run: { txt: 'returned' } },
+      { id: 'outU', t: 'output', name: 'unknown', x: 726, y: 430, w: 180, body: 'Returned to the caller as port "unknown".' }
+    ]
+  }
+};
+const EVENTS = [['session.start', 0], ['session.end', 0], ['message.received', 1], ['turn.start', 1], ['turn.end', 0], ['llm.response', 0], ['tool.pre_call', 1], ['tool.post_call', 0], ['permission.requested', 1], ['context.updated', 0], ['context.compacted', 0], ['subagent.spawned', 1], ['subagent.done', 0], ['model.changed', 0], ['session.agent_changed', 0]];
+const CAT = {
+  guard: ['event.tool', 'event.args', 'event.args.url', 'event.call_id'], compact: ['event.used_pct', 'event.breakdown', 'event.context_window'], route: ['event.text', 'event.author'], trusted: ['input.host', 'input.url']
+};
+const CAT_GROUPS = [
+  ['SESSION', ['session.id', 'session.agent', 'session.model', 'session.workspace']],
+  ['CONVERSATION WITH NAV', ['conversation.last_captain', 'conversation.last_turns', 'conversation.digest']],
+  ['INTENT', ['intent.record']],
+  ['WORKSPACE', ['workspace.root', 'workspace.branch', 'workspace.dirty_files']],
+  ['EDITOR', ['editor.open_files', 'editor.cursor', 'editor.selection'], 'IDE only'],
+  ['WITHNAV SETTINGS', ['settings.permissions.automatic_review', 'settings.subagents.max_concurrent']],
+  ['VARIABLES', ['vars.compactions_today', 'vars.risk_budget']]
+];
+const VAL = {
+  'event.tool': 'bash', 'event.args': '{ "command": "cargo fmt && git add -A" }', 'event.args.url': '—', 'session.agent': 'build', 'conversation.last_captain': '"Swap the toml parser, keep Config::load(p)."',
+  'intent.record': 'Incremental TOML parser, public API unchanged.', 'workspace.root': '~/dev/rust-agent', 'workspace.dirty_files': 'src/config.rs, src/parser/incr.rs', 'event.used_pct': '88',
+  'event.breakdown': 'transcript 151k · tools 18k · system 7k', 'session.model': 'omniroute/cc/claude-opus-5-5 · high', 'conversation.last_turns': '(last 3 turns, 2.1k tokens)', 'event.text': '"Can you review the diff in incr.rs before I commit?"',
+  'input.host': 'docs.rs', 'input.url': 'https://docs.rs/toml_edit', 'editor.cursor': 'src/config.rs:42:18', 'editor.open_files': 'config.rs, incr.rs', 'session.id': '01J9…Q4', 'vars.compactions_today': '1', 'vars.risk_budget': '3'
+};
+
+const TS_ORDER = ['providers', 'layers', 'agents', 'perm', 'sub', 'app'];
+class Component extends DCLogic {
+  state = { scr: 'tuiset', tsSec: 'layers', tsRow: 3, tsPick: false, tsPi: 0, th: 'ayuDark', flow: 'guard', sel: 'effect', run: true, view: 'canvas', zoom: 1, pos: {}, ins: {}, menu: null, catOpen: false, block: { guard: true, compact: false, route: true },
+    webSec: 'layers', prov: 'omniroute', layer: 'cognition', agent: 'build', defAgent: 'build', metaThink: 'low', pv: {}, lm: {}, am: {}, col: {}, autoReview: true, maxSub: 4, subWd: 300, rootWd: 300, scratch: ['$XDG_RUNTIME_DIR/withnav', '/tmp/withnav'], caps: {}, vsSec: 'layer:cognition' };
+
+  tog(on, click) { return { click, tbg: on ? 'var(--ac)' : 'var(--bd)', tk: on ? 'var(--acfg)' : 'var(--mu)', tl: on ? '15px' : '2px', tl2: on ? '20px' : '3px' }; }
+  pill(on) { return on ? ['color-mix(in srgb,var(--ac) 16%,transparent)', 'var(--tx)', 'var(--ac)'] : ['transparent', 'var(--mu)', 'var(--bd)']; }
+
+  startDrag(key, base) {
+    return (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const sx = e.clientX, sy = e.clientY, z = this.state.zoom;
+      const move = (ev) => this.setState((s) => ({ pos: { ...s.pos, [key]: { x: Math.max(0, base.x + (ev.clientX - sx) / z), y: Math.max(0, base.y + (ev.clientY - sy) / z) } } }));
+      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+      window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+      this.setState({ sel: key.split(':')[1], menu: null });
+    };
+  }
+
+  toml(f, fk) {
+    const L = [];
+    const q = (s) => JSON.stringify(s);
+    L.push('[flow]', `name = ${q(f.name)}`);
+    if (f.sub) { L.push('kind = "sub-flow"', 'inputs = ["host", "url"]', 'outputs = ["trusted", "unknown"]'); }
+    else { L.push(`on = ${q(f.on)}`, `when = '${f.when}'`, `blocking = ${!!this.state.block[fk]}`); if (this.state.block[fk]) L.push(`budget_ms = ${f.budget}`, `on_timeout = ${q(f.timeout.replace(' ', '_'))}`); }
+    L.push('', '# decisions run on the instinct layer (System One API)');
+    f.nodes.filter((n) => n.t !== 'trigger' && n.t !== 'input').forEach((n) => {
+      L.push('', '[[node]]', `id = ${q(n.id)}`);
+      if (n.t === 'action') L.push('type = "action"', `do = ${q(n.eff)}`); else L.push(`type = ${q(n.t)}`);
+      if (n.name && n.name !== n.id) L.push(`name = ${q(n.name)}`);
+      if (['noul', 'choice', 'score'].includes(n.t)) {
+        const ins = this.state.ins[fk + ':' + n.id] || n.inputs || [];
+        L.push(`state = [${ins.map(q).join(', ')}]`, `instructions = ${q(n.body)}`);
+      }
+      if (n.t === 'noul') L.push(`threshold = ${n.th}`);
+      if (n.t === 'score') L.push(`levels = [${n.levels.map(q).join(', ')}]`, `at_least = ${n.thl}`);
+      if (n.t === 'expr') L.push(`expr = '${n.expr}'`);
+      if (n.t === 'sub') L.push(`flow = ${q(n.name)}`, 'input = { host = "event.args.url | host", url = "event.args.url" }');
+      if (n.t === 'output') L.push(`return = ${q(n.name)}`);
+      if (n.params) n.params.forEach(([k, v]) => L.push(`${k} = ${q(v.replace(/\n/g, ' '))}`));
+      if (n.t === 'choice') { L.push('[node.criteria]'); n.opts.forEach(([k, v]) => L.push(`${k} = ${q(v)}`)); }
+      if (n.ports && n.ports.length) { L.push('[node.next]'); n.ports.forEach((p) => L.push(`${p.k} = ${q(p.to.length > 1 ? p.to : p.to[0])}`)); }
+    });
+    return L.join('\n');
+  }
+
+  flowVals(st) {
+    const fk = st.flow, F = FLOWS[fk], run = st.run, tint = 'color-mix(in srgb,var(--ac) 14%,transparent)';
+    const nodes0 = F.nodes.map((n) => { const p = st.pos[fk + ':' + n.id]; return { ...n, x: p ? p.x : n.x, y: p ? p.y : n.y }; });
+    const byId = Object.fromEntries(nodes0.map((n) => [n.id, n]));
+    const reached = (n) => !!n.run;
+    const nodes = nodes0.map((n) => {
+      const meta = n.t === 'action' ? ['ACTION', EFF[n.eff][1], EFF[n.eff][2]] : TYPE[n.t];
+      const ports = (n.ports || []).map((p) => { const tk = run && n.run && n.run.taken === p.k; return { label: p.l, fg: tk ? 'var(--at)' : 'var(--mu)', dot: tk ? 'var(--ac)' : 'var(--bg)', ring: tk ? 'var(--ac)' : 'var(--mu)' }; });
+      const isSel = st.sel === n.id, ins = st.ins[fk + ':' + n.id] || n.inputs;
+      const r = run && n.run;
+      return {
+        x: n.x, y: n.y, w: n.w, h: 30 + 60 + 24 + 22 * ports.length + 6, tag: meta[0], icon: meta[1], col: meta[2], name: n.name,
+        body: n.t === 'expr' ? 'Combines answers and inputs. No Instinct call.' : n.body,
+        stateLine: ins ? 'state: ' + ins.join(', ') : n.t === 'expr' ? n.expr : n.t === 'action' ? EFF[n.eff][0] : n.t === 'trigger' ? (F.block ? 'can block' : 'async') : '',
+        ports, bd: isSel ? 'var(--ac)' : 'var(--bd)', sh: isSel ? '0 0 0 3px color-mix(in srgb,var(--ac) 22%,transparent)' : '0 4px 14px rgba(0,0,0,.12)',
+        op: run && !n.run ? '0.5' : '1', inDisp: n.t === 'trigger' || n.t === 'input' ? 'none' : 'block', inCol: r ? 'var(--ac)' : 'var(--mu)',
+        stripBg: r ? 'color-mix(in srgb,var(--ac) 9%,transparent)' : 'transparent',
+        runTxt: r ? n.run.txt : run ? 'not reached' : 'no run yet', runCol: r ? 'var(--at)' : 'var(--mu)',
+        runMeta: r && n.run.ms !== undefined ? n.run.ms + ' ms · ' + n.run.cost : '',
+        click: () => this.setState({ sel: n.id, menu: null }), down: this.startDrag(fk + ':' + n.id, { x: n.x, y: n.y })
+      };
+    });
+    const wires = [];
+    nodes0.forEach((n) => (n.ports || []).forEach((p, i) => p.to.forEach((tid) => {
+      const m = byId[tid]; if (!m) return;
+      const sx = n.x + n.w, sy = n.y + 125 + 22 * i, tx = m.x, ty = m.y + 15, dx = Math.max(40, (tx - sx) / 2);
+      const tk = run && n.run && n.run.taken === p.k;
+      wires.push({ d: `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`, stroke: tk ? 'var(--ac)' : 'color-mix(in srgb,var(--mu) 55%,transparent)', sw: tk ? '2.2' : '1.4', dash: run && !tk ? '4 4' : '', k: tk ? 1 : 0 });
+    })));
+    wires.sort((a, b) => a.k - b.k);
+
+    const sn = byId[st.sel] || nodes0[1];
+    const meta = sn.t === 'action' ? ['ACTION', EFF[sn.eff][1], EFF[sn.eff][2]] : TYPE[sn.t];
+    const insKey = fk + ':' + sn.id, curIns = st.ins[insKey] || sn.inputs || [];
+    const setIns = (k) => () => this.setState((s) => { const cur = s.ins[insKey] || sn.inputs || []; return { ins: { ...s.ins, [insKey]: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] } }; });
+    const upstream = F.nodes.filter((n) => ['noul', 'choice', 'score'].includes(n.t) && n.id !== sn.id).map((n) => n.name);
+    const groups = [['EVENT · ' + (F.on || 'sub-flow input'), CAT[fk]], ...CAT_GROUPS, ['UPSTREAM ANSWERS', upstream]];
+    const catalog = groups.map(([label, keys, note]) => ({ label, items: keys.map((k) => { const on = curIns.includes(k); return { key: k, note: note || '', mark: on ? '✓' : '', bg: on ? 'var(--ac)' : 'transparent', bd: on ? 'var(--ac)' : 'var(--bd)', click: setIns(k) }; }) }));
+    const pretty = (k) => { const s = k.split('.').slice(-1)[0].replace(/_/g, ' '); return s.charAt(0).toUpperCase() + s.slice(1); };
+    const statePreview = curIns.map((k) => `${pretty(k)}: ${VAL[k] || '{{' + k + '}}'}`).join('\n') || '(empty state)';
+    const r = run && sn.run;
+    const optsProb = sn.opts ? sn.opts.map(([k, v]) => { const p = r && sn.run.probs ? sn.run.probs[k] : null; const top = r && sn.run.taken === k; return { k, v, pct: p !== null ? Math.round(p * 100) + ' %' : '', w: p !== null ? Math.round(p * 100) + '%' : '0%', barDisp: p !== null ? 'block' : 'none', pcol: top ? 'var(--ac)' : 'var(--mu)' }; }) : [];
+    const levels = sn.levels ? sn.levels.map((l, i) => ({ i, label: l, pct: r && sn.run.lp ? Math.round(sn.run.lp[i] * 100) + ' %' : '', bd: i >= sn.thl ? 'color-mix(in srgb,var(--or) 50%,var(--bd))' : 'var(--bd)' })) : [];
+    const isDec = ['noul', 'choice', 'score'].includes(sn.t);
+    const types = [['noul', 'yes-prob.'], ['choice', 'options'], ['score', 'levels']].map(([k, sub]) => ({ label: k, sub, bd: sn.t === k ? 'var(--ac)' : 'var(--bd)', bg: sn.t === k ? tint : 'var(--bg)' }));
+    const sel = {
+      tag: meta[0], icon: meta[1], col: meta[2], name: sn.name, body: sn.body, types,
+      isDecision: isDec, isChoice: sn.t === 'choice', isNoul: sn.t === 'noul', isScore: sn.t === 'score', isExpr: sn.t === 'expr', isSub: sn.t === 'sub', isAction: sn.t === 'action', isTrigger: sn.t === 'trigger', isIO: sn.t === 'input' || sn.t === 'output',
+      inputs: curIns.map((k) => ({ key: k })), statePreview, opts: optsProb, levels, thl: sn.levels ? sn.levels[sn.thl] : '',
+      th: sn.th, thPct: sn.th ? sn.th * 100 + '%' : '0%', ansPct: r && sn.run.noul !== undefined ? sn.run.noul * 100 + '%' : '0%', ansDisp: r && sn.run.noul !== undefined ? 'block' : 'none',
+      expr: sn.expr, scope: (sn.scope || []).map((k) => ({ key: k })),
+      effLabel: sn.eff ? EFF[sn.eff][0] : '', params: (sn.params || []).map(([k, v]) => ({ k, v })),
+      chainNote: sn.ports && sn.ports.length ? 'Has a "then" port: the next action runs after this one.' : 'End of chain. Add a "then" port to run another action after it.',
+      hasRun: !!r && !!sn.run.raw, raw: r ? sn.run.raw || '' : '', runMeta: r && sn.run.ms !== undefined ? sn.run.ms + ' ms · ' + sn.run.cost : ''
+    };
+    const pathChips = [];
+    F.nodes.filter(reached).forEach((n, i) => { if (i) pathChips.push({ txt: '›', col: 'var(--mu)' }); pathChips.push({ txt: n.t === 'action' || n.t === 'output' ? n.name : n.t === 'trigger' || n.t === 'input' ? n.name : n.name + ' = ' + n.run.taken, col: n.t === 'action' || n.t === 'output' ? (n.eff ? EFF[n.eff][2] : 'var(--gr)') : 'var(--tx)' }); });
+    const blocking = !F.sub && !!st.block[fk];
+    const f = {
+      name: F.name, file: F.file, isHook: !F.sub, isSub: !!F.sub, kindLabel: F.sub ? 'sub-flow' : 'on ' + F.on, budget: F.budget, timeout: F.timeout, budgetOp: blocking ? '1' : '0.4',
+      sample: F.sample, sampleJson: F.sampleJson, when: F.when, calls: F.calls, cost: F.cost, tokens: F.tokens,
+      budgetPct: blocking ? Math.min(100, Math.round(F.ms / F.budget * 100)) + '%' : '100%', msLabel: blocking ? `${F.ms} / ${F.budget} ms` : `${F.ms} ms · async`
+    };
+    const rowFor = (k, ev, name, icon, st2) => {
+      const on = fk === k, modeled = !!k;
+      return { ev, name, icon, st: st2, stCol: st2 === 'off' ? 'var(--mu)' : 'var(--gr)', bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent', cur: modeled ? 'pointer' : 'default', op: modeled ? '1' : '0.55', click: modeled ? () => this.setState({ flow: k, sel: FLOWS[k].nodes[1].id, menu: null }) : () => {} };
+    };
+    const flowRows = [
+      rowFor(null, 'session.start', 'session-bootstrap', 'ph ph-pause', 'off'),
+      rowFor('route', 'message.received', 'route-agent', st.block.route ? 'ph ph-hand' : 'ph ph-arrows-split', 'on'),
+      rowFor('guard', 'tool.pre_call', 'guard-mutations', st.block.guard ? 'ph ph-hand' : 'ph ph-arrows-split', 'on'),
+      rowFor(null, 'tool.post_call', 'test-failure-triage', 'ph ph-arrows-split', 'off'),
+      rowFor('compact', 'context.updated', 'compaction-advisor', st.block.compact ? 'ph ph-hand' : 'ph ph-arrows-split', 'on'),
+      rowFor(null, 'subagent.spawned', 'subagent-model-pick', 'ph ph-hand', 'off'),
+      rowFor(null, 'turn.end', 'intent-drift', 'ph ph-arrows-split', 'off')
+    ];
+    const subRows = [rowFor('trusted', '', 'trusted-host', '', 'used by 1'), { ...rowFor(null, '', 'classify-change', '', ''), st: 'draft' }];
+    const M = {
+      decision: ['Decision', [['ph ph-gauge', 'var(--bl)', 'Noul', 'Yes-probability. Ports: yes ≥ threshold, no.'], ['ph ph-git-fork', 'var(--at)', 'Choice', 'Named options. One port per option.'], ['ph ph-chart-bar', 'var(--or)', 'Score', '2 to 10 ordered levels. Ports: at least, below.']]],
+      logic: ['Logic', [['ph ph-function', 'var(--pu)', 'Expression', 'Combine answers, inputs and variables.'], ['ph ph-flow-arrow', 'var(--gr)', 'Sub-flow', 'Call a reusable flow as one node.']]],
+      action: ['Action', Object.keys(EFF).map((k) => [EFF[k][1], EFF[k][2], EFF[k][0], ''])]
+    };
+    const menus = Object.keys(M).map((k) => ({ label: M[k][0], open: st.menu === k, bg: st.menu === k ? tint : 'transparent', click: () => this.setState((s) => ({ menu: s.menu === k ? null : k })), items: M[k][1].map(([icon, col, label, desc]) => ({ icon, col, label, desc })) }));
+    const views = [['canvas', 'Canvas'], ['toml', 'TOML']].map(([k, label]) => { const [bg, fg, bd] = this.pill(st.view === k); return { label, bg, fg, bd, click: () => this.setState({ view: k }) }; });
+    const events = EVENTS.map(([name, b]) => ({ name, block: b ? 'can block' : 'async only', bcol: b ? 'var(--at)' : 'var(--mu)', bg: name === F.on ? tint : 'transparent' }));
+    return {
+      f, nodes, wires, sel, catalog, pathChips, flowRows, subRows, menus, views, events,
+      zoom: st.zoom, zoomPct: Math.round(st.zoom * 100) + ' %', cw: Math.round(1180 * st.zoom), ch: Math.round(680 * st.zoom),
+      zoomIn: () => this.setState((s) => ({ zoom: Math.min(1.4, +(s.zoom + 0.1).toFixed(2)) })), zoomOut: () => this.setState((s) => ({ zoom: Math.max(0.5, +(s.zoom - 0.1).toFixed(2)) })),
+      isCanvas: st.view === 'canvas', isToml: st.view === 'toml', tomlText: this.toml(F, fk),
+      run, toggleRun: () => this.setState((s) => ({ run: !s.run })), runLabel: run ? 'Clear run' : 'Run sample', runIcon: run ? 'ph ph-x' : 'ph ph-play',
+      blockTog: this.tog(blocking, () => this.setState((s) => ({ block: { ...s.block, [fk]: !s.block[fk] } }))),
+      catOpen: st.catOpen, catClosed: !st.catOpen, catLabel: st.catOpen ? 'Done' : '+ Add input', toggleCat: () => this.setState((s) => ({ catOpen: !s.catOpen })),
+      closeMenu: () => this.setState({ menu: null }), openSub: () => this.setState({ flow: 'trusted', sel: 'kind' })
+    };
+  }
+
+  groupRows({ api, gw, cur, pick, showApi, prefix }) {
+    const col = this.state.col, tint = 'color-mix(in srgb,var(--ac) 14%,transparent)', px = prefix || 'pk';
+    const ms = CATALOG.filter((m) => (!api || m.api === api) && (!gw || m.gw === gw));
+    const tog = (key) => () => this.setState((s) => ({ col: { ...s.col, [key]: !s.col[key] } }));
+    const rows = [];
+    [...new Set(ms.map((m) => m.gw))].forEach((g) => {
+      const gk = px + ':g:' + g, gOpen = !col[gk], gms = ms.filter((m) => m.gw === g);
+      if (!gw) rows.push({ isGw: true, isPv: false, isM: false, label: g, count: gms.length + ' models', caret: gOpen ? 'ph ph-caret-down' : 'ph ph-caret-right', click: tog(gk) });
+      if (!gOpen && !gw) return;
+      [...new Set(gms.map((m) => m.pv))].forEach((p) => {
+        const pk = px + ':p:' + g + '/' + p, pOpen = !col[pk], pms = gms.filter((m) => m.pv === p);
+        rows.push({ isGw: false, isPv: true, isM: false, label: p || '(direct)', count: pms.length, caret: pOpen ? 'ph ph-caret-down' : 'ph ph-caret-right', click: tog(pk), pad: gw ? '12px' : '30px' });
+        if (!pOpen) return;
+        pms.forEach((m) => { const on = cur && m.full === cur; rows.push({ isGw: false, isPv: false, isM: true, id: m.id, full: m.full, meta: (showApi ? m.api + ' · ' : '') + m.ctx / 1000 + 'k' + (m.vars.length ? ' · ' + m.vars.join(' / ') : ''), mark: pick ? (on ? '●' : '○') : '', bg: on ? tint : 'transparent', cur: pick ? 'pointer' : 'default', pad: gw ? '34px' : '52px', click: pick ? () => pick(m.full) : () => {} }); });
+      });
+    });
+    return rows;
+  }
+
+  settingsVals(st) {
+    const tint = 'color-mix(in srgb,var(--ac) 14%,transparent)';
+    const NAV = [['providers', 'Gateways', 'ph ph-plugs', 'omniroute · inception'], ['layers', 'Layers', 'ph ph-stack', 'reflex · instinct · meta · cognition'], ['perm', 'Permissions', 'ph ph-shield-check', st.autoReview ? 'automatic review on' : 'ask for every call'], ['sub', 'Subagents', 'ph ph-tree-structure', 'max ' + st.maxSub + ' per session'], ['app', 'Appearance', 'ph ph-palette', TH[st.th][0]]];
+    const webNav = NAV.map(([k, label, icon, sub]) => { const on = st.webSec === k; return { label, icon, sub, bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent', ic: on ? 'var(--at)' : 'var(--mu)', click: () => this.setState({ webSec: k }) }; });
+    const USES = [...LAYERS.filter((l) => l.prov).map((l) => ({ k: l.k, model: l.model, prov: l.prov })), ...AGENTS.map((p) => ({ k: 'cognition · ' + p.k, model: p.model, prov: p.prov }))];
+    const provCards = PROVIDERS.map((p) => { const on = st.prov === p.k; return { k: p.k, base: p.base, n: USES.filter((a) => a.prov === p.k).length, bg: on ? tint : 'var(--pn)', bd: on ? 'var(--ac)' : 'var(--bd)', click: () => this.setState({ prov: p.k }) }; });
+    const P0 = PROVIDERS.find((p) => p.k === st.prov);
+    const pv = { ...P0, connect: P0.connect.toLocaleString('en-US'), request: P0.request.toLocaleString('en-US'), uses: USES.filter((a) => a.prov === P0.k) };
+    const apiCol = (a) => a === 'systemone' ? 'var(--at)' : a === 'fim' ? 'var(--pu)' : 'var(--bl)';
+    const lmod = (l) => st.lm[l.k] || l.model, amod = (p) => st.am[p.k] || p.model;
+    const pget = (p) => { const vs = byFull(amod(p)).vars; const v = st.pv[p.k] || p.v; return vs.includes(v) ? v : (vs[0] || '—'); };
+    const metaVars = byFull(lmod(LAYERS[2])).vars, metaV = metaVars.includes(st.metaThink) ? st.metaThink : (metaVars.includes('low') ? 'low' : metaVars[0] || '—');
+    const layerCards = LAYERS.map((l) => { const on = st.layer === l.k; return { label: l.label, icon: l.icon, api: l.api, apiCol: apiCol(l.api), model: l.k === 'cognition' ? 'default agent: ' + st.defAgent : lmod(l), note: l.k === 'metacognition' ? 'fast model · variant ' + metaV : l.note, bg: on ? tint : 'var(--pn)', bd: on ? 'var(--ac)' : 'var(--bd)', click: () => this.setState({ layer: l.k }) }; });
+    const L0 = LAYERS.find((l) => l.k === st.layer), m0 = L0.model ? byFull(lmod(L0)) : null;
+    const ly = { ...L0, model: m0 ? m0.full : '', gw: m0 ? m0.gw : '', pvName: m0 ? (m0.pv || '(direct)') : '', ctx: m0 ? m0.ctx.toLocaleString('en-US') : '', out: L0.out ? L0.out.toLocaleString('en-US') : '', isMeta: L0.k === 'metacognition', isReflex: L0.k === 'reflex', isInstinct: L0.k === 'instinct', cfgKey: 'config.json → layers.' + L0.k };
+    const thinkOpts = metaVars.map((v) => { const [bg, fg, bd] = this.pill(metaV === v); return { label: v, tag: v === 'low' ? 'default' : '', bg, fg, bd, click: () => this.setState({ metaThink: v }) }; });
+    const thinkNote = 'Variants offered by ' + (m0 ? m0.id : '') + '. low is the default.';
+    const ides = [['VS Code', 'connected · withnav-lsp', 'var(--gr)', '1'], ['Zed', 'planned', 'var(--mu)', '0.55'], ['IntelliJ', 'planned', 'var(--mu)', '0.55']].map(([name, s, dot, op]) => ({ name, st: s, dot, op }));
+    const profRows = AGENTS.map((p) => { const on = st.agent === p.k, d = st.defAgent === p.k; return { k: p.k, mode: p.mode, modeCol: p.mode === 'subagent' ? 'var(--pu)' : 'var(--tx)', model: amod(p), prov: p.prov, variant: pget(p), bg: on ? tint : 'transparent', click: () => this.setState({ agent: p.k }), defTxt: d ? 'default' : 'set default', defIcon: 'ph ph-star', defBd: d ? 'var(--ac)' : 'var(--bd)', defFg: d ? 'var(--at)' : 'var(--mu)', setDef: (e) => { e.stopPropagation(); if (p.mode !== 'subagent') this.setState({ defAgent: p.k, agent: p.k }); } }; });
+    const PF = AGENTS.find((p) => p.k === st.agent);
+    const pf = { k: PF.k, desc: PF.desc, model: amod(PF), file: '.withnav/agents/' + PF.k + '.md',
+      modelNote: `Saved in config.json → agents.${PF.k}.model. It wins over a model: line in ${PF.k}.md.`,
+      variants: byFull(amod(PF)).vars.map((v) => { const [bg, fg, bd] = this.pill(pget(PF) === v); return { label: v, bg, fg, bd, click: () => this.setState((s) => ({ pv: { ...s.pv, [PF.k]: v } })) }; }),
+      modes: [['primary', 'primary'], ['subagent', 'subagent'], ['all', 'all']].map(([k, label]) => ({ label, bd: PF.mode === k ? 'var(--ac)' : 'var(--bd)', bg: PF.mode === k ? tint : 'var(--bg)' })) };
+    const cog = st.layer === 'cognition';
+    const pickRows = this.groupRows({ api: cog ? 'chat' : L0.api, cur: cog ? amod(PF) : lmod(L0), pick: (f) => this.setState((s) => cog ? { am: { ...s.am, [PF.k]: f } } : { lm: { ...s.lm, [L0.k]: f } }) });
+    const pickTitle = 'Catalogue · ' + (cog ? 'chat' : L0.api) + ' models · choosing for ' + (cog ? 'agent ' + PF.k : 'layer ' + L0.k);
+    const gwRows = this.groupRows({ gw: st.prov, showApi: true, prefix: 'gw' });
+    const DEF = ['$XDG_RUNTIME_DIR/withnav', '/tmp/withnav'];
+    const scratchRows = st.scratch.map((p, i) => ({ p, note: DEF.includes(p) ? 'default' : '', remove: () => this.setState((s) => ({ scratch: s.scratch.filter((_, j) => j !== i) })) }));
+    const slots = Array.from({ length: Math.min(st.maxSub, 16) }, (_, i) => ({ bg: i < 2 ? 'var(--pu)' : 'transparent', bd: i < 2 ? 'var(--pu)' : 'var(--mu)' }));
+    const wdOpts = (cur, key) => [[0, 'Off'], [60, '1 min'], [300, '5 min'], [900, '15 min'], [3600, '1 h']].map(([v, label]) => { const [bg, fg, bd] = this.pill(cur === v); return { label, bg, fg, bd, click: () => this.setState({ [key]: v }) }; });
+    const watchdogs = [
+      { title: 'Subagent watchdog', key: 'subagents.watchdog_interval_secs', desc: 'How often a running child is checked for progress. Off disables child supervision.', opts: wdOpts(st.subWd, 'subWd'), val: st.subWd + ' s' },
+      { title: 'Root agent watchdog', key: 'agent.watchdog_interval_secs', desc: 'The same progress check for the session\'s own agent.', opts: wdOpts(st.rootWd, 'rootWd'), val: st.rootWd + ' s' }
+    ];
+    const themeCards = Object.keys(TH).map((k) => { const c = TH[k][2]; return { label: TH[k][0], id: TH[k][1], ...c, bd: st.th === k ? 'var(--ac)' : 'var(--bd)', click: () => this.setState({ th: k }) }; });
+
+    // VS Code native-style
+    const toc = [['prov', 'Gateways', 0], ...PROVIDERS.map((p) => ['prov:' + p.k, p.k, 1]), ['layer', 'Layers', 0], ...LAYERS.map((l) => ['layer:' + l.k, l.k, 1]), ...AGENTS.map((p) => ['agent:' + p.k, p.k, 2]), ['perm', 'Permissions', 0], ['sub', 'Subagents', 0], ['app', 'Appearance', 0]];
+    const vsToc = toc.map(([k, label, lvl]) => {
+      const on = st.vsSec === k || (!lvl && st.vsSec.startsWith(k + ':')) || (k === 'layer' && st.vsSec.startsWith('agent:')) || (k === 'layer:cognition' && st.vsSec.startsWith('agent:'));
+      const target = k === 'prov' ? 'prov:omniroute' : k === 'layer' ? 'layer:reflex' : k;
+      return { label, pad: lvl === 2 ? '36px' : lvl ? '22px' : '8px', fw: lvl ? '400' : '600', fg: on ? 'var(--tx)' : 'var(--mu)', bg: st.vsSec === k ? tint : 'transparent', click: () => this.setState({ vsSec: target }) };
+    });
+    const R = (o) => ({ isHead: false, isRow: true, isText: o.kind === 'text', isNum: o.kind === 'num', isSelect: o.kind === 'select', isBool: o.kind === 'bool', isList: o.kind === 'list', isJson: o.kind === 'json', mod: o.mod ? 'var(--bl)' : 'transparent', modTxt: o.mod ? 'Modified' : '', cbg: o.on ? 'var(--ac)' : 'transparent', cmark: o.on ? '✓' : '', list: [], click: () => {}, ...o });
+    const H = (title, desc) => ({ isHead: true, isRow: false, title, desc });
+    let items = [];
+    const sec = st.vsSec;
+    if (sec.startsWith('prov:')) {
+      const p = PROVIDERS.find((x) => 'prov:' + x.k === sec), c = `Gateways › ${p.k}:`;
+      items = [H(p.k, 'models.json → providers.' + p.k + ' · catalogue: ' + CATALOG.filter((m) => m.gw === p.k).length + ' models'),
+        R({ cat: c, title: 'Base URL', desc: 'Root URL of the provider\'s API.', kind: 'text', val: p.base }),
+        R({ cat: c, title: 'API Key Env', desc: 'Environment variable that holds the key. Keys saved in the auth store are used too. Never logged.', kind: 'text', val: p.env }),
+        R({ cat: c, title: 'Catalog Format', desc: 'How the model list is read from the provider.', kind: 'select', val: p.cat }),
+        R({ cat: c, title: 'Connect Timeout Ms', desc: 'Time allowed to open a connection.', kind: 'num', val: p.connect }),
+        R({ cat: c, title: 'Request Timeout Ms', desc: 'Ceiling for one request. The instinct always uses its own 2 s deadline.', kind: 'num', val: p.request }),
+        R({ cat: c, title: 'Headers', desc: 'Extra HTTP headers sent with every request.', kind: 'json' })];
+    } else if (sec.startsWith('layer:') && sec !== 'layer:cognition') {
+      const l = LAYERS.find((x) => 'layer:' + x.k === sec), c = `Layers › ${l.k}:`;
+      items = [H(l.label, 'config.json → layers.' + l.k + ' · one model at a time. ' + l.role),
+        R({ cat: c, title: 'Model', desc: '<gateway>/<id>. ' + l.modelNote + (l.k === 'reflex' ? ' Runs only through the language server, with an IDE attached.' : ''), kind: 'select', val: st.lm[l.k] || l.model, mod: !!st.lm[l.k] }),
+        ...(l.k === 'metacognition' ? [R({ cat: c, title: 'Variant', desc: 'Variants offered by the model: ' + byFull(st.lm[l.k] || l.model).vars.join(', ') + '. low by default.', kind: 'select', val: st.metaThink, mod: st.metaThink !== 'low' })] : []),
+        R({ cat: c, title: 'Context Window', desc: 'From the catalogue.', kind: 'num', val: byFull(st.lm[l.k] || l.model).ctx }),
+        R({ cat: c, title: 'Max Output Tokens', desc: '', kind: 'num', val: l.out })];
+    } else if (sec === 'layer:cognition') {
+      items = [H('Cognition', 'The agentic chat. It runs agents, each with its own model, and several flows at once through subagents.'),
+        R({ cat: 'Layers › cognition:', title: 'Default Agent', desc: 'config.json → default_agent. A new conversation starts with this primary agent.', kind: 'select', val: st.defAgent, mod: st.defAgent !== 'build' }),
+        R({ cat: 'Layers › cognition:', title: 'Agents', desc: 'Defined in ~/.config/withnav/agents/ and .withnav/agents/. Pick one in the table of contents to edit it.', kind: 'list', list: AGENTS.map((p) => ({ p: p.k + '  ·  ' + amod(p) })) })];
+    } else if (sec.startsWith('agent:')) {
+      const p = AGENTS.find((x) => 'agent:' + x.k === sec), c = `Cognition › ${p.k}:`;
+      items = [H(p.k, p.desc),
+        R({ cat: c, title: 'Model', desc: `<gateway>/<id>. Saved in config.json → agents.${p.k}.model; wins over a model: line in ${p.k}.md.`, kind: 'text', val: amod(p), mod: !!st.am[p.k] }),
+        R({ cat: c, title: 'Variant', desc: 'Offered by this model: ' + byFull(amod(p)).vars.join(', ') + '.', kind: 'select', val: pget(p) }),
+        R({ cat: c, title: 'Mode', desc: 'primary drives a conversation, subagent runs as a background flow, all does both.', kind: 'select', val: p.mode }),
+        R({ cat: c, title: 'Definition', desc: 'Prompt, tools and access live in the agent file. Its model: line is overridden by config.json.', kind: 'text', val: '.withnav/agents/' + p.k + '.md' })];
+    } else if (sec === 'perm') {
+      items = [H('Permissions', 'config.json → permissions'),
+        R({ cat: 'Permissions:', title: 'Automatic Review', desc: 'Before a bash, write or edit runs, the instinct classifies effects, scope and risk; risky or outside-project changes need the metacognition\'s approval; any doubt or failure asks you. fetch keeps its origin grants.', kind: 'bool', val: 'Review calls automatically. When off, every bash, write and edit call is asked.', on: st.autoReview, mod: !st.autoReview, click: () => this.setState((s) => ({ autoReview: !s.autoReview })) }),
+        R({ cat: 'Permissions:', title: 'Scratch Dirs', desc: 'Absolute paths agents may write to without asking. An empty list turns scratch space off.', kind: 'list', list: st.scratch.map((p) => ({ p })) })];
+    } else if (sec === 'sub') {
+      items = [H('Subagents', 'config.json → subagents, agent'),
+        R({ cat: 'Subagents:', title: 'Max Concurrent', desc: 'Children one session may have starting, running or waiting for an answer. 1 to 64.', kind: 'num', val: st.maxSub, mod: st.maxSub !== 4 }),
+        R({ cat: 'Subagents:', title: 'Watchdog Interval Secs', desc: 'Progress check for running children. 0 disables supervision.', kind: 'num', val: st.subWd, mod: st.subWd !== 300 }),
+        R({ cat: 'Agent:', title: 'Watchdog Interval Secs', desc: 'The same check for the session\'s own agent. 0 disables it.', kind: 'num', val: st.rootWd, mod: st.rootWd !== 300 })];
+    } else {
+      items = [H('Appearance', 'config.json → tui.theme'),
+        R({ cat: 'Tui:', title: 'Theme', desc: 'Terminal client and WebUI theme. The VS Code webview follows your VS Code theme.', kind: 'select', val: TH[st.th][1], mod: st.th !== 'ayuDark' })];
+    }
+    return {
+      webNav, provCards, pv, layerCards, ly, thinkOpts, thinkNote, pickRows, pickTitle, gwRows, thinkNoteCol: 'var(--mu)', ides, profRows, pf, defAgent: st.defAgent, lyFixed: st.layer !== 'cognition', lyCog: st.layer === 'cognition', goSubSec: (e) => { e.preventDefault(); this.setState({ webSec: 'sub' }); }, scratchRows, slots, watchdogs, themeCards, maxSub: st.maxSub, slotNote: '2 running now in refactor-parser',
+      wsProviders: st.webSec === 'providers', wsLayers: st.webSec === 'layers', wsPerm: st.webSec === 'perm', wsSub: st.webSec === 'sub', wsApp: st.webSec === 'app',
+      arTog: this.tog(st.autoReview, () => this.setState((s) => ({ autoReview: !s.autoReview }))), arOnBd: st.autoReview ? 'var(--ac)' : 'var(--bd)', arOffBd: st.autoReview ? 'var(--bd)' : 'var(--ac)',
+      addScratch: () => this.setState((s) => ({ scratch: [...s.scratch, '/home/me/scratch'] })), resetScratch: () => this.setState({ scratch: DEF }),
+      subInc: () => this.setState((s) => ({ maxSub: Math.min(64, s.maxSub + 1) })), subDec: () => this.setState((s) => ({ maxSub: Math.max(1, s.maxSub - 1) })),
+      vsToc, vsItems: items, vsCount: 31
+    };
+  }
+
+  componentDidMount() {
+    this.onKey = (e) => {
+      const st = this.state, k = e.key, tag = (e.target && e.target.tagName) || '';
+      if (st.scr !== 'tuiset' || tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (st.tsPick) {
+        const ms = this.tsMs || [];
+        if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); this.setState((s) => ({ tsPi: Math.max(0, Math.min(ms.length - 1, s.tsPi + (k === 'ArrowDown' ? 1 : -1))) })); }
+        else if (k === 'Enter') { e.preventDefault(); const m = ms[st.tsPi]; if (m) m.click(); }
+        else if (k === 'Escape') this.setState({ tsPick: false });
+        return;
+      }
+      const n = (this.tsSel || []).length;
+      if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); this.setState((s) => ({ tsRow: Math.max(0, Math.min(n - 1, s.tsRow + (k === 'ArrowDown' ? 1 : -1))) })); }
+      else if (k === 'ArrowLeft' || k === 'ArrowRight') { e.preventDefault(); this.tsAct(this.tsCur, k === 'ArrowRight' ? 1 : -1); }
+      else if ((e.ctrlKey || e.metaKey) && k === 's') { e.preventDefault(); this.tsSaveAll(); }
+      else if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); this.tsRevertAll(); }
+      else if (k === 'Enter' || k === ' ') { e.preventDefault(); this.tsAct(this.tsCur, 0); }
+      else if (k === 'Tab') { e.preventDefault(); const i = TS_ORDER.indexOf(st.tsSec); this.setState({ tsSec: TS_ORDER[(i + (e.shiftKey ? 5 : 1)) % 6], tsRow: 0 }); }
+      else if (/^[1-6]$/.test(k)) this.setState({ tsSec: TS_ORDER[+k - 1], tsRow: 0 });
+    };
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.onKey); }
+
+  tsDefs(st) {
+    const amod = (p) => st.am[p.k] || p.model, lmod = (l) => st.lm[l.k] || l.model;
+    const pget = (p) => { const vs = byFull(amod(p)).vars; const v = st.pv[p.k] || p.v; return vs.includes(v) ? v : (vs[0] || '—'); };
+    const metaVars = byFull(lmod(LAYERS[2])).vars, metaV = metaVars.includes(st.metaThink) ? st.metaThink : (metaVars[0] || '—');
+    const H = (label, meta, col) => ({ head: true, label, meta: meta || '', col: col || 'var(--mu)' });
+    const D = (o) => ({ head: false, ...o, raw: String(o.raw !== undefined ? o.raw : o.v) });
+    const WD = ['0', '60', '300', '900', '3600'], wdShow = (v) => v === '0' ? '0 · off' : v + ' s';
+    const prim = AGENTS.filter((a) => a.mode !== 'subagent').map((a) => a.k);
+    const lset = (k) => (f) => this.setState((s) => ({ lm: { ...s.lm, [k]: f } }));
+    return {
+      providers: { label: 'Gateways', sub: PROVIDERS.map((p) => p.k).join(' · '), file: 'models.json → providers', desc: 'Endpoints that serve the catalogue. Models are named <gateway>/<id>.', rows: PROVIDERS.flatMap((p) => [H(p.k, '● reachable · ' + p.lat, 'var(--gr)'),
+        D({ key: 'providers.' + p.k + '.base_url', k: 'base_url', v: p.base, kind: 'text', desc: 'Root URL of the provider API.' }),
+        D({ key: 'providers.' + p.k + '.api_key_env', k: 'api_key_env', v: p.env + '  · ' + p.keySrc, raw: p.env, kind: 'text', desc: 'Environment variable that holds the key. Keys in the auth store are used too. Never shown or logged.' }),
+        D({ key: 'providers.' + p.k + '.catalog', k: 'catalog', v: p.cat, kind: 'text', desc: 'How the model list is read from the provider.' }),
+        D({ key: 'providers.' + p.k + '.connect_timeout_ms', k: 'connect_timeout_ms', v: p.connect, kind: 'text', desc: 'Time allowed to open a connection.' }),
+        D({ key: 'providers.' + p.k + '.request_timeout_ms', k: 'request_timeout_ms', v: p.request, kind: 'text', desc: 'Ceiling for one request. The instinct always uses its own 2 s deadline.' })]) },
+      layers: { label: 'Layers', sub: 'reflex · instinct · meta · cog', file: 'config.json → layers, default_agent', desc: 'Reflex, instinct and metacognition run one model each. The cognition layer runs Nav and the crew.', rows: [
+        H('reflex', 'fim · LSP only'), D({ key: 'layers.reflex.model', k: 'model', v: lmod(LAYERS[0]), kind: 'model', api: 'fim', setv: lset('reflex'), desc: 'Ghost-text suggestions. Runs only through the language server, with an IDE attached.' }),
+        H('instinct', 'systemone · 2 s deadline'), D({ key: 'layers.instinct.model', k: 'model', v: lmod(LAYERS[1]), kind: 'model', api: 'systemone', setv: lset('instinct'), desc: 'Typed decisions: InstinctFlow, permission review, the Nav pipeline.' }),
+        H('metacognition', 'chat · fast model'), D({ key: 'layers.metacognition.model', k: 'model', v: lmod(LAYERS[2]), kind: 'model', api: 'chat', setv: lset('metacognition'), desc: 'Remarks, wakes, and approval of risky tool calls.' }),
+        D({ key: 'layers.metacognition.variant', k: 'variant', v: metaV, kind: 'enum', opts: metaVars, setv: (v) => this.setState({ metaThink: v }), desc: 'Variants offered by the model. low by default.' }),
+        H('cognition', 'chat · ' + AGENTS.length + ' agents'), D({ key: 'default_agent', k: 'default_agent', v: st.defAgent, kind: 'enum', opts: prim, setv: (v) => this.setState({ defAgent: v }), desc: 'A new conversation starts with this primary agent. Agent models are in section 3.' })] },
+      agents: { label: 'Agents', sub: AGENTS.length + ' agents', file: 'config.json → agents', desc: 'Each agent has its own model and variant. The model here wins over a model: line in the agent file.', rows: AGENTS.flatMap((p) => [H(p.k, p.mode + ' · .withnav/agents/' + p.k + '.md'),
+        D({ key: 'agents.' + p.k + '.model', k: 'model', v: amod(p), kind: 'model', api: 'chat', setv: (f) => this.setState((s) => ({ am: { ...s.am, [p.k]: f } })), desc: p.desc }),
+        D({ key: 'agents.' + p.k + '.variant', k: 'variant', v: pget(p), kind: 'enum', opts: byFull(amod(p)).vars, setv: (v) => this.setState((s) => ({ pv: { ...s.pv, [p.k]: v } })), desc: 'Offered by ' + byFull(amod(p)).id + '.' })]) },
+      perm: { label: 'Permissions', sub: st.autoReview ? 'review on' : 'ask every call', file: 'config.json → permissions', desc: 'Instinct classifies, metacognition approves risky calls, you decide on doubt.', rows: [
+        D({ key: 'permissions.automatic_review', k: 'automatic_review', v: st.autoReview, kind: 'bool', setv: (v) => this.setState({ autoReview: v === 'true' }), desc: 'Review bash, write and edit before they run. Off asks you for every call. fetch keeps its origin grants.' }),
+        D({ key: 'permissions.scratch_dirs', k: 'scratch_dirs', v: '[' + st.scratch.length + '] ' + st.scratch.join(', '), raw: JSON.stringify(st.scratch), kind: 'list', setv: (r) => this.setState({ scratch: JSON.parse(r) }), desc: 'Absolute paths agents may write to without asking. An empty list turns scratch space off.' })] },
+      sub: { label: 'Subagents', sub: 'max ' + st.maxSub + ' per session', file: 'config.json → subagents, agent', desc: 'Background children and the watchdogs that check on them.', rows: [H('subagents'),
+        D({ key: 'subagents.max_concurrent', k: 'max_concurrent', v: st.maxSub, kind: 'num', min: 1, max: 64, setv: (v) => this.setState({ maxSub: +v }), desc: 'Children one session may have starting, running or waiting for an answer. 1 to 64.' }),
+        D({ key: 'subagents.watchdog_interval_secs', k: 'watchdog_interval_secs', v: st.subWd, kind: 'enum', opts: WD, show: wdShow, setv: (v) => this.setState({ subWd: +v }), desc: 'Progress check for running children. 0 turns supervision off.' }),
+        H('agent'), D({ key: 'agent.watchdog_interval_secs', k: 'watchdog_interval_secs', v: st.rootWd, kind: 'enum', opts: WD, show: wdShow, setv: (v) => this.setState({ rootWd: +v }), desc: 'The same check for the session\'s own agent.' })] },
+      app: { label: 'Appearance', sub: TH[st.th][1], file: 'config.json → tui.theme', desc: 'Shared by the terminal client and the WebUI. Applied live.', rows: [
+        D({ key: 'tui.theme', k: 'theme', v: TH[st.th][1], raw: st.th, kind: 'enum', opts: Object.keys(TH), show: (k) => TH[k][1], setv: (v) => this.setState({ th: v }), desc: 'Ayu, Nord, Tide or Moss, dark or light. The VS Code webview follows the VS Code theme.' })] }
+    };
+  }
+  tsDisp(r, raw) { const x = raw !== undefined ? raw : r.raw; return r.show ? r.show(x) : raw !== undefined ? x : String(r.v); }
+  tsAct(r, dir) {
+    if (!r) return;
+    if (r.kind === 'enum') { if (!r.opts.length) return; const i = r.opts.indexOf(r.raw); r.setv(r.opts[(i + (dir || 1) + r.opts.length) % r.opts.length]); }
+    else if (r.kind === 'num') r.setv(String(Math.max(r.min, Math.min(r.max, +r.raw + (dir || 1)))));
+    else if (r.kind === 'bool') r.setv(r.raw === 'true' ? 'false' : 'true');
+    else if (r.kind === 'model' && !dir) { const ms = this.groupRows({ api: r.api, cur: r.raw, prefix: 'ts' }).filter((x) => x.isM); this.setState({ tsPick: true, tsPi: Math.max(0, ms.findIndex((m) => m.full === r.raw)) }); }
+  }
+  tsSaveAll() { this.tsBase = null; this.setState({ tsSavedAt: Date.now() }); }
+  tsRevertAll() { (this.tsDiffRows || []).forEach(({ r, raw }) => r.setv(raw)); }
+  tsVals(st) {
+    const tint = 'color-mix(in srgb,var(--ac) 14%,transparent)';
+    const S = this.tsDefs(st);
+    const all = TS_ORDER.flatMap((k) => S[k].rows.filter((r) => !r.head));
+    if (!this.tsBase) this.tsBase = Object.fromEntries(all.map((r) => [r.key, r.raw]));
+    const B = this.tsBase, dirty = (r) => B[r.key] !== undefined && B[r.key] !== r.raw;
+    const dr = all.filter(dirty);
+    this.tsDiffRows = dr.map((r) => ({ r, raw: B[r.key] }));
+    const sec = S[st.tsSec], sel = sec.rows.filter((r) => !r.head), ri = Math.max(0, Math.min(st.tsRow, sel.length - 1)), cur = sel[ri];
+    this.tsSel = sel; this.tsCur = cur;
+    const HINT = { model: 'enter pick', enum: 'change', num: '±1', bool: 'space toggle', text: 'enter edit', list: 'enter edit list' };
+    const vcol = (r) => r.kind === 'bool' ? (r.raw === 'true' ? 'var(--gr)' : 'var(--rd)') : r.kind === 'enum' ? 'var(--at)' : r.kind === 'num' ? 'var(--or)' : 'var(--tx)';
+    let j = 0;
+    const tsRows = sec.rows.map((r) => {
+      if (r.head) return { ...r, isRow: false };
+      const i = j++, on = i === ri, stop = (fn) => (e) => { e.stopPropagation(); this.setState({ tsRow: i }); fn(); };
+      return { head: false, isRow: true, k: r.k, v: this.tsDisp(r), mod: dirty(r) ? '●' : '', bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent', kcol: on ? 'var(--tx)' : 'var(--mu)', vcol: vcol(r),
+        hint: on ? HINT[r.kind] : '', arrows: on && (r.kind === 'enum' || r.kind === 'num'), dec: stop(() => this.tsAct(r, -1)), inc: stop(() => this.tsAct(r, 1)),
+        click: on ? () => this.tsAct(r, 0) : () => this.setState({ tsRow: i }) };
+    });
+    const tsNav = TS_ORDER.map((k, i) => { const on = st.tsSec === k, n = S[k].rows.filter((r) => !r.head && dirty(r)).length; return { n: i + 1, label: S[k].label, sub: S[k].sub, mod: n ? '●' + n : '', bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent', click: () => this.setState({ tsSec: k, tsRow: 0 }) }; });
+    const TYPE = { model: 'model · ' + (cur.api || '') + ' catalogue', enum: 'choice', num: 'integer', bool: 'boolean', text: 'string', list: 'list of absolute paths' };
+    const allowed = cur.kind === 'enum' ? (cur.opts.length ? cur.opts.map((o) => this.tsDisp(cur, o)).join(' · ') : 'none offered by this model') : cur.kind === 'num' ? cur.min + ' to ' + cur.max : cur.kind === 'bool' ? 'true · false' : cur.kind === 'model' ? '<gateway>/<id> · ' + CATALOG.filter((m) => m.api === cur.api).length + ' models' : '—';
+    const tf = { key: cur.key, desc: cur.desc, type: TYPE[cur.kind], allowed, saved: this.tsDisp(cur, B[cur.key]) };
+    const tsDiffs = dr.map((r) => ({ key: r.key, from: this.tsDisp(r, B[r.key]), to: this.tsDisp(r) }));
+    let tsPickRows = [];
+    if (st.tsPick && cur.kind === 'model') {
+      let mi = 0;
+      const rows = this.groupRows({ api: cur.api, cur: cur.raw, prefix: 'ts', pick: (f) => { cur.setv(f); this.setState({ tsPick: false }); } });
+      this.tsMs = rows.filter((x) => x.isM);
+      tsPickRows = rows.map((x) => { const o = { ...x, tcaret: x.caret && x.caret.includes('down') ? '▾' : '▸' }; if (x.isM) { const f = mi++ === st.tsPi; o.fbg = f ? tint : 'transparent'; o.tmark = x.full === cur.raw ? '●' : f ? '›' : ''; } return o; });
+    }
+    return {
+      tsNav, tsRows, tsTitle: sec.label, tsFile: sec.file, tsDesc: sec.desc, tf, tsDiffs, tsCount: dr.length, tsClean: !dr.length, tsDirty: !!dr.length,
+      tsStatus: dr.length ? '● ' + dr.length + ' unsaved' : st.tsSavedAt ? '✓ written' : 'up to date', tsStatusCol: dr.length ? 'var(--or)' : st.tsSavedAt ? 'var(--gr)' : 'var(--mu)',
+      tsSave: () => this.tsSaveAll(), tsRevert: () => this.tsRevertAll(),
+      tsPick: st.tsPick && cur.kind === 'model', tsPickRows, tsPickTitle: 'model for ' + cur.key.replace(/\.model$/, ''), tsClosePick: () => this.setState({ tsPick: false }), tsStop: (e) => e.stopPropagation()
+    };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const c = TH[st.th][2];
+    const themeVars = Object.keys(c).map((k) => `--${k}:${c[k]}`).join(';');
+    const screens = [['tuiset', 'ph ph-terminal-window', 'Settings · TUI'], ['webset', 'ph ph-browser', 'Settings · WebUI'], ['vsset', 'ph ph-code', 'Settings · VS Code']].map(([k, icon, label]) => { const [bg, fg, bd] = this.pill(st.scr === k); return { label, icon, bg, fg, bd, click: () => this.setState({ scr: k, menu: null }) }; });
+    const themes = Object.keys(TH).map((k) => { const [bg, fg, bd] = this.pill(st.th === k); return { label: TH[k][0], bg, fg, bd, click: () => this.setState({ th: k }) }; });
+    const curF = st.th.replace(/(Dark|Light)$/, ''), curD = st.th.endsWith('Dark');
+    const tSty = (on) => ({ bg: on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)' });
+    const themeFams = [...new Set(Object.keys(TH).map((k) => k.replace(/(Dark|Light)$/, '')))].map((f) => ({ label: f[0].toUpperCase() + f.slice(1), ...tSty(f === curF), click: () => this.setState({ th: f + (curD ? 'Dark' : 'Light') }) }));
+    const themeModes = [['Dark', true], ['Light', false]].map(([l, d]) => ({ label: l, ...tSty(d === curD), click: () => this.setState({ th: curF + l }) }));
+    return { themeVars, screens, themes, themeFams, themeModes, isFlows: st.scr === 'flows', isWebSet: st.scr === 'webset', isVsSet: st.scr === 'vsset', isTuiSet: st.scr === 'tuiset', ...this.flowVals(st), ...this.settingsVals(st), ...this.tsVals(st) };
+  }
+}
+</script>
+</body>
+</html>

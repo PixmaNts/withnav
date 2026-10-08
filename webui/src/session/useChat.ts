@@ -1,5 +1,5 @@
 // The session controller of the chat page: one conversation's stream, its
-// server summary, and every action the driver can take on it. A route with no
+// server summary, and every action the Captain can take on it. A route with no
 // session id is a draft: agent, model and variant are kept locally and sent
 // with `POST /v1/sessions` when the first message goes out.
 

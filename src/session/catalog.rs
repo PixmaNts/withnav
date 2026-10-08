@@ -15,7 +15,7 @@ pub struct SessionListing {
     pub title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    /// Number of driver messages (`message.received` events).
+    /// Number of captain messages (`message.received` events).
     pub message_count: u64,
     /// The primary agent the session runs as.
     pub agent: String,

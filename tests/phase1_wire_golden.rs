@@ -9,14 +9,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use navai::agent::actor::AgentActor;
-use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use navai::provider::config::{ProviderConfig, ReasoningHistory};
-use navai::tools::bash::BashTool;
-use navai::tools::control::AskTool;
-use navai::tools::native::ReadTool;
-use navai::tools::{Registry, ToolContext};
 use tokio_util::sync::CancellationToken;
+use withnav::agent::actor::AgentActor;
+use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use withnav::provider::config::{ProviderConfig, ReasoningHistory};
+use withnav::tools::bash::BashTool;
+use withnav::tools::control::AskTool;
+use withnav::tools::native::ReadTool;
+use withnav::tools::{Registry, ToolContext};
 
 mod common;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};

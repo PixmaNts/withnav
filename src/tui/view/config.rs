@@ -35,7 +35,7 @@ fn description(key: &str) -> &'static str {
     } else {
         match key {
             "default_agent" => "The primary agent used for new conversations.",
-            "permissions.automatic_review" => "Instinct reviews calls; metacognition approves risk. On doubt, the driver decides. Off: ask for every call.",
+            "permissions.automatic_review" => "Instinct reviews calls; metacognition approves risk. On doubt, the Captain decides. Off: ask for every call.",
             "permissions.scratch_dirs" => "Absolute scratch paths. An empty list disables scratch access.",
             "subagents.max_concurrent" => "Maximum concurrent subagents per session.",
             "subagents.watchdog_interval_secs" => "Subagent watchdog interval in seconds. Zero disables it.",
@@ -62,7 +62,7 @@ fn section_info(section: Section) -> (&'static str, &'static str) {
         ),
         Section::Permissions => (
             "config.json → permissions",
-            "Review before execution. The driver decides on doubt, timeout or reviewer failure.",
+            "Review before execution. The Captain decides on doubt, timeout or reviewer failure.",
         ),
         Section::Subagents => (
             "config.json → subagents, agent",
@@ -219,7 +219,8 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) 
         area,
         area.y,
         Line::from(vec![
-            Span::styled(" ◆ navai ", theme.accent()),
+            Span::styled(" ◆", ratatui::style::Style::default().fg(theme.nav)),
+            Span::styled(" withnav ", theme.text()),
             Span::styled(left, theme.muted()),
             Span::raw(" ".repeat(gap)),
             Span::styled(
@@ -316,16 +317,19 @@ fn sections(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
 fn group_title(row: &ConfigRow, state: &State) -> String {
     match row.section {
         Section::Layers => match row.group.as_str() {
-            "reflex" => "reflex  fim · LSP only".into(),
-            "instinct" => "instinct  systemone · 2 s deadline".into(),
-            "metacognition" => "metacognition  chat · fast model".into(),
-            _ => format!("cognition  chat · {} agents", state.agents.len()),
+            "reflex" => "Reflex · Completion  fim · LSP only".into(),
+            "instinct" => "Instinct · Triage  systemone · 2 s deadline".into(),
+            "metacognition" => "Metacognition · Beacon  chat · fast model".into(),
+            _ => format!(
+                "Cognition · Nav and the crew  chat · {} agents",
+                state.agents.len()
+            ),
         },
         Section::Agents => {
             let agent = state.agents.iter().find(|a| a.id == row.group);
             format!(
                 "{}  {}",
-                row.group,
+                super::sidebar::agent_label(&row.group),
                 agent.map(|a| a.mode.as_str()).unwrap_or("—")
             )
         }
@@ -374,7 +378,7 @@ fn hint(kind: &RowKind) -> &'static str {
 /// server's `applies` label; `None` for read-only rows, which carry no label.
 fn applies_note(applies: &str) -> Option<&'static str> {
     match applies {
-        "restart" => Some("applies after restarting Navai"),
+        "restart" => Some("applies after restarting WithNav"),
         "new_sessions" => Some("applies to new sessions and subagents"),
         "live" => Some("applies here now; other windows on next start"),
         _ => None,

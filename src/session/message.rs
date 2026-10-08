@@ -64,6 +64,7 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
         }
     };
     let command_id = command.command_id;
+    super::flows::received(handle, &command).await;
     let actor_state = handle.actor_state.clone();
     let notice = command.downgrade_notice().map(|n| n.to_string());
     let pending = PendingCommand {
@@ -84,8 +85,8 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
         .accept_command(
             pending,
             Box::new(move || {
-                if committed.from_driver() {
-                    status.queue_driver();
+                if committed.from_captain() {
+                    status.queue_captain();
                 }
                 permit.send(committed);
             }),

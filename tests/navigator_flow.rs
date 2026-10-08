@@ -25,7 +25,7 @@ fn triggers(client: &Nav) -> Vec<Value> {
 
 /// A save then an idle on the same text: one request, one delivery. The idle
 /// does not restart the request the save started.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -38,16 +38,16 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     client.expect_status("thinking").await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 1, "the idle must not restart the request");
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "first");
     let rest = client.collect_for(Duration::from_millis(100)).await;
-    assert!(rest.iter().all(|m| m["method"] != "navigator/remark"));
+    assert!(rest.iter().all(|m| m["method"] != "withnav/remark"));
 
     let records = triggers(&client);
     let delivered: Vec<&str> = records
@@ -56,14 +56,11 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
         .collect();
     assert_eq!(delivered.iter().filter(|d| **d == "remark").count(), 1);
     assert!(!delivered.contains(&"cancelled"), "{delivered:?}");
-    assert!(
-        records.iter().any(|r| r["reason"] == "remark_in_flight"),
-        "{records:?}"
-    );
+    assert_eq!(records.len(), 1);
 }
 
 /// Newer text still supersedes the request in flight.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn newer_text_still_supersedes_the_remark_in_flight() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -84,7 +81,7 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "new");
     assert!(triggers(&client)
         .iter()
@@ -92,7 +89,7 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
 }
 
 /// Closing the document cancels the remark in flight, deduplication or not.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn closing_cancels_the_deduplicated_remark() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(0, "late")], gate.clone());
@@ -108,10 +105,10 @@ async fn closing_cancels_the_deduplicated_remark() {
         )
         .await;
     let mut seen = Vec::new();
-    client.expect("navigator/clear", &mut seen).await;
+    client.expect("withnav/clear", &mut seen).await;
     gate.cancel();
     let msgs = client.collect_for(Duration::from_millis(100)).await;
-    assert!(msgs.iter().all(|m| m["method"] != "navigator/remark"));
+    assert!(msgs.iter().all(|m| m["method"] != "withnav/remark"));
     assert!(triggers(&client)
         .iter()
         .any(|r| r["delivered"] == "cancelled"));
@@ -120,7 +117,7 @@ async fn closing_cancels_the_deduplicated_remark() {
 
 /// A one-line replacement reaches the metacognition under the built-in
 /// pipeline, with no size limit to clear.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_one_line_replacement_reaches_the_metacognition() {
     let mock = MockCommenter::new(vec![Answer::Remark(1, "x")]);
     let mut client = Nav::start(mock.clone()).await;
@@ -130,7 +127,7 @@ async fn a_one_line_replacement_reaches_the_metacognition() {
         .await;
     client.did_save(URI).await;
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "x");
     assert_eq!(mock.calls(), 1);
 }

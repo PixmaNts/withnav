@@ -343,7 +343,7 @@ fn replace_in(
     content: &[u8],
     destination: &Path,
 ) -> Result<(), ToolError> {
-    let temp = format!(".navai-{}.tmp", ulid::Ulid::new());
+    let temp = format!(".withnav-{}.tmp", ulid::Ulid::new());
     let fd = openat(
         dir.as_fd(),
         temp.as_str(),

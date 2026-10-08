@@ -181,11 +181,11 @@ fn metacognition_prefers_explicit_low_or_defers_to_runtime_offers() {
 fn agents_prefer_config_over_headers_and_return_warning_fallback() {
     let catalog = catalog();
     let settings = settings(
-        json!({"agents":{"oracle":{"model":"omniroute/cc/chat","variant":"high"},"bad":{"model":"omniroute/missing"}}}),
+        json!({"agents":{"lux":{"model":"omniroute/cc/chat","variant":"high"},"bad":{"model":"omniroute/missing"}}}),
     );
     let resolver = AssignmentResolver::new(&catalog, &settings);
     let AgentModel::Assigned(model) = resolver
-        .agent_model("oracle", Some("omniroute/cc/no-low"))
+        .agent_model("lux", Some("omniroute/cc/no-low"))
         .unwrap()
     else {
         panic!()
@@ -226,7 +226,7 @@ fn default_agent_validates_name_and_requires_usable_model() {
     let catalog = catalog();
     let known = [
         ("build", Some("omniroute/cc/chat"), true),
-        ("oracle", None, true),
+        ("lux", None, true),
     ];
     let empty = Settings::default();
     assert_eq!(
@@ -235,14 +235,13 @@ fn default_agent_validates_name_and_requires_usable_model() {
             .unwrap(),
         "build"
     );
-    let configured = settings(
-        json!({"default_agent":"oracle","agents":{"oracle":{"model":"omniroute/cc/chat"}}}),
-    );
+    let configured =
+        settings(json!({"default_agent":"lux","agents":{"lux":{"model":"omniroute/cc/chat"}}}));
     assert_eq!(
         AssignmentResolver::new(&catalog, &configured)
             .default_agent_check(&known)
             .unwrap(),
-        "oracle"
+        "lux"
     );
     let unknown = settings(json!({"default_agent":"missing"}));
     let error = AssignmentResolver::new(&catalog, &unknown)
@@ -250,10 +249,10 @@ fn default_agent_validates_name_and_requires_usable_model() {
         .unwrap_err();
     assert!(matches!(error, DefaultAgentError::Unknown { .. }));
     assert!(
-        error.to_string().contains("default_agent") && error.to_string().contains("build, oracle")
+        error.to_string().contains("default_agent") && error.to_string().contains("build, lux")
     );
     for value in [
-        json!({"default_agent":"oracle"}),
+        json!({"default_agent":"lux"}),
         json!({"agents":{"build":{"model":"omniroute/missing"}}}),
     ] {
         let settings = settings(value);

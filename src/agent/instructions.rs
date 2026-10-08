@@ -115,7 +115,7 @@ pub struct RuleSource {
 }
 
 impl RuleSource {
-    /// Whether the driver should be told: anything but a clean outcome.
+    /// Whether the Captain should be told: anything but a clean outcome.
     pub fn is_problem(&self) -> bool {
         matches!(
             self.status,

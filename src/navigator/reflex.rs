@@ -39,7 +39,7 @@ pub const MAX_SUGGESTION_TOKENS: u64 = 128;
 #[derive(Debug, Clone)]
 pub struct Suggestion {
     pub item: InlineCompletionItem,
-    /// The id echoed back by the extension in `navigator/reflexShown`.
+    /// The id echoed back by the extension in `withnav/reflexShown`.
     pub request_id: String,
 }
 
@@ -102,7 +102,7 @@ fn cap_context_block(block: &str, max_bytes: usize) -> String {
     }
 }
 
-/// The reflex context block: the driver's intent and nearby signatures,
+/// The reflex context block: the Captain's intent and nearby signatures,
 /// rendered as comments in the file's language and capped at ~300 tokens.
 /// Returns an empty string when there is no context.
 pub fn render_context_block(reflex_context: &str, language_id: &str) -> String {
@@ -338,7 +338,7 @@ impl ReflexService {
 }
 
 /// Wraps a [`Suggestion`] into the wire answer of
-/// `navigator/inlineCompletion`.
+/// `withnav/inlineCompletion`.
 pub fn to_result(suggestion: &Suggestion) -> InlineCompletionResult {
     InlineCompletionResult {
         items: vec![suggestion.item.clone()],

@@ -136,7 +136,7 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
         .expect("stream started");
 
     // Flood the bounded transport while the actor is mid-turn.
-    for i in 0..navai::bus::inbox::INBOX_CAPACITY {
+    for i in 0..withnav::bus::inbox::INBOX_CAPACITY {
         let resp = post_message(&server.base, &id, &format!("filler {i}")).await;
         assert_eq!(resp.status(), 200, "filler {i} must be accepted");
     }
@@ -157,7 +157,7 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
         .await
         .expect("fresh subscribe");
     let received = match fresh.replay {
-        navai::bus::ResumeOutcome::Replay(replay) => replay
+        withnav::bus::ResumeOutcome::Replay(replay) => replay
             .iter()
             .filter(|e| e.kind == "message.received")
             .count(),
@@ -165,7 +165,7 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
     };
     assert_eq!(
         received,
-        navai::bus::inbox::INBOX_CAPACITY + 1,
+        withnav::bus::inbox::INBOX_CAPACITY + 1,
         "rejected command produced NO message.received"
     );
 }
@@ -204,7 +204,7 @@ async fn non_text_content_is_a_structured_400_and_not_sequenced() {
 
     // Nothing beyond session.start was sequenced (reject before the event).
     let replayed = match sub.replay {
-        navai::bus::ResumeOutcome::Replay(replay) => replay,
+        withnav::bus::ResumeOutcome::Replay(replay) => replay,
         other => panic!("expected replay, got {other:?}"),
     };
     assert_eq!(replayed.len(), 1, "only session.start");

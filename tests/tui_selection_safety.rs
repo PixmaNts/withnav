@@ -1,18 +1,18 @@
-use navai::tui::{
+use serde_json::json;
+use withnav::tui::{
     protocol::*,
     reducer,
     state::{Activity, State, UiState, VariantPick},
 };
-use serde_json::json;
 
 fn summary(seq: u64, agent: &str, model: &str, variant: Option<&str>) -> SessionMetadata {
     serde_json::from_value(json!({"session_id":"S","actor_state":"idle","workspace":"/ws","agent":agent,"model":model,"variant":variant,"source":"config","variant_source":"model_default","current_seq":seq})).unwrap()
 }
 fn event(s: &mut State, seq: u64, kind: &str, payload: serde_json::Value) {
-    let envelope = navai::bus::event::EventEnvelope::new(
+    let envelope = withnav::bus::event::EventEnvelope::new(
         ulid::Ulid::new(),
         seq,
-        navai::bus::event::EventKind::ModelChanged,
+        withnav::bus::event::EventKind::ModelChanged,
         payload,
     );
     let mut envelope = envelope;
@@ -77,8 +77,8 @@ fn complete_selection_is_atomic_across_summary_replay_secondary_and_old_variant_
         json!({"name":"variant","ok":true,"data":{"agent":"plan","model":"gateway/astra","variant":null,"variant_source":"override"}}),
     );
     assert_eq!(tuple(&s), held);
-    metadata(&mut s, summary(110, "review", "gateway/newer", None));
-    assert_eq!(s.agent_name(), "review");
+    metadata(&mut s, summary(110, "lux", "gateway/newer", None));
+    assert_eq!(s.agent_name(), "lux");
     assert_eq!(s.selected_model_name.as_deref(), Some("gateway/newer"));
     assert_eq!(s.model_seq, Some(110));
 }
@@ -209,7 +209,7 @@ fn workspace_order_and_tab_scoped_agents_reject_foreign_and_reversed_answers() {
     s.tabs.push(Default::default());
     s.tabs[1].generation = Generation(2);
     s.active = 1;
-    let body = serde_json::from_value(json!({"default_agent":"build","agents":[{"id":"review","description":"Review","mode":"primary","assignment":null,"effective":null,"warning":null}]})).unwrap();
+    let body = serde_json::from_value(json!({"default_agent":"build","agents":[{"id":"lux","description":"Lux","mode":"primary","assignment":null,"effective":null,"warning":null}]})).unwrap();
     reducer::update(
         &mut s,
         ClientEvent::Agents {
@@ -222,7 +222,7 @@ fn workspace_order_and_tab_scoped_agents_reject_foreign_and_reversed_answers() {
     )
     .unwrap();
     assert!(s.tabs[1].agents.is_empty());
-    assert_eq!(s.tabs[0].agents[0].id, "review");
+    assert_eq!(s.tabs[0].agents[0].id, "lux");
     // Workspace catalog survives closure of the tab that issued it.
     s.tabs.remove(0);
     s.active = 0;
@@ -265,13 +265,13 @@ fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
         let mut s = State {
             catalog: vec![
                 ModelEntry {
-                    api: navai::tui::protocol::ApiKind::Chat,
+                    api: withnav::tui::protocol::ApiKind::Chat,
                     name: "gateway/current".into(),
                     context_window: catalog_window,
                     ..Default::default()
                 },
                 ModelEntry {
-                    api: navai::tui::protocol::ApiKind::Chat,
+                    api: withnav::tui::protocol::ApiKind::Chat,
                     name: "gateway/new".into(),
                     context_window: Some(200000),
                     ..Default::default()
@@ -296,12 +296,12 @@ fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
 #[test]
 fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_variant() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use navai::tui::input::{route_key, Editor};
+    use withnav::tui::input::{route_key, Editor};
     for explicit in [false, true] {
         let mut s = State::default();
         agents(&mut s, 1, None, "build");
         s.catalog = vec![ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             name: "gateway/build".into(),
             variants: vec!["low".into(), "high".into()],
             default_variant: Some("high".into()),
@@ -348,10 +348,10 @@ fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_
 #[test]
 fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use navai::tui::input::{route_key, Editor};
+    use withnav::tui::input::{route_key, Editor};
     let mut s = State {
         catalog: vec![ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             name: "gateway/model".into(),
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
@@ -415,13 +415,13 @@ fn archive_header_and_variant_override_view_do_not_claim_child_or_assigned() {
     m.resume_disabled_reason = Some("unproven identity".into());
     metadata(&mut s, m);
     let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
-    let mut cache = navai::tui::view::RenderCache::default();
+    let mut cache = withnav::tui::view::RenderCache::default();
     t.draw(|f| {
-        navai::tui::view::draw(
+        withnav::tui::view::draw(
             f,
             &s,
             &UiState::default(),
-            &navai::tui::input::Editor::new(),
+            &withnav::tui::input::Editor::new(),
             &mut cache,
         )
     })
@@ -434,11 +434,11 @@ fn archive_header_and_variant_override_view_do_not_claim_child_or_assigned() {
     s.session.as_mut().unwrap().read_only = false;
     s.variant_source = "override".into();
     t.draw(|f| {
-        navai::tui::view::draw(
+        withnav::tui::view::draw(
             f,
             &s,
             &UiState::default(),
-            &navai::tui::input::Editor::new(),
+            &withnav::tui::input::Editor::new(),
             &mut cache,
         )
     })

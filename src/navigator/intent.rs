@@ -1,5 +1,5 @@
-//! Read/write access to `.navigator/intent.md`: the workspace's intent
-//! record (sections Intent / Plan / Decisions / Active spec). The driver
+//! Read/write access to `.withnav/intent.md`: the workspace's intent
+//! record (sections Intent / Plan / Decisions / Active spec). The Captain
 //! may edit it by hand; the cognition updates it through the `intent`
 //! tool when the conversation settles an intent, a plan or a decision.
 //! When the sections are missing the file is treated as opaque text:
@@ -19,7 +19,7 @@ use crate::tools::{Tool, ToolContext, ToolResult};
 /// The parsed intent record.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct IntentRecord {
-    /// `## Intent`: what the driver is trying to do.
+    /// `## Intent`: what the Captain is trying to do.
     pub intent: Option<String>,
     /// `## Plan`: the current plan.
     pub plan: Option<String>,
@@ -47,11 +47,11 @@ impl IntentRecord {
     }
 }
 
-/// Reads `.navigator/intent.md` from the workspace, if present. Missing
+/// Reads `.withnav/intent.md` from the workspace, if present. Missing
 /// file -> `Ok(None)`; present but unreadable -> the error (the caller
 /// decides whether that is fatal; it never is for the editor).
 pub fn read_intent(workspace: &Path) -> std::io::Result<Option<IntentRecord>> {
-    let path = workspace.join(".navigator").join("intent.md");
+    let path = crate::paths::workspace_dir(workspace).join("intent.md");
     if !path.is_file() {
         return Ok(None);
     }
@@ -102,7 +102,7 @@ pub fn parse_intent(raw: &str) -> IntentRecord {
     record
 }
 
-/// Writes `.navigator/intent.md` from the workspace, replacing only the
+/// Writes `.withnav/intent.md` from the workspace, replacing only the
 /// sections given (the others keep their current text). The file is
 /// created with all four headings when missing, and the write is atomic
 /// (temp file + rename in the same directory). Sections set to an empty
@@ -112,12 +112,12 @@ pub fn write_intent_sections(
     workspace: &Path,
     sections: &IntentSections,
 ) -> std::io::Result<PathBuf> {
-    let dir = workspace.join(".navigator");
+    let dir = workspace.join(".withnav");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("intent.md");
     // Only a missing record starts empty. Any other failure (permissions,
     // invalid UTF-8, a directory in the way) leaves the file as it is:
-    // rebuilding from nothing would erase what the driver wrote.
+    // rebuilding from nothing would erase what the Captain wrote.
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -125,7 +125,7 @@ pub fn write_intent_sections(
     };
     let updated = apply_sections(&current, sections);
     // Atomic: a temp file in the SAME directory, fsynced, then renamed over
-    // the target, so the driver never sees a half-written record (the file
+    // the target, so the Captain never sees a half-written record (the file
     // is version-controlled and may be open in the editor).
     let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
     tmp.write_all(updated.as_bytes())?;
@@ -221,13 +221,13 @@ impl Tool for IntentTool {
 
     fn schema(&self) -> Value {
         json!({
-            "description": "Update the workspace intent record (.navigator/intent.md). Each given \
+            "description": "Update the workspace intent record (.withnav/intent.md). Each given \
                 section replaces its current text; omitted sections are kept. Update it briefly, \
                 without asking, when the conversation settles an intent, a plan or a decision.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "intent": {"type": "string", "description": "What the driver is trying to do"},
+                    "intent": {"type": "string", "description": "What the Captain is trying to do"},
                     "plan": {"type": "string", "description": "The current plan"},
                     "decisions": {"type": "string", "description": "Settled decisions"},
                     "active_spec": {"type": "string", "description": "Link to the spec being worked on"}
@@ -318,7 +318,7 @@ Add retry with backoff to the HTTP client.
     fn reads_from_workspace_navigator_dir() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(read_intent(tmp.path()).unwrap().is_none());
-        let dir = tmp.path().join(".navigator");
+        let dir = tmp.path().join(".withnav");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("intent.md"), "## Intent\nx").unwrap();
         let r = read_intent(tmp.path()).unwrap().unwrap();
@@ -344,7 +344,7 @@ Add retry with backoff to the HTTP client.
     #[test]
     fn write_replaces_given_sections_and_keeps_the_rest() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".navigator");
+        let dir = tmp.path().join(".withnav");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("intent.md"), SAMPLE).unwrap();
 
@@ -382,7 +382,7 @@ Add retry with backoff to the HTTP client.
             },
         )
         .unwrap();
-        let raw = std::fs::read_to_string(tmp.path().join(".navigator/intent.md")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(".withnav/intent.md")).unwrap();
         for heading in [
             "# Intent record",
             "## Intent",
@@ -404,7 +404,7 @@ Add retry with backoff to the HTTP client.
     #[test]
     fn an_unreadable_record_is_an_error_and_stays_untouched() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".navigator");
+        let dir = tmp.path().join(".withnav");
         std::fs::create_dir_all(&dir).unwrap();
         // Not valid UTF-8: the read fails, the bytes must survive.
         let raw: &[u8] = b"## Intent\nkeep me \xff\xfe\n";

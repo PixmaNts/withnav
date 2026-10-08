@@ -1,6 +1,84 @@
 use super::*;
 
 #[tokio::test]
+async fn admitted_message_routes_flow_effect_before_consumption() {
+    struct Client;
+    impl instinct_flow::DecisionClient for Client {
+        fn capabilities(&self) -> instinct_flow::Capabilities {
+            instinct_flow::Capabilities { images: false }
+        }
+        fn identity(&self) -> instinct_flow::ClientIdentity {
+            instinct_flow::ClientIdentity {
+                model: "fake/instinct".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            _: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: std::time::Instant,
+        ) -> instinct_flow::BoxFuture<
+            'a,
+            Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+        > {
+            Box::pin(async { Err(instinct_flow::DecisionError::ProviderError) })
+        }
+    }
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#).unwrap();
+    service.flows.inject_client(dir.path(), Arc::new(Client));
+    let store = service.flows.store(dir.path().into());
+    store.save("route", crate::flows::store::Location::Global, None, crate::flows::store::Content::Toml {
+        toml: "[flow]\nversion=1\nname='route'\non='message.received'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='routing evidence'\n".into(), templates: Default::default(),
+    }).unwrap();
+    store.reload().unwrap();
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+    assert!(service.handle(id).unwrap().flows.is_some());
+    let command = crate::bus::command::Command {
+        command_id: Ulid::new(),
+        session_id: id,
+        source_actor_id: "user:test".into(),
+        target_actor_id: ROOT_ACTOR_ID.into(),
+        mode: crate::bus::command::DeliveryMode::NextTurn,
+        content: vec![crate::bus::command::ContentBlock::Text {
+            text: "captain task".into(),
+        }],
+        created_at: std::time::SystemTime::now(),
+    };
+    service.send(command).await.unwrap();
+    // Captures are persisted by a background writer, off the blocking admission path: wait for
+    // the record instead of expecting it synchronously.
+    let records = crate::flows::records::Records::new(&service.config.data_dir, dir.path());
+    let mut applied = false;
+    for _ in 0..50 {
+        applied =
+            records.read().unwrap().iter().any(|record| {
+                record.flow_name == "route" && record.application.status == "applied"
+            });
+        if applied {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(applied, "the routing flow's applied run was never captured");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    service.close_all().await;
+    let transcript = service.history.load(id).await.unwrap().unwrap().transcript;
+    assert!(transcript.iter().any(|message| matches!(message, ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Flow { .. }, content } if content.contains("routing evidence"))));
+}
+
+#[tokio::test]
 async fn switching_uses_one_captured_endpoint_variant_and_source_generation() {
     let (dir, service) = test_service();
     std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
@@ -138,7 +216,7 @@ async fn concurrent_terminal_winners_release_exactly_their_reservations() {
             .history()
             .create_child_link(
                 child,
-                "explore".into(),
+                "vigie".into(),
                 "goal".into(),
                 "{}".into(),
                 4,
@@ -203,7 +281,7 @@ async fn listing_hides_child_until_relationship_commits() {
         .history()
         .create_child_link(
             child,
-            "explore".into(),
+            "vigie".into(),
             "inspect".into(),
             "{}".into(),
             4,

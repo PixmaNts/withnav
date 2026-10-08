@@ -121,7 +121,7 @@ export function fileLines(paths: SettingsBody["paths"] | undefined): string[] {
 /** `layers.metacognition` → `metacognition`, `agents.build` → `cognition · build`. */
 export function usedByLabel(key: string): string {
   if (key.startsWith("layers.")) return key.slice("layers.".length);
-  if (key.startsWith("agents.")) return `cognition · ${key.slice("agents.".length)}`;
+  if (key.startsWith("agents.")) return `cognition · ${crewLabel(key.slice("agents.".length))}`;
   return key;
 }
 
@@ -146,7 +146,7 @@ export function searchIndex(body: SettingsBody | undefined, agents: AgentEntry[]
   out.push(e("layers", "layer:metacognition", "metacognition chat variant layers.metacognition", choiceOf(body, "layers.metacognition")?.model));
   out.push(e("layers", "layer:cognition", "cognition agents default agent default_agent"));
   for (const a of agents) out.push(e("layers", `agent:${a.id}`, "agent", a.id, `agents.${a.id}`, a.mode, a.description, choiceOf(body, `agents.${a.id}`)?.model ?? a.effective?.model));
-  out.push(e("permissions", "perm:review", "automatic review permissions.automatic_review bash write edit fetch instinct metacognition driver"));
+  out.push(e("permissions", "perm:review", "automatic review permissions.automatic_review bash write edit fetch instinct metacognition captain"));
   out.push(e("permissions", "perm:scratch", "scratch directories permissions.scratch_dirs", ...asPaths(effective(fieldOf(body, "permissions.scratch_dirs")))));
   out.push(e("subagents", "sub:max", "max concurrent per session subagents.max_concurrent"));
   out.push(e("subagents", "sub:watchdog", "subagent watchdog subagents.watchdog_interval_secs"));
@@ -233,7 +233,7 @@ export function saveReducer(state: SaveState, event: SaveEvent): SaveState {
 export function appliesText(applies: SettingApplies | undefined): string | null {
   switch (applies) {
     case "restart":
-      return "Applies after restarting Navai";
+      return "Applies after restarting WithNav";
     case "new_sessions":
       return "Applies to new sessions and subagents";
     case "live":
@@ -252,3 +252,4 @@ export function statusLine(state: SaveState, applies?: SettingApplies): { tone: 
   const when = state.status === "saved" ? appliesText(applies) : null;
   return { tone: "ok", text: when ? `Saved · ${when[0]!.toLowerCase()}${when.slice(1)}` : "Saved" };
 }
+import { crewLabel } from "../components/Crew";

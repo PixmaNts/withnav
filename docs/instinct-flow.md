@@ -99,9 +99,11 @@ silently saving or reloading them.
 ### Decision: give the instinct evidence
 Each decision has one `instructions` string and its own `[node.inputs]`. The
 instructions describe the question; the inputs are the evidence sent as state.
-**A decision needs inputs.** With no inputs, the default state is empty; the
-provider rejects that request with HTTP 400 and the run reports `provider_error`.
-Adding text to instructions does not supply state. Select at least a meaningful
+**A decision needs inputs.** A decision with no inputs and no state template is
+refused at validation ("a decision needs at least one input: the instinct has
+nothing to judge"): the instinct would receive an empty state, which the provider
+rejects with HTTP 400. Adding text to instructions does not supply state. New
+decisions created from the toolbar start with the trigger's payload fields. Select at least a meaningful
 payload or host input and inspect **State · inputs sent with the question**.
 | Type | Configuration | Answer and active port |
 | --- | --- | --- |
@@ -303,7 +305,7 @@ The matching fallback replaces them:
 | --- | --- |
 | `on_failure` | General failure; expression, input, cancelled and limit failures. |
 | `on_timeout` | Exhausted deadline. |
-| `on_provider_error` | Failed provider call, including rejected empty state. |
+| `on_provider_error` | Provider unreachable, rejected the request (HTTP 4xx) or failed (HTTP 5xx). |
 | `on_invalid_answer` | Missing/wrong/out-of-range answer or malformed probability set. |
 
 A specific key overrides `on_failure`. Each value is `{ action, params, then? }`;
@@ -575,7 +577,9 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `provider_error`, HTTP 400, decision has no inputs | Empty state; instructions alone are not evidence. | Select meaningful inputs on that decision, inspect rendered state, Save and Reload for live runs. |
+| Validation error "a decision needs at least one input" | The decision sends no evidence; instructions alone are not state. | Select meaningful inputs on that decision (State section), inspect the rendered state, Save and Reload. |
+| `provider rejected the request (HTTP 4xx)` | The instinct endpoint refused the request (model id, malformed state). Not an outage: no "instinct unavailable" notice. | Check the instinct layer's model in Settings, then the rendered state of the failing decision. |
+| `provider unreachable` / `provider error (HTTP 5xx)` | Instinct endpoint down or failing. The driver is told once per outage. | Check the gateway; blocking flows apply their fallback meanwhile. |
 | `skipped: when is false` | Payload does not satisfy exact comparison. | Inspect text, case and whitespace; edit sample JSON or correct the condition. |
 | Unknown name in `when` | Alias not declared in `[flow.inputs]`, or dotted reference used as expression name. | Select the input chip first; bind `text = "event.text"`, then use `text`. Node inputs do not declare flow inputs. |
 | `in [...]` / single-quoted expression string fails | Unsupported expression syntax. | Use double-quoted string literals and `||`: `text == "test" || text == "hello"`. |

@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Oversized model catalogue cache files are ignored without reading them whole.** Disk reads
+  are bounded to 2 MiB plus one byte, preventing corrupted caches from allocating unbounded memory.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

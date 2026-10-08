@@ -508,7 +508,17 @@ fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
 /// A cache file this build can trust: a readable version, and no limit of
 /// zero (the parser never writes one, so it means the file was damaged).
 fn read_cache(path: &Path) -> Option<CacheFile> {
-    serde_json::from_slice::<CacheFile>(&std::fs::read(path).ok()?)
+    use std::io::Read;
+    const MAX_CACHE_BYTES: u64 = 2 * 1024 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CACHE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        return None;
+    }
+    serde_json::from_slice::<CacheFile>(&bytes)
         .ok()
         .filter(|c| {
             (OLDEST_READABLE_VERSION..=CACHE_VERSION).contains(&c.version)

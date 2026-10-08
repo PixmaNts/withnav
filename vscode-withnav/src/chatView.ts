@@ -94,6 +94,7 @@ export function registerChatView(
         vscode.window.tabGroups.onDidChangeTabs(scheduleContext),
       ];
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
+        try {
         if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
         switch (message?.type) {
           case "toggleBypass":
@@ -226,6 +227,7 @@ export function registerChatView(
             }
             break;
         }
+        } catch (error) { showError(error); }
       });
       view.onDidDispose(() => {
         disposed = true;

@@ -27,6 +27,9 @@ requests land in `develop`.
 - **Invalid grep expressions return the same error on every host.**
   The ripgrep engine validates expressions before starting its process, returning
   `invalid_regex` just like the built-in fallback rather than a generic command failure.
+- **Fetch explains how redirect query parameters are handled.** A redirect to a new
+  path without a query drops the original query under standard URL resolution;
+  parameters, including credentials, are never implicitly forwarded.
 
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an

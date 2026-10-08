@@ -51,7 +51,7 @@ pub struct Client {
 impl Client {
     pub async fn set_bypass(&self, id: &str, enabled: bool) -> Result<BypassResponse, String> {
         self.json(
-            self.post(&format!("/v1/sessions/{id}/bypass"))
+            self.post(&format!("/v1/sessions/{}/bypass", encode_segment(id)))
                 .json(&serde_json::json!({"enabled": enabled})),
         )
         .await
@@ -147,7 +147,10 @@ impl Client {
 
     pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {
         let mut body: crate::bus::event::SkillsBody = self
-            .json(self.get(&format!("/v1/sessions/{session_id}/skills")))
+            .json(self.get(&format!(
+                "/v1/sessions/{}/skills",
+                encode_segment(session_id)
+            )))
             .await?;
         for skill in &mut body.skills {
             skill.name = crate::tui::reducer::strip_controls(&skill.name);
@@ -474,5 +477,28 @@ mod tests {
     fn encode_segment_escapes_reserved_characters() {
         assert_eq!(encode_segment("01J-a_b.c~"), "01J-a_b.c~");
         assert_eq!(encode_segment("a/b c"), "a%2Fb%20c");
+    }
+
+    #[tokio::test]
+    async fn session_scoped_calls_encode_the_id_in_the_path() {
+        use axum::{extract::OriginalUri, routing::any, Json, Router};
+        let (seen, mut paths) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().fallback(any(move |uri: OriginalUri| {
+            let seen = seen.clone();
+            async move {
+                seen.send(uri.0.path().to_owned()).unwrap();
+                Json(serde_json::json!({"skills": [], "disabled_reason": null,
+                    "enabled": true, "changed": false, "bypass_seq": 0}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Client::new(url, None);
+
+        client.skills("a/b c").await.unwrap();
+        assert_eq!(paths.recv().await.unwrap(), "/v1/sessions/a%2Fb%20c/skills");
+        client.set_bypass("a/b c", true).await.unwrap();
+        assert_eq!(paths.recv().await.unwrap(), "/v1/sessions/a%2Fb%20c/bypass");
     }
 }

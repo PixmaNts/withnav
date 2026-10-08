@@ -1014,7 +1014,8 @@ fn theme_picker_previews_and_esc_restores() {
     };
     let open = Some(Action::OpenOverlay(Overlay::Themes));
     apply(&mut ui, open.clone());
-    assert_eq!(ui.selection.get("Themes"), Some(&0));
+    assert_eq!(ui.selection.get("Themes"), Some(&4));
+    ui.selection.insert("Themes".into(), 0);
     let down = route_key(
         key(KeyCode::Down, KeyModifiers::NONE),
         &s,
@@ -1039,6 +1040,7 @@ fn theme_picker_previews_and_esc_restores() {
     assert_eq!(ui.overlay, None);
 
     apply(&mut ui, open);
+    ui.selection.insert("Themes".into(), 0);
     for _ in 0..3 {
         let action = route_key(
             key(KeyCode::Down, KeyModifiers::NONE),

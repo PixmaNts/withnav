@@ -52,6 +52,9 @@ requests land in `develop`.
 - **The TUI header fits narrow terminals.** In a split pane the agent, model and gauge ran past the
   right edge and were cut off. The row now gives way in order (path, model, variant, branch,
   gauge, pending switch, then `withnav` shrinks to `◆`, then the model_id); the agent stays visible.
+- **Pickers stay inside small terminals and stay usable.** On a very short or narrow pane the model,
+  command or theme picker drew past the screen edge with overlapping rows. The popup now fits the
+  screen; as it shrinks it keeps the highlighted row first, then the filter, then `esc`.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

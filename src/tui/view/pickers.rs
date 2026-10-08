@@ -37,7 +37,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             _ => " Variant ",
         },
     };
-    let width = area.width.saturating_sub(4).clamp(4, 76);
+    // A small screen gives the popup the margin it keeps around it elsewhere.
+    let width = area
+        .width
+        .saturating_sub(if area.width >= 40 { 4 } else { 0 })
+        .min(76);
     // The popup's inner width, less its margins: what a row can take.
     let row_width = usize::from(width.saturating_sub(6));
     let rows: Vec<Line<'static>> = match overlay {
@@ -267,10 +271,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .collect(),
     };
     let note = note(overlay, state, ui, rows.is_empty());
-    // Filter line, rows, note, then a blank line and the keys line.
+    // Filter line, rows, note, then a blank line and the keys line; never more than the screen.
+    let margin = if area.height >= 10 { 2 } else { 0 };
     let height = (rows.len() + 5 + usize::from(note.is_some()))
-        .min(usize::from(area.height.saturating_sub(2)))
-        .max(3) as u16;
+        .min(usize::from(area.height.saturating_sub(margin))) as u16;
     let box_area = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -279,42 +283,66 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     );
     // The screen behind is dimmed, so the popup reads as the one thing to answer.
     dim(frame, area, theme);
+    if box_area.is_empty() {
+        return;
+    }
     frame.render_widget(Clear, box_area);
     frame.buffer_mut().set_style(box_area, theme.surface());
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.accent_line())
-        .title(Span::styled(title, theme.title()))
-        .title_alignment(Alignment::Center);
-    frame.render_widget(block, box_area);
-    let inner = box_area.inner(ratatui::layout::Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    // A box too small for its border drops it; a narrow one keeps one column of margin, not two.
+    let bordered = box_area.height >= 3 && box_area.width >= 5;
+    let inner = if bordered {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.accent_line())
+            .title(Span::styled(title, theme.title()))
+            .title_alignment(Alignment::Center);
+        frame.render_widget(block, box_area);
+        box_area.inner(ratatui::layout::Margin {
+            horizontal: if box_area.width >= 12 { 2 } else { 1 },
+            vertical: 1,
+        })
+    } else {
+        // The first column stays for the selection mark.
+        box_area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 0,
+        })
+    };
+    // A short popup gives its rows to the list first: the selected row, then the filter, the
+    // keys with the blank line above them, then the note.
+    let filtered = overlay != Overlay::Help;
+    let mut free = inner.height.saturating_sub(u16::from(!rows.is_empty()));
+    let filter_shown = filtered && free >= 1;
+    free = free.saturating_sub(u16::from(filter_shown));
+    let keys_shown = free >= 2;
+    free = free.saturating_sub(2 * u16::from(keys_shown));
+    let note = note.filter(|_| free >= 1);
     let keys = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
     let inner = Rect {
-        height: inner.height.saturating_sub(2),
+        height: inner.height.saturating_sub(2 * u16::from(keys_shown)),
         ..inner
     };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            keys_line(overlay, usize::from(keys.width)),
-            theme.muted(),
-        )),
-        keys,
-    );
-    if overlay == Overlay::Models {
+    if keys_shown {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                keys_line(overlay, usize::from(keys.width)),
+                theme.muted(),
+            )),
+            keys,
+        );
+    }
+    if overlay == Overlay::Models && keys_shown {
         // The blank line above the keys: the full name and variants of the highlighted model.
         let selected = ui.selection.get("Models").copied().unwrap_or(0);
         let detail = model_detail(state, ui, selected, usize::from(keys.width));
-        if !detail.is_empty() && keys.y > inner.y + 1 {
+        if !detail.is_empty() {
             frame.render_widget(
                 Paragraph::new(Span::styled(detail, theme.muted())),
                 Rect::new(keys.x, keys.y - 1, keys.width, 1),
             );
         }
     }
-    if overlay != Overlay::Help {
+    if filter_shown {
         let placeholder = match overlay {
             Overlay::Commands => "type a command…",
             Overlay::Models => "filter models…",
@@ -330,7 +358,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             Rect { height: 1, ..inner },
         );
     }
-    let mut offset = u16::from(overlay != Overlay::Help);
+    let mut offset = u16::from(filter_shown);
     if let Some(note) = note {
         frame.render_widget(
             Paragraph::new(Span::styled(note, theme.muted())),
@@ -355,7 +383,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         );
         if selected == index && overlay != Overlay::Help {
             // The tint spans the popup's inner width, margins included, like a list highlight.
-            let row_area = Rect::new(box_area.x + 1, rect.y, box_area.width.saturating_sub(2), 1);
+            let border = u16::from(bordered);
+            let row_area = Rect::new(box_area.x + border, rect.y, box_area.width - 2 * border, 1);
             frame.buffer_mut().set_style(
                 row_area,
                 Style::default().bg(theme.selection_bg_on_surface()),
@@ -368,28 +397,31 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     }
 }
 
-/// The keys a popup takes, at its foot. The model picker's line is built from whole items that
-/// fit in `width`; `esc close` stays last whenever it fits.
+/// The keys a popup takes, at its foot, built from whole items that fit in `width`; the way out
+/// (`esc …`) stays last whenever it fits.
 fn keys_line(overlay: Overlay, width: usize) -> String {
-    match overlay {
-        Overlay::Agents => "↑↓ choose · enter assigned model · F2 override · esc close".into(),
-        Overlay::Skills => "↑↓ move  enter fill draft  esc close".into(),
-        Overlay::Help => "esc close".into(),
-        Overlay::Themes => "↑↓ preview  enter keep  esc put back".into(),
-        Overlay::Commands => "↑↓ move  enter run  esc close".into(),
-        Overlay::Models => fit_items(
-            &[
-                "↑↓ move",
-                "←→ fold",
-                "alt+a all",
-                "ctrl+f fav",
-                "enter choose",
-                "esc close",
-            ],
-            width,
-        ),
-        _ => "↑↓ move  enter choose  esc close".into(),
-    }
+    let items: &[&str] = match overlay {
+        Overlay::Agents => {
+            return fit(
+                "↑↓ choose · enter assigned model · F2 override · esc close",
+                width,
+            )
+        }
+        Overlay::Skills => &["↑↓ move", "enter fill draft", "esc close"],
+        Overlay::Help => &["esc close"],
+        Overlay::Themes => &["↑↓ preview", "enter keep", "esc put back"],
+        Overlay::Commands => &["↑↓ move", "enter run", "esc close"],
+        Overlay::Models => &[
+            "↑↓ move",
+            "←→ fold",
+            "alt+a all",
+            "ctrl+f fav",
+            "enter choose",
+            "esc close",
+        ],
+        _ => &["↑↓ move", "enter choose", "esc close"],
+    };
+    fit_items(items, width)
 }
 
 /// The items joined by two spaces, as many as fit in `width`, never cutting one. The last item is
@@ -412,7 +444,11 @@ fn fit_items(items: &[&str], width: usize) -> String {
         line = next;
     }
     if line.is_empty() {
-        // No room for any other item next to the last: the longest prefix of the items that fits.
+        // No room for any other item next to the last: the last alone, else the longest prefix
+        // of the items that fits.
+        if columns(last) <= width {
+            return last.to_string();
+        }
         for item in items {
             let next = if line.is_empty() {
                 item.to_string()
@@ -618,5 +654,102 @@ mod skill_tests {
         assert!(text.contains("Choose a skill"));
         assert!(text.contains("review"));
         assert!(text.contains("Check correctness"));
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+
+    const OVERLAYS: [Overlay; 9] = [
+        Overlay::Agents,
+        Overlay::Skills,
+        Overlay::Models,
+        Overlay::Sessions,
+        Overlay::Commands,
+        Overlay::Help,
+        Overlay::Themes,
+        Overlay::Variants,
+        Overlay::Children,
+    ];
+
+    /// The popup drawn into `area`, a part of a larger screen filled with `#`.
+    fn drawn(overlay: Overlay, area: Rect) -> Buffer {
+        let ui = UiState {
+            overlay: Some(overlay),
+            ..Default::default()
+        };
+        let theme = ui.theme.palette();
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let screen = frame.area();
+                for y in 0..screen.height {
+                    for x in 0..screen.width {
+                        frame.buffer_mut()[(x, y)].set_symbol("#");
+                    }
+                }
+                draw(frame, area, &State::default(), &ui, &theme);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn a_popup_never_draws_outside_its_area() {
+        for overlay in OVERLAYS {
+            for width in 0..=12 {
+                for height in 0..=8 {
+                    let area = Rect::new(3, 2, width, height);
+                    let buffer = drawn(overlay, area);
+                    for y in 0..20 {
+                        for x in 0..40 {
+                            if !area.contains((x, y).into()) {
+                                assert_eq!(
+                                    buffer[(x, y)].symbol(),
+                                    "#",
+                                    "{overlay:?} in {width}×{height} drew at ({x}, {y})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn rows(buffer: &Buffer, area: Rect) -> Vec<String> {
+        (area.top()..area.bottom())
+            .map(|y| {
+                (area.left()..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tiny_popup_keeps_the_selected_row_then_the_filter() {
+        let shown = |width, height| {
+            let area = Rect::new(0, 0, width, height);
+            rows(&drawn(Overlay::Themes, area), area)
+        };
+        // Seven rows: border, filter, two list rows, blank, keys, border.
+        let tall = shown(24, 7);
+        assert!(tall[0].contains("Theme"), "{tall:#?}");
+        assert!(tall[1].contains("❯ filter…"), "{tall:#?}");
+        assert!(tall[2].starts_with("│▌"), "{tall:#?}");
+        assert_eq!(tall[5], "│ esc put back         │");
+        // Four rows: no room for the keys; the filter and the selected row stay.
+        let short = shown(24, 4);
+        assert!(short[1].contains("❯ filter…"), "{short:#?}");
+        assert!(short[2].starts_with("│▌"), "{short:#?}");
+        // Three rows: the selected row alone inside the border.
+        assert!(shown(24, 3)[1].starts_with("│▌"));
+        // Two rows: no border; the filter, then the selected row with its mark.
+        let tiny = shown(6, 2);
+        assert!(tiny[0].starts_with(" ❯"), "{tiny:#?}");
+        assert!(tiny[1].starts_with('▌'), "{tiny:#?}");
     }
 }

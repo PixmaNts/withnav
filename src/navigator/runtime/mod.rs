@@ -348,6 +348,9 @@ impl Runtime {
     pub(crate) async fn on_did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = crate::navigator::uri_key(&params.text_document.uri);
         self.documents.lock().await.close(&uri);
+        if let Some(reflex) = &self.reflex {
+            reflex.close_document(&uri).await;
+        }
         {
             let mut focused = self.focused.lock().await;
             if focused.as_deref() == Some(uri.as_str()) {

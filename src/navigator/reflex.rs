@@ -251,6 +251,17 @@ impl ReflexService {
         }
     }
 
+    /// Forgets a closed document: cancels its in-flight request and drops its
+    /// entry, which otherwise lives as long as the server (one per file ever
+    /// completed in).
+    pub async fn close_document(&self, uri: &str) {
+        if let Some(entry) = self.per_document.lock().await.remove(uri) {
+            if let Some(token) = entry.cancel {
+                token.cancel();
+            }
+        }
+    }
+
     /// Requests a suggestion at the cursor. `doc_text`/`version` come from
     /// the full-sync document state; `position` is the LSP position
     /// (UTF-16 code units). The returned future resolves after the
@@ -313,12 +324,14 @@ impl ReflexService {
         // registration).
         {
             let per_doc = self.per_document.lock().await;
-            if let Some(entry) = per_doc.get(uri) {
-                let is_latest = entry.cancel.as_ref().is_some_and(|t| !t.is_cancelled());
-                let same_version = entry.pending.map(|(v, _)| v == version).unwrap_or(false);
-                if !is_latest || !same_version {
-                    return Err(SuggestOutcome::StaleVersion);
-                }
+            // No entry means the document was closed while the model answered.
+            let Some(entry) = per_doc.get(uri) else {
+                return Err(SuggestOutcome::StaleVersion);
+            };
+            let is_latest = entry.cancel.as_ref().is_some_and(|t| !t.is_cancelled());
+            let same_version = entry.pending.map(|(v, _)| v == version).unwrap_or(false);
+            if !is_latest || !same_version {
+                return Err(SuggestOutcome::StaleVersion);
             }
         }
         let request_id = crate::navigator::new_ulid_string();
@@ -541,6 +554,44 @@ fn numbered_excerpt(text: &str, line: usize, radius: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Silent;
+    impl FimModel for Silent {
+        fn complete<'a>(
+            &'a self,
+            _request: FimRequest,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<crate::navigator::ports::FimAnswer, crate::navigator::ports::ModelError>,
+        > {
+            Box::pin(async {
+                Err(crate::navigator::ports::ModelError::Unavailable(
+                    "silent".into(),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_a_document_forgets_its_entry_and_cancels_the_request() {
+        let service = ReflexService::new(Arc::new(Silent));
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
+        let _ = service
+            .suggest("file:///a.rs", "x", 1, pos, "", "rust")
+            .await;
+        assert_eq!(service.per_document.lock().await.len(), 1);
+        let token = service.per_document.lock().await["file:///a.rs"]
+            .cancel
+            .clone()
+            .unwrap();
+        service.close_document("file:///a.rs").await;
+        assert!(service.per_document.lock().await.is_empty());
+        assert!(token.is_cancelled());
+    }
 
     #[test]
     fn utf16_offset_lands_after_a_non_ascii_char() {

@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Closing a file now frees what inline completion kept for it.**
+  The completion service remembered every file it had ever completed in until the server stopped, so
+  long editor sessions grew without bound. Closing a file now drops its entry and cancels any
+  completion still in flight for it.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

@@ -4,6 +4,14 @@
   "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
   "version": "0.6.1",
   "publisher": "pixmants",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PixmaNts/withnav.git"
+  },
+  "homepage": "https://github.com/PixmaNts/withnav#readme",
+  "bugs": {
+    "url": "https://github.com/PixmaNts/withnav/issues"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.90.0"

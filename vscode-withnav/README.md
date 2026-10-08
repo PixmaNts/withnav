@@ -1,5 +1,7 @@
 # WithNav — VS Code extension
 
+[Repository](https://github.com/PixmaNts/withnav) · [Report an issue](https://github.com/PixmaNts/withnav/issues)
+
 WithNav pair-programming companion client. Launches the `withnav-lsp` language server over stdio,
 renders its end-of-line remarks, offers inline suggestions from the reflex layer, forwards
 diagnostics and user feedback, and hosts the Cognition chat view.

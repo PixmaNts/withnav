@@ -129,16 +129,20 @@ pub fn render_context_block(reflex_context: &str, language_id: &str) -> String {
 /// Converts an LSP position (line, UTF-16 character) to a byte offset in
 /// the document text. Returns `None` when the position is out of bounds.
 pub fn utf16_position_to_offset(text: &str, line: u32, character: u32) -> Option<usize> {
-    for (i, l) in text.lines().enumerate() {
-        if (i as u32) == line {
-            let in_line = char_utf16_to_byte_offset(l, character as usize)?;
-            // Byte offset of the line start: sum of the preceding lines
-            // plus their newlines.
-            let line_start: usize = text.lines().take(i).map(|prev| prev.len() + 1).sum();
-            return Some(line_start + in_line);
-        }
+    // Lines are separated by `\n`; a `\r` before it belongs to the terminator
+    // (CRLF documents), so the start is found on raw bytes, not by
+    // re-adding one byte per line. A trailing newline opens one more, empty
+    // line, where the cursor sits when typing at the end of a file.
+    let mut line_start = 0usize;
+    for _ in 0..line {
+        let nl = text[line_start..].find('\n')?;
+        line_start += nl + 1;
     }
-    None
+    let rest = &text[line_start..];
+    let line_text = rest.split('\n').next().unwrap_or(rest);
+    let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
+    let in_line = char_utf16_to_byte_offset(line_text, character as usize)?;
+    Some(line_start + in_line)
 }
 
 /// Converts a UTF-16 code-unit offset within one line to a byte offset.
@@ -569,6 +573,26 @@ mod tests {
         assert_eq!(utf16_position_to_offset(text, 2, 0).unwrap(), 9);
         // End of the last line is the end of the text.
         assert_eq!(utf16_position_to_offset(text, 2, 1).unwrap(), text.len());
+    }
+
+    #[test]
+    fn utf16_offset_counts_crlf_terminators_as_two_bytes() {
+        let text = "hello\r\nworld\r\nx";
+        assert_eq!(utf16_position_to_offset(text, 1, 0), Some(7));
+        assert_eq!(utf16_position_to_offset(text, 1, 3), Some(10));
+        assert_eq!(utf16_position_to_offset(text, 2, 1), Some(text.len()));
+        // The `\r` is part of the terminator, not a column.
+        assert_eq!(utf16_position_to_offset(text, 0, 5), Some(5));
+        assert_eq!(utf16_position_to_offset(text, 0, 6), None);
+    }
+
+    #[test]
+    fn utf16_offset_resolves_the_empty_line_after_a_trailing_newline() {
+        assert_eq!(utf16_position_to_offset("hello\n", 1, 0), Some(6));
+        assert_eq!(utf16_position_to_offset("hello\r\n", 1, 0), Some(7));
+        assert_eq!(utf16_position_to_offset("hello\n", 1, 1), None);
+        assert_eq!(utf16_position_to_offset("hello\n", 2, 0), None);
+        assert_eq!(utf16_position_to_offset("", 0, 0), Some(0));
     }
 
     #[test]

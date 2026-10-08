@@ -72,7 +72,7 @@ function ItemView({ item, view, agent, onAnswer, onOpenChild, readOnly }: { item
         <div className="sub-result">
           <div className="head">
             <TreeStructure size={13} aria-hidden />
-            subagent.done · @{item.agent ?? (item.source.replace(/^subagent:?/, "") || "subagent")}
+            subagent.done · <Crew id={item.agent ?? (item.source.replace(/^subagent:?/, "") || "subagent")} />
             {item.outcome ? ` · ${item.outcome}` : ""}
             {item.childId && (
               <button type="button" className="link-btn" style={{ marginLeft: "auto" }} onClick={() => onOpenChild(item.childId!)}>

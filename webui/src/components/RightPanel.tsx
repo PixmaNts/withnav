@@ -1,5 +1,4 @@
 import { Crew } from "./Crew";
-import { ArrowElbowDownRight, Hammer, Notebook, Robot } from "@phosphor-icons/react";
 import { Fragment } from "react";
 import { useIntent, useSkills } from "../api/queries";
 import type { AgentEntry } from "../api/types";
@@ -73,7 +72,7 @@ function IntentTab({ workspace }: { workspace: string | null }) {
   );
 }
 
-const ICON: Record<string, typeof Hammer> = { build: Hammer, plan: Notebook };
+
 
 function AgentsTab({ chat, onOpenChild }: { chat: Chat; onOpenChild: (id: string) => void }) {
   const agents = chat.agents?.agents ?? [];
@@ -109,12 +108,12 @@ function modelLine(a: AgentEntry): string {
 }
 
 function AgentCard({ a, active, isDefault, sub, running, chat }: { a: AgentEntry; active?: boolean; isDefault?: boolean; sub?: boolean; running?: number; chat: Chat }) {
-  const Icon = sub ? ArrowElbowDownRight : ICON[a.id] ?? Robot;
+
   const live = active ? { model: chat.selection.model, variant: chat.selection.variant } : null;
   return (
     <div className={`card${sub ? " sub" : ""}${active ? " active" : ""}${a.id === "plan" ? " plan" : ""}`}>
       <div className="head">
-        <Icon size={14} style={{ color: active ? (a.id === "plan" ? "var(--bl)" : "var(--ac)") : undefined }} aria-hidden />
+        
         <Crew id={a.id} />
         <span className={sub && running ? "" : "muted"} style={sub && running ? { color: "var(--pu)" } : undefined}>
           · {sub ? `subagent${running ? ` · ${running} running` : ""}` : `primary${active ? " · active" : ""}${isDefault ? " · default" : ""}`}

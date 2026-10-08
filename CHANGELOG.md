@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Creating files avoids resolving the same permission root twice.** Path validation
+  reuses its canonical ancestor when that ancestor is an allowed root. Other roots
+  are still resolved freshly so changed symlinks cannot retain stale permissions.
+
 - **Relative file destinations can name folders that do not exist yet.**
   Path validation anchors relative destinations to the first allowed root before resolving
   existing ancestors, while still refusing paths that escape the allowed roots.

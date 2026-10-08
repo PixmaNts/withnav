@@ -44,6 +44,9 @@ pub struct RemarkContext {
     pub prompt: Option<String>,
     /// The workspace root; unlocks the read/grep tools for the metacognition.
     pub workspace: Option<PathBuf>,
+    /// The other folders of a multi-root workspace: readable like the
+    /// workspace itself, relative paths still anchor on the workspace root.
+    pub extra_roots: Vec<PathBuf>,
     /// Open editor buffers keyed by absolute path: `read` answers from the
     /// buffer (unsaved edits), not from disk.
     pub open_buffers: BTreeMap<PathBuf, String>,
@@ -77,6 +80,7 @@ impl RemarkContext {
             intent,
             prompt: None,
             workspace: None,
+            extra_roots: Vec::new(),
             open_buffers: BTreeMap::new(),
             tool_rounds: REMARK_TOOL_ROUNDS,
         }

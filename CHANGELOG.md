@@ -41,6 +41,10 @@ requests land in `develop`.
   The completion service remembered every file it had ever completed in until the server stopped, so
   long editor sessions grew without bound. Closing a file now drops its entry and cancels any
   completion still in flight for it.
+- **Every folder of a multi-root VS Code workspace now counts as part of the workspace.**
+  The language server only knew the first folder, so the navigator's read and search tools refused
+  files in the others. It now knows all of them, follows folders added or removed while it runs,
+  and keeps the first folder as the anchor for relative paths, the intent record and flows.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

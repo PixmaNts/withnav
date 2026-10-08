@@ -45,6 +45,7 @@ impl Runtime {
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
         };
+        let extra_roots = self.extra_roots().await;
         let remark_ctx = RemarkContext {
             uri: ctx.uri.clone(),
             language_id: ctx.language_id.clone(),
@@ -58,6 +59,7 @@ impl Runtime {
             },
             prompt: Some(prompt),
             workspace: self.workspace.lock().await.clone(),
+            extra_roots,
             open_buffers: self.documents.lock().await.open_buffers(),
             tool_rounds: if ctx.called_for_help {
                 HELP_TOOL_ROUNDS

@@ -222,12 +222,15 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                     text: strip_controls(text),
                 },
             ));
-            if v["selected_skill"]["origin"].as_str() == Some("driver") {
+            if matches!(
+                v["selected_skill"]["origin"].as_str(),
+                Some("driver" | "captain")
+            ) {
                 if let Some(name) = v["selected_skill"]["name"].as_str() {
                     s.conversation.blocks.push(block(
                         format!("skill:{}", e.seq),
                         BlockKind::Notice(format!(
-                            "skill: {} · selected by driver",
+                            "skill: {} · selected by Captain",
                             strip_controls(name)
                         )),
                     ));

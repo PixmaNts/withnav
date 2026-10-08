@@ -336,6 +336,11 @@ flows/workspace, 32 KiB per collected input, 64 KiB total inputs/run and rendere
 state, and 256 KiB definition/provider response. Cut text is marked, not hidden;
 total-input/state overflow fails with `limit`. Effects already applied by the host
 cannot be rolled back; failed or uncertain application is never retried automatically.
+The action-text cap remains 16 KiB: an action interpolating a 32 KiB input also
+fails with `limit`. On the asynchronous built-in save flow, context and diff both
+exceeding 32 KiB are cut individually, then exhaust the 64 KiB run input budget
+alongside the other selected inputs. The failure is recorded; there is no fallback
+and nothing is applied.
 
 ## 9. Files, trust, reload and TOML
 
@@ -588,6 +593,7 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 | Reload fails after editing a different flow | Replacement is all-or-nothing, including eligible disabled/shadowed definitions. | Fix every reported error; reload again. The previous set remains running. |
 | Sample/replay says `not applied` | Intentional test behaviour. | Inspect proposed actions/path; use View run on a live record to inspect real application. |
 | Async live failure says `not applied`, fallback none | Async runs have no default fallback. | Fix the recorded failure or declare an allowed effect fallback. |
+| large file: limit failure | Context and diff reach the 64 KiB total input budget, rendered state overflows, or action text exceeds 16 KiB. | Inspect the recorded `limit` message and cut inputs; reduce selected evidence/action text. Built-in save is asynchronous with no fallback: nothing is applied. |
 | Wake suppressed: `wake cooldown` (120 s) | Wakes share the session cooldown; repeated wake is held back. | Wait 120 seconds; inspect application detail. Do not assume a proposed wake was delivered. |
 | `instinct unavailable` notice | First provider error/timeout since startup or a successful call. Further outage notices are suppressed. | Check instinct assignment, System One endpoint/key and deadline; one successful call resets the notice. |
 | Missing upstream input / expression failure | Node was not visited on this path, or host context unavailable. | Use `is_set(alias)` with lazy `&&` or `if`; read only strict upstream outputs. |

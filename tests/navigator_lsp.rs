@@ -19,6 +19,42 @@ use common::navigator::{
 
 // ---------- tests ----------
 
+#[tokio::test]
+async fn failed_legacy_conversion_is_warned_once_after_initialized() {
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |mut deps, ws| {
+        let source = ws.join(".navigator");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("pipeline.toml"), "unsupported = true").unwrap();
+        let host = navai::flows::host::Host::new(ws.join("config"), ws.join("data"), None);
+        let store = host.store(ws.into());
+        let errors = store.migration_diagnostics();
+        assert_eq!(errors.len(), 1);
+        assert!(host
+            .diagnostics(ws)
+            .iter()
+            .any(|error| error.code == "migration"));
+        assert!(store
+            .list()
+            .unwrap()
+            .iter()
+            .any(|row| row.name == "legacy-pipeline" && row.errors == errors));
+        deps.startup_warnings = errors.into_iter().map(|error| error.message).collect();
+        deps
+    })
+    .await;
+    let warning = client.expect("window/showMessage", &mut Vec::new()).await;
+    assert_eq!(warning["params"]["type"], 2);
+    let message = warning["params"]["message"].as_str().unwrap();
+    assert!(message.contains("pipeline.toml"), "{message}");
+    assert!(message.contains("unsupported"), "{message}");
+    assert!(message.contains("original retained"), "{message}");
+    client.notify("initialized", json!({})).await;
+    let messages = client.collect_for(Duration::from_millis(100)).await;
+    assert!(messages
+        .iter()
+        .all(|message| message["method"] != "window/showMessage"));
+}
+
 /// After a 5-line change and 3 s idle, one navigator/remark arrives.
 #[tokio::test]
 async fn idle_after_big_edit_emits_remark() {

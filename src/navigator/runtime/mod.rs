@@ -63,6 +63,7 @@ pub(crate) struct Runtime {
     conversation: Option<crate::navigator::ConversationFeed>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     disabled_layers: Vec<String>,
+    startup_warnings: Mutex<Vec<String>>,
     /// The refreshed reflex context; disabled without the metacognition's
     /// reflex-context seam (the intent summary is served instead).
     reflex_context: Arc<ReflexContext>,
@@ -100,6 +101,7 @@ impl Runtime {
             server_info: deps.server_info,
             conversation: deps.conversation,
             disabled_layers: deps.disabled_layers,
+            startup_warnings: Mutex::new(deps.startup_warnings),
             focused: Mutex::new(None),
         });
         if let Some(turns) = turns {
@@ -140,6 +142,14 @@ impl Runtime {
             )),
         )
         .await;
+    }
+
+    pub(crate) async fn report_startup_warnings(&self) {
+        for message in std::mem::take(&mut *self.startup_warnings.lock().await) {
+            self.client
+                .show_message(tower_lsp_server::ls_types::MessageType::WARNING, message)
+                .await;
+        }
     }
 
     /// Announces the cognition chat server's endpoint when the binary started

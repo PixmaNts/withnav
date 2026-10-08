@@ -28,6 +28,82 @@ pub struct ToolCallContextLike {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn large_builtin_save_records_limit_failure_without_applying_effects() {
+        struct NoCalls;
+        impl FlowEffects for NoCalls {
+            fn effect<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a ProposedAction,
+                _: &'a CancellationToken,
+            ) -> BoxFuture<'a, Result<(), ApplyError>> {
+                Box::pin(async { panic!("limit failure must not apply an effect") })
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(
+            root.path().into(),
+            root.path().join("config"),
+        ));
+        let records = Arc::new(crate::flows::records::Records::new(
+            root.path(),
+            root.path(),
+        ));
+        let runtime = FlowRuntime::new(store, Arc::new(Fake), Arc::new(NoCalls))
+            .with_records(records.clone());
+        let mut payload = serde_json::Map::new();
+        payload.extend(serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({"uri":"file:///repo/test.rs", "language_id":"rust", "version":1, "diff":"edit"})).unwrap());
+        for field in crate::flows::migrate::TEMPLATE_FIELDS {
+            payload.insert(
+                format!("template_{field}"),
+                json!(if matches!(*field, "context" | "diff") {
+                    "x".repeat(40 * 1024)
+                } else {
+                    "evidence".into()
+                }),
+            );
+        }
+        for field in crate::flows::migrate::INTEGER_FIELDS {
+            payload.insert((*field).into(), json!(1));
+        }
+        for field in crate::flows::migrate::BOOLEAN_FIELDS {
+            payload.insert((*field).into(), json!(false));
+        }
+        let (verdict, handles) = runtime
+            .evaluate(
+                Event {
+                    trigger: "save".into(),
+                    payload: payload.into(),
+                },
+                ContextSnapshot::default(),
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(verdict, VerdictLike::NoObjection);
+        assert_eq!(handles.len(), 1);
+        let outcome = handles.into_iter().next().unwrap().await.unwrap();
+        let RunResult::Failure {
+            kind,
+            message,
+            fallback_actions,
+        } = outcome.result
+        else {
+            panic!("expected limit failure")
+        };
+        assert_eq!(kind, FailureKind::Limit);
+        assert_eq!(message, "collected inputs exceed run byte limit");
+        assert!(fallback_actions.is_empty());
+        assert!(outcome.trace.application.actions.is_empty());
+        assert_eq!(outcome.trace.application.status, "not_applied");
+        records.shutdown(Duration::from_secs(2));
+        let captured = records.read().unwrap();
+        assert_eq!(captured.len(), 1);
+        let failure = captured[0].failure.as_ref().unwrap();
+        assert_eq!(failure.kind, FailureKind::Limit);
+        assert_eq!(failure.message, message);
+    }
     struct Fake;
     impl DecisionClient for Fake {
         fn capabilities(&self) -> Capabilities {
@@ -695,7 +771,12 @@ impl FlowRuntime {
                             message,
                         });
                     }
-                    report.status = aggregate_application_status(&report.actions).into();
+                    report.status = if report.actions.is_empty() {
+                        "not_applied"
+                    } else {
+                        aggregate_application_status(&report.actions)
+                    }
+                    .into();
                     outcome.trace.application = report;
                 }
                 if let Some(records) = records.filter(|_| !is_blocking) {

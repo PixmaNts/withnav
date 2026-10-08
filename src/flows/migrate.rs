@@ -53,10 +53,14 @@ pub fn convert(
                 .map(|f| (f.to_string(), format!("event.{f}")))
                 .collect();
             let pf = &trigger.prefilter;
-            let gate = format!(
-                "changed_lines >= {} && since_last_remark_ms >= {}",
-                pf.min_changed_lines, pf.cooldown_ms
-            );
+            let gate = if event == "conversation" {
+                format!("since_last_remark_ms >= {}", pf.cooldown_ms)
+            } else {
+                format!(
+                    "changed_lines >= {} && since_last_remark_ms >= {}",
+                    pf.min_changed_lines, pf.cooldown_ms
+                )
+            };
             let gate = if pf.bypass_on_help_call {
                 format!("called_for_help || ({gate})")
             } else {
@@ -64,7 +68,30 @@ pub fn convert(
             };
             let mut nodes = Vec::new();
             let question_ids: Vec<_> = trigger.questions.keys().cloned().collect();
+            let mut answer_aliases = prefilter_inputs.clone();
             for (id, question) in &trigger.questions {
+                answer_aliases.insert(id.clone(), format!("answer.{id}"));
+                let options: Vec<String> = match question {
+                    protocol::Question::Noul { .. } => vec![],
+                    protocol::Question::Choice { criteria, .. } => {
+                        criteria.keys().cloned().collect()
+                    }
+                    protocol::Question::Score { criteria, .. } => {
+                        (0..criteria.len()).map(|index| index.to_string()).collect()
+                    }
+                };
+                if !matches!(question, protocol::Question::Noul { .. }) {
+                    answer_aliases.insert(
+                        format!("{id}_confidence"),
+                        format!("answer.{id}.confidence"),
+                    );
+                    for option in options {
+                        answer_aliases.insert(
+                            format!("{id}_p_{option}"),
+                            format!("answer.{id}.probabilities.{option}"),
+                        );
+                    }
+                }
                 let question: protocol::Question =
                     serde_json::from_value(serde_json::to_value(question)?)?;
                 let kind = match question {
@@ -81,9 +108,17 @@ pub fn convert(
                         criteria,
                         state_template: Some("state.md".into()),
                     },
-                    protocol::Question::Score { .. } => {
-                        anyhow::bail!("legacy score questions are unsupported")
-                    }
+                    protocol::Question::Score {
+                        instructions,
+                        criteria,
+                    } => NodeKind::Score {
+                        instructions,
+                        at_least: criteria.first().cloned().ok_or_else(|| {
+                            anyhow::anyhow!("score question {id} has no criteria")
+                        })?,
+                        levels: criteria,
+                        state_template: Some("state.md".into()),
+                    },
                 };
                 let next = kind
                     .ports()
@@ -99,13 +134,32 @@ pub fn convert(
                 });
             }
             for (index, branch) in trigger.branch.iter().enumerate() {
-                let mut aliases = prefilter_inputs.clone();
-                aliases.extend(
-                    question_ids
-                        .iter()
-                        .map(|id| (id.clone(), format!("answer.{id}"))),
-                );
+                let tree =
+                    evalexpr::build_operator_tree::<evalexpr::DefaultNumericTypes>(&branch.when)
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "branch {index} condition cannot be translated: {error}"
+                            )
+                        })?;
+                let unknown: Vec<_> = tree
+                    .iter_read_variable_identifiers()
+                    .filter(|name| !answer_aliases.contains_key(*name))
+                    .collect();
+                let functions: Vec<_> = tree.iter_function_identifiers().collect();
+                let writes: Vec<_> = tree.iter_write_variable_identifiers().collect();
+                anyhow::ensure!(unknown.is_empty() && functions.is_empty() && writes.is_empty(),
+                    "branch {index} condition cannot be translated: unknown variables {unknown:?}; functions {functions:?}; assignments {writes:?}");
+                // Collect only referenced answers: every declared alias would otherwise
+                // multiply the input budget and require unused upstream evidence.
+                let mut aliases: BTreeMap<_, _> = tree
+                    .iter_read_variable_identifiers()
+                    .map(|name| (name.to_string(), answer_aliases[name].clone()))
+                    .collect();
                 let condition = if branch.action == ActionDef::WakeCognition {
+                    aliases.insert(
+                        "since_last_wake_ms".into(),
+                        "event.since_last_wake_ms".into(),
+                    );
                     format!(
                         "({}) && since_last_wake_ms >= {}",
                         branch.when, pf.wake_cooldown_ms
@@ -286,6 +340,188 @@ pub fn migrate_directory(source: &Path, target: &Path) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    const SCORED: &str = r#"
+[instinct]
+model = "instinct"
+[[trigger]]
+on = ["diagnostics"]
+state = "state.md"
+[trigger.questions.severity]
+type = "score"
+instructions = "How severe?"
+criteria = ["low", "high"]
+[trigger.questions.route]
+type = "choice"
+instructions = "Who?"
+criteria = { silent = "nothing", cognition = "discuss" }
+[[trigger.branch]]
+when = "severity > 0.7 && severity_p_1 > 0.7 && severity_confidence > 0.8 && route == \"cognition\" && route_p_cognition > 0.7 && route_confidence > 0.8 && has_errors && has_intent && !has_conversation && !called_for_help && changed_lines >= 1 && since_last_remark_ms >= 0 && since_last_wake_ms >= 0"
+action = "wake_cognition"
+[[trigger.branch]]
+when = "true"
+action = "remark"
+prompt = "remark.md"
+"#;
+
+    struct Decisions;
+    impl DecisionClient for Decisions {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: protocol::DecisionRequest<'a>,
+            _: &'a tokio_util::sync::CancellationToken,
+            _: std::time::Instant,
+        ) -> BoxFuture<'a, Result<protocol::DecisionResponse, DecisionError>> {
+            Box::pin(async move {
+                Ok(protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .iter()
+                        .map(|(id, question)| {
+                            let answer = match question {
+                                protocol::Question::Score { criteria, .. } => {
+                                    protocol::Answer::Score {
+                                        score: 0.9,
+                                        legend: criteria
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, label)| (i.to_string(), label.clone()))
+                                            .collect(),
+                                        probabilities: BTreeMap::from([
+                                            ("0".into(), 0.1),
+                                            ("1".into(), 0.9),
+                                        ]),
+                                        confidence: 0.9,
+                                    }
+                                }
+                                protocol::Question::Choice { .. } => protocol::Answer::Choice {
+                                    choice: "cognition".into(),
+                                    probabilities: BTreeMap::from([
+                                        ("silent".into(), 0.1),
+                                        ("cognition".into(), 0.9),
+                                    ]),
+                                    confidence: 0.9,
+                                },
+                                protocol::Question::Noul { .. } => unreachable!(),
+                            };
+                            (id.clone(), answer)
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostics_score_and_flattened_answers_preserve_first_matching_branch() {
+        let prompts = BTreeMap::from([
+            ("state.md".into(), "{{diagnostics}}".into()),
+            ("remark.md".into(), "later branch".into()),
+        ]);
+        let (definition, templates) = convert(SCORED, &prompts).unwrap().remove(0);
+        let compiled = definition
+            .validate(
+                &super::super::catalogue::catalogue(),
+                &Capabilities { images: false },
+                &templates,
+            )
+            .unwrap();
+        let mut payload = serde_json::Map::new();
+        payload.extend(serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({"uri":"file:///repo/test.rs", "language_id":"rust", "version":1, "diagnostics":[], "diff":"edit"})).unwrap());
+        for field in TEMPLATE_FIELDS {
+            payload.insert(format!("template_{field}"), json!("evidence"));
+        }
+        for field in INTEGER_FIELDS {
+            payload.insert((*field).into(), json!(1));
+        }
+        for field in BOOLEAN_FIELDS {
+            payload.insert(
+                (*field).into(),
+                json!(matches!(*field, "has_errors" | "has_intent")),
+            );
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        for (errors, expected) in [(true, "wake"), (false, "remark")] {
+            payload.insert("has_errors".into(), json!(errors));
+            let outcome = run(
+                &compiled,
+                &Event {
+                    trigger: "diagnostics".into(),
+                    payload: json!(payload),
+                },
+                &crate::flows::runtime::ContextSnapshot::default(),
+                &Decisions,
+                RunOptions {
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                    run_id: "conversion".into(),
+                },
+                &cancel,
+            )
+            .await;
+            let RunResult::Success { actions } = outcome.result else {
+                panic!("{:?}", outcome.result)
+            };
+            assert_eq!(actions.len(), 1);
+            assert_eq!(actions[0].action, expected);
+        }
+    }
+
+    #[test]
+    fn unsupported_condition_lists_every_unknown_variable_and_keeps_source_visible() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        let source = config.join("navigator");
+        std::fs::create_dir_all(&source).unwrap();
+        let text = SCORED.replace("severity > 0.7", "unknown_a > 0.7 && unknown_b > 0.7");
+        std::fs::write(source.join("pipeline.toml"), &text).unwrap();
+        std::fs::write(source.join("state.md"), "{{diagnostics}}").unwrap();
+        std::fs::write(source.join("remark.md"), "remark").unwrap();
+        let store = crate::flows::store::FlowStore::new(root.path().into(), config);
+        let errors = store.migration_diagnostics();
+        assert_eq!(errors.len(), 1);
+        for fragment in [
+            "pipeline.toml",
+            "unknown_a",
+            "unknown_b",
+            "original retained",
+        ] {
+            assert!(
+                errors[0].message.contains(fragment),
+                "{}",
+                errors[0].message
+            );
+        }
+        assert!(store
+            .reload_diagnostics()
+            .iter()
+            .any(|error| error.code == "migration"));
+        assert!(store
+            .list()
+            .unwrap()
+            .iter()
+            .any(|row| row.name == "legacy-pipeline" && row.errors == errors));
+        store.reload().unwrap();
+        assert_eq!(store.migration_diagnostics(), errors);
+        assert_eq!(
+            std::fs::read_to_string(source.join("pipeline.toml")).unwrap(),
+            text
+        );
+        assert!(!store
+            .snapshot()
+            .contains_key("navigator-default-diagnostics"));
+    }
+
     #[test]
     fn conversion_is_once_and_keeps_original() {
         let root = tempfile::tempdir().unwrap();

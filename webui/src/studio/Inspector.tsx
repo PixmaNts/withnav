@@ -1,9 +1,9 @@
 // The right column: the selected card's fields, per node type, plus the last run's raw answer.
 
 import { Plus, Trash, WarningCircle, X } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { changeDecisionType, ID_PATTERN, isDecision, mapNode, nodeById, prunePorts, renameNode, renameOption, removeNode, TRIGGER_ID } from "./graph";
-import { inputGroups, renderState, toggleInput } from "./inputs";
+import { aliasFor, EMPTY_DECISION_WARNING, hasEmptyDecisionState, inputGroups, insertInputAlias, renderState, toggleInput } from "./inputs";
 import { actionLook, fmt, lookOf, thresholdValue, TYPE_LOOK } from "./meta";
 import type { Catalogue, Definition, Diagnostic, FallbackAction, FallbackKey, FlowNode, ParamValue, ReplayResult, RunRecord } from "./types";
 import { FALLBACK_KEYS } from "./types";
@@ -46,7 +46,7 @@ export function Inspector({ def, catalogue, selected, onSelect, edit, run, repla
           </ul>
         )}
         {!node ? (
-          <TriggerFields def={def} catalogue={catalogue} edit={edit} payload={payload} />
+          <TriggerFields def={def} catalogue={catalogue} edit={edit} payload={payload} diagnostics={diagnostics} />
         ) : (
           <>
             <IdFields node={node} def={def} edit={edit} onRenamed={onSelect} />
@@ -456,6 +456,7 @@ function InputsPicker({ node, def, catalogue, setNode, disabled }: { node: FlowN
           ))}
         </div>
       )}
+      {hasEmptyDecisionState(node) && <div className="sf-field-err" role="status"><WarningCircle size={13} aria-hidden /> {EMPTY_DECISION_WARNING}</div>}
     </Section>
   );
 }
@@ -492,11 +493,15 @@ const REPLAY_LABEL = {
 
 // ---------- trigger card: event, filter, fallback ----------
 
-function TriggerFields({ def, catalogue, edit, payload }: { def: Definition; catalogue: Catalogue | undefined; edit: Edit; payload: Record<string, unknown> | undefined }) {
+function TriggerFields({ def, catalogue, edit, payload, diagnostics }: { def: Definition; catalogue: Catalogue | undefined; edit: Edit; payload: Record<string, unknown> | undefined; diagnostics: Diagnostic[] }) {
+  const expression = useRef<HTMLInputElement>(null);
   const flowEdit = (f: (flow: Definition["flow"]) => Definition["flow"]) => edit?.((d) => ({ ...d, flow: f(d.flow) }));
   const disabled = !edit;
   const whenGroups = useMemo(() => inputGroups(def, catalogue, null), [def, catalogue]);
   const whenChosen = new Set(Object.values(def.flow.inputs));
+  const firstField = catalogue?.triggers.find((t) => t.name === def.flow.on)?.payload_fields[0];
+  const example = firstField ? `${Object.entries(def.flow.inputs).find(([, ref]) => ref === `event.${firstField.name}`)?.[0] ?? aliasFor(`event.${firstField.name}`, def.flow.inputs)} == ${firstField.value_type === "string" ? '"test"' : firstField.value_type === "boolean" ? "true" : firstField.value_type === "number" || firstField.value_type === "integer" ? "1" : "null"}` : "Always run";
+  const whenErrors = diagnostics.filter((d) => d.path.startsWith("flow.when") || d.path.startsWith("flow.inputs"));
   return (
     <>
       <Section label="Event">
@@ -518,11 +523,19 @@ function TriggerFields({ def, catalogue, edit, payload }: { def: Definition; cat
         <div className="sf-note">Changing the event keeps the nodes; inputs and actions that do not fit it show as errors.</div>
       </Section>
       <Section label="Filter · when">
-        <input className="sf-input mono sf-expr" value={def.flow.when ?? ""} disabled={disabled} placeholder="Always run" onChange={(e) => flowEdit((f) => ({ ...f, when: e.target.value.trim() ? e.target.value : null }))} />
-        <div className="sf-note">Checked before any node, over the inputs below. Empty means every event runs the flow.</div>
+        <input ref={expression} aria-label="Filter expression" className="sf-input mono sf-expr" value={def.flow.when ?? ""} disabled={disabled} placeholder={example} onChange={(e) => flowEdit((f) => ({ ...f, when: e.target.value.trim() ? e.target.value : null }))} />
+        <div className="sf-note">Click a chip to declare its input and insert its name. Empty means every event runs.</div>
+        <div className="sf-note mono">{'== != < > && || ! · strings in "double quotes" · is_set(x)'}</div>
+        {whenErrors.map((d, i) => <div key={i} className="sf-field-err" role="alert">{d.message}{/unknown.*name/i.test(d.message) && " — click its chip to declare it"}</div>)}
         <div className="sf-chips" style={{ marginTop: 6 }}>
-          {whenGroups[0]?.options.map((o) => (
-            <button key={o.reference} type="button" className="sf-chip mono" aria-pressed={whenChosen.has(o.reference)} disabled={disabled} onClick={() => edit?.((d) => ({ ...d, flow: { ...d.flow, inputs: toggleInput({ inputs: d.flow.inputs } as FlowNode, o.reference).inputs } }))}>
+          {whenGroups.flatMap((g) => g.options).filter((o) => o.reference.startsWith("event.")).map((o) => (
+            <button key={o.reference} type="button" className="sf-chip mono" aria-pressed={whenChosen.has(o.reference)} disabled={disabled} onMouseDown={(e) => e.preventDefault()} onClick={() => {
+              const field = expression.current;
+              const text = def.flow.when ?? "";
+              const next = insertInputAlias(def.flow.inputs, text, o.reference, field?.selectionStart ?? text.length, field?.selectionEnd ?? text.length);
+              flowEdit((f) => ({ ...f, inputs: next.inputs, when: next.expression }));
+              requestAnimationFrame(() => { field?.focus(); field?.setSelectionRange(next.cursor, next.cursor); });
+            }}>
               {o.reference.slice(6)}
             </button>
           ))}
@@ -599,4 +612,3 @@ function FallbackFields({ def, catalogue, edit }: { def: Definition; catalogue: 
     </Section>
   );
 }
-

@@ -18,6 +18,8 @@ import { addNode, completeLayout, FLOW_NAME_PATTERN, newNode, TRIGGER_ID } from 
 import { actionsFor, Inspector } from "./Inspector";
 import { actionLook, TYPE_LOOK } from "./meta";
 import { RunBar } from "./RunBar";
+import { defaultDecisionInputs } from "./inputs";
+import { isDecision } from "./graph";
 import type { Definition, Diagnostic, FlowDocument, FlowSummary, HealthRow, Location, NodeType, ReplayResult, RunRecord } from "./types";
 import { setEnabledInToml, useFlowEditor } from "./useFlowEditor";
 
@@ -271,6 +273,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
   const onAdd = (type: NodeType, action?: string) => {
     if (!def || !edit) return;
     const node = newNode(def, type, catalogue.data, action);
+    if (isDecision(node)) node.inputs = defaultDecisionInputs(trigger);
     const layout = completeLayout(def);
     const rightmost = Math.max(...Object.values(layout).map((p) => p.x), 0);
     edit((d) => addNode(d, node, { x: rightmost + 240, y: 40 + (d.node.length % 5) * 60 }));
@@ -350,7 +353,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
                   {reload.ok === false && <DiagList errors={reload.errors} />}
                 </Banner>
               )}
-              <Toolbar view={view} setView={setView} onAdd={onAdd} disabled={!edit} def={def} catalogue={catalogue.data} tomlPending={state.tomlPending} readOnly={readOnly} />
+              <Toolbar view={view} setView={setView} onAdd={onAdd} disabled={!edit || !!run} def={def} catalogue={catalogue.data} tomlPending={state.tomlPending} readOnly={readOnly} />
               <div className="sf-stage">
                 {view === "canvas" ? (
                   def ? (
@@ -361,7 +364,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
                           <button type="button" className="sf-link" onClick={() => setView("toml")}>Open TOML</button>
                         </div>
                       )}
-                      <Canvas key={openKey} def={def} run={run} diagnostics={state.diagnostics} selected={selected} onSelect={setSelected} edit={edit} onRefused={setNotice} />
+                      <Canvas key={openKey} def={def} run={run} diagnostics={state.diagnostics} selected={selected} onSelect={setSelected} edit={run ? null : edit} onRefused={setNotice} />
                     </>
                   ) : (
                     <Center title="This file does not parse">Open the TOML view to fix it.</Center>
@@ -602,6 +605,7 @@ function Toolbar({ view, setView, onAdd, disabled, def, catalogue, tomlPending, 
           </div>
         )}
       </div>
+      {!off && <span className="sf-note sf-delete-hint">Select a wire or card, then press Delete</span>}
       <div className="sf-views" role="tablist" aria-label="View">
         {(["canvas", "toml"] as const).map((v) => (
           <button key={v} type="button" role="tab" aria-selected={view === v} className="sf-view" onClick={() => setView(v)}>

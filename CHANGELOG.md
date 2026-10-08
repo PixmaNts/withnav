@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Model variants cannot use the reserved name `inherit`.** Catalogue validation rejects a
+  name that the CLI and commands interpret as selecting the model's default variant.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

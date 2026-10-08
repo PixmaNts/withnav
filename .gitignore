@@ -42,3 +42,9 @@ __pycache__/
 
 # OpenChamber session data (screenshots, local state)
 /.openchamber/
+
+# Per-workspace WithNav state of this checkout (flows, intent, agents, charts); the old names are
+# still read during 0.7.
+/.withnav/
+/.navai/
+/.navigator/

@@ -609,3 +609,24 @@ button.sf-chip[aria-pressed="true"] { border-color: var(--ac); color: var(--tx);
 }
 .sf-dialog h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .sf-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------- narrow screens ----------
+   The inspector (tablet) and then the flow list (mobile) open as drawers from the top bar. */
+@media (max-width: 1100px) {
+  .sf-grid { grid-template-columns: 220px minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .sf-grid { grid-template-columns: minmax(0, 1fr); }
+  .sf-top { gap: 8px; padding: 6px 10px; }
+  .sf-top .crumb { flex: 1 1 0; }
+  .sf-top .topbar-right { order: 3; flex: 1 1 100%; margin-left: 0; flex-wrap: wrap; }
+  .sf-top-instinct { display: none; }
+  .sf-trust { flex-wrap: wrap; padding: 8px 10px; }
+  .sf-trust > span { flex: 1 1 calc(100% - 70px); }
+  .sf-trust > .sf-btn { margin-left: 25px; }
+  .sf-head { padding: 10px 12px; gap: 8px 12px; }
+  .sf-head-actions { margin-left: 0; }
+  .sf-toolbar { flex-wrap: wrap; }
+  .sf-payload { max-width: 100%; }
+  .sf-stats { margin-left: 0; flex-wrap: wrap; }
+}

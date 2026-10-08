@@ -1,11 +1,12 @@
 import { BrandMark, Crew, crewLabel } from "./components/Crew";
-import { Compass, FlowArrow, GearSix, WifiSlash } from "@phosphor-icons/react";
+import { Compass, FlowArrow, GearSix, List, SidebarSimple, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
 import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
 import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
+import { Drawer, DrawerButton, MOBILE, TABLET, useDrawer } from "./lib/drawer";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
@@ -108,6 +109,22 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
   const bypass = route.subagent ? childRow?.bypass === true : chat.bypass;
   const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
+  // Narrow screens: the workspace list and the session details become drawers.
+  const side = useDrawer(MOBILE);
+  const details = useDrawer(TABLET);
+  const { setOpen: closeSide } = side;
+  const { setOpen: closeDetails } = details;
+  // Picking a session or a subagent in a drawer shows it: the drawer gets out of the way.
+  useEffect(() => {
+    closeSide(false);
+    closeDetails(false);
+  }, [route.workspace, route.session, route.subagent, closeSide, closeDetails]);
+  // The palette, the model picker and the removal dialog open over the page, not under a drawer.
+  useEffect(() => {
+    if (!overlay && !removing) return;
+    closeSide(false);
+    closeDetails(false);
+  }, [overlay, removing, closeSide, closeDetails]);
 
   useEffect(() => {
     document.title = route.session ? `${title} · WithNav` : "WithNav";
@@ -301,9 +318,12 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   return (
     <div className="shell">
       <header className="topbar">
+        <DrawerButton target="chat-side" state={side} label="Workspaces and sessions" className="side-toggle">
+          <List size={18} aria-hidden />
+        </DrawerButton>
         <span className="brand">
           <BrandMark />
-          WithNav
+          <span className="brand-name">WithNav</span>
         </span>
         <span className="crumb" title={workspace ?? undefined}>
           {crumbWs} / {crumb}
@@ -315,7 +335,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         )}
         {bypass && <span className="bypass-badge" title="Bypass ordinary permission prompts; protected requests still ask">⚠ bypass</span>}
         <div className="topbar-right">
-          <span className="muted" style={{ fontSize: 12 }}>
+          <span className="muted agent-label" style={{ fontSize: 12 }}>
             Agent
           </span>
           {["build", "plan"].map((id) => (
@@ -332,7 +352,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             </button>
           ))}
           <button type="button" className="bypass-toggle" aria-pressed={bypass} disabled={!!bypassReason} title={bypassReason ?? "Bypass ordinary permission prompts; protected requests still ask"} onClick={() => void chat.setBypass(!bypass)}>
-            ⚠ Bypass {bypass ? "ON" : "OFF"}
+            ⚠<span className="bar-btn-text"> Bypass</span> {bypass ? "ON" : "OFF"}
           </button>
           <button type="button" className="icon-btn st-gear" onClick={openStudio} disabled={!workspace} aria-label="InstinctFlow Studio" title={workspace ? "InstinctFlow Studio: flows" : "Choose a workspace first"}>
             <FlowArrow size={16} />
@@ -341,13 +361,19 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <GearSix size={16} />
           </button>
           <button type="button" className="kbd" onClick={() => setOverlay({ palette: paletteWithSkills })} aria-label="Open the command palette" title="Command palette">
-            {modKey("K")}
+            {side.active ? "Commands" : modKey("K")}
           </button>
         </div>
+        <DrawerButton target="chat-details" state={details} label="Session details: intent, crew, extensions" className="panel-toggle">
+          <SidebarSimple size={16} style={{ transform: "scaleX(-1)" }} aria-hidden />
+          <span className="bar-btn-text">Details</span>
+        </DrawerButton>
         {bypass && <span className="bypass-warning" role="status">Bypass ordinary permission prompts; protected requests still ask</span>}
       </header>
 
-      <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />
+      <Drawer id="chat-side" side="left" state={side} label="Workspaces">
+        <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />
+      </Drawer>
 
       {route.subagent && route.session ? (
         <main className="main">
@@ -385,7 +411,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         </main>
       )}
 
-      <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
+      <Drawer id="chat-details" side="right" state={details} label="Session details">
+        <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
+      </Drawer>
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}
       {removing && <RemoveWorkspaceDialog request={removing} workspaces={sidebarList} route={route} navigate={navigate} onClose={() => setRemoving(null)} />}

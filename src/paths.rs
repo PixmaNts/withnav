@@ -102,3 +102,60 @@ mod workspace_tests {
         }
     }
 }
+
+/// Reads a renamed environment variable, warning once for each legacy name.
+pub fn env_var_os(name: &str) -> Option<std::ffi::OsString> {
+    env_with(name, |key| std::env::var_os(key))
+}
+pub fn env_var(name: &str) -> Result<String, std::env::VarError> {
+    env_var_os(name)
+        .ok_or(std::env::VarError::NotPresent)?
+        .into_string()
+        .map_err(std::env::VarError::NotUnicode)
+}
+fn env_with(
+    name: &str,
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    use std::sync::{Mutex, OnceLock};
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    if let Some(value) = lookup(name) {
+        return Some(value);
+    }
+    let old = name
+        .strip_prefix("WITHNAV_")
+        .map(|suffix| format!("NAVAI_{suffix}"))?;
+    let value = lookup(&old)?;
+    if WARNED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(old.clone())
+    {
+        tracing::warn!("{old} is deprecated; use {name}");
+    }
+    Some(value)
+}
+#[cfg(test)]
+mod env_tests {
+    #[test]
+    fn legacy_environment_is_read_only_when_new_name_is_absent() {
+        for suffix in [
+            "MAX_STEPS",
+            "BASH_GRACE_MS",
+            "HTML_CONVERTER",
+            "SERVER_TOKEN",
+        ] {
+            let new = format!("WITHNAV_{suffix}");
+            let old = format!("NAVAI_{suffix}");
+            assert_eq!(
+                super::env_with(&new, |key| (key == old).then(|| "old".into())),
+                Some("old".into())
+            );
+            assert_eq!(
+                super::env_with(&new, |_| Some("new".into())),
+                Some("new".into())
+            );
+        }
+    }
+}

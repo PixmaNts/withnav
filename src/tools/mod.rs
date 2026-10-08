@@ -46,7 +46,7 @@ pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
 pub const DEFAULT_BASH_GRACE_MS: u64 = 5_000;
 
 pub fn bash_grace_ms() -> u64 {
-    std::env::var("NAVAI_BASH_GRACE_MS")
+    crate::paths::env_var("WITHNAV_BASH_GRACE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_BASH_GRACE_MS)

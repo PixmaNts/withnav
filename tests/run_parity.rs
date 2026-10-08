@@ -250,7 +250,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "mock/m": {
@@ -277,7 +277,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "--prompt",
                     "go",
                 ])
-                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
                 // The binary opens the conversation history in the XDG data
                 // dir and migrates legacy files there. Without these two, a
                 // test run wrote into the driver's real database and moved
@@ -396,7 +396,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "mock/m": {
@@ -422,7 +422,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
                     "--prompt",
                     "go",
                 ])
-                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
                 .env("XDG_DATA_HOME", home.join("data"))
                 .env("XDG_CONFIG_HOME", home.join("config"))
                 .env("HOME", &home)

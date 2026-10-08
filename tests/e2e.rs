@@ -180,7 +180,7 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
 /// LIVE end-to-end against a real OmniRoute proxy.
 ///
 /// REQUIRED for Phase-1 completion. Run explicitly:
-///   NAVAI_LIVE=1 cargo test --test e2e -- --ignored --nocapture
+///   WITHNAV_LIVE=1 cargo test --test e2e -- --ignored --nocapture
 /// When OmniRoute is unavailable this test FAILS (or is a BLOCKED gate) — it is
 /// NEVER a passing skip.
 #[tokio::test]

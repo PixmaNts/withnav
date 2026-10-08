@@ -83,7 +83,7 @@ pub struct TuiArgs {
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
     /// Connect to a running server instead of starting one. If it needs a bearer token, set
-    /// NAVAI_SERVER_TOKEN.
+    /// WITHNAV_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
 }

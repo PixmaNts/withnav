@@ -20,7 +20,7 @@ pub const DEFAULT_MAX_STEPS: usize = 50;
 pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
 pub fn max_steps() -> usize {
-    std::env::var("NAVAI_MAX_STEPS")
+    crate::paths::env_var("WITHNAV_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_STEPS)
@@ -28,7 +28,7 @@ pub fn max_steps() -> usize {
 
 /// Root turns have no step cap unless the driver explicitly opts in.
 pub fn root_max_steps() -> usize {
-    std::env::var("NAVAI_MAX_STEPS")
+    crate::paths::env_var("WITHNAV_MAX_STEPS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(usize::MAX)

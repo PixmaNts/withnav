@@ -337,7 +337,7 @@ fn two_models_both(
                "context_window": window, "reasoning_history": "preserve"})
     };
     let provider = |url: &str| {
-        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+        json!({"base_url": url, "api_key_env": "WITHNAV_TEST_KEY", "headers": {},
                "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
     };
     std::fs::write(

@@ -22,7 +22,7 @@ fn fixture(config: Value) -> tempfile::TempDir {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::write(cfg.join("config.json"), config.to_string()).unwrap();
     std::fs::write(cfg.join("models.json"), json!({
-        "providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"NAVAI_STARTUP_ABSENT_KEY"}},
+        "providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"WITHNAV_STARTUP_ABSENT_KEY"}},
         "models":{
             "mock/chat":{"provider":"mock","model":"chat","context_window":128000,"supports_tools":true},
             "mock/fim":{"provider":"mock","model":"fim","api":"fim"},
@@ -157,7 +157,7 @@ fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
         .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))
-        .env_remove("NAVAI_STARTUP_ABSENT_KEY")
+        .env_remove("WITHNAV_STARTUP_ABSENT_KEY")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     cmd

@@ -60,7 +60,7 @@ pub struct FetchTool {
 }
 
 /// Environment override of the converter program.
-pub const HTML_CONVERTER_ENV: &str = "NAVAI_HTML_CONVERTER";
+pub const HTML_CONVERTER_ENV: &str = "WITHNAV_HTML_CONVERTER";
 
 impl Default for FetchTool {
     fn default() -> Self {
@@ -94,11 +94,11 @@ impl FetchTool {
         self
     }
 
-    /// The field, else `NAVAI_HTML_CONVERTER`, else the running executable.
+    /// The field, else `WITHNAV_HTML_CONVERTER`, else the running executable.
     fn converter(&self) -> Option<PathBuf> {
         self.converter
             .clone()
-            .or_else(|| std::env::var_os(HTML_CONVERTER_ENV).map(PathBuf::from))
+            .or_else(|| crate::paths::env_var_os(HTML_CONVERTER_ENV).map(PathBuf::from))
             .or_else(|| std::env::current_exe().ok())
     }
 }

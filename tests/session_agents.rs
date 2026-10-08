@@ -867,7 +867,7 @@ fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::proc
         .arg("--models")
         .arg(models)
         .args(extra)
-        .env("NAVAI_TEST_KEY", "test-key")
+        .env("WITHNAV_TEST_KEY", "test-key")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CONFIG_HOME", root.join("config"))

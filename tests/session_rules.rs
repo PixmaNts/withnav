@@ -243,7 +243,7 @@ async fn navai_run_sends_the_rules_too() {
             .arg("--models")
             .arg(&models)
             .args(["--prompt", "go"])
-            .env("NAVAI_TEST_KEY", "test-key")
+            .env("WITHNAV_TEST_KEY", "test-key")
             .env("HOME", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_CONFIG_HOME", root.join("config"))

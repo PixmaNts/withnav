@@ -5,8 +5,8 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::bus::event::EventEnvelope;
-use navai::server::{app, AppState};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{
@@ -29,7 +29,7 @@ fn state(tmp: &std::path::Path) -> AppState {
 
 #[tokio::test]
 async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
-    use navai::bus::runtime::bypass::BypassOrigin;
+    use withnav::bus::runtime::bypass::BypassOrigin;
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let first = state.create_session(&ws, None, false).await.unwrap();
@@ -61,7 +61,7 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
     assert!(disabled.bypass_seq > enabled.bypass_seq);
     state.history().flush().await.unwrap();
     let sub = state.subscribe(first, None).await.unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+    let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
     };
     let toggles: Vec<_> = events
@@ -83,7 +83,7 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
 //      anything else the resume wrote
 #[tokio::test]
 async fn resume_resets_bypass_off_with_an_event_first() {
-    use navai::bus::runtime::bypass::BypassOrigin;
+    use withnav::bus::runtime::bypass::BypassOrigin;
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let id = state.create_session(&ws, None, false).await.unwrap();
@@ -102,7 +102,7 @@ async fn resume_resets_bypass_off_with_an_event_first() {
     assert!(!summary.bypass);
     state.history().flush().await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+    let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
     };
     let resets: Vec<_> = events
@@ -131,7 +131,7 @@ async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(events) => events
+        withnav::bus::ResumeOutcome::Replay(events) => events
             .into_iter()
             .filter(|e| e.kind == "command.result")
             .collect(),
@@ -293,7 +293,7 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
         .run_command(ulid::Ulid::new(), "help", "")
         .await
         .unwrap_err();
-    assert!(matches!(err, navai::error::ServerError::SessionNotFound(_)));
+    assert!(matches!(err, withnav::error::ServerError::SessionNotFound(_)));
     let id = state
         .create_session(&ws, None, false)
         .await
@@ -301,7 +301,7 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     let err = state.run_command(id, "help", "").await.unwrap_err();
-    assert!(matches!(err, navai::error::ServerError::ResumeRequired));
+    assert!(matches!(err, withnav::error::ServerError::ResumeRequired));
 }
 
 // Given an agent waiting on its `ask`
@@ -708,7 +708,7 @@ async fn a_resumed_pending_ask_refuses_an_immediate_command() {
 #[test]
 fn oversized_result_data_is_replaced_by_a_marker() {
     let big = json!({"k": "x".repeat(20_000)});
-    let bounded = navai::bus::event::CommandResult::bound_data(big);
+    let bounded = withnav::bus::event::CommandResult::bound_data(big);
     assert_eq!(bounded["truncated"], true);
 }
 
@@ -724,7 +724,7 @@ fn run_navai(
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")

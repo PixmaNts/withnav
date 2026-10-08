@@ -12,7 +12,7 @@ are installed on the driver's machine. See
 ## What runs
 
 ```
-VS Code ── vscode-navigator (TypeScript)
+VS Code ── vscode-withnav (TypeScript)
    │   ├─ LSP over stdio ─────────────────┐  edits, saves, diagnostics, inline completion, remarks
    │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
    ▼                                  ▼   ▼

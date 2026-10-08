@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use navai::bus::event::EventKind;
-use navai::server::AppState;
-use navai::tools::Tool;
+use withnav::bus::event::EventKind;
+use withnav::server::AppState;
+use withnav::tools::Tool;
 use serde_json::{json, Value};
 
 mod common;
@@ -42,7 +42,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     if cleanup {
         fx.state.fail_child_start(false);
         fx.state.pause_child_cleanup(barrier.clone());
@@ -197,7 +197,7 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_child_publication(barrier.clone());
     let service = fx.state.service();
     let spawn = tokio::spawn(async move {
@@ -295,7 +295,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
                 .send(common::server::driver_command(child, "retry".into()))
                 .bounded(file!(), line!())
                 .await,
-            Err(navai::error::ServerError::ResumeRequired)
+            Err(withnav::error::ServerError::ResumeRequired)
         ));
         assert_eq!(
             replay.iter().filter(|e| e.kind == "subagent.done").count(),
@@ -511,7 +511,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
         .unwrap()
         .unwrap()
         .last_seq;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_resume_registration(barrier.clone());
     let service = fx.state.service();
     let ws = fx.ws.clone();
@@ -603,7 +603,7 @@ async fn paused_child_admission(resume: bool) {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_child_preparation(barrier.clone());
     fx.state
         .send(common::server::driver_command(
@@ -781,7 +781,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
     }
 }
 
-async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
+async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
     fx.state
         .history()
         .flush()
@@ -796,7 +796,7 @@ async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope
         .unwrap()
         .replay
     {
-        navai::bus::ResumeOutcome::Replay(events) => events,
+        withnav::bus::ResumeOutcome::Replay(events) => events,
         other => panic!("expected replay: {other:?}"),
     }
 }
@@ -868,7 +868,7 @@ async fn permission_parked_child_keeps_capacity_until_stopped() {
             .create_child_session(parent, "writer", "another")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::SubagentCapacity { .. })
+        Err(withnav::error::ServerError::SubagentCapacity { .. })
     ));
     fx.state
         .close_session(child)
@@ -1168,7 +1168,7 @@ async fn capacity_error_has_clear_machine_and_model_message() {
         .unwrap_err();
     assert!(matches!(
         err,
-        navai::error::ServerError::SubagentCapacity { capacity: 1 }
+        withnav::error::ServerError::SubagentCapacity { capacity: 1 }
     ));
     assert_eq!(
         err.to_string(),
@@ -1206,7 +1206,7 @@ async fn child_depth_has_no_task_registry_entry() {
             .create_child_session(child, "writer", "nested")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
     let metadata = fx
         .state
@@ -1380,7 +1380,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
             .create_child_session(parent, "explore", "fifth")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::SubagentCapacity { capacity: 4 })
+        Err(withnav::error::ServerError::SubagentCapacity { capacity: 4 })
     ));
     let finished = streams.drain(..2).collect::<Vec<_>>();
     futures::future::join_all(finished.into_iter().map(|stream| async move {
@@ -1434,7 +1434,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
             .create_child_session(parent, "explore", "fifth again")
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::SubagentCapacity { capacity: 4 })
+        Err(withnav::error::ServerError::SubagentCapacity { capacity: 4 })
     ));
     fx.state.close_all().bounded(file!(), line!()).await;
 }
@@ -1520,8 +1520,8 @@ async fn task_ack_returns_before_child_turn_finishes() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let task = navai::tools::task::TaskTool::new(fx.state.service(), parent);
-    let cx = navai::tools::ToolContext {
+    let task = withnav::tools::task::TaskTool::new(fx.state.service(), parent);
+    let cx = withnav::tools::ToolContext {
         binding: None,
         workspace: fx.ws.clone(),
         writable_roots: vec![fx.ws.clone()],
@@ -1697,7 +1697,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let app = navai::server::app(fx.state.clone());
+    let app = withnav::server::app(fx.state.clone());
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -1732,7 +1732,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
         .bounded(file!(), line!())
         .await
         .unwrap_err();
-    assert!(matches!(direct, navai::error::ServerError::ChildReadOnly));
+    assert!(matches!(direct, withnav::error::ServerError::ChildReadOnly));
     let resume = app
         .clone()
         .oneshot(
@@ -1773,7 +1773,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
 
 // ---- session bypass and children ----
 
-async fn bypass_events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
+async fn bypass_events(fx: &Fx, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
     events(fx, id)
         .bounded(file!(), line!())
         .await
@@ -1793,7 +1793,7 @@ async fn bypass_of(fx: &Fx, id: ulid::Ulid) -> bool {
 
 async fn set_bypass(fx: &Fx, id: ulid::Ulid, enabled: bool) {
     fx.state
-        .set_bypass(id, enabled, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(id, enabled, withnav::bus::runtime::bypass::BypassOrigin::Http)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1898,10 +1898,10 @@ async fn parent_changes_reach_live_children_both_ways_and_no_unrelated_root() {
     // A child cannot be toggled by hand.
     assert!(matches!(
         fx.state
-            .set_bypass(child, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+            .set_bypass(child, true, withnav::bus::runtime::bypass::BypassOrigin::Http)
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
     // A child that ended is simply not followed.
     fx.state
@@ -1931,7 +1931,7 @@ async fn a_toggle_during_child_registration_is_never_missed() {
             .bounded(file!(), line!())
             .await
             .unwrap();
-        let barrier = navai::session::ChildPreparationBarrier::default();
+        let barrier = withnav::session::ChildPreparationBarrier::default();
         if inside_gate {
             fx.state.pause_child_bypass_gate(barrier.clone());
         } else {
@@ -1957,7 +1957,7 @@ async fn a_toggle_during_child_registration_is_never_missed() {
                 .set_bypass(
                     parent,
                     true,
-                    navai::bus::runtime::bypass::BypassOrigin::Http,
+                    withnav::bus::runtime::bypass::BypassOrigin::Http,
                 )
                 .bounded(file!(), line!())
                 .await
@@ -2002,7 +2002,7 @@ async fn failed_durable_toggle_enables_nothing_in_the_tree() {
         .set_bypass(
             parent,
             true,
-            navai::bus::runtime::bypass::BypassOrigin::Http
+            withnav::bus::runtime::bypass::BypassOrigin::Http
         )
         .bounded(file!(), line!())
         .await
@@ -2031,23 +2031,23 @@ async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() 
     let stray = ulid::Ulid::new();
     fx.state.history().append_event(
         stray,
-        navai::bus::event::EventEnvelope::new(
+        withnav::bus::event::EventEnvelope::new(
             stray,
             0,
-            navai::bus::event::EventKind::SessionStart,
+            withnav::bus::event::EventKind::SessionStart,
             json!({}),
         ),
     );
     assert!(fx.state.history().flush().await.is_err());
     let first = fx
         .state
-        .set_bypass(id, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(id, true, withnav::bus::runtime::bypass::BypassOrigin::Http)
         .bounded(file!(), line!())
         .await
         .expect("its own append committed");
     let second = fx
         .state
-        .set_bypass(id, false, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(id, false, withnav::bus::runtime::bypass::BypassOrigin::Http)
         .bounded(file!(), line!())
         .await
         .expect("and the next one");
@@ -2068,7 +2068,7 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let child_gate = navai::session::ChildPreparationBarrier::default();
+    let child_gate = withnav::session::ChildPreparationBarrier::default();
     service.pause_child_bypass_gate(child_gate.clone());
     let spawning = service.clone();
     let first_child = tokio::spawn(async move {
@@ -2083,7 +2083,7 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
         .await;
 
     // Another publication is outstanding before the root's sequencer pauses.
-    let registration = navai::session::ChildPreparationBarrier::default();
+    let registration = withnav::session::ChildPreparationBarrier::default();
     service.pause_child_registration(registration.clone());
     let spawning = service.clone();
     let publication = tokio::spawn(async move {
@@ -2098,13 +2098,13 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
         .await;
 
     // The toggle acquires the gate as soon as the first child releases it.
-    let root_commit = navai::session::ChildPreparationBarrier::default();
+    let root_commit = withnav::session::ChildPreparationBarrier::default();
     service.pause_bypass_commit(root_commit.clone());
     service.fail_bypass_commit_after(1);
     let toggle = service.set_bypass(
         parent,
         true,
-        navai::bus::runtime::bypass::BypassOrigin::Http,
+        withnav::bus::runtime::bypass::BypassOrigin::Http,
     );
     tokio::pin!(toggle);
     assert!(
@@ -2133,12 +2133,12 @@ async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
     registration.release.notify_one();
 
     // Hold the lifecycle gate without marking the live child stopping yet.
-    let claim = navai::session::ChildPreparationBarrier::default();
+    let claim = withnav::session::ChildPreparationBarrier::default();
     service.pause_lifecycle_claim(claim.clone());
     let stopping = service.clone();
     let stop = tokio::spawn(async move { stopping.close_session(parent).await });
     claim.reached.notified().bounded(file!(), line!()).await;
-    let child_commit = navai::session::ChildPreparationBarrier::default();
+    let child_commit = withnav::session::ChildPreparationBarrier::default();
     service.pause_bypass_commit(child_commit.clone());
     root_commit.release.notify_one();
     tokio::select! {
@@ -2200,7 +2200,7 @@ async fn a_child_that_cannot_follow_the_toggle_is_stopped() {
         .set_bypass(
             parent,
             true,
-            navai::bus::runtime::bypass::BypassOrigin::Http,
+            withnav::bus::runtime::bypass::BypassOrigin::Http,
         )
         .bounded(file!(), line!())
         .await

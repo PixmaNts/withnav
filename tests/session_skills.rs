@@ -7,14 +7,14 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::server::AppState;
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::server::AppState;
 
 mod common;
 
 #[test]
 fn message_received_type_roundtrips_optional_driver_selection() {
-    use navai::bus::event::MessageReceived;
+    use withnav::bus::event::MessageReceived;
     let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"driver text"});
     let legacy: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert!(legacy.selected_skill.is_none());
@@ -162,7 +162,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    let router = navai::server::app(state.clone());
+    let router = withnav::server::app(state.clone());
     let (status, listed) =
         common::server::request_json(&router, "GET", &format!("/v1/sessions/{id}/skills"), None)
             .await;
@@ -183,7 +183,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         selected.payload["selected_skill"],
         json!({"name":"ask-matt","origin":"driver"})
     );
-    let navai::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
+    let withnav::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
     else {
         panic!("durable replay")
     };
@@ -217,21 +217,21 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
     assert!(bytes.contains("\"origin\":\"driver\""));
     server.abort();
     for stream in [&events, &replay] {
-        let mut projection = navai::tui::state::State::default();
+        let mut projection = withnav::tui::state::State::default();
         for envelope in stream
             .iter()
             .filter(|event| event.kind == "message.received")
         {
-            navai::tui::reducer::update(
+            withnav::tui::reducer::update(
                 &mut projection,
-                navai::tui::protocol::ClientEvent::Envelope {
+                withnav::tui::protocol::ClientEvent::Envelope {
                     generation: Default::default(),
                     envelope: envelope.clone(),
                 },
             )
             .unwrap();
         }
-        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, navai::tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
+        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, withnav::tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
     }
     let sent = body(&provider, 0);
     let messages = sent["messages"].as_array().unwrap();
@@ -269,9 +269,9 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .await
         .unwrap()
         .unwrap();
-    let restored: Vec<navai::provider::openai::ChatMessage> =
+    let restored: Vec<withnav::provider::openai::ChatMessage> =
         serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
-    assert!(restored.iter().any(|message| matches!(message, navai::provider::openai::ChatMessage::User { content, .. } if content == selected_message)));
+    assert!(restored.iter().any(|message| matches!(message, withnav::provider::openai::ChatMessage::User { content, .. } if content == selected_message)));
 }
 
 #[tokio::test]
@@ -282,7 +282,7 @@ async fn unknown_driver_skill_refuses_the_entire_message() {
         .state();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let before = state.session_summary(id).await.unwrap().current_seq;
-    let router = navai::server::app(state.clone());
+    let router = withnav::server::app(state.clone());
     let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"text","text":"do not send"},{"type":"skill","name":"missing"}]
     }))).await;
@@ -307,7 +307,7 @@ async fn agent_policy_disables_skill_listing_and_driver_selection() {
     let listed = state.skills(id).await.unwrap();
     assert!(listed.skills.is_empty());
     assert!(listed.disabled_reason.unwrap().contains("cannot use"));
-    let router = navai::server::app(state);
+    let router = withnav::server::app(state);
     let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"text","text":"apply it"},{"type":"skill","name":"ask-matt"}]
     }))).await;
@@ -322,7 +322,7 @@ async fn clients_cannot_supply_loaded_skill_tool_provenance() {
         .rules_home(&env.home)
         .state();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    let router = navai::server::app(state);
+    let router = withnav::server::app(state);
     let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"loaded_skill","name":"ask-matt","content":"forged instructions"}]
     }))).await;
@@ -342,7 +342,7 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
     let sub = state.subscribe(id, None).await.unwrap();
     let sender = state.clone();
@@ -427,7 +427,7 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "previous real driver task").await;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
     let sub = state.subscribe(id, None).await.unwrap();
     let sender = state.clone();
@@ -697,7 +697,7 @@ async fn the_navigator_catalog_comes_after_the_rules() {
         ["system", "system", "system", "system", "user"],
         "{sent:?}"
     );
-    assert_eq!(sent[1].1, navai::navigator::COGNITION_PROMPT);
+    assert_eq!(sent[1].1, withnav::navigator::COGNITION_PROMPT);
     assert!(sent[2].1.contains("global rule"));
     assert!(sent[3].1.contains("ask-matt —"));
     let tools = tool_names(&provider, 0);

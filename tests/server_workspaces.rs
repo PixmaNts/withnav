@@ -2,7 +2,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use navai::server::{app, AppState};
+use withnav::server::{app, AppState};
 use serde_json::{json, Value};
 use std::path::Path;
 use tower::ServiceExt;

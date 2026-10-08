@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use navai::agent::permissions::PermissionDecision;
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::bus::event::EventEnvelope;
-use navai::server::AppState;
+use withnav::agent::permissions::PermissionDecision;
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::AppState;
 
 mod common;
 use common::server::TestServerConfig;
@@ -117,7 +117,7 @@ async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(all) => {
+        withnav::bus::ResumeOutcome::Replay(all) => {
             all.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -145,7 +145,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
         .send(Command {
             command_id: ulid::Ulid::new(),
             session_id: id,
-            source_actor_id: navai::navigator::NAVIGATOR_ACTOR_ID.to_string(),
+            source_actor_id: withnav::navigator::NAVIGATOR_ACTOR_ID.to_string(),
             target_actor_id: "agent:main".to_string(),
             mode: DeliveryMode::NextTurn,
             content: vec![ContentBlock::Text {

@@ -10,7 +10,7 @@ async fn settings_locked_put_keeps_runtime_responsive() {
     let state = TestServerConfig::unreachable(dir.path())
         .bearer_token("secret")
         .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/settings?workspace={}", dir.path().display());
     let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
     let path = dir.path().join("cfg/config.json.lock");
@@ -90,7 +90,7 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         .variants(json!({"high":{}}), None)
         .bearer_token("secret")
         .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/settings?workspace={}", dir.path().display());
     assert_eq!(request(&app, "GET", &uri, Value::Null, false).await.0, 401);
     let path = dir.path().join("cfg/config.json");
@@ -203,7 +203,7 @@ async fn settings_gateway_base_url_never_carries_credentials() {
     )
     .bearer_token("secret")
     .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/settings?workspace={}", dir.path().display());
     let (status, body) = request(&app, "GET", &uri, Value::Null, true).await;
     assert_eq!(status, 200);
@@ -225,7 +225,7 @@ async fn gateway_probe_never_returns_credentials_or_upstream_body() {
     let state = TestServerConfig::mock(dir.path(), &mock.uri())
         .bearer_token("secret")
         .state();
-    let app = navai::server::app(state);
+    let app = withnav::server::app(state);
     let uri = format!("/v1/gateways/mock/test?workspace={}", dir.path().display());
     Mock::given(method("GET"))
         .and(path("/models"))

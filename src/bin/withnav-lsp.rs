@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use navai::navigator;
-use navai::navigator::bootstrap;
+use withnav::navigator;
+use withnav::navigator::bootstrap;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     // a child started from this same executable: handle that invocation
     // before the async runtime exists (see `conversion_child`).
     let args: Vec<String> = std::env::args().collect();
-    if let Some(code) = navai::tools::fetch::conversion_child(&args) {
+    if let Some(code) = withnav::tools::fetch::conversion_child(&args) {
         std::process::exit(code);
     }
     tokio::runtime::Builder::new_multi_thread()
@@ -70,14 +70,14 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let migration = navai::paths::migrate_legacy();
+    let migration = withnav::paths::migrate_legacy();
     init_tracing_stderr();
     migration.log();
     let cli = Cli::parse();
 
     if let Some(Command::Replay { log, json, .. }) = cli.command {
         let path = log
-            .or_else(navai::paths::decision_log)
+            .or_else(withnav::paths::decision_log)
             .ok_or_else(|| anyhow::anyhow!("pass --log"))?;
         let report = navigator::replay::flows::report(&std::fs::read_to_string(path)?);
         if json {

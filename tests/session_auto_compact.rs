@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use navai::bus::event::EventEnvelope;
-use navai::provider::openai::ChatMessage;
-use navai::server::AppState;
+use withnav::bus::event::EventEnvelope;
+use withnav::provider::openai::ChatMessage;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{collect_until, send_text, TestServerConfig};
@@ -95,7 +95,7 @@ async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(events) => {
+        withnav::bus::ResumeOutcome::Replay(events) => {
             events.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -489,7 +489,7 @@ async fn the_reason_is_stored_and_an_old_event_without_it_still_reads() {
 
     let old = json!({"generation": 1, "through_message": 3, "pruned": 0,
                      "estimate_before": 100, "estimate_after": 50});
-    let parsed: navai::bus::event::ContextCompacted = serde_json::from_value(old).unwrap();
+    let parsed: withnav::bus::event::ContextCompacted = serde_json::from_value(old).unwrap();
     assert_eq!(parsed.reason, None);
 }
 
@@ -780,9 +780,9 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
         .update_agent_override(
             id,
             "scribe",
-            navai::session::store::AgentOverride {
+            withnav::session::store::AgentOverride {
                 model: Some("b/model-b".into()),
-                variant: navai::session::store::AgentVariantOverride::Named("high".into()),
+                variant: withnav::session::store::AgentVariantOverride::Named("high".into()),
             },
         )
         .await
@@ -816,7 +816,7 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
         .parse()
         .unwrap();
     let (installed, observed) = tokio::sync::oneshot::channel();
-    navai::bus::runtime::observe_selection_install(operation, move |actor| {
+    withnav::bus::runtime::observe_selection_install(operation, move |actor| {
         installed
             .send((
                 actor.role.as_ref().unwrap().id.to_string(),
@@ -928,7 +928,7 @@ async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runt
         .await
         .unwrap();
     let before = state.history().load_for_resume(id).await.unwrap().unwrap();
-    navai::agent::compaction::validate(before.2.as_ref().unwrap(), &before.1).unwrap();
+    withnav::agent::compaction::validate(before.2.as_ref().unwrap(), &before.1).unwrap();
     let live = state.session_summary(id).await.unwrap();
     let gauge = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
     let notices = stored(&state, id, "context.compacted").await;
@@ -954,7 +954,7 @@ async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runt
         serde_json::to_value(&before.1).unwrap()
     );
     assert_eq!(after.2, before.2);
-    navai::agent::compaction::validate(after.2.as_ref().unwrap(), &after.1).unwrap();
+    withnav::agent::compaction::validate(after.2.as_ref().unwrap(), &after.1).unwrap();
     assert_eq!(after.0.model, before.0.model);
     assert_eq!(after.0.primary_agent, before.0.primary_agent);
     assert_eq!(after.0.variant, before.0.variant);

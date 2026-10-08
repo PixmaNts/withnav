@@ -1,5 +1,5 @@
 use futures::future::BoxFuture;
-use navai::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -106,13 +106,13 @@ async fn pause_lifecycle(mode: u8) {
         .iter()
         .find(|event| event.kind == "agent.yield" && event.payload["kind"] == "watchdog")
         .unwrap();
-    let typed: navai::bus::event::AgentYield =
+    let typed: withnav::bus::event::AgentYield =
         serde_json::from_value(pause.payload.clone()).unwrap();
     assert!(typed.question.contains("alt+c"));
     let token = serde_json::from_value(typed.details.unwrap()["pause_token"].clone()).unwrap();
     service.history().flush().await.unwrap();
     let loaded = service.history().load(id).await.unwrap().unwrap();
-    assert!(loaded.transcript.iter().any(|m| matches!(m, navai::provider::openai::ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "glob")));
+    assert!(loaded.transcript.iter().any(|m| matches!(m, withnav::provider::openai::ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "glob")));
     assert!(provider.requests.try_recv().is_err());
     if mode == 2 {
         let child = service
@@ -143,10 +143,10 @@ async fn pause_lifecycle(mode: u8) {
         // Admission is durable, but the crash precedes consumption into the transcript.
         service.history().flush().await.unwrap();
         let saved = service.history().load(id).await.unwrap().unwrap();
-        let admitted = navai::bus::event::EventEnvelope::new(
+        let admitted = withnav::bus::event::EventEnvelope::new(
             id,
             saved.meta.last_seq + 1,
-            navai::bus::event::EventKind::MessageReceived,
+            withnav::bus::event::EventKind::MessageReceived,
             serde_json::json!({
                 "source":"user:http","target":"agent:main","command_id":ulid::Ulid::new(),"mode":"next_turn","content":"lost admitted correction"
             }),
@@ -191,7 +191,7 @@ async fn pause_lifecycle(mode: u8) {
             .await
             .unwrap();
     } else if mode == 3 {
-        use navai::bus::command::ContentBlock;
+        use withnav::bus::command::ContentBlock;
         let mut refused = input_command(id, "user:http", "refused correction");
         refused.content.push(ContentBlock::Skill {
             name: "missing-skill".into(),
@@ -205,13 +205,13 @@ async fn pause_lifecycle(mode: u8) {
         });
         service.send(selected).await.unwrap();
     } else if mode == 1 {
-        let command = navai::bus::command::Command {
+        let command = withnav::bus::command::Command {
             command_id: ulid::Ulid::new(),
             session_id: id,
             source_actor_id: "navigator".into(),
             target_actor_id: "agent:main".into(),
-            mode: navai::bus::command::DeliveryMode::NextTurn,
-            content: vec![navai::bus::command::ContentBlock::Text {
+            mode: withnav::bus::command::DeliveryMode::NextTurn,
+            content: vec![withnav::bus::command::ContentBlock::Text {
                 text: "autonomous wake".into(),
             }],
             created_at: std::time::SystemTime::now(),
@@ -272,7 +272,7 @@ async fn pause_lifecycle(mode: u8) {
     if mode == 2 {
         service.history().flush().await.unwrap();
         let saved = service.history().load(id).await.unwrap().unwrap();
-        assert!(saved.transcript.iter().any(|message| matches!(message,navai::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
+        assert!(saved.transcript.iter().any(|message| matches!(message,withnav::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
         assert!(events
             .iter()
             .any(|event| event.payload["data"]["driver_committed"] == true));
@@ -312,17 +312,17 @@ async fn pause_lifecycle(mode: u8) {
 }
 
 fn input_command(
-    id: navai::session::SessionId,
+    id: withnav::session::SessionId,
     source: &str,
     text: &str,
-) -> navai::bus::command::Command {
-    navai::bus::command::Command {
+) -> withnav::bus::command::Command {
+    withnav::bus::command::Command {
         command_id: ulid::Ulid::new(),
         session_id: id,
         source_actor_id: source.into(),
         target_actor_id: "agent:main".into(),
-        mode: navai::bus::command::DeliveryMode::NextTurn,
-        content: vec![navai::bus::command::ContentBlock::Text { text: text.into() }],
+        mode: withnav::bus::command::DeliveryMode::NextTurn,
+        content: vec![withnav::bus::command::ContentBlock::Text { text: text.into() }],
         created_at: std::time::SystemTime::now(),
     }
 }
@@ -376,13 +376,13 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
         .unwrap();
     let sub = service.subscribe(child, None).await.unwrap();
     collect_until(sub, |e| e.kind == "turn.end").await;
-    let mut command = navai::bus::command::Command {
+    let mut command = withnav::bus::command::Command {
         command_id: ulid::Ulid::new(),
         session_id: id,
         source_actor_id: "navigator".into(),
         target_actor_id: "agent:main".into(),
-        mode: navai::bus::command::DeliveryMode::NextTurn,
-        content: vec![navai::bus::command::ContentBlock::Text {
+        mode: withnav::bus::command::DeliveryMode::NextTurn,
+        content: vec![withnav::bus::command::ContentBlock::Text {
             text: "autonomous wake".into(),
         }],
         created_at: std::time::SystemTime::now(),
@@ -398,7 +398,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     assert_eq!(provider.bodies().len(), 501);
     command.command_id = ulid::Ulid::new();
     command.source_actor_id = "user:http".into();
-    command.content = vec![navai::bus::command::ContentBlock::Text {
+    command.content = vec![withnav::bus::command::ContentBlock::Text {
         text: "fresh driver window".into(),
     }];
     service.send(command).await.unwrap();

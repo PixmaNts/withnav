@@ -1,4 +1,4 @@
-use navai::server::AppState;
+use withnav::server::AppState;
 use serde_json::{json, Value};
 mod common;
 use common::deadline::Deadline;
@@ -23,7 +23,7 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
         .create_child_session(parent, "explore", "original delegated task")
         .await
         .unwrap();
-    for step in 0..navai::agent::run_loop::max_steps() {
+    for step in 0..withnav::agent::run_loop::max_steps() {
         let (_, stream) = provider
             .requests
             .recv()
@@ -119,7 +119,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     state
         .pause_negative_result_eligibility(parent, barrier.clone())
         .unwrap();
@@ -393,9 +393,9 @@ async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_on
     // A cancelled summary may leave no checkpoint; any committed one must
     // restore against the actual paired transcript, never a partial summary.
     if let Some(checkpoint) = checkpoint {
-        navai::agent::compaction::validate(&checkpoint, &transcript).unwrap();
+        withnav::agent::compaction::validate(&checkpoint, &transcript).unwrap();
     }
-    assert_eq!(transcript.iter().filter(|m|matches!(m,navai::provider::openai::ChatMessage::User {content,..} if content=="replacement after summary")).count(),1);
+    assert_eq!(transcript.iter().filter(|m|matches!(m,withnav::provider::openai::ChatMessage::User {content,..} if content=="replacement after summary")).count(),1);
     state.close_all().bounded(file!(), line!()).await;
 }
 
@@ -753,14 +753,14 @@ async fn interrupt_provider_request_keeps_child_session_and_starts_a_fresh_turn(
     state.close_all().bounded(file!(), line!()).await;
 }
 
-async fn replay(state: &AppState, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
+async fn replay(state: &AppState, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
     state
         .history()
         .flush()
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = state
+    let withnav::bus::ResumeOutcome::Replay(events) = state
         .subscribe(id, None)
         .bounded(file!(), line!())
         .await
@@ -1172,7 +1172,7 @@ async fn interrupt_during_running_tool_preserves_result_pairing_and_capability_c
         .answer_permission(
             parent,
             id,
-            navai::agent::permissions::PermissionDecision::AllowOnce,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
         )
         .bounded(file!(), line!())
         .await

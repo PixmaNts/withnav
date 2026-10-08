@@ -11,10 +11,10 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use navai::agent::instructions::RulesRoots;
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::bus::event::EventEnvelope;
-use navai::server::{AppState, ServerConfig};
+use withnav::agent::instructions::RulesRoots;
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{AppState, ServerConfig};
 
 use super::sse::spawn_mock_provider;
 
@@ -76,7 +76,7 @@ pub struct TestServerConfig {
     variants: Option<Value>,
     default_variant: Option<String>,
     omniroute: bool,
-    web: Option<navai::server::WebConfig>,
+    web: Option<withnav::server::WebConfig>,
 }
 
 impl TestServerConfig {
@@ -168,7 +168,7 @@ impl TestServerConfig {
 
     /// Serves the browser client's files too, as `navai web` does, with these launch workspaces.
     pub fn web(mut self, launch_workspaces: Vec<PathBuf>) -> Self {
-        self.web = Some(navai::server::WebConfig { launch_workspaces });
+        self.web = Some(withnav::server::WebConfig { launch_workspaces });
         self
     }
 
@@ -291,7 +291,7 @@ impl TestServerConfig {
     /// [`Self::navigator_state`] sharing the navigator's conversation feed.
     pub fn navigator_state_with_conversation(
         &self,
-        conversation: Option<navai::navigator::ConversationFeed>,
+        conversation: Option<withnav::navigator::ConversationFeed>,
     ) -> AppState {
         self.editor_state(conversation, false)
     }
@@ -303,19 +303,19 @@ impl TestServerConfig {
 
     pub fn assigned_navigator_state_with_conversation(
         &self,
-        conversation: Option<navai::navigator::ConversationFeed>,
+        conversation: Option<withnav::navigator::ConversationFeed>,
     ) -> AppState {
         self.editor_state(conversation, true)
     }
 
     fn editor_state(
         &self,
-        conversation: Option<navai::navigator::ConversationFeed>,
+        conversation: Option<withnav::navigator::ConversationFeed>,
         assigned_build: bool,
     ) -> AppState {
         let hooks = match conversation {
-            Some(feed) => navai::navigator::NavigatorHooks::with_feed(feed),
-            None => navai::navigator::NavigatorHooks::new(),
+            Some(feed) => withnav::navigator::NavigatorHooks::with_feed(feed),
+            None => withnav::navigator::NavigatorHooks::new(),
         };
         let assigned = format!("{PROVIDER}/{}", self.model);
         let config = self.config();
@@ -354,7 +354,7 @@ pub async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHand
         .expect("ephemeral bind");
     let addr = listener.local_addr().expect("local addr");
     let task = tokio::spawn(async move {
-        let _ = navai::server::routes::serve_state_on(state, listener).await;
+        let _ = withnav::server::routes::serve_state_on(state, listener).await;
     });
     wait_until_healthy(addr).await;
     (addr, task)
@@ -475,9 +475,9 @@ pub async fn post_message_ok(base: &str, id: &str, text: &str) {
 /// The command `POST /messages` builds for a plain-text message to the main
 /// agent in session `id`.
 pub fn text_command(id: ulid::Ulid, text: &str) -> Command {
-    navai::server::routes::build_command(
+    withnav::server::routes::build_command(
         id,
-        &navai::server::routes::PostMessageRequest {
+        &withnav::server::routes::PostMessageRequest {
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
             content: vec![ContentBlock::Text {
@@ -493,7 +493,7 @@ pub async fn send_text(
     state: &AppState,
     id: ulid::Ulid,
     text: &str,
-) -> navai::session::MessageAccepted {
+) -> withnav::session::MessageAccepted {
     state.send(text_command(id, text)).await.expect("routed")
 }
 
@@ -529,12 +529,12 @@ pub async fn request_json(
 /// what is ready. Panics, listing the events seen, if nothing matches within
 /// 20 s or the stream closes first.
 pub async fn collect_until(
-    sub: navai::session::Subscription,
+    sub: withnav::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut out = Vec::new();
-    if let navai::bus::ResumeOutcome::Replay(replay) = sub.replay {
+    if let withnav::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
     }
     if let Some(mut live) = sub.live {

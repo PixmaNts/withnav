@@ -45,10 +45,10 @@ owned coding-agent core with a terminal client and a local server.
 - **Session commands.** `/help`, `/stop`, `/context`, `/compact`, and selection commands.
   `/model`, `/variant`, `/agent` and `/new [agent]` are explained below.
 
-**The navigator** (`navai-lsp` and the VS Code extension in `vscode-navigator/`): a Language
+**The navigator** (`navai-lsp` and the VS Code extension in `vscode-withnav/`): a Language
 Server that watches your edits. A reflex layer offers ghost-text suggestions, an instinct layer
 decides when to speak, a metacognition layer writes short remarks beside your code, and a
-cognition chat discusses the work with you. See [`vscode-navigator/README.md`](vscode-navigator/README.md).
+cognition chat discusses the work with you. See [`vscode-withnav/README.md`](vscode-withnav/README.md).
 
 ### Command line
 
@@ -67,8 +67,8 @@ approval (`permission_required`), `130` interrupted.
 ```bash
 cargo build --release --bins
 install -m755 target/release/navai target/release/navai-lsp ~/.local/bin/
-(cd vscode-navigator && npm ci && npm run package)
-code --install-extension vscode-navigator/navai-0.5.0.vsix
+(cd vscode-withnav && npm ci && npm run package)
+code --install-extension vscode-withnav/navai-0.5.0.vsix
 ```
 
 ## Configuration and data

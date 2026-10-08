@@ -1,6 +1,6 @@
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::provider::openai::{ChatMessage, UserProvenance};
-use navai::session::store::HistoryStore;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::provider::openai::{ChatMessage, UserProvenance};
+use withnav::session::store::HistoryStore;
 use serde_json::json;
 use ulid::Ulid;
 mod common;

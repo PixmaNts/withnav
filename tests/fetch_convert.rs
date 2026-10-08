@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use navai::tools::fetch::FetchTool;
-use navai::tools::{Tool, ToolContext, ToolResult, ToolStatus};
+use withnav::tools::fetch::FetchTool;
+use withnav::tools::{Tool, ToolContext, ToolResult, ToolStatus};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::method;
@@ -21,7 +21,7 @@ fn cx() -> ToolContext {
 }
 
 fn tool() -> FetchTool {
-    FetchTool::new().with_converter(env!("CARGO_BIN_EXE_navai"))
+    FetchTool::new().with_converter(env!("CARGO_BIN_EXE_nav"))
 }
 
 async fn serve(page: impl Into<Vec<u8>>) -> MockServer {
@@ -184,7 +184,7 @@ fn both_binaries_convert_under_the_child_memory_limit() {
     use std::io::Write;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
-    for exe in [env!("CARGO_BIN_EXE_navai"), env!("CARGO_BIN_EXE_navai-lsp")] {
+    for exe in [env!("CARGO_BIN_EXE_nav"), env!("CARGO_BIN_EXE_withnav-lsp")] {
         let mut cmd = Command::new(exe);
         cmd.args(["internal-html-convert", "--format", "markdown"])
             .env_clear()

@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use navai::agent::instructions::RulesRoots;
-use navai::session::preflight::Preflight;
+use withnav::agent::instructions::RulesRoots;
+use withnav::session::preflight::Preflight;
 use serde_json::{json, Value};
 
 fn fixture(config: Value) -> tempfile::TempDir {
@@ -29,7 +29,7 @@ fn fixture(config: Value) -> tempfile::TempDir {
             "mock/no-window":{"provider":"mock","model":"no-window"}
         }
     }).to_string()).unwrap();
-    navai::provider::auth::set_key(&cfg, "mock", "synthetic-secret-never-print").unwrap();
+    withnav::provider::auth::set_key(&cfg, "mock", "synthetic-secret-never-print").unwrap();
     dir
 }
 
@@ -149,9 +149,9 @@ async fn missing_or_malformed_auth_is_explicit_and_secret_safe() {
 
 fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(if lsp {
-        env!("CARGO_BIN_EXE_navai-lsp")
+        env!("CARGO_BIN_EXE_withnav-lsp")
     } else {
-        env!("CARGO_BIN_EXE_navai")
+        env!("CARGO_BIN_EXE_nav")
     });
     cmd.current_dir(dir)
         .env("HOME", dir.join("home"))

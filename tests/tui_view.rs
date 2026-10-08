@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use navai::{
+use withnav::{
     tools::ToolStatus,
     tui::{
         input::{route_key, route_paste, Editor},
@@ -88,7 +88,7 @@ fn a_child_permission_preview_never_uses_a_colliding_parent_call() {
 
 #[test]
 fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
-    use navai::tui::{
+    use withnav::tui::{
         reducer::handle_action,
         state::{ChildAgent, ChildStatus},
     };
@@ -242,7 +242,7 @@ fn state() -> State {
         tabs: vec![tab],
         catalog: vec![
             ModelEntry {
-                api: navai::tui::protocol::ApiKind::Chat,
+                api: withnav::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "cognition".into(),
@@ -251,7 +251,7 @@ fn state() -> State {
                 ..Default::default()
             },
             ModelEntry {
-                api: navai::tui::protocol::ApiKind::Chat,
+                api: withnav::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "fast".into(),
@@ -295,7 +295,7 @@ fn watchdog_pause_and_budget_are_not_questions_and_permission_keys_take_priority
     assert!(text.contains("alt+c"));
     assert!(!text.contains("QUESTION"));
     assert!(text.contains("watchdog paused"));
-    assert!(navai::tui::reducer::switch_blocked(&s.tabs[s.active]).is_none());
+    assert!(withnav::tui::reducer::switch_blocked(&s.tabs[s.active]).is_none());
     let mut child = s.clone();
     child.parent_session_id = Some("parent".into());
     child.activity = Activity::OutOfSteps;
@@ -351,7 +351,7 @@ fn render(name: &str, size: (u16, u16), state: &State, ui: &UiState, editor: &Ed
 }
 
 fn settings_view_state() -> (State, UiState) {
-    use navai::tui::{
+    use withnav::tui::{
         config::{SettingField, SettingsBody, SettingsPaths},
         protocol::{AgentEntry, ApiKind},
     };
@@ -412,7 +412,7 @@ fn settings_view_state() -> (State, UiState) {
             agents: vec![],
         },
         fields,
-        gateways: vec![navai::tui::config::GatewayInfo {
+        gateways: vec![withnav::tui::config::GatewayInfo {
             name: "omniroute".into(),
             base_url: "http://localhost:20128/v1".into(),
             api_key_env: Some("OMNIROUTE_API_KEY".into()),
@@ -428,7 +428,7 @@ fn settings_view_state() -> (State, UiState) {
     (
         s,
         UiState {
-            screen: navai::tui::config::Screen::Config,
+            screen: withnav::tui::config::Screen::Config,
             ..Default::default()
         },
     )
@@ -437,7 +437,7 @@ fn settings_view_state() -> (State, UiState) {
 #[test]
 fn settings_layers_metacognition_variant() {
     let (mut s, ui) = settings_view_state();
-    s.config.section = navai::tui::config::Section::Layers;
+    s.config.section = withnav::tui::config::Section::Layers;
     s.config.row = 3;
     let text = render(
         "settings-layers-variant-140",
@@ -454,7 +454,7 @@ fn settings_layers_metacognition_variant() {
 #[test]
 fn settings_pending_two_changes() {
     let (mut s, ui) = settings_view_state();
-    s.config.section = navai::tui::config::Section::Subagents;
+    s.config.section = withnav::tui::config::Section::Subagents;
     s.config
         .stage("permissions.automatic_review".into(), json!(false));
     s.config.stage("subagents.max_concurrent".into(), json!(5));
@@ -467,9 +467,9 @@ fn settings_pending_two_changes() {
 #[test]
 fn settings_model_picker_for_layer() {
     let (mut s, mut ui) = settings_view_state();
-    s.config.section = navai::tui::config::Section::Layers;
+    s.config.section = withnav::tui::config::Section::Layers;
     s.config.row = 2;
-    navai::tui::config::handle(&mut s, &mut ui, navai::tui::config::ConfigAction::Edit);
+    withnav::tui::config::handle(&mut s, &mut ui, withnav::tui::config::ConfigAction::Edit);
     let text = render(
         "settings-model-picker-140",
         (140, 40),
@@ -502,19 +502,19 @@ fn settings_leave_prompt() {
 #[test]
 fn settings_row_server_error_and_stale_reload() {
     let (mut s, ui) = settings_view_state();
-    s.config.section = navai::tui::config::Section::Subagents;
+    s.config.section = withnav::tui::config::Section::Subagents;
     s.config.stage("subagents.max_concurrent".into(), json!(65));
     s.config.field_errors.insert(
         "subagents.max_concurrent".into(),
         "Must be between 1 and 64".into(),
     );
-    s.config.status = navai::tui::config::SaveStatus::Error {
+    s.config.status = withnav::tui::config::SaveStatus::Error {
         key: "subagents.max_concurrent".into(),
         message: "Must be between 1 and 64".into(),
     };
     let text = render("settings-row-error-140", (140, 40), &s, &ui, &Editor::new());
     assert!(text.contains("! Must be between 1 and 64"));
-    s.config.status = navai::tui::config::SaveStatus::StaleReloaded(1);
+    s.config.status = withnav::tui::config::SaveStatus::StaleReloaded(1);
     assert!(screen_text(&s, &ui, (140, 40))
         .contains("config.json changed elsewhere; reloaded · 1 still staged"));
 }
@@ -753,7 +753,7 @@ fn tool_summaries_and_durations() {
 
 #[test]
 fn transcript_keys_select_expand_and_follow() {
-    use navai::tui::state::Focus;
+    use withnav::tui::state::Focus;
     let s = done();
     let mut ui = UiState {
         focus: Focus::Transcript,
@@ -849,7 +849,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     let mut s = done();
     // Before any snapshot: the provider's last prompt count over the window.
     assert!(buffer_text(&s).contains("· 12.4k / 200k"));
-    s.conversation.context = Some(navai::tui::protocol::ContextSnapshot {
+    s.conversation.context = Some(withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),
         model: "cognition".into(),
@@ -1005,7 +1005,7 @@ fn theme_picker_previews_and_esc_restores() {
     let mut editor = Editor::new();
     let apply = |ui: &mut UiState, action: Option<Action>| {
         if let Some(action) = action {
-            navai::tui::reducer::handle_action(&mut state(), ui, action)
+            withnav::tui::reducer::handle_action(&mut state(), ui, action)
         } else {
             vec![]
         }
@@ -1056,7 +1056,7 @@ fn theme_picker_previews_and_esc_restores() {
     assert_eq!(enter, Some(Action::PickTheme(ThemeId::NordLight)));
     assert_eq!(
         apply(&mut ui, enter),
-        vec![navai::tui::protocol::Effect::SaveTheme(ThemeId::NordLight)]
+        vec![withnav::tui::protocol::Effect::SaveTheme(ThemeId::NordLight)]
     );
     assert_eq!(ui.theme, ThemeId::NordLight);
     assert_eq!(ui.overlay, None);
@@ -1070,15 +1070,15 @@ fn theme_picker_opens_on_the_current_theme_and_the_palette_lists_it() {
         ..UiState::default()
     };
     let mut s = state();
-    navai::tui::reducer::handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Themes));
+    withnav::tui::reducer::handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Themes));
     assert_eq!(ui.selection.get("Themes"), Some(&2));
     // Confirming the theme already in effect saves it again, so a failed save can be retried.
     assert_eq!(
-        navai::tui::reducer::handle_action(&mut s, &mut ui, Action::PickTheme(ThemeId::NordDark)),
-        vec![navai::tui::protocol::Effect::SaveTheme(ThemeId::NordDark)]
+        withnav::tui::reducer::handle_action(&mut s, &mut ui, Action::PickTheme(ThemeId::NordDark)),
+        vec![withnav::tui::protocol::Effect::SaveTheme(ThemeId::NordDark)]
     );
     assert_eq!(
-        navai::tui::commands::command_action("/theme", Default::default()),
+        withnav::tui::commands::command_action("/theme", Default::default()),
         Some(Action::OpenOverlay(Overlay::Themes))
     );
 }
@@ -1088,7 +1088,7 @@ fn theme_key(ui: &mut UiState, code: KeyCode) -> Option<Action> {
     let s = state();
     let action = route_key(key(code, KeyModifiers::NONE), &s, ui, &mut Editor::new());
     if let Some(action) = action.clone() {
-        navai::tui::reducer::handle_action(&mut state(), ui, action);
+        withnav::tui::reducer::handle_action(&mut state(), ui, action);
     }
     action
 }
@@ -1108,7 +1108,7 @@ fn highlighted_theme(ui: &UiState) -> Option<ThemeId> {
 #[test]
 fn theme_filter_previews_the_highlighted_row() {
     let mut ui = UiState::default();
-    navai::tui::reducer::handle_action(&mut state(), &mut ui, Action::OpenOverlay(Overlay::Themes));
+    withnav::tui::reducer::handle_action(&mut state(), &mut ui, Action::OpenOverlay(Overlay::Themes));
     // Typing `n` from Ayu Dark: the first match is Nord Dark, and that is what is drawn.
     assert_eq!(
         theme_key(&mut ui, KeyCode::Char('n')),
@@ -1248,7 +1248,7 @@ fn tab_keys_switch_close_and_hide_the_bar() {
         &mut editor,
     );
     assert_eq!(editor.text(), "1draft");
-    let help: Vec<_> = navai::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    let help: Vec<_> = withnav::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
     for wanted in ["alt+1 … alt+9", "alt+w", "alt+b"] {
         assert!(help.contains(&wanted), "{help:?}");
     }
@@ -1360,7 +1360,7 @@ fn sidebar_shows_waiting_and_error_states() {
 
 #[test]
 fn the_gauge_follows_the_active_tab() {
-    let gauge = |estimate_total: u64| navai::tui::protocol::ContextSnapshot {
+    let gauge = |estimate_total: u64| withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),
         model: "cognition".into(),
@@ -1404,10 +1404,10 @@ fn the_gauge_follows_the_active_tab() {
 #[test]
 fn tabs_with_the_same_block_id_render_their_own_text_and_height() {
     let mut s = state();
-    s.tabs[0].generation = navai::tui::protocol::Generation(1);
+    s.tabs[0].generation = withnav::tui::protocol::Generation(1);
     s.tabs[0].conversation.blocks = vec![message("7", "assistant", "first tab line")];
     let mut other = s.tabs[0].clone();
-    other.generation = navai::tui::protocol::Generation(2);
+    other.generation = withnav::tui::protocol::Generation(2);
     other.conversation.blocks = vec![message(
         "7",
         "assistant",
@@ -1573,14 +1573,14 @@ fn tab_on_an_empty_message_switches_the_agent_otherwise_it_moves_the_focus() {
     );
     editor.set_text("draft");
     assert_eq!(route_key(tab, &s, &mut ui, &mut editor), None);
-    assert_eq!(ui.focus, navai::tui::state::Focus::Transcript);
+    assert_eq!(ui.focus, withnav::tui::state::Focus::Transcript);
     assert_eq!(route_key(tab, &s, &mut ui, &mut editor), None);
-    assert_eq!(ui.focus, navai::tui::state::Focus::Editor);
+    assert_eq!(ui.focus, withnav::tui::state::Focus::Editor);
     editor.set_text("");
     let back = key(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(route_key(back, &s, &mut ui, &mut editor), None);
-    assert_eq!(ui.focus, navai::tui::state::Focus::Transcript);
-    let help: Vec<_> = navai::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    assert_eq!(ui.focus, withnav::tui::state::Focus::Transcript);
+    let help: Vec<_> = withnav::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
     assert!(
         help.contains(&"tab") && help.contains(&"shift+tab"),
         "{help:?}"
@@ -1625,7 +1625,7 @@ fn big_catalog() -> State {
     let mut s = state();
     s.catalog = (0..293)
         .map(|n| ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: format!("alias-{n:03}"),
@@ -1635,7 +1635,7 @@ fn big_catalog() -> State {
         })
         .collect();
     s.catalog.push(ModelEntry {
-        api: navai::tui::protocol::ApiKind::Chat,
+        api: withnav::tui::protocol::ApiKind::Chat,
         gateway: "gateway".into(),
         provider_group: "gateway".into(),
         name: "opus".into(),
@@ -1646,7 +1646,7 @@ fn big_catalog() -> State {
         ..Default::default()
     });
     s.catalog.push(ModelEntry {
-        api: navai::tui::protocol::ApiKind::Chat,
+        api: withnav::tui::protocol::ApiKind::Chat,
         gateway: "gateway".into(),
         provider_group: "gateway".into(),
         name: "flash".into(),
@@ -1808,12 +1808,12 @@ fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
     s.activity = Activity::Running;
     let mut ui = UiState {
         overlay: Some(Overlay::Variants),
-        variant_pick: Some(navai::tui::state::VariantPick::Current),
+        variant_pick: Some(withnav::tui::state::VariantPick::Current),
         ..UiState::default()
     };
     // opened as `/variant` opens it: on the variant in use
     let (_, start) =
-        navai::tui::commands::variant_choices(&s, &navai::tui::state::VariantPick::Current);
+        withnav::tui::commands::variant_choices(&s, &withnav::tui::state::VariantPick::Current);
     ui.selection.insert("Variants".into(), start);
     render(
         "variant-current-running",
@@ -1842,7 +1842,7 @@ fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
 fn the_status_line_reads_model_variant_and_gauge() {
     let mut s = done();
     s.variant = Some("high".into());
-    s.conversation.context = Some(navai::tui::protocol::ContextSnapshot {
+    s.conversation.context = Some(withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),
         model: "cognition".into(),
@@ -1888,7 +1888,7 @@ fn with_server_commands() -> State {
         "help", "model", "new", "stop", "context", "variant", "compact", "agent",
     ]
     .iter()
-    .map(|n| navai::tui::protocol::ServerCommand {
+    .map(|n| withnav::tui::protocol::ServerCommand {
         name: n.to_string(),
         description: format!("Server {n}"),
         args_hint: match *n {
@@ -2171,7 +2171,7 @@ fn a_paste_after_a_typed_slash_edits_the_line_the_palette_follows() {
 fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Block {
     Block {
         id: "permission:R1".into(),
-        kind: BlockKind::Permission(navai::tui::state::PermissionPrompt {
+        kind: BlockKind::Permission(withnav::tui::state::PermissionPrompt {
             child_session_id: None,
             request_id: "R1".into(),
             tool_call_id: "c1".into(),
@@ -2286,15 +2286,15 @@ fn bash_edit_and_fetch_prompts_show_what_they_would_do() {
 /// An open prompt for `args` as the server sends it (its copy of the arguments cut to 4 KiB),
 /// with the tool call itself in the transcript when `with_call`.
 fn asking_for(tool: &str, args: serde_json::Value, with_call: bool) -> State {
-    let call = navai::provider::ToolCall {
+    let call = withnav::provider::ToolCall {
         id: "c1".into(),
         name: tool.into(),
         args: args.clone(),
         args_valid: true,
     };
-    let request = navai::agent::permissions::PermissionRequest::new(
+    let request = withnav::agent::permissions::PermissionRequest::new(
         &call,
-        navai::agent::permissions::Scope::Folder("/ws".into()),
+        withnav::agent::permissions::Scope::Folder("/ws".into()),
         "build",
     );
     let mut block = prompt(tool, json!({}), ("folder", "/ws"));
@@ -2474,7 +2474,7 @@ fn a_does_nothing_for_a_plan_exception_but_says_why() {
         keys("y", &s, &mut ui, &mut editor),
         [Action::AnswerPermission {
             request_id: "R1".into(),
-            answer: navai::tui::protocol::PermissionAnswer {
+            answer: withnav::tui::protocol::PermissionAnswer {
                 decision: "allow_once".into(),
                 message: None,
             },
@@ -2497,7 +2497,7 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
     let mut editor = Editor::new();
     let answer = |decision: &str, message: Option<&str>| Action::AnswerPermission {
         request_id: "R1".into(),
-        answer: navai::tui::protocol::PermissionAnswer {
+        answer: withnav::tui::protocol::PermissionAnswer {
             decision: decision.into(),
             message: message.map(str::to_string),
         },
@@ -2610,7 +2610,7 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
         keys("⏎", &s2, &mut ui, &mut editor),
         [Action::AnswerPermission {
             request_id: "R2".into(),
-            answer: navai::tui::protocol::PermissionAnswer {
+            answer: withnav::tui::protocol::PermissionAnswer {
                 decision: "deny".into(),
                 message: Some("new".into()),
             },
@@ -2819,7 +2819,7 @@ fn sending_text_over_an_open_request_asks_for_a_second_enter() {
 #[test]
 fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
     let mut s = done();
-    s.git = Some(navai::workspace::git::GitStatus {
+    s.git = Some(withnav::workspace::git::GitStatus {
         branch: Some("feat/tui-design".into()),
         dirty: 3,
         files: vec![],
@@ -2855,8 +2855,8 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
 
 // ---------------------------------------------------------------- right column
 
-fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::tui::protocol::ContextSnapshot {
-    navai::tui::protocol::ContextSnapshot {
+fn snapshot_with(breakdown: withnav::bus::event::Breakdown) -> withnav::tui::protocol::ContextSnapshot {
+    withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),
         model: "cognition".into(),
@@ -2871,7 +2871,7 @@ fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::tui::protoco
         input_budget: 181_808,
         percent: 21,
         last_usage: None,
-        skills: navai::bus::event::SkillCounts {
+        skills: withnav::bus::event::SkillCounts {
             listed: 12,
             omitted: 3,
         },
@@ -2884,14 +2884,14 @@ fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::tui::protoco
 /// `done()` with a context snapshot, a compaction and git changes: what the column reads.
 fn with_panel_data() -> State {
     let mut s = done();
-    s.conversation.context = Some(snapshot_with(navai::bus::event::Breakdown {
+    s.conversation.context = Some(snapshot_with(withnav::bus::event::Breakdown {
         system: 3_100,
         rules: 1_900,
         skills_catalog: 2_400,
         tools: 6_800,
         messages: 27_000,
     }));
-    s.conversation.last_compaction = Some(navai::bus::event::ContextCompacted {
+    s.conversation.last_compaction = Some(withnav::bus::event::ContextCompacted {
         generation: 1,
         through_message: 40,
         pruned: 6,
@@ -2900,13 +2900,13 @@ fn with_panel_data() -> State {
         reason: None,
     });
     let files = (0..14)
-        .map(|n| navai::workspace::git::Change {
+        .map(|n| withnav::workspace::git::Change {
             mark: ['M', 'A', 'D', '?'][n % 4],
             path: format!("src/tui/view/file_{n}.rs"),
         })
-        .take(navai::workspace::git::MAX_FILES)
+        .take(withnav::workspace::git::MAX_FILES)
         .collect();
-    s.git = Some(navai::workspace::git::GitStatus {
+    s.git = Some(withnav::workspace::git::GitStatus {
         branch: Some("feat/tui-design".into()),
         dirty: 14,
         files,
@@ -2976,14 +2976,14 @@ fn the_right_column_hides_under_140_columns_and_alt_r_toggles_it() {
     assert_eq!(action, Some(Action::TogglePanel));
     ui.panel_drawn = false;
     let mut state = s.clone();
-    navai::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
+    withnav::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
     assert_eq!(ui.panel_shown, Some(true));
     assert!(
         screen_text(&s, &ui, (120, 30)).contains("AGENTS"),
         "shown on demand"
     );
     ui.panel_drawn = true;
-    navai::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
+    withnav::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
     assert!(
         !screen_text(&s, &ui, (200, 30)).contains("AGENTS"),
         "hidden on demand"
@@ -3149,15 +3149,15 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
         m.workspace = workspace.into();
     }
     s.selected_model_name = Some("ベンダー/とても長いモデルの名前-e\u{301}-v2".into());
-    s.git = Some(navai::workspace::git::GitStatus {
+    s.git = Some(withnav::workspace::git::GitStatus {
         branch: Some("機能/端末の配置-e\u{301}".into()),
         dirty: 2,
         files: vec![
-            navai::workspace::git::Change {
+            withnav::workspace::git::Change {
                 mark: 'M',
                 path: "源/表示/とても長いファイルの名前です.rs".into(),
             },
-            navai::workspace::git::Change {
+            withnav::workspace::git::Change {
                 mark: 'A',
                 path: "cafe\u{301}/re\u{301}sume\u{301}.md".into(),
             },
@@ -3188,7 +3188,7 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
             while x < 160 {
                 let symbol = buffer[(x, y)].symbol();
                 row.push_str(symbol);
-                x += navai::tui::view::text::columns(symbol).max(1) as u16;
+                x += withnav::tui::view::text::columns(symbol).max(1) as u16;
             }
             row
         })
@@ -3209,7 +3209,7 @@ fn a_deny_message_keeps_both_keys_on_a_narrow_key_bar() {
         plan_exception(),
     ] {
         let ui = UiState {
-            deny_message: Some(navai::tui::state::DenyDraft {
+            deny_message: Some(withnav::tui::state::DenyDraft {
                 request_id: "R1".into(),
                 text: "keep it".into(),
             }),
@@ -3274,7 +3274,7 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
 fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     let mut s = done();
     s.activity = Activity::Running;
-    s.model_switch = Some(navai::tui::state::ModelSwitch {
+    s.model_switch = Some(withnav::tui::state::ModelSwitch {
         agent: "build".into(),
         model_id: "luna".into(),
         token: 1,
@@ -3333,7 +3333,7 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
     );
     assert_eq!(
         ui.variant_pick,
-        Some(navai::tui::state::VariantPick::NewConversation(
+        Some(withnav::tui::state::VariantPick::NewConversation(
             "cognition".into()
         ))
     );
@@ -3384,13 +3384,13 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
     s.context_window = Some(872_000);
     s.model_seq = Some(10);
     s.conversation.context_tokens = Some(1_000);
-    let ev = navai::tui::protocol::ClientEvent::Models {
+    let ev = withnav::tui::protocol::ClientEvent::Models {
         workspace: String::new(),
         request: 0,
         generation: s.generation.clone(),
-        result: Ok(navai::tui::protocol::ModelsBody {
+        result: Ok(withnav::tui::protocol::ModelsBody {
             models: vec![ModelEntry {
-                api: navai::tui::protocol::ApiKind::Chat,
+                api: withnav::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "luna".into(),
@@ -3401,7 +3401,7 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
             default_agent: None,
         }),
     };
-    navai::tui::reducer::update(&mut s, ev).unwrap();
+    withnav::tui::reducer::update(&mut s, ev).unwrap();
     let header = row_text(&cells(&s, &UiState::default(), (140, 20)), 0, 140);
     assert!(header.contains("luna · assigned · 1k / 872k"), "{header}");
 }
@@ -3418,7 +3418,7 @@ fn permission_layout_is_fresh_with_one_render_cache() {
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     for stage in 0..4 {
         if stage == 1 {
-            ui.deny_message = Some(navai::tui::state::DenyDraft {
+            ui.deny_message = Some(withnav::tui::state::DenyDraft {
                 request_id: "R1".into(),
                 text: "first".into(),
             });
@@ -3430,7 +3430,7 @@ fn permission_layout_is_fresh_with_one_render_cache() {
             s.answered_permission = Some("R1".into());
         }
         terminal
-            .draw(|f| navai::tui::view::draw(f, &s, &ui, &editor, &mut cache))
+            .draw(|f| withnav::tui::view::draw(f, &s, &ui, &editor, &mut cache))
             .unwrap();
         let shown = terminal
             .backend()

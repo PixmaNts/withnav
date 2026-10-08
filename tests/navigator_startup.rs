@@ -80,7 +80,7 @@ async fn startup_does_not_wait_for_model_discovery() {
     )
     .unwrap();
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_navai-lsp"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_withnav-lsp"))
         .arg("--models")
         .arg(&models)
         .current_dir(root.path())

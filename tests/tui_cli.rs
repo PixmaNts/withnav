@@ -26,8 +26,8 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     )
     .unwrap();
     std::fs::write(config.join("navai/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
-    navai::provider::auth::set_key(&config.join("navai"), "mock", "test-key").unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_navai"));
+    withnav::provider::auth::set_key(&config.join("navai"), "mock", "test-key").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nav"));
     command
         .arg("tui")
         .args(args)
@@ -189,7 +189,7 @@ fn a_start_moves_the_former_data_and_config_once() {
     std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
 
     for _ in 0..2 {
-        let status = Command::new(env!("CARGO_BIN_EXE_navai"))
+        let status = Command::new(env!("CARGO_BIN_EXE_nav"))
             .args(["tui", "--workspace", "."])
             .env("XDG_DATA_HOME", &data)
             .env("XDG_CONFIG_HOME", &config)

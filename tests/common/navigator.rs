@@ -13,16 +13,16 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::error::ProviderError;
-use navai::navigator::conversation::SessionPost;
-use navai::navigator::metacognition::RemarkContext;
-use navai::navigator::ports::{
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::error::ProviderError;
+use withnav::navigator::conversation::SessionPost;
+use withnav::navigator::metacognition::RemarkContext;
+use withnav::navigator::ports::{
     Answer, Answers, FimAnswer, FimModel, FimRequest, Metacognition, ModelError, Question,
     Questions, ReflexContextModel, ReflexContextRequest,
 };
-use navai::navigator::{self, NavigatorDeps, Remark};
-use navai::provider::Usage;
+use withnav::navigator::{self, NavigatorDeps, Remark};
+use withnav::provider::Usage;
 
 // ---------- fixtures ----------
 
@@ -859,8 +859,8 @@ pub fn with_min_changed_lines(
     lines: usize,
 ) -> NavigatorDeps {
     let config = workspace.join("config");
-    let store = navai::flows::store::FlowStore::new(workspace.to_path_buf(), config);
-    for (mut definition, mut templates) in navai::flows::builtin::definitions() {
+    let store = withnav::flows::store::FlowStore::new(workspace.to_path_buf(), config);
+    for (mut definition, mut templates) in withnav::flows::builtin::definitions() {
         let state_name = format!("{}-state.md", definition.flow.name);
         let state = templates.remove("state.md").unwrap();
         templates.insert(state_name.clone(), state);
@@ -882,9 +882,9 @@ pub fn with_min_changed_lines(
         store
             .save(
                 &definition.flow.name.clone(),
-                navai::flows::store::Location::Global,
+                withnav::flows::store::Location::Global,
                 None,
-                navai::flows::store::Content::Graph {
+                withnav::flows::store::Content::Graph {
                     definition: Box::new(definition),
                     templates,
                 },
@@ -991,13 +991,13 @@ impl EditorFlowsExt for NavigatorDeps {
             .workspace
             .clone()
             .unwrap_or_else(|| self.log_path.parent().unwrap().to_path_buf());
-        let store = Arc::new(navai::flows::store::FlowStore::new(
+        let store = Arc::new(withnav::flows::store::FlowStore::new(
             workspace.clone(),
             workspace.join("config"),
         ));
         let model = Arc::new(FlowDecision(model));
         self.with_flows(Arc::new(move |effects| {
-            Arc::new(navai::flows::runtime::FlowRuntime::new(
+            Arc::new(withnav::flows::runtime::FlowRuntime::new(
                 store.clone(),
                 model.clone(),
                 effects,

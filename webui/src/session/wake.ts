@@ -1,6 +1,6 @@
 // Parses a navigator wake (a `message.received` whose source is `navigator`)
 // into the parts the transcript shows. Same rules as the VS Code chat
-// (`vscode-navigator/src/webview/wake.ts`), which is the reference.
+// (`vscode-withnav/src/webview/wake.ts`), which is the reference.
 //
 // Current shape:
 //   Navigator noticed: <reason> (<score>) in <path>:<line>

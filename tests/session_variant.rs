@@ -7,9 +7,9 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::error::ServerError;
-use navai::server::{app, AppState};
-use navai::session::VariantChoice;
+use withnav::error::ServerError;
+use withnav::server::{app, AppState};
+use withnav::session::VariantChoice;
 
 mod common;
 use common::server::{collect_until, request_json, send_text, wait_for, TestServerConfig};
@@ -450,7 +450,7 @@ async fn navai_run_variant_reaches_the_wire() {
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
         tokio::task::spawn_blocking(move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
                 .args(["run", "--workspace"])
                 .arg(&ws)
                 .arg("--models")
@@ -749,7 +749,7 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
     let mut session = cfg.config().split().0;
     std::fs::copy(cfg.models_path(), ws.join("models.json")).unwrap();
     session.models_path = None;
-    let service = navai::session::Service::new(session).expect("service");
+    let service = withnav::session::Service::new(session).expect("service");
     let id = service
         .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await

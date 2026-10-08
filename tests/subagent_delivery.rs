@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use navai::provider::openai::ChatMessage;
-use navai::server::AppState;
+use withnav::provider::openai::ChatMessage;
+use withnav::server::AppState;
 use serde_json::{json, Value};
 
 mod common;
@@ -45,16 +45,16 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
             .continue_child(parent, child)
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildNotParked)
+        Err(withnav::error::ServerError::ChildNotParked)
     ));
     assert!(matches!(
         state
             .continue_child(other, child)
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
-    let steps = navai::agent::run_loop::max_steps();
+    let steps = withnav::agent::run_loop::max_steps();
     let mut stream = Some(first);
     for index in 0..steps {
         let tx = stream.take().unwrap();
@@ -79,7 +79,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     }
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let navai::bus::ResumeOutcome::Replay(events) = state
+            if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(child, None)
                 .bounded(file!(), line!())
                 .await
@@ -99,7 +99,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     .bounded(file!(), line!())
     .await
     .unwrap();
-    let app = navai::server::app(state.clone());
+    let app = withnav::server::app(state.clone());
     let request = || {
         axum::http::Request::post(format!("/v1/sessions/{parent}/children/{child}/continue"))
             .body(axum::body::Body::empty())
@@ -271,7 +271,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
     drop(stream);
     let request = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let navai::bus::ResumeOutcome::Replay(events) = state
+            if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
                 .bounded(file!(), line!())
                 .await
@@ -301,7 +301,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = state
+    let withnav::bus::ResumeOutcome::Replay(events) = state
         .subscribe(parent, None)
         .bounded(file!(), line!())
         .await
@@ -328,7 +328,7 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
     let config = TestServerConfig::unreachable(tmp.path())
         .chat_tools(128_000)
         .config();
-    let store = navai::session::store::HistoryStore::open(&config.history_db).unwrap();
+    let store = withnav::session::store::HistoryStore::open(&config.history_db).unwrap();
     let parent = ulid::Ulid::new();
     let child = ulid::Ulid::new();
     let request = ulid::Ulid::new();
@@ -349,10 +349,10 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
             "write".into(),
             "{}".into(),
             4,
-            navai::bus::event::EventEnvelope::new(
+            withnav::bus::event::EventEnvelope::new(
                 parent,
                 0,
-                navai::bus::event::EventKind::SubagentSpawned,
+                withnav::bus::event::EventKind::SubagentSpawned,
                 json!({}),
             ),
         )
@@ -361,10 +361,10 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
         .unwrap();
     store.append_event(
         parent,
-        navai::bus::event::EventEnvelope::new(
+        withnav::bus::event::EventEnvelope::new(
             parent,
             1,
-            navai::bus::event::EventKind::PermissionRequested,
+            withnav::bus::event::EventKind::PermissionRequested,
             json!({"request_id":request,"child_session_id":child,"tool_call_id":"pending"}),
         ),
     );
@@ -376,7 +376,7 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = state
+    let withnav::bus::ResumeOutcome::Replay(events) = state
         .subscribe(parent, None)
         .bounded(file!(), line!())
         .await
@@ -425,10 +425,10 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
             "goal".into(),
             "{}".into(),
             4,
-            navai::bus::event::EventEnvelope::new(
+            withnav::bus::event::EventEnvelope::new(
                 parent,
                 0,
-                navai::bus::event::EventKind::SubagentSpawned,
+                withnav::bus::event::EventKind::SubagentSpawned,
                 json!({}),
             ),
         )
@@ -854,7 +854,7 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
     let config = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
         .config();
-    let history = navai::session::store::HistoryStore::open(config.history_db.clone()).unwrap();
+    let history = withnav::session::store::HistoryStore::open(config.history_db.clone()).unwrap();
     let parent = ulid::Ulid::new();
     let child = ulid::Ulid::new();
     history
@@ -874,10 +874,10 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
             "inspect".into(),
             "{}".into(),
             4,
-            navai::bus::event::EventEnvelope::new(
+            withnav::bus::event::EventEnvelope::new(
                 parent,
                 0,
-                navai::bus::event::EventKind::SubagentSpawned,
+                withnav::bus::event::EventKind::SubagentSpawned,
                 json!({}),
             ),
         )
@@ -969,7 +969,7 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
                 .await
                 .unwrap()
                 .replay;
-            if let navai::bus::ResumeOutcome::Replay(events) = replay {
+            if let withnav::bus::ResumeOutcome::Replay(events) = replay {
                 if let Some(e) = events
                     .into_iter()
                     .find(|e| e.kind == "permission.requested")
@@ -994,28 +994,28 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
             .answer_permission(
                 other,
                 id,
-                navai::agent::permissions::PermissionDecision::AllowOnce
+                withnav::agent::permissions::PermissionDecision::AllowOnce
             )
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
     assert!(matches!(
         state
             .answer_permission(
                 child,
                 id,
-                navai::agent::permissions::PermissionDecision::AllowOnce
+                withnav::agent::permissions::PermissionDecision::AllowOnce
             )
             .bounded(file!(), line!())
             .await,
-        Err(navai::error::ServerError::ChildReadOnly)
+        Err(withnav::error::ServerError::ChildReadOnly)
     ));
     state
         .answer_permission(
             parent,
             id,
-            navai::agent::permissions::PermissionDecision::AllowOnce,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
         )
         .bounded(file!(), line!())
         .await
@@ -1024,7 +1024,7 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
         .answer_permission(
             parent,
             id,
-            navai::agent::permissions::PermissionDecision::AllowOnce
+            withnav::agent::permissions::PermissionDecision::AllowOnce
         )
         .bounded(file!(), line!())
         .await
@@ -1096,7 +1096,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
     drop(stream);
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let navai::bus::ResumeOutcome::Replay(events) = state
+            if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
                 .bounded(file!(), line!())
                 .await
@@ -1134,7 +1134,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
     drop(stream);
     let request_id = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let navai::bus::ResumeOutcome::Replay(events) = state
+            if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
                 .bounded(file!(), line!())
                 .await
@@ -1158,7 +1158,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         .answer_permission(
             parent,
             request_id,
-            navai::agent::permissions::PermissionDecision::AllowOnce,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
         )
         .bounded(file!(), line!())
         .await
@@ -1228,7 +1228,7 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
     let path = tmp.path().join("history.db");
     let parent = ulid::Ulid::new();
     let child = ulid::Ulid::new();
-    let store = navai::session::store::HistoryStore::open(&path).unwrap();
+    let store = withnav::session::store::HistoryStore::open(&path).unwrap();
     store
         .record_session(parent, "/ws", "default", false)
         .bounded(file!(), line!())
@@ -1246,10 +1246,10 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
             "goal".into(),
             "{}".into(),
             4,
-            navai::bus::event::EventEnvelope::new(
+            withnav::bus::event::EventEnvelope::new(
                 parent,
                 0,
-                navai::bus::event::EventKind::SubagentSpawned,
+                withnav::bus::event::EventKind::SubagentSpawned,
                 json!({}),
             ),
         )
@@ -1271,10 +1271,10 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
     store
         .deliver_completion(
             child,
-            navai::bus::event::EventEnvelope::new(
+            withnav::bus::event::EventEnvelope::new(
                 parent,
                 1,
-                navai::bus::event::EventKind::SubagentDone,
+                withnav::bus::event::EventKind::SubagentDone,
                 payload,
             ),
         )
@@ -1282,7 +1282,7 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         .await
         .unwrap();
     drop(store);
-    let store = navai::session::store::HistoryStore::open(&path).unwrap();
+    let store = withnav::session::store::HistoryStore::open(&path).unwrap();
     assert!(store
         .pending_completions(parent)
         .bounded(file!(), line!())
@@ -1330,7 +1330,7 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         .await
         .unwrap();
     drop(store);
-    let store = navai::session::store::HistoryStore::open(&path).unwrap();
+    let store = withnav::session::store::HistoryStore::open(&path).unwrap();
     assert!(store
         .unconsumed_completions(parent)
         .bounded(file!(), line!())

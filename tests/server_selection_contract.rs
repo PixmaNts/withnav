@@ -127,7 +127,7 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
     identity(&changed["previous"], "plan", "mock/combo/base", "config");
     identity(&changed["new"], "plan", "mock/direct", "override");
     assert_eq!(changed["operation_id"], switched["operation_id"]);
-    let typed: navai::bus::event::ModelChanged = serde_json::from_value(changed.clone()).unwrap();
+    let typed: withnav::bus::event::ModelChanged = serde_json::from_value(changed.clone()).unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), *changed);
     let variant = command(&client, &base, id, "variant", "").await;
     assert_eq!(variant["data"]["agent"], "plan");

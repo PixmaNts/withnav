@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use navai::bus::event::EventEnvelope;
-use navai::provider::openai::ChatMessage;
-use navai::server::AppState;
+use withnav::bus::event::EventEnvelope;
+use withnav::provider::openai::ChatMessage;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{collect_until, send_text, wait_for, TestServerConfig};
@@ -150,7 +150,7 @@ async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(events) => {
+        withnav::bus::ResumeOutcome::Replay(events) => {
             events.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -477,7 +477,7 @@ async fn a_resume_after_a_switch_uses_the_new_model() {
 
 /// Reasoning, a tool exchange and a reasoning-only assistant message.
 fn rich_history() -> Vec<ChatMessage> {
-    use navai::provider::openai::{RequestFunction, RequestToolCall};
+    use withnav::provider::openai::{RequestFunction, RequestToolCall};
     vec![
         ChatMessage::User {
             provenance: Default::default(),

@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::navigator::ports::Answer;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::navigator::ports::Answer;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 

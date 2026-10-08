@@ -13,19 +13,19 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use navai::agent::actor::AgentActor;
-use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use navai::app::{event_to_ui, exit_code_for};
-use navai::bus::inbox::ActorInbox;
-use navai::bus::runtime;
-use navai::bus::sequencer::Sequencer;
-use navai::bus::{ResumeOutcome, SessionBus};
-use navai::provider::config::{ProviderConfig, ReasoningHistory};
-use navai::provider::StreamDelta;
-use navai::render::UiEvent;
-use navai::tools::bash::BashTool;
-use navai::tools::native::ReadTool;
-use navai::tools::{Registry, ToolContext};
+use withnav::agent::actor::AgentActor;
+use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use withnav::app::{event_to_ui, exit_code_for};
+use withnav::bus::inbox::ActorInbox;
+use withnav::bus::runtime;
+use withnav::bus::sequencer::Sequencer;
+use withnav::bus::{ResumeOutcome, SessionBus};
+use withnav::provider::config::{ProviderConfig, ReasoningHistory};
+use withnav::provider::StreamDelta;
+use withnav::render::UiEvent;
+use withnav::tools::bash::BashTool;
+use withnav::tools::native::ReadTool;
+use withnav::tools::{Registry, ToolContext};
 
 mod common;
 use common::sse::{http_sse, spawn_mock_provider, sse_body};
@@ -120,7 +120,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
 /// Drive the bus event stream through `event_to_ui`, collecting rendered
 /// UiEvents until the terminal turn.end, and derive the exit code the same
 /// way `run` does (via the public `exit_code_for`).
-async fn collect_bus_render(sub: navai::bus::SubscribeReply) -> (Vec<Ui>, i32) {
+async fn collect_bus_render(sub: withnav::bus::SubscribeReply) -> (Vec<Ui>, i32) {
     let mut out = Vec::new();
     if let ResumeOutcome::Replay(events) = &sub.replay {
         for env in events {
@@ -162,7 +162,7 @@ fn phase1_exit(outcome: &RunOutcome) -> i32 {
 /// client rendering from events sees byte-identical error output.
 #[test]
 fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
-    use navai::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
+    use withnav::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
 
     let message = "provider API error (status 500): boom".to_string();
     // The Phase-1 `finish` stderr for `Err(e)` is `\nerror: {e}`.
@@ -196,7 +196,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
     // `terminal_stderr_line` that `exit_code_for` prints — equals the Phase-1
     // `finish` line, not an independent reconstruction.
     let bus_stderr =
-        navai::app::terminal_stderr_line(&payload).expect("error outcome produces a stderr line");
+        withnav::app::terminal_stderr_line(&payload).expect("error outcome produces a stderr line");
     assert_eq!(
         bus_stderr, phase1_stderr,
         "bus stderr line != Phase-1 stderr line for the same error"
@@ -267,7 +267,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
                 .args([
                     "run",
                     "--workspace",
@@ -305,8 +305,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     );
 }
 
-fn user_command(session_id: Ulid, text: &str) -> navai::bus::command::Command {
-    use navai::bus::command::{Command, ContentBlock, DeliveryMode};
+fn user_command(session_id: Ulid, text: &str) -> withnav::bus::command::Command {
+    use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
     Command {
         command_id: Ulid::new(),
         session_id,
@@ -412,7 +412,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
                 .args([
                     "run",
                     "--workspace",

@@ -8,9 +8,9 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::bus::event::EventEnvelope;
-use navai::server::{app, AppState};
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{request_json, TestServerConfig};
@@ -101,7 +101,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
         .send(Command {
             command_id: ulid::Ulid::new(),
             session_id: id,
-            source_actor_id: navai::navigator::NAVIGATOR_ACTOR_ID.to_string(),
+            source_actor_id: withnav::navigator::NAVIGATOR_ACTOR_ID.to_string(),
             target_actor_id: "agent:main".to_string(),
             mode: DeliveryMode::NextTurn,
             content: vec![ContentBlock::Text {
@@ -118,7 +118,7 @@ async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(all) => {
+        withnav::bus::ResumeOutcome::Replay(all) => {
             all.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -257,7 +257,7 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "not a decision");
 }
 
-fn authenticated_router(state: navai::server::AppState) -> axum::Router {
+fn authenticated_router(state: withnav::server::AppState) -> axum::Router {
     app(state).layer(axum::middleware::from_fn(
         |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
             request
@@ -605,7 +605,7 @@ fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
         .arg(&env.ws)
         .arg("--models")
@@ -924,7 +924,7 @@ async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
         .answer_permission(
             id,
             request,
-            navai::agent::permissions::PermissionDecision::AllowOnce,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
         )
         .await
         .expect("answer");

@@ -6,8 +6,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use navai::provider::openai::ChatMessage;
-use navai::session::store::HistoryStore;
+use withnav::provider::openai::ChatMessage;
+use withnav::session::store::HistoryStore;
 
 mod common;
 use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};

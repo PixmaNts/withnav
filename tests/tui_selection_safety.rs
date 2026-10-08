@@ -1,4 +1,4 @@
-use navai::tui::{
+use withnav::tui::{
     protocol::*,
     reducer,
     state::{Activity, State, UiState, VariantPick},
@@ -9,10 +9,10 @@ fn summary(seq: u64, agent: &str, model: &str, variant: Option<&str>) -> Session
     serde_json::from_value(json!({"session_id":"S","actor_state":"idle","workspace":"/ws","agent":agent,"model":model,"variant":variant,"source":"config","variant_source":"model_default","current_seq":seq})).unwrap()
 }
 fn event(s: &mut State, seq: u64, kind: &str, payload: serde_json::Value) {
-    let envelope = navai::bus::event::EventEnvelope::new(
+    let envelope = withnav::bus::event::EventEnvelope::new(
         ulid::Ulid::new(),
         seq,
-        navai::bus::event::EventKind::ModelChanged,
+        withnav::bus::event::EventKind::ModelChanged,
         payload,
     );
     let mut envelope = envelope;
@@ -265,13 +265,13 @@ fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
         let mut s = State {
             catalog: vec![
                 ModelEntry {
-                    api: navai::tui::protocol::ApiKind::Chat,
+                    api: withnav::tui::protocol::ApiKind::Chat,
                     name: "gateway/current".into(),
                     context_window: catalog_window,
                     ..Default::default()
                 },
                 ModelEntry {
-                    api: navai::tui::protocol::ApiKind::Chat,
+                    api: withnav::tui::protocol::ApiKind::Chat,
                     name: "gateway/new".into(),
                     context_window: Some(200000),
                     ..Default::default()
@@ -296,12 +296,12 @@ fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
 #[test]
 fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_variant() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use navai::tui::input::{route_key, Editor};
+    use withnav::tui::input::{route_key, Editor};
     for explicit in [false, true] {
         let mut s = State::default();
         agents(&mut s, 1, None, "build");
         s.catalog = vec![ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             name: "gateway/build".into(),
             variants: vec!["low".into(), "high".into()],
             default_variant: Some("high".into()),
@@ -348,10 +348,10 @@ fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_
 #[test]
 fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use navai::tui::input::{route_key, Editor};
+    use withnav::tui::input::{route_key, Editor};
     let mut s = State {
         catalog: vec![ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             name: "gateway/model".into(),
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
@@ -415,13 +415,13 @@ fn archive_header_and_variant_override_view_do_not_claim_child_or_assigned() {
     m.resume_disabled_reason = Some("unproven identity".into());
     metadata(&mut s, m);
     let mut t = Terminal::new(TestBackend::new(80, 20)).unwrap();
-    let mut cache = navai::tui::view::RenderCache::default();
+    let mut cache = withnav::tui::view::RenderCache::default();
     t.draw(|f| {
-        navai::tui::view::draw(
+        withnav::tui::view::draw(
             f,
             &s,
             &UiState::default(),
-            &navai::tui::input::Editor::new(),
+            &withnav::tui::input::Editor::new(),
             &mut cache,
         )
     })
@@ -434,11 +434,11 @@ fn archive_header_and_variant_override_view_do_not_claim_child_or_assigned() {
     s.session.as_mut().unwrap().read_only = false;
     s.variant_source = "override".into();
     t.draw(|f| {
-        navai::tui::view::draw(
+        withnav::tui::view::draw(
             f,
             &s,
             &UiState::default(),
-            &navai::tui::input::Editor::new(),
+            &withnav::tui::input::Editor::new(),
             &mut cache,
         )
     })

@@ -50,7 +50,7 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 ## Build and package
 
 ```
-cd vscode-navigator
+cd vscode-withnav
 npm ci
 npm run compile
 npm run package

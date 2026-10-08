@@ -1,6 +1,6 @@
 use futures::future::BoxFuture;
-use navai::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
-use navai::session::SessionId;
+use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::SessionId;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -195,7 +195,7 @@ impl Judge for FakeJudge {
 }
 struct Fixture {
     _tmp: tempfile::TempDir,
-    service: navai::server::AppState,
+    service: withnav::server::AppState,
     parent: SessionId,
     child: SessionId,
     provider: common::sse::StreamingProvider,
@@ -491,7 +491,7 @@ async fn doubt_boundary_driver_continue_releases_the_same_turn() {
 
 async fn watchdog_teardown_blocks_delete(delete_parent: bool) {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     f.service.pause_watchdog_teardown(barrier.clone());
     f.tick(300).await;
     barrier.reached.notified().bounded(file!(), line!()).await;
@@ -535,8 +535,8 @@ async fn watchdog_stop_owns_child_until_concurrent_parent_delete_can_finish() {
 #[tokio::test]
 async fn delete_rechecks_owned_teardown_before_claiming_stopping() {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
-    let claim = navai::session::ChildPreparationBarrier::default();
-    let teardown = navai::session::ChildPreparationBarrier::default();
+    let claim = withnav::session::ChildPreparationBarrier::default();
+    let teardown = withnav::session::ChildPreparationBarrier::default();
     f.service.pause_lifecycle_claim(claim.clone());
     f.service.pause_watchdog_teardown(teardown.clone());
     let service = f.service.clone();
@@ -569,7 +569,7 @@ async fn delete_rechecks_owned_teardown_before_claiming_stopping() {
 #[tokio::test]
 async fn replacement_between_stuck_verdict_and_ownership_is_not_stopped() {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     f.service.pause_watchdog_ownership(barrier.clone());
     f.tick(300).await;
     barrier.reached.notified().bounded(file!(), line!()).await;
@@ -607,7 +607,7 @@ async fn replacement_between_stuck_verdict_and_ownership_is_not_stopped() {
 #[tokio::test]
 async fn failed_provisional_claim_finalizes_the_retained_natural_completion() {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     f.service.pause_watchdog_claim_write(barrier.clone());
     f.service.fail_watchdog_stop_write();
     f.tick(300).await;
@@ -738,7 +738,7 @@ impl std::ops::Deref for HeldToolAdapter {
         &self.0
     }
 }
-impl navai::tools::Tool for HeldToolAdapter {
+impl withnav::tools::Tool for HeldToolAdapter {
     fn name(&self) -> &str {
         "glob"
     }
@@ -749,11 +749,11 @@ impl navai::tools::Tool for HeldToolAdapter {
         &'a self,
         _: Value,
         cancel: CancellationToken,
-        _: &'a navai::tools::ToolContext,
+        _: &'a withnav::tools::ToolContext,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<navai::tools::ToolResult, navai::error::ToolError>,
+                    Output = Result<withnav::tools::ToolResult, withnav::error::ToolError>,
                 > + Send
                 + 'a,
         >,
@@ -764,14 +764,14 @@ impl navai::tools::Tool for HeldToolAdapter {
             self.cancelled.notify_one();
             self.release.notified().await;
             self.ended.store(true, std::sync::atomic::Ordering::Release);
-            Err(navai::error::ToolError::Canceled)
+            Err(withnav::error::ToolError::Canceled)
         })
     }
 }
 #[derive(Debug)]
 struct HeldToolHooks(Arc<HeldTool>);
-impl navai::session::SessionHooks for HeldToolHooks {
-    fn configure_actor(&self, _: bool, actor: &mut navai::agent::actor::AgentActor) {
+impl withnav::session::SessionHooks for HeldToolHooks {
+    fn configure_actor(&self, _: bool, actor: &mut withnav::agent::actor::AgentActor) {
         actor
             .registry
             .register(Box::new(HeldToolAdapter(self.0.clone())));
@@ -785,7 +785,7 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     let tool = Arc::new(HeldTool::default());
-    let service = navai::server::AppState::with_hooks(
+    let service = withnav::server::AppState::with_hooks(
         TestServerConfig::mock(tmp.path(), &provider.url)
             .chat_tools(128000)
             .config(),
@@ -858,7 +858,7 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
 #[tokio::test]
 async fn shutdown_reclaims_the_child_after_a_provisional_watchdog_stop_rolls_back() {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
-    let claim = navai::session::ChildPreparationBarrier::default();
+    let claim = withnav::session::ChildPreparationBarrier::default();
     f.service.pause_watchdog_claim_write(claim.clone());
     f.service.fail_watchdog_stop_write();
     f.tick(300).await;
@@ -910,8 +910,8 @@ async fn shutdown_reclaims_the_child_after_a_provisional_watchdog_stop_rolls_bac
 #[tokio::test]
 async fn shutdown_snapshot_retains_ownership_when_stop_rolls_back_before_waiting() {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
-    let claim = navai::session::ChildPreparationBarrier::default();
-    let snapshot = navai::session::ChildPreparationBarrier::default();
+    let claim = withnav::session::ChildPreparationBarrier::default();
+    let snapshot = withnav::session::ChildPreparationBarrier::default();
     f.service.pause_watchdog_claim_write(claim.clone());
     f.service.fail_watchdog_stop_write();
     f.tick(300).await;
@@ -975,7 +975,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     let tool = Arc::new(HeldTool::default());
-    let service = navai::server::AppState::with_hooks(
+    let service = withnav::server::AppState::with_hooks(
         TestServerConfig::mock(tmp.path(), &provider.url)
             .chat_tools(128000)
             .config(),
@@ -1134,7 +1134,7 @@ impl Fixture {
         *self.clock.now.lock().unwrap() += Duration::from_secs(seconds);
         waiter.send(()).unwrap();
     }
-    async fn events(&self) -> Vec<navai::bus::event::EventEnvelope> {
+    async fn events(&self) -> Vec<withnav::bus::event::EventEnvelope> {
         self.service
             .history()
             .flush()
@@ -1508,7 +1508,7 @@ async fn interval_zero_starts_no_supervisor_and_children_have_no_decision_tool()
 async fn budget_parked_child_is_skipped_without_asking_instinct() {
     let mut f = Fixture::new(vec![]).await;
     let mut stream = Some(f.stream);
-    for step in 0..navai::agent::run_loop::max_steps() {
+    for step in 0..withnav::agent::run_loop::max_steps() {
         let tx = stream.take().unwrap();
         tx.send(tool_call_chunk(
             &format!("glob-{step}"),
@@ -1517,7 +1517,7 @@ async fn budget_parked_child_is_skipped_without_asking_instinct() {
         ))
         .unwrap();
         drop(tx);
-        if step + 1 < navai::agent::run_loop::max_steps() {
+        if step + 1 < withnav::agent::run_loop::max_steps() {
             stream = Some(
                 f.provider
                     .requests
@@ -1646,8 +1646,8 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
 
 #[tokio::test]
 async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() {
-    use navai::provider::{config::load_models, openai::ClientCache, systemone::SystemOneClient};
-    use navai::session::subagents::watchdog::JevJudge;
+    use withnav::provider::{config::load_models, openai::ClientCache, systemone::SystemOneClient};
+    use withnav::session::subagents::watchdog::JevJudge;
     use wiremock::{Mock, MockServer, ResponseTemplate};
     let server = MockServer::start().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

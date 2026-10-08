@@ -3,7 +3,7 @@ members = ["crates/instinct-flow"]
 resolver = "2"
 
 [package]
-name = "navai"
+name = "withnav"
 version = "0.6.1"
 edition = "2021"
 rust-version = "1.89"
@@ -12,16 +12,16 @@ license = "MIT OR Apache-2.0"
 
 # LIB + BIN split: all behavior lives in the library; the binary is a thin CLI shell.
 [lib]
-name = "navai"
+name = "withnav"
 path = "src/lib.rs"
 
 [[bin]]
-name = "navai"
+name = "nav"
 path = "src/main.rs"
 
 [[bin]]
-name = "navai-lsp"
-path = "src/bin/navai-lsp.rs"
+name = "withnav-lsp"
+path = "src/bin/withnav-lsp.rs"
 
 [dependencies]
 instinct-flow = { path = "crates/instinct-flow" }

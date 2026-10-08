@@ -1,8 +1,8 @@
 //! Reducer tests over JSONL fixtures built from the crate's real event types.
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
-use navai::tui::protocol::{ContextSnapshot, ModelIdentity};
-use navai::{
+use withnav::tui::protocol::{ContextSnapshot, ModelIdentity};
+use withnav::{
     bus::event::*,
     provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
@@ -392,7 +392,7 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
 
 #[tokio::test]
 async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
-    use navai::tui::{
+    use withnav::tui::{
         client::Client,
         input::Editor,
         runtime::{Context, Executor},
@@ -649,7 +649,7 @@ fn a_terminal_list_status_updates_a_child_without_an_open_parent() {
 
 #[tokio::test]
 async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completion() {
-    use navai::tui::{
+    use withnav::tui::{
         client::Client,
         input::Editor,
         runtime::{Context, Executor},
@@ -748,7 +748,7 @@ fn startup_child_metadata_opens_read_only_without_resume() {
 
 #[tokio::test]
 async fn child_controls_and_permission_answers_use_the_owner_routes() {
-    use navai::tui::client::Client;
+    use withnav::tui::client::Client;
     use wiremock::{
         matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
@@ -1741,7 +1741,7 @@ fn resumed_ev(s: &State, id: &str) -> ClientEvent {
 fn catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "a".into(),
@@ -1750,7 +1750,7 @@ fn catalog() -> Vec<ModelEntry> {
             ..Default::default()
         },
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "b".into(),
@@ -1781,7 +1781,7 @@ fn models_now(s: &mut State, default: Option<String>) -> Result<Vec<Effect>, Pro
             }),
         },
     )?;
-    if !navai::tui::reducer::occupied(s) {
+    if !withnav::tui::reducer::occupied(s) {
         let chosen = default.unwrap_or_else(|| "a".into());
         update(
             s,
@@ -3307,7 +3307,7 @@ fn a_message_sent_during_a_resume_reaches_the_resumed_conversation() {
     assert_eq!(sent.1, 3);
     assert!(matches!(
         &sent.0.content[..],
-        [navai::bus::command::ContentBlock::Text { text }] if text == "hello again"
+        [withnav::bus::command::ContentBlock::Text { text }] if text == "hello again"
     ));
     // a second message while the first waited would have been refused, not lost silently
     let (mut s, mut ui) = (st(), self::ui());
@@ -3416,7 +3416,7 @@ fn a_tab_holding_a_message_for_a_pending_resume_cannot_be_closed() {
     assert!(fx.iter().any(|e| matches!(
         e,
         Effect::SendAt { request, .. }
-            if matches!(&request.content[..], [navai::bus::command::ContentBlock::Text { text }] if text == "keep me")
+            if matches!(&request.content[..], [withnav::bus::command::ContentBlock::Text { text }] if text == "keep me")
     )));
 }
 
@@ -3471,7 +3471,7 @@ fn context_compacted_pushes_a_one_line_notice() {
 
 #[test]
 fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
-    use navai::tui::commands::{route, Routed};
+    use withnav::tui::commands::{route, Routed};
     let server = |name: &str, arguments: &str| Routed::Server {
         name: name.into(),
         arguments: arguments.into(),
@@ -3794,7 +3794,7 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
 fn variant_catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "opus".into(),
@@ -3805,7 +3805,7 @@ fn variant_catalog() -> Vec<ModelEntry> {
             ..Default::default()
         },
         ModelEntry {
-            api: navai::tui::protocol::ApiKind::Chat,
+            api: withnav::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "flash".into(),
@@ -3883,7 +3883,7 @@ fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
 #[test]
 fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use navai::tui::input::{route_key, Editor};
+    use withnav::tui::input::{route_key, Editor};
     let (mut s, mut ui) = (with_variants(), ui());
     s.selected_model_id = Some("opus".into());
     created_now(&mut s, "S1").unwrap();
@@ -3963,10 +3963,10 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     let Effect::ShowVariants { current } = &fx[0] else {
         unreachable!()
     };
-    navai::tui::reducer::show_variants(&s, &mut ui, current.as_deref());
+    withnav::tui::reducer::show_variants(&s, &mut ui, current.as_deref());
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(ui.variant_pick, Some(VariantPick::Current));
-    let (rows, _) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    let (rows, _) = withnav::tui::commands::variant_choices(&s, &VariantPick::Current);
     assert_eq!(rows, ["low", "max", "off", "inherit"]);
     assert_eq!(
         rows[ui.selection["Variants"]], "max",
@@ -4088,7 +4088,7 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
 
 #[test]
 fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
-    use navai::tui::commands::{route, Routed};
+    use withnav::tui::commands::{route, Routed};
     let mode = Mode::NextTurn;
     // only a slash in the first column makes a command
     assert_eq!(route("  /stop", mode), Routed::Message("  /stop".into()));
@@ -4155,7 +4155,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     assert!(s.catalog.is_empty());
     // before any answer, and with an offer of nothing: `off` is still there
     assert_eq!(
-        navai::tui::commands::variant_choices(&s, &VariantPick::Current),
+        withnav::tui::commands::variant_choices(&s, &VariantPick::Current),
         (vec!["off".to_string(), "inherit".to_string()], 0)
     );
     let answer = ClientEvent::CommandRan {
@@ -4172,7 +4172,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     };
     handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     update(&mut s, answer).unwrap();
-    let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    let (rows, start) = withnav::tui::commands::variant_choices(&s, &VariantPick::Current);
     assert_eq!(
         (rows, start),
         (vec!["high".into(), "off".into(), "inherit".into()], 0)
@@ -4251,7 +4251,7 @@ fn permission_script(request: u128) -> Script {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: json!({"path": "/ws/a.txt", "content": "one\ntwo"}).to_string(),
-            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/ws".into()),
             agent: "build".into(),
             reason: "write changes a file".into(),
         },
@@ -4359,7 +4359,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: json!({"path": "/elsewhere/a.txt", "content": "one\ntwo"}).to_string(),
-            scope: navai::agent::permissions::Scope::Folder("/elsewhere".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/elsewhere".into()),
             agent: "build".into(),
             reason: "write changes a file".into(),
         },
@@ -4407,7 +4407,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: "{}".into(),
-            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/ws".into()),
             agent: "build".into(),
             reason: String::new(),
         },
@@ -4442,7 +4442,7 @@ fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     let background = &s.tabs[0];
     assert!(background.open_permission().is_some());
     assert!(background.unread);
-    assert_eq!(navai::tui::view::sidebar::tab_state(background), "waiting");
+    assert_eq!(withnav::tui::view::sidebar::tab_state(background), "waiting");
     assert!(s.open_permission().is_none(), "the tab on screen has none");
 }
 
@@ -4488,7 +4488,7 @@ fn an_accepted_answer_waiting_for_its_resolution_is_not_sent_again() {
             tool_call_id: "w1".into(),
             tool: "write".into(),
             arguments: "{}".into(),
-            scope: navai::agent::permissions::Scope::Folder("/other".into()),
+            scope: withnav::agent::permissions::Scope::Folder("/other".into()),
             agent: "build".into(),
             reason: String::new(),
         },
@@ -4611,7 +4611,7 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
 fn git_now(s: &mut State, branch: Option<&str>) -> Vec<Effect> {
     let ev = ClientEvent::Git {
         generation: s.generation.clone(),
-        status: branch.map(|b| navai::workspace::git::GitStatus {
+        status: branch.map(|b| withnav::workspace::git::GitStatus {
             branch: Some(b.into()),
             dirty: 2,
             files: vec![],
@@ -4658,7 +4658,7 @@ fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
     let first = s.generation.clone();
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert_eq!(s.active, 1);
-    let status = |branch: &str| navai::workspace::git::GitStatus {
+    let status = |branch: &str| withnav::workspace::git::GitStatus {
         branch: Some(branch.into()),
         dirty: 1,
         files: vec![],
@@ -4829,7 +4829,7 @@ fn switching() -> (State, UiState) {
     let (mut s, mut ui) = (st(), ui());
     models_now(&mut s, Some("a".into())).unwrap();
     s.catalog.push(ModelEntry {
-        api: navai::tui::protocol::ApiKind::Chat,
+        api: withnav::tui::protocol::ApiKind::Chat,
         name: "c".into(),
         ..Default::default()
     });
@@ -5244,7 +5244,7 @@ fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
         generation: s.generation.clone(),
         result: Ok(ModelsBody {
             models: vec![ModelEntry {
-                api: navai::tui::protocol::ApiKind::Chat,
+                api: withnav::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "luna".into(),
@@ -5333,10 +5333,10 @@ fn approval_evidence_survives_live_and_replay() {
                 .iter()
                 .find(|b| matches!(b.kind, BlockKind::ToolCall { .. }))
                 .unwrap();
-            assert!(navai::tui::view::tool::header(
+            assert!(withnav::tui::view::tool::header(
                 &block.kind,
                 0,
-                &navai::tui::theme::ThemeId::default().palette()
+                &withnav::tui::theme::ThemeId::default().palette()
             )
             .spans
             .iter()

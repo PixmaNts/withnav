@@ -1,11 +1,11 @@
 //! Explicit archive markers preserve legacy history without preparing a runtime.
 use axum::http::StatusCode;
 use http_body_util::BodyExt;
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::error::ServerError;
-use navai::provider::openai::ChatMessage;
-use navai::server::routes::app as router;
-use navai::session::store::HistoryStore;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::error::ServerError;
+use withnav::provider::openai::ChatMessage;
+use withnav::server::routes::app as router;
+use withnav::session::store::HistoryStore;
 use serde_json::json;
 use tower::ServiceExt;
 use ulid::Ulid;
@@ -22,7 +22,7 @@ async fn pending_fresh_root_cannot_be_archived_before_publication() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     let state = TestServerConfig::unreachable(tmp.path()).state();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     state.pause_root_publication(barrier.clone());
     let creating = {
         let state = state.clone();
@@ -78,7 +78,7 @@ async fn failed_or_cancelled_fresh_root_publication_releases_pending_ownership()
         let ws = tmp.path().join("ws");
         std::fs::create_dir(&ws).unwrap();
         let state = TestServerConfig::unreachable(tmp.path()).state();
-        let barrier = navai::session::ChildPreparationBarrier::default();
+        let barrier = withnav::session::ChildPreparationBarrier::default();
         state.pause_root_publication(barrier.clone());
         if !cancel {
             state.fail_root_publication();
@@ -157,7 +157,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
             .answer_permission(
                 id,
                 Ulid::new(),
-                navai::agent::permissions::PermissionDecision::AllowOnce
+                withnav::agent::permissions::PermissionDecision::AllowOnce
             )
             .await,
         Err(ServerError::SessionArchived { .. })

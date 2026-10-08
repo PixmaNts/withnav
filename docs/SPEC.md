@@ -1977,7 +1977,7 @@ navai/
 │   ├── tui/                   terminal client: reducer, runtime, view, theme
 │   └── paths/                 move from the former rust-agent locations
 ├── tests/                     integration tests, common/ harnesses, fixtures
-├── vscode-navigator/          the VS Code extension (TypeScript)
+├── vscode-withnav/          the VS Code extension (TypeScript)
 └── examples/
 ```
 

@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use navai::tui::{
+use withnav::tui::{
     catalog::{self, Row},
     commands::{self, Routed},
     input::{route_key, Editor},
@@ -142,12 +142,12 @@ fn mixed_catalog_picker_renders_and_routes_chat_only() {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     terminal
         .draw(|frame| {
-            navai::tui::view::draw(
+            withnav::tui::view::draw(
                 frame,
                 &s,
                 &ui,
                 &editor,
-                &mut navai::tui::view::RenderCache::default(),
+                &mut withnav::tui::view::RenderCache::default(),
             )
         })
         .unwrap();
@@ -226,7 +226,7 @@ fn direct_lower_layer_model_actions_are_rejected_before_tab_or_switch_effects() 
                 assert!(s.start_model.is_none());
                 assert!(s.model_switch.is_none());
                 assert!(matches!(&s.conversation.blocks.last().unwrap().kind,
-                    navai::tui::state::BlockKind::Notice(text) if text.contains(name) && text.contains("chat API")));
+                    withnav::tui::state::BlockKind::Notice(text) if text.contains(name) && text.contains("chat API")));
             }
         }
     }
@@ -380,7 +380,7 @@ fn stale_assignment_fetch_cannot_change_another_generation_or_session() {
 #[test]
 fn unified_selection_replay_restores_agent_model_variant_and_override_source() {
     let mut s = State::default();
-    let mut e: navai::bus::event::EventEnvelope=serde_json::from_value(json!({
+    let mut e: withnav::bus::event::EventEnvelope=serde_json::from_value(json!({
         "schema_version":1,"session_id":ulid::Ulid::new(),"seq":1,"event_id":ulid::Ulid::new(),"occurred_at":"2026-10-05T00:00:00Z", "kind":"model.changed",
         "actor_id":"agent:main","payload":{"previous":null,"new":{"agent":"plan","model":"omniroute/combo/astra","gateway":"omniroute","upstream_id":"combo/astra","variant":"low","source":"override","variant_source":"override"},"window":1000000,"reason":"agent","operation_id":null}
     })).unwrap();
@@ -422,7 +422,7 @@ async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let client = navai::tui::client::Client::new(format!("http://{address}"), None);
+    let client = withnav::tui::client::Client::new(format!("http://{address}"), None);
     assert_eq!(
         client.models("/project").await.unwrap().models[0].name,
         "omniroute/combo/astra"
@@ -451,10 +451,10 @@ fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
         {"layer":"instinct","status":"disabled","model":"gateway/jev","variant":null,"reason":"wrong API kind"}
     ]})).unwrap().layers;
     let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
-    let mut cache = navai::tui::view::RenderCache::default();
+    let mut cache = withnav::tui::view::RenderCache::default();
     terminal
         .draw(|frame| {
-            navai::tui::view::draw(frame, &s, &UiState::default(), &Editor::new(), &mut cache)
+            withnav::tui::view::draw(frame, &s, &UiState::default(), &Editor::new(), &mut cache)
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
@@ -495,12 +495,12 @@ fn picker_lines(state: &State, ui: &UiState, size: (u16, u16)) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
     terminal
         .draw(|frame| {
-            navai::tui::view::draw(
+            withnav::tui::view::draw(
                 frame,
                 state,
                 ui,
                 &Editor::default(),
-                &mut navai::tui::view::RenderCache::default(),
+                &mut withnav::tui::view::RenderCache::default(),
             )
         })
         .unwrap();

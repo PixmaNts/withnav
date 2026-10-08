@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::bus::event::EventEnvelope;
-use navai::server::{app, AppState};
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{app, AppState};
 
 mod common;
 
@@ -65,7 +65,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
                 &env.ws,
                 None,
                 false,
-                navai::session::VariantChoice::Exact("low".into()),
+                withnav::session::VariantChoice::Exact("low".into()),
                 None,
             )
             .await
@@ -74,7 +74,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         assert_eq!(meta.agent_overrides["build"].model, None);
         assert_eq!(
             meta.agent_overrides["build"].variant,
-            navai::session::store::AgentVariantOverride::Named("low".into())
+            withnav::session::store::AgentVariantOverride::Named("low".into())
         );
     }
     std::fs::write(
@@ -88,7 +88,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
             &env.ws,
             None,
             false,
-            navai::session::VariantChoice::Default,
+            withnav::session::VariantChoice::Default,
             Some("plan"),
         )
         .await
@@ -174,11 +174,11 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
         .unwrap();
     assert_eq!(
         provenance.model,
-        navai::session::store::ModelSource::Override
+        withnav::session::store::ModelSource::Override
     );
     assert_eq!(
         provenance.variant,
-        navai::session::store::VariantSource::Override
+        withnav::session::store::VariantSource::Override
     );
     assert!(
         reopened
@@ -218,7 +218,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
                 &env.ws,
                 None,
                 false,
-                navai::session::VariantChoice::Default,
+                withnav::session::VariantChoice::Default,
                 Some(agent),
             )
             .await
@@ -238,7 +238,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
             &env.ws,
             None,
             false,
-            navai::session::VariantChoice::Default,
+            withnav::session::VariantChoice::Default,
             Some("custom"),
         )
         .await
@@ -252,7 +252,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
             &env.ws,
             None,
             false,
-            navai::session::VariantChoice::Default,
+            withnav::session::VariantChoice::Default,
             Some("plan"),
         )
         .await
@@ -283,7 +283,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
 
 #[tokio::test]
 async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
-    use navai::session::{
+    use withnav::session::{
         store::{AgentVariantOverride, HistoryStore},
         VariantChoice,
     };
@@ -476,7 +476,7 @@ async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(all) => {
+        withnav::bus::ResumeOutcome::Replay(all) => {
             all.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -564,7 +564,7 @@ async fn only_primary_agents_can_start_a_session() {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, navai::error::ServerError::UnknownAgent { .. }),
+            matches!(err, withnav::error::ServerError::UnknownAgent { .. }),
             "{bad}: {err:?}"
         );
         assert!(err.to_string().contains("build, plan, scribe"), "{err}");
@@ -607,7 +607,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, navai::error::ServerError::SavedAgentUnavailable { .. }),
+        matches!(err, withnav::error::ServerError::SavedAgentUnavailable { .. }),
         "{err:?}"
     );
     assert!(err.to_string().contains("scribe"));
@@ -622,7 +622,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .unwrap_err();
     assert!(matches!(
         err,
-        navai::error::ServerError::SavedAgentUnavailable { .. }
+        withnav::error::ServerError::SavedAgentUnavailable { .. }
     ));
 }
 
@@ -858,7 +858,7 @@ fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::proc
         r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")

@@ -12,11 +12,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use navai::navigator::reflex::{build_fim_request, MAX_CONTEXT_BYTES};
-use navai::provider::auth;
-use navai::provider::config::ModelsConfig;
-use navai::provider::fim::InceptionFim;
-use navai::provider::openai::ClientCache;
+use withnav::navigator::reflex::{build_fim_request, MAX_CONTEXT_BYTES};
+use withnav::provider::auth;
+use withnav::provider::config::ModelsConfig;
+use withnav::provider::fim::InceptionFim;
+use withnav::provider::openai::ClientCache;
 
 const CALLS: usize = 10;
 
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // first (it carries the navigator aliases), the user dir second.
     let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let config_dir = auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("no config dir"))?;
-    let models_path = navai::navigator::resolve_models(None, &workspace)
+    let models_path = withnav::navigator::resolve_models(None, &workspace)
         .unwrap_or_else(|| config_dir.join("models.json"));
     let models = ModelsConfig::load(&models_path)?;
     let resolved = models.resolve("reflex")?;

@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use navai::navigator;
+use withnav::navigator;
 
 mod common;
 use common::navigator::{
@@ -25,7 +25,7 @@ async fn failed_legacy_conversion_is_warned_once_after_initialized() {
         let source = ws.join(".navigator");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("pipeline.toml"), "unsupported = true").unwrap();
-        let host = navai::flows::host::Host::new(ws.join("config"), ws.join("data"), None);
+        let host = withnav::flows::host::Host::new(ws.join("config"), ws.join("data"), None);
         let store = host.store(ws.into());
         let errors = store.migration_diagnostics();
         assert_eq!(errors.len(), 1);
@@ -785,16 +785,16 @@ async fn reflex_context_empty_answers_are_logged_once() {
 
 fn session_event(
     session_id: ulid::Ulid,
-    kind: navai::bus::event::EventKind,
+    kind: withnav::bus::event::EventKind,
     payload: Value,
-) -> navai::bus::event::EventEnvelope {
-    navai::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
+) -> withnav::bus::event::EventEnvelope {
+    withnav::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
 }
 
-fn message_event(session_id: ulid::Ulid, source: &str) -> navai::bus::event::EventEnvelope {
+fn message_event(session_id: ulid::Ulid, source: &str) -> withnav::bus::event::EventEnvelope {
     session_event(
         session_id,
-        navai::bus::event::EventKind::MessageReceived,
+        withnav::bus::event::EventKind::MessageReceived,
         json!({
             "command_id": ulid::Ulid::new().to_string(),
             "source": source,
@@ -805,10 +805,10 @@ fn message_event(session_id: ulid::Ulid, source: &str) -> navai::bus::event::Eve
     )
 }
 
-fn turn_end_event(session_id: ulid::Ulid) -> navai::bus::event::EventEnvelope {
+fn turn_end_event(session_id: ulid::Ulid) -> withnav::bus::event::EventEnvelope {
     session_event(
         session_id,
-        navai::bus::event::EventKind::TurnEnd,
+        withnav::bus::event::EventKind::TurnEnd,
         json!({
             "turn_id": ulid::Ulid::new().to_string(),
             "actor_id": "agent:main",

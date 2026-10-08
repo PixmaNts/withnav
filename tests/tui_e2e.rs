@@ -12,13 +12,13 @@ use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
 use tokio::time::Instant;
 
-use navai::provider::Usage;
-use navai::tools::ToolStatus;
-use navai::tui::client::Client;
-use navai::tui::protocol::{ClientEvent, Effect};
-use navai::tui::runtime::Runtime;
-use navai::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
-use navai::tui::TuiOptions;
+use withnav::provider::Usage;
+use withnav::tools::ToolStatus;
+use withnav::tui::client::Client;
+use withnav::tui::protocol::{ClientEvent, Effect};
+use withnav::tui::runtime::Runtime;
+use withnav::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
+use withnav::tui::TuiOptions;
 
 mod common;
 use common::server::{spawn_server, TestServerConfig};
@@ -243,10 +243,10 @@ fn rate_limited() -> Vec<u8> {
 /// preselected variant (the default, or none) in the second step.
 fn pick_model(rt: &mut Runtime, index: usize) {
     press(rt, KeyCode::F(2));
-    let row = navai::tui::catalog::rows(&rt.state.catalog, &rt.ui)
+    let row = withnav::tui::catalog::rows(&rt.state.catalog, &rt.ui)
         .iter()
         .enumerate()
-        .filter(|(_, row)| matches!(row, navai::tui::catalog::Row::Model(_)))
+        .filter(|(_, row)| matches!(row, withnav::tui::catalog::Row::Model(_)))
         .nth(index)
         .unwrap()
         .0;
@@ -481,7 +481,7 @@ async fn a_rate_limited_provider_shows_an_error_block() {
     assert!(shown.contains("Quota preflight blocked"), "{shown}");
 }
 
-fn final_text_of(tab: &navai::tui::state::Tab, text: &str) -> bool {
+fn final_text_of(tab: &withnav::tui::state::Tab, text: &str) -> bool {
     tab.activity == Activity::Idle
         && tab
             .conversation
@@ -510,7 +510,7 @@ async fn next_request(rt: &mut Runtime, provider: &mut StreamingProvider) -> (St
     }
 }
 
-fn streamed_text(tab: &navai::tui::state::Tab) -> String {
+fn streamed_text(tab: &withnav::tui::state::Tab) -> String {
     tab.conversation
         .blocks
         .iter()
@@ -627,7 +627,7 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
     assert!(listed.sessions.iter().any(|s| s.id == second_id));
 }
 
-fn command_blocks(tab: &navai::tui::state::Tab) -> Vec<(String, bool, String)> {
+fn command_blocks(tab: &withnav::tui::state::Tab) -> Vec<(String, bool, String)> {
     tab.conversation
         .blocks
         .iter()
@@ -822,11 +822,11 @@ async fn variant_step_and_slash_variant_drive_the_server() {
     press(&mut rt, KeyCode::Enter);
     // the list opens on the server's answer: what this conversation offers
     until("the variant list", &mut rt, |_, rt| {
-        rt.ui.overlay == Some(navai::tui::protocol::Overlay::Variants)
+        rt.ui.overlay == Some(withnav::tui::protocol::Overlay::Variants)
     })
     .await;
     assert_eq!(
-        navai::tui::commands::variant_choices(&rt.state, &navai::tui::state::VariantPick::Current),
+        withnav::tui::commands::variant_choices(&rt.state, &withnav::tui::state::VariantPick::Current),
         (
             vec!["high".into(), "low".into(), "off".into(), "inherit".into()],
             1
@@ -1085,7 +1085,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
     )
     .expect("auth.json");
     std::fs::write(config.config_dir.join("config.json"), json!({"default_agent":"build","agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
-    let state = navai::server::session::AppState::new(config).expect("state");
+    let state = withnav::server::session::AppState::new(config).expect("state");
     let (addr, task) = spawn_server(state).await;
     let ws = workspace_of(&root);
     std::fs::create_dir_all(&ws).expect("workspace dir");

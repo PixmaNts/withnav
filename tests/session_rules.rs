@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::server::AppState;
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::server::AppState;
 
 mod common;
 use common::server::{collect_until, TestServerConfig};
@@ -174,7 +174,7 @@ async fn the_navigator_role_stays_before_the_rules() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert_eq!(sent[1].1, navai::navigator::COGNITION_PROMPT);
+    assert_eq!(sent[1].1, withnav::navigator::COGNITION_PROMPT);
     assert!(sent[2].1.contains("project rule"));
 }
 
@@ -237,7 +237,7 @@ async fn navai_run_sends_the_rules_too() {
     let models = env.root.join("models.json");
     let (ws, root) = (env.ws.clone(), env.root.clone());
     let out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
             .args(["run", "--workspace"])
             .arg(&ws)
             .arg("--models")

@@ -1,4 +1,4 @@
-use navai::bus::event::{ContextSnapshot, ModelChanged};
+use withnav::bus::event::{ContextSnapshot, ModelChanged};
 use serde_json::json;
 
 #[test]

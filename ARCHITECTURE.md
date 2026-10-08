@@ -1,12 +1,12 @@
 # Architecture
 
-The map of Navai's codebase: what runs, which module owns what, how data flows, and where new code
+The map of WithNav's codebase: what runs, which module owns what, how data flows, and where new code
 goes. Vocabulary is defined in [`CONTEXT.md`](CONTEXT.md); the decisions behind this shape are in
 [`docs/adr/`](docs/adr/). Read this before adding a module or a helper: most past duplication came
 from agents who did not know the piece already existed.
 
 The runtime map below describes the implementation prepared for **0.5**, not which binaries
-are installed on the driver's machine. See
+are installed on the Captain's machine. See
 [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md) and the contract section below.
 
 ## What runs
@@ -16,7 +16,7 @@ VS Code ── vscode-withnav (TypeScript)
    │   ├─ LSP over stdio ─────────────────┐  edits, saves, diagnostics, inline completion, remarks
    │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
    ▼                                  ▼   ▼
-navai-lsp   (one process, two channels: ADR 0006)
+withnav-lsp   (one process, two channels: ADR 0006)
    ├─ navigator/   Language Server, the four layers, editor flows, log, replay
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
@@ -25,9 +25,9 @@ navai-lsp   (one process, two channels: ADR 0006)
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
-A second binary, `navai` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
+A second binary, `nav` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
 `run` (one task in a terminal), `serve` (the session server alone), `auth`, `tui` (the terminal
-chat client, below) and `web` (the browser chat client, below). `navai run` exits 3 when permission is required and 130 when interrupted.
+chat client, below) and `web` (the browser chat client, below). `nav run` exits 3 when permission is required and 130 when interrupted.
 
 ## Modules
 
@@ -38,26 +38,26 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
-| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
 | `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel and by `GET /v1/workspaces` | sessions, HTTP |
-| `navigator/` | everything the driver perceives as the navigator, below | session internals |
+| `navigator/` | everything the Captain perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
 
 | File | Responsibility |
 |---|---|
-| `lsp/` | the `LanguageServer` adapter and custom `navigator/*` methods (`mod.rs`), wire types (`protocol.rs`), URI to path (`uri.rs`). Thin: it delegates to `runtime`. |
+| `lsp/` | the `LanguageServer` adapter and custom `withnav/*` methods (`mod.rs`), wire types (`protocol.rs`), URI to path (`uri.rs`). Thin: it delegates to `runtime`. |
 | `runtime/` | the shared state behind the LSP: idle timers, the conversation-turn listener, trigger evaluation (`trigger.rs`), remark and wake delivery (`delivery.rs`, the wake text in `wake.rs`), reflex-facing calls (`inline.rs`) |
 | `document.rs` | one `OpenDocument` per uri (text, baseline, version, diagnostics, edit history) and the `snapshot` a trigger reads |
 | `reflex.rs` | inline suggestions: position conversion, prefix and suffix caps, debounce, staleness, and the reflex-context cache |
 | `metacognition/` | the one `Metacognition` implementation: remark prompt and tool loop with its budget (`mod.rs`), answer parsing (`answer.rs`), the read/grep tools (`tools.rs`), the reflex-context producer and its prompt (`reflex_context.rs`) |
 | `replay/` | offline replay of historical decision captures through built-in editor flows (`flows.rs`); no model calls or effects |
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
-| `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, driver-turn events |
-| `intent.rs` | `.navigator/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
+| `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, Captain-turn events |
+| `intent.rs` | `.withnav/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
 | `ports.rs` | the model seams (`FimModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
 | `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
@@ -100,9 +100,9 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode, alternate screen, bracketed paste and mouse capture, restored on exit and on panic |
-| `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
+| `theme.rs` | the eight themes (Tide Dark by default) (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
-| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
+| `view/header.rs` | the header row: `◆ withnav`, workspace, git branch and change count, `▌agent` in its colour, model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
 | `view/panel.rs` | the right panel (36 columns, hidden under 140 unless `alt+r` asks): Agents and role, Context breakdown and last compaction, Skills listed and omitted, and Changes from git; a section with no data shows `—` |
 | `view/sidebar.rs` | the left conversation sidebar: number, title, `<agent> · <state>`, unread mark, active tint and tab keys; hidden under 80 columns (`alt+b` also toggles it) |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
@@ -114,17 +114,17 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
 | `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. `ctrl+f` marks a favorite; favorites (`tui.favorite_models` in `config.json`) are listed first in an always-open section that is also kept in each model's group. |
 
-### The browser client (`navai web`)
+### The browser client (`nav web`)
 
-`navai web` (`src/app/web.rs`) starts the same private in-process server as `navai tui`
+`nav web` (`src/app/web.rs`) starts the same private in-process server as `nav tui`
 (`src/app/embedded.rs`: preflight on every `--workspace`, loopback only, a per-process bearer token,
-graceful stop), prints `Navai WebUI: http://127.0.0.1:<port>/#token=<token>`, opens it with
+graceful stop), prints `WithNav WebUI: http://127.0.0.1:<port>/#token=<token>`, opens it with
 `xdg-open`/`open` unless `--no-open`, and runs until Ctrl-C. The token rides in the URL fragment, so the
 browser never sends it to a server; the page keeps it and sends it as a bearer header.
 
 The single-page app lives in `webui/`; its build output `webui/dist/` is committed and embedded in the
 binary with `include_dir`, so `cargo build` needs no Node. The files are served by `server/web.rs` only
-when `ServerConfig.web` is set (`navai web` alone; `serve`, the terminal client and the language server
+when `ServerConfig.web` is set (`nav web` alone; `serve`, the terminal client and the language server
 leave it `None` and answer only the API): `GET /` and any non-`/v1/` path return the file in `dist/`,
 else `index.html`. Those paths and `/v1/health` need no token; every other `/v1/*` route still does,
 and an unknown `/v1/` path is a 404, never the page. HTML carries a strict Content-Security-Policy,
@@ -134,17 +134,17 @@ Two read endpoints serve the page, both behind the token: `GET /v1/workspaces` l
 workspaces (kept in `WebConfig`, argument order, `launched:true`) and then the workspaces of the
 history store (`HistoryStore::workspaces`: top-level conversations only, directories that no longer
 exist skipped), each with its git branch and change count; `GET /v1/intent?workspace=` returns the
-parsed `.navigator/intent.md`.
+parsed `.withnav/intent.md`.
 
 ## Data flows
 
-Scratch roots default to private `$XDG_RUNTIME_DIR/navai` (fallback `~/.cache/navai/scratch`) and
-shared `<temp_dir>/navai`, snapshotted in `permissions.scratch_dirs`. Every component is opened
+Scratch roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback `~/.cache/withnav/scratch`) and
+shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Every component is opened
 descriptor-relatively without following links. Native execution carries the reviewed root identity,
 opens it again without creation and writes relative to that descriptor. Validation is read-only.
 
 The actor carries an explicit protected config root. Resolved native write/edit targets inside it
-ask the driver before instinct, metacognition or scratch exemptions. Literal config references in
+ask the Captain before instinct, metacognition or scratch exemptions. Literal config references in
 bash ask too; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
 
@@ -164,30 +164,30 @@ generation, so late results of its previous session are ignored. Picking a model
 conversation sends `/model <gateway/id>` on that same session; on an empty tab it changes the starting
 configuration. A conversation is created on the first message, not before.
 
-**Driver-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
+**Captain-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
 catalog-listed names and descriptions, or a disabled reason when its agent disallows `skill`.
 The searchable picker fills `/skill <name> ` without sending anything. Sending adds a typed
-`{type:"skill",name}` content block beside the driver's text; with no request the text is
+`{type:"skill",name}` content block beside the Captain's text; with no request the text is
 `Apply the <name> skill.`. Session admission resolves one listed skill through the skill tool's
 bounded loader before accepting anything. The inbox appends its exact output as JSON in a
-`<driver_selected_skill encoding="json">` block in the driver's own user message. JSON escapes
+`<driver_selected_skill encoding="json">` block in the Captain's own user message. JSON escapes
 `<`, `>` and `&`, so loaded text cannot close the delimiter. Unknown, omitted,
 disabled or unreadable selections refuse the whole message; clients cannot supply loaded content.
 The turn's pinned agent policy is checked again after admission: an intervening agent switch can
-refuse the whole command before answering an ask, cancelling permission, changing the driver task,
+refuse the whole command before answering an ask, cancelling permission, changing the Captain task,
 appending text or persisting child delivery. A durable `command.result` uses its command id as
 operation id, causation and correlation; other queued commands proceed.
 Policy pinning does not consume a pending ask or clear its permission slot or answer claim:
 only accepted input or a matching answer starts interaction consumption. Replay task lookup
-excludes correlated whole-message refusals, so resume and new children keep the real driver task.
-`message.received.selected_skill` records `{name,origin:"driver"}` for live and replayed clients.
+excludes correlated whole-message refusals, so resume and new children keep the real Captain task.
+`message.received.selected_skill` records `{name,origin:"captain"}` for live and replayed clients.
 No synthetic tool exchange or model-visible provenance argument is used. Selected instructions
-stay with their driver message through storage and latest-batch compaction protection. Multiple
-queued driver selections all stay verbatim even with interleaved navigator input. Discovery covers
-the consecutive user-message run, but only Driver-provenance messages are protected, carried and
-charged as irreducible. Non-driver input retains its provenance in the unsummarized tail and may
-be summarized before a checkpoint. If driver selections cannot fit, the capacity error prevents the request; no
-skill is silently truncated. Event text remains driver text only for display.
+stay with their Captain message through storage and latest-batch compaction protection. Multiple
+queued Captain selections all stay verbatim even with interleaved navigator input. Discovery covers
+the consecutive user-message run, but only Captain-provenance messages are protected, carried and
+charged as irreducible. Non-Captain input retains its provenance in the unsummarized tail and may
+be summarized before a checkpoint. If Captain selections cannot fit, the capacity error prevents the request; no
+skill is silently truncated. Event text remains Captain text only for display.
 This does not change the event catalog or execute a skill's scripts.
 
 **Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the
@@ -237,8 +237,8 @@ missing, an `ignore::WalkBuilder` fallback runs on a blocking worker with cancel
 entry/depth/per-file/total-byte/match limits and partial-result notices.
 Inside-root ordinary reads remain ungated but bound. Native reads bind one canonical target, re-resolve
 before dispatch and hold a no-follow descriptor; they never expand readable roots. Deterministic
-credential/key flags on native reads require metacognition and then the driver even after model approval. Reading
-ordinary Navai config follows this policy; config mutation stays driver-only.
+credential/key flags on native reads require metacognition and then the Captain even after model approval. Reading
+ordinary WithNav config follows this policy; config mutation stays Captain-only.
 Bash is not confined and sensitive-file detection there is best effort, not a guarantee against
 arbitrary commands. Literal supported file operands are canonicalized; ambiguous sensitive
 expansions tighten risk. Native sensitivity is deterministic. In-root search descendant reopen
@@ -261,10 +261,10 @@ checks `hard_floor` (protected config, sensitive target, changed scratch root) a
 off or on the floor, the request goes out (`requires_driver` set from the floor); otherwise the call
 runs once with `approved_by: bypass`, keeping the review evidence. Turning it on, and a request
 published just after, claim the eligible waiting request and queue an internal `AllowOnce` of origin
-`Bypass`; a driver answer that already holds the claim wins. `Service::set_bypass` applies the root,
+`Bypass`; a Captain answer that already holds the claim wins. `Service::set_bypass` applies the root,
 then each active child by `parent:<id>`, under `RuntimeStatus::bypass_gate`; `admit_child` holds the
 same gate from registration to the child's first prompt and commits the inherited ON before it.
-`navai run --yes` is `set_bypass(user:cli)` before the first prompt; any remaining
+`nav run --yes` is `set_bypass(user:cli)` before the first prompt; any remaining
 `permission.requested` ends the run with exit 3.
 
 A call that needs approval is not run: it, and the calls behind it, become
@@ -282,14 +282,14 @@ resume expires every request that has no `permission.resolved` and settles its c
 written is not a symlink, and whose destination is an existing regular `.md` file or a missing `.md`
 file in an existing directory, needs no `role_conformance` answer; it still goes through the
 permission review. Every other `write` or `edit`, and every `bash`, asks Jev `role_conformance` in the
-same batched request (role prompt, the driver's latest message, workspace, resolved target, tool,
+same batched request (role prompt, the Captain's latest message, workspace, resolved target, tool,
 exact arguments, at most 16 KiB); a `fetch` asks it alone. Only a valid `conforms` lets the call
 continue, and the verdict is recorded as `guard` in the metadata of its durable `tool.post_call`.
 Anything else (`violates`, `uncertain`, a malformed answer, no usable instinct assignment or key, a timeout, an
 oversized call) is an ordinary permission request whose `reason` says why. Jev is advisory, never a
 sandbox.
 
-**Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
+**Keystroke to suggestion (reflex).** The extension asks `withnav/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM
 request, `provider/fim.rs` calls Mercury, the answer goes back as ghost text. A newer request
 supersedes an older one; a stale version is dropped.
@@ -300,16 +300,25 @@ instinct questions and ordered decisions. Built-ins preserve the original state 
 Remarks use anchored metacognition; wakes use typed flow notes to the conversation. No enabled
 flow means nothing runs. The decision log retains delivery records; flow records own run traces.
 
-**Chat to cognition.** The extension posts driver messages to the session server. The bus
+**Chat to cognition.** The extension posts Captain messages to the session server. The bus
 sequences them, the runtime task runs `run_agent` with the chosen agent's effective chat model, events stream back over
 SSE. A navigator session also feeds the `ConversationFeed`, attached by `NavigatorHooks::started` (`navigator/session_hooks.rs`; a resume replays without announcing old turns): its digest reaches the fast layers'
-prompts, and every driver turn end triggers a `conversation` evaluation on the focused document.
+prompts, and every Captain turn end triggers a `conversation` evaluation on the focused document.
 Editor roots have the same root subagent tools as terminal roots. Children have no editor attachment,
 do not receive `intent`, and are never registered by `started`. Completion uses the normal durable
 outbox and root stream, not the latest-wins navigator wake channel. The digest labels delivered
-subagent text as untrusted and never treats it as a driver turn.
+subagent text as untrusted and never treats it as a Captain turn.
 
 ## State on disk
+
+WithNav writes the new paths below. During 0.7, absent `.withnav/` directories
+fall back to `.navai/` then `.navigator/`; old config/data paths and `navai.db` /
+`navai.jsonl` migrate without overwriting new files. `NAVAI_*` remains a warned
+fallback for `WITHNAV_*`. The LSP accepts legacy `navigator/*` requests but emits
+`withnav/*`; wire readers accept `driver` and writers emit `captain`.
+See [ADR 0014](docs/adr/0014-rebrand-withnav.md). Internal names such as
+`requires_driver` and `driver_selected_skill` remain technical identifiers, not
+user-facing roles.
 
 **Background children.** Admission reserves capacity and snapshots the parent's complete effective
 execution configuration and policy. Publication and failed-start cleanup have parent- and
@@ -328,7 +337,7 @@ the model call. Its payload keeps `{command_id, source, target, mode, content}` 
 `watchdog: true` and doubt notices include `verdict`. Content is the same bounded untrusted JSON
 text stored in the transcript. A crash before emission therefore replays the committed event
 without consuming or delivering the message twice. No new event kind is added (22 total).
-It never injects through navigator commands or changes the driver task. The runtime's existing
+It never injects through navigator commands or changes the Captain task. The runtime's existing
 control channel carries delivery wakes: idle parents run immediately, busy parents wait until the
 boundary, and pending interactions cannot be answered by a result. Stopped parents have no wake;
 resume drains durable notices. Child deletion keeps unconsumed notices and their result text.
@@ -364,30 +373,30 @@ are checked before completion-only wakes. `subagent.spawned` and `subagent.done`
 consecutive-failure rule. The service installs one task per root runtime. It skips idle and human
 waits, checks the turn generation again after each model await, and submits a safe-boundary stop or
 doubt hold through `WatchdogPark`. A local mockable `ProgressReviewer` performs one tool-free
-metacognition call within 20 seconds; undecidable reviews ask the driver. Notices reuse
+metacognition call within 20 seconds; undecidable reviews ask the Captain. Notices reuse
 `command.result`; the runtime emits typed `agent.yield` at the final safe-boundary check after
 awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
 incarnation plus unique hold id. Continue consumes the matching token atomically and sequences
-resolution; restart/stop expires it. A driver message supersedes it and records interruption;
+resolution; restart/stop expires it. A Captain message supersedes it and records interruption;
 autonomous inputs cannot release it or renew a parked budget. The event catalog remains 22 kinds.
 The typed boundary result carries the settled transcript on every watchdog exit and keeps the
 remaining steps. Interrupt-delivery checks revalidate the hold after awaiting notice eligibility.
-Recovery installs an awaiting-fresh-driver gate; neither delivery wakes nor delegated provenance
+Recovery installs an awaiting-fresh-Captain gate; neither delivery wakes nor delegated provenance
 can clear it. Deferred controls accepted in a paused turn receive operation-correlated cancellation.
-Driver admission events never clear the recovered gate. The runtime commits the consumed driver
+Captain admission events never clear the recovered gate. The runtime commits the consumed Captain
 transcript and a `command.result` checkpoint marker atomically through the existing acknowledged
 transcript/event transaction before releasing the gate. Recovery reads that marker, not admission;
 an admitted but unconsumed correction therefore requires fresh input after another crash. Accepted
 interrupt guidance on a budget-parked child stays queued and is claimed once by authorized Continue
 before its first resumed provider request; the guidance itself never renews the budget.
-Progress parking filters autonomous-only batches before policy pinning. A driver batch pins its
+Progress parking filters autonomous-only batches before policy pinning. A Captain batch pins its
 role before validating selected skills; held-only or refused batches release that pin without
 changing the interaction claim, progress generation, goal or recovery gate. Only applied commands
 supersede a watchdog hold and commit fresh input. `consume_turn` starts activity and the watchdog
-after that validation, using the updated driver task, before transcript-persisting turn delivery.
+after that validation, using the updated Captain task, before transcript-persisting turn delivery.
 Root `alt+c`
 uses the existing Continue route with the root as both owner and target, which cannot answer asks
-or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct
+or permissions. Root turns are unbounded unless `WITHNAV_MAX_STEPS` is set; unavailable instinct
 or disabled supervision installs a visible renewable 500-step fallback cap. Children keep their
 50-step budget. The root supervisor starts only after publication; runtime exit cancels and joins
 it outside admission and registry locks.
@@ -413,20 +422,20 @@ as before; no supervision state is restored. The event catalog has 22 kinds.
 
 | Path | What | Written by |
 |---|---|---|
-| `~/.config/navai/models.json`, `auth.json`, `config.json` | model catalogue, provider keys, assignments and client settings | the driver/importer (catalogue), `navai auth` (keys), TUI (client settings, not assignments) |
-| `~/.config/navai/navigator/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to global flows | the driver |
-| `~/.config/navai/agents/*.md` | user agent definitions | the driver |
-| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to workspace flows | the driver |
-| `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
-| `<workspace>/.navai/agents/*.md` | project agent definitions | the driver |
-| `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the driver |
-| `~/.local/share/navai/navai.db`, `navai.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
+| `~/.config/withnav/models.json`, `auth.json`, `config.json` | model catalogue, provider keys, assignments and client settings | the Captain/importer (catalogue), `nav auth` (keys), TUI (client settings, not assignments) |
+| `~/.config/withnav/navigator/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to global flows | the Captain |
+| `~/.config/withnav/agents/*.md` | user agent definitions | the Captain |
+| `<workspace>/.withnav/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to workspace flows | the Captain |
+| `<workspace>/.withnav/intent.md` | intent, plan, decisions | the cognition and the Captain |
+| `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
+| `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
+| `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
 
 Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
-(`paths/migrate.rs`) moves what the former names left behind to the Navai dirs: `~/.local/share/navigator/*`
+(`paths/migrate.rs`) moves what the former names left behind to the WithNav dirs: `~/.local/share/navigator/*`
 and `~/.local/share/rust-agent/*` (`navigator.db` or `navigator/sessions.db`, with their `-wal` and `-shm`,
-`navigator.jsonl`, `tui.log`) to `~/.local/share/navai/`, and `~/.config/rust-agent/*` (`auth.json`,
-`models.json`, `navigator/pipeline.toml`) to `~/.config/navai/`. A file is never overwritten, a second
+`navigator.jsonl`, `tui.log`) to `~/.local/share/withnav/`, and `~/.config/rust-agent/*` (`auth.json`,
+`models.json`, `navigator/pipeline.toml`) to `~/.config/withnav/`. A file is never overwritten, a second
 start does nothing, and a database moves only when no other process holds it: otherwise it stays where
 it is and that run keeps using it.
 
@@ -446,7 +455,7 @@ over Markdown `model:` headers. See [the examples](models.example.json) and
 Reflex = one FIM model (editor only), instinct = one System One model, metacognition = one chat
 model (prefers `low`, otherwise model default). Cognition runs agents, not a singleton model.
 Missing/unknown/API-incompatible lower layers are disabled with reasons and existing conservative
-fallbacks: no suggestions, driver permission review, renewable 500-step supervision cap when
+fallbacks: no suggestions, Captain permission review, renewable 500-step supervision cap when
 instinct is unavailable. Invalid nondefault agent models warn and fall back to the default agent.
 An unknown/nonprimary default agent or one without a usable chat model prevents server/LSP startup.
 
@@ -505,7 +514,7 @@ the later 0.6 scope, not this contract.
   across snapshot read, revision comparison, mutation and atomic save. `server/settings/editor.rs` owns
   editable keys, defaults and scalar validation; `provider/assignments.rs` checks proposed model
   API and offered variants without runtime fallback. Unknown config keys and siblings survive.
-  `restart` means after Navai restarts (conservative for layers). `new_sessions` means next use:
+  `restart` means after WithNav restarts (conservative for layers). `new_sessions` means next use:
   new sessions, model/agent switches or newly started subagents; running turns keep their values.
   `live` means the changing client applies it at once; other open clients on their next start.
 
@@ -589,7 +598,7 @@ the later 0.6 scope, not this contract.
   numbered excerpts), `tools/mod.rs` (`validate_path`).
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
-- `navai run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
+- `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
   required, 130 interrupted.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Tunable editor behaviour goes in `src/flows/builtin/` or custom flow TOML/templates, not in a second evaluator.

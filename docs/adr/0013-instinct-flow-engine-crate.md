@@ -4,6 +4,9 @@ Date: 2026-10-07
 
 Status: Accepted — not implemented. Supersedes [ADR 0012](0012-extractable-system-one-flows.md).
 
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.
+
 The 0.6 flow work followed ADR 0012: the existing pipeline deepened into staged batches of questions
 with ordered branches on one path, three actions, drafts and activation in a private database, and
 a separate vanilla JS Studio. The driver rejected it: a flow is a canvas of cards, one decision per

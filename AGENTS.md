@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working in Navai (formerly `rust-agent`).
+Guidance for AI agents working in WithNav (formerly Navai / `rust-agent`).
 
 ## Read first
 
@@ -18,7 +18,7 @@ one you need probably exists.
 - A pull request into `develop` is ready when `cargo build --bins`, `cargo test`,
   `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` and, if the extension changed,
   `npm run compile` in `vscode-withnav/` all pass. Its description says what changed for the
-  driver, and how it was verified.
+  Captain, and how it was verified.
 - A release: bump the version in `Cargo.toml` and `vscode-withnav/package.json`, move the
   `Unreleased` entries of `CHANGELOG.md` under the new version, merge `develop` into `main`, tag
   `vX.Y.Z`, push the tag.

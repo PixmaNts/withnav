@@ -10,3 +10,6 @@ conversation settles things; every layer reads both parts.
 
 The intent record is one file per project, `.navigator/intent.md`, linking to the active feature spec
 rather than being that spec: the work of the moment and a feature's specification do not live as long.
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

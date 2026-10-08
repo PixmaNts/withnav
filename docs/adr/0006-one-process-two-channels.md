@@ -12,3 +12,6 @@ Accepted for now, deliberately revisitable. The terminal client now exists (`nav
 own private server, or connects to a running one with `--url`, so it does not yet share a navigator
 with the editor. A separate daemon with the Language Server reduced to a relay becomes the better
 shape once several editors or a TUI must share one navigator.
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

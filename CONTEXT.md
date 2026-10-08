@@ -1,4 +1,4 @@
-# Navai
+# WithNav
 
 A pair-programming system in which the human keeps the keyboard and stays the author of the code,
 while several models of different speeds watch, complete, judge and discuss. It exists to get the
@@ -6,20 +6,20 @@ speed of AI assistance without losing the developer's mental model of their own 
 
 ## Roles
 
-**Driver**:
-The human writing the code. The driver is the default author of every line.
+**Captain**:
+The human writing the code. The Captain is the default author of every line.
 _Avoid_: user (when authorship matters), pilot
 
-**Navigator**:
-The whole assisting system as the driver perceives it: a colleague watching over the shoulder who
-completes, remarks and discusses, but does not take the keyboard.
+**Nav**:
+The Captain’s single point of contact, running the `build` and `plan` agents in Cognition.
+WithNav is the whole assisting system; Nav guides, discusses and implements delegated work.
 _Avoid_: copilot, assistant, agent (for the whole system)
 
 ## Layers
 
 The layer, model and agent vocabulary below describes the implementation prepared for **v0.5.0**;
 see [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md). It does not describe which
-version is installed on the driver's machine.
+version is installed on the Captain's machine.
 
 **Layer**:
 One of four cognitive roles: reflex, instinct, metacognition and cognition. The first three each
@@ -27,45 +27,64 @@ have one configured model at a time; cognition runs agents in parallel sessions.
 flows are planned for 0.6.
 _Avoid_: model tier, model alias
 
-**Reflex**:
-The fastest layer: completes what the driver is typing, as ghost text, from a fill-in-the-middle
+**Reflex · Completion**:
+The fastest layer: completes what the Captain is typing, as ghost text, from a fill-in-the-middle
 model, only in editor contexts.
 _Avoid_: autocomplete layer, FIM layer
 
-**Instinct**:
+**Instinct · Triage**:
 The decision layer: answers bounded, typed questions (choice, score, yes-probability) about the
 current situation to sort, route, filter and gate; it never produces free text.
 _Avoid_: classifier, router, Jev (Jev is one provider of this layer, not the layer)
 
-**Metacognition**:
+**Metacognition · Beacon**:
 The fast reflective layer: watches both the code being written and the conversation, judges whether
 the code matches the intent, produces remarks, and can wake the cognition.
 _Avoid_: observer, critic, flash (a flash model is its current engine, not its role)
 
-**Cognition**:
-The deliberate layer: the high-level conversation with the driver about concepts, features, intent
+**Cognition · Nav and the crew**:
+The deliberate layer: the high-level conversation with the Captain about concepts, features, intent
 and problems, with the full agentic toolset.
 _Avoid_: main agent, chat, frontier (a frontier model is its engine, not its role)
+
+## Feature labels
+
+**Logbook · Activity history**: the recorded activity and decision history.
+
+**Voyage · Session**: one session with its transcript, selected agent and model.
+
+Safe Harbor · Checkpoint names the existing compaction checkpoint defined below.
 
 ## Outputs
 
 **Suggestion**:
-Ghost text offered by the reflex at the cursor; it becomes code only when the driver accepts it.
+Ghost text offered by the reflex at the cursor; it becomes code only when the Captain accepts it.
 _Avoid_: completion (ambiguous with chat completions)
 
-**Remark**:
-A short, line-anchored comment from the metacognition, shown discreetly next to the code; it never
-changes the code.
+**Beacon · Remark**:
+A short, line-anchored Metacognition remark, signed by Nav and shown beside the code;
+it never changes the code. The layer itself has no persona.
 _Avoid_: hint, diagnostic, comment
 
 **Delegation**:
-The driver explicitly asking the cognition to do a piece of work itself instead of guiding them
-through it; without a delegation, the cognition assists and the driver writes the code.
+The Captain explicitly asking the cognition to do a piece of work itself instead of guiding them
+through it; without a delegation, the cognition assists and the Captain writes the code.
 _Avoid_: autopilot, vibe mode
 
 **Verdict**:
-The driver's rating of a remark: useful, noise, or dismissed.
+The Captain's rating of a remark: useful, noise, or dismissed.
 _Avoid_: feedback, vote
+
+## Crew
+
+Each member has a name and glyph; colour alone never identifies a member.
+
+- **Nav · The Navigator** (`build`, `plan`): the primary contact for implementation and planning.
+- **Vigie · The Lookout** (`vigie`): read-only code, documentation and web scouting, with sources.
+- **Lux · The Expert Advisor** (`lux`): read-only analysis and recommendations.
+- **Mousse · The Lightweight Deckhand** (`mousse`): small local edits after approval.
+- **Cartographe · The Cartographer** (`cartographe`): on-demand maps, writing Mermaid charts to `.withnav/charts/`.
+- **Sondeur · The Deep Diver** (`sondeur`): on-demand root-cause work; tests and profilers after approval.
 
 ## Agents
 
@@ -77,14 +96,14 @@ An invalid nondefault model assignment falls back to the default agent's model w
 warning; an invalid default agent or unusable default model prevents startup.
 
 **Agent**:
-The role cognition plays, such as `build`, `plan`, `explore`, `review` or a custom role: its prompt,
+The role cognition plays, such as `build`, `plan`, `vigie`, `lux` or a custom role: its prompt,
 tools, access and optional assigned model and variant. A configured assignment takes precedence
 over the model in its markdown header.
 _Avoid_: model, profile, persona
 
 **Default agent**:
-The agent a new session starts with unless the driver chooses another: configured by
-`default_agent`, or `build` when absent. It must have a usable model or Navai cannot start.
+The agent a new session starts with unless the Captain chooses another: configured by
+`default_agent`, or `build` when absent. It must have a usable model or WithNav cannot start.
 _Avoid_: default model, default alias
 
 **Editor session**:
@@ -95,7 +114,7 @@ _Avoid_: navigator profile, session profile
 
 **Primary agent**:
 The role a session runs as: `build` (implement, verify, report), `plan` (research, write markdown
-plans, delegate) or a custom one. The driver selects it for the session and can switch between turns.
+plans, delegate) or a custom one. The Captain selects it for the session and can switch between turns.
 It sets what the model is told to do, not what it may execute.
 _Avoid_: mode (a mode is where an agent definition may be used), persona
 
@@ -106,7 +125,7 @@ _Avoid_: profile, session type
 
 **Subagent**:
 An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
-(`explore` and `review` are built in and read-only). A cognition session may start one through
+(`vigie` and `lux` are built in and read-only). A cognition session may start one through
 `task(agent, prompt)` from either the terminal or an editor root conversation. Children never
 register with the conversation feed or receive the navigator's `intent` tool. Their results use
 normal durable delivery, not navigator wakes; the root digest labels them as untrusted subagent text.
@@ -115,7 +134,7 @@ intersected snapshot of the parent's policy, a durable parent-child link, and bo
 result. `subagent.spawned` and `subagent.done` are replayable events. Results enter the parent's
 transcript once, as bounded untrusted user messages at a turn boundary. `steer` delivery can use
 a safe boundary within its running turn. Completion wakes an idle parent, but cannot answer its
-pending interaction. Child permissions are answered by the driver
+pending interaction. Child permissions are answered by the Captain
 through the parent's API, with the interaction and grants remaining on the child. Parent stop and
 delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
@@ -141,9 +160,9 @@ _Avoid_: step event (observation is not an injection boundary)
 Parent guidance injected into a running child's transcript at its next safe boundary, without
 restarting the turn. A parked interaction or watchdog doubt keeps it queued. Guidance is queued
 in memory and can be lost in a crash. `Parent` provenance prevents guidance
-from replacing the driver's instruction for compaction or the plan guard. A child result whose
+from replacing the Captain's instruction for compaction or the plan guard. A child result whose
 delivery mode is `steer` uses the same boundary on the parent, with untrusted subagent provenance.
-_Avoid_: driver message, permission answer
+_Avoid_: Captain message, permission answer
 
 **Interrupt**:
 Cancel only the current turn, settle its outstanding tool results, record interrupted `turn.end`,
@@ -158,16 +177,16 @@ evidence every 300 seconds (`agent.watchdog_interval_secs`; 0 disables), bound t
 `active` continues; `stuck` stops before the next provider request once every tool result is in.
 `doubt`, including two consecutive judge failures, gets one tool-free metacognition review with a
 20-second deadline. Continue resumes with the remaining steps; stop settles the batch and stops; hesitation, invalid
-output, timeout or an unavailable reviewer pauses at that boundary and asks the driver to Continue
+output, timeout or an unavailable reviewer pauses at that boundary and asks the Captain to Continue
 (`alt+c`) or Stop. Permission and ask waits are not judged or answered by this mechanism.
 At the settled boundary, a pause snapshots the transcript, publishes a typed yield with its turn
 identity and unique incarnation/hold token, and ends the turn as yielded. Owner Continue consumes
-that token once; late answers cannot release a newer pause. Resolution, expiry and driver-message
+that token once; late answers cannot release a newer pause. Resolution, expiry and Captain-message
 supersession are sequenced notices. Restart expires the hold, retains the checkpoint and waits
-for fresh driver input. Navigator wakes and child results cannot release a hold or renew a parked
-budget. A real driver message replaces the paused turn and records its interruption.
-Recovery installs a separate fresh-driver gate even after publishing expiry; pending child
-completions and autonomous inbox messages stay held until HTTP or CLI driver input clears it.
+for fresh Captain input. Navigator wakes and child results cannot release a hold or renew a parked
+budget. A real Captain message replaces the paused turn and records its interruption.
+Recovery installs a separate fresh-Captain gate even after publishing expiry; pending child
+completions and autonomous inbox messages stay held until HTTP or CLI Captain input clears it.
 Only a consumed instruction checkpointed atomically with its gate-release event clears recovery's
 gate. Durable `message.received` is admission, not proof of transcript consumption. A crash before
 that checkpoint keeps the gate closed on the next recovery. Owner Continue on a budget-parked
@@ -175,8 +194,8 @@ child claims accepted interrupt replacements exactly once before requesting anot
 Supersession names the old turn in the pause-resolution event, never a second terminal event.
 Accepted deferred model/compact operations receive correlated cancellation at a watchdog pause.
 Without instinct, or with supervision disabled, the session announces a renewable 500-step fallback
-cap instead. Only explicit owner Continue or fresh driver input renews it. An explicit
-`NAVAI_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.
+cap instead. Only explicit owner Continue or fresh Captain input renews it. An explicit
+`WITHNAV_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.
 
 The instinct's separate progress check for a running background child, every 300 seconds by
 default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
@@ -188,7 +207,7 @@ unavailable, timed-out or invalid answers also yield doubt; one is silent. Permi
 and doubt-parked children are not checked, and missed intervals are discarded.
 
 Only the owning root cognition can use `decide_subagent(child_id, decision, note?)` to continue
-or stop a watchdog doubt. This cannot approve a tool or renew a step budget. The driver's existing
+or stop a watchdog doubt. This cannot approve a tool or renew a step budget. The Captain's existing
 Stop and owner Continue endpoints still work. `subagent.watchdog` is a durable parent-stream
 verdict with `child_session_id`, `verdict`, `reason` and `checked_at`; evidence is untrusted data.
 Recovery stops doubts like any other unfinished child; watchdog state is not restored.
@@ -230,19 +249,19 @@ _Avoid_: tool, action (an action is what a flow proposes)
 
 ## Permissions
 
-**Driver request**:
-The driver's own latest human-ingress message. Explicitly requested effects establish intent,
+**Captain request**:
+The Captain's own latest human-ingress message. Explicitly requested effects establish intent,
 not instructions to the reviewers about their verdict. Tool arguments, assistant text and parent
 delegations remain untrusted evidence. Approval still requires understood, recoverable effects;
-protected configuration always requires a typed driver answer.
+protected configuration always requires a typed Captain answer.
 
-Navai's explicitly configured config directory is a protected root: native writes/edits ask the
-driver before any model review, including symlinks. Scratch never overlaps this root.
+WithNav's explicitly configured config directory is a protected root: native writes/edits ask the
+Captain before any model review, including symlinks. Scratch never overlaps this root.
 Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
 
 **Scratch directory**:
-Two independently checked roots default to private `$XDG_RUNTIME_DIR/navai` (fallback
-`~/.cache/navai/scratch`) then shared `<temp_dir>/navai`. `permissions.scratch_dirs` is an ordered
+Two independently checked roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback
+`~/.cache/withnav/scratch`) then shared `<temp_dir>/withnav`. `permissions.scratch_dirs` is an ordered
 absolute-path list; `[]` disables both. Native scratch approval binds the root inode through dispatch.
 These private owned roots are available across projects and children.
 Scratch changes count as project-local during review. The ordered absolute-path list is snapshotted
@@ -252,14 +271,14 @@ Outside-project file changes receive review like bash effects; approval never ex
 **Permission review**:
 An advisory per-call classification by the instinct, followed for risky or outside-project
 mutations by synchronous metacognition review. Only explicit approval runs those calls;
-uncertainty, malformed answers and deadlines escalate to the driver. Not a sandbox.
+uncertainty, malformed answers and deadlines escalate to the Captain. Not a sandbox.
 
 Native `read` within readable roots remains ungated, except sensitive targets. Native `grep` and
 `glob` stay confined to readable roots and skip sensitive entries before opening them, with a count.
 Outside single-file reads use the same per-call classification as bash. Approval binds one canonical target,
 re-resolved before dispatch and opened without following replacement links. No root is added.
-Credential/key targets deterministically force risky review and then a typed driver decision even
-if both models approve. A risky read-only bash call also needs review. Reading ordinary Navai
+Credential/key targets deterministically force risky review and then a typed Captain decision even
+if both models approve. A risky read-only bash call also needs review. Reading ordinary WithNav
 configuration follows normal read review; `auth.json` is sensitive.
 Bash is not confined: its sensitive-file detection is best effort (literal canonical operands and
 recognized expansions), not enforcement against arbitrary shell programs. Only native file tools
@@ -267,24 +286,24 @@ enforce the deterministic sensitive-path policy. In-root directory walks still r
 by path; replacement links mid-walk need a future descriptor-relative traversal fix.
 
 **Permission request**:
-A held tool call awaiting a typed driver decision. Bash, write and edit offer allow once or deny;
+A held tool call awaiting a typed Captain decision. Bash, write and edit offer allow once or deny;
 fetch may also offer an origin grant. Chat text never approves a call. A pending request expires
-on restart. Reviewer rejection escalates to the driver rather than finally denying execution.
+on restart. Reviewer rejection escalates to the Captain rather than finally denying execution.
 _Avoid_: confirmation, approval prompt
 
 **Bypass**:
 A per-session setting, off by default and never saved as a preference, that answers ordinary
-permission requests for the driver. When on, a call that would have asked runs once instead,
+permission requests for the Captain. When on, a call that would have asked runs once instead,
 after the usual reviews: their verdicts stay in its evidence and the result is marked
-`approved_by: bypass`. Navai's protected configuration, credential and key targets and a changed
-scratch root still ask the driver (the request says `requires_driver`); validation errors, tool
+`approved_by: bypass`. WithNav's protected configuration, credential and key targets and a changed
+scratch root still ask the Captain (the request says `requires_driver`); validation errors, tool
 policy, read-only agents and outside searches are refused as before, and a question from `ask` is
 never answered. Turning it on also answers an eligible request already waiting. A root session
-sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `navai run --yes`) and its live
+sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `nav run --yes`) and its live
 subagents follow every change; a new subagent starts with the parent's current value. A resumed
 session starts off, and its history says so. HTTP changes require a configured bearer token and
 an authenticated client, including slash commands; servers without a token allow only state reads.
-The in-process `navai run --yes` path does not require HTTP authentication.
+The in-process `nav run --yes` path does not require HTTP authentication.
 Not a sandbox: bash keeps its ambient access.
 _Avoid_: auto-approve, yolo, allow all
 
@@ -316,7 +335,7 @@ _Avoid_: memory, context window
 
 **Intent record**:
 The durable part of the shared context: current intent, plan and decisions, readable and editable by
-the driver and kept under version control.
+the Captain and kept under version control.
 _Avoid_: plan file, notes
 
 **Live state**:
@@ -332,7 +351,7 @@ _Avoid_: escalate, trigger (a trigger is an instinct input)
 **Wake hold**:
 The rule that, while a conversation waits for an answer to an `ask` or for a permission decision, a
 wake from the navigator is kept back instead of delivered. Only the latest held wake is kept, and it
-is delivered once nothing is pending. Driver text, unlike a wake, still cancels a permission request.
+is delivered once nothing is pending. Captain text, unlike a wake, still cancels a permission request.
 _Avoid_: mute, queue
 
 **Trigger**:
@@ -363,7 +382,7 @@ The feature: flows run by the instinct layer, edited in the studio.
 _Avoid_: Jev flows
 
 **Studio**:
-The editor where the driver draws, tests and saves flows, and asks the engine to reload them.
+The editor where the Captain draws, tests and saves flows, and asks the engine to reload them.
 _Avoid_: flow editor (fine in prose, not as a name), canvas (the canvas is one part of it)
 
 **Flow**:
@@ -422,13 +441,13 @@ _Avoid_: state, memory, setting
 
 **Workspace flow** / **Global flow**:
 Where a flow definition lives: in the workspace, read only once the workspace is trusted, or in the
-driver's own configuration, for every workspace. A workspace flow replaces a global flow of the
-same name. The driver chooses where when creating the flow.
+Captain's own configuration, for every workspace. A workspace flow replaces a global flow of the
+same name. The Captain chooses where when creating the flow.
 _Avoid_: project flow, user flow
 
 **Action** (flows):
-What a chain ends with: something Navai does, chosen from the closed list Navai offers. A flow
-can make Navai more careful (deny a tool call, ask the driver) but never less: an action that does
+What a chain ends with: something WithNav does, chosen from the closed list WithNav offers. A flow
+can make WithNav more careful (deny a tool call, ask the Captain) but never less: an action that does
 not object leaves the normal permission review in place. Actions never run arbitrary code.
 _Avoid_: outcome, effect, allow (say "no objection")
 
@@ -436,7 +455,7 @@ _Avoid_: outcome, effect, allow (say "no objection")
 What a flow does when its run fails: the whole run's actions are replaced by it, even if some
 branches had already concluded. One general fallback (on failure) may be specialised per kind of
 failure (on timeout, on provider error, on invalid answer). The failure message is always kept in
-the trace. Without a fallback, a blocking flow asks the driver and an asynchronous flow does
+the trace. Without a fallback, a blocking flow asks the Captain and an asynchronous flow does
 nothing.
 _Avoid_: on timeout (a timeout is one kind of failure), default action
 
@@ -464,7 +483,7 @@ Re-running recorded answers through a flow definition without calling any model.
 _Avoid_: re-evaluation (that calls the model again)
 
 **Workspace trust**:
-One explicit driver decision that lets a workspace's own flow definitions read the context they declare. It activates nothing and grants no tool permission or model destination.
+One explicit Captain decision that lets a workspace's own flow definitions read the context they declare. It activates nothing and grants no tool permission or model destination.
 _Avoid_: permission, approval
 
 ## Context budget
@@ -480,7 +499,7 @@ catalog, tools and messages, and it is shown as an estimate (`~42k`). It is neve
 of the last request (`last_usage`), and never the session's cumulative usage.
 _Avoid_: token limit, quota
 
-**Checkpoint**:
+**Safe Harbor · Checkpoint**:
 The summary that stands for the start of a conversation once it was compacted: `{through_message,
 summary, generation}` plus the tool outputs the prompt shows as elision markers. The full
 transcript is never rewritten: `sessions.transcript` keeps every message, and the checkpoint is a

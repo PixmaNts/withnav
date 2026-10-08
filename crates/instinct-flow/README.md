@@ -2,7 +2,7 @@
 
 An independent Cargo library and CLI. It validates immutable decision graphs, calls an
 explicit decision-client seam, and returns proposed actions and a private JSON capture.
-It never applies actions, reads Navai settings, resolves credentials or stores captures.
+It never applies actions, reads WithNav settings, resolves credentials or stores captures.
 
 ## Host API
 

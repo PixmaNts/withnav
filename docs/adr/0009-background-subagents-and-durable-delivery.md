@@ -92,3 +92,6 @@ They build on the separate role and permission rules of ADR 0008.
 - The driver remains the authority for effects. Delegation does not expand permission.
 - The event catalog has 22 kinds. Live result text reuses `message.received`.
 - Shared writable workspaces are not sandboxes. Concurrent children can still edit the same files.
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

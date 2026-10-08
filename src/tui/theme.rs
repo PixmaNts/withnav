@@ -63,7 +63,10 @@ impl ThemeId {
     }
 
     pub fn is_light(self) -> bool {
-        matches!(self, ThemeId::AyuLight | ThemeId::NordLight | ThemeId::TideLight | ThemeId::MossLight)
+        matches!(
+            self,
+            ThemeId::AyuLight | ThemeId::NordLight | ThemeId::TideLight | ThemeId::MossLight
+        )
     }
 
     pub fn palette(self) -> Theme {
@@ -105,7 +108,6 @@ pub struct Theme {
     pub mousse: Color,
     pub cartographe: Color,
     pub sondeur: Color,
-
 }
 
 const fn hex(rgb: u32) -> Color {
@@ -153,7 +155,6 @@ impl Theme {
             mousse: hex(0xf89177),
             cartographe: hex(0xdca3e5),
             sondeur: hex(0xa3b3f8),
-
         }
     }
 
@@ -180,7 +181,6 @@ impl Theme {
             mousse: hex(0xb14328),
             cartographe: hex(0x85468f),
             sondeur: hex(0x4d5aac),
-
         }
     }
 
@@ -207,7 +207,6 @@ impl Theme {
             mousse: hex(0xf89177),
             cartographe: hex(0xdca3e5),
             sondeur: hex(0xa3b3f8),
-
         }
     }
 
@@ -234,7 +233,6 @@ impl Theme {
             mousse: hex(0xb14328),
             cartographe: hex(0x85468f),
             sondeur: hex(0x4d5aac),
-
         }
     }
 
@@ -421,6 +419,16 @@ mod tests {
 
     #[test]
     fn every_theme_has_its_design_values() {
+        assert_eq!(Theme::default().id, ThemeId::TideDark);
+        assert_eq!(Theme::tide_dark().nav, hex(0x5ecaed));
+        assert_eq!(Theme::tide_light().vigie, hex(0x107460));
+        for id in ThemeId::ALL {
+            let theme = id.palette();
+            assert_eq!(
+                theme.lux,
+                hex(if id.is_light() { 0x8f5d04 } else { 0xf8ca65 })
+            );
+        }
         assert_eq!(Theme::ayu_dark().bg, Color::Rgb(0x0b, 0x0e, 0x14));
         assert_eq!(Theme::ayu_dark().accent, Color::Rgb(0xe6, 0xb4, 0x50));
         assert_eq!(Theme::ayu_light().accent_text, Color::Rgb(0xa3, 0x5f, 0x00));

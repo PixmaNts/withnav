@@ -95,8 +95,8 @@ pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
             Span::styled(
                 format!(
                     " · {}",
-                    if source == "driver" {
-                        "driver approved".into()
+                    if matches!(source, "driver" | "captain") {
+                        "Captain approved".into()
                     } else {
                         format!("auto · {}", reviewer(source))
                     }
@@ -111,7 +111,7 @@ pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
 fn review_source(metadata: &Value) -> Option<&str> {
     metadata["permission_gate"]["source"]
         .as_str()
-        .filter(|s| matches!(*s, "jev" | "metacognition" | "driver"))
+        .filter(|s| matches!(*s, "jev" | "metacognition" | "driver" | "captain"))
 }
 fn reviewer(source: &str) -> &str {
     if source == "jev" {
@@ -133,7 +133,7 @@ pub(crate) fn approval_text(kind: &BlockKind) -> Vec<String> {
     };
     let mut lines = Vec::new();
     let gate = &metadata["permission_gate"];
-    if let Some(source) = review_source(metadata).filter(|s| *s != "driver") {
+    if let Some(source) = review_source(metadata).filter(|s| !matches!(*s, "driver" | "captain")) {
         let verdicts = &gate["verdicts"];
         let mut evidence = Vec::new();
         for (key, values) in [

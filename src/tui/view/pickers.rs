@@ -49,19 +49,23 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                     && a.id.to_lowercase().contains(&ui.filter.to_lowercase())
             })
             .map(|a| {
-                Line::from(format!(
-                    "{}{} · {}",
-                    if a.id == state.default_agent {
-                        "● "
-                    } else {
-                        "  "
-                    },
-                    a.id,
-                    a.effective
-                        .as_ref()
-                        .map(|s| s.model.as_str())
-                        .unwrap_or("unassigned")
-                ))
+                Line::styled(
+                    format!(
+                        "{}{} /{} · {}",
+                        if a.id == state.default_agent {
+                            "● "
+                        } else {
+                            "  "
+                        },
+                        super::sidebar::agent_label(&a.id),
+                        a.id,
+                        a.effective
+                            .as_ref()
+                            .map(|s| s.model.as_str())
+                            .unwrap_or("unassigned")
+                    ),
+                    super::sidebar::agent_style(&a.id, theme),
+                )
             })
             .collect(),
         Overlay::Skills => commands::skill_rows(state, &ui.filter)
@@ -83,7 +87,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .iter()
             .map(|child| {
                 Line::from(vec![
-                    Span::styled(child.name.clone(), theme.subagent()),
+                    Span::styled(
+                        super::sidebar::agent_label(&child.name),
+                        super::sidebar::agent_style(&child.name, theme),
+                    ),
                     Span::styled(
                         format!(
                             " · {} · {}",

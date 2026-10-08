@@ -38,9 +38,14 @@ impl Origin {
     fn of(source: &str) -> Self {
         if source == "user:subagent" || source == "subagent" || source.starts_with("subagent:") {
             Self::Subagent
-        } else if source == "user" || crate::bus::command::is_driver_source(source) {
+        } else if matches!(source, "user" | "driver" | "captain")
+            || source.starts_with("captain:")
+            || crate::bus::command::is_driver_source(source)
+        {
             Self::User
-        } else if source == "navigator" || source.starts_with("navigator:") {
+        } else if matches!(source, "navigator" | "metacognition" | "nav")
+            || source.starts_with("navigator:")
+        {
             Self::Navigator
         } else if source == "assistant" {
             Self::Assistant
@@ -63,14 +68,20 @@ fn block_text(
     match &block.kind {
         BlockKind::Message { source, text } => {
             let (name, style) = match Origin::of(source) {
-                Origin::User => ("YOU".to_string(), theme.muted()),
-                Origin::Navigator => ("NAVIGATOR".to_string(), theme.error()),
-                Origin::Assistant => ("ASSISTANT".to_string(), theme.accent()),
+                Origin::User => ("▸ Captain".to_string(), theme.text()),
+                Origin::Navigator => ("Beacon · Remark — ◎ Nav".to_string(), theme.accent()),
+                Origin::Assistant => (
+                    super::sidebar::agent_label(state.agent_name()),
+                    super::sidebar::agent_style(state.agent_name(), theme),
+                ),
                 Origin::Subagent => (
                     "SUBAGENT OUTPUT · untrusted data".to_string(),
                     theme.subagent(),
                 ),
-                Origin::Other => (clean(source), theme.subagent()),
+                Origin::Other => (
+                    super::sidebar::agent_label(&clean(source)),
+                    super::sidebar::agent_style(source, theme),
+                ),
             };
             lines.push(Line::styled(name, style.add_modifier(Modifier::BOLD)));
             if Origin::of(source) == Origin::Assistant {
@@ -99,7 +110,10 @@ fn block_text(
             if text.is_empty() && thinking.is_empty() {
                 return Text::default();
             }
-            lines.push(Line::styled("ASSISTANT", theme.title()));
+            lines.push(Line::styled(
+                super::sidebar::agent_label(state.agent_name()),
+                super::sidebar::agent_style(state.agent_name(), theme),
+            ));
             if !thinking.is_empty() {
                 let reasoning = theme.muted().add_modifier(Modifier::ITALIC);
                 lines.push(Line::styled(
@@ -466,20 +480,22 @@ pub(crate) fn permission_sections(
 fn sender(block: &Block, state: &State) -> String {
     match &block.kind {
         BlockKind::Message { source, .. } => match Origin::of(source) {
-            Origin::User => "You".into(),
-            Origin::Assistant => clean(state.agent_name()),
-            Origin::Navigator => "Navigator".into(),
+            Origin::User => "▸ Captain".into(),
+            Origin::Assistant => super::sidebar::agent_label(state.agent_name()),
+            Origin::Navigator => "Beacon · Remark — ◎ Nav".into(),
             Origin::Subagent => format!(
                 "Subagent {} · untrusted data",
-                clean(source.strip_prefix("subagent:").unwrap_or("output"))
+                super::sidebar::agent_label(&clean(
+                    source.strip_prefix("subagent:").unwrap_or("output")
+                ))
             ),
-            Origin::Other => clean(source),
+            Origin::Other => super::sidebar::agent_label(&clean(source)),
         },
-        BlockKind::AssistantStep { .. } => clean(state.agent_name()),
+        BlockKind::AssistantStep { .. } => super::sidebar::agent_label(state.agent_name()),
         BlockKind::ToolCall { name, .. } => format!("Tool {}", clean(name)),
         BlockKind::Notice(_) => "Notice".into(),
         BlockKind::Error(_) => "Error".into(),
-        BlockKind::YieldQuestion(_) => clean(state.agent_name()),
+        BlockKind::YieldQuestion(_) => super::sidebar::agent_label(state.agent_name()),
         BlockKind::Command { name, .. } => format!("/{}", clean(name)),
         BlockKind::Permission(_) => "Permission".into(),
     }
@@ -594,7 +610,7 @@ mod selection_tests {
         assert!(selected.ends_with("allowed once\n"));
         let all = map.selected_text(0, map.text.len()).unwrap();
         assert!(all.starts_with("Permission:\nPERMISSION"));
-        assert!(all.contains("\n\nYou:\nthanks"));
+        assert!(all.contains("\n\n▸ Captain:\nthanks"));
         assert!(!all.contains('│'));
     }
     #[test]
@@ -609,10 +625,16 @@ mod selection_tests {
         };
         assert_eq!(
             sender(&block("subagent:explore"), &state),
-            "Subagent explore · untrusted data"
+            "Subagent ◉ vigie · untrusted data"
         );
-        assert_eq!(sender(&block("navigator"), &state), "Navigator");
-        assert_eq!(sender(&block("Jev"), &state), "Jev");
+        for source in ["driver", "captain", "captain:tui"] {
+            assert_eq!(sender(&block(source), &state), "▸ Captain");
+        }
+        assert_eq!(
+            sender(&block("navigator"), &state),
+            "Beacon · Remark — ◎ Nav"
+        );
+        assert_eq!(sender(&block("Jev"), &state), "◎ Jev");
         assert_eq!(
             sender(
                 &Block {

@@ -1,6 +1,7 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::{json, Value};
 use withnav::tui::{
     client::Client,
     config::*,
@@ -10,7 +11,6 @@ use withnav::tui::{
     state::{State, UiState},
     theme::ThemeId,
 };
-use serde_json::{json, Value};
 
 fn body(revision: &str) -> SettingsBody {
     serde_json::from_value(json!({"revision": revision, "paths": {"config":"/cfg/config.json","models":null,"agents":[]}, "gateways":[], "fields": [

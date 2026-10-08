@@ -661,7 +661,7 @@ fn pick_theme(runtime: &mut Runtime, steps: usize) {
 async fn a_picked_theme_is_saved_and_restored_at_the_next_start() {
     let dir = tempfile::tempdir().unwrap();
     let mut runtime = Runtime::new(&options_in(dir.path()));
-    assert_eq!(runtime.ui.theme, ThemeId::AyuDark);
+    assert_eq!(runtime.ui.theme, ThemeId::TideDark);
     pick_theme(&mut runtime, 3);
     assert_eq!(runtime.ui.theme, ThemeId::NordLight);
     runtime.executor().flush_saves().await;

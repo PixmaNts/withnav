@@ -1,4 +1,4 @@
-//! The header row: `◆ navai`, the workspace, the git branch and its changes on the left; the
+//! The header row: `◆ withnav`, the workspace, the git branch and its changes on the left; the
 //! agent and the model in use (model_id · model · variant · context gauge) on the right. What does
 //! not fit is dropped, least useful first.
 use super::{
@@ -81,7 +81,10 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme)
                     ),
                     theme.title(),
                 ),
-                Span::styled(format!("  ▌{}", fit_end(agent, 14)), theme.subagent()),
+                Span::styled(
+                    format!("  ▌{}", fit_end(&super::sidebar::agent_label(agent), 14)),
+                    theme.subagent(),
+                ),
                 Span::styled(
                     format!(
                         " · {}",
@@ -110,10 +113,10 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme)
     let (used, window, percent) = context_gauge(state);
 
     // Left: the logo always; the branch, then the path, as room allows.
-    let logo = vec![Span::styled(
-        " ◆ navai",
-        theme.accent().add_modifier(Modifier::BOLD),
-    )];
+    let logo = vec![
+        Span::styled(" ◆", ratatui::style::Style::default().fg(theme.nav)),
+        Span::styled(" withnav", theme.strong()),
+    ];
     let branch = state.git.as_ref().map(|git| {
         let name = git.branch.as_deref().unwrap_or("detached");
         let mut spans = vec![
@@ -137,7 +140,10 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme)
     let lead = vec![
         Span::styled("▌", agent_style),
         Span::styled(
-            fit_end(agent, (total / 6).max(4)),
+            fit_end(
+                &format!("{} /{agent}", super::sidebar::agent_label(agent)),
+                (total / 5).max(8),
+            ),
             agent_style.add_modifier(Modifier::BOLD),
         ),
         Span::styled(

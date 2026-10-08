@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import { migratedValue } from "./storage";
 
-export const EXPANDED_WORKSPACES_KEY = "navai.expanded-workspaces";
+export const EXPANDED_WORKSPACES_KEY = "withnav.expanded-workspaces";
 
-export function readExpandedWorkspaces(current: string | null, storage: Pick<Storage, "getItem">): Set<string> {
+export function readExpandedWorkspaces(current: string | null, storage: Pick<Storage, "getItem" | "setItem" | "removeItem">): Set<string> {
   try {
-    const saved = storage.getItem(EXPANDED_WORKSPACES_KEY);
+    const saved = migratedValue(storage, EXPANDED_WORKSPACES_KEY, "navai.expanded-workspaces");
     if (saved !== null) {
       const paths: unknown = JSON.parse(saved);
       if (Array.isArray(paths) && paths.every((path) => typeof path === "string" && path.startsWith("/"))) return new Set(paths);

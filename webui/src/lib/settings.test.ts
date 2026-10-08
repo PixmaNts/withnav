@@ -98,7 +98,7 @@ describe("sidebar summaries", () => {
   });
   it("label the users of a gateway like the design", () => {
     expect(usedByLabel("layers.reflex")).toBe("reflex");
-    expect(usedByLabel("agents.build")).toBe("cognition · build");
+    expect(usedByLabel("agents.build")).toBe("cognition · Nav · The Navigator");
   });
 });
 

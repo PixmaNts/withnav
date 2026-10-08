@@ -9,16 +9,15 @@
 // a key. The gateway test lists the gateway's models with its real key.
 
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { devConfigDir } from "./legacyConfig.ts";
 import { join } from "node:path";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
-const configDir = process.env.WITHNAV_CONFIG_DIR ?? process.env.NAVAI_CONFIG_DIR ?? (existsSync(join(homedir(), ".config", "withnav")) ? join(homedir(), ".config", "withnav") : join(homedir(), ".config", "navai"));
+const configDir = devConfigDir();
 const THEMES = ["ayu-dark", "ayu-light", "nord-dark", "nord-light", "tide-dark", "tide-light", "moss-dark", "moss-light"];
 const LAYER_API: Record<string, string> = { reflex: "fim", instinct: "systemone", metacognition: "chat" };
 const MAX_SECS = 31_536_000;

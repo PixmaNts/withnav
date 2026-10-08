@@ -1,8 +1,9 @@
 // The four themes of the design (docs/design/README.md, "Design tokens — themes").
 // Colours live in theme.css as custom properties keyed by `data-theme`.
 
+import { migratedValue } from "../lib/storage";
 export const THEMES = [
-  { id: "tide-dark", label: "Ayu Dark", dark: true },
+  { id: "ayu-dark", label: "Ayu Dark", dark: true },
   { id: "ayu-light", label: "Ayu Light", dark: false },
   { id: "nord-dark", label: "Nord Dark", dark: true },
   { id: "nord-light", label: "Nord Light", dark: false },
@@ -17,7 +18,7 @@ export type ThemeId = (typeof THEMES)[number]["id"];
 const KEY = "withnav.theme";
 
 export function storedTheme(): ThemeId {
-  const value = localStorage.getItem(KEY) ?? localStorage.getItem("navai.theme");
+  const value = migratedValue(localStorage, KEY, "navai.theme");
   return THEMES.some((t) => t.id === value) ? (value as ThemeId) : "tide-dark";
 }
 

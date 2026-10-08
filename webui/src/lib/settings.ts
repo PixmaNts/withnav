@@ -121,7 +121,7 @@ export function fileLines(paths: SettingsBody["paths"] | undefined): string[] {
 /** `layers.metacognition` → `metacognition`, `agents.build` → `cognition · build`. */
 export function usedByLabel(key: string): string {
   if (key.startsWith("layers.")) return key.slice("layers.".length);
-  if (key.startsWith("agents.")) return `cognition · ${key.slice("agents.".length)}`;
+  if (key.startsWith("agents.")) return `cognition · ${crewLabel(key.slice("agents.".length))}`;
   return key;
 }
 
@@ -252,3 +252,4 @@ export function statusLine(state: SaveState, applies?: SettingApplies): { tone: 
   const when = state.status === "saved" ? appliesText(applies) : null;
   return { tone: "ok", text: when ? `Saved · ${when[0]!.toLowerCase()}${when.slice(1)}` : "Saved" };
 }
+import { crewLabel } from "../components/Crew";

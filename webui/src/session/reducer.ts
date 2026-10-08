@@ -62,6 +62,7 @@ export interface Permission {
 export type Item =
   | { kind: "driver"; key: string; text: string; skill?: string }
   | { kind: "wake"; key: string; text: string; note: WakeNote }
+  | { kind: "beacon"; key: string; text: string }
   | { kind: "subagent-result"; key: string; text: string; source: string; agent?: string; outcome?: string; childId?: string }
   | Turn
   /** A permission asked outside any turn shown here (a stream cut mid-turn). */
@@ -163,7 +164,9 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       const text = str(p.content);
       const key = `m:${envelope.seq}`;
       const author = authorOf(source);
-      if (author === "driver") {
+      if (source === "metacognition" || source === "metacognition:remark") {
+        next.items = [...next.items, { kind: "beacon", key, text }];
+      } else if (author === "driver") {
         const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
         next.items = [...next.items, { kind: "driver", key, text, skill }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];

@@ -176,7 +176,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           rows={1}
           value={text}
           disabled={!!disabled}
-          placeholder={disabled ?? "Message cognition…  /skill  /command"}
+          placeholder={disabled ?? "What course would you like to set?  /skill  /command"}
           onChange={(e) => {
             setText(e.target.value);
             setSlashDismissed(false);
@@ -184,7 +184,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           onKeyDown={onKey}
         />
         <div className="composer-row">
-          <button type="button" className="chip" onClick={props.onToggleAgent} disabled={!!disabled} title="Switch build / plan (Tab on an empty message)">
+          <button type="button" className="chip" onClick={props.onToggleAgent} disabled={!!disabled} title="Switch Nav between work and route planning (Tab on an empty message)">
             <Crew id={agent} /> ▾
           </button>
           <button

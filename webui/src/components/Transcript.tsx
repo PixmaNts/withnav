@@ -67,6 +67,8 @@ function ItemView({ item, view, agent, onAnswer, onOpenChild, readOnly }: { item
     }
     case "wake":
       return <Wake item={item} />;
+    case "beacon":
+      return <div className="wake"><div className="byline">Beacon · Remark · <Crew id="nav" /></div><Markdown text={item.text} /></div>;
     case "subagent-result":
       return (
         <div className="sub-result">
@@ -147,7 +149,7 @@ function Reasoning({ text, live }: { text: string; live: boolean }) {
     <details className="reasoning">
       <summary>
         <CaretRight size={11} aria-hidden />
-        {live ? "Reasoning…" : "Reasoning"}
+        {live ? "Thinking. This can take a minute." : "Reasoning"}
       </summary>
       <div className="body">{text}</div>
     </details>

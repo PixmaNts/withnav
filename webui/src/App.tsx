@@ -1,4 +1,4 @@
-import { BrandMark, Crew } from "./components/Crew";
+import { BrandMark, Crew, crewLabel } from "./components/Crew";
 import { Compass, FlowArrow, GearSix, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -150,7 +150,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     const children = Object.values(chat.view.children);
     const items: PaletteCommand[] = [
       { id: "bypass", group: "Session", label: `Turn bypass ${bypass ? "off" : "on"}`, description: "Bypass ordinary permission prompts; protected requests still ask", hint: "", disabled: bypassReason, run: () => void chat.setBypass(!bypass) },
-      { id: "agent", group: "Agent", label: `Switch agent to ${otherAgent}`, hint: "tab", run: toggleAgent, disabled: workspace ? undefined : "Choose a workspace first" },
+      { id: "agent", group: "Agent", label: `Switch to ${crewLabel(otherAgent)}`, hint: "tab", run: toggleAgent, disabled: workspace ? undefined : "Choose a workspace first" },
       { id: "model", group: "Agent", label: "Model for this session…", hint: "/model", run: () => setOverlay("models"), disabled: workspace ? undefined : "Choose a workspace first" },
       {
         id: "subagent",
@@ -161,7 +161,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         page: () => ({
           title: "Subagents",
           placeholder: "Choose a subagent…",
-          items: children.map((c) => ({ id: c.id, group: c.status, label: `@${c.agent}`, description: c.goal.slice(0, 80), run: () => openChild(c.id) })),
+          items: children.map((c) => ({ id: c.id, group: c.status, label: crewLabel(c.agent), description: c.goal.slice(0, 80), run: () => openChild(c.id) })),
         }),
       },
       { id: "delegate", group: "Agent", label: "Delegate to cognition", hint: "", run: () => composer.current?.toggleDelegate(), disabled: workspace ? undefined : "Choose a workspace first" },
@@ -213,7 +213,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       items.push({
         id: `server:${c.name}`,
         group: "Session",
-        label: c.description,
+        label: c.name === "intent" ? "Set the Course" : ["approve", "approve_plan", "confirm_route"].includes(c.name) ? "Confirm the Route" : c.description,
         hint: `/${c.name}`,
         disabled: hasSession ? undefined : "Send a first message to start the session",
         run: () => (c.args_hint.startsWith("<") ? composer.current?.fill(`/${c.name} `) : void runServer(c.name, "")),

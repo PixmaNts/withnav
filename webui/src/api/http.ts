@@ -5,7 +5,8 @@
 // working, a new tab does not inherit it) and stripped from the address bar so
 // it never lands in history or a screenshot. In dev there is no token.
 
-const TOKEN_KEY = "navai.token";
+import { migratedValue } from "../lib/storage";
+const TOKEN_KEY = "withnav.token";
 
 export function adoptTokenFromHash(): void {
   // The server's token is two lowercase ULIDs (Crockford base32), not hex:
@@ -17,7 +18,7 @@ export function adoptTokenFromHash(): void {
 }
 
 export function token(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+  return migratedValue(sessionStorage, TOKEN_KEY, "navai.token");
 }
 
 /** Every listener is told once when the server answers 401. */

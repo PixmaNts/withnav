@@ -8,7 +8,7 @@ import type { Chat } from "../session/useChat";
 export type PanelTab = "intent" | "agents" | "extensions";
 const TABS: [PanelTab, string][] = [
   ["intent", "Intent"],
-  ["agents", "Agents"],
+  ["agents", "Crew"],
   ["extensions", "Extensions"],
 ];
 
@@ -76,7 +76,7 @@ function IntentTab({ workspace }: { workspace: string | null }) {
 
 function AgentsTab({ chat, onOpenChild }: { chat: Chat; onOpenChild: (id: string) => void }) {
   const agents = chat.agents?.agents ?? [];
-  if (!chat.agents) return <div className="panel-empty">Loading agents…</div>;
+   if (!chat.agents) return <div className="panel-empty">Loading the crew…</div>;
   const primaries = agents.filter((a) => a.mode === "primary" || a.mode === "all");
   const subagents = agents.filter((a) => a.mode === "subagent");
   const children = Object.values(chat.view.children);

@@ -1,4 +1,4 @@
-import { Crew } from "../components/Crew";
+import { Crew, crewLabel } from "../components/Crew";
 import { Brain, CaretDown, Compass, Gauge, Lightning, LockSimple, MagnifyingGlass, Star } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentEntry, LayerEntry, ModelEntry } from "../api/types";
@@ -247,10 +247,10 @@ function Cognition({ p, agent, leads, defaultAgent, onAgent, onSearch }: { p: Se
           </label>
           <span className="st-select">
             <select id="st-default-agent" className="mono" value={defaultAgent} onChange={(e) => p.save.save("default_agent", e.target.value)}>
-              {!leads.some((a) => a.id === defaultAgent) && <option value={defaultAgent}>{defaultAgent || "—"}</option>}
+              {!leads.some((a) => a.id === defaultAgent) && <option value={defaultAgent}>{defaultAgent ? crewLabel(defaultAgent) : "—"}</option>}
               {leads.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.id}
+                  {crewLabel(a.id)}
                 </option>
               ))}
             </select>

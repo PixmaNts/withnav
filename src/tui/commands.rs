@@ -19,12 +19,12 @@ pub const CATALOG: &[Command] = &[
     },
     Command {
         name: "/new",
-        description: "new conversation in a new tab",
+        description: "Voyage · Session — new conversation in a new tab",
         args_hint: "[agent]",
     },
     Command {
         name: "/sessions",
-        description: "browse conversations",
+        description: "Voyage · Session — browse conversations",
         args_hint: "",
     },
     Command {

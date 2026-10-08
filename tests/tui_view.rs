@@ -893,10 +893,12 @@ fn buffer_text(s: &State) -> String {
 #[test]
 fn message_labels_follow_the_source_actor_id() {
     for (source, label) in [
-        ("user:http", "YOU"),
-        ("user", "YOU"),
-        ("navigator", "NAVIGATOR"),
-        ("navigator:main", "NAVIGATOR"),
+        ("user:http", "▸ Captain"),
+        ("user", "▸ Captain"),
+        ("driver", "▸ Captain"),
+        ("captain", "▸ Captain"),
+        ("navigator", "Beacon · Remark"),
+        ("navigator:main", "Beacon · Remark"),
         ("cron:nightly", "cron:nightly"),
     ] {
         let mut s = state();

@@ -2,7 +2,7 @@
 source: tests/tui_layers_models.rs
 expression: "picker_lines(&state, &ui, (60, 16)).join(\"\\n\")"
 ---
- ◆ navai                        build  — · assigned · — / — 
+ ◆ withnav               ◎ Nav /build  — · assigned · — / — 
 ────────────────────────────────────────────────────────────
   ┌─────────────────── Choose a model ───────────────────┐  
   │ ❯ filter models…                                     │  

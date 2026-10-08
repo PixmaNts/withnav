@@ -16,7 +16,7 @@
 <div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
 <div style="min-width:1440px">
   <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px">
-    <div style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:28px;width:84.6px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></div>
+    <div style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:8.4px;flex:none"><svg viewBox="0 0 64 64" width="29.4" height="29.4" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:22.4px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></div>
     <div style="display:flex;gap:4px">
       <span style="color:var(--tx);font-size:14px;display:flex;gap:6px;align-items:center;white-space:nowrap"><i class="ph ph-flow-arrow"></i>InstinctFlow · WebUI</span>
     </div>
@@ -29,7 +29,7 @@
 <sc-if value="{{ isFlows }}" hint-placeholder-val="{{ true }}">
 <div style="position:relative;height:820px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:220px minmax(0,1fr) 340px;grid-template-rows:auto minmax(0,1fr);overflow:hidden">
   <div style="grid-column:1/4;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn)">
-    <span style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:19px;width:57.4px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></span>
+    <span style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:5.7px;flex:none"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:15.2px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></span>
     <span style="color:var(--mu)">rust-agent / InstinctFlow</span>
     <span style="margin-left:auto;color:var(--mu);font-size:12px;display:flex;gap:6px;align-items:center"><i class="ph ph-lightning"></i>instinct · omniroute/typesafe/jev-1.13 · System One API</span>
   </div>
@@ -241,9 +241,9 @@ const LAYERS = [
 const AGENTS = [
   { k: 'build', mode: 'primary', model: 'omniroute/cc/claude-opus-5-5', prov: 'omniroute', v: 'high', desc: 'Implements, verifies, reports.' },
   { k: 'plan', mode: 'primary', model: 'omniroute/zai/glm-5.3', prov: 'omniroute', v: 'high', desc: 'Researches, writes markdown plans, delegates.' },
-  { k: 'librarian', mode: 'subagent', model: 'omniroute/openai/gpt-6-luna', prov: 'omniroute', v: 'medium', desc: 'Finds docs, APIs and examples.' },
-  { k: 'explorer', mode: 'subagent', model: 'omniroute/opencode-go/deepseek-v4-flash', prov: 'omniroute', v: 'low', desc: 'Maps the codebase.' },
-  { k: 'oracle', mode: 'all', model: 'omniroute/openai/gpt-6-astra', prov: 'omniroute', v: 'high', desc: 'Second opinion on hard problems and reviews.' }
+  { k: 'vigie', mode: 'subagent', model: 'omniroute/openai/gpt-6-luna', prov: 'omniroute', v: 'medium', desc: 'The Lookout: codebase, docs and web. Read-only.' },
+  { k: 'mousse', mode: 'subagent', model: 'omniroute/opencode-go/deepseek-v4-flash', prov: 'omniroute', v: 'low', desc: 'Lightweight Deckhand: renames, formatting, basic tests.' }, { k: 'cartographe', mode: 'subagent', model: 'omniroute/openai/gpt-6-luna', prov: 'omniroute', v: 'medium', desc: 'The Cartographer: modules, dependencies, data flows, diagrams. Read-only.' }, { k: 'sondeur', mode: 'subagent', model: 'omniroute/cc/claude-opus-5-5', prov: 'omniroute', v: 'high', desc: 'The Deep Diver: root causes, logs, performance. Runs diagnostics after approval.' },
+  { k: 'lux', mode: 'all', model: 'omniroute/openai/gpt-6-astra', prov: 'omniroute', v: 'high', desc: 'Expert Advisor: architecture, risks, reviews, hard debugging.' }
 ];
 const byFull = (f) => CATALOG.find((m) => m.full === f);
 const TYPE = {
@@ -252,15 +252,15 @@ const TYPE = {
   expr: ['EXPRESSION', 'ph ph-function', 'var(--pu)'], sub: ['SUB-FLOW', 'ph ph-flow-arrow', 'var(--gr)']
 };
 const EFF = {
-  allow: ['Allow tool call', 'ph ph-check-circle', 'var(--gr)'], deny: ['Deny tool call + inject note', 'ph ph-prohibit', 'var(--rd)'], ask: ['Ask the driver', 'ph ph-hand', 'var(--or)'],
-  inject: ['Inject note into cognition', 'ph ph-chat-text', 'var(--bl)'], compact: ['Trigger compaction', 'ph ph-arrows-in', 'var(--at)'], switch: ['Switch agent', 'ph ph-swap', 'var(--bl)'],
+  allow: ['Allow tool call', 'ph ph-check-circle', 'var(--gr)'], deny: ['Deny tool call + inject note', 'ph ph-prohibit', 'var(--rd)'], ask: ['Ask the Captain', 'ph ph-hand', 'var(--or)'],
+  inject: ['Inject note for Nav', 'ph ph-chat-text', 'var(--bl)'], compact: ['Trigger compaction', 'ph ph-arrows-in', 'var(--at)'], switch: ['Switch agent', 'ph ph-swap', 'var(--bl)'],
   model: ['Switch variant', 'ph ph-cpu', 'var(--bl)'], spawn: ['Spawn subagent', 'ph ph-tree-structure', 'var(--pu)'], setvar: ['Set variable', 'ph ph-brackets-curly', 'var(--tx)'],
-  log: ['Log only', 'ph ph-note', 'var(--mu)'], remark: ['Show remark', 'ph ph-compass', 'var(--at)'], wake: ['Wake cognition', 'ph ph-bell-ringing', 'var(--rd)'], skill: ['Run skill / command', 'ph ph-sparkle', 'var(--gr)']
+  log: ['Log only', 'ph ph-note', 'var(--mu)'], remark: ['Show remark', 'ph ph-compass', 'var(--at)'], wake: ['Wake Nav', 'ph ph-bell-ringing', 'var(--rd)'], skill: ['Run skill / command', 'ph ph-sparkle', 'var(--gr)']
 };
 const P = (k, l, to) => ({ k, l, to });
 const FLOWS = {
   guard: {
-    name: 'guard-mutations', on: 'tool.pre_call', when: 'tool in ["bash", "write", "edit", "fetch"]', block: true, budget: 800, timeout: 'ask driver', file: '.navai/flows/guard-mutations.toml',
+    name: 'guard-mutations', on: 'tool.pre_call', when: 'tool in ["bash", "write", "edit", "fetch"]', block: true, budget: 800, timeout: 'ask Captain', file: '.withnav/flows/guard-mutations.toml',
     sample: 'tool.pre_call · bash "cargo fmt && git add -A" · agent build', ms: 614, calls: 2, cost: '$0.00002', tokens: '812 tok in',
     sampleJson: '{\n  "event": "tool.pre_call",\n  "tool": "bash",\n  "args": { "command": "cargo fmt && git add -A" },\n  "call_id": "call_7f3",\n  "session": { "agent": "build" }\n}',
     nodes: [
@@ -269,7 +269,7 @@ const FLOWS = {
         opts: [['read_only', 'Only reads files or prints information.'], ['local_change', 'Changes files inside the workspace.'], ['network', 'Reaches a host outside the machine.'], ['destructive', 'Deletes, force-pushes or rewrites history.']],
         ports: [P('read_only', 'read_only', ['allow']), P('local_change', 'local_change', ['asked']), P('network', 'network', ['host']), P('destructive', 'destructive', ['blast'])],
         run: { txt: 'local_change · 0.81', ms: 318, cost: '$0.00001', taken: 'local_change', probs: { read_only: 0.06, local_change: 0.81, network: 0.02, destructive: 0.11 }, raw: '{\n  "type": "choice",\n  "choice": "local_change",\n  "probabilities": {\n    "read_only": 0.06, "local_change": 0.81,\n    "network": 0.02, "destructive": 0.11\n  },\n  "confidence": 0.81\n}' } },
-      { id: 'asked', t: 'noul', name: 'asked_for', x: 476, y: 30, w: 220, th: 0.75, body: 'Did the driver or the intent record ask for this change?', inputs: ['conversation.last_driver', 'intent.record', 'event.args'],
+      { id: 'asked', t: 'noul', name: 'asked_for', x: 476, y: 30, w: 220, th: 0.75, body: 'Did the Captain or the intent record ask for this change?', inputs: ['conversation.last_captain', 'intent.record', 'event.args'],
         ports: [P('yes', 'yes ≥ 0.75', ['allow']), P('no', 'no', ['expr'])], run: { txt: 'noul 0.31 → no', ms: 296, cost: '$0.00001', taken: 'no', noul: 0.31, raw: '{\n  "type": "noul",\n  "noul": 0.31\n}' } },
       { id: 'host', t: 'sub', name: 'trusted-host', x: 476, y: 250, w: 220, body: 'Is the target host on the allow list or a known docs site?', inputs: ['event.args.url'], ports: [P('trusted', 'trusted', ['allow']), P('unknown', 'unknown', ['ask'])] },
       { id: 'blast', t: 'score', name: 'blast_radius', x: 476, y: 450, w: 220, body: 'How far could this reach if it goes wrong?', inputs: ['event.args', 'workspace.root', 'workspace.dirty_files'], levels: ['one file', 'one folder', 'whole repo', 'outside the repo'], thl: 2,
@@ -277,17 +277,17 @@ const FLOWS = {
       { id: 'expr', t: 'expr', name: 'plan_overreach', x: 726, y: 120, w: 210, body: 'asked_for < 0.4 && session.agent == "plan"', expr: 'asked_for < 0.4 && session.agent == "plan"', scope: ['effect', 'asked_for', 'session.agent', 'vars.risk_budget'],
         ports: [P('true', 'true', ['deny']), P('false', 'false', ['ask'])], run: { txt: 'false · agent is build', ms: 0, cost: '$0', taken: 'false', raw: 'asked_for = 0.31   → true\nsession.agent = "build" → false\nresult: false' } },
       { id: 'allow', t: 'action', eff: 'allow', name: 'allow', x: 966, y: 30, w: 180, body: 'Run the call without asking.', params: [['reason', 'logged with the answers']] },
-      { id: 'ask', t: 'action', eff: 'ask', name: 'ask', x: 966, y: 260, w: 180, body: 'Allow once or deny, with Instinct\'s reason shown.', params: [['choices', 'allow once · deny (fetch: allow origin)'], ['reason', 'effect = {{effect}}, asked_for = {{asked_for}}']], run: { txt: 'prompt shown to driver', raw: 'permission.requested emitted\nreason: "local change not asked for (0.31)"' } },
-      { id: 'deny', t: 'action', eff: 'deny', name: 'deny', x: 966, y: 470, w: 180, body: 'Deny, then tell the cognition why.', params: [['note', 'Not allowed in plan. Propose the change\nin the plan instead.'], ['delivery', 'next-turn']] }
+      { id: 'ask', t: 'action', eff: 'ask', name: 'ask', x: 966, y: 260, w: 180, body: 'Allow once or deny, with Instinct\'s reason shown.', params: [['choices', 'allow once · deny (fetch: allow origin)'], ['reason', 'effect = {{effect}}, asked_for = {{asked_for}}']], run: { txt: 'prompt shown to the Captain', raw: 'permission.requested emitted\nreason: "local change not asked for (0.31)"' } },
+      { id: 'deny', t: 'action', eff: 'deny', name: 'deny', x: 966, y: 470, w: 180, body: 'Deny, then tell Nav why.', params: [['note', 'Not allowed in plan. Propose the change\nin the plan instead.'], ['delivery', 'next-turn']] }
     ]
   },
   compact: {
-    name: 'compaction-advisor', on: 'context.updated', when: 'used_pct >= 70', block: false, budget: 1500, timeout: 'skip', file: '.navai/flows/compaction-advisor.toml',
+    name: 'compaction-advisor', on: 'context.updated', when: 'used_pct >= 70', block: false, budget: 1500, timeout: 'skip', file: '.withnav/flows/compaction-advisor.toml',
     sample: 'context.updated · 176k / 200k (88 %) · agent build', ms: 629, calls: 2, cost: '$0.00002', tokens: '1 304 tok in',
     sampleJson: '{\n  "event": "context.updated",\n  "used_tokens": 176000,\n  "context_window": 200000,\n  "used_pct": 88,\n  "breakdown": { "transcript": 151000, "tools": 18000, "system": 7000 }\n}',
     nodes: [
       { id: 't', t: 'trigger', name: 'context.updated', x: 16, y: 200, w: 190, body: 'when used ≥ 70 % of the context window', ports: [P('event', 'event', ['brk'])], run: { txt: '176k / 200k · 88 %', taken: 'event' } },
-      { id: 'brk', t: 'noul', name: 'natural_break', x: 226, y: 170, w: 220, th: 0.7, body: 'Is the conversation at a natural break: task done, topic switch, or waiting on the driver?', inputs: ['conversation.last_turns', 'session.agent', 'event.used_pct'],
+      { id: 'brk', t: 'noul', name: 'natural_break', x: 226, y: 170, w: 220, th: 0.7, body: 'Is the conversation at a natural break: task done, topic switch, or waiting on the Captain?', inputs: ['conversation.last_turns', 'session.agent', 'event.used_pct'],
         ports: [P('yes', 'yes ≥ 0.70', ['compact']), P('no', 'no', ['urg'])], run: { txt: 'noul 0.22 → no', ms: 288, cost: '$0.00001', taken: 'no', noul: 0.22, raw: '{\n  "type": "noul",\n  "noul": 0.22\n}' } },
       { id: 'compact', t: 'action', eff: 'compact', name: 'compact', x: 476, y: 30, w: 200, body: 'Summarise older turns; keep the intent record and open tasks.', params: [['keep', 'intent record, open tasks, last 4 turns']], ports: [P('then', 'then', ['var'])] },
       { id: 'var', t: 'action', eff: 'setvar', name: 'count', x: 726, y: 30, w: 190, body: 'compactions_today += 1', params: [['name', 'compactions_today'], ['scope', 'session'], ['value', '{{vars.compactions_today}} + 1']] },
@@ -296,16 +296,16 @@ const FLOWS = {
       { id: 'exp', t: 'expr', name: 'should_nudge', x: 726, y: 260, w: 210, body: 'vars.compactions_today < 5 && session.agent == "build"', expr: 'vars.compactions_today < 5 && session.agent == "build"', scope: ['natural_break', 'urgency', 'session.agent', 'vars.compactions_today'],
         ports: [P('true', 'true', ['note']), P('false', 'false', ['log'])], run: { txt: 'true', ms: 0, cost: '$0', taken: 'true', raw: 'vars.compactions_today = 1 → true\nsession.agent = "build"   → true\nresult: true' } },
       { id: 'note', t: 'action', eff: 'inject', name: 'nudge', x: 966, y: 240, w: 180, body: '"Context at 88 %. Finish this step; I\'ll compact after it."', params: [['text', 'Context at {{event.used_pct}} %. Finish this\nstep; I\'ll compact after it.'], ['delivery', 'next-turn']], run: { txt: 'queued for next turn', raw: 'note queued · delivery next-turn' } },
-      { id: 'log', t: 'action', eff: 'log', name: 'log', x: 966, y: 450, w: 180, body: 'Write answers to the trigger log.', params: [['log', '.navai/log/triggers.jsonl']] }
+      { id: 'log', t: 'action', eff: 'log', name: 'log', x: 966, y: 450, w: 180, body: 'Write answers to the trigger log.', params: [['log', '.withnav/log/triggers.jsonl']] }
     ]
   },
   route: {
-    name: 'route-agent', on: 'message.received', when: 'author == "driver"', block: true, budget: 600, timeout: 'keep agent', file: '.navai/flows/route-agent.toml',
+    name: 'route-agent', on: 'message.received', when: 'author == "captain"', block: true, budget: 600, timeout: 'keep agent', file: '.withnav/flows/route-agent.toml',
     sample: 'message.received · "Can you review the diff in incr.rs before I commit?"', ms: 305, calls: 1, cost: '$0.00001', tokens: '640 tok in',
-    sampleJson: '{\n  "event": "message.received",\n  "author": "driver",\n  "text": "Can you review the diff in incr.rs\n           before I commit?",\n  "session": { "agent": "build" }\n}',
+    sampleJson: '{\n  "event": "message.received",\n  "author": "captain",\n  "text": "Can you review the diff in incr.rs\n           before I commit?",\n  "session": { "agent": "build" }\n}',
     nodes: [
-      { id: 't', t: 'trigger', name: 'message.received', x: 16, y: 200, w: 190, body: 'when author == "driver"', ports: [P('event', 'event', ['kind'])], run: { txt: '"Can you review the diff…"', taken: 'event' } },
-      { id: 'kind', t: 'choice', name: 'request_kind', x: 226, y: 170, w: 220, body: 'What is the driver asking for right now?', inputs: ['event.text', 'session.agent', 'intent.record'],
+      { id: 't', t: 'trigger', name: 'message.received', x: 16, y: 200, w: 190, body: 'when author == "captain"', ports: [P('event', 'event', ['kind'])], run: { txt: '"Can you review the diff…"', taken: 'event' } },
+      { id: 'kind', t: 'choice', name: 'request_kind', x: 226, y: 170, w: 220, body: 'What is the Captain asking for right now?', inputs: ['event.text', 'session.agent', 'intent.record'],
         opts: [['question', 'Wants an answer, no change to the code.'], ['plan', 'Wants a plan or a design before any edit.'], ['implement', 'Wants code written or changed now.'], ['review', 'Wants existing changes checked.']],
         ports: [P('question', 'question', ['keep']), P('plan', 'plan', ['plan']), P('implement', 'implement', ['build']), P('review', 'review', ['review'])],
         run: { txt: 'review · 0.88', ms: 305, cost: '$0.00001', taken: 'review', probs: { question: 0.07, plan: 0.03, implement: 0.02, review: 0.88 }, raw: '{\n  "type": "choice",\n  "choice": "review",\n  "probabilities": {\n    "question": 0.07, "plan": 0.03,\n    "implement": 0.02, "review": 0.88\n  },\n  "confidence": 0.88\n}' } },
@@ -313,11 +313,11 @@ const FLOWS = {
       { id: 'plan', t: 'action', eff: 'switch', name: 'to_plan', x: 476, y: 170, w: 200, body: 'session.agent = plan from this turn on.', params: [['agent', 'plan']] },
       { id: 'build', t: 'action', eff: 'switch', name: 'to_build', x: 476, y: 320, w: 200, body: 'session.agent = build.', params: [['agent', 'build']], ports: [P('then', 'then', ['model'])] },
       { id: 'model', t: 'action', eff: 'model', name: 'effort_high', x: 726, y: 320, w: 200, body: 'build agent · variant high for this turn.', params: [['agent', 'build'], ['variant', 'high'], ['scope', 'this turn']] },
-      { id: 'review', t: 'action', eff: 'spawn', name: 'spawn_oracle', x: 476, y: 490, w: 200, body: 'oracle reviews the staged diff. Delivery next-turn.', params: [['agent', 'oracle'], ['task', 'Review the staged diff of {{workspace.dirty_files}}'], ['delivery', 'next-turn']], run: { txt: 'oracle spawned', raw: 'subagent.spawned · oracle · next-turn' } }
+      { id: 'review', t: 'action', eff: 'spawn', name: 'spawn_lux', x: 476, y: 490, w: 200, body: 'lux reviews the staged diff. Delivery next-turn.', params: [['agent', 'lux'], ['task', 'Review the staged diff of {{workspace.dirty_files}}'], ['delivery', 'next-turn']], run: { txt: 'lux spawned', raw: 'subagent.spawned · lux · next-turn' } }
     ]
   },
   trusted: {
-    name: 'trusted-host', sub: true, file: '.navai/flows/trusted-host.toml', budget: 0,
+    name: 'trusted-host', sub: true, file: '.withnav/flows/trusted-host.toml', budget: 0,
     sample: 'input · host = "docs.rs"', ms: 279, calls: 1, cost: '$0.00001', tokens: '210 tok in', sampleJson: '{ "host": "docs.rs", "url": "https://docs.rs/toml_edit" }',
     nodes: [
       { id: 'in', t: 'input', name: 'input', x: 16, y: 200, w: 190, body: 'host: string · url: string', ports: [P('in', 'in', ['kind'])], run: { txt: 'host = docs.rs', taken: 'in' } },
@@ -337,15 +337,15 @@ const CAT = {
 };
 const CAT_GROUPS = [
   ['SESSION', ['session.id', 'session.agent', 'session.model', 'session.workspace']],
-  ['CONVERSATION WITH THE COGNITION', ['conversation.last_driver', 'conversation.last_turns', 'conversation.digest']],
+  ['CONVERSATION WITH NAV', ['conversation.last_captain', 'conversation.last_turns', 'conversation.digest']],
   ['INTENT', ['intent.record']],
   ['WORKSPACE', ['workspace.root', 'workspace.branch', 'workspace.dirty_files']],
   ['EDITOR', ['editor.open_files', 'editor.cursor', 'editor.selection'], 'IDE only'],
-  ['NAVAI SETTINGS', ['settings.permissions.automatic_review', 'settings.subagents.max_concurrent']],
+  ['WITHNAV SETTINGS', ['settings.permissions.automatic_review', 'settings.subagents.max_concurrent']],
   ['VARIABLES', ['vars.compactions_today', 'vars.risk_budget']]
 ];
 const VAL = {
-  'event.tool': 'bash', 'event.args': '{ "command": "cargo fmt && git add -A" }', 'event.args.url': '—', 'session.agent': 'build', 'conversation.last_driver': '"Swap the toml parser, keep Config::load(p)."',
+  'event.tool': 'bash', 'event.args': '{ "command": "cargo fmt && git add -A" }', 'event.args.url': '—', 'session.agent': 'build', 'conversation.last_captain': '"Swap the toml parser, keep Config::load(p)."',
   'intent.record': 'Incremental TOML parser, public API unchanged.', 'workspace.root': '~/dev/rust-agent', 'workspace.dirty_files': 'src/config.rs, src/parser/incr.rs', 'event.used_pct': '88',
   'event.breakdown': 'transcript 151k · tools 18k · system 7k', 'session.model': 'omniroute/cc/claude-opus-5-5 · high', 'conversation.last_turns': '(last 3 turns, 2.1k tokens)', 'event.text': '"Can you review the diff in incr.rs before I commit?"',
   'input.host': 'docs.rs', 'input.url': 'https://docs.rs/toml_edit', 'editor.cursor': 'src/config.rs:42:18', 'editor.open_files': 'config.rs, incr.rs', 'session.id': '01J9…Q4', 'vars.compactions_today': '1', 'vars.risk_budget': '3'
@@ -353,7 +353,7 @@ const VAL = {
 
 class Component extends DCLogic {
   state = { scr: 'flows', th: 'ayuDark', flow: 'guard', sel: 'effect', run: true, view: 'canvas', zoom: 1, pos: {}, ins: {}, menu: null, catOpen: false, block: { guard: true, compact: false, route: true },
-    webSec: 'layers', prov: 'omniroute', layer: 'cognition', agent: 'build', defAgent: 'build', metaThink: 'low', pv: {}, lm: {}, am: {}, col: {}, autoReview: true, maxSub: 4, subWd: 300, rootWd: 300, scratch: ['$XDG_RUNTIME_DIR/navai', '/tmp/navai'], caps: {}, vsSec: 'layer:cognition' };
+    webSec: 'layers', prov: 'omniroute', layer: 'cognition', agent: 'build', defAgent: 'build', metaThink: 'low', pv: {}, lm: {}, am: {}, col: {}, autoReview: true, maxSub: 4, subWd: 300, rootWd: 300, scratch: ['$XDG_RUNTIME_DIR/withnav', '/tmp/withnav'], caps: {}, vsSec: 'layer:cognition' };
 
   tog(on, click) { return { click, tbg: on ? 'var(--ac)' : 'var(--bd)', tk: on ? 'var(--acfg)' : 'var(--mu)', tl: on ? '15px' : '2px', tl2: on ? '20px' : '3px' }; }
   pill(on) { return on ? ['color-mix(in srgb,var(--ac) 16%,transparent)', 'var(--tx)', 'var(--ac)'] : ['transparent', 'var(--mu)', 'var(--bd)']; }
@@ -529,10 +529,10 @@ class Component extends DCLogic {
     const ly = { ...L0, model: m0 ? m0.full : '', gw: m0 ? m0.gw : '', pvName: m0 ? (m0.pv || '(direct)') : '', ctx: m0 ? m0.ctx.toLocaleString('en-US') : '', out: L0.out ? L0.out.toLocaleString('en-US') : '', isMeta: L0.k === 'metacognition', isReflex: L0.k === 'reflex', isInstinct: L0.k === 'instinct', cfgKey: 'config.json → layers.' + L0.k };
     const thinkOpts = metaVars.map((v) => { const [bg, fg, bd] = this.pill(metaV === v); return { label: v, tag: v === 'low' ? 'default' : '', bg, fg, bd, click: () => this.setState({ metaThink: v }) }; });
     const thinkNote = 'Variants offered by ' + (m0 ? m0.id : '') + '. low is the default.';
-    const ides = [['VS Code', 'connected · navai-lsp', 'var(--gr)', '1'], ['Zed', 'planned', 'var(--mu)', '0.55'], ['IntelliJ', 'planned', 'var(--mu)', '0.55']].map(([name, s, dot, op]) => ({ name, st: s, dot, op }));
+    const ides = [['VS Code', 'connected · withnav-lsp', 'var(--gr)', '1'], ['Zed', 'planned', 'var(--mu)', '0.55'], ['IntelliJ', 'planned', 'var(--mu)', '0.55']].map(([name, s, dot, op]) => ({ name, st: s, dot, op }));
     const profRows = AGENTS.map((p) => { const on = st.agent === p.k, d = st.defAgent === p.k; return { k: p.k, mode: p.mode, modeCol: p.mode === 'subagent' ? 'var(--pu)' : 'var(--tx)', model: amod(p), prov: p.prov, variant: pget(p), bg: on ? tint : 'transparent', click: () => this.setState({ agent: p.k }), defTxt: d ? 'default' : 'set default', defIcon: 'ph ph-star', defBd: d ? 'var(--ac)' : 'var(--bd)', defFg: d ? 'var(--at)' : 'var(--mu)', setDef: (e) => { e.stopPropagation(); if (p.mode !== 'subagent') this.setState({ defAgent: p.k, agent: p.k }); } }; });
     const PF = AGENTS.find((p) => p.k === st.agent);
-    const pf = { k: PF.k, desc: PF.desc, model: amod(PF), file: '.navai/agents/' + PF.k + '.md',
+    const pf = { k: PF.k, desc: PF.desc, model: amod(PF), file: '.withnav/agents/' + PF.k + '.md',
       modelNote: `Saved in config.json → agents.${PF.k}.model. It wins over a model: line in ${PF.k}.md.`,
       variants: byFull(amod(PF)).vars.map((v) => { const [bg, fg, bd] = this.pill(pget(PF) === v); return { label: v, bg, fg, bd, click: () => this.setState((s) => ({ pv: { ...s.pv, [PF.k]: v } })) }; }),
       modes: [['primary', 'primary'], ['subagent', 'subagent'], ['all', 'all']].map(([k, label]) => ({ label, bd: PF.mode === k ? 'var(--ac)' : 'var(--bd)', bg: PF.mode === k ? tint : 'var(--bg)' })) };
@@ -540,7 +540,7 @@ class Component extends DCLogic {
     const pickRows = this.groupRows({ api: cog ? 'chat' : L0.api, cur: cog ? amod(PF) : lmod(L0), pick: (f) => this.setState((s) => cog ? { am: { ...s.am, [PF.k]: f } } : { lm: { ...s.lm, [L0.k]: f } }) });
     const pickTitle = 'Catalogue · ' + (cog ? 'chat' : L0.api) + ' models · choosing for ' + (cog ? 'agent ' + PF.k : 'layer ' + L0.k);
     const gwRows = this.groupRows({ gw: st.prov, showApi: true, prefix: 'gw' });
-    const DEF = ['$XDG_RUNTIME_DIR/navai', '/tmp/navai'];
+    const DEF = ['$XDG_RUNTIME_DIR/withnav', '/tmp/withnav'];
     const scratchRows = st.scratch.map((p, i) => ({ p, note: DEF.includes(p) ? 'default' : '', remove: () => this.setState((s) => ({ scratch: s.scratch.filter((_, j) => j !== i) })) }));
     const slots = Array.from({ length: Math.min(st.maxSub, 16) }, (_, i) => ({ bg: i < 2 ? 'var(--pu)' : 'transparent', bd: i < 2 ? 'var(--pu)' : 'var(--mu)' }));
     const wdOpts = (cur, key) => [[0, 'Off'], [60, '1 min'], [300, '5 min'], [900, '15 min'], [3600, '1 h']].map(([v, label]) => { const [bg, fg, bd] = this.pill(cur === v); return { label, bg, fg, bd, click: () => this.setState({ [key]: v }) }; });
@@ -580,14 +580,14 @@ class Component extends DCLogic {
     } else if (sec === 'layer:cognition') {
       items = [H('Cognition', 'The agentic chat. It runs agents, each with its own model, and several flows at once through subagents.'),
         R({ cat: 'Layers › cognition:', title: 'Default Agent', desc: 'config.json → default_agent. A new conversation starts with this primary agent.', kind: 'select', val: st.defAgent, mod: st.defAgent !== 'build' }),
-        R({ cat: 'Layers › cognition:', title: 'Agents', desc: 'Defined in ~/.config/navai/agents/ and .navai/agents/. Pick one in the table of contents to edit it.', kind: 'list', list: AGENTS.map((p) => ({ p: p.k + '  ·  ' + amod(p) })) })];
+        R({ cat: 'Layers › cognition:', title: 'Agents', desc: 'Defined in ~/.config/withnav/agents/ and .withnav/agents/. Pick one in the table of contents to edit it.', kind: 'list', list: AGENTS.map((p) => ({ p: p.k + '  ·  ' + amod(p) })) })];
     } else if (sec.startsWith('agent:')) {
       const p = AGENTS.find((x) => 'agent:' + x.k === sec), c = `Cognition › ${p.k}:`;
       items = [H(p.k, p.desc),
         R({ cat: c, title: 'Model', desc: `<gateway>/<id>. Saved in config.json → agents.${p.k}.model; wins over a model: line in ${p.k}.md.`, kind: 'text', val: amod(p), mod: !!st.am[p.k] }),
         R({ cat: c, title: 'Variant', desc: 'Offered by this model: ' + byFull(amod(p)).vars.join(', ') + '.', kind: 'select', val: pget(p) }),
         R({ cat: c, title: 'Mode', desc: 'primary drives a conversation, subagent runs as a background flow, all does both.', kind: 'select', val: p.mode }),
-        R({ cat: c, title: 'Definition', desc: 'Prompt, tools and access live in the agent file. Its model: line is overridden by config.json.', kind: 'text', val: '.navai/agents/' + p.k + '.md' })];
+        R({ cat: c, title: 'Definition', desc: 'Prompt, tools and access live in the agent file. Its model: line is overridden by config.json.', kind: 'text', val: '.withnav/agents/' + p.k + '.md' })];
     } else if (sec === 'perm') {
       items = [H('Permissions', 'config.json → permissions'),
         R({ cat: 'Permissions:', title: 'Automatic Review', desc: 'Before a bash, write or edit runs, the instinct classifies effects, scope and risk; risky or outside-project changes need the metacognition\'s approval; any doubt or failure asks you. fetch keeps its origin grants.', kind: 'bool', val: 'Review calls automatically. When off, every bash, write and edit call is asked.', on: st.autoReview, mod: !st.autoReview, click: () => this.setState((s) => ({ autoReview: !s.autoReview })) }),

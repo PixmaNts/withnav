@@ -16,7 +16,7 @@
 <div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
 <div style="min-width:1120px">
   <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px">
-    <div style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:28px;width:84.6px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></div>
+    <div style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:8.4px;flex:none"><svg viewBox="0 0 64 64" width="29.4" height="29.4" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:22.4px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></div>
     <div style="display:flex;gap:4px">
       <sc-for list="{{ surfaces }}" as="s" hint-placeholder-count="3"><button onClick="{{ s.click }}" style="background:{{ s.bg }};color:{{ s.fg }};border:1px solid {{ s.bd }};border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;display:flex;gap:6px;align-items:center"><i class="{{ s.icon }}"></i>{{ s.label }}</button></sc-for>
     </div>
@@ -31,8 +31,8 @@
 <sc-if value="{{ isTui }}" hint-placeholder-val="{{ true }}">
 <div class="mono" style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:180px minmax(0,1fr) 290px;grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden;font-size:12.5px;line-height:1.55">
   <div style="grid-column:1/4;display:flex;gap:16px;padding:6px 14px;border-bottom:1px solid var(--bd);background:var(--pn);color:var(--mu)">
-    <span><span style="color:var(--lh)">◆</span> <span style="color:var(--tx)">navai</span></span><span>~/dev/rust-agent</span><span>develop ●3</span>
-    <span style="margin-left:auto;color:{{ modeColor }}">▌{{ modeName }}</span><span>cognition · {{ cogModel }} · {{ cogVariant }} · 41k/200k</span>
+    <span><span style="color:var(--lh)">◆</span> <span style="color:var(--tx)">withnav</span></span><span>~/dev/rust-agent</span><span>develop ●3</span>
+    <span style="margin-left:auto;color:{{ modeColor }}">▌{{ modeName }}</span><span>nav · {{ cogModel }} · {{ cogVariant }} · 41k/200k</span>
   </div>
   <div style="border-right:1px solid var(--bd);background:var(--pn);padding:10px 0;overflow:auto;display:flex;flex-direction:column;gap:2px">
     <div style="padding:0 12px 6px;color:var(--mu)">TABS</div>
@@ -42,13 +42,13 @@
   </div>
   <sc-if value="{{ tuiSession }}" hint-placeholder-val="{{ true }}">
   <div style="padding:12px 16px;overflow:auto;display:flex;flex-direction:column;gap:12px">
-    <div><span style="color:var(--mu)">▌driver</span><div>Delegate: swap the toml parser for an incremental one. Keep <span style="color:var(--bl)">Config::load(p)</span> as it is.</div></div>
-    <div><span style="color:var(--ac)">▌cognition</span> <span style="color:var(--mu)">/{{ modeName }}</span>
+    <div><span style="color:var(--mu)">▌captain</span><div>Delegate: swap the toml parser for an incremental one. Keep <span style="color:var(--bl)">Config::load(p)</span> as it is.</div></div>
+    <div><span style="color:var(--ac)">▌nav</span> <span style="color:var(--mu)">/{{ modeName }}</span>
       <div>I'll map the call sites first, then edit.</div>
       <div style="margin:6px 0 0 14px;color:var(--mu)">
         <div><span style="color:var(--gr)">✓</span> grep  "from_str"  · 7 matches</div>
         <div><span style="color:var(--gr)">✓</span> read  src/config.rs  · 212 lines</div>
-        <div><span style="color:var(--ac)">⠹</span> spawn_agent  <span style="color:var(--pu)">@explore</span> "map parser call sites"  <span style="color:var(--mu)">(non-blocking)</span></div>
+        <div><span style="color:var(--ac)">⠹</span> spawn_agent  <span style="color:var(--pu)">@vigie</span> "map parser call sites"  <span style="color:var(--mu)">(non-blocking)</span></div>
         <div style="margin-left:16px">└ <span style="color:var(--gr)">✓</span> glob src/**/*.rs<br>└ <span style="color:var(--ac)">⠹</span> read src/loader.rs</div>
       </div>
     </div>
@@ -62,20 +62,20 @@
       <sc-if value="{{ modePlan }}" hint-placeholder-val="{{ false }}"><div style="color:var(--mu)">plan mode: edit is blocked, the proposal is added to the plan. <span style="color:var(--ac)">Tab</span> to switch to build.</div></sc-if>
     </div>
     <div style="border-left:2px solid var(--ac);padding:4px 0 4px 12px;background:linear-gradient(90deg,color-mix(in srgb,var(--ac) 12%,transparent),transparent 70%)">
-      <div style="color:var(--ac)">◇ navigator · remark · config.rs:42 · metacognition</div>
+      <div style="color:var(--ac)">◇ nav · remark · config.rs:42 · metacognition</div>
       <div>New parameter on <span style="color:var(--bl)">Config::load</span> contradicts "public API unchanged" in the intent record.</div>
       <sc-if value="{{ verdictPending }}" hint-placeholder-val="{{ true }}"><div style="color:var(--mu)"><button onClick="{{ vUseful }}" style="{{ linkBtn }}">[ctrl+alt+y] useful</button>  <button onClick="{{ vNoise }}" style="{{ linkBtn }}">[ctrl+alt+n] noise</button>  <button onClick="{{ vDismiss }}" style="{{ linkBtn }}">[ctrl+alt+d] dismiss</button></div></sc-if>
       <sc-if value="{{ verdictDone }}" hint-placeholder-val="{{ false }}"><div style="color:var(--mu)">verdict: <span style="color:var(--tx)">{{ verdictText }}</span> <button onClick="{{ vReset }}" style="{{ linkBtn }}">undo</button></div></sc-if>
     </div>
     <div style="border-left:2px solid var(--rd);padding:4px 0 4px 12px;background:linear-gradient(90deg,color-mix(in srgb,var(--rd) 10%,transparent),transparent 70%)">
-      <div style="color:var(--rd)">↑ wake · metacognition → cognition · drift 0.86</div>
-      <div>Signature change on a public function; intent says it must stay stable. Cognition will raise it in the next turn.</div>
+      <div style="color:var(--rd)">↑ wake · metacognition → nav · drift 0.86</div>
+      <div>Signature change on a public function; intent says it must stay stable. Nav will raise it in the next turn.</div>
     </div>
   </div>
   </sc-if>
   <sc-if value="{{ tuiPipeline }}" hint-placeholder-val="{{ false }}">
   <div style="padding:12px 16px;overflow:auto;line-height:1.7">
-    <div style="color:var(--ac)">pipeline.toml · .navigator/</div>
+    <div style="color:var(--ac)">pipeline.toml · .withnav/</div>
     <div style="color:var(--mu);margin-bottom:8px">trigger: save · idle · diagnostic · conversation</div>
     <div style="color:var(--mu)">PRE-FILTERS</div><div>min_changed_lines = <span style="color:var(--or)">3</span> · cooldown = <span style="color:var(--or)">45s</span></div>
     <div style="color:var(--mu);margin-top:8px">QUESTIONS <span style="color:var(--mu)">(instinct, typed answers)</span></div>
@@ -90,7 +90,7 @@
   </sc-if>
   <sc-if value="{{ tuiSub }}" hint-placeholder-val="{{ false }}">
   <div style="padding:12px 16px;overflow:auto;display:flex;flex-direction:column;gap:12px">
-    <div><span style="color:var(--mu)">refactor-parser ›</span> <span style="color:var(--pu)">@explore</span>  <span style="color:var(--mu)">subagent · spawned by build · running 0:42</span></div>
+    <div><span style="color:var(--mu)">refactor-parser ›</span> <span style="color:var(--pu)">@vigie</span>  <span style="color:var(--mu)">subagent · spawned by build · running 0:42</span></div>
     <div style="border:1px solid var(--bd);border-radius:4px;padding:8px 12px"><div style="color:var(--mu)">TASK</div>Map parser call sites: every caller of toml::from_str and Config::load, with file:line.<div style="color:var(--mu);margin-top:4px">tools glob · grep · read (read-only) · delivery next-turn · {{ subModel }}</div></div>
     <div><sc-for list="{{ subCalls }}" as="c" hint-placeholder-count="4"><div><span style="color:{{ c.col }}">{{ c.icon }}</span> {{ c.text }}  <span style="color:var(--mu)">· {{ c.meta }}</span></div></sc-for></div>
     <div><div style="color:var(--mu)">FINDINGS SO FAR</div><sc-for list="{{ subFindings }}" as="f" hint-placeholder-count="3"><div>- <span style="color:var(--bl)">{{ f.loc }}</span> {{ f.text }}</div></sc-for></div>
@@ -101,8 +101,8 @@
   <div style="border-left:1px solid var(--bd);background:var(--pn);padding:12px 14px;overflow:auto;display:flex;flex-direction:column;gap:14px">
     <div><div style="color:var(--mu)">INTENT RECORD</div><div style="margin-top:3px">Incremental TOML parser, public API unchanged.</div><div style="margin-top:5px;color:var(--mu)">drift</div><div style="color:var(--ac)">█████████░ 0.86</div></div>
     <div><div style="color:var(--mu)">LAYERS</div>
-      <div><span style="color:var(--gr)">●</span> reflex <span style="color:var(--mu)">FIM · 180ms</span></div><div><span style="color:var(--gr)">●</span> instinct <span style="color:var(--mu)">typed Q&amp;A</span></div><div><span style="color:var(--gr)">●</span> metacognition <span style="color:var(--mu)">remarks</span></div><div><span style="color:var(--ac)">●</span> cognition <span style="color:var(--mu)">busy</span></div></div>
-    <div><div style="color:var(--mu)">AGENTS</div><div style="color:{{ buildCol }}">{{ buildDot }} build</div><div style="color:{{ planCol }}">{{ planDot }} plan <span style="color:var(--mu)">read-only</span></div><div style="margin-left:2px"><span style="color:var(--pu)">⠹ explore</span> <span style="color:var(--mu)">sub</span></div><div style="color:var(--mu)">○ review · sub</div></div>
+      <div><span style="color:var(--gr)">●</span> reflex <span style="color:var(--mu)">FIM · 180ms</span></div><div><span style="color:var(--gr)">●</span> instinct <span style="color:var(--mu)">typed Q&amp;A</span></div><div><span style="color:var(--gr)">●</span> metacognition <span style="color:var(--mu)">remarks</span></div><div><span style="color:var(--ac)">●</span> nav <span style="color:var(--mu)">busy</span></div></div>
+    <div><div style="color:var(--mu)">AGENTS</div><div style="color:{{ buildCol }}">{{ buildDot }} build</div><div style="color:{{ planCol }}">{{ planDot }} plan <span style="color:var(--mu)">read-only</span></div><div style="margin-left:2px"><span style="color:var(--pu)">⠹ vigie</span> <span style="color:var(--mu)">sub</span></div><div style="color:var(--mu)">○ lux · sub</div><div style="color:var(--mu)">○ mousse · sub</div></div>
     <div><div style="color:var(--mu)">CHANGES</div><div><span style="color:var(--or)">M</span> src/config.rs</div><div><span style="color:var(--or)">M</span> src/parser/mod.rs</div><div><span style="color:var(--gr)">A</span> src/parser/incr.rs</div></div>
     <div><div style="color:var(--mu)">SKILLS · MCP · PLUGINS</div><div>rust-clippy · git-commit</div><div>mcp:github <span style="color:var(--gr)">●</span> · mcp:contextd <span style="color:var(--gr)">●</span></div><div>plugin:notify <span style="color:var(--or)">●</span></div></div>
   </div>
@@ -138,30 +138,30 @@
 <div style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:44px 250px minmax(0,1fr) 310px;grid-template-rows:minmax(0,1fr) 24px;overflow:hidden">
   <div style="background:var(--pn);display:flex;flex-direction:column;align-items:center;gap:18px;padding-top:12px;color:var(--mu);font-size:20px;border-right:1px solid var(--bd)"><i class="ph ph-files"></i><i class="ph ph-magnifying-glass"></i><i class="ph ph-git-branch"></i><i class="ph ph-compass" style="color:var(--ac)"></i></div>
   <div style="background:var(--pn);border-right:1px solid var(--bd);overflow:auto;font-size:12px">
-    <div style="padding:10px 12px 6px;letter-spacing:.08em;color:var(--mu);font-size:11px">NAVIGATOR</div>
+    <div style="padding:10px 12px 6px;letter-spacing:.08em;color:var(--mu);font-size:11px">WITHNAV</div>
     <div style="padding:4px 12px 8px"><div style="color:var(--mu);font-size:11px">INTENT RECORD</div><div style="margin:3px 0 8px">Incremental TOML parser, public API unchanged.</div>
       <div style="height:4px;background:var(--bd);border-radius:2px"><div style="width:86%;height:4px;background:var(--ac);border-radius:2px"></div></div><div style="color:var(--mu);margin-top:4px">drift 0.86 · 3 remarks · 1 wake</div></div>
     <div style="padding:8px 12px 4px;color:var(--mu);font-size:11px;display:flex;align-items:center">CONVERSATIONS · rust-agent<span style="margin-left:auto;display:flex;gap:8px;font-size:13px"><i class="ph ph-plus"></i><i class="ph ph-magnifying-glass"></i></span></div>
     <sc-for list="{{ convs }}" as="c" hint-placeholder-count="5"><div onClick="{{ c.click }}" style="padding:4px 12px 4px 10px;display:flex;gap:6px;align-items:center;cursor:pointer;background:{{ c.bg }};border-left:2px solid {{ c.bd }}"><i class="ph ph-chat-circle" style="color:var(--mu)"></i><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.title }}</span><span style="margin-left:auto;color:var(--mu);white-space:nowrap">{{ c.when }} · {{ c.n }}</span></div></sc-for>
     <div style="padding:8px 12px 4px;color:var(--mu);font-size:11px">LAYERS</div>
-    <div style="padding:2px 12px"><span style="color:var(--gr)">●</span> Reflex · inline suggestions</div><div style="padding:2px 12px"><span style="color:var(--gr)">●</span> Instinct</div><div style="padding:2px 12px"><span style="color:var(--gr)">●</span> Metacognition · idle 3s</div><div style="padding:2px 12px"><span style="color:var(--ac)">●</span> Cognition · busy</div>
+    <div style="padding:2px 12px"><span style="color:var(--gr)">●</span> Reflex · inline suggestions</div><div style="padding:2px 12px"><span style="color:var(--gr)">●</span> Instinct</div><div style="padding:2px 12px"><span style="color:var(--gr)">●</span> Metacognition · idle 3s</div><div style="padding:2px 12px"><span style="color:var(--ac)">●</span> Nav · busy</div>
     <div style="padding:10px 12px 4px;color:var(--mu);font-size:11px">REMARKS</div>
     <div style="padding:3px 12px;display:flex;gap:6px"><i class="ph ph-compass" style="color:var(--ac)"></i>config.rs:42 · API changed<span style="margin-left:auto;color:var(--mu)">new</span></div>
     <div style="padding:3px 12px;display:flex;gap:6px"><i class="ph ph-thumbs-up" style="color:var(--gr)"></i>incr.rs:12 · naming<span style="margin-left:auto;color:var(--mu)">useful</span></div>
     <div style="padding:3px 12px;display:flex;gap:6px"><i class="ph ph-thumbs-down" style="color:var(--rd)"></i>mod.rs:9 · unused import<span style="margin-left:auto;color:var(--mu)">noise</span></div>
     <div style="padding:10px 12px 4px;color:var(--mu);font-size:11px">AGENTS</div>
-    <div style="padding:2px 12px;color:{{ buildCol }}">{{ buildDot }} build</div><div style="padding:2px 12px;color:{{ planCol }}">{{ planDot }} plan</div><div style="padding:2px 12px 2px 24px;color:var(--pu)">⠹ explore <span style="color:var(--mu)">sub</span></div>
+    <div style="padding:2px 12px;color:{{ buildCol }}">{{ buildDot }} build</div><div style="padding:2px 12px;color:{{ planCol }}">{{ planDot }} plan</div><div style="padding:2px 12px 2px 24px;color:var(--pu)">⠹ vigie <span style="color:var(--mu)">sub</span></div>
     <div style="padding:10px 12px 4px;color:var(--mu);font-size:11px">SKILLS · MCP · PLUGINS</div>
     <div style="padding:2px 12px">rust-clippy · git-commit</div><div style="padding:2px 12px">mcp:github · mcp:contextd</div><div style="padding:2px 12px">plugin:notify</div>
   </div>
   <div style="display:flex;flex-direction:column;min-width:0">
-    <div style="display:flex;background:var(--pn);font-size:12px;border-bottom:1px solid var(--bd)"><div style="padding:8px 14px;background:var(--bg);border-top:1px solid var(--ac)">config.rs</div><div style="padding:8px 14px;color:var(--mu)">incr.rs</div><div style="padding:8px 14px;color:var(--mu)">.navigator/intent.md</div></div>
+    <div style="display:flex;background:var(--pn);font-size:12px;border-bottom:1px solid var(--bd)"><div style="padding:8px 14px;background:var(--bg);border-top:1px solid var(--ac)">config.rs</div><div style="padding:8px 14px;color:var(--mu)">incr.rs</div><div style="padding:8px 14px;color:var(--mu)">.withnav/intent.md</div></div>
     <div class="mono" style="flex:1;overflow:auto;font-size:12.5px;line-height:1.75;padding:10px 0">
       <div style="display:flex"><span style="width:44px;text-align:right;padding-right:14px;color:var(--mu)">38</span><span style="color:var(--mu)">/// Loads the configuration from disk.</span></div>
       <div style="display:flex"><span style="width:44px;text-align:right;padding-right:14px;color:var(--mu)">39</span><span><span style="color:var(--or)">impl</span> Config {</span></div>
       <div style="display:flex;background:color-mix(in srgb,var(--ac) 9%,transparent)"><span style="width:44px;text-align:right;padding-right:14px;color:var(--ac)">42</span><span>    <span style="color:var(--or)">pub fn</span> <span style="color:var(--ac)">load</span>(p: &amp;Path<span style="text-decoration:underline wavy var(--ac);text-underline-offset:4px">, opts: LoadOpts</span>) -&gt; Result&lt;Self&gt; {<span style="margin-left:18px;color:var(--ac);font-family:'IBM Plex Sans',sans-serif;font-size:12px"><i class="ph ph-compass"></i> contradicts intent: public API</span></span></div>
       <div style="margin:2px 0 6px 44px;border:1px solid var(--bd);border-left:2px solid var(--ac);border-radius:4px;background:var(--sf);padding:8px 12px;font-family:'IBM Plex Sans',sans-serif;font-size:12px;line-height:1.5;max-width:560px">
-        <div style="display:flex;gap:6px;align-items:center;color:var(--at)"><i class="ph ph-compass"></i>Navigator · Remark<span style="margin-left:auto;color:var(--mu)">metacognition · drift 0.86</span></div>
+        <div style="display:flex;gap:6px;align-items:center;color:var(--at)"><i class="ph ph-compass"></i>Nav · Remark<span style="margin-left:auto;color:var(--mu)">metacognition · drift 0.86</span></div>
         <div style="margin:4px 0 8px">A second parameter breaks the "public API unchanged" constraint. A builder or an internal field would keep <span class="mono">load(p)</span>.</div>
         <sc-if value="{{ verdictPending }}" hint-placeholder-val="{{ true }}"><div style="display:flex;gap:8px"><button onClick="{{ vUseful }}" style="{{ outBtn }}"><i class="ph ph-thumbs-up"></i> Useful</button><button onClick="{{ vNoise }}" style="{{ ghostBtn }}"><i class="ph ph-thumbs-down"></i> Noise</button><button onClick="{{ vDismiss }}" style="{{ ghostBtn }}">Dismiss</button><span style="margin-left:auto;color:var(--mu);align-self:center">Verdict</span></div></sc-if>
         <sc-if value="{{ verdictDone }}" hint-placeholder-val="{{ false }}"><div style="color:var(--mu)">Verdict: <span style="color:var(--tx)">{{ verdictText }}</span> · <a href="#" onClick="{{ vReset }}">undo</a></div></sc-if>
@@ -171,23 +171,23 @@
       <div style="display:flex"><span style="width:44px;text-align:right;padding-right:14px;color:var(--mu)">45</span><span>        Ok(cfg)</span></div>
       <div style="display:flex"><span style="width:44px;text-align:right;padding-right:14px;color:var(--mu)">46</span><span>    }</span></div>
     </div>
-    <div style="border-top:1px solid var(--bd);height:110px;padding:8px 14px;font-size:12px"><div style="display:flex;gap:16px;color:var(--mu);font-size:11px;margin-bottom:4px"><span style="color:var(--tx)">PROBLEMS 1</span><span>OUTPUT · Navigator</span><span>TERMINAL</span></div><div class="mono" style="color:var(--rd)">error[E0382]: borrow of moved value: `raw`</div><div class="mono" style="color:var(--mu)">  --&gt; src/parser/incr.rs:18:9</div></div>
+    <div style="border-top:1px solid var(--bd);height:110px;padding:8px 14px;font-size:12px"><div style="display:flex;gap:16px;color:var(--mu);font-size:11px;margin-bottom:4px"><span style="color:var(--tx)">PROBLEMS 1</span><span>OUTPUT · WithNav</span><span>TERMINAL</span></div><div class="mono" style="color:var(--rd)">error[E0382]: borrow of moved value: `raw`</div><div class="mono" style="color:var(--mu)">  --&gt; src/parser/incr.rs:18:9</div></div>
   </div>
   <div style="background:var(--pn);border-left:1px solid var(--bd);display:flex;flex-direction:column;font-size:12px;min-height:0">
-    <div style="padding:9px 12px;border-bottom:1px solid var(--bd);display:flex;gap:6px;align-items:center"><i class="ph ph-chat-circle-text" style="color:var(--ac)"></i>Cognition <span style="color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">· {{ convTitle }}</span><i class="ph ph-clock-counter-clockwise" style="color:var(--mu);margin-left:4px"></i><span style="margin-left:auto;display:flex;gap:2px">
+    <div style="padding:9px 12px;border-bottom:1px solid var(--bd);display:flex;gap:6px;align-items:center"><i class="ph ph-chat-circle-text" style="color:var(--ac)"></i>Nav <span style="color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">· {{ convTitle }}</span><i class="ph ph-clock-counter-clockwise" style="color:var(--mu);margin-left:4px"></i><span style="margin-left:auto;display:flex;gap:2px">
       <button onClick="{{ setBuild }}" style="{{ segBuild }}">build</button><button onClick="{{ setPlan }}" style="{{ segPlan }}">plan</button></span></div>
     <sc-if value="{{ vscChat }}" hint-placeholder-val="{{ true }}">
     <div style="flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;line-height:1.5">
-      <div style="background:var(--sf);padding:8px 10px;border-radius:6px"><div style="color:var(--mu);font-size:11px;margin-bottom:2px">Driver · <span class="mono">config.rs:42</span> attached</div>Delegate: swap the toml parser for an incremental one. Keep Config::load(p).</div>
-      <div><span style="color:var(--ac)">Cognition</span> · I'll map the call sites with <span style="color:var(--pu)">@explore</span>.</div>
-      <div style="border:1px solid var(--bd);border-radius:6px;padding:6px 10px;color:var(--mu);display:flex;flex-direction:column;gap:3px"><span><span style="color:var(--gr)">✓</span> grep "from_str" · 7</span><span><span style="color:var(--gr)">✓</span> read src/config.rs</span><span><i class="ph ph-spinner"></i> spawn_agent explore…</span></div>
-      <div style="border:1px solid var(--rd);border-radius:6px;padding:7px 10px"><div style="color:var(--rd);font-size:11px">WAKE · from Navigator</div>Signature change contradicts the intent record. I'll check the code and raise it with you before editing.</div>
+      <div style="background:var(--sf);padding:8px 10px;border-radius:6px"><div style="color:var(--mu);font-size:11px;margin-bottom:2px">Captain · <span class="mono">config.rs:42</span> attached</div>Delegate: swap the toml parser for an incremental one. Keep Config::load(p).</div>
+      <div><span style="color:var(--ac)">Nav</span> · I'll map the call sites with <span style="color:var(--pu)">@vigie</span>.</div>
+      <div style="border:1px solid var(--bd);border-radius:6px;padding:6px 10px;color:var(--mu);display:flex;flex-direction:column;gap:3px"><span><span style="color:var(--gr)">✓</span> grep "from_str" · 7</span><span><span style="color:var(--gr)">✓</span> read src/config.rs</span><span><i class="ph ph-spinner"></i> spawn_agent vigie…</span></div>
+      <div style="border:1px solid var(--rd);border-radius:6px;padding:7px 10px"><div style="color:var(--rd);font-size:11px">WAKE · from Nav</div>Signature change contradicts the intent record. I'll check the code and raise it with you before editing.</div>
       <div style="border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div>Edit <span class="mono">src/parser/incr.rs</span> <span style="color:var(--mu)">+64</span></div><div style="display:flex;gap:8px;margin-top:6px"><button style="{{ outBtn }}">View diff</button><button style="{{ ghostBtn }}">Deny</button></div></div>
     </div>
     </sc-if>
     <sc-if value="{{ vscSub }}" hint-placeholder-val="{{ false }}">
     <div style="flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;line-height:1.5">
-      <div style="display:flex;gap:6px;align-items:center;color:var(--mu)"><a href="#" onClick="{{ toSession }}">{{ convTitle }}</a> › <span style="color:var(--pu)">@explore</span><span style="margin-left:auto;color:var(--pu)">running 0:42</span></div>
+      <div style="display:flex;gap:6px;align-items:center;color:var(--mu)"><a href="#" onClick="{{ toSession }}">{{ convTitle }}</a> › <span style="color:var(--pu)">@vigie</span><span style="margin-left:auto;color:var(--pu)">running 0:42</span></div>
       <div style="border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div style="color:var(--mu);font-size:11px">TASK · from build</div>Map parser call sites: every caller of toml::from_str and Config::load, with file:line.<div style="color:var(--mu);font-size:11px;margin-top:4px">glob · grep · read · read-only · next-turn · {{ subModel }}</div></div>
       <div style="border:1px solid var(--bd);border-radius:6px;padding:6px 10px;display:flex;flex-direction:column;gap:3px"><sc-for list="{{ subCalls }}" as="c" hint-placeholder-count="4"><span><span style="color:{{ c.col }}">{{ c.icon }}</span> <span class="mono">{{ c.text }}</span> <span style="color:var(--mu)">· {{ c.meta }}</span></span></sc-for></div>
       <div><div style="color:var(--mu);font-size:11px;margin-bottom:3px">FINDINGS SO FAR</div><sc-for list="{{ subFindings }}" as="f" hint-placeholder-count="3"><div><a href="#" class="mono">{{ f.loc }}</a> {{ f.text }}</div></sc-for></div>
@@ -200,22 +200,22 @@
   <sc-if value="{{ palOpen }}" hint-placeholder-val="{{ false }}">
   <div onClick="{{ toSession }}" style="position:absolute;inset:0;z-index:5">
     <div onClick="{{ stop }}" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:600px;background:var(--pn);border:1px solid var(--bd);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:6px;font-size:12.5px">
-      <div style="border:1px solid var(--ac);border-radius:4px;padding:5px 8px;background:var(--bg);margin-bottom:4px">&gt;Navigator: <span style="background:var(--ac)">&nbsp;</span></div>
-      <sc-for list="{{ palette }}" as="p" hint-placeholder-count="8"><div onClick="{{ p.click }}" style="display:flex;gap:6px;padding:5px 8px;border-radius:4px;background:{{ p.bg }};cursor:pointer"><span style="color:var(--mu)">Navigator:</span><span>{{ p.label }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px">{{ p.hint }}</span></div></sc-for>
+      <div style="border:1px solid var(--ac);border-radius:4px;padding:5px 8px;background:var(--bg);margin-bottom:4px">&gt;Nav: <span style="background:var(--ac)">&nbsp;</span></div>
+      <sc-for list="{{ palette }}" as="p" hint-placeholder-count="8"><div onClick="{{ p.click }}" style="display:flex;gap:6px;padding:5px 8px;border-radius:4px;background:{{ p.bg }};cursor:pointer"><span style="color:var(--mu)">Nav:</span><span>{{ p.label }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px">{{ p.hint }}</span></div></sc-for>
     </div>
   </div>
   </sc-if>
   <sc-if value="{{ modelsOpen }}" hint-placeholder-val="{{ false }}">
   <div onClick="{{ toSession }}" style="position:absolute;inset:0;z-index:5">
     <div onClick="{{ stop }}" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:620px;background:var(--pn);border:1px solid var(--bd);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:6px;font-size:12.5px">
-      <div style="display:flex;gap:6px;align-items:center;padding:2px 4px 6px"><span style="color:var(--mu)">Navai: Session Model for</span><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:{{ l.bg }};color:{{ l.fg }};border:1px solid {{ l.bd }};border-radius:3px;padding:0 6px;font-size:12px;cursor:pointer">{{ l.label }}</button></sc-for></div>
+      <div style="display:flex;gap:6px;align-items:center;padding:2px 4px 6px"><span style="color:var(--mu)">WithNav: Session Model for</span><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:{{ l.bg }};color:{{ l.fg }};border:1px solid {{ l.bd }};border-radius:3px;padding:0 6px;font-size:12px;cursor:pointer">{{ l.label }}</button></sc-for></div>
       <div style="border:1px solid var(--ac);border-radius:4px;padding:5px 8px;background:var(--bg);margin-bottom:4px;color:var(--mu)">Filter models</div>
       <sc-for list="{{ models }}" as="m" hint-placeholder-count="6"><sc-if value="{{ m.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="display:flex;gap:6px;align-items:center;padding:6px 8px 3px;cursor:pointer;color:var(--mu);font-size:11.5px;border-top:1px solid var(--bd)"><i class="{{ m.icon }}"></i><span class="mono">{{ m.label }}</span><span style="margin-left:auto">{{ m.count }} models</span></div></sc-if><sc-if value="{{ m.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="display:flex;gap:6px;align-items:center;padding:3px 8px 3px 22px;cursor:pointer;color:var(--mu);font-size:11.5px"><i class="{{ m.icon }}"></i><span class="mono">{{ m.label }}</span></div></sc-if><sc-if value="{{ m.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ m.click }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:6px;padding:4px 8px 4px 36px;border-radius:4px;background:{{ m.bg }};cursor:pointer"><i class="ph ph-check" style="opacity:{{ m.op }};color:var(--ac)"></i><div><div class="mono">{{ m.id }}</div><div style="color:var(--mu);font-size:11px" class="mono">{{ m.name }} · {{ m.ctx }}</div></div><span style="color:var(--mu);font-size:11.5px">{{ m.used }}</span></div></sc-if></sc-for>
       <div style="display:flex;gap:6px;align-items:center;padding:8px 8px 4px;border-top:1px solid var(--bd);margin-top:4px"><span style="color:var(--mu)">Variant</span><sc-for list="{{ variants }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:3px;padding:1px 8px;font-size:12px;cursor:pointer">{{ v.label }}</button></sc-for><span style="color:var(--mu);font-size:11.5px;margin-left:4px">{{ variantDesc }}</span></div>
     </div>
   </div>
   </sc-if>
-  <div style="grid-column:1/5;background:var(--ac);color:var(--acfg);display:flex;gap:16px;align-items:center;padding:0 12px;font-size:11.5px"><span><i class="ph ph-git-branch"></i> develop</span><span><i class="ph ph-x-circle"></i> 1</span><span><i class="ph ph-compass"></i> Navigator · drift 0.86 · click to set intent</span><span style="margin-left:auto">Rust · rust-agent-lsp · {{ modeName }}</span></div>
+  <div style="grid-column:1/5;background:var(--ac);color:var(--acfg);display:flex;gap:16px;align-items:center;padding:0 12px;font-size:11.5px"><span><i class="ph ph-git-branch"></i> develop</span><span><i class="ph ph-x-circle"></i> 1</span><span><i class="ph ph-compass"></i> Nav · drift 0.86 · click to set intent</span><span style="margin-left:auto">Rust · rust-agent-lsp · {{ modeName }}</span></div>
 </div>
 </sc-if>
 
@@ -223,7 +223,7 @@
 <sc-if value="{{ isWeb }}" hint-placeholder-val="{{ false }}">
 <div style="position:relative;height:740px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:240px minmax(0,1fr) 360px;grid-template-rows:auto minmax(0,1fr);overflow:hidden">
   <div style="grid-column:1/4;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn)">
-    <span style="display:flex;align-items:center"><svg viewBox="0 -8 266 88" role="img" aria-label="navai" style="height:19px;width:57.4px;overflow:visible;flex:none"><g fill="none" stroke="var(--tx)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 80 V30.5 M4.5 48 A18 18 0 0 1 40.5 48 V80"></path><circle cx="81" cy="53" r="22.5"></circle><path d="M103.5 30.5 V80"></path><polyline points="121.5,30.5 142,77 162.5,30.5"></polyline><circle cx="203" cy="53" r="22.5"></circle><path d="M225.5 30.5 V80"></path></g><polygon points="248,26 254.5,53 248,80 241.5,53" fill="var(--lh)"></polygon><polygon points="241.5,53 254.5,53 248,80" fill="var(--lh)" opacity=".45"></polygon><circle cx="248" cy="9" r="12" fill="none" stroke="var(--la)" stroke-width="3.6" opacity=".65"></circle><circle cx="248" cy="9" r="5.5" fill="var(--la)"></circle></svg></span>
+    <span style="display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:5.7px;flex:none"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:15.2px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></span>
     <span style="color:var(--mu)">{{ wsName }} / {{ webCrumb }}</span>
     <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
       <span style="color:var(--mu);font-size:12px">Agent</span><button onClick="{{ setBuild }}" style="{{ segBuild }}">build</button><button onClick="{{ setPlan }}" style="{{ segPlan }}">plan</button>
@@ -246,12 +246,12 @@
   <sc-if value="{{ webChat }}" hint-placeholder-val="{{ true }}">
   <div style="display:flex;flex-direction:column;min-width:0;position:relative">
     <div style="flex:1;overflow:auto;padding:20px 28px;display:flex;flex-direction:column;gap:14px;line-height:1.55">
-      <div style="border-left:2px solid var(--bd);padding:2px 0 2px 12px"><div style="color:var(--mu);font-size:11.5px;margin-bottom:3px;display:flex;gap:6px;align-items:center"><i class="ph ph-user"></i>Driver · Delegation</div>Swap the toml parser for an incremental one. Keep <span class="mono" style="color:var(--bl)">Config::load(p)</span> as it is.</div>
-      <div style="max-width:80%"><div style="color:var(--ac);font-size:11.5px;margin-bottom:3px">Cognition · {{ modeName }}</div>I'll map the call sites first, then delegate the survey to a subagent.
+      <div style="border-left:2px solid var(--bd);padding:2px 0 2px 12px"><div style="color:var(--mu);font-size:11.5px;margin-bottom:3px;display:flex;gap:6px;align-items:center"><i class="ph ph-user"></i>Captain · Delegation</div>Swap the toml parser for an incremental one. Keep <span class="mono" style="color:var(--bl)">Config::load(p)</span> as it is.</div>
+      <div style="max-width:80%"><div style="color:var(--ac);font-size:11.5px;margin-bottom:3px">Nav · {{ modeName }}</div>I'll map the call sites first, then delegate the survey to a subagent.
         <div style="margin-top:8px;border:1px solid var(--bd);border-radius:6px;overflow:hidden">
           <div style="padding:6px 10px;display:flex;gap:8px;color:var(--mu)"><i class="ph ph-check" style="color:var(--gr)"></i>grep <span class="mono">"from_str"</span><span style="margin-left:auto">7 matches</span></div>
           <div style="padding:6px 10px;display:flex;gap:8px;color:var(--mu);border-top:1px solid var(--bd)"><i class="ph ph-check" style="color:var(--gr)"></i>read <span class="mono">src/config.rs</span></div>
-          <div style="padding:6px 10px;display:flex;gap:8px;border-top:1px solid var(--bd);background:var(--sf)"><i class="ph ph-tree-structure" style="color:var(--pu)"></i>spawn_agent <span style="color:var(--pu)">@explore</span><span style="margin-left:auto;color:var(--mu)">running · 3 tools</span></div>
+          <div style="padding:6px 10px;display:flex;gap:8px;border-top:1px solid var(--bd);background:var(--sf)"><i class="ph ph-tree-structure" style="color:var(--pu)"></i>spawn_agent <span style="color:var(--pu)">@vigie</span><span style="margin-left:auto;color:var(--mu)">running · 3 tools</span></div>
         </div></div>
       <div style="max-width:80%;border:1px solid var(--bd);border-radius:6px;padding:10px 12px">
         <div style="display:flex;gap:8px;align-items:center"><i class="ph ph-pencil-simple" style="color:var(--ac)"></i>Edit <span class="mono">src/parser/incr.rs</span><span style="color:var(--mu)">+64</span></div>
@@ -263,17 +263,17 @@
         <sc-if value="{{ modePlan }}" hint-placeholder-val="{{ false }}"><div style="color:var(--mu)">Plan mode: edits are blocked and added to the plan.</div></sc-if>
       </div>
       <div style="max-width:80%;border-left:2px solid var(--ac);padding:8px 14px;background:linear-gradient(90deg,color-mix(in srgb,var(--ac) 13%,transparent),transparent 80%)">
-        <div style="color:var(--at);display:flex;gap:6px;align-items:center"><i class="ph ph-compass"></i>Navigator · Remark<span style="margin-left:auto;color:var(--mu)">config.rs:42 · metacognition</span></div>
+        <div style="color:var(--at);display:flex;gap:6px;align-items:center"><i class="ph ph-compass"></i>Nav · Remark<span style="margin-left:auto;color:var(--mu)">config.rs:42 · metacognition</span></div>
         <div style="margin:3px 0 6px">The new parameter on <span class="mono" style="color:var(--bl)">Config::load</span> contradicts "public API unchanged" in the intent record.</div>
         <sc-if value="{{ verdictPending }}" hint-placeholder-val="{{ true }}"><div style="display:flex;gap:8px"><button onClick="{{ vUseful }}" style="{{ outBtn }}">Useful</button><button onClick="{{ vNoise }}" style="{{ ghostBtn }}">Noise</button><button onClick="{{ vDismiss }}" style="{{ ghostBtn }}">Dismiss</button><button style="{{ ghostBtn }}">Why this remark?</button></div></sc-if>
         <sc-if value="{{ verdictDone }}" hint-placeholder-val="{{ false }}"><div style="color:var(--mu)">Verdict: <span style="color:var(--tx)">{{ verdictText }}</span> · <a href="#" onClick="{{ vReset }}">undo</a></div></sc-if>
       </div>
       <div style="max-width:80%;border-left:2px solid var(--rd);padding:8px 14px;background:linear-gradient(90deg,color-mix(in srgb,var(--rd) 10%,transparent),transparent 80%)">
-        <div style="color:var(--rd);display:flex;gap:6px;align-items:center"><i class="ph ph-arrow-up"></i>Wake · metacognition → cognition<span style="margin-left:auto;color:var(--mu)">drift 0.86</span></div>
-        <div>Cognition received the wake and will raise the mismatch in its next turn.</div>
+        <div style="color:var(--rd);display:flex;gap:6px;align-items:center"><i class="ph ph-arrow-up"></i>Wake · metacognition → nav<span style="margin-left:auto;color:var(--mu)">drift 0.86</span></div>
+        <div>Nav received the wake and will raise the mismatch in its next turn.</div>
       </div>
     </div>
-    <div style="padding:12px 28px 16px"><div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--sf)"><div style="color:var(--mu)">Message cognition… @file  /skill  @agent  /command</div>
+    <div style="padding:12px 28px 16px"><div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--sf)"><div style="color:var(--mu)">Message Nav… @file  /skill  @agent  /command</div>
       <div style="display:flex;gap:8px;margin-top:10px;align-items:center;color:var(--mu);font-size:12px"><span style="border:1px solid var(--bd);border-radius:5px;padding:2px 8px">{{ modeName }} ▾</span><button onClick="{{ goModels }}" style="background:transparent;color:var(--tx);border:1px solid var(--bd);border-radius:5px;padding:2px 8px;font-size:12px;cursor:pointer">{{ cogModel }} · {{ cogVariant }} ▾</button><span style="border:1px solid var(--bd);border-radius:5px;padding:2px 8px">Delegate</span><span style="margin-left:auto;border:1px solid var(--ac);color:var(--at);border-radius:5px;padding:3px 10px"><i class="ph ph-arrow-up"></i> Send</span></div></div></div>
     <sc-if value="{{ modelsOpen }}" hint-placeholder-val="{{ false }}">
     <div onClick="{{ toSession }}" style="position:absolute;inset:0;z-index:4">
@@ -306,7 +306,7 @@
   </sc-if>
   <sc-if value="{{ webSub }}" hint-placeholder-val="{{ false }}">
   <div style="min-width:0;overflow:auto;padding:20px 28px;display:flex;flex-direction:column;gap:14px;line-height:1.55">
-    <div style="display:flex;gap:8px;align-items:center;color:var(--mu)"><a href="#" onClick="{{ toSession }}"><i class="ph ph-arrow-left"></i> {{ sessName }}</a><span>›</span><span style="color:var(--pu)">@explore</span><span style="margin-left:auto;border:1px solid var(--pu);color:var(--pu);border-radius:10px;padding:1px 9px;font-size:11.5px">running · 0:42</span></div>
+    <div style="display:flex;gap:8px;align-items:center;color:var(--mu)"><a href="#" onClick="{{ toSession }}"><i class="ph ph-arrow-left"></i> {{ sessName }}</a><span>›</span><span style="color:var(--pu)">@vigie</span><span style="margin-left:auto;border:1px solid var(--pu);color:var(--pu);border-radius:10px;padding:1px 9px;font-size:11.5px">running · 0:42</span></div>
     <div style="border:1px solid var(--bd);border-radius:8px;padding:12px 14px;background:var(--pn);display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:16px"><div><div style="color:var(--mu);font-size:11px">TASK · from build</div><div style="font-size:14px;margin-top:2px">Map parser call sites: every caller of toml::from_str and Config::load, with file:line.</div></div><div style="display:flex;flex-direction:column;gap:3px;font-size:12px"><div style="display:flex"><span style="color:var(--mu)">tools</span><span style="margin-left:auto">glob · grep · read</span></div><div style="display:flex"><span style="color:var(--mu)">access</span><span style="margin-left:auto">read-only</span></div><div style="display:flex"><span style="color:var(--mu)">delivery</span><span style="margin-left:auto">next-turn</span></div><div style="display:flex"><span style="color:var(--mu)">model</span><span class="mono" style="margin-left:auto;font-size:11px">{{ subModel }}</span></div></div></div>
     <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden"><sc-for list="{{ subCalls }}" as="c" hint-placeholder-count="4"><div style="padding:7px 12px;display:flex;gap:8px;border-bottom:1px solid var(--bd)"><span style="color:{{ c.col }}">{{ c.icon }}</span><span class="mono">{{ c.text }}</span><span style="margin-left:auto;color:var(--mu)">{{ c.meta }}</span></div></sc-for></div>
     <div><div style="color:var(--mu);font-size:11px;margin-bottom:4px">FINDINGS SO FAR</div><sc-for list="{{ subFindings }}" as="f" hint-placeholder-count="3"><div><a href="#" class="mono">{{ f.loc }}</a> {{ f.text }}</div></sc-for></div>
@@ -321,16 +321,17 @@
     </div>
     <div style="padding:14px;overflow:auto;flex:1;font-size:12.5px;line-height:1.55">
       <sc-if value="{{ tabIntent }}" hint-placeholder-val="{{ true }}">
-        <div style="color:var(--mu);font-size:11px">INTENT RECORD · .navigator/intent.md</div>
+        <div style="color:var(--mu);font-size:11px">INTENT RECORD · .withnav/intent.md</div>
         <div class="mono" style="background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:10px 12px;margin:6px 0 14px;font-size:12px;line-height:1.7"><span style="color:var(--or)">## intent</span><br>Incremental TOML parser.<br><span style="color:var(--or)">## plan</span><br>1. map call sites<br>2. IncrParser::feed<br>3. swap in Config::load<br><span style="color:var(--or)">## decisions</span><br>- public API unchanged<br>- no new dependency</div>
       </sc-if>
       <sc-if value="{{ tabAgents }}" hint-placeholder-val="{{ false }}">
         <div style="display:flex;flex-direction:column;gap:8px">
           <div style="border:1px solid var(--ac);border-radius:6px;padding:8px 10px"><div><i class="ph ph-hammer" style="color:var(--ac)"></i> build <span style="color:var(--mu)">· primary</span></div><div style="color:var(--mu);font-size:11.5px">All tools. Edits ask permission. Acts only on Delegation.</div></div>
           <div style="border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div><i class="ph ph-notebook"></i> plan <span style="color:var(--mu)">· primary</span></div><div style="color:var(--mu);font-size:11.5px">Read-only. Writes the plan into the intent record.</div></div>
-          <div style="margin-left:18px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div><i class="ph ph-arrow-elbow-down-right"></i> explore <span style="color:var(--pu)">· subagent · running</span></div><div style="color:var(--mu);font-size:11.5px">glob, grep, read · spawned by build · non-blocking → subagent.done</div></div>
-          <div style="margin-left:18px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div><i class="ph ph-arrow-elbow-down-right"></i> review <span style="color:var(--mu)">· subagent · idle</span></div><div style="color:var(--mu);font-size:11.5px">Reads diffs, no write access. Delivery: next-turn</div></div>
-          <div style="color:var(--mu);font-size:11px;margin-top:4px">AGENT FILES · .navigator/agents/*.md</div>
+          <div style="margin-left:18px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div><i class="ph ph-arrow-elbow-down-right"></i> vigie <span style="color:var(--pu)">· subagent · running</span></div><div style="color:var(--mu);font-size:11.5px">glob, grep, read · spawned by build · non-blocking → subagent.done</div></div>
+          <div style="margin-left:18px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div><i class="ph ph-arrow-elbow-down-right"></i> lux <span style="color:var(--mu)">· subagent · idle</span></div><div style="color:var(--mu);font-size:11.5px">Expert Advisor. Reads diffs, no write access. Delivery: next-turn</div></div>
+          <div style="margin-left:18px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div><i class="ph ph-arrow-elbow-down-right"></i> mousse <span style="color:var(--mu)">· subagent · idle</span></div><div style="color:var(--mu);font-size:11.5px">Lightweight Deckhand. Local edits after approval.</div></div>
+          <div style="color:var(--mu);font-size:11px;margin-top:4px">AGENT FILES · .withnav/agents/*.md</div>
           <button style="{{ outBtn }}">+ New agent</button>
         </div>
       </sc-if>
@@ -347,8 +348,8 @@
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span class="mono">contradicts_conversation</span><span style="margin-left:auto;color:var(--mu)">yes-prob</span></div></div>
         <div style="color:var(--mu);font-size:11px">BRANCHES · first match wins</div>
         <div style="display:flex;flex-direction:column;gap:5px;margin:5px 0 12px;font-size:12px">
-          <div style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px">1 · <span class="mono">drift &gt; <b style="color:var(--or)">0.80</b></span> → <span style="color:var(--rd)">wake cognition</span></div>
-          <div style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px">2 · <span class="mono">contradicts &gt; <b style="color:var(--or)">0.80</b></span> → <span style="color:var(--rd)">wake cognition</span></div>
+          <div style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px">1 · <span class="mono">drift &gt; <b style="color:var(--or)">0.80</b></span> → <span style="color:var(--rd)">wake Nav</span></div>
+          <div style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px">2 · <span class="mono">contradicts &gt; <b style="color:var(--or)">0.80</b></span> → <span style="color:var(--rd)">wake Nav</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px">3 · <span class="mono">worth &gt; <b style="color:var(--or)">0.85</b> &amp; route = metacognition</span> → <span style="color:var(--at)">remark</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px">4 · else → <span style="color:var(--mu)">silent</span></div></div>
         <div style="display:flex;gap:8px"><button style="{{ outBtn }}">Save pipeline</button><button style="{{ ghostBtn }}">Replay log</button></div>
@@ -372,14 +373,14 @@
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Reflex</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mReflex }}</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Instinct</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mInstinct }}</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Metacognition</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mMeta }}</span></div>
-          <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Cognition · {{ modeName }}</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ cfgCog }}</span></div></div>
+          <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Nav · {{ modeName }}</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ cfgCog }}</span></div></div>
         <div style="color:var(--mu);font-size:11px;margin-bottom:5px">TOOL PERMISSIONS</div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px"><tbody>
           <tr><td style="padding:5px 0" class="mono">read · grep</td><td style="color:var(--gr);text-align:right">allow</td></tr>
           <tr><td style="padding:5px 0;border-top:1px solid var(--bd)" class="mono">edit · write</td><td style="color:var(--or);text-align:right;border-top:1px solid var(--bd)">ask</td></tr>
           <tr><td style="padding:5px 0;border-top:1px solid var(--bd)" class="mono">bash</td><td style="color:var(--or);text-align:right;border-top:1px solid var(--bd)">ask</td></tr>
           <tr><td style="padding:5px 0;border-top:1px solid var(--bd)" class="mono">spawn_agent</td><td style="color:var(--gr);text-align:right;border-top:1px solid var(--bd)">allow</td></tr></tbody></table>
-        <div style="color:var(--mu);font-size:11px;margin-bottom:5px">NAVIGATOR</div>
+        <div style="color:var(--mu);font-size:11px;margin-bottom:5px">WITHNAV</div>
         <div style="display:flex;flex-direction:column;gap:5px">
           <div style="display:flex"><span>idle delay</span><span class="mono" style="margin-left:auto;color:var(--mu)">3000 ms</span></div>
           <div style="display:flex"><span>cooldown per file</span><span class="mono" style="margin-left:auto;color:var(--mu)">20000 ms</span></div>
@@ -391,7 +392,7 @@
   <sc-if value="{{ webPipe }}" hint-placeholder-val="{{ false }}">
   <div style="grid-column:2/4;display:flex;flex-direction:column;min-width:0;min-height:0">
     <div style="display:flex;align-items:center;gap:14px;padding:12px 24px;border-bottom:1px solid var(--bd)">
-      <div><div style="font-size:16px;font-weight:600">Pipeline</div><div class="mono" style="color:var(--mu);font-size:11.5px">{{ wsName }}/.navigator/pipeline.toml</div></div>
+      <div><div style="font-size:16px;font-weight:600">Pipeline</div><div class="mono" style="color:var(--mu);font-size:11.5px">{{ wsName }}/.withnav/pipeline.toml</div></div>
       <div style="display:flex;gap:4px;margin-left:18px"><sc-for list="{{ pipeTrigTabs }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:1px solid {{ t.bd }};border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer">{{ t.label }}</button></sc-for></div>
       <div style="margin-left:auto;display:flex;gap:8px"><button style="{{ ghostBtn }}">Revert</button><button style="{{ ghostBtn }}"><i class="ph ph-play"></i> Replay</button><button style="{{ outBtn }}">Save pipeline</button></div>
     </div>
@@ -406,10 +407,10 @@
         <sc-for list="{{ pipeQuestions }}" as="q" hint-placeholder-count="4"><div style="border:1px solid var(--bd);border-radius:6px;padding:9px 12px;background:var(--pn);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px"><span class="mono">{{ q.name }}</span><span style="border:1px solid var(--bd);border-radius:10px;padding:0 8px;font-size:11px;color:var(--mu);justify-self:end">{{ q.type }}</span><span style="color:var(--mu);font-size:12px">{{ q.prompt }}</span><span style="color:var(--mu);font-size:11px;justify-self:end">{{ q.needs }}</span></div></sc-for>
         <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px"><span style="font-size:13.5px;font-weight:500">Branches</span><span style="color:var(--mu);font-size:12px">tried in order · first that holds wins</span><span style="margin-left:auto;color:var(--at);font-size:12px">+ Add branch</span></div>
         <sc-for list="{{ pipeBranches }}" as="b" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:18px minmax(0,1fr) 150px 118px;gap:12px;align-items:center;border:1px solid var(--bd);border-radius:6px;padding:9px 12px;background:var(--pn)"><span class="mono" style="color:var(--mu)">{{ b.n }}</span><div><div class="mono" style="font-size:12.5px">{{ b.cond }}</div><div style="color:var(--mu);font-size:11.5px">{{ b.guard }}</div></div><div><div style="height:4px;background:var(--bd);border-radius:2px;position:relative"><div style="position:absolute;left:{{ b.pct }};top:-4px;width:2px;height:12px;background:var(--or)"></div></div><div class="mono" style="color:var(--mu);font-size:11px;margin-top:5px">{{ b.th }}</div></div><span style="justify-self:end;border:1px solid {{ b.col }};color:{{ b.col }};border-radius:10px;padding:1px 9px;font-size:11.5px">{{ b.action }}</span></div></sc-for>
-        <div style="display:flex;gap:16px;color:var(--mu);font-size:11.5px;margin-top:6px"><span><span style="color:var(--mu)">silent</span> · nothing shown</span><span><span style="color:var(--at)">remark</span> · metacognition, prompts/remark.md</span><span><span style="color:var(--rd)">wake</span> · brings it to the cognition</span></div>
+        <div style="display:flex;gap:16px;color:var(--mu);font-size:11.5px;margin-top:6px"><span><span style="color:var(--mu)">silent</span> · nothing shown</span><span><span style="color:var(--at)">remark</span> · metacognition, prompts/remark.md</span><span><span style="color:var(--rd)">wake</span> · brings it to Nav</span></div>
       </div>
       <div style="padding:16px 18px;border-left:1px solid var(--bd);background:var(--pn);display:flex;flex-direction:column;gap:12px;font-size:12.5px">
-        <div><div style="font-size:13.5px;font-weight:500">Replay</div><div style="color:var(--mu);font-size:12px">Trigger log of 2026-09-29, compared against the driver's verdicts</div></div>
+        <div><div style="font-size:13.5px;font-weight:500">Replay</div><div style="color:var(--mu);font-size:12px">Trigger log of 2026-09-29, compared against the Captain's verdicts</div></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div style="border:1px solid var(--bd);border-radius:6px;padding:8px 10px"><div style="color:var(--mu);font-size:11px">PREVIOUS · 0.70 / 20 s</div><div style="font-size:20px">25</div><div style="color:var(--mu);font-size:11px">remarks</div></div><div style="border:1px solid var(--ac);border-radius:6px;padding:8px 10px"><div style="color:var(--mu);font-size:11px">THIS PIPELINE · 0.85 / 45 s</div><div style="font-size:20px;color:var(--at)">13</div><div style="color:var(--mu);font-size:11px">remarks</div></div></div>
         <div style="color:var(--mu);font-size:11px">TRIGGERS · previous → this pipeline</div>
         <div style="display:flex;flex-direction:column"><sc-for list="{{ replayRows }}" as="r" hint-placeholder-count="5"><div style="padding:7px 0;border-top:1px solid var(--bd);display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:2px 8px"><span class="mono" style="color:var(--mu);font-size:11.5px">{{ r.t }}</span><span><span class="mono" style="font-size:12px">{{ r.trig }}</span> <span style="color:var(--mu)">{{ r.file }}</span></span><span style="font-size:11.5px;color:{{ r.vcol }}">{{ r.verdict }}</span><span></span><span class="mono" style="font-size:11px;color:var(--mu)">{{ r.ans }}</span><span style="font-size:11.5px"><span style="color:var(--mu)">{{ r.prev }}</span> → <span style="color:{{ r.ncol }}">{{ r.now }}</span></span></div></sc-for></div>
@@ -477,12 +478,12 @@ class Component extends DCLogic {
     const P = [
       ['Switch agent to ' + (build ? 'plan' : 'build'), 'Agent', 'tab', () => this.setState({ mode: build ? 'plan' : 'build', scr: 'session' })],
       ['Model for this session…', 'Agent', '/model', go('models')],
-      ['Open subagent: explore', 'Agent', 'ctrl+t', go('subagent')],
-      ['Delegate to cognition', 'Agent', '/delegate', go('session')],
-      ['Edit intent record', 'Navigator', '/intent', go('session')],
-      ['Edit pipeline', 'Navigator', 'ctrl+l', go(st.s === 'vsc' ? 'session' : 'pipeline')],
-      ['Replay trigger log', 'Navigator', '/replay', go(st.s === 'vsc' ? 'session' : 'pipeline')],
-      ['Mark last remark useful', 'Navigator', 'ctrl+alt+y', () => this.setState({ verdict: 'useful', scr: 'session' })],
+      ['Open subagent: vigie', 'Agent', 'ctrl+t', go('subagent')],
+      ['Ask Lux', 'Agent', '/delegate', go('session')],
+      ['Edit intent record', 'Nav', '/intent', go('session')],
+      ['Edit pipeline', 'Nav', 'ctrl+l', go(st.s === 'vsc' ? 'session' : 'pipeline')],
+      ['Replay trigger log', 'Nav', '/replay', go(st.s === 'vsc' ? 'session' : 'pipeline')],
+      ['Mark last remark useful', 'Nav', 'ctrl+alt+y', () => this.setState({ verdict: 'useful', scr: 'session' })],
       ['New conversation', 'Session', '/new', go('session')],
       ['Open conversation…', 'Session', 'ctrl+s', go('session')],
       ['Run skill…', 'Extensions', '/skill', go('session')],
@@ -494,12 +495,12 @@ class Component extends DCLogic {
     const TT = [[1, 'refactor-parser', 'build · streaming', 'var(--ac)'], [2, 'fix-ci-clippy', 'plan · idle', 'var(--mu)'], [3, 'sse-reconnect', 'build · done', 'var(--mu)']];
     const tuiTabs = TT.map(([n, label, meta, metaCol]) => { const on = st.tuiTab === n && st.scr !== 'subagent'; return { n, label, meta, metaCol, pad: '10px', click: () => this.setState({ tuiTab: n, scr: 'session' }), bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent' }; });
     const subOn = st.scr === 'subagent';
-    tuiTabs.splice(1, 0, { n: '└', label: 'explore', meta: 'subagent · running', metaCol: 'var(--pu)', pad: '22px', click: go('subagent'), bg: subOn ? tint : 'transparent', bd: subOn ? 'var(--pu)' : 'transparent' });
+    tuiTabs.splice(1, 0, { n: '└', label: 'vigie', meta: 'subagent · running', metaCol: 'var(--pu)', pad: '22px', click: go('subagent'), bg: subOn ? tint : 'transparent', bd: subOn ? 'var(--pu)' : 'transparent' });
     const CV = [['refactor-parser', '2 min', 14], ['fix-ci-clippy', '1 h', 6], ['sse-reconnect', 'yesterday', 22], ['docs-plugin-api', 'Mon', 9], ['intent-tool-sections', 'Sep 27', 17]];
     const convs = CV.map(([title, when, n]) => { const on = st.conv === title; return { title, when, n, click: () => this.setState({ conv: title, scr: 'session' }), bg: on ? tint : 'transparent', bd: on ? 'var(--ac)' : 'transparent' }; });
     const W = [
-      { k: 'ra', name: 'rust-agent', path: '~/dev/rust-agent', branch: 'develop', s: [['refactor-parser', 'Today · 14 msgs · drift 0.86', [['explore', 'running'], ['review', 'idle']]], ['fix-ci-clippy', 'Today · 6 msgs', [['review', 'done']]], ['sse-reconnect', 'Yesterday · 22 msgs', []], ['docs-plugin-api', 'Mon · 9 msgs', []]] },
-      { k: 'om', name: 'omniroute', path: '~/dev/omniroute', branch: 'main', s: [['combo-routing', 'Today · 31 msgs', [['explore', 'done']]], ['rate-limit-backoff', 'Tue · 8 msgs', []]] },
+      { k: 'ra', name: 'rust-agent', path: '~/dev/rust-agent', branch: 'develop', s: [['refactor-parser', 'Today · 14 msgs · drift 0.86', [['vigie', 'running'], ['lux', 'idle']]], ['fix-ci-clippy', 'Today · 6 msgs', [['lux', 'done']]], ['sse-reconnect', 'Yesterday · 22 msgs', []], ['docs-plugin-api', 'Mon · 9 msgs', []]] },
+      { k: 'om', name: 'omniroute', path: '~/dev/omniroute', branch: 'main', s: [['combo-routing', 'Today · 31 msgs', [['vigie', 'done']]], ['rate-limit-backoff', 'Tue · 8 msgs', []]] },
       { k: 'df', name: 'dotfiles', path: '~/dotfiles', branch: 'main', s: [['nvim-lsp-setup', 'Sep 24 · 5 msgs', []]] }
     ].filter((w) => !st.gone['ws:' + w.k]).map((w) => ({ ...w, s: w.s.filter(([t]) => !st.gone['s:' + w.k + '/' + t]) }));
     const workspaces = W.map((w) => { const open = st.ws === w.k; return { name: w.name, path: w.path, branch: w.branch, open, count: w.s.length, caret: open ? 'ph ph-caret-down' : 'ph ph-caret-right', ic: open ? 'var(--ac)' : 'var(--mu)', click: () => this.setState({ ws: w.k, sess: w.s[0] ? w.s[0][0] : null, scr: st.scr === 'pipeline' ? 'pipeline' : 'session' }),
@@ -514,8 +515,8 @@ class Component extends DCLogic {
       const ss = cf.kind === 'ws' ? cfW.s : cfW.s.filter(([t]) => t === cf.title);
       const cfSubs = ss.flatMap(([t, , subs]) => subs.map(([name, state]) => ({ name, state: state === 'running' ? 'running · will be stopped' : state, col: subCol(state), sess: cf.kind === 'ws' ? t : '' })));
       cfv = cf.kind === 'ws'
-        ? { confirmOpen: true, cfTitle: 'Remove workspace "' + cfW.name + '"?', cfBody: 'Navai forgets this workspace and deletes its ' + ss.length + ' session' + (ss.length === 1 ? '' : 's') + ': conversations, trigger logs and remarks.', cfNote: 'Files in ' + cfW.path + ' are not touched. Add the folder again to reopen it.', cfAction: 'Remove workspace', cfSubs, cfHasSubs: cfSubs.length > 0 }
-        : { confirmOpen: true, cfTitle: 'Delete session "' + cf.title + '"?', cfBody: 'Deletes the conversation, its trigger log and remarks.', cfNote: 'The intent record in .navigator/intent.md stays. This cannot be undone.', cfAction: 'Delete session', cfSubs, cfHasSubs: cfSubs.length > 0 };
+        ? { confirmOpen: true, cfTitle: 'Remove workspace "' + cfW.name + '"?', cfBody: 'WithNav forgets this workspace and deletes its ' + ss.length + ' session' + (ss.length === 1 ? '' : 's') + ': conversations, trigger logs and remarks.', cfNote: 'Files in ' + cfW.path + ' are not touched. Add the folder again to reopen it.', cfAction: 'Remove workspace', cfSubs, cfHasSubs: cfSubs.length > 0 }
+        : { confirmOpen: true, cfTitle: 'Delete session "' + cf.title + '"?', cfBody: 'Deletes the conversation, its trigger log and remarks.', cfNote: 'The intent record in .withnav/intent.md stays. This cannot be undone.', cfAction: 'Delete session', cfSubs, cfHasSubs: cfSubs.length > 0 };
     }
     const doRemove = () => this.setState((s) => {
       const c = s.confirm; if (!c) return null;
@@ -532,14 +533,14 @@ class Component extends DCLogic {
     const pipeEvents = ['save', 'idle', 'diagnostic', 'conversation'].map((name) => { const on = evOn.includes(name); return { name, mark: on ? '✓' : '', bg: on ? 'var(--ac)' : 'transparent', bd: on ? 'var(--ac)' : 'var(--bd)', fg: on ? 'var(--tx)' : 'var(--mu)' }; });
     const pipeFilters = (edit ? [['min_changed_lines', '3', 'var(--or)'], ['cooldown', '45 s', 'var(--or)']] : [['min_changed_lines', 'n/a (no file change)', 'var(--mu)'], ['cooldown', '30 s', 'var(--or)']]).map(([name, val, fg]) => ({ name, val, fg }));
     const pipeQuestions = (edit ? [
-      ['worth_attention', 'score', 'Does this change deserve the driver\'s attention now?', ''],
+      ['worth_attention', 'score', 'Does this change deserve the Captain\'s attention now?', ''],
       ['route', 'choice', 'Which layer should look at it: metacognition or none?', ''],
       ['drift', 'score', 'How far is the code from the intent record?', 'needs has_intent'],
       ['contradicts_conversation', 'yes-probability', 'Does the code contradict what was just agreed?', 'needs has_conversation']
-    ] : [['code_contradicts_conversation', 'yes-probability', 'Does the code already contradict what the driver and cognition just agreed?', 'needs has_conversation']]).map(([name, type, prompt, needs]) => ({ name, type, prompt, needs }));
+    ] : [['code_contradicts_conversation', 'yes-probability', 'Does the code already contradict what the Captain and Nav just agreed?', 'needs has_conversation']]).map(([name, type, prompt, needs]) => ({ name, type, prompt, needs }));
     const pipeBranches = (edit ? [
-      [1, 'drift > 0.80', 'only if has_intent', '80%', 'threshold 0.80', 'wake cognition', 'var(--rd)'],
-      [2, 'contradicts_conversation > 0.80', 'only if has_conversation', '80%', 'threshold 0.80', 'wake cognition', 'var(--rd)'],
+      [1, 'drift > 0.80', 'only if has_intent', '80%', 'threshold 0.80', 'wake Nav', 'var(--rd)'],
+      [2, 'contradicts_conversation > 0.80', 'only if has_conversation', '80%', 'threshold 0.80', 'wake Nav', 'var(--rd)'],
       [3, 'worth_attention > 0.85 && route == metacognition', '', '85%', 'threshold 0.85', 'remark', 'var(--at)'],
       [4, 'else', '', '0%', '—', 'silent', 'var(--mu)']
     ] : [
@@ -562,7 +563,7 @@ class Component extends DCLogic {
       resetOv: () => this.setState((s) => ({ assign: { ...s.assign, [K]: CFG[K] } })), ovDisp: ovK ? 'inline-block' : 'none', cfgCog: short(st.mode),
       cogModel: byK[A[st.mode].m].name, cogVariant: A[st.mode].v || 'default', mReflex: short('reflex'), mInstinct: short('instinct'), mMeta: short('metacognition'),
       subModel: 'omniroute/opencode-go/deepseek-v4-flash · low', convTitle: st.conv, wsName: curW.name, sessName: st.sess,
-      webCrumb: st.scr === 'pipeline' ? 'pipeline' : !hasSess ? 'no session' : st.scr === 'subagent' ? st.sess + ' / explore' : st.sess,
+      webCrumb: st.scr === 'pipeline' ? 'pipeline' : !hasSess ? 'no session' : st.scr === 'subagent' ? st.sess + ' / vigie' : st.sess,
       ...cfv, doRemove, cancelRemove: () => this.setState({ confirm: null }), webEmpty: !hasSess && st.scr !== 'pipeline',
       pipeStatePrompt: edit ? 'prompts/state.md' : 'prompts/conversation_state.md',
       modelsOpen: st.scr === 'models', palOpen: st.scr === 'palette', toSession: stopE, stop: (e) => e.stopPropagation(), goSub: go('subagent'), goModels: go('models'),
@@ -593,7 +594,7 @@ class Component extends DCLogic {
     const tabs = [['intent', 'Intent'], ['agents', 'Agents'], ['pipeline', 'Pipeline'], ['ext', 'Extensions'], ['config', 'Config']].map(([k, l]) => { const on = st.tab === k; return { label: l, click: set({ tab: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent' }; });
     const build = st.mode === 'build';
     const seg = (on) => `background:${on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent'};color:${on ? 'var(--tx)' : 'var(--mu)'};border:1px solid ${on ? 'var(--ac)' : 'var(--bd)'};border-radius:4px;padding:2px 9px;font-size:12px;cursor:pointer`;
-    const permText = { allowed: '✓ Allowed once.', always: '✓ Allowed for this folder.', denied: '✕ Denied. Cognition proposes an alternative.' }[st.perm];
+    const permText = { allowed: '✓ Allowed once.', always: '✓ Allowed for this folder.', denied: '✕ Denied. Nav proposes an alternative.' }[st.perm];
     const verdictText = { useful: 'useful', noise: 'noise', dismissed: 'dismissed' }[st.verdict];
     return {
       surfaces, themes, tabs, themeFams, themeModes, themeVars: T[st.th][1], permText, verdictText,

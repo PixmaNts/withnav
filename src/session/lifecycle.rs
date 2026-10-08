@@ -372,6 +372,7 @@ mod tests {
     /// exists for.
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
+            flows: None,
             skills: Arc::default(),
             publications: Arc::default(),
             incarnation: Ulid::new(),

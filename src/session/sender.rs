@@ -21,6 +21,24 @@ pub struct SessionSender {
 }
 
 impl SessionSender {
+    /// Queues untrusted flow data at the next safe boundary, without admission. A wake held back
+    /// by the session's flow-wake cooldown is reported as the error `"wake cooldown"` rather than
+    /// accepted silently, so the editor keeps its document baseline and the run is recorded as
+    /// suppressed rather than applied.
+    pub(crate) fn queue_flow_note_report(
+        &self,
+        text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+    ) -> Result<(), String> {
+        if self.handle.session_cancel.is_cancelled() {
+            return Err("session stopped".into());
+        }
+        self.handle
+            .status
+            .queue_flow_note_report(text, flow, run_id, wake, false)
+    }
     pub(super) fn new(session_id: SessionId, handle: SessionHandle) -> Self {
         Self { session_id, handle }
     }

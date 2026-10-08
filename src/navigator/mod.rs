@@ -12,7 +12,6 @@
 pub mod bootstrap;
 pub mod config;
 pub mod conversation;
-pub mod default_pipeline;
 pub mod document;
 pub mod help_call;
 pub mod intent;
@@ -20,12 +19,12 @@ pub mod log;
 pub mod lsp;
 pub mod metacognition;
 pub mod models;
-pub mod pipeline;
 pub mod ports;
 pub mod reflex;
 pub mod replay;
 pub mod runtime;
 pub mod session_hooks;
+mod trigger;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,31 +44,23 @@ pub use lsp::protocol::{
 pub use lsp::uri::{uri_key, uri_to_path, uri_to_path_str};
 pub use lsp::{build_service, serve};
 pub use metacognition::{LlmCommenter, RemarkContext};
-pub use pipeline::{
-    Action, Evaluation, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, TriggerInputs,
-    TriggerKind,
-};
 pub use ports::{
-    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
-    Question, Questions, ReflexContextModel, ReflexContextRequest,
+    Answer, Answers, FimAnswer, FimModel, FimRequest, Metacognition, ModelError, Question,
+    Questions, ReflexContextModel, ReflexContextRequest,
 };
 pub use reflex::{
     SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
 pub use session_hooks::{NavigatorHooks, COGNITION_PROMPT};
+pub use trigger::TriggerKind;
 
-/// Everything the navigator needs besides the LSP channel itself. The model
-/// seams (metacognition, and `fim`/`decision` for the reflex and instinct
-/// layers) and the JSONL log path are injectable so tests can script them.
-///
-/// `fim`/`decision` set to `None` keep the corresponding layer disabled (no
-/// suggestion / triggers logged with `instinct_unavailable`); the other
-/// layers keep working. `workspace`/`user_dir` drive pipeline resolution,
-/// the intent record and hot reload.
+/// Injectable editor model seams, flow factory, conversation and decision log.
+/// No flow factory or no eligible enabled flow means no editor evaluation.
 pub struct NavigatorDeps {
+    /// Creates the editor runtime with its document-scoped effect adapter.
+    pub flows: Option<Arc<FlowFactory>>,
     pub commenter: Arc<dyn Metacognition>,
     pub fim: Option<Arc<dyn FimModel>>,
-    pub decision: Option<Arc<dyn DecisionModel>>,
     /// The metacognition's reflex-context seam; `None` keeps the intent
     /// summary as the reflex context.
     pub reflex_context: Option<Arc<dyn ReflexContextModel>>,
@@ -92,15 +83,17 @@ pub struct NavigatorDeps {
     /// Human-readable notes about layers that were disabled at startup;
     /// surfaced as one status message after initialize.
     pub disabled_layers: Vec<String>,
+    /// Flow conversion failures, shown once after the editor initializes.
+    pub startup_warnings: Vec<String>,
     pub log_path: PathBuf,
 }
 
 impl NavigatorDeps {
     pub fn new(commenter: Arc<dyn Metacognition>, log_path: impl Into<PathBuf>) -> Self {
         Self {
+            flows: None,
             commenter,
             fim: None,
-            decision: None,
             reflex_context: None,
             reflex_model: None,
             instinct_model: None,
@@ -110,6 +103,7 @@ impl NavigatorDeps {
             user_dir: None,
             server_info: None,
             disabled_layers: Vec::new(),
+            startup_warnings: Vec::new(),
             log_path: log_path.into(),
         }
     }
@@ -120,9 +114,8 @@ impl NavigatorDeps {
         self
     }
 
-    /// Builder-style: attaches the instinct layer's model seam.
-    pub fn with_decision(mut self, decision: Arc<dyn DecisionModel>) -> Self {
-        self.decision = Some(decision);
+    pub fn with_flows(mut self, factory: Arc<FlowFactory>) -> Self {
+        self.flows = Some(factory);
         self
     }
 
@@ -146,7 +139,7 @@ impl NavigatorDeps {
     }
 
     /// Builder-style: the workspace root and the user navigator dir
-    /// (pipeline resolution, intent record, hot reload).
+    /// (intent resolution and historical configuration migration).
     pub fn with_dirs(mut self, workspace: Option<PathBuf>, user_dir: Option<PathBuf>) -> Self {
         self.workspace = workspace;
         self.user_dir = user_dir;
@@ -173,6 +166,10 @@ impl NavigatorDeps {
         self
     }
 }
+
+pub type FlowFactory = dyn Fn(Arc<dyn crate::flows::runtime::FlowEffects>) -> Arc<crate::flows::runtime::FlowRuntime>
+    + Send
+    + Sync;
 
 /// The default user-level navigator dir
 /// (`~/.config/navai/navigator/`), when it can be resolved.

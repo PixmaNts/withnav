@@ -238,7 +238,7 @@ async fn run_steps(
                     Calls::Finished => {}
                     Calls::Interrupted => return Ok(RunOutcome::Interrupted),
                     Calls::Permission(request) => {
-                        return Ok(RunOutcome::PermissionRequired(request))
+                        return Ok(RunOutcome::PermissionRequired(*request))
                     }
                 }
                 if actor.cancel.is_cancelled() {
@@ -300,7 +300,13 @@ pub async fn resolve_permission(
 
 pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
     match &actor.pending {
-        Some(PendingInteraction::Permission { call, .. }) => {
+        Some(PendingInteraction::Permission { call, request, .. }) => {
+            if matches!(
+                request.origin,
+                super::permissions::RequestOrigin::Flow { .. }
+            ) {
+                return false;
+            }
             pending_bypass_eligible_call(actor, call)
         }
         _ => false,
@@ -331,7 +337,16 @@ pub async fn resolve_permission_with_origin(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
     match &actor.pending {
-        Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {}
+        Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {
+            if origin == super::permissions::PermissionOrigin::Bypass
+                && matches!(
+                    request.origin,
+                    super::permissions::RequestOrigin::Flow { .. }
+                )
+            {
+                return Err(PermissionError::Stale.into());
+            }
+        }
         Some(PendingInteraction::Permission { .. }) | Some(PendingInteraction::Ask { .. }) => {
             return Err(PermissionError::Stale.into());
         }
@@ -370,7 +385,12 @@ pub async fn resolve_permission_with_origin(
             // The approval is for the destination the driver reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
             // not run on this approval, and goes through the gate afresh.
-            let one = if bypass && !pending_bypass_eligible_call(actor, &call) {
+            let one = if matches!(
+                request.origin,
+                super::permissions::RequestOrigin::Flow { .. }
+            ) {
+                resolve_flow_call(actor, &call, &request, destination.as_deref(), observe).await
+            } else if bypass && !pending_bypass_eligible_call(actor, &call) {
                 run_gated(actor, &call, observe).await
             } else {
                 match gate(actor, &call) {
@@ -429,7 +449,7 @@ pub async fn resolve_permission_with_origin(
     match run_calls(actor, remaining_calls, steps_left, observe).await {
         Calls::Finished => {}
         Calls::Interrupted => return Ok(RunOutcome::Interrupted),
-        Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(request)),
+        Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(*request)),
     }
     Ok(run_steps(actor, observe, steps_left).await?)
 }
@@ -440,7 +460,7 @@ enum Calls {
     Interrupted,
     /// The call at hand needs a decision; the actor holds it, and the calls
     /// behind it, as its pending interaction.
-    Permission(PermissionRequest),
+    Permission(Box<PermissionRequest>),
 }
 
 /// Runs `calls` in order. A call that needs approval and has none stops the
@@ -462,7 +482,7 @@ async fn run_calls(
             actor.state = AgentState::Idle;
             return Calls::Interrupted;
         }
-        match run_gated(actor, &call, observe).await {
+        match run_flow_hook(actor, &call, observe).await {
             One::Settled => {}
             One::Ask(request, destination) => {
                 actor.pending = Some(PendingInteraction::Permission {
@@ -473,7 +493,7 @@ async fn run_calls(
                     steps_left,
                 });
                 actor.state = AgentState::Yielded;
-                return Calls::Permission(*request);
+                return Calls::Permission(request);
             }
             One::Interrupted => {
                 append_interrupted(actor, &call.id);
@@ -500,19 +520,19 @@ enum Gated {
     Rejected(String),
     /// Waits for a decision; the path is the canonical file a `write` or
     /// `edit` was resolved to.
-    Ask(PermissionRequest, Option<PathBuf>),
+    Ask(Box<PermissionRequest>, Option<PathBuf>),
     /// An exception of a guarded agent: the role guard is asked before the
     /// driver is. See [`guard_step`].
     Guarded(Needed),
     Reviewed(Needed),
 }
 
-fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
     if let Err(error) = crate::tools::reject_reserved_args(&call.args) {
-        return Gated::Rejected(error.to_string());
+        return Err(error.to_string());
     }
     if !call.args_valid || !call.args.is_object() {
-        return Gated::Rejected("invalid tool arguments".into());
+        return Err("invalid tool arguments".into());
     }
     if call.name == "bash"
         && !call
@@ -520,13 +540,20 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
             .get("command")
             .is_some_and(serde_json::Value::is_string)
     {
-        return Gated::Rejected("missing string argument: command".into());
+        return Err("missing string argument: command".into());
     }
     if !actor.tool_allowed(&call.name) {
-        return Gated::Rejected(format!(
+        return Err(format!(
             "tool '{}' is disabled by this session's policy",
             call.name
         ));
+    }
+    Ok(())
+}
+
+fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if let Err(message) = preflight(actor, call) {
+        return Gated::Rejected(message);
     }
     let Some(role) = actor.role.as_deref() else {
         return Gated::Run(None);
@@ -542,7 +569,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         let mut request = PermissionRequest::new(call, needed.scope, agent);
         request.reason =
             "Navai configuration is driver-only; approve this call once or deny".into();
-        return Gated::Ask(request, needed.destination);
+        return Gated::Ask(Box::new(request), needed.destination);
     }
     if matches!(
         call.name.as_str(),
@@ -565,7 +592,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         return Gated::Run(needed.destination);
     }
     Gated::Ask(
-        PermissionRequest::new(call, needed.scope, agent),
+        Box::new(PermissionRequest::new(call, needed.scope, agent)),
         needed.destination,
     )
 }
@@ -583,6 +610,172 @@ enum One {
 /// How many times a call whose file moved under it is checked afresh before
 /// it is refused: a file that keeps changing is not one to write.
 const REGATE_LIMIT: usize = 3;
+
+fn flow_binding(actor: &AgentActor, call: &ToolCall) -> Result<Needed, String> {
+    let workspace = actor
+        .tool_context
+        .workspace
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if !matches!(
+        call.name.as_str(),
+        "write" | "edit" | "read" | "grep" | "glob"
+    ) {
+        return Ok(Needed {
+            scope: Scope::Folder(workspace),
+            destination: None,
+        });
+    }
+    let path = match call.args.get("path") {
+        Some(serde_json::Value::String(path)) if !path.is_empty() => Path::new(path),
+        None if matches!(call.name.as_str(), "grep" | "glob") => &workspace,
+        _ => return Err("missing string argument: path".into()),
+    };
+    let target = super::permissions::resolve_read_target(path, &actor.tool_context)
+        .map_err(|e| e.to_string())?;
+    if matches!(call.name.as_str(), "write" | "edit" | "read") && target.is_dir() {
+        return Err("destination is a directory".into());
+    }
+    let scope = if matches!(call.name.as_str(), "grep" | "glob") {
+        target.clone()
+    } else {
+        target.parent().unwrap_or(&target).to_path_buf()
+    };
+    Ok(Needed {
+        scope: Scope::Folder(scope),
+        destination: Some(target),
+    })
+}
+
+fn flow_request(
+    actor: &AgentActor,
+    call: &ToolCall,
+    needed: Needed,
+    origin: super::permissions::RequestOrigin,
+    note: String,
+    regates: usize,
+) -> One {
+    let mut request = PermissionRequest::new(
+        call,
+        needed.scope,
+        actor
+            .role
+            .as_ref()
+            .map(|r| r.id.as_str())
+            .unwrap_or("build"),
+    );
+    request.origin = origin;
+    request.reason = note;
+    request.requires_driver = true;
+    request.flow_regates = regates;
+    One::Ask(Box::new(request), needed.destination)
+}
+
+async fn run_flow_hook(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> One {
+    use super::flow_hook::{FlowVerdict, ToolCallContext};
+    if let Err(message) = preflight(actor, call) {
+        reject_call(actor, call, message, observe);
+        return One::Settled;
+    }
+    let Some(flows) = actor.tool_flows.clone() else {
+        return run_gated(actor, call, observe).await;
+    };
+    let context = ToolCallContext {
+        call_id: call.id.clone(),
+        tool: call.name.clone(),
+        args: call.args.clone(),
+        agent: actor.role.as_ref().map(|r| r.id.as_str().to_owned()),
+        workspace: actor.tool_context.workspace.clone(),
+    };
+    let verdict = tokio::select! {
+        biased;
+        _ = actor.cancel.cancelled() => return One::Interrupted,
+        result = tokio::time::timeout(std::time::Duration::from_millis(2500), flows.pre_call(&context, &actor.cancel)) =>
+            result.unwrap_or_else(|_| FlowVerdict::AskDriver { note: "Flows did not answer in time".into(), flow: String::new(), run_id: String::new() }),
+    };
+    match verdict {
+        FlowVerdict::NoObjection => run_gated(actor, call, observe).await,
+        FlowVerdict::Deny { note } => {
+            append_tool_result(actor, &call.id, &ToolResult::permission_denied(note));
+            One::Settled
+        }
+        FlowVerdict::AskDriver { note, flow, run_id } => match flow_binding(actor, call) {
+            Ok(needed) => flow_request(
+                actor,
+                call,
+                needed,
+                super::permissions::RequestOrigin::Flow { flow, run_id },
+                note,
+                0,
+            ),
+            Err(message) => {
+                reject_call(actor, call, message, observe);
+                One::Settled
+            }
+        },
+    }
+}
+
+async fn resolve_flow_call(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    request: &PermissionRequest,
+    destination: Option<&Path>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> One {
+    let needed = match preflight(actor, call).and_then(|()| flow_binding(actor, call)) {
+        Ok(needed) => needed,
+        Err(message) => {
+            reject_call(actor, call, message, observe);
+            return One::Settled;
+        }
+    };
+    if actor.cancel.is_cancelled() {
+        return One::Interrupted;
+    }
+    if needed.scope == request.scope
+        && needed.destination.as_deref() == destination
+        && super::permission_gate::hard_floor(actor, call, &needed).is_none()
+    {
+        let super::permissions::RequestOrigin::Flow { flow, run_id } = &request.origin else {
+            unreachable!()
+        };
+        let approval =
+            serde_json::json!({"approved_by":"driver","flow":{"name":flow,"run_id":run_id}});
+        if let Some(result) = execute_call(actor, call, destination, Some(approval), observe).await
+        {
+            append_tool_result(actor, &call.id, &result);
+            return One::Settled;
+        }
+    }
+    if request.flow_regates >= REGATE_LIMIT {
+        reject_call(
+            actor,
+            call,
+            "the target changed while the call was being checked; nothing was changed".into(),
+            observe,
+        );
+        return One::Settled;
+    }
+    match flow_binding(actor, call) {
+        Ok(needed) => flow_request(
+            actor,
+            call,
+            needed,
+            request.origin.clone(),
+            "Protected or changed target; approve this call once or deny".into(),
+            request.flow_regates + 1,
+        ),
+        Err(message) => {
+            reject_call(actor, call, message, observe);
+            One::Settled
+        }
+    }
+}
 
 /// Takes `call` through the gate and runs it when it is let through. A call
 /// whose file no longer resolves where it was checked (a link put in its
@@ -635,10 +828,10 @@ async fn run_gated(
                     }
                 }
             }
-            Gated::Ask(request, destination) => (destination, None, Some(request)),
+            Gated::Ask(request, destination) => (destination, None, Some(*request)),
             Gated::Guarded(needed) => match guard_step(actor, call, needed).await {
                 GuardStep::Run(note, destination) => (destination, Some(note), None),
-                GuardStep::Ask(request, destination) => (destination, None, Some(request)),
+                GuardStep::Ask(request, destination) => (destination, None, Some(*request)),
                 GuardStep::Interrupted => return One::Interrupted,
             },
         };
@@ -744,7 +937,7 @@ enum GuardStep {
     /// on the canonical destination that was judged.
     Run(serde_json::Value, Option<PathBuf>),
     /// The driver decides.
-    Ask(PermissionRequest, Option<PathBuf>),
+    Ask(Box<PermissionRequest>, Option<PathBuf>),
     /// The session was stopped while Jev was asked.
     Interrupted,
 }
@@ -775,7 +968,7 @@ async fn guard_step(actor: &AgentActor, call: &ToolCall, needed: Needed) -> Guar
                 "{why}. {} (approve this call once, or deny)",
                 request.reason
             );
-            GuardStep::Ask(request, needed.destination)
+            GuardStep::Ask(Box::new(request), needed.destination)
         }
     }
 }
@@ -884,12 +1077,15 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
     if !metadata.is_object() {
         *metadata = serde_json::json!({});
     }
-    for key in ["approved_by", "permission_gate", "guard"] {
+    for key in ["approved_by", "permission_gate", "guard", "flow"] {
         if let Some(value) = note.get(key) {
             metadata[key] = value.clone();
         }
     }
-    if note.get("permission_gate").is_none() && note.get("guard").is_none() {
+    if note.get("permission_gate").is_none()
+        && note.get("guard").is_none()
+        && note.get("flow").is_none()
+    {
         metadata["guard"] = note.clone();
     }
 }
@@ -1053,6 +1249,159 @@ mod tests {
         r.register(Box::new(BashTool));
         r.register(Box::new(AskTool));
         r
+    }
+
+    #[derive(Debug)]
+    struct FakeFlows {
+        mode: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl super::super::flow_hook::ToolCallFlows for FakeFlows {
+        fn pre_call<'a>(
+            &'a self,
+            _: &'a super::super::flow_hook::ToolCallContext,
+            _: &'a CancellationToken,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = super::super::flow_hook::FlowVerdict> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                use super::super::flow_hook::FlowVerdict;
+                match self.mode {
+                    "deny" => FlowVerdict::Deny {
+                        note: "flow denied".into(),
+                    },
+                    "ask" => FlowVerdict::AskDriver {
+                        note: "flow asks".into(),
+                        flow: "test".into(),
+                        run_id: "run".into(),
+                    },
+                    "timeout" => std::future::pending().await,
+                    _ => FlowVerdict::NoObjection,
+                }
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn flow_hook_verdicts_preflight_and_timeout() {
+        for mode in ["deny", "ask", "timeout", "none"] {
+            let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+            let path = actor.tool_context.workspace.join("file.txt");
+            std::fs::write(&path, "hello").unwrap();
+            let call = ToolCall {
+                id: "flow-call".into(),
+                name: "read".into(),
+                args: serde_json::json!({"path":path}),
+                args_valid: true,
+            };
+            let flows = Arc::new(FakeFlows {
+                mode,
+                calls: Default::default(),
+            });
+            actor.tool_flows = Some(flows.clone());
+            let one = run_flow_hook(&mut actor, &call, &mut |_| {}).await;
+            if matches!(mode, "ask" | "timeout") {
+                let One::Ask(request, destination) = one else {
+                    panic!("expected flow ask")
+                };
+                assert!(request.requires_driver);
+                let serialized = serde_json::to_string(&request).unwrap();
+                assert_eq!(
+                    *request,
+                    serde_json::from_str::<PermissionRequest>(&serialized).unwrap()
+                );
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: request.clone(),
+                    call: call.clone(),
+                    remaining_calls: vec![],
+                    destination: destination.clone(),
+                    steps_left: 0,
+                });
+                actor.bypass.lock().unwrap().enabled = true;
+                assert!(!pending_bypass_eligible(&actor));
+                assert!(resolve_permission_with_origin(
+                    &mut actor,
+                    request.id,
+                    PermissionDecision::AllowOnce,
+                    super::super::permissions::PermissionOrigin::Bypass,
+                    &mut |_| {}
+                )
+                .await
+                .is_err());
+                assert!(actor.pending.is_some());
+                assert!(matches!(
+                    resolve_flow_call(
+                        &mut actor,
+                        &call,
+                        &request,
+                        destination.as_deref(),
+                        &mut |_| {}
+                    )
+                    .await,
+                    One::Settled
+                ));
+                assert_eq!(actor.transcript.len(), 1);
+                assert_eq!(flows.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            } else {
+                assert!(matches!(one, One::Settled));
+            }
+            let mut invalid = call;
+            invalid.args_valid = false;
+            run_flow_hook(&mut actor, &invalid, &mut |_| {}).await;
+            assert_eq!(flows.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+        let mut metadata = serde_json::Value::Null;
+        merge_approval_metadata(
+            &mut metadata,
+            &serde_json::json!({"approved_by":"driver","flow":{"name":"test","run_id":"run"}}),
+        );
+        assert_eq!(metadata["flow"]["name"], "test");
+        assert!(metadata.get("guard").is_none());
+    }
+
+    #[tokio::test]
+    async fn flow_changed_binding_followups_are_bounded() {
+        let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+        let call = ToolCall {
+            id: "flow-call".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":"file.txt"}),
+            args_valid: true,
+        };
+        let mut request =
+            PermissionRequest::new(&call, Scope::Folder(PathBuf::from("/old")), "build");
+        request.origin = super::super::permissions::RequestOrigin::Flow {
+            flow: "test".into(),
+            run_id: "run".into(),
+        };
+        for count in 1..=REGATE_LIMIT {
+            let One::Ask(fresh, _) = resolve_flow_call(
+                &mut actor,
+                &call,
+                &request,
+                Some(Path::new("/old/file.txt")),
+                &mut |_| {},
+            )
+            .await
+            else {
+                panic!("expected followup")
+            };
+            assert_eq!(fresh.flow_regates, count);
+            request = *fresh;
+        }
+        assert!(matches!(
+            resolve_flow_call(
+                &mut actor,
+                &call,
+                &request,
+                Some(Path::new("/old/file.txt")),
+                &mut |_| {}
+            )
+            .await,
+            One::Settled
+        ));
     }
 
     struct PolicyTool(&'static str);

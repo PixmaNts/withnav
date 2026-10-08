@@ -6,8 +6,6 @@
 use std::collections::BTreeMap;
 
 use navai::error::ProviderError;
-use navai::navigator::models::DecisionAdapter;
-use navai::navigator::TriggerInputs;
 use navai::provider::config::{ApiKind, ModelConfig, ProviderConfig};
 use navai::provider::openai::ClientCache;
 use navai::provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
@@ -251,64 +249,5 @@ async fn client_is_reused_across_calls_through_the_cache() {
         .unwrap();
     }
     // Three calls, one provider: the cache handed out one shared client.
-    server.verify().await;
-}
-
-#[tokio::test]
-async fn pipeline_over_systemone_end_to_end() {
-    // The pipeline drives the real client against the mock end to end.
-    let server = MockServer::start().await;
-    // The captured response predates `unfinished` and `stuck`: add them,
-    // both low, so the built-in branches have every variable they read.
-    let mut body: serde_json::Value = serde_json::from_str(&captured_response_body()).unwrap();
-    for name in ["unfinished", "stuck"] {
-        body["answers"][name] = serde_json::json!({"type": "noul", "noul": 0.1});
-    }
-    Mock::given(method("POST"))
-        .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(body.to_string()))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
-
-    let pipeline =
-        navai::navigator::Pipeline::new(navai::navigator::PipelineSnapshot::builtin().unwrap());
-    let vars: BTreeMap<String, String> = [("file".to_string(), "a.rs".to_string())]
-        .into_iter()
-        .collect();
-    let _ = TriggerInputs {
-        changed_lines: 5,
-        since_last_remark_ms: 60_000,
-        since_last_wake_ms: 60_000,
-        called_for_help: false,
-        has_errors: false,
-        has_intent: false,
-        has_conversation: false,
-    };
-    // The built-in default asks 6 questions; the captured fixture answers
-    // the first four (worth 0.8, route cognition, drift 0.54) -> no remark branch
-    // matches (route != metacognition, drift <= 0.8) -> silent.
-    let eval = pipeline
-        .evaluate(
-            navai::navigator::TriggerKind::Save,
-            TriggerInputs {
-                changed_lines: 5,
-                since_last_remark_ms: 60_000,
-                since_last_wake_ms: 60_000,
-                called_for_help: false,
-                has_errors: false,
-                has_intent: true,
-                has_conversation: false,
-            },
-            &vars,
-            &DecisionAdapter(client),
-            &tokio_util::sync::CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(eval.requested_action.as_str(), "silent");
-    assert!(eval.answers.is_some());
     server.verify().await;
 }

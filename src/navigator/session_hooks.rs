@@ -155,7 +155,13 @@ impl SessionHooks for NavigatorHooks {
         }
         let id = info.id;
         let incarnation = self.incarnations.begin(id);
-        feed.register_session(id, wake_poster(sender, cancel.clone()));
+        feed.register_session(id, wake_poster(sender.clone(), cancel.clone()));
+        feed.register_flow_poster(
+            id,
+            Arc::new(move |text, flow, run_id, wake| {
+                sender.queue_flow_note_report(text, flow, run_id, wake)
+            }),
+        );
         let incarnations = self.incarnations.clone();
         tokio::spawn(async move {
             watch(feed.clone(), subscription, cancel).await;
@@ -169,6 +175,105 @@ impl SessionHooks for NavigatorHooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn editor_flow_poster_keeps_provenance_without_publishing_message_received() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("cfg");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.json"),
+            r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+        )
+        .unwrap();
+        crate::provider::auth::set_key(&config_dir, "mock", "test").unwrap();
+        let models_path = dir.path().join("models.json");
+        std::fs::write(&models_path, r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#).unwrap();
+        let feed = ConversationFeed::new();
+        let service = crate::session::Service::with_hooks(
+            crate::session::SessionConfig {
+                models_path: Some(models_path),
+                config_dir,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+            },
+            Arc::new(NavigatorHooks::with_feed(feed.clone())),
+        )
+        .unwrap();
+        let id = service
+            .create_session(dir.path(), None, true)
+            .await
+            .unwrap();
+        let handle = service.handle(id).unwrap();
+        let mut live = handle.sequencer.subscribe_live().await.unwrap().receiver;
+        feed.observe(&crate::bus::event::EventEnvelope::new(
+            id,
+            0,
+            crate::bus::event::EventKind::MessageReceived,
+            serde_json::json!({"source":"user:test", "content":"driver task"}),
+        ))
+        .await;
+        feed.post_flow_note(
+            "queued evidence".into(),
+            "editor-review".into(),
+            "note".into(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), live.recv())
+                .await
+                .is_err()
+        );
+        feed.post_flow_note(
+            "wake evidence".into(),
+            "editor-review".into(),
+            "wake".into(),
+            true,
+        )
+        .unwrap();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), live.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_ne!(event.kind, "message.received");
+            if event.kind == "turn.end" {
+                break;
+            }
+        }
+        service.close_all().await;
+        let transcript = service
+            .history()
+            .load(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .transcript;
+        let notes: Vec<_> = transcript
+            .iter()
+            .filter_map(|message| match message {
+                ChatMessage::User {
+                    content,
+                    provenance:
+                        crate::provider::openai::UserProvenance::Flow {
+                            source: crate::provider::openai::FlowSource::Flow,
+                            flow,
+                            run_id,
+                        },
+                } => Some((content, flow, run_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 2);
+        assert!(notes
+            .iter()
+            .all(|(text, flow, _)| text.starts_with("<untrusted-flow-note>")
+                && *flow == "editor-review"));
+        assert_eq!(notes[0].2, "note");
+        assert_eq!(notes[1].2, "wake");
+    }
 
     // Given a session id watched twice (a resume replaced the first
     // incarnation)

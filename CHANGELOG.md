@@ -4,6 +4,28 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **InstinctFlow.** Draw flows the instinct runs on Navai's events: a trigger, decisions
+  (noul, choice, score), expressions and actions, wired as a graph. Flows live in
+  `.navai/flows/` (after you trust the workspace) or `~/.config/navai/flows/`; Save writes the
+  file and Reload makes it run. A blocking `tool.pre_call` flow can deny a tool call or ask you,
+  never allow one past the normal permission review, and bypass never answers it.
+  `message.received` and `turn.end` flows can inject a note or wake the cognition, marked as
+  coming from a flow. See [the driver's guide](docs/instinct-flow.md).
+- **The Studio** (`#/studio` in the browser): canvas and TOML views of the same file, an inspector
+  per node, Run sample against the instinct, Replay of recorded runs without a model call, and
+  24-hour health per flow.
+- **`instinct-flow`**, a standalone engine crate and command (`validate`, `run`, `replay`) that
+  runs without Navai, and `navai flows catalogue`, which prints Navai's triggers, inputs and
+  actions.
+
+### Removed
+
+- The legacy navigator decision pipeline and fallback evaluator. Built-in editor flows now own
+  triggers exclusively; custom `pipeline.toml` files are converted once with originals retained.
+  Offline replay uses flows only (`--flows` remains accepted; `--pipeline` and `--reask` are removed).
+
 ## [0.6.1] - 2026-10-07
 
 Navai gets a bypass mode: one session can skip ordinary permission prompts, from the terminal,

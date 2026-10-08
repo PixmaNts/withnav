@@ -25,7 +25,7 @@ fn triggers(client: &Nav) -> Vec<Value> {
 
 /// A save then an idle on the same text: one request, one delivery. The idle
 /// does not restart the request the save started.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -38,7 +38,7 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     client.expect_status("thinking").await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 1, "the idle must not restart the request");
 
@@ -56,14 +56,11 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
         .collect();
     assert_eq!(delivered.iter().filter(|d| **d == "remark").count(), 1);
     assert!(!delivered.contains(&"cancelled"), "{delivered:?}");
-    assert!(
-        records.iter().any(|r| r["reason"] == "remark_in_flight"),
-        "{records:?}"
-    );
+    assert_eq!(records.len(), 1);
 }
 
 /// Newer text still supersedes the request in flight.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn newer_text_still_supersedes_the_remark_in_flight() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -92,7 +89,7 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
 }
 
 /// Closing the document cancels the remark in flight, deduplication or not.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn closing_cancels_the_deduplicated_remark() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(0, "late")], gate.clone());
@@ -120,7 +117,7 @@ async fn closing_cancels_the_deduplicated_remark() {
 
 /// A one-line replacement reaches the metacognition under the built-in
 /// pipeline, with no size limit to clear.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_one_line_replacement_reaches_the_metacognition() {
     let mock = MockCommenter::new(vec![Answer::Remark(1, "x")]);
     let mut client = Nav::start(mock.clone()).await;

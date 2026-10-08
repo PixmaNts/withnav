@@ -12,15 +12,51 @@ use navai::navigator;
 
 mod common;
 use common::navigator::{
-    base_text, big_edit, driver_message, feed_with_session, with_intent_and_feed,
-    with_min_changed_lines, LspClient, Nav, RemarkAnswer as Answer,
-    ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext, URI,
+    base_text, big_edit, driver_message, feed_with_session, with_min_changed_lines, LspClient, Nav,
+    RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext,
+    URI,
 };
 
 // ---------- tests ----------
 
+#[tokio::test]
+async fn failed_legacy_conversion_is_warned_once_after_initialized() {
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |mut deps, ws| {
+        let source = ws.join(".navigator");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("pipeline.toml"), "unsupported = true").unwrap();
+        let host = navai::flows::host::Host::new(ws.join("config"), ws.join("data"), None);
+        let store = host.store(ws.into());
+        let errors = store.migration_diagnostics();
+        assert_eq!(errors.len(), 1);
+        assert!(host
+            .diagnostics(ws)
+            .iter()
+            .any(|error| error.code == "migration"));
+        assert!(store
+            .list()
+            .unwrap()
+            .iter()
+            .any(|row| row.name == "legacy-pipeline" && row.errors == errors));
+        deps.startup_warnings = errors.into_iter().map(|error| error.message).collect();
+        deps
+    })
+    .await;
+    let warning = client.expect("window/showMessage", &mut Vec::new()).await;
+    assert_eq!(warning["params"]["type"], 2);
+    let message = warning["params"]["message"].as_str().unwrap();
+    assert!(message.contains("pipeline.toml"), "{message}");
+    assert!(message.contains("unsupported"), "{message}");
+    assert!(message.contains("original retained"), "{message}");
+    client.notify("initialized", json!({})).await;
+    let messages = client.collect_for(Duration::from_millis(100)).await;
+    assert!(messages
+        .iter()
+        .all(|message| message["method"] != "window/showMessage"));
+}
+
 /// After a 5-line change and 3 s idle, one navigator/remark arrives.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn idle_after_big_edit_emits_remark() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Remark(
         1,
@@ -29,7 +65,7 @@ async fn idle_after_big_edit_emits_remark() {
     .await;
     client.open_and_edit().await;
 
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
     let remark = client.expect("navigator/remark", &mut seen).await;
     let params = &remark["params"];
@@ -45,7 +81,7 @@ async fn idle_after_big_edit_emits_remark() {
 
 /// A pipeline that asks for 3 changed lines skips a smaller change
 /// (skip: too_few_changed_lines) without calling the metacognition.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_change_under_the_pipelines_size_limit_never_triggers() {
     let mock = MockCommenter::new(vec![Answer::Remark(0, "should not happen")]);
     let mut client = Nav::start_with(mock.clone(), json!({}), |d, ws| {
@@ -58,14 +94,14 @@ async fn a_change_under_the_pipelines_size_limit_never_triggers() {
         .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
         .await;
 
-    tokio::time::advance(Duration::from_millis(10_000)).await;
+    tokio::time::sleep(Duration::from_millis(10_000)).await;
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(mock.calls(), 0, "commenter must not be called");
 }
 
 /// A diagnostics event no trigger listens to logs nothing; a too-small
 /// change logs a light record, without the rendered state.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn skips_logs_light_or_not_at_all() {
     let mut client = Nav::start_with(
         MockCommenter::new(vec![Answer::Silent]),
@@ -91,13 +127,13 @@ async fn skips_logs_light_or_not_at_all() {
         .collect();
     assert_eq!(triggers.len(), 1, "{records}");
     assert_eq!(triggers[0]["event"], "save");
-    assert_eq!(triggers[0]["reason"], "too_few_changed_lines");
+    assert_eq!(triggers[0]["reason"], "flow_skipped");
     assert!(triggers[0].get("template_inputs").is_none());
     assert!(triggers[0].get("rendered_state").is_none());
 }
 
 /// Cooldown suppresses a second remark on the same file.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cooldown_suppresses_second_remark() {
     let mock = MockCommenter::new(vec![
         Answer::Remark(0, "first"),
@@ -105,7 +141,7 @@ async fn cooldown_suppresses_second_remark() {
     ]);
     let mut client = Nav::start(mock.clone()).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
     let first = client.expect("navigator/remark", &mut seen).await;
     assert_eq!(first["params"]["text"], "first");
@@ -115,15 +151,15 @@ async fn cooldown_suppresses_second_remark() {
     // the policy skips, so no second commenter call happens.
     let bigger = format!("{}\n// a\n// b\n// c\n", big_edit());
     client.did_change(URI, &bigger, 3).await;
-    tokio::time::advance(Duration::from_millis(5000)).await;
+    tokio::time::sleep(Duration::from_millis(5000)).await;
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(mock.calls(), 1, "cooldown must suppress the second call");
 
     // After the cooldown elapses, a new edit fires again.
-    tokio::time::advance(Duration::from_millis(45_000)).await;
+    tokio::time::sleep(Duration::from_millis(45_000)).await;
     let bigger2 = format!("{}\n// d\n// e\n// f\n", big_edit());
     client.did_change(URI, &bigger2, 4).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     let second = client.expect("navigator/remark", &mut seen).await;
     assert_eq!(second["params"]["text"], "second");
 }
@@ -131,7 +167,7 @@ async fn cooldown_suppresses_second_remark() {
 /// A one-line comment that calls on the navigator reaches it: the instinct
 /// runs and the remark is delivered, where an ordinary one-line edit is
 /// skipped (`one_line_change_never_triggers`).
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_one_line_call_for_help_in_a_comment_reaches_the_metacognition() {
     let mock = MockCommenter::new(vec![Answer::Remark(2, "what part is stuck?")]);
     let mut client = Nav::start(mock.clone()).await;
@@ -143,7 +179,7 @@ async fn a_one_line_call_for_help_in_a_comment_reaches_the_metacognition() {
             2,
         )
         .await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
     let remark = client.expect("navigator/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "what part is stuck?");
@@ -153,11 +189,11 @@ async fn a_one_line_call_for_help_in_a_comment_reaches_the_metacognition() {
 }
 
 /// Silent answer emits no remark.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn silent_answer_emits_no_remark() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Silent])).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     // Silence: the "idle" status after "thinking" is the sync point.
     client.expect_status("idle").await;
 
@@ -167,11 +203,11 @@ async fn silent_answer_emits_no_remark() {
 }
 
 /// Commenter error emits navigator/status error and the server stays alive.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn commenter_error_emits_status_error_and_survives() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Fail("provider exploded")])).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     let status = client.expect_status("error").await;
     assert_eq!(status["params"]["message"], "provider exploded");
 
@@ -179,20 +215,23 @@ async fn commenter_error_emits_status_error_and_survives() {
     client
         .send(&json!({"jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": null}))
         .await;
-    let resp = client.recv().await;
+    let mut resp = client.recv().await;
+    while resp["id"] != 99 {
+        resp = client.recv().await;
+    }
     assert_eq!(resp["id"], 99);
     assert!(resp.get("result").is_some());
 }
 
 /// The remark request outlives typing: it is delivered after further
 /// `didChange` events, on the line's place in the current text.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn typing_does_not_cancel_a_remark_and_its_line_follows_the_edits() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(1, "x is unused")], gate.clone());
     let mut client = Nav::start(mock).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     // "thinking" proves the instinct answered and the remark is in flight.
     client.expect_status("thinking").await;
 
@@ -216,13 +255,13 @@ async fn typing_does_not_cancel_a_remark_and_its_line_follows_the_edits() {
 
 /// A remark about a line that was edited meanwhile has nothing left to
 /// talk about: it is dropped, and logged as such.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_remark_on_a_line_edited_meanwhile_is_dropped() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(1, "x is unused")], gate.clone());
     let mut client = Nav::start(mock).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     client.expect_status("thinking").await;
 
     // Line 2 of the file (index 1) is rewritten.
@@ -246,7 +285,7 @@ async fn a_remark_on_a_line_edited_meanwhile_is_dropped() {
 
 /// A newer trigger for the same document supersedes the remark still being
 /// written: only the newer one is delivered.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_newer_trigger_supersedes_the_remark_in_flight() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -255,7 +294,7 @@ async fn a_newer_trigger_supersedes_the_remark_in_flight() {
     );
     let mut client = Nav::start(mock.clone()).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     client.expect_status("thinking").await;
 
     // Typing, then another idle: a second remark request starts.
@@ -264,7 +303,7 @@ async fn a_newer_trigger_supersedes_the_remark_in_flight() {
         .await;
     // Let the server register the new idle timer before the clock moves.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         mock.calls(),
@@ -285,13 +324,13 @@ async fn a_newer_trigger_supersedes_the_remark_in_flight() {
 }
 
 /// Closing the document still cancels the remark in flight.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn closing_the_document_cancels_the_remark_in_flight() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(0, "late")], gate.clone());
     let mut client = Nav::start(mock).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     client.expect_status("thinking").await;
 
     client
@@ -314,7 +353,7 @@ async fn closing_the_document_cancels_the_remark_in_flight() {
 }
 
 /// Save fires the trigger without waiting for the idle timer.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn save_triggers_immediately() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Remark(
         2,
@@ -330,7 +369,7 @@ async fn save_triggers_immediately() {
 }
 
 /// Feedback is written to the log.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn feedback_is_written_to_log() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
     client
@@ -348,7 +387,7 @@ async fn feedback_is_written_to_log() {
 }
 
 /// didClose clears state and notifies navigator/clear.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn did_close_clears_remark() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
     client.open_base().await;
@@ -367,7 +406,7 @@ async fn did_close_clears_remark() {
 /// timer boundary for the next edit. The legacy keys the pipeline now owns
 /// (`minChangedLines`, `cooldownMs`) are still accepted, and ignored: the
 /// pipeline's own pre-filter keeps deciding whether the instinct runs.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn config_update_changes_idle_threshold() {
     let mock = MockCommenter::new(vec![Answer::Remark(0, "cfg-driven")]);
     let mut client = Nav::start_with(
@@ -379,7 +418,7 @@ async fn config_update_changes_idle_threshold() {
     client.open_and_edit().await;
 
     // Past the default 3 s, still short of the configured 5 s.
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(mock.calls(), 0, "the initial idleMs, not the default");
 
@@ -394,11 +433,11 @@ async fn config_update_changes_idle_threshold() {
         .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
         .await;
     tokio::time::sleep(Duration::from_millis(1)).await;
-    tokio::time::advance(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(mock.calls(), 0, "still inside the new 1 s delay");
 
-    tokio::time::advance(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(mock.calls(), 1, "fired at the new 1 s delay");
     let mut seen = Vec::new();
@@ -407,12 +446,12 @@ async fn config_update_changes_idle_threshold() {
 }
 
 /// Disabled config suppresses everything.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn disabled_config_suppresses_evaluation() {
     let mock = MockCommenter::new(vec![Answer::Remark(0, "nope")]);
     let mut client = Nav::start_with(mock.clone(), json!({"enabled": false}), |d, _| d).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(10_000)).await;
+    tokio::time::sleep(Duration::from_millis(10_000)).await;
     client.did_save(URI).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 0);
@@ -420,7 +459,7 @@ async fn disabled_config_suppresses_evaluation() {
 
 /// navigator/intent and navigator/diagnostics are accepted and stored
 /// (observable through the log's remark after a trigger).
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn intent_and_diagnostics_are_accepted() {
     let mut client = Nav::start(MockCommenter::new(vec![Answer::Silent])).await;
     client
@@ -436,20 +475,23 @@ async fn intent_and_diagnostics_are_accepted() {
         )
         .await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     // Server must still respond to a request (custom notifications didn't
     // break it).
     client
         .send(&json!({"jsonrpc": "2.0", "id": 7, "method": "shutdown", "params": null}))
         .await;
-    let resp = client.recv().await;
+    let mut resp = client.recv().await;
+    while resp["id"] != 7 {
+        resp = client.recv().await;
+    }
     assert!(resp.get("result").is_some(), "server broken: {resp}");
 }
 
 /// navigator/inlineCompletion answers with an item and request id from the
 /// reflex service, including the result range.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn inline_completion_answers_empty_items() {
     let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, _| {
         d.with_fim(Arc::new(ScriptedFim::fixed("hello")))
@@ -465,7 +507,7 @@ async fn inline_completion_answers_empty_items() {
             "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
         }))
         .await;
-    tokio::time::advance(Duration::from_millis(151)).await;
+    tokio::time::sleep(Duration::from_millis(151)).await;
     let resp = client.recv().await;
     assert_eq!(resp["id"], 21);
     assert_eq!(resp["result"]["items"][0]["text"], "hello");
@@ -474,7 +516,7 @@ async fn inline_completion_answers_empty_items() {
 
 /// A request superseded during its debounce never reaches the model, so only
 /// the request that did is logged as a reflex call.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_debounced_inline_completion_is_not_logged_as_a_model_call() {
     let fim = ScriptedFim::fixed("hello");
     let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, _| {
@@ -492,9 +534,9 @@ async fn a_debounced_inline_completion_is_not_logged_as_a_model_call() {
                 "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
             }))
             .await;
-        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    tokio::time::advance(Duration::from_millis(151)).await;
+    tokio::time::sleep(Duration::from_millis(151)).await;
     let mut answered = 0;
     while answered < 2 {
         if client.recv().await["id"].is_u64() {
@@ -513,7 +555,7 @@ async fn a_debounced_inline_completion_is_not_logged_as_a_model_call() {
 }
 
 /// navigator/reflexShown is accepted and logged as a reflex_shown record.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn reflex_shown_is_logged() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
     client
@@ -533,7 +575,7 @@ async fn reflex_shown_is_logged() {
 /// With `server_info` in the deps, `initialized` delivers
 /// `navigator/serverInfo` with exactly those values: the extension learns
 /// the cognition chat server's port and bearer token.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn server_info_arrives_after_initialized_with_the_configured_values() {
     let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, _| {
         d.with_server_info(navigator::ServerInfoParams {
@@ -548,181 +590,13 @@ async fn server_info_arrives_after_initialized_with_the_configured_values() {
     assert_eq!(info["params"]["token"], "tok-123");
 }
 
-// ---------- wake_cognition delivery ----------
-
-/// With a feed whose active session exists and an instinct that requests
-/// `wake_cognition`, the branch posts ONCE through the feed and the
-/// trigger record is delivered `wake` with the session id.
-#[tokio::test(start_paused = true)]
-async fn wake_cognition_posts_once_and_logs_wake() {
-    let (feed, posted, _session) = feed_with_session(Ok(())).await;
-    // spawn_server wires its ScriptedDecision, whose noul answers (0.9)
-    // fire the built-in drift branch when an intent exists.
-    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
-        with_intent_and_feed(d, ws, feed)
-    })
-    .await;
-    client.open_and_edit().await;
-    client.did_save(URI).await;
-    // The wake path ends with the idle status.
-    client.expect_status("idle").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let posted = posted.lock().unwrap().clone();
-    assert_eq!(posted.len(), 1, "exactly one wake posted");
-    let message = &posted[0];
-    assert!(message.contains(URI), "names the file: {message}");
-    assert!(
-        message.contains("auth remove command"),
-        "carries the intent: {message}"
-    );
-
-    let trigger = first_trigger(&client);
-    assert_eq!(trigger["requested_action"], "wake_cognition");
-    assert_eq!(trigger["delivered"], "wake");
-    assert!(trigger["session"].as_str().is_some(), "session id logged");
-}
-
-/// The wake text: a stable first line, the diff in a fenced block, the
-/// intent (drift) and no conversation digest.
-#[tokio::test(start_paused = true)]
-async fn the_wake_message_is_short_and_renders() {
-    let (feed, posted, _session) = feed_with_session(Ok(())).await;
-    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
-        with_intent_and_feed(d, ws, feed)
-    })
-    .await;
-    client.open_and_edit().await;
-    client.did_save(URI).await;
-    client.expect_status("idle").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let posted = posted.lock().unwrap().clone();
-    assert_eq!(posted.len(), 1);
-    let message = &posted[0];
-    // Drift and contradiction both score 0.9 with the scripted instinct: the
-    // intent drift wins the tie.
-    // The uri is outside the temporary workspace, so it stays as it is.
-    assert_eq!(
-        message.lines().next().unwrap(),
-        "Navigator noticed: the code drifts from the intent (0.90) in file:///ws/src/main.rs:2",
-        "{message}"
-    );
-    assert!(message.contains("```diff\n"), "{message}");
-    assert!(message.contains("+    let x = 1;"), "{message}");
-    assert!(
-        message.contains("\nIntent on record:\nadd an auth remove command"),
-        "{message}"
-    );
-    assert!(!message.contains("Recent conversation"), "{message}");
-    assert!(
-        !message.contains("add an auth remove command\n\n"),
-        "{message}"
-    );
-}
-
-/// A wake does not set the remark cooldown, and a second wake inside 120 s
-/// is skipped: the trigger falls through to the remark branch instead, which
-/// the wake did not silence.
-#[tokio::test(start_paused = true)]
-async fn a_wake_does_not_silence_remarks_and_wakes_have_their_own_cooldown() {
-    let (feed, posted, _session) = feed_with_session(Ok(())).await;
-    let mock = MockCommenter::new(vec![Answer::Remark(0, "after the wake")]);
-    let mut client = Nav::start_with(mock.clone(), json!({}), |d, ws| {
-        with_intent_and_feed(d, ws, feed)
-    })
-    .await;
-    client.open_and_edit().await;
-    client.did_save(URI).await;
-    client.expect_status("idle").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(posted.lock().unwrap().len(), 1);
-
-    // 5 s later (well inside the 45 s remark cooldown, were it stamped): a
-    // new edit and save. The instinct runs (no remark cooldown), the wake is
-    // inside its own cooldown, so the remark branch answers.
-    tokio::time::advance(Duration::from_secs(5)).await;
-    let bigger = format!("{}\n// a\n// b\n// c\n", big_edit());
-    client.did_change(URI, &bigger, 3).await;
-    client.did_save(URI).await;
-    let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
-    assert_eq!(remark["params"]["text"], "after the wake");
-    assert_eq!(posted.lock().unwrap().len(), 1, "no second wake");
-
-    let records = client.log_text();
-    let triggers: Vec<Value> = records
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|r| r["kind"] == "trigger")
-        .collect();
-    assert_eq!(triggers[0]["requested_action"], "wake_cognition");
-    assert_eq!(triggers[1]["requested_action"], "remark");
-    assert_eq!(
-        triggers[1]["prefilter"]["inputs"]["since_last_remark_ms"], 4611686018427387903i64,
-        "the wake did not stamp the remark clock"
-    );
-    let since_wake = triggers[1]["prefilter"]["inputs"]["since_last_wake_ms"]
-        .as_i64()
-        .unwrap();
-    assert!((5_000..120_000).contains(&since_wake), "{since_wake}");
-}
-
-/// Without a feed (or with no active conversation), the wake branch keeps
-/// today's behaviour: nothing posted, delivered `none`, reason
-/// `cognition_unavailable`.
-#[tokio::test(start_paused = true)]
-async fn wake_cognition_without_a_feed_logs_cognition_unavailable() {
-    // A feed with nothing registered: no active session.
-    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
-        with_intent_and_feed(d, ws, navigator::ConversationFeed::new())
-    })
-    .await;
-    client.open_and_edit().await;
-    client.did_save(URI).await;
-    client.expect_status("idle").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let trigger = first_trigger(&client);
-    assert_eq!(trigger["delivered"], "none");
-    assert_eq!(trigger["reason"], "cognition_unavailable");
-}
-
-/// With a `ConversationFeed` holding a digest (an active session with
-/// driver messages), the logged trigger's `template_inputs.conversation`
-/// carries that digest: the instinct and the metacognition see what the
-/// driver and the cognition agreed.
-#[tokio::test(start_paused = true)]
-async fn trigger_template_inputs_carry_the_conversation_digest() {
-    let (feed, _posted, _session) = feed_with_session(Ok(())).await;
-    let mut client = Nav::start_with(
-        MockCommenter::new(vec![Answer::Silent]),
-        json!({}),
-        |d, _| d.with_conversation(feed),
-    )
-    .await;
-    client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
-    client.expect_status("idle").await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let trigger = first_trigger(&client);
-    let conversation = trigger["template_inputs"]["conversation"]
-        .as_str()
-        .expect("conversation template input");
-    assert!(
-        conversation.contains("driver: add an auth remove command"),
-        "the digest: {conversation}"
-    );
-}
-
 /// Without `server_info` in the deps, NO `navigator/serverInfo` ever leaves
 /// the server (the chat stays unannounced when its server failed to bind).
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn without_server_info_no_notification_is_sent() {
     let mut client = Nav::start(MockCommenter::new(vec![])).await;
     client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let msgs = client.collect_for(Duration::from_millis(100)).await;
     assert!(
@@ -742,7 +616,7 @@ impl LspClient {
             "params": {"uri": URI, "version": version, "line": 0, "character": 4}
         }))
         .await;
-        tokio::time::advance(Duration::from_millis(151)).await;
+        tokio::time::sleep(Duration::from_millis(151)).await;
         // Skip notifications (idle-timer status) until the response.
         loop {
             let resp = self.recv().await;
@@ -917,16 +791,6 @@ fn session_event(
     navai::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
 }
 
-/// The first trigger record of the log.
-fn first_trigger(client: &Nav) -> Value {
-    client
-        .log_text()
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .find(|v: &Value| v["kind"] == "trigger")
-        .expect("a trigger record")
-}
-
 fn message_event(session_id: ulid::Ulid, source: &str) -> navai::bus::event::EventEnvelope {
     session_event(
         session_id,
@@ -966,7 +830,7 @@ fn trigger_records(client: &Nav, event: &str) -> Vec<Value> {
 /// A driver turn ending evaluates the pipeline with event `conversation` on
 /// the focused document, and the built-in remarks on a contradiction. A
 /// second driver turn within the cooldown is skipped.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_applies() {
     let mock = MockCommenter::new(vec![Answer::Remark(2, "the cache is back")]);
     let (feed, _posted, session_id) = feed_with_session(Ok(())).await;
@@ -991,15 +855,7 @@ async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_a
     assert_eq!(records[0]["prefilter"]["outcome"], "pass");
     assert_eq!(records[0]["requested_action"], "remark");
     assert_eq!(records[0]["delivered"], "remark");
-    let state = records[0]["rendered_state"].as_str().unwrap();
-    assert!(
-        state.contains("driver: add an auth remove command"),
-        "the conversation digest is in the state: {state}"
-    );
-    assert!(
-        state.contains("   1| fn main() {"),
-        "numbered code: {state}"
-    );
+    assert!(records[0].get("rendered_state").is_none());
     assert_eq!(mock.calls(), 1);
 
     // The cooldown: another driver turn right after is skipped.
@@ -1008,14 +864,13 @@ async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_a
     tokio::time::sleep(Duration::from_millis(50)).await;
     let records = trigger_records(&client, "conversation");
     assert_eq!(records.len(), 2, "{records:?}");
-    assert_eq!(records[1]["prefilter"]["outcome"], "skip");
-    assert_eq!(records[1]["prefilter"]["reason"], "cooldown");
+    assert_eq!(records[1]["reason"], "flow_skipped");
     assert_eq!(mock.calls(), 1, "no second remark");
 }
 
 /// The turn a navigator wake provokes never triggers the pipeline, and
 /// neither does a turn end with no focused document.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn navigator_caused_turn_end_and_no_focused_document_trigger_nothing() {
     let mock = MockCommenter::new(vec![Answer::Remark(1, "unexpected")]);
     let (feed, _posted, session_id) = feed_with_session(Ok(())).await;
@@ -1041,7 +896,7 @@ async fn navigator_caused_turn_end_and_no_focused_document_trigger_nothing() {
 }
 
 /// The focused document is the last one opened, changed or saved.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn conversation_trigger_targets_the_last_focused_document() {
     let mock = MockCommenter::new(vec![Answer::Silent]);
     let (feed, _posted, session_id) = feed_with_session(Ok(())).await;
@@ -1095,7 +950,7 @@ fn delivered(client: &Nav) -> Vec<(String, Option<String>)> {
 
 /// The same comment, triggered again while its remark is being written,
 /// leaves that remark alone: it is skipped, not superseded.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(1, "the cache")], gate.clone());
@@ -1111,7 +966,7 @@ async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
         .await;
     client.did_save(URI).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 1, "no second request for the same comment");
 
@@ -1121,10 +976,6 @@ async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
     assert_eq!(remark["params"]["text"], "the cache");
     let outcomes = delivered(&client);
     assert!(
-        outcomes.contains(&("none".to_string(), Some("help_in_flight".to_string()))),
-        "{outcomes:?}"
-    );
-    assert!(
         !outcomes.iter().any(|(d, _)| d == "cancelled"),
         "{outcomes:?}"
     );
@@ -1132,7 +983,7 @@ async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
 
 /// After the remark, the comment does not fire again unless it was removed
 /// and written anew.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
     let mock = MockCommenter::new(vec![
         Answer::Remark(1, "first answer"),
@@ -1152,7 +1003,7 @@ async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
     client.did_change(URI, &copied, 3).await;
     client.did_save(URI).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 1, "an answered call is not asked again");
 
@@ -1167,7 +1018,7 @@ async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
 
 /// A trigger that is not a call for help still supersedes the remark in
 /// flight, and help remarks get three tool rounds, ordinary ones one.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_differ() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -1192,7 +1043,7 @@ async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_diff
     .join("\n");
     client.did_change(URI, &plain, 3).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 2, "the ordinary trigger asked for its own");
     assert_eq!(mock.tool_rounds(), vec![3, 1]);

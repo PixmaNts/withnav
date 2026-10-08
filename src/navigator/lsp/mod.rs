@@ -73,6 +73,7 @@ impl LanguageServer for NavigatorBackend {
     /// `initialized`: announce the cognition chat server's endpoint when the
     /// binary started one, so the extension can bridge the chat panel.
     async fn initialized(&self, _params: InitializedParams) {
+        self.runtime.report_startup_warnings().await;
         self.runtime.announce_server_info().await;
     }
 

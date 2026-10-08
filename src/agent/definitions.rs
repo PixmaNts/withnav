@@ -343,6 +343,11 @@ impl Agents {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return; // an absent directory is normal
         };
+        // The former WithNav agent names are OpenCode's own agent names too (`explorer`,
+        // `librarian`, `oracle`...): an OpenCode file with one of them configures OpenCode's agent,
+        // not WithNav's crew member, so it is not read as an alias. Observed 2026-10-08: OpenCode's
+        // `explorer.md` (`mode: all`, no prompt) replaced Mousse's built-in prompt.
+        let opencode = matches!(source(PathBuf::new()), AgentSource::OpenCode(_));
         let Ok(root) = std::fs::canonicalize(dir) else {
             return;
         };
@@ -368,6 +373,7 @@ impl Agents {
                 path.extension().is_some_and(|e| e == "md")
                     && std::fs::metadata(path).is_ok_and(|m| m.is_file())
             })
+            .filter(|path| !opencode || !is_legacy_alias_file(path))
             .collect();
         // Canonical files win over legacy filenames within the same source.
         files.sort_by_key(|path| {
@@ -557,6 +563,13 @@ struct Header {
     access: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// True when the file is named after a former agent id kept as an alias.
+fn is_legacy_alias_file(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| AGENT_ALIASES.iter().any(|(old, _)| *old == stem))
 }
 
 /// Reads and parses one agent file; the id is the name of `path` without

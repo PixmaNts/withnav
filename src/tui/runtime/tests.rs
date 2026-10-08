@@ -6,9 +6,28 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::tui::protocol::{CreateSessionRequest, Generation, SubmitRequest};
+use crate::tui::protocol::{CreateSessionRequest, Generation, Overlay, SubmitRequest};
 
 const DEAD_URL: &str = "http://127.0.0.1:1";
+
+#[tokio::test]
+async fn deletion_reply_survives_origin_tab_closure_and_missing_is_silent() {
+    let mut runtime = Runtime::new(&options(None));
+    let generation = runtime.state.generation.clone();
+    runtime.dispatch(Action::NewConversation);
+    runtime.apply_event(ClientEvent::SessionDeleted {
+        generation,
+        session_id: "already-gone".into(),
+        result: Ok(false),
+    });
+    assert_eq!(runtime.ui.overlay, Some(Overlay::Sessions));
+    assert!(runtime.state.conversation.blocks.is_empty());
+    loop {
+        if matches!(next(&mut runtime.rx).await, ClientEvent::Sessions { .. }) {
+            break;
+        }
+    }
+}
 
 #[tokio::test]
 async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
@@ -307,6 +326,57 @@ fn submit() -> SubmitRequest {
         target_actor_id: "agent:main".into(),
         mode: "next-turn".into(),
         content: vec![],
+    }
+}
+
+#[tokio::test]
+async fn delete_effect_reports_errors_with_session_and_generation() {
+    let (mut exec, mut rx) = executor();
+    exec.execute(
+        Effect::DeleteSession("session /?".into()),
+        &ctx(7, None),
+        &mut Editor::new(),
+    );
+    match next(&mut rx).await {
+        ClientEvent::SessionDeleted {
+            generation,
+            session_id,
+            result,
+        } => {
+            assert_eq!(generation, Generation(7));
+            assert_eq!(session_id, "session /?");
+            assert!(result.is_err());
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn delete_effect_encodes_ids_and_treats_missing_as_already_deleted() {
+    use wiremock::{
+        matchers::{header, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+    for (status, deleted) in [(204, true), (404, false)] {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/v1/sessions/session%20%2F%3F"))
+            .and(header("authorization", "Bearer secret"))
+            .respond_with(ResponseTemplate::new(status))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut exec = Executor::new(Client::new(server.uri(), Some("secret".into())), tx);
+        exec.execute(
+            Effect::DeleteSession("session /?".into()),
+            &ctx(8, None),
+            &mut Editor::new(),
+        );
+        match next(&mut rx).await {
+            ClientEvent::SessionDeleted { result, .. } => assert_eq!(result, Ok(deleted)),
+            other => panic!("unexpected event {other:?}"),
+        }
     }
 }
 

@@ -87,6 +87,16 @@ pub fn route_key(
     if ui.screen == super::config::Screen::Config && ui.overlay.is_none() {
         return config_key(key, state);
     }
+    if ui.overlay == Some(Overlay::Sessions) && ui.delete_pending.is_some() {
+        return None;
+    }
+    if ui.overlay == Some(Overlay::Sessions) && ui.delete_confirm.is_some() {
+        return match key.code {
+            KeyCode::Enter => Some(Action::ConfirmDeleteSession),
+            KeyCode::Esc => Some(Action::CancelDeleteSession),
+            _ => None,
+        };
+    }
     if ui.child_confirm.is_some() {
         return match key.code {
             KeyCode::Enter | KeyCode::Char('y') => Some(Action::ConfirmChildControl),
@@ -101,6 +111,15 @@ pub fn route_key(
         let names = overlay_names(overlay, state, ui);
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
         match key.code {
+            KeyCode::Char('d')
+                if overlay == Overlay::Sessions
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                return names
+                    .get(*selected)
+                    .cloned()
+                    .map(Action::RequestDeleteSession);
+            }
             KeyCode::F(2) if overlay == Overlay::Agents => {
                 let name = names.get(*selected)?.clone();
                 ui.overlay = Some(Overlay::Models);
@@ -732,7 +751,7 @@ fn close_palette(ui: &mut UiState) {
 }
 
 /// The keys of the rows an overlay lists under the current filter, in display order.
-fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
+pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
     match overlay {
         Overlay::Agents => state
             .agents

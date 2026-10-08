@@ -547,6 +547,8 @@ pub struct UiState {
     /// no longer in the catalogue; the picker only lists those it knows.
     pub favorite_models: std::collections::BTreeSet<String>,
     pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
+    pub delete_confirm: Option<String>,
+    pub delete_pending: Option<String>,
     pub child_confirm_token: Option<crate::bus::event::PauseToken>,
     pub focus: Focus,
     pub overlay: Option<super::protocol::Overlay>,

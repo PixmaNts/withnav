@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Added
 
+- **Delete saved sessions from the terminal session picker.** Press `ctrl+d`, then confirm
+  permanent deletion with the attached subagent count. The list refreshes near the same row,
+  and tabs for the deleted session and its subagents close.
+
 - **Delete VS Code conversations from the command palette.** Choose a workspace conversation,
   then confirm permanent deletion including its subagent count. The chat button uses the same
   confirmation; deleted conversations reset to an empty chat and their subagent views close.

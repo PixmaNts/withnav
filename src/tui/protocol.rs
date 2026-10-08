@@ -375,6 +375,11 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<SessionListBody, String>,
     },
+    SessionDeleted {
+        generation: Generation,
+        session_id: String,
+        result: Result<bool, String>,
+    },
     Created {
         generation: Generation,
         result: Result<CreateSessionResponse, String>,
@@ -466,6 +471,13 @@ pub enum Action {
     Select(usize),
     NewConversation,
     ResumeSession(String),
+    RequestDeleteSession(String),
+    ConfirmDeleteSession,
+    CancelDeleteSession,
+    SessionDeleted {
+        session_id: String,
+        result: Result<bool, String>,
+    },
     OpenChild(String),
     ContinueChild,
     ConfirmChildControl,
@@ -560,6 +572,7 @@ pub enum Effect {
     UnwatchChild(String),
     FetchModels,
     ListSessions,
+    DeleteSession(String),
     /// Reads the server's command list.
     FetchCommands,
     /// Sends a decision on a permission request; the outcome comes back as

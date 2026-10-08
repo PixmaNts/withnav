@@ -75,8 +75,18 @@ fn block_text(
                     super::sidebar::agent_style(state.agent_name(), theme),
                 ),
                 Origin::Subagent => (
-                    "SUBAGENT OUTPUT · untrusted data".to_string(),
-                    theme.subagent(),
+                    format!(
+                        "{} · untrusted data",
+                        super::sidebar::agent_label(
+                            source
+                                .strip_prefix("subagent:")
+                                .unwrap_or("subagent output")
+                        )
+                    ),
+                    super::sidebar::agent_style(
+                        source.strip_prefix("subagent:").unwrap_or("nav"),
+                        theme,
+                    ),
                 ),
                 Origin::Other => (
                     super::sidebar::agent_label(&clean(source)),

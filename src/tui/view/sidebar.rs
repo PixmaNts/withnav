@@ -57,29 +57,6 @@ pub fn agent_label(agent: &str) -> String {
     format!("{glyph} {name}")
 }
 
-#[cfg(test)]
-mod identity_tests {
-    use super::*;
-
-    #[test]
-    fn legacy_agents_keep_their_crew_identity() {
-        for (old, new) in [
-            ("explore", "vigie"),
-            ("librarian", "vigie"),
-            ("review", "lux"),
-            ("oracle", "lux"),
-            ("explorer", "mousse"),
-            ("driver", "captain"),
-        ] {
-            assert_eq!(agent_label(old), agent_label(new));
-            assert_eq!(
-                agent_style(old, &Theme::default()),
-                agent_style(new, &Theme::default())
-            );
-        }
-    }
-}
-
 /// What a tab is doing, in the words the sidebar uses.
 pub fn tab_state(tab: &Tab) -> &'static str {
     match tab.activity {
@@ -288,6 +265,29 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                     Span::styled(format!(" {label}"), theme.muted()),
                 ])),
                 Rect::new(inner.x, rows_bottom + 1 + n as u16, inner.width, 1),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_agents_keep_their_crew_identity() {
+        for (old, new) in [
+            ("explore", "vigie"),
+            ("librarian", "vigie"),
+            ("review", "lux"),
+            ("oracle", "lux"),
+            ("explorer", "mousse"),
+            ("driver", "captain"),
+        ] {
+            assert_eq!(agent_label(old), agent_label(new));
+            assert_eq!(
+                agent_style(old, &Theme::default()),
+                agent_style(new, &Theme::default())
             );
         }
     }

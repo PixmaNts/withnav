@@ -651,6 +651,7 @@ fn pick_theme(runtime: &mut Runtime, steps: usize) {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
     runtime.dispatch(Action::OpenOverlay(crate::tui::protocol::Overlay::Themes));
+    runtime.ui.selection.insert("Themes".into(), 0);
     for _ in 0..steps {
         runtime.handle_terminal_event(press(KeyCode::Down));
     }

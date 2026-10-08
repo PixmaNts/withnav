@@ -468,8 +468,8 @@ fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
         .join("\n");
     for value in [
         "override",
-        "FIM · editor only",
-        "System One",
+        "Completion · FIM",
+        "Triage",
         "usable",
         "disabled",
         "wrong API kind",

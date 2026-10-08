@@ -4,6 +4,9 @@ Date: 2026-10-05
 
 Status: Superseded by [ADR 0013](0013-instinct-flow-engine-crate.md) on 2026-10-07
 
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.
+
 The navigator's decision pipeline asks one batch of questions and takes the first matching branch.
 The driver wants staged questions where an earlier answer selects the next, edited as a graph or
 as text, replacing the remarks pipeline progressively. We extend the existing Rust evaluator and

@@ -19,3 +19,6 @@ question re-asks the instinct.
   case while experimenting and becomes verbose.
 - An embedded scripting language (Rhai, Lua): rejected, errors would surface while coding instead
   of at load time, and the power is not needed yet.
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

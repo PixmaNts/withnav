@@ -21,3 +21,6 @@ driver accepts, and the metacognition only produces remarks.
 
 Authorship relies on the prompt and on the driver's review, not on a sandbox. The intent record is
 written by the cognition on its own: it is the navigator's working memory, not code.
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

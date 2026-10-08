@@ -11,7 +11,7 @@ are installed on the Captain's machine. See
 
 ## What runs
 
-```
+```txt
 VS Code ── vscode-withnav (TypeScript)
    │   ├─ LSP over stdio ─────────────────┐  edits, saves, diagnostics, inline completion, remarks
    │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
@@ -34,7 +34,7 @@ chat client, below) and `web` (the browser chat client, below). `nav run` exits 
 Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
-|---|---|---|
+| --- | --- | --- |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
@@ -48,7 +48,7 @@ Dependencies point down this list. A module never imports one above it.
 ### Inside `navigator/`
 
 | File | Responsibility |
-|---|---|
+| --- | --- |
 | `lsp/` | the `LanguageServer` adapter and custom `withnav/*` methods (`mod.rs`), wire types (`protocol.rs`), URI to path (`uri.rs`). Thin: it delegates to `runtime`. |
 | `runtime/` | the shared state behind the LSP: idle timers, the conversation-turn listener, trigger evaluation (`trigger.rs`), remark and wake delivery (`delivery.rs`, the wake text in `wake.rs`), reflex-facing calls (`inline.rs`) |
 | `document.rs` | one `OpenDocument` per uri (text, baseline, version, diagnostics, edit history) and the `snapshot` a trigger reads |
@@ -82,7 +82,7 @@ labelled as untrusted subagent output. Optional delivery fields and `subagent.wa
 are read without depending on a newer server event enum. Missing data is not guessed.
 
 | File | Responsibility |
-|---|---|
+| --- | --- |
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
 | `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar and right column shown); data only |
@@ -166,7 +166,7 @@ configuration. A conversation is created on the first message, not before.
 
 **Captain-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
 catalog-listed names and descriptions, or a disabled reason when its agent disallows `skill`.
-The searchable picker fills `/skill <name> ` without sending anything. Sending adds a typed
+The searchable picker fills `/skill <name>` without sending anything. Sending adds a typed
 `{type:"skill",name}` content block beside the Captain's text; with no request the text is
 `Apply the <name> skill.`. Session admission resolves one listed skill through the skill tool's
 bounded loader before accepting anything. The inbox appends its exact output as JSON in a
@@ -421,7 +421,7 @@ The existing owner continue endpoint also resumes doubt. Recovery terminalizes u
 as before; no supervision state is restored. The event catalog has 22 kinds.
 
 | Path | What | Written by |
-|---|---|---|
+| --- | --- | --- |
 | `~/.config/withnav/models.json`, `auth.json`, `config.json` | model catalogue, provider keys, assignments and client settings | the Captain/importer (catalogue), `nav auth` (keys), TUI (client settings, not assignments) |
 | `~/.config/withnav/navigator/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to global flows | the Captain |
 | `~/.config/withnav/agents/*.md` | user agent definitions | the Captain |
@@ -468,7 +468,7 @@ and never applies a deferred selection to a different agent. `/new [agent]` star
 session overrides. Editor context adds prompt/intent/feed independently of the chosen agent.
 
 | Route | Response/request contract |
-|---|---|
+| --- | --- |
 | `GET /v1/models?workspace=...` | `models` entries: `name`, `gateway`, `provider_group`, `upstream_id`, API, capabilities, variants/default and existing limit/diagnostic fields; top-level `default_agent` |
 | `GET /v1/agents?workspace=...&session_id=...` | `default_agent`, all definitions with `id`, description, mode, `assignment`, `effective`, optional `override`, warning; without session id omit override; an unassigned child without parent context has null choices and `inherits_parent: true` |
 | `GET /v1/layers?workspace=...` | exactly reflex/instinct/metacognition entries: `layer`, `status` (`usable` or `disabled`), `model`, `variant`, `gateway`, `upstream_id`, `api`, `reason` and optional `variant_diagnostic`; usable validates assignment/API, not future network access |

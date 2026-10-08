@@ -15,6 +15,8 @@ owned coding-agent core with a terminal client and a local server.
 
 ## What exists today
 
+- **InstinctFlow Studio.** Draw, test, save and reload flows: [driver's guide](docs/instinct-flow.md).
+
 **The agent core** (`navai`):
 
 - `navai tui`: a terminal chat client. Several conversations in tabs (up to nine, `alt+1` to

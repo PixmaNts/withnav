@@ -1,5 +1,7 @@
 # Navai WebUI
 
+For the Studio's inputs, nodes, testing and reload, see the [InstinctFlow driver's guide](../docs/instinct-flow.md).
+
 A browser client of the Navai session server: the same HTTP/SSE API the terminal client and the
 VS Code extension use (`src/server/routes.rs`). Vite + React + TypeScript, plain CSS with the four
 themes of `docs/design/README.md`. Fonts and icons are bundled; nothing loads from a CDN.

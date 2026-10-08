@@ -104,9 +104,9 @@
       "reasoning_history": "preserve",
       "api": "fim"
     },
-    "omniroute/inception/mercury-2": {
+    "omniroute/typesafe/jev-1.13": {
       "provider": "omniroute",
-      "model": "inception/mercury-2",
+      "model": "typesafe/jev-1.13",
       "context_window": 64000,
       "max_output_tokens": 2048,
       "supports_tools": false,

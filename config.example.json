@@ -1,7 +1,7 @@
 {
   "layers": {
     "reflex": "inception/mercury-edit-2",
-    "instinct": "omniroute/inception/mercury-2",
+    "instinct": "omniroute/typesafe/jev-1.13",
     "metacognition": {
       "model": "omniroute/combo/deepseek-v4-flash",
       "variant": "low"

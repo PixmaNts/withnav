@@ -21,7 +21,7 @@ No aliases in the UI. Four **layers**:
 - `models.json` = **catalogue only** (gateways and their models).
 - `config.json` = `layers` (one model each), `agents.<name>.model` / variant, `default_agent`, plus the existing keys (`permissions`, `subagents`, `agent`, `tui`). A model set in `config.json` **wins over** a `model:` line in the agent's `.md`.
 
-**Model names** are `<gateway>/<id>`, e.g. `omniroute/cc/claude-opus-5-5`, `omniroute/inception/mercury-2`, `inception/mercury-edit-2`. Every model list is **grouped by gateway, then by provider** (the segment after the gateway: `cc`, `zai`, `openai`, `opencode-go`, `combo`, `typesafe`; none for `inception/mercury-edit-2`), with **collapsible groups**, and filtered by the target's API.
+**Model names** are `<gateway>/<id>`, e.g. `omniroute/cc/claude-opus-5-5`, `omniroute/typesafe/jev-1.13`, `inception/mercury-edit-2`. Every model list is **grouped by gateway, then by provider** (the segment after the gateway: `cc`, `zai`, `openai`, `opencode-go`, `combo`, `typesafe`; none for `inception/mercury-edit-2`), with **collapsible groups**, and filtered by the target's API.
 
 Mock assignment: build → `omniroute/cc/claude-opus-5-5` · high, plan → `omniroute/zai/glm-5.3` · high, vigie → `omniroute/openai/gpt-6-luna` · medium, mousse → `omniroute/opencode-go/deepseek-v4-flash` · low, lux → `omniroute/openai/gpt-6-astra` · high, cartographe → `omniroute/openai/gpt-6-luna` · medium, sondeur → `omniroute/cc/claude-opus-5-5` · high (mode `all`). The `zai` / `openai` provider segments and every variant list are placeholders.
 

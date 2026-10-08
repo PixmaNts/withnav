@@ -449,7 +449,7 @@ class Component extends DCLogic {
       { k: 'astra', gw: 'omniroute', pv: 'openai', id: 'gpt-6-astra', ctx: '400k', caps: 'tools · parallel', vars: ['medium', 'high', 'xhigh'], api: 'chat' },
       { k: 'dsflash', gw: 'omniroute', pv: 'opencode-go', id: 'deepseek-v4-flash', ctx: '128k', caps: 'tools · parallel', vars: ['low', 'high'], api: 'chat' },
       { k: 'combo', gw: 'omniroute', pv: 'combo', id: 'deepseek-v4-flash', ctx: '128k', caps: 'tools', vars: ['low', 'high'], api: 'chat' },
-      { k: 'instinct', gw: 'omniroute', pv: 'inception', id: 'mercury-2', ctx: '64k', caps: 'typed answers', vars: [], api: 'systemone' },
+      { k: 'instinct', gw: 'omniroute', pv: 'typesafe', id: 'jev-1.13', ctx: '64k', caps: 'typed answers', vars: [], api: 'systemone' },
       { k: 'mercury', gw: 'inception', pv: '', id: 'mercury-edit-2', ctx: '128k', caps: 'fim · 512 out', vars: [], api: 'fim' }
     ].map((m) => ({ ...m, name: m.gw + '/' + (m.pv ? m.pv + '/' : '') + m.id }));
     const byK = Object.fromEntries(M.map((m) => [m.k, m]));

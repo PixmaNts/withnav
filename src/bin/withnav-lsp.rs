@@ -14,7 +14,7 @@ use withnav::navigator::bootstrap;
 #[command(
     name = "withnav-lsp",
     version,
-    about = "Navigator: a pair-programming navigator over LSP"
+    about = "WithNav language server: Reflex, Instinct and Metacognition in your editor"
 )]
 struct Cli {
     /// Explicit path to models.json (default: workspace, then config dir).

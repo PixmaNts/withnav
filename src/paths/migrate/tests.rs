@@ -292,3 +292,16 @@ fn navai_files_move_without_replacing_withnav_files() {
     assert_eq!(read(&f.layout.config.join("config.json")), "new");
     assert_eq!(read(&f.layout.navai_config.join("config.json")), "old");
 }
+
+#[test]
+fn navai_instance_locks_stay_behind() {
+    let f = fixture();
+    write(&f.layout.navai_data.join("navai.db"), "db");
+    write(
+        &f.layout.navai_data.join("navai.db.instances/01ABC.lock"),
+        "",
+    );
+    migrate_in(&f.layout);
+    assert_eq!(read(&f.layout.data.join("withnav.db")), "db");
+    assert!(!f.layout.data.join("navai.db.instances").exists());
+}

@@ -22,7 +22,7 @@ pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 #[command(
     name = "nav",
     version,
-    about = "A personal, minimal-but-complete coding agent in Rust",
+    about = "WithNav: you set the course, Nav lights the way. A pair-programming crew for your code",
     propagate_version = true
 )]
 pub struct Cli {

@@ -180,6 +180,11 @@ fn collect_legacy_files(source: &Path, target: &Path, items: &mut Vec<Item>) {
             continue;
         };
         let name = entry.file_name();
+        // Per-process instance locks of the old database: they only matter while that process
+        // runs, and the new database keeps its own beside `withnav.db`.
+        if kind.is_dir() && name.to_str() == Some("navai.db.instances") {
+            continue;
+        }
         if kind.is_dir() {
             collect_legacy_files(&entry.path(), &target.join(&name), items);
         } else if kind.is_file()

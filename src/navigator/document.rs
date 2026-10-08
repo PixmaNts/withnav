@@ -14,7 +14,7 @@ use crate::navigator::help_call::{added_help_comments, without_comments, HelpCal
 use crate::navigator::log::excerpt;
 use crate::navigator::lsp::uri::uri_to_path_str;
 use crate::navigator::metacognition::Diag;
-use crate::navigator::pipeline::{TriggerKind, NO_REMARK_MS};
+use crate::navigator::trigger::{TriggerKind, NO_REMARK_MS};
 
 /// Edit summaries kept per uri in the live state.
 const LIVE_STATE_EDITS: usize = 5;

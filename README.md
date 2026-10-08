@@ -84,7 +84,8 @@ The old alias entries `default`, `fast` and `cognition` are removed, not compati
 | `~/.config/navai/auth.json` | API keys, mode 0600; write them with `navai auth set <provider>` |
 | `~/.config/navai/config.json` | `layers`, `agents`, `default_agent`, and client settings such as `tui.theme` |
 | `~/.config/navai/agents/*.md`, `<project>/.navai/agents/*.md` | agent definitions; `~/.config/opencode/agents/` is also read |
-| `~/.config/navai/navigator/pipeline.toml`, `<project>/.navigator/` | the navigator's decision pipeline and intent record |
+| `~/.config/navai/flows/`, `<project>/.navai/flows/` | editor flows; historical `pipeline.toml` files are converted once, originals retained |
+| `<project>/.navigator/intent.md` | the navigator's intent record |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills (`~/.claude/` is read too); projects add `AGENTS.md`, `rules.md` and `.agents/skills` (also `.claude/` and `.opencode/`) |
 | `~/.local/share/navai/` | conversation history `navai.db`, decision log `navai.jsonl`, `tui.log`, `model-catalog/` |
 

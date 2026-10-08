@@ -1,10 +1,18 @@
 # Editor flow migration
 
-Editor flows own an eligible trigger exclusively; absent or disabled flows leave the legacy
-pipeline in charge. The default save, idle and conversation flows preserve the legacy
-questions, state templates, branch ordering and independent wake cooldown.
+The legacy engine was removed on 2026-10-08 after the driver replayed their real decision log:
+18 comparable triggers, 0 changed actions. Four older entries lacked question provenance; a
+separate input-limit correction addresses the 25.7 KiB context capture. This removal does not
+change that limit.
 
-Run `navai-lsp replay --flows --log /path/to/navai.jsonl` before retiring the legacy engine.
-This is offline and never applies effects. Missing original question/state provenance is
-reported as noncomparable, not inferred. The old pipeline engine remains until the driver
-has checked equivalence against their own recorded decisions.
+Built-in save, idle and conversation flows are enabled by default and retain the original state
+and prompts. No enabled flow for a trigger means nothing runs; there is no legacy fallback.
+
+Custom workspace `.navigator/pipeline.toml` and global `navigator/pipeline.toml` files are
+converted once into their corresponding flow directories, with a warning and without replacing
+driver-authored flows. The originals and referenced prompts remain untouched. Only a private
+read-only TOML schema survives in `src/flows/migrate/legacy.rs`, not an evaluator.
+
+`navai-lsp replay --flows --log /path/to/navai.jsonl` remains offline; `--flows` is optional and
+accepted for compatibility. `--pipeline` and `--reask` are removed. Missing provenance is
+reported as not comparable, never inferred.

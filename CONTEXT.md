@@ -226,7 +226,7 @@ terminal client also has its own commands (`/sessions`, `/theme`, `/quit`). `/mo
 switches the current agent's model in the open conversation, after the turn if busy; on an empty
 tab it sets the starting override. `/new [agent]` starts fresh on that agent's assignment, without
 the previous session's overrides.
-_Avoid_: tool, action (an action is what a pipeline branch decides)
+_Avoid_: tool, action (an action is what a flow proposes)
 
 ## Permissions
 
@@ -341,36 +341,21 @@ hook such as a tool call about to run). Each flow has exactly one trigger; the a
 event starts a flow run.
 _Avoid_: hook (the agent-loop point it comes from), input (what a node reads)
 
-## Decision pipeline
+## Editor flows
 
-**Pipeline**:
-The editable chain that turns a trigger into an action: the questions the instinct asks, and the
-branches that read the answers. Today it is one flat batch of questions followed by ordered
-branches; a staged, conditional version is a flow (below).
-_Avoid_: workflow, graph, rules
+The legacy decision pipeline was replaced by the built-in save, idle and conversation flows
+on 2026-10-08. They are enabled by default; without an enabled flow for a trigger nothing runs.
+Pipeline, Branch and Question describe the historical `pipeline.toml` format only.
 
-**Question**:
-One typed ask put to the instinct about the current state, answered as a choice, a score or a
-yes-probability.
-_Avoid_: check, probe, query
+**Action**: what a flow proposes, such as a remark, a wake or silence.
 
-**Branch**:
-A condition over the answers, with a threshold, that selects an action when it holds; branches are
-tried in order and the first that holds wins.
-_Avoid_: rule, route (route is itself a question name)
-
-**Action**:
-What a branch decides: stay silent, ask the metacognition for a remark, or wake the cognition.
-_Avoid_: outcome, effect
-
-**Replay**:
-Running a recorded history of triggers through a different pipeline to see which actions it would
-have chosen, compared against the driver's verdicts.
-_Avoid_: backtest, simulation
+**Replay**: offline evaluation of captured decisions through flows, comparing their actions with
+recorded ones without asking a model or applying effects. Missing provenance is not comparable.
+See Replay (flows) below.
 
 ## Flows
 
-Agreed on 2026-10-07, not implemented; see [ADR 0013](docs/adr/0013-instinct-flow-engine-crate.md)
+Implemented for editor triggers; see [ADR 0013](docs/adr/0013-instinct-flow-engine-crate.md)
 and `.scratch/instinct-flow/spec.md`.
 
 **InstinctFlow**:
@@ -385,7 +370,7 @@ _Avoid_: flow editor (fine in prose, not as a name), canvas (the canvas is one p
 An acyclic graph of nodes started by one trigger: decisions ask the instinct, expressions compute,
 actions end the chains. A node runs at most once per flow run, as soon as any wire into it is
 active; one output may feed several nodes, so a run can follow several branches at once. The
-existing pipeline is the flat, single-batch case.
+built-in editor flows preserve the historical single-batch decisions.
 _Avoid_: workflow, automation, subagent (a subagent is a child session, not a flow)
 
 **Event**:

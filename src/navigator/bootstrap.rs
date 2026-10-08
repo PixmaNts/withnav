@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use crate::navigator::log::NavLog;
 use crate::navigator::metacognition::LlmCommenter;
-use crate::navigator::models::{DecisionAdapter, FimAdapter};
-use crate::navigator::ports::{DecisionModel, FimModel};
+use crate::navigator::models::FimAdapter;
+use crate::navigator::ports::FimModel;
 use crate::navigator::{
     self, ConversationFeed, Metacognition, ModelError, NavigatorDeps, Remark, RemarkContext,
     ServerInfoParams,
@@ -34,7 +34,6 @@ pub fn load_models(explicit: Option<&Path>) -> anyhow::Result<ModelsConfig> {
 
 struct Layers {
     fim: Option<Arc<dyn FimModel>>,
-    decision: Option<Arc<dyn DecisionModel>>,
     reflex_model: Option<String>,
     instinct_model: Option<String>,
     metacognition_model: Option<String>,
@@ -52,7 +51,6 @@ fn build_layers_from(
 ) -> Layers {
     let mut layers = Layers {
         fim: None,
-        decision: None,
         reflex_model: None,
         instinct_model: None,
         metacognition_model: None,
@@ -93,11 +91,10 @@ fn build_layers_from(
         }
     }
 
-    // Pipeline labels never override the configured instinct assignment.
+    // Check the instinct assignment used by the native flow host.
     match crate::provider::layers::instinct(models, config_dir, clients.clone()) {
         Ok(client) => {
             layers.instinct_model = Some(client.model().to_string());
-            layers.decision = Some(Arc::new(DecisionAdapter(client)));
         }
         Err(e) => {
             tracing::error!("instinct disabled: {e}");
@@ -382,9 +379,6 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     }
     if let Some(fim) = layers.fim {
         deps = deps.with_fim(fim);
-    }
-    if let Some(decision) = layers.decision {
-        deps = deps.with_decision(decision);
     }
     if let Some(llm) = layers.metacognition {
         deps = deps.with_reflex_context(llm);
@@ -743,7 +737,10 @@ mod tests {
     async fn an_unresolved_metacognition_disables_only_the_remarks() {
         let (_dir, layers) = layers(&config(None));
         assert!(layers.fim.is_some(), "FIM is not touched");
-        assert!(layers.decision.is_some(), "the instinct is not touched");
+        assert!(
+            layers.instinct_model.is_some(),
+            "the instinct is not touched"
+        );
         assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
         let cancel = tokio_util::sync::CancellationToken::new();
         for _ in 0..2 {
@@ -768,7 +765,7 @@ mod tests {
         let (_dir, layers) = layers(&config(Some(128_000)));
         assert!(layers.metacognition.is_some());
         assert_eq!(layers.metacognition_model.as_deref(), Some("m-chat"));
-        assert!(layers.fim.is_some() && layers.decision.is_some());
+        assert!(layers.fim.is_some() && layers.instinct_model.is_some());
         assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
     }
 

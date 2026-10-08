@@ -30,6 +30,23 @@ pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn editor_state_templates_preserve_historical_bytes() {
+        let editor = include_str!("../../../tests/fixtures/navigator/legacy/prompts/state.md");
+        let conversation =
+            include_str!("../../../tests/fixtures/navigator/legacy/prompts/conversation_state.md");
+        for (definition, templates) in super::definitions() {
+            assert_eq!(
+                templates["state.md"],
+                if definition.flow.on == "conversation" {
+                    conversation
+                } else {
+                    editor
+                }
+            );
+        }
+    }
+
+    #[test]
     fn embedded_flows_validate() {
         for (definition, templates) in super::definitions() {
             definition

@@ -184,10 +184,29 @@ impl GrantStore {
     }
 
     /// Adds `entries` to this workspace's saved grants, keeping those another
-    /// session saved meanwhile: temp file (0600), sync, rename.
+    /// session saved meanwhile: temp file (0600), sync, rename. The whole
+    /// read-merge-rename runs under an exclusive advisory lock on a sibling
+    /// file: the rename alone keeps readers from seeing a torn file, but two
+    /// unlocked writers both read the old content and the later rename drops
+    /// the other's grant.
     fn save(&self, entries: &[Entry]) -> Result<(), String> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        if let Some(dir) = self.file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        // The lock is on its own file, not on `grants.json`, whose inode the
+        // rename replaces. It is released when the guard drops.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(self.file.with_extension("json.lock"))
+            .map_err(|e| e.to_string())?;
+        let _lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
+            .map_err(|(_, e)| e.to_string())?;
         let mut file = self.read()?;
         let saved = file.entry(self.workspace.clone()).or_default();
         for entry in entries {
@@ -196,9 +215,6 @@ impl GrantStore {
             }
         }
         let json = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
-        if let Some(dir) = self.file.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
         let tmp = self.file.with_extension(format!("{}.tmp", Ulid::new()));
         let mut out = std::fs::OpenOptions::new()
             .write(true)
@@ -747,6 +763,75 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    // Given several sessions of one workspace granting distinct folders at once
+    // When each saves through its own `Grants`
+    // Then the file holds every grant: no concurrent save drops another's
+    #[test]
+    fn concurrent_grants_from_several_sessions_are_all_kept() {
+        const SESSIONS: usize = 8;
+        const PER_SESSION: usize = 6;
+        let f = fixture();
+        let file = f.config.join("grants.json");
+        let start = std::sync::Barrier::new(SESSIONS);
+        std::thread::scope(|scope| {
+            for session in 0..SESSIONS {
+                let (file, ws, start) = (&file, &f.ws, &start);
+                scope.spawn(move || {
+                    let mut grants = Grants::persisted(file.clone(), ws);
+                    start.wait();
+                    for n in 0..PER_SESSION {
+                        let folder = ws.join(format!("s{session}-{n}"));
+                        grants.grant("build", "bash", Scope::Folder(folder));
+                    }
+                });
+            }
+        });
+        let saved = Grants::persisted(file, &f.ws);
+        assert_eq!(saved.entries.len(), SESSIONS * PER_SESSION);
+    }
+
+    // Given a save that waits on the lock another writer holds
+    // When that writer commits its own grant and then lets go
+    // Then the waiting save merges it instead of replacing the file
+    #[test]
+    fn a_save_waits_for_the_lock_and_keeps_what_the_holder_wrote() {
+        let f = fixture();
+        let file = f.config.join("grants.json");
+        let holder = GrantStore {
+            file: file.clone(),
+            workspace: canonical(&f.ws).to_string_lossy().into_owned(),
+        };
+        let lock = std::fs::File::create(file.with_extension("json.lock")).unwrap();
+        let guard = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
+            .map_err(|(_, e)| e)
+            .unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let waiting = {
+            let file = file.clone();
+            let ws = f.ws.clone();
+            std::thread::spawn(move || {
+                let mut grants = Grants::persisted(file, &ws);
+                started_tx.send(()).unwrap();
+                grants.grant("build", "bash", Scope::Folder(ws.join("waiting")));
+            })
+        };
+        started_rx.recv().unwrap();
+        // The holder's write lands while the other save is parked (or about to be).
+        let theirs: Entry = (
+            "build".into(),
+            Capability::Bash,
+            Scope::Folder(f.ws.join("holder")),
+        );
+        let mut all = GrantFile::new();
+        all.insert(holder.workspace.clone(), vec![theirs.clone()]);
+        std::fs::write(&file, serde_json::to_vec(&all).unwrap()).unwrap();
+        drop(guard);
+        waiting.join().unwrap();
+        let saved = holder.read().unwrap().remove(&holder.workspace).unwrap();
+        assert!(saved.contains(&theirs), "{saved:?}");
+        assert_eq!(saved.len(), 2, "{saved:?}");
     }
 
     #[test]

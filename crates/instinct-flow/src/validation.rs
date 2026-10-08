@@ -536,6 +536,16 @@ pub(crate) fn validate(
             }
         }
         if let Some(question) = node.kind.question() {
+            if node.inputs.is_empty() && node.kind.template().is_none() {
+                errors.push(
+                    Diagnostic::new(
+                        "schema",
+                        "a decision needs at least one input: the instinct has nothing to judge",
+                        format!("{path}.inputs"),
+                    )
+                    .at_node(&node.id),
+                );
+            }
             let instructions = match question {
                 protocol::Question::Noul { instructions }
                 | protocol::Question::Choice { instructions, .. }

@@ -355,7 +355,7 @@ mod tests {
             ),
             (
                 "decision",
-                "type='noul'\ninstructions='test'\nthreshold=0.5",
+                "type='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'",
             ),
         ] {
             runtime.store.save(name, super::super::store::Location::Global, None, super::super::store::Content::Toml {

@@ -27,6 +27,38 @@ fn client(server: &MockServer) -> SystemOneClient {
     .unwrap()
 }
 #[tokio::test]
+async fn provider_rejections_are_secret_free_and_not_outages() {
+    for (status, message, outage) in [
+        (400, "provider rejected the request (HTTP 400)", false),
+        (503, "provider error (HTTP 503)", true),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("secret"))
+            .mount(&server)
+            .await;
+        let q = questions();
+        let error = client(&server)
+            .decide(
+                DecisionRequest {
+                    state: "s",
+                    questions: &q,
+                },
+                &CancellationToken::new(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), message);
+        assert_eq!(error.is_outage(), outage);
+    }
+    assert_eq!(
+        DecisionError::ProviderError.to_string(),
+        "provider unreachable"
+    );
+    assert!(DecisionError::ProviderError.is_outage());
+}
+#[tokio::test]
 async fn exact_wire_body_and_usage_defaults_survive_extraction() {
     let server = MockServer::start().await;
     Mock::given(method("POST")).and(path("/systemone")).and(body_json(serde_json::json!({"model":"model","state":"state","questions":{"go":{"type":"noul","instructions":"Go?"}}})))

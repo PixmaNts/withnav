@@ -22,8 +22,12 @@ pub enum DecisionError {
     Timeout,
     #[error("decision cancelled")]
     Cancelled,
-    #[error("provider request failed")]
+    #[error("provider unreachable")]
     ProviderError,
+    #[error("provider rejected the request (HTTP {0})")]
+    ProviderRejected(u16),
+    #[error("provider error (HTTP {0})")]
+    ProviderStatus(u16),
     #[error("invalid provider answer: {0}")]
     InvalidAnswer(String),
     #[error("response exceeds byte limit")]
@@ -32,6 +36,14 @@ pub enum DecisionError {
 #[derive(Debug, thiserror::Error)]
 #[error("invalid System One client configuration")]
 pub struct ClientError;
+impl DecisionError {
+    pub fn is_outage(&self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::ProviderError | Self::ProviderStatus(_)
+        )
+    }
+}
 pub trait DecisionClient: Send + Sync {
     fn capabilities(&self) -> Capabilities;
     fn identity(&self) -> ClientIdentity;
@@ -122,7 +134,12 @@ impl DecisionClient for SystemOneClient {
                     .json(&serde_json::json!({"model":self.model,"state":request.state,"questions":request.questions}))
                     .send().await.map_err(|_| DecisionError::ProviderError)?;
                 if !response.status().is_success() {
-                    return Err(DecisionError::ProviderError);
+                    let status = response.status();
+                    return Err(if status.is_client_error() {
+                        DecisionError::ProviderRejected(status.as_u16())
+                    } else {
+                        DecisionError::ProviderStatus(status.as_u16())
+                    });
                 }
                 if response.content_length().is_some_and(|n| n > 262144) {
                     return Err(DecisionError::Limit);

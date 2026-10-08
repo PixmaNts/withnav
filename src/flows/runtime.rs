@@ -68,7 +68,10 @@ mod tests {
         ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
         {
             Box::pin(async move {
-                if self.0.fetch_add(1, Ordering::SeqCst) == 2 {
+                let call = self.0.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    Err(DecisionError::ProviderRejected(400))
+                } else if call == 3 {
                     Ok(instinct_flow::protocol::DecisionResponse {
                         answers: request
                             .questions
@@ -92,7 +95,7 @@ mod tests {
     async fn outage_notice_resets_only_after_provider_success() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
-        let toml = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n";
+        let toml = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
         store
             .save(
                 "decision",
@@ -118,10 +121,13 @@ mod tests {
             agent: "build".into(),
             workspace: dir.path().into(),
         };
-        for _ in 0..4 {
+        for call in 0..5 {
             runtime
                 .tool_pre_call(ctx.clone(), CancellationToken::new())
                 .await;
+            if call == 0 {
+                assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+            }
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 2);
     }
@@ -311,7 +317,7 @@ mod tests {
             let d = store.get(name, Location::Global).unwrap();
             store.delete(name, Location::Global, &d.revision).unwrap();
         }
-        let toml="[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n";
+        let toml="[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
         store
             .save(
                 "decision",
@@ -644,13 +650,14 @@ impl FlowRuntime {
                 if outcome.trace.nodes.iter().any(|n| n.answer.is_some()) {
                     outage.store(false, Ordering::SeqCst);
                 }
-                if matches!(
+                if (matches!(
                     outcome.result,
                     RunResult::Failure {
-                        kind: FailureKind::ProviderError | FailureKind::Timeout,
+                        kind: FailureKind::Timeout,
                         ..
                     }
-                ) && !outage.swap(true, Ordering::SeqCst)
+                ) || outcome.provider_outage)
+                    && !outage.swap(true, Ordering::SeqCst)
                 {
                     effects.instinct_unavailable();
                 }

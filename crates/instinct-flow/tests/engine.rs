@@ -24,7 +24,44 @@ fn compile(text: &str) -> CompiledDefinition {
 fn header(start: &str) -> String {
     format!("[flow]\nversion=1\nname='test'\non='tool.pre_call'\nblocking=true\nbudget_ms=800\nstart={start}\n")
 }
+#[test]
+fn decisions_need_inputs_or_a_state_template() {
+    for kind in [
+        "type='noul'\nthreshold=0.5",
+        "type='choice'\ncriteria={a='A',b='B'}",
+        "type='score'\nlevels=['A','B']\nat_least='B'",
+    ] {
+        let text = header("['judge']")
+            + &format!("[[node]]\nid='judge'\n{kind}\ninstructions='Judge'\n[node.inputs]\n");
+        let definition = Definition::parse(&text).unwrap();
+        let errors = definition
+            .validate(
+                &catalogue(),
+                &Capabilities { images: false },
+                &BTreeMap::new(),
+            )
+            .unwrap_err();
+        assert!(errors.iter().any(|d| d.code == "schema"
+            && d.node_id.as_deref() == Some("judge")
+            && d.message
+                == "a decision needs at least one input: the instinct has nothing to judge"));
+    }
+    let values = BTreeMap::from([(
+        "text".into(),
+        InputValue {
+            value: None,
+            cut: false,
+            redacted: false,
+        },
+    )]);
+    assert_eq!(rendering::state(&values, None).unwrap(), "text = <absent>");
+}
 fn decision(id: &str, next: &str) -> String {
+    let next = if next.contains("[node.inputs]") {
+        next.to_owned()
+    } else {
+        format!("{next}\n[node.inputs]\ncontext='session.agent'")
+    };
     format!("\n[[node]]\nid='{id}'\ntype='noul'\ninstructions='Is it so?'\nthreshold=0.5\n{next}\n")
 }
 fn action(id: &str, name: &str, text: &str) -> String {
@@ -492,9 +529,12 @@ impl InputSource for BlockingInput<'_> {
 #[tokio::test]
 async fn blocked_input_collection_does_not_starve_inflight_decisions() {
     let text = header("['fast','host']")
-        + &decision("fast", "[node.next]\nyes=['join']")
+        + &decision(
+            "fast",
+            "[node.inputs]\nx='event.tool'\n[node.next]\nyes=['join']",
+        )
         + &decision("host", "[node.inputs]\nx='session.agent'")
-        + &decision("join", "");
+        + &decision("join", "[node.inputs]\nx='event.tool'");
     let c = compile(&text);
     let client = Controlled::new();
     let result = run(
@@ -1135,7 +1175,7 @@ async fn verdict_priority_ties_use_flow_name_and_merge_notes() {
 }
 #[test]
 fn exclusive_choice_ports_allow_different_verdicts() {
-    compile(&(header("['choice']") + "[[node]]\nid='choice'\ntype='choice'\ninstructions='Pick'\ncriteria={a='A',b='B'}\n[node.next]\na=['deny']\nb=['ask']\n" + &action("deny", "deny", "note='deny'") + &action("ask", "ask_driver", "note='ask'")));
+    compile(&(header("['choice']") + "[[node]]\nid='choice'\ntype='choice'\ninstructions='Pick'\ncriteria={a='A',b='B'}\n[node.inputs]\nx='session.agent'\n[node.next]\na=['deny']\nb=['ask']\n" + &action("deny", "deny", "note='deny'") + &action("ask", "ask_driver", "note='ask'")));
 }
 #[tokio::test]
 async fn reconvergent_diamond_activates_join_once() {

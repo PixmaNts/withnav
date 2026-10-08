@@ -230,17 +230,23 @@ mod tests {
     use super::*;
     #[test]
     fn saved_question_and_state_captures_choose_identical_actions() {
-        let pipeline: crate::navigator::pipeline::PipelineFile =
-            toml::from_str(include_str!("../default_pipeline/pipeline.toml")).unwrap();
-        let trigger = &pipeline.triggers[0];
+        let (definition, templates) = crate::flows::builtin::definitions()
+            .into_iter()
+            .find(|(d, _)| d.flow.on == "save")
+            .unwrap();
+        let questions: protocol::Questions = definition
+            .node
+            .iter()
+            .filter_map(|n| n.kind.question().map(|q| (n.id.clone(), q)))
+            .collect();
         let fields: BTreeMap<String, String> = crate::flows::migrate::TEMPLATE_FIELDS
             .iter()
             .map(|f| (f.to_string(), String::new()))
             .collect();
-        let rendered = crate::navigator::pipeline::templates::render(
-            include_str!("../default_pipeline/prompts/state.md"),
-            &fields,
-        );
+        let mut rendered = templates["state.md"].clone();
+        for (name, value) in &fields {
+            rendered = rendered.replace(&format!("{{{{{name}}}}}"), value);
+        }
         let mut records = Vec::new();
         for (help, stuck, worth, expected) in [
             (false, 0.0, 0.1, "silent"),
@@ -248,31 +254,13 @@ mod tests {
             (false, 0.9, 0.1, "wake_cognition"),
             (false, 0.0, 0.9, "remark"),
         ] {
-            let answers: BTreeMap<_, _> = trigger.questions.keys().map(|id| {
+            let answers: BTreeMap<_, _> = questions.keys().map(|id| {
                 let answer = if id == "route" { json!({"type":"choice","choice":"metacognition","confidence":1.0,"probabilities":{"metacognition":1.0,"silent":0.0,"cognition":0.0}}) } else { json!({"type":"noul","noul":match id.as_str() { "stuck" => stuck, "worth_attention" => worth, _ => 0.0 }}) };
                 (id.clone(), answer)
             }).collect();
-            records.push(json!({"kind":"trigger","event":"save","trigger_id":expected,"uri":"file:///repo/main.rs","version":1,"model":"fake/instinct","questions":trigger.questions,"answers":answers,"rendered_state":rendered,"template_inputs":fields,"requested_action":expected,"prefilter":{"inputs":{"changed_lines":1,"since_last_remark_ms":100000,"since_last_wake_ms":200000,"called_for_help":help,"has_errors":false,"has_intent":false,"has_conversation":false}}}).to_string());
+            records.push(json!({"kind":"trigger","event":"save","trigger_id":expected,"uri":"file:///repo/main.rs","version":1,"model":"fake/instinct","questions":questions,"answers":answers,"rendered_state":rendered,"template_inputs":fields,"requested_action":expected,"prefilter":{"inputs":{"changed_lines":1,"since_last_remark_ms":100000,"since_last_wake_ms":200000,"called_for_help":help,"has_errors":false,"has_intent":false,"has_conversation":false}}}).to_string());
         }
         let result = report(&records.join("\n"));
-        let snapshot = crate::navigator::pipeline::PipelineSnapshot::builtin().unwrap();
-        for record in &records {
-            let value: Value = serde_json::from_str(record).unwrap();
-            let answers = serde_json::from_value(value["answers"].clone()).unwrap();
-            let inputs = crate::navigator::TriggerInputs {
-                changed_lines: 1,
-                since_last_remark_ms: 100000,
-                since_last_wake_ms: 200000,
-                called_for_help: value["prefilter"]["inputs"]["called_for_help"]
-                    .as_bool()
-                    .unwrap(),
-                has_errors: false,
-                has_intent: false,
-                has_conversation: false,
-            };
-            let (action, _) = snapshot.triggers()[0].select(inputs, &answers).unwrap();
-            assert_eq!(value["requested_action"], action.as_str());
-        }
         assert_eq!(result["not_comparable"], json!([]), "{result}");
         assert_eq!(result["changed"], json!([]), "{result}");
         assert_eq!(result["compared"], 4);

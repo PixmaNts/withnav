@@ -1,6 +1,7 @@
 //! Lossless editor pipeline conversion; the legacy source remains available for rollback.
-use crate::navigator::pipeline::{ActionDef, PipelineFile};
+mod legacy;
 use instinct_flow::*;
+use legacy::{ActionDef, PipelineFile};
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path};
 
@@ -291,28 +292,30 @@ mod tests {
         let source = root.path().join("navigator");
         let target = root.path().join("flows");
         std::fs::create_dir_all(source.join("prompts")).unwrap();
-        let text = include_str!("../navigator/default_pipeline/pipeline.toml");
+        let text = include_str!("../../tests/fixtures/navigator/legacy/pipeline.toml");
         std::fs::write(source.join("pipeline.toml"), text).unwrap();
         for (name, body) in [
             (
                 "state.md",
-                include_str!("../navigator/default_pipeline/prompts/state.md"),
+                include_str!("../../tests/fixtures/navigator/legacy/prompts/state.md"),
             ),
             (
                 "conversation_state.md",
-                include_str!("../navigator/default_pipeline/prompts/conversation_state.md"),
+                include_str!("../../tests/fixtures/navigator/legacy/prompts/conversation_state.md"),
             ),
             (
                 "remark.md",
-                include_str!("../navigator/default_pipeline/prompts/remark.md"),
+                include_str!("../../tests/fixtures/navigator/legacy/prompts/remark.md"),
             ),
             (
                 "help_remark.md",
-                include_str!("../navigator/default_pipeline/prompts/help_remark.md"),
+                include_str!("../../tests/fixtures/navigator/legacy/prompts/help_remark.md"),
             ),
             (
                 "conversation_remark.md",
-                include_str!("../navigator/default_pipeline/prompts/conversation_remark.md"),
+                include_str!(
+                    "../../tests/fixtures/navigator/legacy/prompts/conversation_remark.md"
+                ),
             ),
         ] {
             std::fs::write(source.join("prompts").join(name), body).unwrap();

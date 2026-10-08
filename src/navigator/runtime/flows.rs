@@ -299,7 +299,12 @@ impl Runtime {
             }
         }
         self.clear_in_flight(uri).await;
-        self.set_status("idle", None).await;
+        if failed && !cancel.is_cancelled() {
+            self.set_status("error", Some("editor flow failed".into()))
+                .await;
+        } else {
+            self.set_status("idle", None).await;
+        }
         true
     }
 }
@@ -629,6 +634,7 @@ mod tests {
             .unwrap();
         store.reload().unwrap();
         assert!(!owns("save"));
+        assert!(!owns_trigger(&store, TriggerKind::Save));
         let toml = "[flow]\nversion=1\nname='custom-save'\non='save'\nstart=['note']\n[[node]]\nid='note'\ntype='action'\naction='wake'\n[node.params]\nnote='Review this'\n";
         store
             .save(

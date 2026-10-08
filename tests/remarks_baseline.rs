@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 mod common;
+use common::navigator::EditorFlowsExt;
 use common::navigator::{
     big_edit, feed_with_session, Nav, RemarkAnswer, ScriptedCommenter, ScriptedDecision, URI,
 };
@@ -42,7 +43,7 @@ fn silent_answers() -> BTreeMap<String, Answer> {
     ])
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn successful_instinct_silence_consumes_the_diff_without_starting_a_remark() {
     let model = Arc::new(ScriptedDecision::fixed(silent_answers()));
     let commenter = ScriptedCommenter::default();
@@ -56,15 +57,15 @@ async fn successful_instinct_silence_consumes_the_diff_without_starting_a_remark
     nav.did_save(URI).await;
     nav.expect_status("idle").await;
     let records = triggers(&nav);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["branch"], 4);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1]["reason"], "flow_skipped");
     assert_eq!(records[0]["requested_action"], "silent");
     assert_eq!(records[0]["delivered"], "silent");
     assert_eq!(model.calls(), 1, "the second save has no unjudged diff");
     assert_eq!(commenter.calls(), 0);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn failed_instinct_keeps_the_diff_for_the_next_save() {
     let model = Arc::new(ScriptedDecision::failing("synthetic malformed answer"));
     let commenter = ScriptedCommenter::default();
@@ -82,14 +83,14 @@ async fn failed_instinct_keeps_the_diff_for_the_next_save() {
     for record in records {
         assert_eq!(record["prefilter"]["inputs"]["changed_lines"], 4);
         assert_eq!(record["delivered"], "provider_error");
-        assert_eq!(record["reason"], "instinct");
+        assert_eq!(record["reason"], "flow");
         assert!(record.get("requested_action").is_none());
     }
     assert_eq!(model.calls(), 2);
     assert_eq!(commenter.calls(), 0);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn newer_edit_cancels_cooperative_instinct_and_next_save_keeps_the_diff() {
     // This fake respects cancellation. Rejection of a late successful answer from
     // a non-cooperative client remains a separate evaluator acceptance boundary.
@@ -121,6 +122,7 @@ async fn newer_edit_cancels_cooperative_instinct_and_next_save_keeps_the_diff() 
         .await;
     nav.sync_notifications().await;
     gate.cancel();
+    nav.expect_status("idle").await;
     nav.did_save(URI).await;
     nav.expect_status("idle").await;
     let records = triggers(&nav);
@@ -134,7 +136,7 @@ async fn newer_edit_cancels_cooperative_instinct_and_next_save_keeps_the_diff() 
     assert_eq!(commenter.calls(), 0);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn diagnostics_update_context_without_a_builtin_trigger_or_log_record() {
     let model = Arc::new(ScriptedDecision::fixed(silent_answers()));
     let mut nav = Nav::start_as_is(ScriptedCommenter::default(), |deps, _| {
@@ -163,7 +165,7 @@ async fn diagnostics_update_context_without_a_builtin_trigger_or_log_record() {
     assert!(model.states()[0].contains("synthetic type error"));
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn conversation_silence_logs_one_question_and_leaves_the_edit_for_save() {
     let (feed, _, session) = feed_with_session(Ok(())).await;
     let model = Arc::new(ScriptedDecision::new(vec![
@@ -193,17 +195,16 @@ async fn conversation_silence_logs_one_question_and_leaves_the_edit_for_save() {
     let records = triggers(&nav);
     assert_eq!(records.len(), 2);
     assert_eq!(records[0]["event"], "conversation");
-    assert_eq!(records[0]["branch"], 1);
     assert_eq!(records[0]["requested_action"], "silent");
     assert_eq!(records[0]["delivered"], "silent");
-    assert_eq!(records[0]["questions"].as_object().unwrap().len(), 1);
-    assert_eq!(records[0]["template_inputs"]["diff"], "");
+    assert_eq!(model.questions()[0].len(), 1);
+    assert!(model.states()[0].contains("driver:"));
     assert_eq!(records[1]["event"], "save");
     assert_eq!(records[1]["prefilter"]["inputs"]["changed_lines"], 4);
     assert_eq!(model.calls(), 2);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn metacognition_silence_consumes_the_diff_but_failed_answers_do_not() {
     for (answer, status, delivered, calls) in [
         (RemarkAnswer::Silent, "idle", "silent", 1),

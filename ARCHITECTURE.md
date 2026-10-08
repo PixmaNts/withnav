@@ -17,7 +17,7 @@ VS Code ── vscode-navigator (TypeScript)
    │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
    ▼                                  ▼   ▼
 navai-lsp   (one process, two channels: ADR 0006)
-   ├─ navigator/   Language Server, the four layers, decision pipeline, log, replay
+   ├─ navigator/   Language Server, the four layers, editor flows, log, replay
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
    ├─ agent/       the coding-agent loop (the cognition runs on it)
@@ -54,15 +54,13 @@ Dependencies point down this list. A module never imports one above it.
 | `document.rs` | one `OpenDocument` per uri (text, baseline, version, diagnostics, edit history) and the `snapshot` a trigger reads |
 | `reflex.rs` | inline suggestions: position conversion, prefix and suffix caps, debounce, staleness, and the reflex-context cache |
 | `metacognition/` | the one `Metacognition` implementation: remark prompt and tool loop with its budget (`mod.rs`), answer parsing (`answer.rs`), the read/grep tools (`tools.rs`), the reflex-context producer and its prompt (`reflex_context.rs`) |
-| `pipeline/` | the decision pipeline: TOML model (`mod.rs`), load-time validation and compiled conditions (`validator.rs`), snapshot and file resolution (`snapshot.rs`), `{{var}}` templates (`templates.rs`), evaluation and branch selection (`evaluator.rs`) |
-| `replay/` | frozen-trigger replay of the log against a candidate pipeline, reusing the pipeline's prefilters and branch selection (`mod.rs`); log parsing (`log.rs`); the report and its text rendering (`report.rs`) |
+| `replay/` | offline replay of historical decision captures through built-in editor flows (`flows.rs`); no model calls or effects |
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
 | `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, driver-turn events |
 | `intent.rs` | `.navigator/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
-| `ports.rs` | the model seams (`FimModel`, `DecisionModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
+| `ports.rs` | the model seams (`FimModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
 | `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
-| `default_pipeline/` | the built-in pipeline TOML and prompts; a project's `.navigator/` overrides them |
 
 ### Inside `tui/`
 
@@ -297,11 +295,10 @@ request, `provider/fim.rs` calls Mercury, the answer goes back as ghost text. A 
 supersedes an older one; a stale version is dropped.
 
 **Pause or save to remark or wake (instinct, metacognition).** An idle timer or `didSave` calls
-`runtime::evaluate`. It takes a document snapshot, runs the pipeline's free prefilters, asks the
-instinct the trigger's questions in one System One call, and selects the first branch whose
-condition holds. `remark` calls the metacognition with the rendered branch prompt and sends
-`navigator/remark`; `wake_cognition` posts a navigator-sourced message through the
-`ConversationFeed`. One trigger record is written per evaluation.
+`runtime::evaluate`. Enabled editor flows exclusively handle the document snapshot, prefilters,
+instinct questions and ordered decisions. Built-ins preserve the original state and prompts.
+Remarks use anchored metacognition; wakes use typed flow notes to the conversation. No enabled
+flow means nothing runs. The decision log retains delivery records; flow records own run traces.
 
 **Chat to cognition.** The extension posts driver messages to the session server. The bus
 sequences them, the runtime task runs `run_agent` with the chosen agent's effective chat model, events stream back over
@@ -417,9 +414,9 @@ as before; no supervision state is restored. The event catalog has 22 kinds.
 | Path | What | Written by |
 |---|---|---|
 | `~/.config/navai/models.json`, `auth.json`, `config.json` | model catalogue, provider keys, assignments and client settings | the driver/importer (catalogue), `navai auth` (keys), TUI (client settings, not assignments) |
-| `~/.config/navai/navigator/pipeline.toml`, `prompts/*.md` | the user's pipeline and prompts | the driver |
+| `~/.config/navai/navigator/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to global flows | the driver |
 | `~/.config/navai/agents/*.md` | user agent definitions | the driver |
-| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline and prompts, overriding the user and built-in defaults | the driver |
+| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | historical custom pipeline, converted once to workspace flows | the driver |
 | `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
 | `<workspace>/.navai/agents/*.md` | project agent definitions | the driver |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the driver |
@@ -595,7 +592,8 @@ the later 0.6 scope, not this contract.
 - `navai run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
   required, 130 interrupted.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
-- Behaviour that should be tunable goes in the pipeline (TOML and prompts), not in Rust (ADR 0005).
+- Tunable editor behaviour goes in `src/flows/builtin/` or custom flow TOML/templates, not in a second evaluator.
+- Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `tui`.
 - `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.

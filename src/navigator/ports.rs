@@ -3,8 +3,6 @@
 //!
 //! - [`FimModel`]: the reflex's fill-in-the-middle engine (ghost-text
 //!   suggestions while the driver types).
-//! - [`DecisionModel`]: the instinct's typed-question engine (one call,
-//!   several bounded questions, never free text).
 //! - [`Metacognition`]: the fast remark engine (one remark, or silence, for a
 //!   document state).
 //!
@@ -101,19 +99,8 @@ pub trait ReflexContextModel: Send + Sync {
     ) -> BoxFuture<'a, Result<String, ModelError>>;
 }
 
-/// The instinct's model seam: answers several typed questions about a
-/// rendered state in one call. Never produces free text.
-pub trait DecisionModel: Send + Sync {
-    fn decide<'a>(
-        &'a self,
-        state: &'a str,
-        questions: &'a Questions,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Answers, ModelError>>;
-}
-
 /// The metacognition's remark seam: one remark (or silence) for a document
-/// state. The pipeline's rendered branch prompt travels on
+/// state. The flow's rendered remark prompt travels on
 /// [`RemarkContext::prompt`]; without it the model would judge the diff
 /// alone. `Ok(None)` is silence; an error is a provider failure or an answer
 /// that violates the prompt contract ([`ModelError::Malformed`]).

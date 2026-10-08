@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Removed
+
+- The legacy navigator decision pipeline and fallback evaluator. Built-in editor flows now own
+  triggers exclusively; custom `pipeline.toml` files are converted once with originals retained.
+  Offline replay uses flows only (`--flows` remains accepted; `--pipeline` and `--reask` are removed).
+
 ## [0.6.1] - 2026-10-07
 
 Navai gets a bypass mode: one session can skip ordinary permission prompts, from the terminal,

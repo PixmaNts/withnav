@@ -18,8 +18,8 @@ use navai::error::ProviderError;
 use navai::navigator::conversation::SessionPost;
 use navai::navigator::metacognition::RemarkContext;
 use navai::navigator::ports::{
-    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
-    Question, Questions, ReflexContextModel, ReflexContextRequest,
+    Answer, Answers, FimAnswer, FimModel, FimRequest, Metacognition, ModelError, Question,
+    Questions, ReflexContextModel, ReflexContextRequest,
 };
 use navai::navigator::{self, NavigatorDeps, Remark};
 use navai::provider::Usage;
@@ -148,6 +148,16 @@ impl Metacognition for ScriptedCommenter {
             }
         })
     }
+}
+
+/// Test-only historical wire adapter used to script native flow decisions.
+pub trait DecisionModel: Send + Sync {
+    fn decide<'a>(
+        &'a self,
+        state: &'a str,
+        questions: &'a Questions,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Answers, ModelError>>;
 }
 
 // ---------- instinct fake ----------
@@ -848,25 +858,38 @@ pub fn with_min_changed_lines(
     workspace: &Path,
     lines: usize,
 ) -> NavigatorDeps {
-    use navai::navigator::default_pipeline as built_in;
-    let dir = workspace.join(".navigator");
-    std::fs::create_dir_all(dir.join("prompts")).unwrap();
-    let toml = built_in::PIPELINE_TOML.replace(
-        "min_changed_lines = 1",
-        &format!("min_changed_lines = {lines}"),
-    );
-    std::fs::write(dir.join("pipeline.toml"), toml).unwrap();
-    for (name, text) in [
-        ("state.md", built_in::STATE_PROMPT),
-        ("remark.md", built_in::REMARK_PROMPT),
-        ("help_remark.md", built_in::HELP_REMARK_PROMPT),
-        ("conversation_state.md", built_in::CONVERSATION_STATE_PROMPT),
-        (
-            "conversation_remark.md",
-            built_in::CONVERSATION_REMARK_PROMPT,
-        ),
-    ] {
-        std::fs::write(dir.join("prompts").join(name), text).unwrap();
+    let config = workspace.join("config");
+    let store = navai::flows::store::FlowStore::new(workspace.to_path_buf(), config);
+    for (mut definition, mut templates) in navai::flows::builtin::definitions() {
+        let state_name = format!("{}-state.md", definition.flow.name);
+        let state = templates.remove("state.md").unwrap();
+        templates.insert(state_name.clone(), state);
+        for node in &mut definition.node {
+            match &mut node.kind {
+                instinct_flow::NodeKind::Noul { state_template, .. }
+                | instinct_flow::NodeKind::Choice { state_template, .. } => {
+                    *state_template = Some(state_name.clone())
+                }
+                _ => {}
+            }
+        }
+        if definition.flow.on != "conversation" {
+            definition.flow.when = definition
+                .flow
+                .when
+                .map(|w| w.replace("changed_lines >= 1", &format!("changed_lines >= {lines}")));
+        }
+        store
+            .save(
+                &definition.flow.name.clone(),
+                navai::flows::store::Location::Global,
+                None,
+                navai::flows::store::Content::Graph {
+                    definition: Box::new(definition),
+                    templates,
+                },
+            )
+            .unwrap();
     }
     deps.with_dirs(Some(workspace.to_path_buf()), None)
 }
@@ -909,4 +932,76 @@ pub async fn feed_with_session(
     feed.observe(&driver_message(session_id, 1, "add an auth remove command"))
         .await;
     (feed, posted, session_id)
+}
+
+/// Test-only wiring of scripted decisions through the editor flow runtime.
+pub trait EditorFlowsExt {
+    fn with_decision(self, model: Arc<dyn DecisionModel>) -> Self;
+}
+struct FlowDecision(Arc<dyn DecisionModel>);
+impl instinct_flow::DecisionClient for FlowDecision {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "test/instinct".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        request: instinct_flow::protocol::DecisionRequest<'a>,
+        cancel: &'a CancellationToken,
+        _: std::time::Instant,
+    ) -> instinct_flow::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        Box::pin(async move {
+            let questions =
+                serde_json::from_value(serde_json::to_value(request.questions).unwrap()).unwrap();
+            let mut answers = self
+                .0
+                .decide(request.state, &questions, cancel)
+                .await
+                .map_err(|e| instinct_flow::DecisionError::InvalidAnswer(e.to_string()))?;
+            answers.retain(|id, _| request.questions.contains_key(id));
+            for (id, answer) in &mut answers {
+                if let (
+                    Some(instinct_flow::protocol::Question::Choice { criteria, .. }),
+                    Answer::Choice { probabilities, .. },
+                ) = (request.questions.get(id), answer)
+                {
+                    for key in criteria.keys() {
+                        probabilities.entry(key.clone()).or_insert(0.0);
+                    }
+                }
+            }
+            Ok(instinct_flow::protocol::DecisionResponse {
+                answers: serde_json::from_value(serde_json::to_value(answers).unwrap()).unwrap(),
+                usage: None,
+            })
+        })
+    }
+}
+impl EditorFlowsExt for NavigatorDeps {
+    fn with_decision(self, model: Arc<dyn DecisionModel>) -> Self {
+        let workspace = self
+            .workspace
+            .clone()
+            .unwrap_or_else(|| self.log_path.parent().unwrap().to_path_buf());
+        let store = Arc::new(navai::flows::store::FlowStore::new(
+            workspace.clone(),
+            workspace.join("config"),
+        ));
+        let model = Arc::new(FlowDecision(model));
+        self.with_flows(Arc::new(move |effects| {
+            Arc::new(navai::flows::runtime::FlowRuntime::new(
+                store.clone(),
+                model.clone(),
+                effects,
+            ))
+        }))
+    }
 }

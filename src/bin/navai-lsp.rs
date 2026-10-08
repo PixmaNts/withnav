@@ -5,14 +5,10 @@
 //! in `navigator::bootstrap`, the replay report in `navigator::replay`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::Parser;
 use navai::navigator;
 use navai::navigator::bootstrap;
-use navai::navigator::models::DecisionAdapter;
-use navai::provider::auth;
-use navai::provider::openai::ClientCache;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,25 +30,15 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
-    /// Replays a candidate pipeline over the recorded trigger log and
-    /// compares its decisions with the ones the driver took.
+    /// Replays built-in editor flows offline against captured decisions.
     Replay {
-        /// Replay the embedded editor flows offline, retaining legacy provenance.
-        #[arg(long, conflicts_with_all = ["pipeline", "reask"])]
-        flows: bool,
-        /// A `.navigator` directory or its `pipeline.toml` (default: the
-        /// built-in pipeline).
+        /// Accepted for compatibility; flows are the only replay mode.
         #[arg(long)]
-        pipeline: Option<PathBuf>,
+        flows: bool,
         /// Decision log to replay (default: the navigator log).
         #[arg(long)]
         log: Option<PathBuf>,
-        /// Re-render the state and ask the instinct again when the candidate's
-        /// question differs from the logged one. Without it such a trigger is
-        /// reported as not comparable.
-        #[arg(long)]
-        reask: bool,
-        /// Machine-readable report on stdout instead of the text table.
+        /// Machine-readable report instead of a summary.
         #[arg(long)]
         json: bool,
     },
@@ -89,88 +75,22 @@ async fn run() -> anyhow::Result<()> {
     migration.log();
     let cli = Cli::parse();
 
-    if let Some(Command::Replay {
-        ref pipeline,
-        ref log,
-        reask,
-        json,
-        flows,
-    }) = cli.command
-    {
-        if flows {
-            let path = log
-                .clone()
-                .or_else(navai::paths::decision_log)
-                .ok_or_else(|| anyhow::anyhow!("pass --log"))?;
-            let report = navigator::replay::flows::report(&std::fs::read_to_string(path)?);
+    if let Some(Command::Replay { log, json, .. }) = cli.command {
+        let path = log
+            .or_else(navai::paths::decision_log)
+            .ok_or_else(|| anyhow::anyhow!("pass --log"))?;
+        let report = navigator::replay::flows::report(&std::fs::read_to_string(path)?);
+        if json {
             println!("{}", serde_json::to_string_pretty(&report)?);
-            return Ok(());
+        } else {
+            println!(
+                "{} compared, {} changed, {} not comparable",
+                report["compared"],
+                report["changed"].as_array().map_or(0, Vec::len),
+                report["not_comparable"].as_array().map_or(0, Vec::len)
+            );
         }
-        return run_replay(&cli, pipeline.as_deref(), log.as_deref(), reask, json).await;
+        return Ok(());
     }
-
     bootstrap::run(cli.models.as_deref()).await
-}
-
-/// Replays a candidate pipeline over the recorded trigger log. Nothing here
-/// talks to the editor: the instinct model is only built when `--reask` was
-/// asked for, and then only for the triggers whose question changed.
-async fn run_replay(
-    cli: &Cli,
-    pipeline_path: Option<&std::path::Path>,
-    log_path: Option<&std::path::Path>,
-    reask: bool,
-    json: bool,
-) -> anyhow::Result<()> {
-    use navai::navigator::pipeline::Pipeline;
-    use navai::navigator::replay::{load_candidate, ReplayLog, Replayer};
-
-    let candidate = load_candidate(pipeline_path)
-        .map_err(|e| anyhow::anyhow!("cannot load the candidate pipeline: {e}"))?;
-    let pipeline = Pipeline::new(candidate);
-
-    let log_path = match log_path {
-        Some(path) => path.to_path_buf(),
-        None => navai::paths::decision_log()
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve the user data dir; pass --log"))?,
-    };
-    // A missing log replays as an empty one: no triggers, nothing to compare.
-    let log = match ReplayLog::read(&log_path) {
-        Ok(log) => log,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(anyhow::anyhow!("no such log: {}", log_path.display()));
-        }
-        Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", log_path.display())),
-    };
-
-    let report = if reask {
-        let models = bootstrap::load_models(cli.models.as_deref())?;
-        let config_dir = auth::default_config_dir()
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir for the instinct API key"))?;
-        let client =
-            navai::provider::layers::instinct(&models, &config_dir, Arc::new(ClientCache::new()))?;
-        let decision = DecisionAdapter(client);
-        Replayer::with_reask(&pipeline, &decision).run(&log).await
-    } else {
-        Replayer::new(&pipeline).run(&log).await
-    };
-
-    // The snapshot only knows builtin/user/project: report the path the driver
-    // actually pointed at.
-    let report = match pipeline_path {
-        Some(path) => report.with_pipeline_origin(&path.display().to_string()),
-        None => report.with_pipeline_origin("built-in"),
-    };
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).map_err(|e| anyhow::anyhow!("{e}"))?
-        );
-    } else {
-        print!(
-            "{}",
-            report.render_text(navigator::replay::DEFAULT_LIST_LIMIT)
-        );
-    }
-    Ok(())
 }

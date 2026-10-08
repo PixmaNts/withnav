@@ -103,12 +103,12 @@ pub struct Position {
     pub character: u32,
 }
 
-/// Server -> client: the answer to `navigator/inlineCompletion`. Empty when
+/// Server -> client: the answer to `withnav/inlineCompletion`. Empty when
 /// the reflex layer is absent or had nothing to say.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InlineCompletionResult {
     pub items: Vec<InlineCompletionItem>,
-    /// The reflex call's id, echoed back in `navigator/reflexShown` so the
+    /// The reflex call's id, echoed back in `withnav/reflexShown` so the
     /// log can join the model call with its display. Absent when no
     /// suggestion was produced.
     #[serde(default, rename = "requestId", skip_serializing_if = "Option::is_none")]
@@ -131,28 +131,28 @@ pub enum RemarkNotification {}
 
 impl Notification for RemarkNotification {
     type Params = RemarkParams;
-    const METHOD: &'static str = "navigator/remark";
+    const METHOD: &'static str = "withnav/remark";
 }
 
 pub enum ServerInfoNotification {}
 
 impl Notification for ServerInfoNotification {
     type Params = ServerInfoParams;
-    const METHOD: &'static str = "navigator/serverInfo";
+    const METHOD: &'static str = "withnav/serverInfo";
 }
 
 pub enum ClearNotification {}
 
 impl Notification for ClearNotification {
     type Params = ClearParams;
-    const METHOD: &'static str = "navigator/clear";
+    const METHOD: &'static str = "withnav/clear";
 }
 
 pub enum StatusNotification {}
 
 impl Notification for StatusNotification {
     type Params = StatusParams;
-    const METHOD: &'static str = "navigator/status";
+    const METHOD: &'static str = "withnav/status";
 }
 
 /// A remark ready to show: 1-based line from the model, normalized to 0-based
@@ -195,10 +195,10 @@ mod tests {
 
     #[test]
     fn notification_methods_match_contract() {
-        assert_eq!(RemarkNotification::METHOD, "navigator/remark");
-        assert_eq!(ClearNotification::METHOD, "navigator/clear");
-        assert_eq!(StatusNotification::METHOD, "navigator/status");
-        assert_eq!(ServerInfoNotification::METHOD, "navigator/serverInfo");
+        assert_eq!(RemarkNotification::METHOD, "withnav/remark");
+        assert_eq!(ClearNotification::METHOD, "withnav/clear");
+        assert_eq!(StatusNotification::METHOD, "withnav/status");
+        assert_eq!(ServerInfoNotification::METHOD, "withnav/serverInfo");
     }
 
     #[test]

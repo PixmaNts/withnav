@@ -323,7 +323,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
     // loopback ephemeral port with a per-process bearer token, announced as
-    // `navigator/serverInfo`. It lives exactly as long as the LSP session:
+    // `withnav/serverInfo`. It lives exactly as long as the LSP session:
     // when `navigator::serve` returns (exit/EOF) the shutdown trigger fires,
     // every session is closed and the server drains so the process exits.
     // The SAME conversation hub goes to the session server (sessions
@@ -335,7 +335,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         Err(e) => {
             // A failed bind or an unopenable history database must not take
             // the navigator down: run the LSP without the chat (no
-            // serverInfo notification) and say so in `navigator/status`.
+            // serverInfo notification) and say so in `withnav/status`.
             tracing::error!("cognition chat server unavailable: {e}");
             layers.disabled.push(format!("chat: {e}"));
             None
@@ -543,7 +543,7 @@ fn bearer_token() -> String {
 }
 
 /// Stand-in used when the metacognition layer could not be built: every
-/// remark call errors, which surfaces as `navigator/status` error instead
+/// remark call errors, which surfaces as `withnav/status` error instead
 /// of a crash.
 struct FailingCommenter {
     message: String,

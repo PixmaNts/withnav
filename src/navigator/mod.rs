@@ -78,7 +78,7 @@ pub struct NavigatorDeps {
     /// The user-level navigator dir (`~/.config/navai/navigator/`).
     pub user_dir: Option<PathBuf>,
     /// The cognition chat server's endpoint: when set, `initialized` sends
-    /// `navigator/serverInfo` with the loopback port and bearer token.
+    /// `withnav/serverInfo` with the loopback port and bearer token.
     pub server_info: Option<ServerInfoParams>,
     /// Human-readable notes about layers that were disabled at startup;
     /// surfaced as one status message after initialize.
@@ -147,7 +147,7 @@ impl NavigatorDeps {
     }
 
     /// Builder-style: the cognition chat server's endpoint, announced as
-    /// `navigator/serverInfo` after `initialized`.
+    /// `withnav/serverInfo` after `initialized`.
     pub fn with_server_info(mut self, info: ServerInfoParams) -> Self {
         self.server_info = Some(info);
         self

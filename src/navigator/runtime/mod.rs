@@ -54,7 +54,7 @@ pub(crate) struct Runtime {
     reflex_model: Option<String>,
     /// The reflex service; None keeps the layer disabled (empty answers).
     reflex: Option<ReflexService>,
-    /// The cognition chat server's endpoint; sent as `navigator/serverInfo`
+    /// The cognition chat server's endpoint; sent as `withnav/serverInfo`
     /// after `initialized`. None keeps the chat unannounced.
     server_info: Option<ServerInfoParams>,
     /// The conversation hub shared with the session server: the seam a
@@ -195,7 +195,7 @@ impl Runtime {
     }
 
     /// The workspace intent record, falling back to the session intent set
-    /// via `navigator/intent`. Returns the summary text and whether any
+    /// via `withnav/intent`. Returns the summary text and whether any
     /// intent exists.
     async fn current_intent(&self) -> (String, bool) {
         let workspace = self.workspace.lock().await.clone();
@@ -268,7 +268,7 @@ impl Runtime {
         }
     }
 
-    /// `navigator/reflexShown`: the extension reporting display time of a
+    /// `withnav/reflexShown`: the extension reporting display time of a
     /// suggestion, so the log holds both halves of the pause-to-display
     /// latency.
     pub(crate) async fn on_reflex_shown(&self, params: ReflexShownParams) {
@@ -278,7 +278,7 @@ impl Runtime {
         });
     }
 
-    /// `navigator/feedback` client->server notification.
+    /// `withnav/feedback` client->server notification.
     pub(crate) async fn on_feedback(&self, params: FeedbackParams) {
         self.log.append(&LogRecord::Feedback {
             id: &params.id,
@@ -286,7 +286,7 @@ impl Runtime {
         });
     }
 
-    /// `navigator/diagnostics`: keep the latest set per uri and run the
+    /// `withnav/diagnostics`: keep the latest set per uri and run the
     /// diagnostics trigger.
     pub(crate) async fn on_diagnostics(self: &Arc<Self>, params: DiagnosticsParams) {
         let items: Vec<Diag> = params
@@ -305,7 +305,7 @@ impl Runtime {
         self.evaluate(params.uri, TriggerKind::Diagnostics).await;
     }
 
-    /// `navigator/intent`: the user's current goal, global to the session.
+    /// `withnav/intent`: the user's current goal, global to the session.
     pub(crate) async fn on_intent(&self, params: IntentParams) {
         let text = params.text.trim().to_string();
         *self.intent.lock().await = if text.is_empty() { None } else { Some(text) };

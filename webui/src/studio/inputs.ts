@@ -103,7 +103,11 @@ export function insertInputAlias(inputs: Record<string, string>, expression: str
 }
 
 export function defaultDecisionInputs(trigger: Catalogue["triggers"][number] | undefined): Record<string, string> {
-  const fields = trigger?.name === "tool.pre_call" ? trigger.payload_fields.filter((f) => f.name === "tool" || f.name === "args") : trigger?.payload_fields.slice(0, 1) ?? [];
+  const payload = trigger?.payload_fields ?? [];
+  const preferred = ["text", "diff", "args", "diagnostics"].find((name) => payload.some((f) => f.name === name));
+  const fields = preferred
+    ? payload.filter((f) => f.name === preferred || (preferred === "args" && f.name === "tool") || (preferred === "diff" && f.name === "diagnostics"))
+    : payload.filter((f) => f.name !== "uri" && !f.name.endsWith("_id") && (f.value_type === "string" || f.value_type === "object"));
   return Object.fromEntries(fields.map((f) => [f.name, `event.${f.name}`]));
 }
 

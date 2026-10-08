@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Importing OpenCode models no longer requires an OmniRoute provider.** Direct compatible
+  providers can be imported; OmniRoute's catalogue format is attached only when present.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

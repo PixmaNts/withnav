@@ -85,8 +85,8 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
         .accept_command(
             pending,
             Box::new(move || {
-                if committed.from_driver() {
-                    status.queue_driver();
+                if committed.from_captain() {
+                    status.queue_captain();
                 }
                 permit.send(committed);
             }),

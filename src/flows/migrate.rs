@@ -255,7 +255,7 @@ pub fn convert(
     Ok(converted)
 }
 
-/// Converts an existing legacy directory without overwriting driver-authored flows.
+/// Converts an existing legacy directory without overwriting captain-authored flows.
 pub fn migrate_directory(source: &Path, target: &Path) -> anyhow::Result<bool> {
     let path = source.join("pipeline.toml");
     let directory = match super::fs::Directory::open(source, false) {

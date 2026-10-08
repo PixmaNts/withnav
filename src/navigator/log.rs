@@ -9,7 +9,7 @@
 //! - `call`: one cost-relevant model call (layer, model, latency, tokens).
 //! - `reflex_shown`: the extension reporting when a suggestion was displayed.
 //! - `remark` / `silent` / `malformed` / `error` / `feedback`: the prototype
-//!   commenter path and the driver's verdicts.
+//!   commenter path and the Captain's verdicts.
 
 use std::collections::BTreeMap;
 use std::io::Write;

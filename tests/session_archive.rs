@@ -11,7 +11,7 @@ use withnav::server::routes::app as router;
 use withnav::session::store::HistoryStore;
 
 mod common;
-use common::server::{driver_command, request_json, TestServerConfig};
+use common::server::{captain_command, request_json, TestServerConfig};
 
 const REASON: &str = "Historic model identity has no proven resolution";
 
@@ -141,7 +141,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
     // defensive boundary against a marker present alongside a retained runtime.
     store.mark_archive(id, REASON).await.unwrap();
     assert!(matches!(
-        state.send(driver_command(id, "must not run".into())).await,
+        state.send(captain_command(id, "must not run".into())).await,
         Err(ServerError::SessionArchived { .. })
     ));
     assert!(matches!(

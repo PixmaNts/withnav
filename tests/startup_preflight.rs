@@ -1,4 +1,4 @@
-//! Process startup admission uses synthetic config and never the driver's credentials.
+//! Process startup admission uses synthetic config and never the Captain's credentials.
 
 use std::path::Path;
 use std::process::Stdio;

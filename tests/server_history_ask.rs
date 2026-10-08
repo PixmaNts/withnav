@@ -1,5 +1,5 @@
-//! A conversation resumed while the cognition was waiting on the driver:
-//! the driver's next message must answer the dangling `ask` as its TOOL
+//! A conversation resumed while the cognition was waiting on the Captain:
+//! the Captain's next message must answer the dangling `ask` as its TOOL
 //! result, not start a new user turn.
 
 use std::path::Path;
@@ -73,7 +73,7 @@ async fn collect_until(
 
 // Given a cognition that yielded on `ask` and a conversation resumed in a
 //      fresh AppState on the same database
-// When the driver sends a message
+// When the Captain sends a message
 // Then the model request carries it as the `tool` message answering the ask's
 //      id, and no user message other than the first
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

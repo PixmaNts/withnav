@@ -623,7 +623,7 @@ pub struct ContextCompacted {
     pub reason: Option<CompactionReason>,
 }
 
-/// A gated tool call waits for a driver's decision. The call has not run.
+/// A gated tool call waits for a Captain's decision. The call has not run.
 /// `arguments` is the call's JSON text cut to 4 KiB, for review only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequested {
@@ -644,7 +644,7 @@ pub struct PermissionRequested {
 pub enum PermissionResolution {
     AllowOnce,
     AllowFolder,
-    /// A driver refused; `message` is what the model reads back.
+    /// A captain refused; `message` is what the model reads back.
     Deny {
         message: String,
     },

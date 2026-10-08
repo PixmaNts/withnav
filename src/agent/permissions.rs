@@ -1,11 +1,11 @@
-//! The permission gate: which tool calls need a driver's approval, what an
+//! The permission gate: which tool calls need a Captain's approval, what an
 //! approval covers, and the grants an approval can leave behind.
 //!
 //! `write`, `edit`, `bash` and `fetch` are gated for a session that runs as an
 //! agent; outside-root or sensitive `read`, `grep` and `glob` calls are reviewed
 //! too. Ordinary inside-root reads, `skill` and `ask` are ungated. A gated call is
 //! described by a [`Scope`]: the folder it changes, or the origin it reaches.
-//! The driver answers with a [`PermissionDecision`]; an "allow folder" answer
+//! The captain answers with a [`PermissionDecision`]; an "allow folder" answer
 //! is remembered, in memory only, as a grant keyed by agent, capability and
 //! scope.
 
@@ -25,11 +25,11 @@ pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionOrigin {
-    Driver,
+    Captain,
     Bypass,
 }
 
-/// A driver's answer to a [`PermissionRequest`].
+/// A Captain's answer to a [`PermissionRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum PermissionDecision {
@@ -81,7 +81,7 @@ pub struct PermissionRequest {
     #[serde(default)]
     pub flow_regates: usize,
     #[serde(default)]
-    pub requires_driver: bool,
+    pub requires_captain: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_gate: Option<Box<Value>>,
     pub id: Ulid,
@@ -93,7 +93,7 @@ pub struct PermissionRequest {
     pub scope: Scope,
     /// The id of the agent that made the call.
     pub agent: String,
-    /// Why approval is needed, in a sentence a driver can show.
+    /// Why approval is needed, in a sentence a captain can show.
     pub reason: String,
 }
 
@@ -108,7 +108,7 @@ impl PermissionRequest {
         Self {
             origin: RequestOrigin::Ordinary,
             flow_regates: 0,
-            requires_driver: false,
+            requires_captain: false,
             permission_gate: None,
             id: Ulid::new(),
             tool_call_id: call.id.clone(),
@@ -466,7 +466,7 @@ pub enum Gate {
 ///   the canonical file itself. A missing path argument or a path
 ///   `validate_path` refuses is [`Gate::Rejected`]: the tool never runs.
 /// * `bash`: the working directory, which is the workspace. This is the scope
-///   the driver approves, NOT a confinement: the command can touch anything
+///   the Captain approves, NOT a confinement: the command can touch anything
 ///   the process can.
 /// * `fetch`: the URL's origin. An unusable URL needs no approval: the tool
 ///   will refuse it without side effect.

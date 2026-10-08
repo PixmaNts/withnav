@@ -133,7 +133,7 @@ impl Runtime {
         ctx.workspace = self.workspace.lock().await.clone();
         ctx.open_buffers = snapshot.open_buffers;
         // The conversation digest the fast layers judge against: the feed's
-        // bounded view of what the driver and the cognition last agreed.
+        // bounded view of what the Captain and the cognition last agreed.
         let conversation_text = self
             .conversation
             .as_ref()

@@ -35,8 +35,8 @@
 //!   Message content accepts one `{type:"skill",name}` alongside text. Admission loads it through
 //!   the skill tool's bounded loader before accepting the message; unknown, omitted, disabled or
 //!   unreadable skills return 400 without sending anything. The exact bounded tool-loader output
-//!   is JSON-escaped into a delimited block in the driver's own user message, never a synthetic tool call.
-//!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"driver"}`.
+//!   is JSON-escaped into a delimited block in the Captain's own user message, never a synthetic tool call.
+//!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"captain"}`.
 //!   If the consuming turn's pinned agent disables skills, the whole command is refused before
 //!   transcript mutation; `command.result` carries its command id as operation id and correlation.
 //! - `GET  /v1/workspaces`    -> `{workspaces:[{path,name,launched,session_count,updated_at?,branch?,dirty?}]}`:
@@ -465,7 +465,7 @@ pub struct SessionListEntry {
     pub title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    /// Number of driver messages (`message.received` events).
+    /// Number of captain messages (`message.received` events).
     pub message_count: u64,
     /// The primary agent the session runs as.
     pub agent: String,
@@ -964,7 +964,7 @@ pub enum DecisionKind {
     Deny,
 }
 
-/// The message a denial carries when the driver gave none.
+/// The message a denial carries when the Captain gave none.
 const DEFAULT_DENIAL: &str = "the user denied this tool call";
 
 async fn answer_permission(

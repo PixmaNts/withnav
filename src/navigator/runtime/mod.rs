@@ -68,7 +68,7 @@ pub(crate) struct Runtime {
     /// reflex-context seam (the intent summary is served instead).
     reflex_context: Arc<ReflexContext>,
     /// The focused document: the last uri that received `didOpen`,
-    /// `didChange` or `didSave`. A driver turn in the conversation is
+    /// `didChange` or `didSave`. A captain turn in the conversation is
     /// judged against it; None until the first of those arrives.
     focused: Mutex<Option<String>>,
 }
@@ -105,7 +105,7 @@ impl Runtime {
             focused: Mutex::new(None),
         });
         if let Some(turns) = turns {
-            tokio::spawn(listen_for_driver_turns(Arc::downgrade(&runtime), turns));
+            tokio::spawn(listen_for_captain_turns(Arc::downgrade(&runtime), turns));
         }
         runtime
     }
@@ -361,10 +361,10 @@ impl Runtime {
 }
 
 /// Evaluates the `conversation` event on the focused document each time a
-/// driver-caused turn ends. A turn caused by a navigator wake never gets
+/// captain-caused turn ends. A turn caused by a navigator wake never gets
 /// here as a trigger (no loop). Holds the server weakly: once the server is
 /// gone the next event ends the task.
-async fn listen_for_driver_turns(
+async fn listen_for_captain_turns(
     inner: std::sync::Weak<Runtime>,
     mut turns: tokio::sync::broadcast::Receiver<ConversationEvent>,
 ) {
@@ -377,7 +377,7 @@ async fn listen_for_driver_turns(
             Err(RecvError::Closed) => return,
         };
         let ConversationEvent::TurnEnded {
-            caused_by_driver: true,
+            caused_by_captain: true,
             ..
         } = event
         else {

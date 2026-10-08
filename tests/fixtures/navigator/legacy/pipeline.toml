@@ -24,17 +24,17 @@ instructions = "Does an observable decision in the code conflict with the stated
 
 [trigger.questions.contradicts_conversation]
 type = "noul"
-instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the driver stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
+instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the Captain stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
 
-# Whether the code compiles says nothing about whether the driver needs
+# Whether the code compiles says nothing about whether the Captain needs
 # help: the instinct judges "still typing" and "stuck" instead.
 [trigger.questions.unfinished]
 type = "noul"
-instructions = "Is this an edit the driver is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
+instructions = "Is this an edit the Captain is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
 
 [trigger.questions.stuck]
 type = "noul"
-instructions = "Has the driver tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
+instructions = "Has the Captain tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
 
 # A comment that calls on the navigator ("help", "aide", a question) gets an
 # answer whatever the scores say; the prefilter let it past the size limit.
@@ -43,7 +43,7 @@ when = "called_for_help"
 action = "remark"
 prompt = "prompts/help_remark.md"
 
-# A driver who looks stuck gets the chat, whether the code compiles or not.
+# A captain who looks stuck gets the chat, whether the code compiles or not.
 [[trigger.branch]]
 when = "stuck > 0.8"
 action = "wake_cognition"
@@ -61,7 +61,7 @@ prompt = "prompts/remark.md"
 when = "true"
 action = "silent"
 
-# A driver turn ended in the conversation: is the code in the focused file at
+# A captain turn ended in the conversation: is the code in the focused file at
 # odds with what was just agreed? min_changed_lines does not apply here.
 [[trigger]]
 on = ["conversation"]
@@ -70,7 +70,7 @@ prefilter = { cooldown_ms = 30000 }
 
 [trigger.questions.code_contradicts_conversation]
 type = "noul"
-instructions = "Does the code in this file already conflict with an explicit goal or agreement the driver stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
+instructions = "Does the code in this file already conflict with an explicit goal or agreement the Captain stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
 
 [[trigger.branch]]
 when = "has_conversation && code_contradicts_conversation > 0.8"

@@ -74,7 +74,7 @@ impl Tool for ReadTool {
                     {
                         return Err(ToolError::Denied {
                             code: "permission_required".into(),
-                            message: "sensitive file: read requires driver review".into(),
+                            message: "sensitive file: read requires captain review".into(),
                         });
                     }
                     target

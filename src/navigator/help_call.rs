@@ -1,4 +1,4 @@
-//! Spotting an explicit call for help: a comment the driver just wrote that
+//! Spotting an explicit call for help: a comment the Captain just wrote that
 //! addresses the navigator ("help", "aide", "navigator", or a question).
 //! One such line is a whole conversation opener, so the pipeline lets it
 //! past the small-change pre-filter.

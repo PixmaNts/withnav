@@ -43,17 +43,17 @@ async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_tur
 }
 
 #[tokio::test]
-async fn two_restarts_keep_fresh_driver_gate_when_only_admission_was_persisted() {
+async fn two_restarts_keep_fresh_captain_gate_when_only_admission_was_persisted() {
     pause_lifecycle(2).await;
 }
 
 #[tokio::test]
-async fn driver_message_supersedes_live_pause_but_navigator_does_not() {
+async fn captain_message_supersedes_live_pause_but_navigator_does_not() {
     pause_lifecycle(1).await;
 }
 
 #[tokio::test]
-async fn skill_driver_message_supersedes_watchdog_pause_but_refused_skill_does_not() {
+async fn skill_captain_message_supersedes_watchdog_pause_but_refused_skill_does_not() {
     pause_lifecycle(3).await;
 }
 
@@ -173,14 +173,14 @@ async fn pause_lifecycle(mode: u8) {
         );
         for source in ["navigator", "user:subagent", "parent:agent"] {
             service
-                .send(input_command(id, source, "not driver input"))
+                .send(input_command(id, source, "not captain input"))
                 .await
                 .unwrap();
         }
         service.history().flush().await.unwrap();
         assert!(
             provider.requests.try_recv().is_err(),
-            "recovery must await a real driver"
+            "recovery must await a real captain"
         );
         assert!(service
             .continue_child_with_token(id, id, Some(token))
@@ -219,7 +219,7 @@ async fn pause_lifecycle(mode: u8) {
         service.send(command).await.unwrap();
         for source in ["user:subagent", "parent:agent"] {
             service
-                .send(input_command(id, source, "not driver input"))
+                .send(input_command(id, source, "not captain input"))
                 .await
                 .unwrap();
         }
@@ -275,7 +275,7 @@ async fn pause_lifecycle(mode: u8) {
         assert!(saved.transcript.iter().any(|message| matches!(message,withnav::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
         assert!(events
             .iter()
-            .any(|event| event.payload["data"]["driver_committed"] == true));
+            .any(|event| event.payload["data"]["captain_committed"] == true));
         service.close_session(id).await.unwrap();
         service
             .create_or_resume_session(&ws, None, false, Some(id))
@@ -399,7 +399,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     command.command_id = ulid::Ulid::new();
     command.source_actor_id = "user:http".into();
     command.content = vec![withnav::bus::command::ContentBlock::Text {
-        text: "fresh driver window".into(),
+        text: "fresh captain window".into(),
     }];
     service.send(command).await.unwrap();
     let sub = service.subscribe(id, None).await.unwrap();

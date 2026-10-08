@@ -52,7 +52,7 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
         target_actor_id: ROOT_ACTOR_ID.into(),
         mode: crate::bus::command::DeliveryMode::NextTurn,
         content: vec![crate::bus::command::ContentBlock::Text {
-            text: "driver task".into(),
+            text: "captain task".into(),
         }],
         created_at: std::time::SystemTime::now(),
     };

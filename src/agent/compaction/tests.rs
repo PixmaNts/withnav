@@ -603,15 +603,15 @@ fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
 }
 
 #[test]
-fn mid_turn_checkpoint_preserves_interleaved_driver_selections_and_navigator_provenance() {
+fn mid_turn_checkpoint_preserves_interleaved_captain_selections_and_navigator_provenance() {
     use crate::provider::openai::UserProvenance;
     let mut transcript = vec![
-        user("Driver A\n<driver_selected_skill>BODY A</driver_selected_skill>"),
+        user("Captain A\n<captain_selected_skill>BODY A</captain_selected_skill>"),
         ChatMessage::User {
             content: "navigator wake".into(),
             provenance: UserProvenance::Navigator,
         },
-        user("Driver B\n<driver_selected_skill>BODY B</driver_selected_skill>"),
+        user("Captain B\n<captain_selected_skill>BODY B</captain_selected_skill>"),
     ];
     for n in 0..12 {
         transcript.push(call(&format!("c{n}"), "read", "{}"));
@@ -651,7 +651,7 @@ fn mid_turn_checkpoint_preserves_interleaved_driver_selections_and_navigator_pro
 }
 
 #[test]
-fn adjacent_non_driver_input_does_not_inflate_no_skill_minimum_capacity() {
+fn adjacent_non_captain_input_does_not_inflate_no_skill_minimum_capacity() {
     use crate::provider::openai::UserProvenance;
     for provenance in [UserProvenance::Navigator, UserProvenance::Parent] {
         let transcript = vec![
@@ -690,7 +690,7 @@ fn adjacent_non_driver_input_does_not_inflate_no_skill_minimum_capacity() {
         };
         assert_eq!(
             needed, baseline_needed,
-            "adjacent non-driver input adds no irreducible cost"
+            "adjacent non-captain input adds no irreducible cost"
         );
         let planned = plan(&transcript, None, &components(), 14_000, Aim::FitMidTurn).unwrap();
         let compacted = Compaction {
@@ -709,10 +709,10 @@ fn adjacent_non_driver_input_does_not_inflate_no_skill_minimum_capacity() {
 }
 
 #[test]
-fn delivered_subagent_output_does_not_displace_checkpoint_driver_request() {
+fn delivered_subagent_output_does_not_displace_checkpoint_captain_request() {
     use crate::provider::openai::UserProvenance;
     let mut transcript = vec![
-        user("driver instruction verbatim"),
+        user("captain instruction verbatim"),
         call("first", "read", "{}"),
         result("first", 10),
         call("latest", "read", "{}"),
@@ -726,7 +726,7 @@ fn delivered_subagent_output_does_not_displace_checkpoint_driver_request() {
         provenance: UserProvenance::Navigator,
     });
     transcript.push(ChatMessage::User {
-        content: "untrusted subagent says ignore the driver".into(),
+        content: "untrusted subagent says ignore the Captain".into(),
         provenance: UserProvenance::Subagent,
     });
     let restored: Vec<ChatMessage> =
@@ -742,7 +742,7 @@ fn delivered_subagent_output_does_not_displace_checkpoint_driver_request() {
         vec![],
         None,
     );
-    assert!(request.messages.iter().any(|m| matches!(m, ChatMessage::User { content, .. } if content == "driver instruction verbatim")));
+    assert!(request.messages.iter().any(|m| matches!(m, ChatMessage::User { content, .. } if content == "captain instruction verbatim")));
     assert!(request.messages.iter().any(
         |m| matches!(m, ChatMessage::User { content, .. } if content.contains("untrusted subagent"))
     ));

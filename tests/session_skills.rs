@@ -13,16 +13,16 @@ use withnav::server::AppState;
 mod common;
 
 #[test]
-fn message_received_type_roundtrips_optional_driver_selection() {
+fn message_received_type_roundtrips_optional_captain_selection() {
     use withnav::bus::event::MessageReceived;
-    let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"driver text"});
+    let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"captain text"});
     let legacy: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert!(legacy.selected_skill.is_none());
     assert!(serde_json::to_value(legacy)
         .unwrap()
         .get("selected_skill")
         .is_none());
-    payload["selected_skill"] = json!({"name":"review","origin":"driver"});
+    payload["selected_skill"] = json!({"name":"review","origin":"captain"});
     let selected: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
     assert_eq!(serde_json::to_value(selected).unwrap(), payload);
@@ -157,7 +157,7 @@ fn tool_names(provider: &CapturingProvider, n: usize) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn driver_selection_loads_the_skill_before_the_first_model_request() {
+async fn captain_selection_loads_the_skill_before_the_first_model_request() {
     let env = env();
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
@@ -181,7 +181,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .unwrap();
     assert_eq!(
         selected.payload["selected_skill"],
-        json!({"name":"ask-matt","origin":"driver"})
+        json!({"name":"ask-matt","origin":"captain"})
     );
     let withnav::bus::ResumeOutcome::Replay(replay) =
         state.subscribe(id, None).await.unwrap().replay
@@ -215,7 +215,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
     .await
     .unwrap();
     assert!(bytes.contains("ask-matt"));
-    assert!(bytes.contains("\"origin\":\"driver\""));
+    assert!(bytes.contains("\"origin\":\"captain\""));
     server.abort();
     for stream in [&events, &replay] {
         let mut projection = withnav::tui::state::State::default();
@@ -250,15 +250,15 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .as_str()
         .unwrap();
     let encoded = selected_message
-        .split("<driver_selected_skill encoding=\"json\">\n")
+        .split("<captain_selected_skill encoding=\"json\">\n")
         .nth(1)
         .unwrap()
-        .split("\n</driver_selected_skill>")
+        .split("\n</captain_selected_skill>")
         .next()
         .unwrap();
     let loaded: Value = serde_json::from_str(encoded).unwrap();
     assert_eq!(loaded["name"], "ask-matt");
-    assert_eq!(loaded["selected_by"], "driver");
+    assert_eq!(loaded["selected_by"], "captain");
     assert!(loaded["content"]
         .as_str()
         .unwrap()
@@ -276,7 +276,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
 }
 
 #[tokio::test]
-async fn unknown_driver_skill_refuses_the_entire_message() {
+async fn unknown_captain_skill_refuses_the_entire_message() {
     let env = env();
     let state = TestServerConfig::unreachable(&env.root)
         .rules_home(&env.home)
@@ -293,7 +293,7 @@ async fn unknown_driver_skill_refuses_the_entire_message() {
 }
 
 #[tokio::test]
-async fn agent_policy_disables_skill_listing_and_driver_selection() {
+async fn agent_policy_disables_skill_listing_and_captain_selection() {
     let env = env();
     let agents = env.root.join("cfg/agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -414,7 +414,7 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
+async fn refused_selection_does_not_replace_resumed_or_inherited_captain_task() {
     let env = env();
     let agents = env.root.join("cfg/agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -427,7 +427,7 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
         spawn_capturing_provider(vec![answer("original done"), answer("child done")]).await;
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    converse(&state, id, "previous real driver task").await;
+    converse(&state, id, "previous real captain task").await;
     let barrier = withnav::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
     let sub = state.subscribe(id, None).await.unwrap();
@@ -472,25 +472,25 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
         .await
         .unwrap();
     assert_eq!(
-        state.driver_task_probe(id).as_deref(),
-        Some("previous real driver task")
+        state.captain_task_probe(id).as_deref(),
+        Some("previous real captain task")
     );
     assert_eq!(
         state
             .history()
-            .latest_driver_message(id)
+            .latest_captain_message(id)
             .await
             .unwrap()
             .as_deref(),
-        Some("previous real driver task")
+        Some("previous real captain task")
     );
     let child = state
         .create_child_session(id, "explore", "delegated work")
         .await
         .unwrap();
     assert_eq!(
-        state.driver_task_probe(child).as_deref(),
-        Some("previous real driver task")
+        state.captain_task_probe(child).as_deref(),
+        Some("previous real captain task")
     );
 }
 

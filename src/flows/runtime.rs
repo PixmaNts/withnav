@@ -356,7 +356,7 @@ mod tests {
     async fn deny_wins_over_ask_and_outage_is_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
-        for (name, action) in [("ask", "ask_driver"), ("deny", "deny")] {
+        for (name, action) in [("ask", "ask_captain"), ("deny", "deny")] {
             store
                 .save(
                     name,
@@ -407,7 +407,7 @@ mod tests {
                 runtime
                     .tool_pre_call(ctx.clone(), CancellationToken::new())
                     .await,
-                VerdictLike::AskDriver { .. }
+                VerdictLike::AskCaptain { .. }
             ));
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
@@ -419,7 +419,7 @@ pub enum VerdictLike {
     Deny {
         note: String,
     },
-    AskDriver {
+    AskCaptain {
         note: String,
         flow: String,
         run_id: String,
@@ -803,15 +803,15 @@ impl FlowRuntime {
                     .to_owned();
                 match action.action.as_str() {
                     "deny" => VerdictLike::Deny { note },
-                    "ask_driver" => {
+                    "ask_captain" => {
                         let origin = outcomes.iter().find(|o| {
                             o.trace
                                 .actions
                                 .iter()
                                 .chain(&o.trace.fallback_actions)
-                                .any(|a| a.action == "ask_driver")
+                                .any(|a| a.action == "ask_captain")
                         });
-                        VerdictLike::AskDriver {
+                        VerdictLike::AskCaptain {
                             note,
                             flow: origin
                                 .map(|o| o.trace.flow_name.clone())
@@ -965,8 +965,8 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
             match verdict {
                 VerdictLike::NoObjection => FlowVerdict::NoObjection,
                 VerdictLike::Deny { note } => FlowVerdict::Deny { note },
-                VerdictLike::AskDriver { note, flow, run_id } => {
-                    FlowVerdict::AskDriver { note, flow, run_id }
+                VerdictLike::AskCaptain { note, flow, run_id } => {
+                    FlowVerdict::AskCaptain { note, flow, run_id }
                 }
             }
         })

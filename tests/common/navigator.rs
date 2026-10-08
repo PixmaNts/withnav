@@ -306,7 +306,7 @@ impl DecisionModel for ScriptedDecision {
                 .iter()
                 .map(|(name, question)| {
                     let answer = match name.as_str() {
-                        // The edit is finished and the driver not stuck.
+                        // The edit is finished and the Captain not stuck.
                         "unfinished" | "stuck" => Answer::Noul { noul: 0.1 },
                         _ => routed_answer(question),
                     };
@@ -894,8 +894,8 @@ pub fn with_min_changed_lines(
     deps.with_dirs(Some(workspace.to_path_buf()), None)
 }
 
-/// A driver message observed by a conversation feed.
-pub fn driver_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventEnvelope {
+/// A captain message observed by a conversation feed.
+pub fn captain_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventEnvelope {
     EventEnvelope::new(
         session_id,
         seq,
@@ -910,7 +910,7 @@ pub fn driver_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventE
     )
 }
 
-/// A feed with one active session (one driver message observed) whose poster
+/// A feed with one active session (one captain message observed) whose poster
 /// records every text and answers `post_result`.
 pub async fn feed_with_session(
     post_result: Result<(), String>,
@@ -929,8 +929,12 @@ pub async fn feed_with_session(
     });
     let session_id = ulid::Ulid::new();
     feed.register_session(session_id, post);
-    feed.observe(&driver_message(session_id, 1, "add an auth remove command"))
-        .await;
+    feed.observe(&captain_message(
+        session_id,
+        1,
+        "add an auth remove command",
+    ))
+    .await;
     (feed, posted, session_id)
 }
 

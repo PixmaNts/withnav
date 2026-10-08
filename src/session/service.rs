@@ -773,11 +773,11 @@ impl Service {
     /// Debug-build observation seam for resume and child inheritance tests.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
-    pub fn driver_task_probe(&self, id: SessionId) -> Option<String> {
+    pub fn captain_task_probe(&self, id: SessionId) -> Option<String> {
         let handle = self.handle(id)?;
         let task = handle
             .status
-            .driver_task_probe
+            .captain_task_probe
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
@@ -937,7 +937,7 @@ impl Service {
                         .as_ref()
                         .is_some_and(|execution| execution.automatic_permission_review),
                     self.history
-                        .latest_driver_message(parent)
+                        .latest_captain_message(parent)
                         .await
                         .map_err(ServerError::History)?,
                     inherited
@@ -1395,7 +1395,7 @@ impl Service {
             ));
         }
         if let Some(name) = names.first() {
-            if !command.from_driver()
+            if !command.from_captain()
                 || handle.status.selection.current().tools.get("skill") == Some(&false)
             {
                 return Err(ServerError::MalformedBody(
@@ -1500,7 +1500,7 @@ impl Service {
         }
         if handle
             .status
-            .awaiting_fresh_driver
+            .awaiting_fresh_captain
             .load(std::sync::atomic::Ordering::Acquire)
         {
             return Err(ServerError::ChildNotParked);
@@ -1636,7 +1636,7 @@ impl Service {
         if handle
             .permissions
             .try_send(crate::bus::inbox::PermissionAnswer {
-                origin: crate::agent::permissions::PermissionOrigin::Driver,
+                origin: crate::agent::permissions::PermissionOrigin::Captain,
                 request_id,
                 decision,
                 reply,
@@ -1992,7 +1992,7 @@ impl Service {
                         .is_none_or(|now| now.lifecycle != Lifecycle::Active) => {}
                 Err(error) => {
                     // A child that cannot follow would run under a policy the
-                    // driver did not choose: cancel its runtime immediately.
+                    // captain did not choose: cancel its runtime immediately.
                     child.session_cancel.cancel();
                     failures.push((child_id, error));
                 }
@@ -2574,11 +2574,11 @@ impl Service {
                 .reasoning_floor
                 .map_or(0, |floor| usize::try_from(floor).unwrap_or(usize::MAX))
                 .min(actor.transcript.len());
-            // The task the role guard judges against: the driver's latest
+            // The task the role guard judges against: the Captain's latest
             // stored words, not a navigator wake.
-            actor.driver_task = self
+            actor.captain_task = self
                 .history
-                .latest_driver_message(session_id)
+                .latest_captain_message(session_id)
                 .await
                 .map_err(ServerError::History)?;
         }
@@ -2606,7 +2606,7 @@ impl Service {
         actor.protected_config_unresolved = actor.protected_config_root.is_none();
         if actor.protected_config_unresolved {
             crate::agent::scratch::warn_once(
-                "config root unresolved; native writes require driver approval",
+                "config root unresolved; native writes require captain approval",
             );
         }
         for path in &execution.scratch_choice {
@@ -2629,9 +2629,9 @@ impl Service {
                 Err(error) => crate::agent::scratch::warn_once(&error),
             }
         }
-        if let Some((_, _, _, driver_task, _)) = &child_policy {
-            actor.driver_request_inherited = true;
-            actor.driver_task = driver_task.clone();
+        if let Some((_, _, _, captain_task, _)) = &child_policy {
+            actor.captain_request_inherited = true;
+            actor.captain_task = captain_task.clone();
         }
         if let Ok((models, _)) = crate::provider::config::load_models(
             self.config.models_path.as_deref(),
@@ -2820,7 +2820,7 @@ impl Service {
             None
         };
 
-        let mut awaiting_fresh_driver = false;
+        let mut awaiting_fresh_captain = false;
         if is_resume && child_parent.is_none() {
             let events = self
                 .history
@@ -2840,20 +2840,21 @@ impl Service {
                     && event.payload["data"]["resolution"].is_string()
                 {
                     pending = None;
-                    awaiting_fresh_driver = matches!(
+                    awaiting_fresh_captain = matches!(
                         event.payload["data"]["resolution"].as_str(),
                         Some("expired" | "superseded")
                     );
                 }
                 if event.kind == "command.result"
                     && event.payload["name"] == "watchdog"
-                    && event.payload["data"]["driver_committed"] == true
+                    && (event.payload["data"]["captain_committed"] == true
+                        || event.payload["data"]["driver_committed"] == true)
                 {
-                    awaiting_fresh_driver = false;
+                    awaiting_fresh_captain = false;
                 }
             }
             if let Some(token) = pending {
-                awaiting_fresh_driver = true;
+                awaiting_fresh_captain = true;
                 runtime::publish_pause_resolution(&sequencer, token, "expired");
             }
         }
@@ -2943,14 +2944,14 @@ impl Service {
         }
         if child_parent.is_none() {
             let history = self.history.clone();
-            let driver_sequencer = sequencer.clone();
-            status.install_driver_commit(Arc::new(move |transcript| {
-                let (history, sequencer) = (history.clone(), driver_sequencer.clone());
+            let captain_sequencer = sequencer.clone();
+            status.install_captain_commit(Arc::new(move |transcript| {
+                let (history, sequencer) = (history.clone(), captain_sequencer.clone());
                 Box::pin(async move {
                     history.flush().await?;
                     let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
                         "name":"watchdog","ok":true,"operation_id":Ulid::new(),
-                        "data":{"driver_committed":true,"message":"Fresh driver instruction checkpointed"}
+                        "data":{"captain_committed":true,"message":"Fresh captain instruction checkpointed"}
                     }));
                     sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
                         history.consume_completions_committed(session_id,vec![],transcript,Some(envelope)).await
@@ -2959,8 +2960,8 @@ impl Service {
             }));
         }
         status
-            .awaiting_fresh_driver
-            .store(awaiting_fresh_driver, std::sync::atomic::Ordering::Release);
+            .awaiting_fresh_captain
+            .store(awaiting_fresh_captain, std::sync::atomic::Ordering::Release);
         status.watchdog_fallback_notice.store(
             root_watchdog
                 .as_ref()

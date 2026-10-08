@@ -200,7 +200,7 @@ pub fn effective_history(
     let mut out = Vec::with_capacity(transcript.len().saturating_sub(first) + 2);
     out.extend(summary_messages(&compaction.checkpoint.summary));
     out.extend(
-        protected_driver_messages(transcript)
+        protected_captain_messages(transcript)
             .into_iter()
             .filter(|&i| i < first)
             .map(|i| transcript[i].clone()),
@@ -253,14 +253,14 @@ fn drop_empty_assistants(mut history: Vec<ChatMessage>) -> Vec<ChatMessage> {
     history
 }
 
-/// The consecutive user-message run containing the latest driver input, including
-/// interleaved navigator/parent input with its original provenance. `None` without driver input.
+/// The consecutive user-message run containing the latest captain input, including
+/// interleaved navigator/parent input with its original provenance. `None` without captain input.
 pub fn latest_user_batch(transcript: &[ChatMessage]) -> Option<std::ops::Range<usize>> {
-    let driver = transcript.iter().rposition(|m| m.is_driver_message())?;
-    let end = transcript[driver..]
+    let captain = transcript.iter().rposition(|m| m.is_captain_message())?;
+    let end = transcript[captain..]
         .iter()
         .position(|m| !matches!(m, ChatMessage::User { .. }))
-        .map_or(transcript.len(), |offset| driver + offset);
+        .map_or(transcript.len(), |offset| captain + offset);
     let start = transcript[..end]
         .iter()
         .rposition(|m| !matches!(m, ChatMessage::User { .. }))
@@ -268,12 +268,12 @@ pub fn latest_user_batch(transcript: &[ChatMessage]) -> Option<std::ops::Range<u
     Some(start..end)
 }
 
-/// Discovery includes interleaved input; only actual driver instructions are irreducible.
-fn protected_driver_messages(transcript: &[ChatMessage]) -> Vec<usize> {
+/// Discovery includes interleaved input; only actual captain instructions are irreducible.
+fn protected_captain_messages(transcript: &[ChatMessage]) -> Vec<usize> {
     latest_user_batch(transcript)
         .into_iter()
         .flatten()
-        .filter(|&i| transcript[i].is_driver_message())
+        .filter(|&i| transcript[i].is_captain_message())
         .collect()
 }
 
@@ -330,7 +330,7 @@ pub fn validate(
     // checkpoint makes must carry it verbatim.
     let prompt = effective_history(transcript, Some(compaction));
     let mut remaining = prompt.iter();
-    for index in protected_driver_messages(transcript) {
+    for index in protected_captain_messages(transcript) {
         if !remaining.any(|message| same_user_text(message, &transcript[index])) {
             return invalid(
                 "the checkpoint would drop the latest user request from the prompt".into(),
@@ -525,7 +525,7 @@ pub fn plan(
 
     let fixed = components.fixed_tokens() + summary_reserve_tokens();
     // The latest user batch is carried verbatim when the boundary is past it.
-    let protected = protected_driver_messages(transcript);
+    let protected = protected_captain_messages(transcript);
     let suffix = |cost: &[u64], from: usize| {
         let carried: u64 = protected
             .iter()

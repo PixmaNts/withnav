@@ -650,7 +650,7 @@ impl HistoryStore {
         .await
     }
 
-    /// Canonical paths hidden by the driver, shared by every server using this history.
+    /// Canonical paths hidden by the Captain, shared by every server using this history.
     pub async fn hidden_workspaces(&self) -> Result<std::collections::HashSet<PathBuf>, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -1216,7 +1216,7 @@ impl HistoryStore {
         .await
     }
 
-    /// Sets the session title (first driver message; only when unset).
+    /// Sets the session title (first captain message; only when unset).
     /// Fire-and-forget, like [`HistoryStore::append_event`].
     pub fn set_title(&self, id: Ulid, title: String) {
         self.enqueue(Write::SetTitle { id, title });
@@ -1259,7 +1259,7 @@ fn split_variant(
     Ok((Some(name.clone()), Some(raw)))
 }
 
-/// One row of the list projection: the session metadata plus its driver
+/// One row of the list projection: the session metadata plus its captain
 /// message count (`message.received` events).
 #[derive(Debug, Clone)]
 pub struct ListedSession {
@@ -2054,7 +2054,7 @@ impl Emitter for PersistingEmitter {
         let kind = envelope.kind.as_str();
         // An unknown name is stored: only a catalog kind marked live-only is not.
         if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
-            // The first driver message becomes the title (the store guards:
+            // The first captain message becomes the title (the store guards:
             // only when the title is still NULL).
             if kind == "message.received" && envelope.payload["source"] != "subagent" {
                 if let Some(content) = envelope.payload["content"].as_str() {
@@ -2092,7 +2092,7 @@ impl Emitter for PersistingEmitter {
     }
 }
 
-/// Derives the session title from the first driver message: any trailing
+/// Derives the session title from the first captain message: any trailing
 /// `<editor-context>…</editor-context>` block removed, whitespace collapsed,
 /// cut at 60 characters.
 pub fn title_from_message(content: &str) -> String {
@@ -2102,7 +2102,7 @@ pub fn title_from_message(content: &str) -> String {
 }
 
 /// Removes a TRAILING `<editor-context>…</editor-context>` block (the editor
-/// appends it after the driver's text). Non-trailing blocks are kept.
+/// appends it after the Captain's text). Non-trailing blocks are kept.
 fn strip_editor_context(content: &str) -> String {
     const OPEN: &str = "<editor-context>";
     const CLOSE: &str = "</editor-context>";
@@ -3140,7 +3140,7 @@ mod tests {
 
     // ---- title derivation ----
 
-    // Given a driver message with a trailing editor-context block
+    // Given a captain message with a trailing editor-context block
     // When the title is derived
     // Then the block is gone, whitespace collapses, cut at 60 chars
     #[test]

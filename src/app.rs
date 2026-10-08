@@ -391,7 +391,7 @@ async fn post_prompt(
 /// A `permission.requested` ends the run with [`EXIT_PERMISSION_REQUIRED`] and
 /// a `permission_required: <tool> <scope>: <reason>` line on stderr. Nothing
 /// is ever approved here: with `--yes` the session's bypass already answered
-/// the ordinary requests, so one that arrives is one the driver must decide.
+/// the ordinary requests, so one that arrives is one the Captain must decide.
 async fn render_until_terminal(
     sub: &mut crate::session::Subscription,
     renderer: &mut Renderer,

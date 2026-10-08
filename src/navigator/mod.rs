@@ -1,4 +1,4 @@
-//! The navigator: a colleague over the driver's shoulder with four
+//! The navigator: a colleague over the Captain's shoulder with four
 //! cooperating layers — reflex (fill-in-the-middle suggestions), instinct
 //! (typed decision questions), metacognition (fast remarks) and cognition
 //! (deliberate chat). It never edits code.

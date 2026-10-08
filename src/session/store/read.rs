@@ -27,7 +27,7 @@ impl HistoryStore {
             rows.map(|row| serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())).collect()
         })).await
     }
-    /// Sessions of one workspace with their driver message counts, newest
+    /// Sessions of one workspace with their captain message counts, newest
     /// `updated_at` first.
     pub async fn list(&self, workspace: &str) -> Result<Vec<ListedSession>, String> {
         let path = Arc::clone(&self.path);
@@ -160,13 +160,13 @@ impl HistoryStore {
         .await
     }
 
-    /// The text of the driver's latest message in one session: the newest
+    /// The text of the Captain's latest message in one session: the newest
     /// stored `message.received` whose source is a human ingress identity
     /// (`user:http`, `user:cli`), which also covers an answer to an `ask`. A
     /// navigator wake, delegated text, subagent result or command with a correlated
     /// whole-message skill refusal is not it. `None`
-    /// when the driver never spoke.
-    pub async fn latest_driver_message(&self, id: Ulid) -> Result<Option<String>, String> {
+    /// when the Captain never spoke.
+    pub async fn latest_captain_message(&self, id: Ulid) -> Result<Option<String>, String> {
         let path = Arc::clone(&self.path);
         blocking(move || {
             with_read_tx(&path, |tx| {
@@ -201,7 +201,7 @@ impl HistoryStore {
                     if envelope.payload["command_id"].as_str().and_then(|id| id.parse::<Ulid>().ok()).is_some_and(|id| rejected.contains(&id)) {
                         continue;
                     }
-                    if source.is_some_and(crate::bus::command::is_driver_source) {
+                    if source.is_some_and(crate::bus::command::is_captain_source) {
                         return Ok(envelope
                             .payload
                             .get("content")

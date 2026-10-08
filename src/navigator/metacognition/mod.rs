@@ -111,7 +111,7 @@ or:
 /// The system prompt framing the navigator. Public for tests.
 pub const NAVIGATOR_SYSTEM_PROMPT: &str = concat!(
     "\
-You are a senior pair-programming navigator watching over the driver's shoulder.
+You are a senior pair-programming navigator watching over the Captain's shoulder.
 
 Your job is NOT to write code. You never rewrite, never produce code blocks, \
 never refactor. You observe the current diff and, only when something is \
@@ -119,9 +119,9 @@ genuinely worth interrupting for, you say one or two short sentences anchored \
 to a specific line.
 
 Silence is the expected default. Most pauses are fine: the code is reasonable, \
-or the driver is mid-thought. Speak up only for a real risk: a bug being \
+or the Captain is mid-thought. Speak up only for a real risk: a bug being \
 introduced, a missing error path, an edge case the diff ignores, a mismatch \
-with the driver's stated intent, or a much simpler alternative to what is \
+with the Captain's stated intent, or a much simpler alternative to what is \
 being written.
 
 ",
@@ -158,11 +158,11 @@ pub struct LlmCommenter {
 /// past it the metacognition stays silent.
 const REMARK_BUDGET: Duration = Duration::from_secs(20);
 /// Tool rounds of an ordinary remark: one optional round of reading, then the
-/// answer. Each round is a model round trip the driver waits for, and an
+/// answer. Each round is a model round trip the Captain waits for, and an
 /// ordinary remark rests on the diff it was given. The call after the last
 /// round carries no tools, forcing the JSON answer.
 pub const REMARK_TOOL_ROUNDS: usize = 1;
-/// Tool rounds of a remark answering a call for help: the driver asked, so
+/// Tool rounds of a remark answering a call for help: the Captain asked, so
 /// the model may read more before it speaks.
 pub const HELP_TOOL_ROUNDS: usize = 3;
 /// Cap on the tokens of each metacognition round: a remark is a sentence or
@@ -231,7 +231,7 @@ impl LlmCommenter {
             ctx.uri, ctx.language_id
         ));
         if let Some(intent) = &ctx.intent {
-            m.push_str(&format!("Driver's stated intent: {intent}\n"));
+            m.push_str(&format!("Captain's stated intent: {intent}\n"));
         }
         if !ctx.diagnostics.is_empty() {
             m.push_str("Current diagnostics:\n");

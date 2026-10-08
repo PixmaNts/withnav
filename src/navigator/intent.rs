@@ -1,5 +1,5 @@
 //! Read/write access to `.withnav/intent.md`: the workspace's intent
-//! record (sections Intent / Plan / Decisions / Active spec). The driver
+//! record (sections Intent / Plan / Decisions / Active spec). The Captain
 //! may edit it by hand; the cognition updates it through the `intent`
 //! tool when the conversation settles an intent, a plan or a decision.
 //! When the sections are missing the file is treated as opaque text:
@@ -19,7 +19,7 @@ use crate::tools::{Tool, ToolContext, ToolResult};
 /// The parsed intent record.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct IntentRecord {
-    /// `## Intent`: what the driver is trying to do.
+    /// `## Intent`: what the Captain is trying to do.
     pub intent: Option<String>,
     /// `## Plan`: the current plan.
     pub plan: Option<String>,
@@ -117,7 +117,7 @@ pub fn write_intent_sections(
     let path = dir.join("intent.md");
     // Only a missing record starts empty. Any other failure (permissions,
     // invalid UTF-8, a directory in the way) leaves the file as it is:
-    // rebuilding from nothing would erase what the driver wrote.
+    // rebuilding from nothing would erase what the Captain wrote.
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -125,7 +125,7 @@ pub fn write_intent_sections(
     };
     let updated = apply_sections(&current, sections);
     // Atomic: a temp file in the SAME directory, fsynced, then renamed over
-    // the target, so the driver never sees a half-written record (the file
+    // the target, so the Captain never sees a half-written record (the file
     // is version-controlled and may be open in the editor).
     let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
     tmp.write_all(updated.as_bytes())?;
@@ -227,7 +227,7 @@ impl Tool for IntentTool {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "intent": {"type": "string", "description": "What the driver is trying to do"},
+                    "intent": {"type": "string", "description": "What the Captain is trying to do"},
                     "plan": {"type": "string", "description": "The current plan"},
                     "decisions": {"type": "string", "description": "Settled decisions"},
                     "active_spec": {"type": "string", "description": "Link to the spec being worked on"}

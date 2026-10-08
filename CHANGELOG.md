@@ -49,6 +49,9 @@ requests land in `develop`.
   workspace list opens from the ☰ button. Settings and the Studio work the same way. Esc closes
   a side panel and puts focus back on its button. The desktop layout does not change.
 
+- **Subagents no longer pause merely because instinct is unconfigured.** A watchdog without a
+  judge skips advisory checks; configured judges still escalate repeated failures, and the step
+  cap remains enforced.
 - **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
   `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
   OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its

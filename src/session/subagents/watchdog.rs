@@ -201,14 +201,12 @@ impl Watchdog {
         evidence: &Evidence,
         cancel: &CancellationToken,
     ) -> Option<Checked> {
+        let judge = judge?;
         let answer = tokio::select! {
             biased;
             _ = cancel.cancelled() => return None,
             answer = tokio::time::timeout(SYSTEMONE_DEADLINE + Duration::from_millis(500), async {
-                match judge {
-                    Some(judge) => judge.judge(evidence, cancel).await,
-                    None => Err(JudgeError::Unavailable),
-                }
+                judge.judge(evidence, cancel).await
             }) => answer.unwrap_or(Err(JudgeError::Unavailable)),
         };
         match answer {
@@ -315,14 +313,26 @@ mod tests {
     async fn two_unreachable_answers_become_doubt_and_cancellation_is_not_a_failure() {
         let mut watchdog = Watchdog::new(Arc::new(RealClock), Duration::from_secs(300));
         let cancel = CancellationToken::new();
-        assert_eq!(watchdog.check(None, &evidence(), &cancel).await, None);
+        for _ in 0..3 {
+            assert_eq!(watchdog.check(None, &evidence(), &cancel).await, None);
+        }
+        assert_eq!(watchdog.failures, 0);
+        let unavailable = FakeJudge(Err(JudgeError::Unavailable));
+        assert_eq!(
+            watchdog
+                .check(Some(&unavailable), &evidence(), &cancel)
+                .await,
+            None
+        );
         let cancelled = FakeJudge(Err(JudgeError::Cancelled));
         assert_eq!(
             watchdog.check(Some(&cancelled), &evidence(), &cancel).await,
             None
         );
         assert_eq!(
-            watchdog.check(None, &evidence(), &cancel).await,
+            watchdog
+                .check(Some(&unavailable), &evidence(), &cancel)
+                .await,
             Some(Checked {
                 verdict: Verdict::Doubt,
                 reason: Some(JudgeError::Unavailable)

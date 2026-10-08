@@ -71,6 +71,7 @@ pub struct TestServerConfig {
     history_db: Option<PathBuf>,
     rules_roots: RulesRoots,
     chat_tools: Option<u64>,
+    max_output: Option<u64>,
     without_window: bool,
     extra_aliases: Vec<(String, String)>,
     variants: Option<Value>,
@@ -102,6 +103,7 @@ impl TestServerConfig {
             history_db: None,
             rules_roots: RulesRoots::default(),
             chat_tools: None,
+            max_output: None,
             without_window: false,
             extra_aliases: Vec::new(),
             variants: None,
@@ -115,6 +117,12 @@ impl TestServerConfig {
     /// `context_window` tokens, so `GET /v1/models` lists it.
     pub fn chat_tools(mut self, context_window: u64) -> Self {
         self.chat_tools = Some(context_window);
+        self
+    }
+
+    /// Sets the alias's `max_output_tokens`.
+    pub fn max_output(mut self, tokens: u64) -> Self {
+        self.max_output = Some(tokens);
         self
     }
 
@@ -202,6 +210,9 @@ impl TestServerConfig {
         if let Some(window) = self.chat_tools {
             alias_entry["supports_tools"] = json!(true);
             alias_entry["context_window"] = json!(window);
+        }
+        if let Some(tokens) = self.max_output {
+            alias_entry["max_output_tokens"] = json!(tokens);
         }
         if self.without_window {
             alias_entry

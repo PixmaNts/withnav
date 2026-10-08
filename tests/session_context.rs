@@ -319,6 +319,7 @@ async fn an_impossible_budget_refuses_the_session() {
     let (tmp, ws) = tmp_ws();
     let state = TestServerConfig::unreachable(tmp.path())
         .chat_tools(4096)
+        .max_output(4096)
         .state();
     let err = state
         .create_session(&ws, None, false)

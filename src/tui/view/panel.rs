@@ -80,7 +80,10 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         title("Agents", theme),
         Line::from(vec![
             Span::styled(" ● ", style),
-            Span::styled(agent.to_string(), style.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                super::sidebar::agent_label(agent),
+                style.add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  in use", theme.muted()),
         ]),
     ];
@@ -121,7 +124,13 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let running = child.status == crate::tui::state::ChildStatus::Running;
         lines.push(Line::from(vec![
             Span::styled(if running { " ◐ " } else { " ○ " }, theme.subagent()),
-            Span::styled(fit(&child.name, width.saturating_sub(14)), theme.subagent()),
+            Span::styled(
+                fit(
+                    &super::sidebar::agent_label(&child.name),
+                    width.saturating_sub(14),
+                ),
+                super::sidebar::agent_style(&child.name, theme),
+            ),
             Span::styled(format!("  {}", child.status.label()), theme.muted()),
         ]));
     }
@@ -270,9 +279,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     lines.push(title("Lower layers · config", theme));
     for layer in &state.layers {
         let kind = match layer.layer.as_str() {
-            "reflex" => "FIM · editor only",
-            "instinct" => "System One",
-            _ => "Chat",
+            "reflex" => "Completion · FIM",
+            "instinct" => "Triage",
+            "metacognition" => "Beacon",
+            _ => "Nav and the crew",
         };
         lines.push(Line::styled(
             format!(" {} · {kind}", layer.layer),

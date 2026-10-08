@@ -1,0 +1,21 @@
+---
+source: tests/tui_layers_models.rs
+assertion_line: 948
+expression: "narrow.join(\"\\n\")"
+---
+ ◆ withnav                    ◎ build  — · assigned · — / — 
+────────────────────────────────────────────────────────────
+                                                            
+  ┌─────────────────── Choose a model ───────────────────┐  
+  │ ❯ filter models…                                     │  
+  │ ▾ omniroute                                          │  
+  │   ▾ agy                                              │  
+  │     claude-opus-4-5-thinking                    1M   │  
+  │     gemini-3-pro                              200k   │  
+  │ omniroute/agy/claude-opus-4-5-thinking · variants: … │  
+──│ ↑↓ move  ←→ fold  alt+a all  ctrl+f fav  esc close   │──
+ r└──────────────────────────────────────────────────────┘k 
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

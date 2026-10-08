@@ -142,7 +142,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
             .trim_end()
             .to_string()
     };
-    insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌explore · —");
+    insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌◉ vigie · —");
     insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
     assert!(!(0..16).any(|y| line(y).contains("Conversations")));
@@ -182,7 +182,7 @@ fn delivered_subagent_output_is_not_labelled_as_the_driver() {
         .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("SUBAGENT OUTPUT · untrusted data"));
+    assert!(text.contains("◎ subagent output · untrusted data"));
     assert!(text.contains("The parser test passed."));
     assert!(!text.contains("YOU"));
 }
@@ -563,7 +563,7 @@ fn done_tools_and_reasoning() {
         .buffer()
         .content()
         .iter()
-        .any(|cell| cell.bg == Theme::ayu_dark().selection_bg()));
+        .any(|cell| cell.bg == Theme::default().selection_bg()));
 }
 #[test]
 fn errors_yield_and_connection() {
@@ -598,7 +598,7 @@ fn errors_yield_and_connection() {
         .buffer()
         .content()
         .iter()
-        .any(|cell| cell.fg == Theme::ayu_dark().red));
+        .any(|cell| cell.fg == Theme::default().red));
     s.connection = ConnectionStatus::Reconnecting;
     s.activity = Activity::Stopped;
     s.delivery_uncertain = true;
@@ -893,10 +893,12 @@ fn buffer_text(s: &State) -> String {
 #[test]
 fn message_labels_follow_the_source_actor_id() {
     for (source, label) in [
-        ("user:http", "YOU"),
-        ("user", "YOU"),
-        ("navigator", "NAVIGATOR"),
-        ("navigator:main", "NAVIGATOR"),
+        ("user:http", "▸ Captain"),
+        ("user", "▸ Captain"),
+        ("driver", "▸ Captain"),
+        ("captain", "▸ Captain"),
+        ("navigator", "Beacon · Remark"),
+        ("navigator:main", "Beacon · Remark"),
         ("cron:nightly", "cron:nightly"),
     ] {
         let mut s = state();
@@ -1012,7 +1014,8 @@ fn theme_picker_previews_and_esc_restores() {
     };
     let open = Some(Action::OpenOverlay(Overlay::Themes));
     apply(&mut ui, open.clone());
-    assert_eq!(ui.selection.get("Themes"), Some(&0));
+    assert_eq!(ui.selection.get("Themes"), Some(&4));
+    ui.selection.insert("Themes".into(), 0);
     let down = route_key(
         key(KeyCode::Down, KeyModifiers::NONE),
         &s,
@@ -1033,10 +1036,11 @@ fn theme_picker_previews_and_esc_restores() {
         &mut editor,
     );
     assert_eq!(apply(&mut ui, esc), vec![]);
-    assert_eq!(ui.theme, ThemeId::AyuDark, "esc puts the old theme back");
+    assert_eq!(ui.theme, ThemeId::TideDark, "esc puts the old theme back");
     assert_eq!(ui.overlay, None);
 
     apply(&mut ui, open);
+    ui.selection.insert("Themes".into(), 0);
     for _ in 0..3 {
         let action = route_key(
             key(KeyCode::Down, KeyModifiers::NONE),
@@ -1291,15 +1295,15 @@ fn sidebar_lists_tabs_with_state_unread_and_active_tint() {
     };
     render("sidebar-three-tabs", (100, 24), &s, &ui, &Editor::new());
     let t = cells(&s, &ui, (100, 24));
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     assert!(row_text(&t, 1, 22).starts_with("▌1 Fix parser"));
-    assert!(row_text(&t, 2, 22).contains("build · idle"));
+    assert!(row_text(&t, 2, 22).contains("◎ Nav · idle"));
     assert!(
         row_text(&t, 3, 22).contains("2 01JZZZZZ"),
         "short id for an untitled tab"
     );
     assert!(row_text(&t, 3, 22).contains('●'), "unread mark");
-    assert!(row_text(&t, 4, 22).contains("build · running"));
+    assert!(row_text(&t, 4, 22).contains("◎ Nav · running"));
     assert!(row_text(&t, 5, 22).contains("3 new conversation"));
     assert!(row_text(&t, 23, 22).contains("alt+b hide bar"));
     let buffer = t.backend().buffer();
@@ -1341,11 +1345,11 @@ fn sidebar_hides_on_demand_and_on_narrow_terminals() {
         "no sidebar under 80 columns"
     );
     let wide = cells(&s, &ui, (80, 24));
-    assert!(row_text(&wide, 2, 80).contains("build · idle"));
+    assert!(row_text(&wide, 2, 80).contains("◎ Nav · idle"));
     ui.sidebar_hidden = true;
     render("sidebar-hidden", (100, 24), &s, &ui, &Editor::new());
     let hidden = cells(&s, &ui, (100, 24));
-    assert!(row_text(&hidden, 0, 100).starts_with(" ◆ navai"));
+    assert!(row_text(&hidden, 0, 100).starts_with(" ◆ withnav"));
     assert!(!(0..24).any(|y| row_text(&hidden, y, 100).contains("build · ")));
 }
 
@@ -1359,9 +1363,9 @@ fn sidebar_shows_waiting_and_error_states() {
     }];
     let ui = UiState::default();
     let t = cells(&s, &ui, (100, 24));
-    let theme = Theme::ayu_dark();
-    assert!(row_text(&t, 4, 22).contains("build · waiting"));
-    assert!(row_text(&t, 6, 22).contains("build · error"));
+    let theme = Theme::default();
+    assert!(row_text(&t, 4, 22).contains("◎ Nav · waiting"));
+    assert!(row_text(&t, 6, 22).contains("◎ Nav · error"));
     let err_x = row_text(&t, 6, 22).find("error").unwrap();
     let err_x = row_text(&t, 6, 22)[..err_x].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(err_x, 6)].fg, theme.red);
@@ -1468,7 +1472,7 @@ fn a_short_sidebar_scrolls_to_keep_the_active_tab_in_view() {
     let all = bar.join("\n");
     assert!(all.contains("▌9 starting…"), "{all}");
     assert!(!all.contains(" 1 Fix parser"), "{all}");
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let row = bar.iter().position(|r| r.starts_with("▌9")).unwrap() as u16;
     assert_eq!(
         t.backend().buffer()[(5, row)].bg,
@@ -1518,7 +1522,7 @@ fn command_outcomes_render_as_compact_blocks() {
     assert!(screen.contains("/variant · ok"), "{screen}");
     assert!(screen.contains("/agent · error"), "{screen}");
     let t = cells(&s, &ui, (100, 30));
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let row = (0..30)
         .find(|y| row_text(&t, *y, 100).contains("/agent · error"))
         .unwrap();
@@ -1601,35 +1605,35 @@ fn tab_on_an_empty_message_switches_the_agent_otherwise_it_moves_the_focus() {
 
 #[test]
 fn the_agent_shows_in_the_status_line_and_the_sidebar() {
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let mut s = done();
     let ui = UiState::default();
     let t = cells(&s, &ui, (100, 30));
     let status = (0..30)
-        .find(|y| row_text(&t, *y, 100).contains("▌build  cognition"))
+        .find(|y| row_text(&t, *y, 100).contains("▌◎ build  cognition"))
         .expect("status line");
     let x = row_text(&t, status, 100)
         .chars()
         .position(|c| c == '▌')
         .unwrap() as u16;
-    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.accent);
-    assert_eq!(t.backend().buffer()[(x + 1, status)].fg, theme.accent_text);
+    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.nav);
+    assert_eq!(t.backend().buffer()[(x + 1, status)].fg, theme.nav);
     s.agent = Some("plan".into());
     s.variant = Some("high".into());
     s.conversation.context = None;
     render("agent-plan", (100, 30), &s, &ui, &Editor::new());
     let t = cells(&s, &ui, (100, 30));
     let status = (0..30)
-        .find(|y| row_text(&t, *y, 100).contains("▌plan  cognition"))
+        .find(|y| row_text(&t, *y, 100).contains("▌◎ plan  cognition"))
         .expect("status line");
     let line = row_text(&t, status, 100);
     assert!(line.contains("· high · 12.4k / 200k"), "{line}");
     let x = line.chars().position(|c| c == '▌').unwrap() as u16;
-    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.blue);
-    assert!(row_text(&t, 2, 22).contains("plan · idle"));
-    let x = row_text(&t, 2, 22).find("plan").unwrap() as u16;
+    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.nav);
+    assert!(row_text(&t, 2, 22).contains("◎ Nav · idle"));
+    let x = row_text(&t, 2, 22).find("◎ Nav").unwrap() as u16;
     let x = row_text(&t, 2, 22)[..x as usize].chars().count() as u16;
-    assert_eq!(t.backend().buffer()[(x, 2)].fg, theme.blue);
+    assert_eq!(t.backend().buffer()[(x, 2)].fg, theme.nav);
 }
 
 /// A catalog of 295 aliases; `opus` offers variants with `high` as default, `flash` none.
@@ -1877,7 +1881,7 @@ fn the_status_line_reads_model_variant_and_gauge() {
     let t = cells(&s, &UiState::default(), (120, 30));
     let line = (0..30)
         .map(|y| row_text(&t, y, 120))
-        .find(|r| r.contains("▌build"))
+        .find(|r| r.contains("▌◎"))
         .unwrap();
     assert!(
         line.contains("cognition · assigned · high · ~42k / 1M · 4%"),
@@ -1887,7 +1891,7 @@ fn the_status_line_reads_model_variant_and_gauge() {
     let t = cells(&s, &UiState::default(), (70, 20));
     let line = (0..20)
         .map(|y| row_text(&t, y, 70))
-        .find(|r| r.contains("▌build"))
+        .find(|r| r.contains("▌◎"))
         .unwrap();
     assert!(line.contains("· high · ~42k / 1M · 4%"), "{line}");
 }
@@ -2246,7 +2250,7 @@ fn a_write_prompt_shows_the_path_the_first_lines_and_the_keys() {
     assert!(!shown.contains("+ line 7"), "{shown}");
     // the open prompt has the accent rule
     let t = cells(&s, &ui, (100, 36));
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let row = (0..36)
         .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
         .unwrap();
@@ -2447,7 +2451,7 @@ fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
     }
     assert!(!shown.contains("always"), "{shown}");
     let t = cells(&plan, &ui, (100, 30));
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let row = (0..30)
         .find(|y| row_text(&t, *y, 100).contains("Jev judged"))
         .unwrap();
@@ -2708,7 +2712,7 @@ fn a_prompt_the_server_no_longer_waits_on_is_muted_until_it_says_how_it_ended() 
     assert!(!shown.contains("waiting for your answer"), "{shown}");
     assert!(!shown.contains("y allow once"), "{shown}");
     let t = cells(&s, &ui, (100, 30));
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let row = (0..30)
         .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
         .unwrap();
@@ -2840,28 +2844,28 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
     let t = cells(&s, &ui, (140, 20));
     let header = row_text(&t, 0, 140);
     for want in [
-        "◆ navai",
+        "◆ withnav",
         "~/dev/project",
         "feat/tui-design ●3",
-        "▌build  cognition · assigned · 12.4k / 200k",
+        "▌◎ Nav /build  cognition · assigned · 12.4k / 200k",
     ] {
         assert!(header.contains(want), "{want}: {header}");
     }
-    let theme = Theme::ayu_dark();
-    let x = header[..header.find("▌build").unwrap()].chars().count() as u16;
-    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.accent);
+    let theme = Theme::default();
+    let x = header[..header.find("▌◎ Nav").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.nav);
     s.agent = Some("plan".into());
     let t = cells(&s, &ui, (140, 20));
     let header = row_text(&t, 0, 140);
-    let x = header[..header.find("▌plan").unwrap()].chars().count() as u16;
-    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.blue);
+    let x = header[..header.find("▌◎ Nav").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.nav);
     // not a repository: no branch, nothing made up
     s.git = None;
     let header = row_text(&cells(&s, &ui, (140, 20)), 0, 140);
     assert!(!header.contains('●'), "{header}");
     // narrow: the path and the model give way before the agent and the gauge
     let header = row_text(&cells(&s, &ui, (60, 20)), 0, 60);
-    assert!(header.contains("▌plan  cognition"), "{header}");
+    assert!(header.contains("▌◎ plan  cognition"), "{header}");
     assert!(header.contains("/ 200k"), "{header}");
 }
 
@@ -2939,7 +2943,7 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
     let shown = screen_text(&s, &ui, (160, 40));
     for want in [
         "AGENTS",
-        "● build  in use",
+        "● ◎ Nav  in use",
         "Implements the task, verifies",
         "rules · 2 files",
         "messages                    ~27k",
@@ -3043,7 +3047,7 @@ fn the_key_bar_follows_what_the_keys_do_now() {
         bar.contains("y allow once · n deny · esc stop · ctrl+p palette"),
         "{bar}"
     );
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     let mut terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
     terminal
         .draw(|f| view::draw(f, &s, &ui, &Editor::new(), &mut RenderCache::default()))
@@ -3066,7 +3070,7 @@ fn the_key_bar_follows_what_the_keys_do_now() {
 #[test]
 fn every_popup_is_centred_with_an_accent_border_over_a_dimmed_screen() {
     let s = done();
-    let theme = Theme::ayu_dark();
+    let theme = Theme::default();
     for overlay in [
         Overlay::Commands,
         Overlay::Models,
@@ -3138,11 +3142,7 @@ fn the_layout_at_100_140_and_200_columns_in_dark_and_light() {
             assert_eq!(t.backend().buffer()[(30, 10)].bg, palette.bg);
             let header = row_text(&t, 0, width);
             let x = header[..header.find('◆').unwrap()].chars().count() as u16;
-            assert_eq!(
-                t.backend().buffer()[(x, 0)].fg,
-                palette.accent_text,
-                "{name}"
-            );
+            assert_eq!(t.backend().buffer()[(x, 0)].fg, palette.nav, "{name}");
             if width >= 140 {
                 let row = (0..40)
                     .find(|y| row_text(&t, *y, width).contains("AGENTS"))
@@ -3185,7 +3185,10 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
             header.contains("200k"),
             "{width}: the gauge stays: {header}"
         );
-        assert!(header.contains("▌build"), "{width}: {header}");
+        assert!(
+            header.contains("▌◎ Nav /build") || header.contains("▌◎ build"),
+            "{width}: {header}"
+        );
         // the header ends with the gauge and its trailing space: nothing was cut at the edge
         assert!(
             header.trim_end().ends_with("200k · 21%"),
@@ -3302,7 +3305,9 @@ fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     render("model-pending", (140, 24), &s, &ui, &Editor::new());
     let header = row_text(&cells(&s, &ui, (140, 24)), 0, 140);
     assert!(
-        header.contains("▌build  cognition · assigned · 12.4k / 200k  → luna (after this turn)"),
+        header.contains(
+            "▌◎ Nav /build  cognition · assigned · 12.4k / 200k  → luna (after this turn)"
+        ),
         "{header}"
     );
     // narrow: the switch stays, the model name gives way first
@@ -3496,7 +3501,7 @@ fn auto_approval_notes_render_narrow_with_optional_evidence() {
             match source {
                 "jev" => assert!(collapsed.contains("auto · Jev")),
                 "metacognition" => assert!(collapsed.contains("auto · metacognition")),
-                "driver" => assert!(collapsed.contains("driver approved")),
+                "driver" => assert!(collapsed.contains("Captain approved")),
                 _ => assert!(!collapsed.contains("auto ·")),
             }
             ui.expanded.insert("review".into());

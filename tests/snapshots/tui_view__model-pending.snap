@@ -2,18 +2,18 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project                         ▌build  cognition · assigned · 12.4k / 200k  → luna (after this turn) 
+ Conversations       │ ◆ withnav  ~/dev/project                ▌◎ Nav /build  cognition · assigned · 12.4k / 200k  → luna (after this turn) 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-▌  build · running   │ │ YOU                                                                            │                                   
+▌  ◎ Nav · running   │ │ ▸ Captain                                                                      │                                   
                      │ │  Explain the failure, then fix it.                                             │ AGENTS                            
-                     │ │                                                                                │  ● build  in use                  
-                     │ │ ASSISTANT                                                                      │  cognition · off ·                
+                     │ │                                                                                │  ● ◎ Nav  in use                  
+                     │ │ ◎ Nav                                                                          │  cognition · off ·                
                      │ │ ▸ Reasoning                                                                    │    Implements the task, verifies  
                      │ │  The parser treats an empty argument as a missing value.                       │    it and reports                 
                      │ │                                                                                │                                   
                      │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                            │ CONTEXT                           
                      │ │                                                                                │  —                                
-                     │ │ ASSISTANT                                                                      │                                   
+                     │ │ ◎ Nav                                                                          │                                   
                      │ │  I found the failing test. The empty argument is discarded.                    │ SKILLS                            
                      │ │                                                                                │  —                                
                      │                                                                                  │                                   

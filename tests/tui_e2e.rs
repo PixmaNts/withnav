@@ -355,7 +355,7 @@ async fn pick_send_stream_tool_reconnect_stop_and_resume() {
     assert_eq!(rt.state.conversation.session_tokens, Some(110 + 170));
     assert_unique_ids(&rt.state.conversation.blocks);
     let shown = screen(&mut rt);
-    assert!(shown.contains("YOU"), "{shown}");
+    assert!(shown.contains("▸ Captain"), "{shown}");
     assert!(!shown.contains("NAVIGATOR"), "{shown}");
     assert!(shown.contains("The notes say hello."), "{shown}");
 
@@ -747,8 +747,8 @@ async fn tab_switches_build_and_plan_through_the_server() {
     })
     .await;
     let shown = screen(&mut rt);
-    assert!(shown.contains("▌plan"), "{shown}");
-    assert!(shown.contains("plan · idle"), "{shown}");
+    assert!(shown.contains("▌◎ plan"), "{shown}");
+    assert!(shown.contains("◎ Nav · idle"), "{shown}");
     let summary = Client::new(env.base.clone(), None)
         .summary(&session_id(&rt))
         .await

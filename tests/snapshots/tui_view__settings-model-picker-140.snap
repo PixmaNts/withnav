@@ -1,26 +1,25 @@
 ---
 source: tests/tui_view.rs
-assertion_line: 323
 expression: snapshot
 ---
- ◆ navai  /ws/refactor-parser  —  /config                                       up to date  /cfg/navai/config.json · /cfg/navai/models.json 
+ ◆ withnav  /ws/refactor-parser  —  /config                                       up to date  /cfg/navai/config.json · /cfg/navai/models.jso
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │                                                                                  │                                   
  SETTINGS            │  Layers  config.json → layers, default_agent                                     │ FOCUSED                           
                      │  Reflex, instinct and metacognition run one model each. The cognition runs age…  │ layers.metacognition.model        
  1 Gateways          │                                                                                  │                                   
  omniroute           │                                                                                  │ Fast model for remarks, reflex    
-                     │  reflex  fim · LSP only                                                          │ context and risky-call review.    
+                     │  Reflex · Completion  fim · LSP only                                             │ context and risky-call review.    
 ▌2 Layers            │    model          inception/mercury-edit-2                                       │                                   
  reflex · instinct · │                                                                                  │ type    model · chat catalogue    
- meta · cognition    │  instinct  systemone · 2 s deadline                                              │ values  <gateway>/<id> · 1        
+ meta · cognition    │  Instinct · Triage  systemone · 2 s deadline                                     │ values  <gateway>/<id> · 1        
  3 Agents            │    model          omniroute/typesafe/jev-1.13                                    │ models                            
  build               │                                                                                  │ saved   omniroute/combo/deepsee…  
-                     │  metacognition  chat · fast model                                                │ applies to new sessions and       
+                     │  Metacognition · Beacon  chat · fast model                                       │ applies to new sessions and       
  4 Permissions       │▌   model          omniroute/combo/deepseek-v4-flash                  enter pick  │ subagents                         
  automatic review on │    varian┌────────── model for layers.metacognition · writes config.json ───────────┐                                
                      │          │ ❯ filter models…                                                         │NDING · 0                       
- 5 Subagents         │  cognitio│ stages this assignment · writes config.json with ctrl+s                  │ changes. config.json is up to  
+ 5 Subagents         │  Cognitio│ stages this assignment · writes config.json with ctrl+s                  │ changes. config.json is up to  
  max 4 per session   │    defaul│▌▾ omniroute                                                              │te.                             
                      │          │   ▾ combo                                                                │                                
  6 Appearance        │          │   ● deepseek-v4-flash                                             200k   │Written for every client: TUI,  

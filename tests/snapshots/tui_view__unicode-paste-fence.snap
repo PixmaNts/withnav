@@ -2,12 +2,12 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- ◆ navai  …rectory  ▌build  cognition · assigned · — / 200k 
+ ◆ withnav   ▌◎ Nav /build  cognition · assigned · — / 200k 
 ────────────────────────────────────────────────────────────
- │ YOU                                                      
+ │ ▸ Captain                                                
  │  你 好  é 👩‍💻  café                                          
  │                                                          
- │ ASSISTANT                                                
+ │ ◎ Nav                                                    
  │  ```rust                                                 
  │  fn main() { println!("hi"); }                           
  │  ```                                                     

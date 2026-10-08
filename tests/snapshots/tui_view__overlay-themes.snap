@@ -2,27 +2,27 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project           ▌build  cognition · assigned · 12.4k / 200k 
+ Conversations       │ ◆ withnav  ~/dev/project  ▌◎ Nav /build  cognition · assigned · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · idle      │ │ YOU                                                                        
+▌  ◎ Nav · idle      │ │ ▸ Captain                                                                  
                      │ │  Explain the failure, then fix it.                                         
                      │ │                                                                            
-                     │ │ ASSISTANT                                                                  
+                     │ │ ◎ Nav                                                                      
                      │ │ ▸ Reasoning                                                                
                      │ │  The parser treats an empty argument as a missing value.                   
-                     │ │                                                                            
-                     │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
             ┌───────────────────────────────── Theme ──────────────────────────────────┐            
             │ ❯ filter…                                                                │            
-            │▌● Ayu Dark      ayu-dark     Aa  ■■■■■■                                  │            
+            │▌  Ayu Dark      ayu-dark     Aa  ■■■■■■                                  │            
             │   Ayu Light     ayu-light    Aa  ■■■■■■                                  │            
             │   Nord Dark     nord-dark    Aa  ■■■■■■                                  │            
             │   Nord Light    nord-light   Aa  ■■■■■■                                  │            
+            │ ● Tide Dark     tide-dark    Aa  ■■■■■■                                  │            
+            │   Tide Light    tide-light   Aa  ■■■■■■                                  │            
+            │   Moss Dark     moss-dark    Aa  ■■■■■■                                  │            
+            │   Moss Light    moss-light   Aa  ■■■■■■                                  │            
             │                                                                          │            
             │ ↑↓ preview  enter keep  esc put back                                     │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

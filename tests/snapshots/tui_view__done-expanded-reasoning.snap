@@ -2,12 +2,12 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project           ▌build  cognition · assigned · 12.4k / 200k 
+ Conversations       │ ◆ withnav  ~/dev/project  ▌◎ Nav /build  cognition · assigned · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · idle      │ │ YOU                                                                        
+▌  ◎ Nav · idle      │ │ ▸ Captain                                                                  
                      │ │  Explain the failure, then fix it.                                         
                      │ │                                                                            
-                     │ │ ASSISTANT                                                                  
+                     │ │ ◎ Nav                                                                      
                      │ │ ▾ Reasoning                                                                
                      │ │   I should check the parser tests first.                                   
                      │ │  The parser treats an empty argument as a missing value.                   
@@ -16,7 +16,7 @@ expression: snapshot
                      │ │   test parser::empty_argument ... FAILED                                   
                      │ │   expected Some(""), got None                                              
                      │ │                                                                            
-                     │ │ ASSISTANT                                                                  
+                     │ │ ◎ Nav                                                                      
                      │ │  I found the failing test. The empty argument is discarded.                
                      │ │                                                                            
                      │                                                                              

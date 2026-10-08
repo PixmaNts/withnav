@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- ◆ navai  /ws/refactor-parser  —  /config                                       up to date  /cfg/navai/config.json · /cfg/navai/models.json 
+ ◆ withnav  /ws/refactor-parser  —  /config                                       up to date  /cfg/navai/config.json · /cfg/navai/models.jso
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │                                                                                  │                                   
  SETTINGS            │  Gateways  models.json → providers                                               │ FOCUSED                           

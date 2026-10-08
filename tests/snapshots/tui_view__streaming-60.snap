@@ -2,12 +2,12 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- ◆ navai  …project  ▌build  cognition · assigned · — / 200k 
+ ◆ withnav   ▌◎ Nav /build  cognition · assigned · — / 200k 
 ────────────────────────────────────────────────────────────
- │ YOU                                                      
+ │ ▸ Captain                                                
  │  Why is this failing?                                    
  │                                                          
- │ ASSISTANT                                                
+ │ ◎ Nav                                                    
  │ ▸ Reasoning                                              
  │  Checking the parser as tokens arrive…                   
  │                                                          

@@ -2,9 +2,9 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ⚠ bypass   ◆ navai  ~/dev/project    ▌build  cognition · assigned · — / 200k 
+ Conversations       │ ⚠ bypass   ◆ withnav  …oject  ▌◎ Nav /build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · ⚠ bypass  │ │ NOTICE                                                                     
+▌  ◎ Nav · ⚠ bypass  │ │ NOTICE                                                                     
                      │ │  bypass on: ordinary permission prompts are skipped; protected requests    
                      │ │ still ask                                                                  
                      │ │                                                                            

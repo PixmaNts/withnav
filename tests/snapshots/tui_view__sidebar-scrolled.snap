@@ -2,15 +2,15 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai                                         ▌build  — · assigned · — / — 
+ Conversations       │ ◆ withnav                                ▌◎ Nav /build  — · assigned · — / — 
  6 starting…         │──────────────────────────────────────────────────────────────────────────────
-   build · idle      │                                                                              
+   ◎ Nav · idle      │                                                                              
  7 starting…         │                                                                              
-   build · idle      │                                                                              
+   ◎ Nav · idle      │                                                                              
  8 starting…         │                                                                              
-   build · idle      │                                                                              
+   ◎ Nav · idle      │                                                                              
 ▌9 starting…         │                                                                              
-▌  build · idle      │──────────────────────────────────────────────────────────────────────────────
+▌  ◎ Nav · idle      │──────────────────────────────────────────────────────────────────────────────
                      │ ready   offline                                                session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │

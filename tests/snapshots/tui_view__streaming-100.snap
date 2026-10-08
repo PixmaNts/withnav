@@ -2,12 +2,12 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project               ▌build  cognition · assigned · — / 200k 
+ Conversations       │ ◆ withnav  ~/dev/project      ▌◎ Nav /build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · running   │ │ YOU                                                                        
+▌  ◎ Nav · running   │ │ ▸ Captain                                                                  
                      │ │  Why is this failing?                                                      
                      │ │                                                                            
-                     │ │ ASSISTANT                                                                  
+                     │ │ ◎ Nav                                                                      
                      │ │ ▸ Reasoning                                                                
                      │ │  Checking the parser as tokens arrive…                                     
                      │ │                                                                            

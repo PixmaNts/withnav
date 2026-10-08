@@ -2,9 +2,9 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- ◆ navai        ▌build  cognition · assigned · 12.4k / 200k 
+ ◆ withnav  ▌◎ Nav /build  cognition · assi… · 12.4k / 200k 
 ────────────────────────────────────────────────────────────
- │ ASSISTANT                                                
+ │ ◎ Nav                                                    
  │ ▸ Reasoning                                              
  │  The parser treats an empty argument as a missing value. 
  │                                                          
@@ -12,7 +12,7 @@ expression: snapshot
  │   test parser::empty_argument ... FAILED                 
  │   expected Some(""), got None                            
  │                                                          
- │ ASSISTANT                                                
+ │ ◎ Nav                                                    
  │  I found the failing test. The empty argument is         
  │ discarded.                                               
  │                                                          

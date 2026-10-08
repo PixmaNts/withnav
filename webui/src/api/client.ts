@@ -28,6 +28,8 @@ export const api = {
   sessions: (workspace: string) =>
     get<{ sessions: SessionListEntry[] }>(`/v1/sessions?workspace=${q(workspace)}`).then((b) => b.sessions ?? []),
   session: (id: string) => get<SessionSummary>(`/v1/sessions/${q(id)}`),
+  /** Delete a session for good, with its subagent sessions; a running one is stopped first. 404 when already gone. */
+  remove: (id: string) => del<void>(`/v1/sessions/${q(id)}`),
   setBypass: (id: string, enabled: boolean) => post<{ enabled: boolean; changed: boolean; bypass_seq: number }>(`/v1/sessions/${q(id)}/bypass`, { enabled }),
   models: (workspace: string) =>
     get<{ models: ModelEntry[]; default_agent: string }>(`/v1/models?workspace=${q(workspace)}`),

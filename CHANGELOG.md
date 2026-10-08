@@ -9,6 +9,10 @@ requests land in `develop`.
 - **Delete VS Code conversations from the command palette.** Choose a workspace conversation,
   then confirm permanent deletion including its subagent count. The chat button uses the same
   confirmation; deleted conversations reset to an empty chat and their subagent views close.
+- **The WebUI can delete a session, with its subagent sessions.** Each session in the sidebar has
+  a delete button (shown on hover or focus; the Delete key works on the row), and the command
+  palette has "Delete session…" for the open one. The confirmation lists the subagents that go
+  with it and says it cannot be undone; deleting the open session moves to the next one.
 
 ### Fixed
 

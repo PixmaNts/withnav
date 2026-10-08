@@ -219,7 +219,8 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) 
         area,
         area.y,
         Line::from(vec![
-            Span::styled(" ◆ withnav ", theme.accent()),
+            Span::styled(" ◆", ratatui::style::Style::default().fg(theme.nav)),
+            Span::styled(" withnav ", theme.text()),
             Span::styled(left, theme.muted()),
             Span::raw(" ".repeat(gap)),
             Span::styled(

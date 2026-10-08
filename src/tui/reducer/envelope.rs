@@ -31,6 +31,28 @@ mod tests {
     use ulid::Ulid;
 
     #[test]
+    fn turn_boundaries_discard_unfinished_tool_arguments() {
+        for (kind, payload) in [
+            (EventKind::TurnStart, json!({"turn_id":"next"})),
+            (EventKind::TurnEnd, json!({"outcome":"interrupted"})),
+            (EventKind::TurnEnd, json!({"outcome":"error"})),
+            (EventKind::SessionEnd, json!({})),
+        ] {
+            let mut state = State::default();
+            state
+                .conversation
+                .pending_tool_fragments
+                .insert("0".into(), "unfinished".into());
+            apply_envelope(
+                &mut state,
+                EventEnvelope::new(Ulid::new(), 1, kind, payload),
+            )
+            .unwrap();
+            assert!(state.conversation.pending_tool_fragments.is_empty());
+        }
+    }
+
+    #[test]
     fn budget_yield_stays_out_of_steps_through_turn_end_and_agent_state() {
         for kind in [Some("budget"), Some("choice"), None] {
             let mut state = State::default();
@@ -200,6 +222,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     match kind {
         Some(EventKind::SessionStart) => s.activity = Activity::Idle,
         Some(EventKind::SessionEnd) => {
+            s.conversation.pending_tool_fragments.clear();
             s.bypass = false;
             s.bypass_seq = s.bypass_seq.max(e.seq);
             s.watchdog_paused = false;
@@ -238,6 +261,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             }
         }
         Some(EventKind::TurnStart) => {
+            s.conversation.pending_tool_fragments.clear();
             s.watchdog_paused = false;
             s.pause_token = None;
             let v = e.payload;
@@ -389,6 +413,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             ));
         }
         Some(EventKind::TurnEnd) => {
+            s.conversation.pending_tool_fragments.clear();
             let v = e.payload;
             let outcome = v["outcome"].as_str().unwrap_or("");
             if outcome != "yielded" {

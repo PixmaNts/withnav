@@ -20,6 +20,8 @@ requests land in `develop`.
   name that the CLI and commands interpret as selecting the model's default variant.
 - **Oversized model catalogue cache files are ignored without reading them whole.** Disk reads
   are bounded to 2 MiB plus one byte, preventing corrupted caches from allocating unbounded memory.
+- **Provider error bodies are bounded and cancellable.** Chat and non-streaming failures read
+  at most 64 KiB, and Stop interrupts a slow error response rather than waiting for its end.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

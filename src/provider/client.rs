@@ -151,9 +151,7 @@ impl ModelClient {
             let response = cancellable(cancel, req.send()).await??;
             let status = response.status();
             if !status.is_success() {
-                let text = cancellable(cancel, response.text())
-                    .await?
-                    .unwrap_or_default();
+                let text = super::read_error_body(response, cancel).await?;
                 let message = extract_error_message(&text).unwrap_or(text);
                 return Err(ProviderError::Api {
                     status: status.as_u16(),

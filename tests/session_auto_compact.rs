@@ -619,9 +619,9 @@ async fn the_fallback_summary_is_cut_down_to_the_destinations_window() {
     let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
     let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
     let state = two_models(&env, &a, &b, 20_000);
-    let transcript: Vec<ChatMessage> = (0..7)
+    let transcript: Vec<ChatMessage> = (0..12)
         .flat_map(read_turn)
-        .chain((7..9).flat_map(short_turn))
+        .chain((12..14).flat_map(short_turn))
         .collect();
     let id = seeded_with(&state, &env.ws, transcript).await;
 

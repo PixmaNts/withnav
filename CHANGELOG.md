@@ -12,6 +12,10 @@ requests land in `develop`.
   The host boundary now catches synchronous failures as well as the existing asynchronous errors.
 - **The example default agent has an explicit context window.** Startup preflight no longer
   needs online catalogue discovery to determine its capacity.
+- **Brace glob alternatives can explicitly search normally skipped folders.**
+  Patterns such as `{src,target}/**/*.rs` now enter `target`, while broad wildcard
+  alternatives still leave hidden and generated folders skipped by default.
+
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

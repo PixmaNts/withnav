@@ -8,6 +8,8 @@ requests land in `develop`.
 
 - **VS Code's layer protocol now includes variant discovery diagnostics.** The optional server
   field is represented in the extension's types instead of being omitted from its contract.
+- **Unexpected VS Code chat message errors are reported instead of escaping the dispatcher.**
+  The host boundary now catches synchronous failures as well as the existing asynchronous errors.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

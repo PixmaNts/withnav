@@ -4,6 +4,16 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-08
+
+Navai is now **WithNav**. Nav is your single point of contact, with a crew behind it: Vigie scouts
+and cites its sources, Lux weighs hard decisions, Mousse handles small local edits, and the
+Cartographe and the Sondeur come on demand. You are the Captain. The CLI is `nav`, the language
+server `withnav-lsp`, the extension `pixmants.withnav`, and Tide Dark is the default theme. Your
+config and data move to `withnav` on first start; every old name, directory, variable and agent id
+keeps working with a warning until 0.8. This release also brings InstinctFlow: draw the flows the
+instinct runs, in the new Studio, and the legacy decision pipeline is gone.
+
 ### Rebrand to WithNav
 
 Write new names throughout 0.7; legacy readers warn or give a migration hint.

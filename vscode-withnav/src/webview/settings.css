@@ -1,4 +1,4 @@
-/* "Navai Settings" editor tab. Follows the VS Code settings editor: only
+/* "WithNav Settings" editor tab. Follows the VS Code settings editor: only
    --vscode-* theme variables, so it matches every theme, high contrast included. */
 :root {
   color-scheme: light dark;
@@ -15,7 +15,7 @@ body {
   padding: 0;
   background: var(--vscode-editor-background);
   color: var(--vscode-foreground);
-  font-family: var(--vscode-font-family);
+  font-family: "IBM Plex Sans", var(--vscode-font-family);
   font-size: 13px;
   overflow: hidden;
 }
@@ -200,7 +200,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   background: var(--vscode-settings-numberInputBackground, var(--vscode-input-background));
   border-color: var(--vscode-settings-numberInputBorder, var(--vscode-input-border, var(--line)));
 }
-.control.number::placeholder { color: var(--vscode-input-placeholderForeground); font-family: var(--vscode-font-family); }
+.control.number::placeholder { color: var(--vscode-input-placeholderForeground); font-family: "IBM Plex Sans", var(--vscode-font-family); }
 .select-wrap { position: relative; width: 258px; max-width: 100%; }
 .select-wrap.wide { width: 398px; }
 .select-wrap::after {
@@ -323,3 +323,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   .rows { padding-left: 12px; }
   .paths { display: none; }
 }
+
+:root { --nav:#5ecaed; --lux:#f8ca65; --mou:#f89177; --vig:#72d8b3; --car:#dca3e5; --son:#a3b3f8; }
+body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d04; --mou:#b14328; --vig:#107460; --car:#85468f; --son:#4d5aac; }

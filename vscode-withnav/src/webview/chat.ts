@@ -330,7 +330,7 @@ const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement
 function updateControls(): void {
   prompt.disabled = readOnly || state === "connecting";
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
-  else if (!readOnly) prompt.placeholder = "Message Navai…";
+  else if (!readOnly) prompt.placeholder = "Message WithNav…";
   if (readOnly) modelSelect.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
   stop.hidden = readOnly || (state !== "busy" && !compacting);
@@ -363,11 +363,27 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
+function decorateCrew(byline: HTMLElement, agent = "build"): void {
+  const aliases: Record<string, string> = { build: "nav", plan: "nav", explore: "vigie", librarian: "vigie", review: "lux", oracle: "lux", explorer: "mousse" };
+  const id = aliases[agent] ?? agent;
+  const names: Record<string, string> = { captain: "Captain", nav: "Nav · The Navigator", vigie: "Vigie · The Lookout", lux: "Lux · The Expert Advisor", mousse: "Mousse · The Lightweight Deckhand", cartographe: "Cartographe · The Cartographer", sondeur: "Sondeur · The Deep Diver" };
+  byline.textContent = names[id] ?? agent;
+  if (names[id]) {
+    byline.dataset.crew = id;
+    const glyph = el("span", "crew-glyph");
+    glyph.setAttribute("aria-hidden", "true");
+    byline.prepend(glyph);
+  }
+}
+
 function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string): void {
-  if (author === "navigator") { add(navigatorNote(text)); return; }
+  if ((author === "navigator" || author === "nav")) { add(navigatorNote(text)); return; }
   const root = el("article", `message ${author}`);
   if (author === "cognition") root.dataset.agent = agentLabel.dataset.agent;
-  const byline = el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Subagent output · untrusted data");
+  const byline = el("div", "byline", (author === "driver" || author === "captain") ? pendingQuestion ? "Captain · Answer" : "Captain" : author === "cognition" ? "Cognition" : "Subagent output · untrusted data");
+  if (author === "cognition") decorateCrew(byline, agentLabel.dataset.agent);
+  if (author === "driver" || author === "captain") decorateCrew(byline, "captain");
+  if (author === "subagent" && source) { const id = source.split(":").at(-1)!; if (["vigie", "lux", "mousse", "cartographe", "sondeur", "explore", "librarian", "review", "oracle", "explorer"].includes(id)) { decorateCrew(byline, id); byline.append(el("span", "skill-note", "Untrusted data")); } }
   if (author === "subagent" && source) byline.title = `Source: ${source}`;
   if (skill) {
     const note = el("span", "skill-note", `skill: ${skill.name}`);
@@ -384,7 +400,7 @@ function message(author: string, text: string, context?: string, skill?: { name:
     root.append(chip);
   }
   add(root);
-  if (pendingQuestion && author === "driver") pendingQuestion = false;
+  if (pendingQuestion && (author === "driver" || author === "captain")) pendingQuestion = false;
 }
 
 // A wake: the navigator glancing over the driver's shoulder. One quiet
@@ -397,7 +413,7 @@ function navigatorNote(text: string): HTMLElement {
   const head = el("div", "note-head");
   head.append(navigatorMark());
   const line = el("div", "note-line");
-  line.append(el("span", "note-label", "Navigator noticed"));
+  line.append(el("span", "note-label", "Beacon · Nav · metacognition → nav"));
   if (wake.reason) line.append(el("span", "note-reason", wake.reason));
   head.append(line);
   root.append(head);
@@ -509,7 +525,7 @@ function turn(id: string): Turn {
   if (existing) return existing;
   const root = el("article", "message cognition");
   root.dataset.agent = agentLabel.dataset.agent;
-  root.append(el("div", "byline", "Cognition"));
+  const byline = el("div", "byline"); decorateCrew(byline, agentLabel.dataset.agent); root.append(byline);
   const content = el("div", "message-body");
   const details = el("details", "reasoning");
   details.append(el("summary", "", "Reasoning"));
@@ -743,7 +759,7 @@ function receive(event: HostToWebview): void {
         childrenSection.hidden = true;
       }
       form.hidden = readOnly;
-      prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message Navai…";
+      prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message WithNav…";
       closePalette(); updateControls(); break;
     }
     case "commands": commands = event.items; filterPalette(); break;
@@ -808,7 +824,7 @@ function receive(event: HostToWebview): void {
       card.outcome.textContent = permissionOutcome(event.resolution, event.message);
       card.root.dataset.resolution = event.resolution;
       const review = card.root.querySelector(".approval-evidence summary");
-    if (review?.textContent === "Driver review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · driver";
+    if (review?.textContent === "Captain review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
       for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = readOnly || event.resolution === "pending";
       follow();

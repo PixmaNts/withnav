@@ -1,5 +1,5 @@
 // Contract between the extension host (which talks to the session server's
-// `/v1/settings` routes) and the "Navai Settings" webview (which only renders
+// `/v1/settings` routes) and the "WithNav Settings" webview (which only renders
 // and never sees the server token). Both sides import these types and the
 // small pure helpers below.
 
@@ -202,7 +202,7 @@ export function carryVariant(variant: string | null, next: CatalogModel | undefi
 export function appliesText(applies: Applies): string {
   switch (applies) {
     case "restart":
-      return "Applies after restarting Navai.";
+      return "Applies after restarting WithNav.";
     case "new_sessions":
       return "Applies to new sessions and new subagents.";
     case "live":

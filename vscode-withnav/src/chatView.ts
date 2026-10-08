@@ -6,7 +6,7 @@ import { routeComposer } from "./commands";
 
 const CONTEXT_DEBOUNCE_MS = 200;
 /** `globalState` key of the favorite model names; the terminal client keeps its own list. */
-export const FAVORITE_MODELS_KEY = "navai.favoriteModels";
+export const FAVORITE_MODELS_KEY = "withnav.favoriteModels";
 const MAX_FAVORITES = 500;
 const MAX_FAVORITE_NAME = 300;
 
@@ -203,7 +203,7 @@ export function registerChatView(
               if (opening) { void opening.then(() => panels.get(message.childId)?.reveal()); break; }
               const pending = backend.openChild(message.parentId, message.childId, message.generation).then(childBackend => {
                 if (disposed || message.generation !== backend.currentGeneration()) { childBackend.dispose(); return; }
-                const panel = vscode.window.createWebviewPanel("navai.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
+                const panel = vscode.window.createWebviewPanel("withnav.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
                 panels.set(message.childId, panel);
                 mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId, favorites);
                 panel.onDidDispose(() => { if (panels.get(message.childId) === panel) panels.delete(message.childId); childBackend.dispose(); });
@@ -280,7 +280,7 @@ function randomNonce(): string {
 }
 
 function showError(error: unknown): void {
-  void vscode.window.showErrorMessage(`Navai: ${error instanceof Error ? error.message : String(error)}`);
+  void vscode.window.showErrorMessage(`WithNav: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 async function openFile(path: string, line?: number): Promise<void> {

@@ -94,7 +94,7 @@ export function splitEditorContext(text: string): { text: string; context?: stri
 /** Maps a host message for display: driver messages lose their raw block and gain a chip. */
 export function presentMessage(message: HostToWebview): HostToWebview {
   if (message.type === "history") return { ...message, items: message.items.map(presentMessage) };
-  if (message.type !== "message" || message.author !== "driver") return message;
+  if (message.type !== "message" || (message.author !== "driver" && message.author !== "captain")) return message;
   const { text, context } = splitEditorContext(message.text);
   return context === undefined ? message : { ...message, text, context };
 }

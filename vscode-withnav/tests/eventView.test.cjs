@@ -148,10 +148,10 @@ test("evidence preserves all optional review fields only when present", () => {
 test("open and denied driver-review cards never claim approval", () => {
   const { evidenceLabel } = require("../out/tests/eventView.js");
   const evidence = { source: "driver", policy_version: 1 };
-  assert.equal(evidenceLabel(evidence, "permission"), "Driver review required");
-  assert.equal(evidenceLabel(evidence, "permission", "deny"), "Driver review required");
-  assert.equal(evidenceLabel(evidence, "permission", "allow_once"), "approved · driver");
-  assert.equal(evidenceLabel(evidence, "tool"), "approved · driver");
+  assert.equal(evidenceLabel(evidence, "permission"), "Captain review required");
+  assert.equal(evidenceLabel(evidence, "permission", "deny"), "Captain review required");
+  assert.equal(evidenceLabel(evidence, "permission", "allow_once"), "approved · Captain");
+  assert.equal(evidenceLabel(evidence, "tool"), "approved · Captain");
 });
 
 test("edit replace_all and every non-content argument remain visible and distinguish calls", () => {
@@ -193,4 +193,13 @@ test("ambiguous, wrong-name or inconsistent repeated calls never replace request
   replay.observe(envelope("llm.response", { message: { tool_calls: [call] } }));
   assert.equal(replay.argumentsFor(request), request.arguments);
   assert.equal(replay.argumentsFor({ ...request, arguments: "unrelated shortened text" }), undefined);
+});
+
+test("Captain and Nav provenance retain human and wake rendering for new sessions", () => {
+  const { evidenceLabel } = require("../out/tests/eventView.js");
+  for (const source of ["driver", "captain"]) {
+    assert.equal(eventView(envelope("message.received", { source, content: "hello" })).author, "driver");
+    assert.equal(evidenceLabel({ source, policy_version: 1 }, "tool"), "approved · Captain");
+  }
+  assert.equal(eventView(envelope("message.received", { source: "nav", content: "wake" })).author, "navigator");
 });

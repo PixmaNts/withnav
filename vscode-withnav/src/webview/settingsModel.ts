@@ -73,9 +73,9 @@ export interface Section {
 }
 
 const LAYERS = [
-  { id: "reflex", label: "Reflex", api: "fim", role: "Ghost-text suggestions in the editor.", note: "Only fill-in-the-middle models are offered. Runs only through the language server, with an IDE attached." },
-  { id: "instinct", label: "Instinct", api: "systemone", role: "Typed decisions: InstinctFlow, permission review, navigator pipeline. Fixed 2 s deadline.", note: "Only models behind the System One API are offered." },
-  { id: "metacognition", label: "Metacognition", api: "chat", role: "Remarks, wakes, and approval of risky calls.", note: "A fast (flash) chat model works best here." },
+  { id: "reflex", label: "Reflex · Completion", api: "fim", role: "Ghost-text suggestions in the editor.", note: "Only fill-in-the-middle models are offered. Runs only through the language server, with an IDE attached." },
+  { id: "instinct", label: "Instinct · Triage", api: "systemone", role: "Typed decisions: InstinctFlow, permission review, WithNav pipeline. Fixed 2 s deadline.", note: "Only models behind the System One API are offered." },
+  { id: "metacognition", label: "Metacognition · Beacon", api: "chat", role: "Remarks, wakes, and approval of risky calls.", note: "A fast (flash) chat model works best here." },
 ] as const;
 
 const THEMES: SelectOption[] = [
@@ -232,7 +232,7 @@ function cognitionSection(s: SettingsSnapshot): Section {
     return choice?.model ?? "inherits the parent session";
   };
   return {
-    id: "layer:cognition", label: "cognition", level: 1, title: "Cognition",
+    id: "layer:cognition", label: "cognition", level: 1, title: "Cognition · Nav and the crew",
     description: "The agentic chat. It runs agents, each with its own model, and several flows at once through subagents.",
     rows: [
       {

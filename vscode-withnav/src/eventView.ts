@@ -5,7 +5,7 @@ export interface WireEnvelope { seq: number; kind: string; payload: any }
 
 export function permissionEvidence(value: any): PermissionEvidence | undefined {
   if (!value || typeof value.policy_version !== "number" ||
-      !["jev", "metacognition", "driver"].includes(value.source)) return undefined;
+      !["jev", "metacognition", "driver", "captain"].includes(value.source)) return undefined;
   const result: PermissionEvidence = { policy_version: value.policy_version, source: value.source };
   if (typeof value.reason === "string") result.reason = value.reason;
   for (const key of ["verdicts", "overrides", "models"] as const) {
@@ -48,8 +48,8 @@ export function permissionCall(tool: string, argumentsText: string): string {
 }
 
 export function evidenceLabel(evidence: PermissionEvidence, context: "tool" | "permission", resolution?: string): string {
-  if (evidence.source === "driver") return context === "tool" || resolution === "allow_once" || resolution === "allow_folder"
-    ? "approved · driver" : "Driver review required";
+  if ((evidence.source === "driver" || evidence.source === "captain")) return context === "tool" || resolution === "allow_once" || resolution === "allow_folder"
+    ? "approved · Captain" : "Captain review required";
   return evidence.source === "jev" ? "auto · Jev" : "auto · metacognition";
 }
 
@@ -104,8 +104,8 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
   switch (envelope.kind) {
     case "message.received": {
       const source = String(p.source ?? "");
-      const author = source === "user:http" || source === "user:cli" ? "driver"
-        : source === "navigator" || source.startsWith("navigator:") ? "navigator" : "subagent";
+      const author = source === "captain" || source === "driver" || source === "user:http" || source === "user:cli" ? "driver"
+        : source === "nav" || source.startsWith("nav:") || source === "navigator" || source.startsWith("navigator:") ? "navigator" : "subagent";
       const selectedSkill = author === "driver" && typeof p.selected_skill?.name === "string"
         ? { name: p.selected_skill.name, origin: String(p.selected_skill.origin ?? "") } : undefined;
       return { type: "message", id: String(p.command_id ?? envelope.seq), author, source,

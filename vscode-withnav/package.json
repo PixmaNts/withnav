@@ -1,9 +1,17 @@
 {
-  "name": "navai",
-  "displayName": "Navai",
-  "description": "Pair-programming navigator: a language server watches your edits and offers short end-of-line remarks.",
+  "name": "withnav",
+  "displayName": "WithNav",
+  "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
   "version": "0.6.1",
   "publisher": "pixmants",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PixmaNts/withnav.git"
+  },
+  "homepage": "https://github.com/PixmaNts/withnav#readme",
+  "bugs": {
+    "url": "https://github.com/PixmaNts/withnav/issues"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
@@ -14,118 +22,119 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "icon": "media/withnav-icon.png",
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "navai",
-          "title": "Navai",
-          "icon": "media/navai.svg"
+          "id": "withnav",
+          "title": "WithNav",
+          "icon": "media/withnav.svg"
         }
       ]
     },
     "views": {
-      "navai": [
+      "withnav": [
         {
-          "id": "navai.chat",
-          "name": "Cognition",
+          "id": "withnav.chat",
+          "name": "Nav",
           "type": "webview"
         }
       ]
     },
     "commands": [
-      { "command": "navai.toggleBypassPermissions", "title": "Navai: Toggle Bypass Permissions" },
+      { "command": "withnav.toggleBypassPermissions", "title": "WithNav: Toggle Bypass Permissions" },
       {
-        "command": "navai.openSettings",
+        "command": "withnav.openSettings",
         "title": "Open Settings",
-        "category": "Navai",
+        "category": "WithNav",
         "icon": "$(settings-gear)"
       },
       {
-        "command": "navai.focusChat",
-        "title": "Focus Cognition Chat",
-        "category": "Navai"
+        "command": "withnav.focusChat",
+        "title": "Focus Nav Chat",
+        "category": "WithNav"
       },
       {
-        "command": "navai.markUseful",
+        "command": "withnav.markUseful",
         "title": "Mark Last Remark as Useful",
-        "category": "Navai"
+        "category": "WithNav"
       },
       {
-        "command": "navai.markNoise",
+        "command": "withnav.markNoise",
         "title": "Mark Last Remark as Noise",
-        "category": "Navai"
+        "category": "WithNav"
       },
       {
-        "command": "navai.dismiss",
+        "command": "withnav.dismiss",
         "title": "Dismiss Current Remark",
-        "category": "Navai"
+        "category": "WithNav"
       },
       {
-        "command": "navai.setIntent",
-        "title": "Set Current Intent",
-        "category": "Navai"
+        "command": "withnav.setIntent",
+        "title": "Set the Course",
+        "category": "WithNav"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "navai.openSettings",
-          "when": "view == navai.chat",
+          "command": "withnav.openSettings",
+          "when": "view == withnav.chat",
           "group": "navigation"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "navai.markUseful",
+        "command": "withnav.markUseful",
         "key": "ctrl+alt+y",
-        "when": "navai.remarkVisible"
+        "when": "withnav.remarkVisible"
       },
       {
-        "command": "navai.markNoise",
+        "command": "withnav.markNoise",
         "key": "ctrl+alt+n",
-        "when": "navai.remarkVisible"
+        "when": "withnav.remarkVisible"
       },
       {
-        "command": "navai.dismiss",
+        "command": "withnav.dismiss",
         "key": "ctrl+alt+d",
-        "when": "navai.remarkVisible"
+        "when": "withnav.remarkVisible"
       }
     ],
     "configuration": {
-      "title": "Navai",
+      "title": "WithNav",
       "properties": {
-        "navai.enabled": {
+        "withnav.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable the navigator and keep its language server running."
+          "description": "Enable WithNav and keep its language server running."
         },
-        "navai.serverPath": {
+        "withnav.serverPath": {
           "type": "string",
-          "default": "navai-lsp",
-          "description": "Path to the navai-lsp server binary (absolute path, or a command found on PATH)."
+          "default": "withnav-lsp",
+          "description": "Path to the withnav-lsp server binary (absolute path, or a command found on PATH)."
         },
-        "navai.idleMs": {
+        "withnav.idleMs": {
           "type": "integer",
           "default": 3000,
           "minimum": 0,
-          "description": "Idle delay after the last edit before the navigator may speak."
+          "description": "Idle delay after the last edit before WithNav may speak."
         },
-        "navai.minChangedLines": {
+        "withnav.minChangedLines": {
           "type": "integer",
           "default": 3,
           "minimum": 0,
-          "description": "Minimum number of changed lines since the last remark for the navigator to consider speaking."
+          "description": "Minimum number of changed lines since the last remark for WithNav to consider speaking."
         },
-        "navai.cooldownMs": {
+        "withnav.cooldownMs": {
           "type": "integer",
           "default": 20000,
           "minimum": 0,
           "description": "Minimum delay between two remarks on the same file."
         },
-        "navai.reflex.enabled": {
+        "withnav.reflex.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable inline-completion suggestions from the reflex layer."

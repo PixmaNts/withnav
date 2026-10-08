@@ -175,18 +175,18 @@ test('real 409 reloads and drops queued saves; real 400 renders a row error',asy
 });
 test('no workspace makes no requests and provides Open Folder',async()=>{
   const {host,messages,calls}=setup(()=>{throw Error('must not request');},{});await host.handle({type:'ready'});await host.handle({type:'save',key:'default_agent',value:'build'});assert.equal(calls.length,0);
-  const v=view();v.deliver(messages[0]);assert.match(v.document.querySelector('#rows').textContent,/Open a folder to edit Navai settings/);v.document.querySelector('#rows button').click();assert.equal(v.sent.at(-1).type,'openFolder');v.dom.window.close();
+  const v=view();v.deliver(messages[0]);assert.match(v.document.querySelector('#rows').textContent,/Open a folder to edit WithNav settings/);v.document.querySelector('#rows button').click();assert.equal(v.sent.at(-1).type,'openFolder');v.dom.window.close();
 });
 test('panel disposal cancels pending endpoint waits and Open Folder runs its command',async()=>{
   const original=Module._load;let open,receive,dispose,signal;const commands=[];
   const vscode={workspace:{workspaceFolders:undefined},Uri:{joinPath:()=>'/asset'},ViewColumn:{Active:1},Disposable:class{constructor(fn){this.dispose=fn;}},commands:{registerCommand:(_,fn)=>{open=fn;return{dispose(){}};},executeCommand:name=>commands.push(name)},window:{createWebviewPanel:()=>({webview:{asWebviewUri:x=>x,cspSource:'https://host',postMessage(){},onDidReceiveMessage:fn=>{receive=fn;return{dispose(){}};}},onDidDispose:fn=>dispose=fn}),setStatusBarMessage(){}}};
   Module._load=function(id,...args){return id==='vscode'?vscode:original.call(this,id,...args);};let registerSettingsView;try{({registerSettingsView}=require('../out/tests/settingsView'));}finally{Module._load=original;}
-  const registration=registerSettingsView({extensionUri:'/extension',extension:{id:'navai'}},{settingsRequest:(_p,_i,s)=>{signal=s;return new Promise((_resolve,reject)=>s.addEventListener('abort',()=>reject(Error('cancelled'))));}});
+  const registration=registerSettingsView({extensionUri:'/extension',extension:{id:'withnav'}},{settingsRequest:(_p,_i,s)=>{signal=s;return new Promise((_resolve,reject)=>s.addEventListener('abort',()=>reject(Error('cancelled'))));}});
   open();receive({type:'openFolder'});assert.equal(commands[0],'workbench.action.files.openFolder');dispose();vscode.workspace.workspaceFolders=[{uri:{fsPath:'/work'}}];open();receive({type:'ready'});await new Promise(r=>setImmediate(r));assert.ok(signal);dispose();assert.equal(signal.aborted,true);await new Promise(r=>setImmediate(r));registration.dispose();
 });
 test('endpoint waits cancel cleanly and time out with a Retry state',async t=>{
   const original=Module._load;Module._load=function(id,...args){return id==='vscode'?{}:original.call(this,id,...args);};let CognitionBackend;try{({CognitionBackend}=require('../out/tests/cognition'));}finally{Module._load=original;}
   const backend=Object.create(CognitionBackend.prototype);t.mock.timers.enable({apis:['setTimeout','setInterval']});const controller=new AbortController();const cancelled=backend.waitForEndpoint(controller.signal);controller.abort();await assert.rejects(cancelled,/cancelled/);
-  const timed=backend.waitForEndpoint();const rejected=assert.rejects(timed,/Navai's language server is not running/);t.mock.timers.tick(30000);await rejected;
-  const v=view();v.deliver({type:'loadError',message:"Navai's language server is not running"});assert.match(v.document.querySelector('#rows').textContent,/Retry/);v.document.querySelector('#rows button').click();assert.equal(v.sent.at(-1).type,'reload');v.dom.window.close();
+  const timed=backend.waitForEndpoint();const rejected=assert.rejects(timed,/WithNav's language server is not running/);t.mock.timers.tick(30000);await rejected;
+  const v=view();v.deliver({type:'loadError',message:"WithNav's language server is not running"});assert.match(v.document.querySelector('#rows').textContent,/Retry/);v.document.querySelector('#rows button').click();assert.equal(v.sent.at(-1).type,'reload');v.dom.window.close();
 });

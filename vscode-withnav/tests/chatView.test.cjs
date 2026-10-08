@@ -623,7 +623,7 @@ test("late-created and recreated views receive current session identity before r
 });
 
 test("favorite models: the host stores them in globalState, shares them with every view and ignores bad input", async () => {
-  const state = memento({ "navai.favoriteModels": ["kept/model", 7, null] });
+  const state = memento({ "withnav.favoriteModels": ["kept/model", 7, null] });
   const backend = { currentGeneration: () => 1, currentConversationId: () => "S", subscribe: () => () => {}, currentContext: () => undefined,
     publishSubagents() {}, publishCompaction() {}, refreshAssignments: async () => {}, refreshCommands: async () => {}, resumePermissionReads() {}, cancelPermissionReads() {}, history: () => [] };
   registerChatView({ extensionUri: "extension", globalState: state }, backend);
@@ -636,22 +636,22 @@ test("favorite models: the host stores them in globalState, shares them with eve
   first.receive({ type: "ready" });
   assert.deepEqual(first.favorites().at(-1), { type: "favorites", items: ["kept/model"], generation: 1 }, "non-strings are dropped on read");
   first.receive({ type: "toggleFavorite", name: "gw/a", generation: 1 });
-  assert.deepEqual(state.get("navai.favoriteModels"), ["kept/model", "gw/a"]);
+  assert.deepEqual(state.get("withnav.favoriteModels"), ["kept/model", "gw/a"]);
   assert.deepEqual(first.favorites().at(-1).items, ["kept/model", "gw/a"]);
   assert.deepEqual(second.favorites().at(-1).items, ["kept/model", "gw/a"], "another view sees the change");
   first.receive({ type: "toggleFavorite", name: "kept/model", generation: 1 });
-  assert.deepEqual(state.get("navai.favoriteModels"), ["gw/a"]);
+  assert.deepEqual(state.get("withnav.favoriteModels"), ["gw/a"]);
   first.receive({ type: "toggleFavorite", name: 5, generation: 1 });
   first.receive({ type: "toggleFavorite", name: "", generation: 1 });
   first.receive({ type: "toggleFavorite", name: "x".repeat(1000), generation: 1 });
   first.receive({ type: "toggleFavorite", name: "gw/b", generation: 99 });
-  assert.deepEqual(state.get("navai.favoriteModels"), ["gw/a"], "bad names and stale generations change nothing");
+  assert.deepEqual(state.get("withnav.favoriteModels"), ["gw/a"], "bad names and stale generations change nothing");
   second.receive({ type: "ready" });
   assert.deepEqual(second.favorites().at(-1).items, ["gw/a"], "a recreated view starts from the stored list");
 });
 
 test("favorite models reach a subagent panel too", async t => {
-  const state = memento({ "navai.favoriteModels": ["gw/a"] });
+  const state = memento({ "withnav.favoriteModels": ["gw/a"] });
   const { b, event, dom, tick, panels } = fullChat(t, state);
   b.state.session = "P"; b.scheduleChildRead = () => {};
   event("subagent.spawned", { parent_session_id: "P", child_session_id: "C", agent: "plan", goal: "work" });

@@ -663,3 +663,48 @@ async fn test_server_config_never_resolves_to_the_users_data_dir() {
     assert!(db.exists(), "the database is the one in the temp root");
     task.abort();
 }
+
+// Given two sessions of one workspace, one with an unreadable agent_overrides column
+// When GET /v1/sessions?workspace=... runs
+// Then the healthy session is listed and the unreadable one is left out, not a 500
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_skips_a_session_with_unreadable_metadata() {
+    let (server, db, _keep) = spawn_history_server().await;
+    let healthy = server
+        .state
+        .create_session(&server.ws, None, false)
+        .await
+        .expect("healthy");
+    let broken = server
+        .state
+        .create_session(&server.ws, None, false)
+        .await
+        .expect("broken");
+    server.state.history().flush().await.expect("flush");
+    rusqlite::Connection::open(&db)
+        .expect("db")
+        .execute(
+            "UPDATE sessions SET agent_overrides='invalid json' WHERE id=?1",
+            [broken.to_string()],
+        )
+        .expect("corrupt");
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/v1/sessions?workspace={}",
+            server.base,
+            server.ws.display()
+        ))
+        .send()
+        .await
+        .expect("list");
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.expect("json");
+    let ids: Vec<&str> = body["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .map(|s| s["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(ids, vec![healthy.to_string()]);
+}

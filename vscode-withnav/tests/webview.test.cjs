@@ -138,8 +138,10 @@ test("real webview initializes with frozen VS Code API, renders history and post
   assert.equal(posts[0].type, "ready");
   const receive = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data }));
   receive({ type: "conversationOpened", id: "A", title: "Conversation A", generation: 2 });
+  // Legacy history authors retain the same Captain presentation.
   receive({ type: "history", generation: 2, items: [{ type: "message", author: "driver", text: "Hello from history", id: "M", generation: 2 }] });
   assert.match(dom.window.document.querySelector("#transcript").textContent, /Hello from history/);
+  assert.ok(dom.window.document.querySelector(".message.captain"));
   receive({ type: "permission", generation: 2, card: { requestId: "RA", callId: "C", tool: "bash", agent: "build", scope: { kind: "folder", value: "/a" }, reason: "Review", call: "pwd", allowFolder: false } });
   [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow once").click();
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: "answerPermission", sessionId: "A", requestId: "RA", decision: "allow_once", generation: 2 });

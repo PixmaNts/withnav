@@ -53,7 +53,7 @@ export function Permissions(p: SectionProps) {
               <Step icon={<Compass size={13} />} title="2 · Metacognition">
                 Must approve risky or outside-project changes before they run.
               </Step>
-              <Step icon={<User size={13} />} title="3 · Driver">
+              <Step icon={<User size={13} />} title="3 · Captain">
                 Decides on any doubt, timeout or reviewer failure: allow once or deny. Sensitive reads always end here.
               </Step>
             </div>

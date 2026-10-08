@@ -14,7 +14,7 @@ import {
   DiagnosticItem,
   FeedbackNotification,
   IntentNotification,
-  NavigatorConfig,
+  WithNavConfig,
   RemarkNotification,
   RemarkParams,
   ServerInfoNotification,
@@ -84,8 +84,8 @@ export function activate(_context: vscode.ExtensionContext) {
   });
 
   // A remark is anchored to a line number: edits above it shift it, and an
-  // edit next to it means the driver is acting on it, so it is removed
-  // (observed 2026-09-30: a remark stayed on screen after the driver applied
+  // edit next to it means the Captain is acting on it, so it is removed
+  // (observed 2026-09-30: a remark stayed on screen after the Captain applied
   // it, and drifted to unrelated lines as code moved).
   vscode.workspace.onDidChangeTextDocument((event) => followEdits(event));
 
@@ -126,7 +126,7 @@ function registerCommands() {
   vscode.commands.registerCommand("withnav.setIntent", promptForIntent);
 }
 
-function readConfig(): NavigatorConfig {
+function readConfig(): WithNavConfig {
   return {
     enabled: readSetting<boolean>("enabled", true),
     idleMs: readSetting<number>("idleMs", 3000),

@@ -1,7 +1,7 @@
 // Dev-only stand-in for `GET/PUT /v1/settings` and `POST /v1/gateways/{name}/test`
 // (`.scratch/settings/contract.md`), used only while the server answers 404.
 //
-// It starts from the real `config.json` and `models.json` of `NAVAI_CONFIG_DIR`
+// It starts from the real `config.json` and `models.json` of `WITHNAV_CONFIG_DIR`
 // (default `~/.config/withnav`), keeps every change in memory and never writes a
 // file. Catalogue checks use the real server's `GET /v1/models` and
 // `GET /v1/agents`, so a model or agent that does not exist is refused as the
@@ -110,7 +110,7 @@ async function body(target: string, workspace: string, auth: string) {
   }));
   return {
     revision: revision(cfg),
-    paths: { config: join(configDir, "config.json"), models: join(configDir, "models.json"), agents: [join(configDir, "agents"), join(workspace, ".navai", "agents")] },
+    paths: { config: join(configDir, "config.json"), models: join(configDir, "models.json"), agents: [join(configDir, "agents"), join(workspace, ".withnav", "agents")] },
     fields,
     gateways,
   };
@@ -148,7 +148,7 @@ async function validate(target: string, workspace: string, auth: string, key: st
 function send(res: ServerResponse, status: number, value: Json) {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");
-  res.setHeader("x-navai-dev-fallback", "settings");
+  res.setHeader("x-withnav-dev-fallback", "settings");
   res.end(JSON.stringify(value));
 }
 

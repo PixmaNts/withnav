@@ -1,14 +1,14 @@
 import * as vscode from "vscode";
 import type { HostToWebview } from "./chatProtocol";
 
-// The editor-context block rides at the end of the driver's message text so
+// The editor-context block rides at the end of the Captain's message text so
 // the cognition can read it; the panel strips it back out and shows a chip.
 
 const OPEN = "<editor-context>";
 const CLOSE = "</editor-context>";
 const MAX_OPEN_FILES = 10;
 const MAX_SELECTION_CHARS = 2000;
-/** Document schemes that are real files the driver works on (not output panes). */
+/** Document schemes that are real files the Captain works on (not output panes). */
 const SCHEMES = new Set(["file", "untitled", "vscode-remote", "vscode-vfs"]);
 
 export interface EditorContext {
@@ -68,7 +68,7 @@ export function buildEditorContext(): EditorContext {
   return { block: lines.join("\n"), label: chipLabel(summary) };
 }
 
-/** Splits a message text into the driver's own text and the chip label of its context block. */
+/** Splits a message text into the Captain's own text and the chip label of its context block. */
 export function splitEditorContext(text: string): { text: string; context?: string } {
   const trimmed = text.trimEnd();
   if (!trimmed.endsWith(CLOSE)) return { text };
@@ -91,7 +91,7 @@ export function splitEditorContext(text: string): { text: string; context?: stri
   return { text: trimmed.slice(0, at).trimEnd(), context: chipLabel(summary) };
 }
 
-/** Maps a host message for display: driver messages lose their raw block and gain a chip. */
+/** Maps a host message for display: Captain messages lose their raw block and gain a chip. */
 export function presentMessage(message: HostToWebview): HostToWebview {
   if (message.type === "history") return { ...message, items: message.items.map(presentMessage) };
   if (message.type !== "message" || (message.author !== "driver" && message.author !== "captain")) return message;
@@ -99,7 +99,7 @@ export function presentMessage(message: HostToWebview): HostToWebview {
   return context === undefined ? message : { ...message, text, context };
 }
 
-/** Last file editor the driver used, kept while focus sits in an output or terminal pane. */
+/** Last file editor the Captain used, kept while focus sits in an output or terminal pane. */
 let lastFocused: vscode.TextEditor | undefined;
 
 function focusedEditor(): vscode.TextEditor | undefined {

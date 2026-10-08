@@ -16,7 +16,7 @@ const DELIVERY: Record<string, string> = { next_turn: "next-turn", steer: "steer
  * A subagent's own session, read-only: its task, how its result returns, the
  * calls it made and what it has written so far. Children are not promptable
  * (CONTEXT.md, Subagent), so there is no steer box: guidance comes from the
- * parent agent. The driver can stop a child, or continue one that is paused.
+ * parent agent. The Captain can stop a child, or continue one that is paused.
  */
 export function SubagentView({ childId, parentId, parent, parentTitle, onBack }: { childId: string; parentId: string; parent: SessionView; parentTitle: string; onBack: () => void }) {
   const qc = useQueryClient();
@@ -54,7 +54,7 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
     .filter((p): p is Extract<Turn["parts"][number], { type: "text" }> => p.type === "text" && !!p.text.trim())
     .map((p) => p.text);
   const latest = findings[findings.length - 1];
-  const goal = child?.goal || (view.items.find((i) => i.kind === "driver" || i.kind === "subagent-result") as { text?: string } | undefined)?.text || "";
+  const goal = child?.goal || (view.items.find((i) => i.kind === "captain" || i.kind === "subagent-result") as { text?: string } | undefined)?.text || "";
   const paused = view.pause;
 
   const act = async (work: () => Promise<unknown>) => {
@@ -90,7 +90,7 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
         </span>
       </div>
       <div className="task-card">
-        <div className="msg-driver" style={{ minWidth: 0 }}>
+        <div className="msg-captain" style={{ minWidth: 0 }}>
           <div className="byline">{child ? `Delegation · from ${child.spawnedBy}` : "Captain · Delegation"}</div>
           <div className="label">TASK</div>
           <div className="goal">{goal || <span className="muted">Not known yet.</span>}</div>

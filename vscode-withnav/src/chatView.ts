@@ -62,7 +62,7 @@ export function registerChatView(
       const style = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"));
       webview.html = chatHtml(nonce, String(script), String(style), webview.cspSource);
 
-      // Driver messages lose their raw editor-context block and gain a chip label.
+      // Captain messages lose their raw editor-context block and gain a chip label.
       // The webview (re)loads with amnesia: remember the last conversation
       // header pushes so `ready` can restore them before the transcript.
       let lastConversationOpened: HostToWebview | undefined;

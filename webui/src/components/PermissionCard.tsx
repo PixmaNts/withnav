@@ -4,7 +4,7 @@ import type { Permission } from "../session/reducer";
 
 type Decision = "allow_once" | "allow_folder" | "deny";
 
-/** What the call would do, as the driver reviews it: path and content, or the command. */
+/** What the call would do, as the Captain reviews it: path and content, or the command. */
 function preview(perm: Permission): { title: string; path?: string; lines: { kind: "add" | "del" | "ctx"; text: string }[]; extra?: string } {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let args: any;

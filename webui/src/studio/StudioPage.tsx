@@ -150,7 +150,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
     if (def && selected !== TRIGGER_ID && !def.node.some((n) => n.id === selected)) setSelected(TRIGGER_ID);
   }, [def, selected]);
 
-  // Sample payload: the trigger's sample until the driver edits it.
+  // Sample payload: the trigger's sample until the Captain edits it.
   const trigger = catalogue.data?.triggers.find((t) => t.name === def?.flow.on);
   const [payloadText, setPayloadText] = useState("");
   const payloadFor = useRef<string>("");

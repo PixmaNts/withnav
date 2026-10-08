@@ -85,15 +85,15 @@ test("bash commands are never bounded; server-shortened arguments say unavailabl
   assert.match(permissionCall("bash", '{"command":"cut'), /full call unavailable/);
 });
 
-for (const [source, author] of [["user:http", "driver"], ["user:cli", "driver"],
+for (const [source, author] of [["user:http", "captain"], ["user:cli", "captain"],
   ["user:subagent", "subagent"], ["subagent", "subagent"], ["subagent:child", "subagent"],
   ["user:automation", "subagent"], ["user", "subagent"], ["unknown", "subagent"],
   ["navigator", "navigator"], ["navigator:edit", "navigator"]]) {
-  test(`source ${source} is ${author}, not guessed driver provenance`, () => {
-    const message = eventView(envelope("message.received", { source, content: "text", selected_skill: { name: "review", origin: "driver" } }));
+  test(`source ${source} is ${author}, not guessed Captain provenance`, () => {
+    const message = eventView(envelope("message.received", { source, content: "text", selected_skill: { name: "review", origin: "captain" } }));
     assert.equal(message.author, author);
     assert.equal(message.source, source);
-    assert.equal(message.selectedSkill?.name, author === "driver" ? "review" : undefined);
+    assert.equal(message.selectedSkill?.name, author === "captain" ? "review" : undefined);
   });
 }
 
@@ -135,7 +135,7 @@ test("evidence absent and malformed does not invent an approval", () => {
 });
 
 test("evidence preserves all optional review fields only when present", () => {
-  for (const source of ["jev", "metacognition", "driver"]) {
+  for (const source of ["jev", "metacognition", "captain", "driver"]) {
     const minimal = { policy_version: 1, source };
     assert.deepEqual(permissionEvidence(minimal), minimal);
     const full = { ...minimal, reason: "Low risk", verdicts: { effect: "write", scope: "project", risk: "low" },
@@ -145,9 +145,9 @@ test("evidence preserves all optional review fields only when present", () => {
   }
 });
 
-test("open and denied driver-review cards never claim approval", () => {
+test("open and denied Captain-review cards never claim approval", () => {
   const { evidenceLabel } = require("../out/tests/eventView.js");
-  const evidence = { source: "driver", policy_version: 1 };
+  const evidence = { source: "captain", policy_version: 1 };
   assert.equal(evidenceLabel(evidence, "permission"), "Captain review required");
   assert.equal(evidenceLabel(evidence, "permission", "deny"), "Captain review required");
   assert.equal(evidenceLabel(evidence, "permission", "allow_once"), "approved · Captain");
@@ -198,7 +198,7 @@ test("ambiguous, wrong-name or inconsistent repeated calls never replace request
 test("Captain and Nav provenance retain human and wake rendering for new sessions", () => {
   const { evidenceLabel } = require("../out/tests/eventView.js");
   for (const source of ["driver", "captain"]) {
-    assert.equal(eventView(envelope("message.received", { source, content: "hello" })).author, "driver");
+    assert.equal(eventView(envelope("message.received", { source, content: "hello" })).author, "captain");
     assert.equal(evidenceLabel({ source, policy_version: 1 }, "tool"), "approved · Captain");
   }
   assert.equal(eventView(envelope("message.received", { source: "nav", content: "wake" })).author, "navigator");

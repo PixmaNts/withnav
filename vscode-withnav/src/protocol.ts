@@ -1,6 +1,6 @@
 import { NotificationType } from "vscode-languageclient";
 
-export interface NavigatorConfig {
+export interface WithNavConfig {
   enabled: boolean;
   idleMs: number;
   minChangedLines: number;
@@ -18,14 +18,14 @@ export interface ClearParams {
   uri: string;
 }
 
-export type NavigatorState = "idle" | "thinking" | "error";
+export type WithNavState = "idle" | "thinking" | "error";
 
 export interface StatusParams {
-  state: NavigatorState;
+  state: WithNavState;
   message?: string;
 }
 
-/** `followed`: cleared automatically because the driver edited right next to it. */
+/** `followed`: cleared automatically because the Captain edited right next to it. */
 export type Verdict = "useful" | "noise" | "dismissed" | "followed";
 
 export interface FeedbackParams {

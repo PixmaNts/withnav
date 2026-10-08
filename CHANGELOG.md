@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **VS Code's layer protocol now includes variant discovery diagnostics.** The optional server
+  field is represented in the extension's types instead of being omitted from its contract.
 - **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
   The extension built the message URL from the raw id while every other call encoded it, so such an
   id produced a malformed request and a 404.

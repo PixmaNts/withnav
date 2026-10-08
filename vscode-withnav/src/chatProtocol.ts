@@ -109,7 +109,7 @@ export interface ModelInfo {
 }
 export interface Selection { model: string; variant?: string | null; source: string; variant_source?: string }
 export interface AgentInfo { id: string; description: string; mode: string; effective: Selection | null; assignment?: Selection | null; warning?: string | null }
-export interface LayerInfo { layer: string; status: string; model?: string | null; variant?: string | null; api?: string; reason?: string | null }
+export interface LayerInfo { layer: string; status: string; model?: string | null; variant?: string | null; api?: string; reason?: string | null; variant_diagnostic?: string | null }
 
 export interface CommandInfo { name: string; description: string; args_hint: string }
 export interface ChildInfo {

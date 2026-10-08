@@ -1,5 +1,5 @@
 //! The permission gate through the session service and the HTTP surface: a
-//! gated tool call yields the turn, the driver answers with a typed decision,
+//! gated tool call yields the turn, the Captain answers with a typed decision,
 //! and the decision (never chat text) resumes it.
 
 use std::path::{Path, PathBuf};
@@ -165,7 +165,7 @@ fn body_of(provider: &CapturingProvider, n: usize) -> String {
     provider.bodies()[n].clone()
 }
 
-// Given a write, when the driver allows it once
+// Given a write, when the Captain allows it once
 // Then the call runs once, its real result is what the next model request
 //      carries, and the request is stored with its resolution
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -314,7 +314,7 @@ async fn bypass_leaves_pending_sensitive_request_open() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "write credentials").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
-    assert_eq!(requested[0].payload["requires_driver"], true);
+    assert_eq!(requested[0].payload["requires_captain"], true);
     let (status, body) = request_json(
         &router,
         "POST",
@@ -330,10 +330,10 @@ async fn bypass_leaves_pending_sensitive_request_open() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
+async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
     let env = env();
-    let target = env.ws.join("driver.txt");
-    let provider = provider(vec![one_write("driver-write", &target), done("written")]).await;
+    let target = env.ws.join("captain.txt");
+    let provider = provider(vec![one_write("captain-write", &target), done("written")]).await;
     let state = config(&env, &provider).bearer_token("test-token").state();
     let router = authenticated_router(state.clone());
     let id = state.create_session(&env.ws, None, false).await.unwrap();
@@ -361,7 +361,7 @@ async fn admitted_driver_answer_keeps_driver_provenance_after_bypass() {
     assert!(resolved[0].payload.get("approved_by").is_none());
     assert_eq!(
         std::fs::read_to_string(target).unwrap(),
-        "from driver-write"
+        "from captain-write"
     );
     state.close_session(id).await.unwrap();
 }
@@ -932,8 +932,8 @@ async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
 
 // Given a model message with two writes, and a navigator wake posted while
 //       the first request waits
-// When the driver approves the first, the second raises its own request, and
-//      the driver approves that too
+// When the Captain approves the first, the second raises its own request, and
+//      the Captain approves that too
 // Then no request is cancelled, both files are written, and the wake runs
 //      as its own turn only after the turn that held the requests has ended
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -990,7 +990,7 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
 
 // Given a write whose destination moves while its approval waits, and a wake
 //       posted behind the request
-// When the driver approves the first request and the call asks again
+// When the Captain approves the first request and the call asks again
 // Then the fresh request is not cancelled by the held wake, and the wake runs
 //      after the turn
 #[cfg(unix)]

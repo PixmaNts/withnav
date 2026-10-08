@@ -1,5 +1,5 @@
-use withnav::server::AppState;
 use serde_json::{json, Value};
+use withnav::server::AppState;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
@@ -76,7 +76,7 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
 }
 
 #[tokio::test]
-async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
+async fn completion_after_negative_eligibility_cannot_overtake_queued_captain() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
@@ -90,7 +90,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(parent, "original".into()))
+        .send(common::server::captain_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -112,9 +112,9 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
-            "driver correction".into(),
+            "captain correction".into(),
         ))
         .bounded(file!(), line!())
         .await
@@ -152,7 +152,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(!request.contains("driver correction"));
+    assert!(!request.contains("captain correction"));
     assert!(!request.contains("late child result"));
     stream.send(text_chunk("natural boundary")).unwrap();
     drop(stream);
@@ -164,9 +164,9 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .unwrap();
     let b = body(&request);
     let messages = b["messages"].as_array().unwrap();
-    let driver = messages
+    let captain = messages
         .iter()
-        .position(|m| m["content"] == "driver correction")
+        .position(|m| m["content"] == "captain correction")
         .unwrap();
     let result = messages
         .iter()
@@ -176,7 +176,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
                 .is_some_and(|s| s.contains("late child result"))
         })
         .unwrap();
-    assert!(driver < result);
+    assert!(captain < result);
     state.close_all().bounded(file!(), line!()).await;
     drop(stream);
 }
@@ -280,7 +280,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(parent, "captain".into()))
+        .send(common::server::captain_command(parent, "captain".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -400,7 +400,7 @@ async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_on
 }
 
 #[tokio::test]
-async fn queued_driver_without_result_preserves_running_turn_and_budget() {
+async fn queued_captain_without_result_preserves_running_turn_and_budget() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
@@ -414,7 +414,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(parent, "original".into()))
+        .send(common::server::captain_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -425,9 +425,9 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
-            "next turn driver".into(),
+            "next turn captain".into(),
         ))
         .bounded(file!(), line!())
         .await
@@ -442,7 +442,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(!request.contains("next turn driver"));
+    assert!(!request.contains("next turn captain"));
     let events = replay(&state, parent).bounded(file!(), line!()).await;
     assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
     assert!(!events.iter().any(|e| e.kind == "turn.end"));
@@ -454,7 +454,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(request.contains("next turn driver"));
+    assert!(request.contains("next turn captain"));
     let events = replay(&state, parent).bounded(file!(), line!()).await;
     assert!(events
         .iter()
@@ -467,7 +467,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
 }
 
 #[tokio::test]
-async fn queued_driver_precedes_mid_turn_result_steer() {
+async fn queued_captain_precedes_mid_turn_result_steer() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
@@ -481,7 +481,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(parent, "original".into()))
+        .send(common::server::captain_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -503,9 +503,9 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
-            "driver correction".into(),
+            "captain correction".into(),
         ))
         .bounded(file!(), line!())
         .await
@@ -540,9 +540,9 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .unwrap();
     let b = body(&request);
     let messages = b["messages"].as_array().unwrap();
-    let driver = messages
+    let captain = messages
         .iter()
-        .position(|m| m["content"] == "driver correction")
+        .position(|m| m["content"] == "captain correction")
         .unwrap();
     let notice = messages
         .iter()
@@ -552,7 +552,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
                 .is_some_and(|s| s.contains("untrusted_subagent_output"))
         })
         .unwrap();
-    assert!(driver < notice);
+    assert!(captain < notice);
     assert!(messages
         .iter()
         .any(|m| m["role"] == "tool" && m["tool_call_id"] == "glob"));
@@ -913,9 +913,9 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
             .await
             .unwrap();
         state
-            .send(common::server::driver_command(
+            .send(common::server::captain_command(
                 parent,
-                "driver instruction".into(),
+                "captain instruction".into(),
             ))
             .bounded(file!(), line!())
             .await
@@ -988,7 +988,7 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
 }
 
 #[tokio::test]
-async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_first() {
+async fn interrupt_result_waits_for_parent_permission_and_queued_captain_goes_first() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
@@ -1002,9 +1002,9 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
-            "driver instruction".into(),
+            "captain instruction".into(),
         ))
         .bounded(file!(), line!())
         .await
@@ -1077,9 +1077,9 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .iter()
         .any(|e| e.kind == "permission.resolved"));
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
-            "driver correction".into(),
+            "captain correction".into(),
         ))
         .bounded(file!(), line!())
         .await
@@ -1092,9 +1092,9 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .unwrap();
     let b = body(&request);
     let messages = b["messages"].as_array().unwrap();
-    let driver = messages
+    let captain = messages
         .iter()
-        .position(|m| m["content"] == "driver correction")
+        .position(|m| m["content"] == "captain correction")
         .unwrap();
     let result = messages
         .iter()
@@ -1104,7 +1104,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
                 .is_some_and(|s| s.contains("untrusted_subagent_output"))
         })
         .unwrap();
-    assert!(driver < result);
+    assert!(captain < result);
     state.close_all().bounded(file!(), line!()).await;
     drop(stream);
 }

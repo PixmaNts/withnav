@@ -687,7 +687,7 @@ async fn typed_parameter_overflow_is_a_limit_not_a_string() {
     assert!(outcome.trace.actions.is_empty());
 }
 #[tokio::test]
-async fn decision_text_preserves_driver_context_until_32_kib() {
+async fn decision_text_preserves_captain_context_until_32_kib() {
     let c = compile(&(header("['b']") + &decision("b", "")));
     for (bytes, expected_bytes, cut) in [(25749, 25749, false), (33000, 32768, true)] {
         let client = Fake::new();
@@ -760,7 +760,7 @@ fn five_reference_flow() -> String {
             "state_template='fixed'\n[node.inputs]\nx='session.agent'\n[node.next]\nno=['c','d','e','f']",
         );
     for (id, reference) in [
-        ("c", "conversation.last_driver"),
+        ("c", "conversation.last_captain"),
         ("d", "intent.record"),
         ("e", "workspace.root"),
         ("f", "event.tool"),

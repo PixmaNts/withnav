@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use tokio_util::sync::CancellationToken;
 use withnav::agent::prompt::build_request;
 use withnav::provider::catalog::{resolve_chat, ModelCatalog, ResolvedChat};
 use withnav::provider::client::ModelClient;
 use withnav::provider::config::{ModelsConfig, ProviderConfig};
 use withnav::provider::openai::ChatMessage;
 use withnav::provider::openai::ClientCache;
-use tokio_util::sync::CancellationToken;
 
 mod common;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};

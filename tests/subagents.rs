@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::{json, Value};
 use withnav::bus::event::EventKind;
 use withnav::server::AppState;
 use withnav::tools::Tool;
-use serde_json::{json, Value};
 
 mod common;
 use common::deadline::Deadline;
@@ -292,7 +292,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         assert!(link.terminal_reason.unwrap().contains("injected child"));
         assert!(matches!(
             fx.state
-                .send(common::server::driver_command(child, "retry".into()))
+                .send(common::server::captain_command(child, "retry".into()))
                 .bounded(file!(), line!())
                 .await,
             Err(withnav::error::ServerError::ResumeRequired)
@@ -324,7 +324,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
         .await
         .unwrap();
     fx.state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "parent request".into(),
         ))
@@ -606,7 +606,7 @@ async fn paused_child_admission(resume: bool) {
     let barrier = withnav::session::ChildPreparationBarrier::default();
     fx.state.pause_child_preparation(barrier.clone());
     fx.state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "spawn a child".into(),
         ))
@@ -751,7 +751,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
         std::fs::remove_file(settings).unwrap();
         let child = fx
             .state
-            .create_child_session(parent, "writer", "the driver approved this")
+            .create_child_session(parent, "writer", "the Captain approved this")
             .await
             .unwrap();
         let mut requested = None;
@@ -772,7 +772,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
         assert_eq!(
             fx.state
                 .history()
-                .latest_driver_message(child)
+                .latest_captain_message(child)
                 .await
                 .unwrap(),
             None
@@ -1440,7 +1440,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
 }
 
 #[tokio::test]
-async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited() {
+async fn child_prompt_is_not_attributed_as_captain_task_or_transcript_inherited() {
     let fx = fixture();
     install_agents(&fx.root, &fx.ws);
     let parent = fx
@@ -1450,7 +1450,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
         .await
         .unwrap();
     fx.state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "parent history".into(),
         ))
@@ -1793,7 +1793,11 @@ async fn bypass_of(fx: &Fx, id: ulid::Ulid) -> bool {
 
 async fn set_bypass(fx: &Fx, id: ulid::Ulid, enabled: bool) {
     fx.state
-        .set_bypass(id, enabled, withnav::bus::runtime::bypass::BypassOrigin::Http)
+        .set_bypass(
+            id,
+            enabled,
+            withnav::bus::runtime::bypass::BypassOrigin::Http,
+        )
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1898,7 +1902,11 @@ async fn parent_changes_reach_live_children_both_ways_and_no_unrelated_root() {
     // A child cannot be toggled by hand.
     assert!(matches!(
         fx.state
-            .set_bypass(child, true, withnav::bus::runtime::bypass::BypassOrigin::Http)
+            .set_bypass(
+                child,
+                true,
+                withnav::bus::runtime::bypass::BypassOrigin::Http
+            )
             .bounded(file!(), line!())
             .await,
         Err(withnav::error::ServerError::ChildReadOnly)

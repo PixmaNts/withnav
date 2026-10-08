@@ -38,7 +38,7 @@ async fn spawn_stalling_provider() -> String {
 
 // Given a turn stalled mid-stream
 // When the session is stopped and its history is loaded from the database
-// Then the transcript holds the driver's message of the interrupted turn and
+// Then the transcript holds the Captain's message of the interrupted turn and
 //      the stored events end with that turn's turn.end and the session.end
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stopped_mid_turn_session_keeps_its_transcript() {
@@ -99,7 +99,7 @@ async fn a_stopped_mid_turn_session_keeps_its_transcript() {
             m,
             ChatMessage::User { content, .. } if format!("{content:?}").contains("remember pineapple")
         )),
-        "interrupted turn's driver message is in the transcript: {:?}",
+        "interrupted turn's captain message is in the transcript: {:?}",
         loaded.transcript
     );
     let kinds: Vec<&str> = loaded.envelopes.iter().map(|e| e.kind.as_str()).collect();

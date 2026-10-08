@@ -102,7 +102,7 @@ fn cap_context_block(block: &str, max_bytes: usize) -> String {
     }
 }
 
-/// The reflex context block: the driver's intent and nearby signatures,
+/// The reflex context block: the Captain's intent and nearby signatures,
 /// rendered as comments in the file's language and capped at ~300 tokens.
 /// Returns an empty string when there is no context.
 pub fn render_context_block(reflex_context: &str, language_id: &str) -> String {

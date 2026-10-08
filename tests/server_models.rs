@@ -7,7 +7,10 @@ use common::server::{spawn_server, TestServerConfig, PROVIDER};
 
 const SECRET_SENTINEL: &str = "synthetic-secret-never-echo";
 
-async fn catalog_response(state: withnav::server::AppState, root: &std::path::Path) -> (u16, Value) {
+async fn catalog_response(
+    state: withnav::server::AppState,
+    root: &std::path::Path,
+) -> (u16, Value) {
     let (addr, task) = spawn_server(state).await;
     let response = reqwest::Client::new()
         .get(format!("http://{addr}/v1/models"))

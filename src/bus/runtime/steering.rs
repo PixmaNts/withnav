@@ -16,7 +16,7 @@ pub(super) struct Steering {
 #[derive(Debug, Default)]
 struct FlowWakes {
     last: Option<std::time::Instant>,
-    since_driver: bool,
+    since_captain: bool,
 }
 
 #[cfg(test)]
@@ -24,7 +24,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn flow_note_preserves_non_driver_provenance_without_claiming_replacement() {
+    fn flow_note_preserves_non_captain_provenance_without_claiming_replacement() {
         let steering = Steering::default();
         let provenance = UserProvenance::Flow {
             source: crate::provider::openai::FlowSource::Flow,
@@ -42,7 +42,7 @@ mod tests {
         assert!(!claimed);
         assert!(messages.is_empty());
         let messages = steering.apply(messages);
-        assert!(!messages[0].is_driver_message());
+        assert!(!messages[0].is_captain_message());
         let value = serde_json::to_value(&messages[0]).unwrap();
         assert_eq!(
             value["provenance"],
@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_end_cannot_wake_again_after_a_long_turn_until_driver_input() {
+    fn turn_end_cannot_wake_again_after_a_long_turn_until_captain_input() {
         let steering = Steering::default();
         assert_eq!(
             steering.admit_flow_report("wake".into(), "review".into(), "a".into(), true, true),
@@ -94,7 +94,7 @@ mod tests {
             Err("wake cooldown".into())
         );
         assert!(!steering.has_wake());
-        steering.flow_wakes.lock().unwrap().since_driver = false;
+        steering.flow_wakes.lock().unwrap().since_captain = false;
         assert_eq!(
             steering.admit_flow_report("new task".into(), "other".into(), "c".into(), true, true),
             Ok(())
@@ -185,7 +185,7 @@ impl Steering {
             && (wakes
                 .last
                 .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_secs(120))
-                || (turn_end && wakes.since_driver))
+                || (turn_end && wakes.since_captain))
         {
             return Err("wake cooldown".into());
         }
@@ -202,7 +202,7 @@ impl Steering {
         });
         if admitted && wake {
             wakes.last = Some(now);
-            wakes.since_driver = true;
+            wakes.since_captain = true;
         }
         if admitted {
             Ok(())
@@ -295,12 +295,12 @@ impl Steering {
 }
 
 impl super::RuntimeStatus {
-    pub(crate) fn flow_driver_message(&self) {
+    pub(crate) fn flow_captain_message(&self) {
         self.steering
             .flow_wakes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .since_driver = false;
+            .since_captain = false;
     }
 
     pub(crate) fn queue_flow_note_report(

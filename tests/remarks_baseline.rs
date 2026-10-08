@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use withnav::bus::event::{EventEnvelope, EventKind};
-use withnav::navigator::ports::Answer;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::navigator::ports::Answer;
 
 mod common;
 use common::navigator::EditorFlowsExt;
@@ -198,7 +198,7 @@ async fn conversation_silence_logs_one_question_and_leaves_the_edit_for_save() {
     assert_eq!(records[0]["requested_action"], "silent");
     assert_eq!(records[0]["delivered"], "silent");
     assert_eq!(model.questions()[0].len(), 1);
-    assert!(model.states()[0].contains("driver:"));
+    assert!(model.states()[0].contains("captain:"));
     assert_eq!(records[1]["event"], "save");
     assert_eq!(records[1]["prefilter"]["inputs"]["changed_lines"], 4);
     assert_eq!(model.calls(), 2);

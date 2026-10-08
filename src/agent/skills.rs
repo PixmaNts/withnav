@@ -115,7 +115,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Whether the driver should be told; a shadowed skill is ordinary.
+    /// Whether the Captain should be told; a shadowed skill is ordinary.
     pub fn is_problem(&self) -> bool {
         !matches!(self.kind, DiagnosticKind::Shadowed { .. })
     }

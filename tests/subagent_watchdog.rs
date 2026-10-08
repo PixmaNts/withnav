@@ -1,12 +1,12 @@
 use futures::future::BoxFuture;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
-use withnav::session::SessionId;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::SessionId;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
@@ -410,7 +410,7 @@ async fn doubt_boundary_model_stop_delivers_one_terminal_notice_and_releases_cap
 }
 
 #[tokio::test]
-async fn doubt_boundary_driver_stop_finishes_promptly_with_one_notice_and_one_slot_release() {
+async fn doubt_boundary_captain_stop_finishes_promptly_with_one_notice_and_one_slot_release() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     let parent_stream = f.reach_doubt_boundary().await;
     f.service
@@ -448,7 +448,7 @@ async fn doubt_boundary_driver_stop_finishes_promptly_with_one_notice_and_one_sl
 }
 
 #[tokio::test]
-async fn doubt_boundary_driver_continue_releases_the_same_turn() {
+async fn doubt_boundary_captain_continue_releases_the_same_turn() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     let parent_stream = f.reach_doubt_boundary().await;
     f.service
@@ -653,7 +653,7 @@ async fn failed_provisional_claim_finalizes_the_retained_natural_completion() {
 }
 
 #[tokio::test]
-async fn failed_stop_write_restores_doubt_and_driver_continue_releases_waiter() {
+async fn failed_stop_write_restores_doubt_and_captain_continue_releases_waiter() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     f.tick(300).await;
     f.wait_verdict("doubt").await;
@@ -1414,7 +1414,7 @@ async fn ownership_wrong_state_and_root_only_schema_are_enforced() {
 }
 
 #[tokio::test]
-async fn doubt_is_skipped_on_later_ticks_and_driver_continue_resumes() {
+async fn doubt_is_skipped_on_later_ticks_and_captain_continue_resumes() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     f.tick(300).await;
     f.wait_verdict("doubt").await;
@@ -1646,9 +1646,9 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
 
 #[tokio::test]
 async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
     use withnav::provider::{config::load_models, openai::ClientCache, systemone::SystemOneClient};
     use withnav::session::subagents::watchdog::JevJudge;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     let server = MockServer::start().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let config = TestServerConfig::mock(tmp.path(), &server.uri()).config();

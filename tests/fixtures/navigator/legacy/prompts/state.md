@@ -16,5 +16,5 @@ Diagnostics:
 Live state (recent distinct edits, then the current diagnostics only; whether a diagnostic persisted across edits is not recorded):
 {{live_state}}
 
-Conversation (remarks and wakes from the navigator in it are the navigator's own claims, not agreements of the driver):
+Conversation (remarks and wakes from the navigator in it are the navigator's own claims, not agreements of the Captain):
 {{conversation}}

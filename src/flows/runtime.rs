@@ -411,7 +411,7 @@ mod tests {
                 runtime
                     .tool_pre_call(ctx.clone(), CancellationToken::new())
                     .await,
-                VerdictLike::AskDriver { .. }
+                VerdictLike::AskCaptain { .. }
             ));
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
@@ -423,7 +423,7 @@ pub enum VerdictLike {
     Deny {
         note: String,
     },
-    AskDriver {
+    AskCaptain {
         note: String,
         flow: String,
         run_id: String,
@@ -815,7 +815,7 @@ impl FlowRuntime {
                                 .chain(&o.trace.fallback_actions)
                                 .any(|a| a.action == "ask_captain")
                         });
-                        VerdictLike::AskDriver {
+                        VerdictLike::AskCaptain {
                             note,
                             flow: origin
                                 .map(|o| o.trace.flow_name.clone())
@@ -969,8 +969,8 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
             match verdict {
                 VerdictLike::NoObjection => FlowVerdict::NoObjection,
                 VerdictLike::Deny { note } => FlowVerdict::Deny { note },
-                VerdictLike::AskDriver { note, flow, run_id } => {
-                    FlowVerdict::AskDriver { note, flow, run_id }
+                VerdictLike::AskCaptain { note, flow, run_id } => {
+                    FlowVerdict::AskCaptain { note, flow, run_id }
                 }
             }
         })

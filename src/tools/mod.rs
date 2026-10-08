@@ -117,7 +117,7 @@ impl ToolResult {
         }
     }
 
-    /// A call a driver refused: the model reads `message` back.
+    /// A call a captain refused: the model reads `message` back.
     pub fn permission_denied(message: impl Into<String>) -> Self {
         Self {
             status: ToolStatus::Denied,

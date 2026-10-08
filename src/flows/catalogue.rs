@@ -182,7 +182,7 @@ pub fn catalogue() -> Catalogue {
         ("session.agent", Text),
         ("session.model", Text),
         ("session.workspace", Text),
-        ("conversation.last_driver", Text),
+        ("conversation.last_captain", Text),
         ("conversation.digest", Text),
         ("conversation.last_turns", Array),
         ("intent.record", Text),

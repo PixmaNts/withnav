@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
-use serde_json::{json, Value};
 
 mod common;
 use common::deadline::Deadline;
@@ -141,7 +141,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
 }
 
 #[tokio::test]
-async fn queued_driver_correction_precedes_completion_only_wake() {
+async fn queued_captain_correction_precedes_completion_only_wake() {
     let mut provider = common::sse::spawn_streaming_provider()
         .bounded(file!(), line!())
         .await;
@@ -157,7 +157,7 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "original instruction".into(),
         ))
@@ -187,9 +187,9 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .bounded(file!(), line!())
         .await;
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
-            "driver correction".into(),
+            "captain correction".into(),
         ))
         .bounded(file!(), line!())
         .await
@@ -203,9 +203,9 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .unwrap();
     let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
     let messages = body["messages"].as_array().unwrap();
-    let driver = messages
+    let captain = messages
         .iter()
-        .position(|m| m["content"] == "driver correction")
+        .position(|m| m["content"] == "captain correction")
         .unwrap();
     let notice = messages
         .iter()
@@ -215,7 +215,7 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
                 .is_some_and(|s| s.contains("untrusted_subagent_output"))
         })
         .unwrap();
-    assert!(driver < notice);
+    assert!(captain < notice);
     assert_eq!(request_outputs(&request).len(), 1);
     stream.send(text_chunk("corrected")).unwrap();
     drop(stream);
@@ -634,7 +634,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(
+        .send(common::server::captain_command(
             parent,
             "parent working".into(),
         ))
@@ -682,7 +682,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .bounded(file!(), line!())
         .await;
     for text in ["older navigator wake", "latest navigator wake"] {
-        let mut command = common::server::driver_command(parent, text.into());
+        let mut command = common::server::captain_command(parent, text.into());
         command.source_actor_id = "navigator:conversation".into();
         state.send(command).bounded(file!(), line!()).await.unwrap();
     }
@@ -1076,7 +1076,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         .await
         .unwrap();
     state
-        .send(common::server::driver_command(parent, "ask me".into()))
+        .send(common::server::captain_command(parent, "ask me".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1192,7 +1192,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         |m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "parent-ask")
     ));
     state
-        .send(common::server::driver_command(parent, "my answer".into()))
+        .send(common::server::captain_command(parent, "my answer".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();

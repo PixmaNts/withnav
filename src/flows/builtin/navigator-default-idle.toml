@@ -29,7 +29,7 @@ since_last_wake_ms = "event.since_last_wake_ms"
 
 [[node]]
 id = "contradicts_conversation"
-instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the driver stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
+instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the Captain stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
 state_template = "state.md"
 threshold = 0.5
 type = "noul"
@@ -97,7 +97,7 @@ silent = ["branch_0"]
 
 [[node]]
 id = "stuck"
-instructions = "Has the driver tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
+instructions = "Has the Captain tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
 state_template = "state.md"
 threshold = 0.5
 type = "noul"
@@ -118,7 +118,7 @@ yes = ["branch_0"]
 
 [[node]]
 id = "unfinished"
-instructions = "Is this an edit the driver is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
+instructions = "Is this an edit the Captain is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
 state_template = "state.md"
 threshold = 0.5
 type = "noul"
@@ -205,7 +205,7 @@ live_state = "event.template_live_state"
 prompt = """
 You are the metacognition of a pair-programming navigator: you write one short remark at the end of a line, never more than one.
 
-The driver just wrote a comment that calls on you. Answer it: that is why you are speaking.
+The captain just wrote a comment that calls on you. Answer it: that is why you are speaking.
 
 File: {file} ({language})
 Intent:
@@ -391,7 +391,7 @@ Live state (recent distinct edits, then the current diagnostics only; whether a 
 Conversation:
 {conversation}
 
-Help with one concrete obstacle or wrong choice in the change above, as a senior pair programmer would say it aloud. Never announce that code is unfinished: the driver knows. If the correction is not evident from what you can see, stay silent. Never rewrite code, never produce more than one remark.
+Help with one concrete obstacle or wrong choice in the change above, as a senior pair programmer would say it aloud. Never announce that code is unfinished: the Captain knows. If the correction is not evident from what you can see, stay silent. Never rewrite code, never produce more than one remark.
 """
 
 [[node]]

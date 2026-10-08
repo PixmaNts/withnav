@@ -53,7 +53,7 @@ pub struct BypassState {
 pub struct AgentActor {
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
-    pub driver_request_inherited: bool,
+    pub captain_request_inherited: bool,
     pub protected_config_spelling: Option<std::path::PathBuf>,
     pub protected_config_unresolved: bool,
     pub scratch_roots: Vec<super::scratch::Identity>,
@@ -115,17 +115,17 @@ pub struct AgentActor {
     /// The folder and origin approvals: given in this session, or kept for
     /// its workspace when the session service loads them.
     pub grants: Grants,
-    /// What the driver last asked for: the text of their latest message, or
+    /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
-    /// driver (a human ingress identity), never from a navigator wake, delegated
+    /// captain (a human ingress identity), never from a navigator wake, delegated
     /// text or a subagent result. The role guard and the permission review judge
     /// calls against it. Not stored on its own: a resumed session rebuilds it
-    /// from the stored `message.received` events (the newest from the driver),
-    /// so it is `None` only when the driver never spoke.
-    pub driver_task: Option<String>,
+    /// from the stored `message.received` events (the newest from the Captain),
+    /// so it is `None` only when the Captain never spoke.
+    pub captain_task: Option<String>,
     /// The second opinion a guarded agent's exceptions go through before the
-    /// driver. `None` when the session has no guard: every exception then goes
-    /// to the driver.
+    /// captain. `None` when the session has no guard: every exception then goes
+    /// to the Captain.
     pub guard: Option<Arc<dyn RoleGuard>>,
 }
 
@@ -197,7 +197,7 @@ impl AgentActor {
     ) -> Self {
         Self {
             tool_flows: None,
-            driver_request_inherited: false,
+            captain_request_inherited: false,
             protected_config_spelling: None,
             protected_config_unresolved: false,
             scratch_roots: Vec::new(),
@@ -230,7 +230,7 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
-            driver_task: None,
+            captain_task: None,
             guard: None,
         }
     }
@@ -452,7 +452,7 @@ impl AgentActor {
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
-        self.push_user_with_provenance(text, crate::provider::openai::UserProvenance::Driver);
+        self.push_user_with_provenance(text, crate::provider::openai::UserProvenance::Captain);
     }
 
     pub fn push_user_with_provenance(

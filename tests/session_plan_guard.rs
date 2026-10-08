@@ -1,6 +1,6 @@
 //! The plan agent's role guard through the session service: Jev (a scripted
 //! System One endpoint on the `instinct` alias) is asked about every exception,
-//! and only a valid `conforms` lets a call run without the driver.
+//! and only a valid `conforms` lets a call run without the Captain.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -161,7 +161,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
 fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
     let body: Value = serde_json::from_str(&system_one_requests(provider)[n]).unwrap();
     let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
-    state["driver_request"].clone()
+    state["captain_request"].clone()
 }
 
 async fn plan_session(state: &AppState, env: &Env) -> ulid::Ulid {
@@ -234,7 +234,7 @@ async fn a_conforming_exception_runs_and_is_recorded() {
         "the role prompt"
     );
     let evidence = &described["untrusted_evidence"];
-    assert_eq!(described["driver_request"], "write the stub");
+    assert_eq!(described["captain_request"], "write the stub");
     assert_eq!(
         described["host_facts"]["destination"],
         target.to_str().unwrap()
@@ -271,10 +271,10 @@ async fn a_conforming_exception_runs_and_is_recorded() {
 }
 
 // Given plan writing code and Jev not conforming, or not available
-// Then the driver is asked, with the reason; nothing runs; allow-folder is one
+// Then the Captain is asked, with the reason; nothing runs; allow-folder is one
 //      approval; approving runs the call
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn violates_uncertain_and_no_jev_all_ask_the_driver() {
+async fn violates_uncertain_and_no_jev_all_ask_the_captain() {
     for (jev, with_jev, reason) in [
         (vec![verdict("violates")], true, "uncertain"),
         (vec![verdict("uncertain")], true, "uncertain"),
@@ -334,11 +334,11 @@ async fn build_is_not_guarded() {
     assert!(system_one_requests(&provider).is_empty());
 }
 
-// Given a plan conversation where the driver spoke, then stopped and resumed
+// Given a plan conversation where the Captain spoke, then stopped and resumed
 //       with a navigator wake as the only new message
-// Then Jev is sent the driver's stored words as the task, not the wake
+// Then Jev is sent the Captain's stored words as the task, not the wake
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_resumed_session_judges_against_the_drivers_stored_words() {
+async fn a_resumed_session_judges_against_the_captains_stored_words() {
     let env = env();
     let target = env.ws.join("main.rs");
     let provider = provider(
@@ -368,10 +368,10 @@ async fn a_resumed_session_judges_against_the_drivers_stored_words() {
     );
 }
 
-// Given a plan conversation the driver never spoke in
+// Given a plan conversation the Captain never spoke in
 // Then Jev is sent `task: null`, before and after a resume
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn without_a_driver_message_the_task_is_null() {
+async fn without_a_captain_message_the_task_is_null() {
     let env = env();
     let target = env.ws.join("main.rs");
     let provider = provider(

@@ -1,12 +1,12 @@
-//! Process startup admission uses synthetic config and never the driver's credentials.
+//! Process startup admission uses synthetic config and never the Captain's credentials.
 
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use withnav::agent::instructions::RulesRoots;
 use withnav::session::preflight::Preflight;
-use serde_json::{json, Value};
 
 fn fixture(config: Value) -> tempfile::TempDir {
     let mut config = config;

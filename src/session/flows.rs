@@ -85,13 +85,13 @@ pub(crate) async fn received(
     handle: &super::service::SessionHandle,
     command: &crate::bus::command::Command,
 ) {
-    if command.from_driver() {
-        handle.status.flow_driver_message();
+    if command.from_captain() {
+        handle.status.flow_captain_message();
     }
     let Some(runtime) = &handle.flows else {
         return;
     };
-    let author = if command.from_driver() {
+    let author = if command.from_captain() {
         "captain"
     } else if command.source_actor_id.starts_with("agent:") {
         "subagent"

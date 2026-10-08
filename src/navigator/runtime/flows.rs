@@ -452,7 +452,7 @@ mod tests {
             id,
             0,
             crate::bus::event::EventKind::MessageReceived,
-            json!({"source":"user:test", "content":"driver task"}),
+            json!({"source":"user:test", "content":"captain task"}),
         ))
         .await;
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));

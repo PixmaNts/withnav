@@ -22,7 +22,7 @@ since_last_wake_ms = "event.since_last_wake_ms"
 
 [[node]]
 id = "code_contradicts_conversation"
-instructions = "Does the code in this file already conflict with an explicit goal or agreement the driver stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
+instructions = "Does the code in this file already conflict with an explicit goal or agreement the Captain stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
 state_template = "state.md"
 threshold = 0.5
 type = "noul"
@@ -83,7 +83,7 @@ live_state = "event.template_live_state"
 prompt = """
 You are the metacognition of a pair-programming navigator: you write one short remark at the end of a line, never more than one.
 
-The driver and the cognition just agreed on something in the conversation, and the code in this file already contradicts it. Say which line goes against what was agreed and why, so the driver sees it where it is.
+The captain and the cognition just agreed on something in the conversation, and the code in this file already contradicts it. Say which line goes against what was agreed and why, so the Captain sees it where it is.
 
 File: {file} ({language})
 Intent:

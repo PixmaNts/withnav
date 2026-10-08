@@ -148,7 +148,7 @@ async fn spawn_history_server() -> (ServerA, PathBuf, tempfile::TempDir) {
 
 // Given a session created with history_db set against a scripted provider
 // When a message completes its turn
-// Then the store has the session with a title from the first driver message,
+// Then the store has the session with a title from the first captain message,
 //      the events are stored (minus llm.delta/session.end), and the
 //      transcript snapshot is saved
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -279,7 +279,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
         );
         assert!(
             replay.iter().any(|e| e.kind == "message.received"),
-            "the original driver message replays"
+            "the original captain message replays"
         );
         assert!(
             !replay.iter().any(|e| e.kind == "session.end"),
@@ -319,7 +319,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let new_message = new_events
         .iter()
         .find(|e| e.kind == "message.received")
-        .expect("the new driver message was sequenced after the stored head");
+        .expect("the new captain message was sequenced after the stored head");
     assert_eq!(
         new_message.payload["content"],
         "What word did I ask you to remember?"

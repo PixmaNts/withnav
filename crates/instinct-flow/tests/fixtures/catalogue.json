@@ -43,7 +43,7 @@
   ],
   "inputs": [
     {
-      "name": "conversation.last_driver",
+      "name": "conversation.last_captain",
       "input_type": "text",
       "value_type": "string",
       "source": "conversation",

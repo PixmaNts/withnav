@@ -371,7 +371,7 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
 
     let c = commenter(server.uri(), None);
     let mut ctx = remark_ctx(tmp.path(), vec![]);
-    ctx.prompt = Some("Conversation:\ndriver: keep the parser".to_string());
+    ctx.prompt = Some("Conversation:\ncaptain: keep the parser".to_string());
     let cancel = tokio_util::sync::CancellationToken::new();
     let _ = c.remark(&ctx, &cancel).await.unwrap();
 
@@ -379,7 +379,7 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
     let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
     assert_eq!(bodies[0]["messages"][0]["role"], "system");
     assert!(
-        system.contains("driver: keep the parser"),
+        system.contains("captain: keep the parser"),
         "branch prompt in the system message: {system}; server={}; requests={bodies:#?}",
         server.uri()
     );

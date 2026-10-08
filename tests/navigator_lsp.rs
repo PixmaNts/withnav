@@ -12,9 +12,9 @@ use withnav::navigator;
 
 mod common;
 use common::navigator::{
-    base_text, big_edit, driver_message, feed_with_session, with_min_changed_lines, LspClient, Nav,
-    RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext,
-    URI,
+    base_text, big_edit, captain_message, feed_with_session, with_min_changed_lines, LspClient,
+    Nav, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim,
+    ScriptedReflexContext, URI,
 };
 
 // ---------- tests ----------
@@ -635,8 +635,8 @@ impl LspClient {
 #[tokio::test(start_paused = true)]
 async fn reflex_context_is_refreshed_by_the_metacognition() {
     let (feed, _posted, session_id) = feed_with_session(Ok(())).await;
-    // The conversation holds the session's first driver message already.
-    feed.observe(&driver_message(session_id, 2, "use anyhow for errors"))
+    // The conversation holds the session's first captain message already.
+    feed.observe(&captain_message(session_id, 2, "use anyhow for errors"))
         .await;
 
     let model = ScriptedReflexContext::new(vec![Ok("REFRESHED-ONE"), Ok("REFRESHED-TWO")]);
@@ -677,7 +677,7 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
     assert_eq!(model.calls(), 1);
 
     // 3. A changed digest inside a minute does not refresh.
-    feed.observe(&driver_message(session_id, 3, "and add a --force flag"))
+    feed.observe(&captain_message(session_id, 3, "and add a --force flag"))
         .await;
     client.complete(23, 1).await;
     assert_eq!(model.calls(), 1);
@@ -827,11 +827,11 @@ fn trigger_records(client: &Nav, event: &str) -> Vec<Value> {
         .collect()
 }
 
-/// A driver turn ending evaluates the pipeline with event `conversation` on
+/// A captain turn ending evaluates the pipeline with event `conversation` on
 /// the focused document, and the built-in remarks on a contradiction. A
-/// second driver turn within the cooldown is skipped.
+/// second captain turn within the cooldown is skipped.
 #[tokio::test]
-async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_applies() {
+async fn captain_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_applies() {
     let mock = MockCommenter::new(vec![Answer::Remark(2, "the cache is back")]);
     let (feed, _posted, session_id) = feed_with_session(Ok(())).await;
     let mut client = Nav::start_with(mock.clone(), json!({}), |d, _| {
@@ -858,7 +858,7 @@ async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_a
     assert!(records[0].get("rendered_state").is_none());
     assert_eq!(mock.calls(), 1);
 
-    // The cooldown: another driver turn right after is skipped.
+    // The cooldown: another captain turn right after is skipped.
     feed.observe(&message_event(session_id, "user:http")).await;
     feed.observe(&turn_end_event(session_id)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -879,7 +879,7 @@ async fn navigator_caused_turn_end_and_no_focused_document_trigger_nothing() {
     })
     .await;
 
-    // Driver turn, but no document was ever opened: nothing to judge.
+    // Captain turn, but no document was ever opened: nothing to judge.
     feed.observe(&turn_end_event(session_id)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(trigger_records(&client, "conversation").is_empty());
@@ -960,7 +960,7 @@ async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
     client.did_save(URI).await;
     client.expect_status("thinking").await;
 
-    // The comment moves down a line and the driver saves again.
+    // The comment moves down a line and the Captain saves again.
     client
         .did_change(URI, &with_help(&["    // tail"]), 3)
         .await;

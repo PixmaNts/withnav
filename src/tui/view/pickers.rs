@@ -180,6 +180,24 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                         .contains(&ui.filter.to_lowercase())
             })
             .map(|entry| {
+                if ui.delete_confirm.as_deref() == Some(&entry.id) {
+                    let count = state
+                        .sessions
+                        .iter()
+                        .filter(|child| child.parent_session_id.as_deref() == Some(&entry.id))
+                        .count();
+                    let children = if count == 0 {
+                        String::new()
+                    } else {
+                        format!(" and its {count} subagent sessions")
+                    };
+                    return Line::from(format!(
+                        "enter/esc · Delete this session{children}? This cannot be undone."
+                    ));
+                }
+                if ui.delete_pending.as_deref() == Some(&entry.id) {
+                    return Line::from("Deleting session…");
+                }
                 Line::from(vec![
                     Span::raw(entry.title.clone().unwrap_or_else(|| "Untitled".into())),
                     Span::styled(
@@ -325,7 +343,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     if keys_shown {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                keys_line(overlay, usize::from(keys.width)),
+                if overlay == Overlay::Sessions && ui.delete_confirm.is_some() {
+                    fit_items(
+                        &["enter delete permanently", "esc cancel"],
+                        usize::from(keys.width),
+                    )
+                } else {
+                    keys_line(overlay, usize::from(keys.width))
+                },
                 theme.muted(),
             )),
             keys,
@@ -408,6 +433,7 @@ fn keys_line(overlay: Overlay, width: usize) -> String {
             )
         }
         Overlay::Skills => &["↑↓ move", "enter fill draft", "esc close"],
+        Overlay::Sessions => &["↑↓ move", "enter open", "ctrl+d delete", "esc close"],
         Overlay::Help => &["esc close"],
         Overlay::Themes => &["↑↓ preview", "enter keep", "esc put back"],
         Overlay::Commands => &["↑↓ move", "enter run", "esc close"],

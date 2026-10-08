@@ -274,6 +274,24 @@ impl Client {
         self.json(request).await
     }
 
+    pub async fn delete_session(&self, id: &str) -> Result<bool, String> {
+        let response = self
+            .authorized(self.http.delete(format!(
+                "{}/v1/sessions/{}",
+                self.base_url,
+                encode_segment(id)
+            )))
+            .send()
+            .await
+            .map_err(|e| describe(&e))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(status == reqwest::StatusCode::NO_CONTENT);
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(status_message(status, &body))
+    }
+
     pub async fn continue_child(&self, parent: &str, child: &str) -> Result<(), String> {
         self.continue_child_with_token(parent, child, None).await
     }

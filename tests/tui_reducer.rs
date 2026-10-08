@@ -19,6 +19,50 @@ use withnav::{
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn session_delete_requires_confirmation_and_closes_parent_and_child_tabs() {
+    let mut s = subagent_parent();
+    let root = s.session.as_ref().unwrap().session_id.clone();
+    let entry: SessionListEntry = serde_json::from_value(json!({
+        "id":root,"created_at":"today","updated_at":"today","message_count":0,"live":true
+    }))
+    .unwrap();
+    let mut child_entry = entry.clone();
+    child_entry.id = "delete-child".into();
+    child_entry.parent_session_id = Some(root.clone());
+    s.sessions = vec![entry, child_entry];
+    let mut child_tab = s.tabs[0].clone();
+    child_tab.session.as_mut().unwrap().session_id = "delete-child".into();
+    child_tab.parent_session_id = Some(root.clone());
+    s.tabs.push(child_tab);
+    let mut ui = UiState {
+        overlay: Some(Overlay::Sessions),
+        ..Default::default()
+    };
+    assert!(handle_action(&mut s, &mut ui, Action::RequestDeleteSession(root.clone())).is_empty());
+    handle_action(&mut s, &mut ui, Action::CancelDeleteSession);
+    assert!(handle_action(&mut s, &mut ui, Action::ConfirmDeleteSession).is_empty());
+    handle_action(&mut s, &mut ui, Action::RequestDeleteSession(root.clone()));
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::ConfirmDeleteSession),
+        vec![Effect::DeleteSession(root.clone())]
+    );
+    let effects = handle_action(
+        &mut s,
+        &mut ui,
+        Action::SessionDeleted {
+            session_id: root,
+            result: Ok(true),
+        },
+    );
+    assert!(effects.contains(&Effect::ListSessions));
+    assert!(s.sessions.is_empty());
+    assert_eq!(s.tabs.len(), 1);
+    assert!(s.session.is_none());
+    assert!(ui.delete_pending.is_none());
+    assert_eq!(ui.overlay, Some(Overlay::Sessions));
+}
+
+#[test]
 fn selected_skills_accept_current_and_legacy_human_origins() {
     for origin in ["captain", "driver"] {
         let mut s = st();

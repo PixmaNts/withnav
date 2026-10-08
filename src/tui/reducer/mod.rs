@@ -51,6 +51,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Models { generation, .. }
         | ClientEvent::Skills { generation, .. }
         | ClientEvent::Sessions { generation, .. }
+        | ClientEvent::SessionDeleted { generation, .. }
         | ClientEvent::Created { generation, .. }
         | ClientEvent::Resumed { generation, .. }
         | ClientEvent::Metadata { generation, .. }
@@ -369,6 +370,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
+        ClientEvent::SessionDeleted { .. } => {}
         ClientEvent::ConfigLoaded {
             request, result, ..
         } => effects.extend(crate::tui::config::loaded(&mut s.config, request, result)),

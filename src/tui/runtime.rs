@@ -187,6 +187,14 @@ impl Runtime {
     }
 
     pub fn apply_event(&mut self, event: ClientEvent) {
+        if let ClientEvent::SessionDeleted {
+            session_id, result, ..
+        } = event
+        {
+            self.dispatch(Action::SessionDeleted { session_id, result });
+            return;
+        }
+        let sessions_reloaded = matches!(event, ClientEvent::Sessions { result: Ok(_), .. });
         self.dirty = true;
         // The effects of an event belong to the tab it reached, which may not be the one shown.
         let tab = self
@@ -197,6 +205,16 @@ impl Runtime {
             Ok(effects) => self.run_effects_for(tab, effects),
             // A bad event is shown, never fatal.
             Err(err) => self.state.last_protocol_error = Some(err.0),
+        }
+        if sessions_reloaded {
+            let count = crate::tui::input::overlay_names(
+                super::protocol::Overlay::Sessions,
+                &self.state,
+                &self.ui,
+            )
+            .len();
+            let selected = self.ui.selection.entry("Sessions".into()).or_default();
+            *selected = (*selected).min(count.saturating_sub(1));
         }
     }
 

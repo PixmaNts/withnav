@@ -23,6 +23,50 @@ fn message(id: &str, source: &str, text: &str) -> Block {
 }
 
 #[test]
+fn session_delete_confirmation_row_and_keys() {
+    let mut s = state();
+    let id = s.sessions[0].id.clone();
+    let mut child = s.sessions[0].clone();
+    child.id = "child".into();
+    child.parent_session_id = Some(id.clone());
+    s.sessions.push(child);
+    let mut ui = UiState {
+        overlay: Some(Overlay::Sessions),
+        ..Default::default()
+    };
+    let mut editor = Editor::new();
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::RequestDeleteSession(id.clone()))
+    );
+    ui.delete_confirm = Some(id);
+    render("sessions-delete-confirmation", (160, 30), &s, &ui, &editor);
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::CancelDeleteSession)
+    );
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::ConfirmDeleteSession)
+    );
+}
+
+#[test]
 fn bypass_header_sidebar_and_notice() {
     let mut s = state();
     s.bypass = true;

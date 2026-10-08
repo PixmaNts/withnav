@@ -1,0 +1,606 @@
+# Rebrand Navai → WithNav: inventory
+
+Generated from `rg -i "navai|navigator|explore|explorer|librarian|oracle|review|driver"` (excluding `docs/design/`, `webui/dist/`, lock files). One line per file and category, with hit counts per term. Checked when the file is done for that category. Deleted in the last commit of the rebrand.
+
+`review` and `explore` also match ordinary words (permission review, explore the code); only product names and agent keys are renamed. `src/navigator/` keeps its module name. A hit of the old name that remains on purpose is a compatibility fallback, the GitHub URL, the CHANGELOG or the rebrand ADR.
+
+## Path / config key / wire value (needs fallback)
+
+- [ ] `config.example.json`: librarian 1, oracle 1
+- [ ] `crates/instinct-flow/tests/engine.rs`: driver 6
+- [ ] `crates/instinct-flow/tests/fixtures/catalogue.json`: driver 3
+- [ ] `crates/instinct-flow/tests/fixtures/guard-mutations.toml`: driver 4, navai 1
+- [ ] `examples/reflex_latency_probe.rs`: navai 1
+- [ ] `scripts/import-opencode-models`: navai 1
+- [ ] `src/agent/compaction/summary/tests.rs`: driver 1, review 1
+- [ ] `src/agent/definitions.rs`: explore 1, navai 3, review 1
+- [ ] `src/agent/definitions/tests.rs`: explore 3, navai 7, review 3
+- [ ] `src/agent/loop.rs`: driver 13, navai 4, review 3
+- [ ] `src/agent/permission_gate.rs`: driver 5, navai 3
+- [ ] `src/app.rs`: navai 1
+- [ ] `src/app/tui.rs`: navai 1
+- [ ] `src/bus/event.rs`: explore 2
+- [ ] `src/bus/inbox.rs`: driver 2, review 5
+- [ ] `src/bus/runtime.rs`: driver 1, review 7
+- [ ] `src/bus/runtime/steering.rs`: review 4
+- [ ] `src/bus/sequencer.rs`: driver 1
+- [ ] `src/flows/catalogue.rs`: driver 3, review 1
+- [ ] `src/flows/migrate.rs`: navigator 2
+- [ ] `src/flows/redaction.rs`: driver 1
+- [ ] `src/flows/runtime.rs`: driver 3, navigator 3
+- [ ] `src/flows/store.rs`: navai 4, navigator 2
+- [ ] `src/navigator/conversation.rs`: driver 1
+- [ ] `src/navigator/intent.rs`: navigator 10
+- [ ] `src/navigator/lsp/mod.rs`: navigator 5
+- [ ] `src/navigator/lsp/protocol.rs`: navigator 8
+- [ ] `src/navigator/metacognition/permission.rs`: navai 1, review 1
+- [ ] `src/navigator/mod.rs`: navai 2, navigator 3
+- [ ] `src/navigator/runtime/flows.rs`: review 2
+- [ ] `src/paths.rs`: navai 9
+- [ ] `src/paths/migrate.rs`: navai 2, navigator 2
+- [ ] `src/paths/migrate/tests.rs`: navai 20, navigator 7
+- [ ] `src/provider/assignments/tests.rs`: oracle 6
+- [ ] `src/provider/auth.rs`: navai 7
+- [ ] `src/server/routes.rs`: driver 1, navigator 1
+- [ ] `src/server/settings.rs`: navai 1
+- [ ] `src/server/web.rs`: navigator 1
+- [ ] `src/session/flows.rs`: driver 2
+- [ ] `src/session/service.rs`: navai 1
+- [ ] `src/session/service/assignment_views.rs`: oracle 13
+- [ ] `src/session/service/tests.rs`: explore 2
+- [ ] `src/session/store.rs`: explore 2
+- [ ] `src/settings.rs`: navai 6
+- [ ] `src/tools/fetch.rs`: navai 2
+- [ ] `src/tools/mod.rs`: navai 1
+- [ ] `src/tools/nofollow.rs`: navai 1
+- [ ] `src/tools/task.rs`: explore 1
+- [ ] `src/tui/input.rs`: review 1
+- [ ] `src/tui/reducer/envelope.rs`: driver 1
+- [ ] `src/tui/reducer/mod.rs`: review 1
+- [ ] `src/tui/view/pickers.rs`: review 2
+- [ ] `src/tui/view/tool.rs`: driver 3, review 1
+- [ ] `tests/common/navigator.rs`: navigator 5
+- [ ] `tests/common/server.rs`: navai 1
+- [ ] `tests/e2e.rs`: navai 1
+- [ ] `tests/fixtures/navigator/legacy/pipeline.toml`: navigator 1
+- [ ] `tests/fixtures/navigator/replay/recorded/pipeline.toml`: navigator 1
+- [ ] `tests/navigator_flow.rs`: navigator 6
+- [ ] `tests/navigator_lsp.rs`: navigator 32
+- [ ] `tests/navigator_startup.rs`: navai 3, navigator 1
+- [ ] `tests/remarks_baseline.rs`: navigator 2
+- [ ] `tests/root_watchdog.rs`: explore 2, review 1
+- [ ] `tests/run_parity.rs`: navai 7
+- [ ] `tests/server_models.rs`: navai 3
+- [ ] `tests/server_navigator.rs`: explore 1
+- [ ] `tests/server_web.rs`: navigator 2
+- [ ] `tests/session_agents.rs`: explore 5, navai 3
+- [ ] `tests/session_auto_compact.rs`: navai 1
+- [ ] `tests/session_auto_compact_budget.rs`: navai 1
+- [ ] `tests/session_commands.rs`: navai 3
+- [ ] `tests/session_model_switch.rs`: navai 1
+- [ ] `tests/session_permissions.rs`: navai 4
+- [ ] `tests/session_rules.rs`: navai 3
+- [ ] `tests/session_skills.rs`: driver 3, explore 1, review 2
+- [ ] `tests/session_variant.rs`: explore 1, navai 3
+- [ ] `tests/settings_http.rs`: explore 1
+- [ ] `tests/startup_preflight.rs`: explore 1, navai 18, navigator 1, oracle 4
+- [ ] `tests/subagent_delivery.rs`: explore 10, navai 6
+- [ ] `tests/subagent_live_result.rs`: explore 6
+- [ ] `tests/subagent_steer.rs`: driver 1, explore 11, navai 4
+- [ ] `tests/subagent_watchdog.rs`: explore 5, navai 4
+- [ ] `tests/subagents.rs`: explore 23, navai 2, review 1
+- [ ] `tests/tui_cli.rs`: navai 10, navigator 3
+- [ ] `tests/tui_e2e.rs`: navai 1
+- [ ] `tests/tui_layers_models.rs`: explore 1
+- [ ] `tests/tui_reducer.rs`: explore 15, review 5
+- [ ] `tests/tui_selection_safety.rs`: review 4
+- [ ] `tests/tui_view.rs`: driver 2, explore 2, review 3
+- [ ] `vscode-withnav/package.json`: navai 21
+- [ ] `vscode-withnav/src/chatProtocol.ts`: driver 2, navai 1, navigator 1
+- [ ] `vscode-withnav/src/chatView.ts`: navai 2
+- [ ] `vscode-withnav/src/editorContext.ts`: driver 1
+- [ ] `vscode-withnav/src/eventView.ts`: driver 4
+- [ ] `vscode-withnav/src/extension.ts`: navai 9
+- [ ] `vscode-withnav/src/protocol.ts`: navigator 8
+- [ ] `vscode-withnav/src/reflex.ts`: navigator 1
+- [ ] `vscode-withnav/src/settingsView.ts`: navai 3
+- [ ] `vscode-withnav/src/webview/chat.ts`: driver 2
+- [ ] `vscode-withnav/tests/chatView.test.cjs`: navai 5
+- [ ] `vscode-withnav/tests/cognition.test.cjs`: review 1
+- [ ] `vscode-withnav/tests/eventView.test.cjs`: driver 5, review 2
+- [ ] `vscode-withnav/tests/settings.test.cjs`: explore 2, navai 5
+- [ ] `vscode-withnav/tests/webview.test.cjs`: driver 1
+- [ ] `webui/dev/fallbacks.ts`: navigator 1
+- [ ] `webui/dev/settingsFallback.ts`: navai 4
+- [ ] `webui/src/api/http.ts`: navai 1
+- [ ] `webui/src/components/RightPanel.tsx`: navai 1, navigator 2
+- [ ] `webui/src/components/SubagentView.tsx`: driver 1
+- [ ] `webui/src/components/Transcript.tsx`: driver 1
+- [ ] `webui/src/lib/settings.test.ts`: explore 1, navai 3
+- [ ] `webui/src/lib/workspaceExpansion.ts`: navai 1
+- [ ] `webui/src/session/__fixtures__/permission-denied.sse`: driver 1, navai 1, review 1
+- [ ] `webui/src/session/reducer.test.ts`: driver 4, explore 3
+- [ ] `webui/src/session/reducer.ts`: driver 6, navigator 1
+- [ ] `webui/src/studio/StudioPage.tsx`: navai 1
+- [ ] `webui/src/studio/editorState.test.ts`: navai 1
+- [ ] `webui/src/studio/meta.tsx`: driver 1, review 1
+- [ ] `webui/src/studio/mock/fixtures.ts`: driver 8, navai 1, review 1
+- [ ] `webui/src/studio/mock/server.test.ts`: navai 1
+- [ ] `webui/src/studio/mock/server.ts`: navai 1
+- [ ] `webui/src/theme/themes.ts`: navai 1
+- [ ] `webui/vite.config.ts`: navai 3
+
+## User-facing string
+
+- [ ] `Cargo.toml`: navigator 1
+- [ ] `crates/instinct-flow/tests/engine.rs`: driver 1
+- [ ] `crates/instinct-flow/tests/fixtures/catalogue.json`: driver 1
+- [ ] `crates/instinct-flow/tests/fixtures/guard-mutations.toml`: driver 3, review 1
+- [ ] `scripts/import-opencode-models`: navai 3
+- [ ] `src/agent/compaction/summary/tests.rs`: driver 4, review 2
+- [ ] `src/agent/compaction/tests.rs`: driver 6, navigator 3
+- [ ] `src/agent/definitions.rs`: explore 1, review 2
+- [ ] `src/agent/guard.rs`: driver 1
+- [ ] `src/agent/loop.rs`: driver 21, navai 10, review 9
+- [ ] `src/agent/permission_gate.rs`: driver 17, navai 6, review 6
+- [ ] `src/agent/permissions.rs`: review 1
+- [ ] `src/agent/prompt.rs`: driver 1
+- [ ] `src/agent/skills/tests.rs`: review 4
+- [ ] `src/app.rs`: navai 2
+- [ ] `src/app/embedded.rs`: navai 3
+- [ ] `src/app/tests.rs`: navai 9
+- [ ] `src/app/web.rs`: navai 1
+- [ ] `src/bin/withnav-lsp.rs`: navai 1, navigator 1
+- [ ] `src/bus/command.rs`: driver 1
+- [ ] `src/bus/event.rs`: navai 1
+- [ ] `src/bus/inbox.rs`: driver 10, navigator 7, review 2
+- [ ] `src/bus/runtime.rs`: driver 11, navai 1, review 1
+- [ ] `src/bus/runtime/delivery.rs`: driver 1
+- [ ] `src/flows/builtin/mod.rs`: navigator 8
+- [ ] `src/flows/builtin/navigator-default-conversation.toml`: driver 1, navigator 2
+- [ ] `src/flows/builtin/navigator-default-idle.toml`: driver 3, navigator 2
+- [ ] `src/flows/builtin/navigator-default-save.toml`: driver 3, navigator 2
+- [ ] `src/flows/catalogue.rs`: driver 1
+- [ ] `src/flows/client.rs`: navai 1
+- [ ] `src/flows/host.rs`: navai 2
+- [ ] `src/flows/migrate.rs`: navigator 10
+- [ ] `src/flows/records.rs`: navai 1
+- [ ] `src/flows/redaction.rs`: driver 2
+- [ ] `src/navigator/bootstrap.rs`: navai 3, review 1
+- [ ] `src/navigator/conversation.rs`: driver 8, navigator 6
+- [ ] `src/navigator/help_call.rs`: navigator 2
+- [ ] `src/navigator/intent.rs`: driver 1, navigator 6
+- [ ] `src/navigator/log.rs`: navigator 1
+- [ ] `src/navigator/lsp/mod.rs`: navai 1, navigator 1
+- [ ] `src/navigator/metacognition/mod.rs`: driver 1, navigator 4
+- [ ] `src/navigator/metacognition/permission.rs`: driver 1, navai 3, review 7
+- [ ] `src/navigator/metacognition/tools.rs`: driver 1, navai 2, review 1
+- [ ] `src/navigator/ports.rs`: navigator 1
+- [ ] `src/navigator/reflex.rs`: navigator 3
+- [ ] `src/navigator/runtime/flows.rs`: driver 1, navigator 1, review 4
+- [ ] `src/navigator/session_hooks.rs`: driver 2, review 3
+- [ ] `src/paths.rs`: navai 2
+- [ ] `src/paths/migrate.rs`: navigator 2
+- [ ] `src/paths/migrate/tests.rs`: navigator 21
+- [ ] `src/provider/assignments/tests.rs`: oracle 1
+- [ ] `src/provider/layers.rs`: navai 1
+- [ ] `src/provider/systemone.rs`: navigator 1
+- [ ] `src/server/config.rs`: navai 4
+- [ ] `src/server/flows.rs`: navai 8
+- [ ] `src/server/routes.rs`: navai 9
+- [ ] `src/server/settings/editor.rs`: review 3
+- [ ] `src/server/web.rs`: navai 1
+- [ ] `src/session/flows.rs`: navai 1
+- [ ] `src/session/guard.rs`: navai 2
+- [ ] `src/session/preflight.rs`: navai 1
+- [ ] `src/session/service.rs`: driver 3, navai 2, review 1
+- [ ] `src/session/service/assignment_views.rs`: navai 20, oracle 1
+- [ ] `src/session/service/tests.rs`: driver 1
+- [ ] `src/session/store.rs`: navigator 1
+- [ ] `src/session/subagents/root_watchdog.rs`: driver 1, navai 5, review 1
+- [ ] `src/session/subagents/watchdog.rs`: navai 1
+- [ ] `src/settings.rs`: navai 6, review 2
+- [ ] `src/tools/fetch.rs`: navai 4
+- [ ] `src/tools/glob.rs`: review 3
+- [ ] `src/tools/grep.rs`: review 1
+- [ ] `src/tools/mod.rs`: navai 2, review 1
+- [ ] `src/tools/native.rs`: driver 1, navai 1, review 2
+- [ ] `src/tui/client.rs`: navai 1
+- [ ] `src/tui/commands.rs`: review 1
+- [ ] `src/tui/config.rs`: review 4
+- [ ] `src/tui/input.rs`: review 2
+- [ ] `src/tui/reducer/envelope.rs`: driver 1
+- [ ] `src/tui/reducer/mod.rs`: review 4
+- [ ] `src/tui/runtime/tests.rs`: review 1
+- [ ] `src/tui/view/config.rs`: driver 2, navai 2, review 3
+- [ ] `src/tui/view/header.rs`: navai 1
+- [ ] `src/tui/view/permission.rs`: navai 1
+- [ ] `src/tui/view/pickers.rs`: review 1
+- [ ] `src/tui/view/tool.rs`: driver 1, review 1
+- [ ] `src/tui/view/transcript.rs`: explore 2, navigator 4
+- [ ] `tests/common/navigator.rs`: navigator 5
+- [ ] `tests/e2e.rs`: navai 1
+- [ ] `tests/e2e_live_server.rs`: navai 1
+- [ ] `tests/fixtures/navigator/legacy/pipeline.toml`: driver 4, navigator 2
+- [ ] `tests/fixtures/navigator/replay/mixed_log.jsonl`: navai 2, navigator 1
+- [ ] `tests/fixtures/navigator/systemone_multi.json`: driver 1
+- [ ] `tests/navigator_metacognition.rs`: driver 2
+- [ ] `tests/navigator_reflex.rs`: navigator 1
+- [ ] `tests/navigator_startup.rs`: navai 1
+- [ ] `tests/remarks_baseline.rs`: driver 1
+- [ ] `tests/root_watchdog.rs`: driver 5, navigator 4, review 3
+- [ ] `tests/run_parity.rs`: navai 1
+- [ ] `tests/server_history.rs`: driver 2, navigator 1
+- [ ] `tests/server_history_snapshot.rs`: driver 1
+- [ ] `tests/server_http.rs`: navigator 1
+- [ ] `tests/server_models.rs`: navai 4
+- [ ] `tests/server_navigator.rs`: driver 8, navigator 11
+- [ ] `tests/server_selection_contract.rs`: navigator 1
+- [ ] `tests/server_workspaces.rs`: explore 1, navai 1
+- [ ] `tests/session_permissions.rs`: driver 4, review 1
+- [ ] `tests/session_plan_guard.rs`: driver 2, navai 2
+- [ ] `tests/session_rules.rs`: navai 1
+- [ ] `tests/session_skills.rs`: driver 8
+- [ ] `tests/settings_http.rs`: navai 2, review 2
+- [ ] `tests/startup_preflight.rs`: navai 4, oracle 3
+- [ ] `tests/subagent_delivery.rs`: driver 2, navigator 2
+- [ ] `tests/subagent_steer.rs`: driver 12
+- [ ] `tests/subagents.rs`: driver 1, review 1
+- [ ] `tests/systemone_wire_golden.rs`: navigator 1
+- [ ] `tests/tui_cli.rs`: navai 3
+- [ ] `tests/tui_config.rs`: navai 3, review 2
+- [ ] `tests/tui_e2e.rs`: navigator 1
+- [ ] `tests/tui_reducer.rs`: explore 2, review 1
+- [ ] `tests/tui_view.rs`: explore 1, navai 7, navigator 4, review 3
+- [ ] `vscode-withnav/package.json`: navai 16, navigator 4
+- [ ] `vscode-withnav/src/chatHtml.ts`: navai 2, review 1
+- [ ] `vscode-withnav/src/cognition.ts`: navai 5
+- [ ] `vscode-withnav/src/eventView.ts`: driver 1, navigator 1, review 1
+- [ ] `vscode-withnav/src/extension.ts`: navai 16, navigator 1
+- [ ] `vscode-withnav/src/settings.ts`: navai 1, navigator 1
+- [ ] `vscode-withnav/src/settingsHtml.ts`: navai 2
+- [ ] `vscode-withnav/src/settingsProtocol.ts`: navai 1, review 1
+- [ ] `vscode-withnav/src/settingsView.ts`: navai 2
+- [ ] `vscode-withnav/src/webview/chat.ts`: driver 1, navai 3, navigator 2, review 5
+- [ ] `vscode-withnav/src/webview/settings.css`: navai 1
+- [ ] `vscode-withnav/src/webview/settings.ts`: navai 1
+- [ ] `vscode-withnav/src/webview/settingsModel.ts`: navigator 1, review 5
+- [ ] `vscode-withnav/src/webview/wake.ts`: navigator 1
+- [ ] `vscode-withnav/tests/chatView.test.cjs`: review 1
+- [ ] `vscode-withnav/tests/cognition.test.cjs`: navai 3, review 6
+- [ ] `vscode-withnav/tests/commands.test.cjs`: review 1
+- [ ] `vscode-withnav/tests/eventView.test.cjs`: driver 5, navai 1, navigator 1, review 5
+- [ ] `vscode-withnav/tests/settings-regressions.test.cjs`: navai 1
+- [ ] `vscode-withnav/tests/settings.test.cjs`: explore 1, navai 2, review 4
+- [ ] `vscode-withnav/tests/webview.test.cjs`: review 5
+- [ ] `webui/dev/fallbacks.ts`: navai 3
+- [ ] `webui/dev/settingsFallback.ts`: navai 2, review 2
+- [ ] `webui/package.json`: navai 1, review 1
+- [ ] `webui/src/App.tsx`: navai 2
+- [ ] `webui/src/components/PermissionCard.tsx`: review 1
+- [ ] `webui/src/components/SubagentView.tsx`: driver 2
+- [ ] `webui/src/components/Transcript.tsx`: driver 1, navigator 1, review 1
+- [ ] `webui/src/components/WorkspaceActions.test.tsx`: navai 1
+- [ ] `webui/src/components/WorkspaceActions.tsx`: navai 2
+- [ ] `webui/src/lib/settings.test.ts`: explore 1, navai 1, review 4
+- [ ] `webui/src/lib/settings.ts`: driver 1, navai 1, review 3
+- [ ] `webui/src/session/__fixtures__/permission-denied.sse`: driver 2, navai 3, review 2
+- [ ] `webui/src/session/__fixtures__/write-file.sse`: navai 3
+- [ ] `webui/src/session/reducer.test.ts`: driver 2, explore 1, navigator 2
+- [ ] `webui/src/session/reducer.ts`: navai 1, navigator 2
+- [ ] `webui/src/session/wake.ts`: navigator 1
+- [ ] `webui/src/settings/Catalogue.tsx`: navai 1
+- [ ] `webui/src/settings/Layers.tsx`: review 1
+- [ ] `webui/src/settings/SettingsPage.tsx`: navai 1
+- [ ] `webui/src/settings/Simple.tsx`: driver 1, review 10
+- [ ] `webui/src/settings/ui.tsx`: navai 1
+- [ ] `webui/src/studio/StudioPage.tsx`: navai 2
+- [ ] `webui/src/studio/diagnostics.test.ts`: navai 4
+- [ ] `webui/src/studio/diagnostics.ts`: navai 1
+- [ ] `webui/src/studio/meta.tsx`: review 1
+- [ ] `webui/src/studio/mock/fixtures.ts`: driver 8, navai 2, review 1
+- [ ] `webui/src/studio/mock/server.test.ts`: navai 2
+- [ ] `webui/src/studio/mock/server.ts`: driver 1
+- [ ] `webui/vite.config.ts`: navai 1
+
+## Identifier
+
+- [ ] `Cargo.toml`: navai 1, navigator 2
+- [ ] `build.rs`: navai 1
+- [ ] `crates/instinct-flow/tests/engine.rs`: driver 1, navai 1
+- [ ] `examples/reflex_latency_probe.rs`: navigator 5
+- [ ] `scripts/import-opencode-models`: navai 4
+- [ ] `src/agent/actor.rs`: driver 11, navai 4, navigator 2, review 7
+- [ ] `src/agent/compaction.rs`: driver 11, navigator 1
+- [ ] `src/agent/compaction/summary.rs`: driver 2
+- [ ] `src/agent/compaction/tests.rs`: driver 3, navigator 6
+- [ ] `src/agent/definitions.rs`: driver 3, navai 2
+- [ ] `src/agent/definitions/tests.rs`: explore 1, review 1
+- [ ] `src/agent/flow_hook.rs`: driver 1
+- [ ] `src/agent/guard.rs`: driver 16, navai 4
+- [ ] `src/agent/instructions.rs`: driver 1
+- [ ] `src/agent/loop.rs`: driver 51, navai 1, navigator 2, review 121
+- [ ] `src/agent/permission_gate.rs`: navai 1, review 65
+- [ ] `src/agent/permissions.rs`: driver 8, review 8
+- [ ] `src/agent/skills.rs`: driver 1
+- [ ] `src/agent/skills/catalog.rs`: driver 1
+- [ ] `src/app.rs`: driver 1, navai 3, navigator 1
+- [ ] `src/app/embedded.rs`: navai 2, navigator 2
+- [ ] `src/bin/withnav-lsp.rs`: navai 1, navigator 6
+- [ ] `src/bus/command.rs`: driver 11, navigator 2
+- [ ] `src/bus/event.rs`: driver 2, review 1
+- [ ] `src/bus/inbox.rs`: driver 40, navigator 10
+- [ ] `src/bus/runtime.rs`: driver 47
+- [ ] `src/bus/runtime/delivery.rs`: driver 3
+- [ ] `src/bus/runtime/steering.rs`: driver 9
+- [ ] `src/error.rs`: navai 4, review 1
+- [ ] `src/flows/builtin/navigator-default-conversation.toml`: driver 1, navigator 1
+- [ ] `src/flows/builtin/navigator-default-idle.toml`: driver 2, navigator 4
+- [ ] `src/flows/builtin/navigator-default-save.toml`: driver 2, navigator 4
+- [ ] `src/flows/client.rs`: navai 5
+- [ ] `src/flows/host.rs`: navai 4
+- [ ] `src/flows/migrate.rs`: driver 1
+- [ ] `src/flows/mod.rs`: navai 1
+- [ ] `src/flows/runtime.rs`: driver 5, navai 3, navigator 1
+- [ ] `src/lib.rs`: navigator 1
+- [ ] `src/navigator/bootstrap.rs`: navai 5, navigator 24, review 20
+- [ ] `src/navigator/config.rs`: navigator 11
+- [ ] `src/navigator/conversation.rs`: driver 67, navigator 27
+- [ ] `src/navigator/document.rs`: navigator 7
+- [ ] `src/navigator/help_call.rs`: driver 1, navigator 8
+- [ ] `src/navigator/intent.rs`: driver 4, navigator 2
+- [ ] `src/navigator/log.rs`: driver 1, review 1
+- [ ] `src/navigator/lsp/mod.rs`: navigator 17
+- [ ] `src/navigator/lsp/protocol.rs`: navigator 4
+- [ ] `src/navigator/metacognition/answer.rs`: navigator 1
+- [ ] `src/navigator/metacognition/mod.rs`: driver 5, navigator 12
+- [ ] `src/navigator/metacognition/permission.rs`: navigator 1, review 17
+- [ ] `src/navigator/metacognition/reflex_context.rs`: navigator 3
+- [ ] `src/navigator/metacognition/tools.rs`: driver 1, navigator 1
+- [ ] `src/navigator/mod.rs`: driver 1, navai 1, navigator 11
+- [ ] `src/navigator/models.rs`: navigator 2
+- [ ] `src/navigator/ports.rs`: driver 2, navai 1, navigator 4
+- [ ] `src/navigator/reflex.rs`: driver 1, navigator 6
+- [ ] `src/navigator/replay/flows.rs`: navai 1
+- [ ] `src/navigator/runtime/delivery.rs`: navigator 7
+- [ ] `src/navigator/runtime/flows.rs`: navigator 15
+- [ ] `src/navigator/runtime/inline.rs`: navigator 4
+- [ ] `src/navigator/runtime/mod.rs`: driver 5, navai 1, navigator 32
+- [ ] `src/navigator/runtime/trigger.rs`: driver 1, navigator 3
+- [ ] `src/navigator/session_hooks.rs`: navigator 12
+- [ ] `src/paths.rs`: navai 3
+- [ ] `src/paths/migrate.rs`: navai 4, navigator 6
+- [ ] `src/paths/migrate/tests.rs`: navai 12, navigator 8
+- [ ] `src/provider/config.rs`: navigator 1
+- [ ] `src/provider/layers.rs`: navai 1
+- [ ] `src/provider/openai.rs`: driver 6, navigator 1
+- [ ] `src/provider/systemone.rs`: navigator 1
+- [ ] `src/server/config.rs`: navai 2, navigator 1
+- [ ] `src/server/routes.rs`: driver 3, navai 13, navigator 1
+- [ ] `src/server/settings.rs`: navai 2
+- [ ] `src/server/web.rs`: navai 3, navigator 2
+- [ ] `src/session/catalog.rs`: driver 1
+- [ ] `src/session/flows.rs`: driver 3, navai 1
+- [ ] `src/session/guard.rs`: driver 1, navai 1
+- [ ] `src/session/message.rs`: driver 2, navigator 1
+- [ ] `src/session/service.rs`: driver 22, navai 7, navigator 2, review 10
+- [ ] `src/session/service/assignment_views.rs`: oracle 2
+- [ ] `src/session/service/resolve.rs`: navai 3, review 1
+- [ ] `src/session/store.rs`: driver 7, navigator 1
+- [ ] `src/session/store/read.rs`: driver 5, navigator 1
+- [ ] `src/session/subagents/decision.rs`: driver 1
+- [ ] `src/session/subagents/root_watchdog.rs`: driver 23, navai 3, review 83
+- [ ] `src/session/subagents/watchdog.rs`: navai 7
+- [ ] `src/settings.rs`: navai 1, review 2
+- [ ] `src/tools/fetch.rs`: navai 6
+- [ ] `src/tools/mod.rs`: driver 1
+- [ ] `src/tools/native.rs`: review 2
+- [ ] `src/tools/nofollow.rs`: review 5
+- [ ] `src/tui/client.rs`: navai 1
+- [ ] `src/tui/input.rs`: driver 2, review 3
+- [ ] `src/tui/protocol.rs`: review 1
+- [ ] `src/tui/reducer/actions.rs`: driver 2, review 1
+- [ ] `src/tui/reducer/mod.rs`: driver 2
+- [ ] `src/tui/runtime/effects.rs`: navai 1
+- [ ] `src/tui/runtime/tests.rs`: review 1
+- [ ] `src/tui/state.rs`: driver 5, review 1
+- [ ] `src/tui/view/header.rs`: navai 1
+- [ ] `src/tui/view/mod.rs`: driver 1
+- [ ] `src/tui/view/panel.rs`: driver 1
+- [ ] `src/tui/view/permission.rs`: review 11
+- [ ] `src/tui/view/pickers.rs`: driver 1
+- [ ] `src/tui/view/tool.rs`: review 8
+- [ ] `src/tui/view/transcript.rs`: driver 1, navigator 4, review 3
+- [ ] `tests/common/mod.rs`: navigator 1
+- [ ] `tests/common/navigator.rs`: driver 5, navai 2, navigator 27
+- [ ] `tests/common/server.rs`: driver 2, navai 1, navigator 12
+- [ ] `tests/e2e.rs`: navai 1
+- [ ] `tests/e2e_live_server.rs`: navai 1
+- [ ] `tests/fetch_convert.rs`: navai 1
+- [ ] `tests/fixtures/navigator/legacy/pipeline.toml`: driver 3, navigator 1
+- [ ] `tests/navigator_flow.rs`: navigator 2
+- [ ] `tests/navigator_lsp.rs`: driver 10, navigator 16
+- [ ] `tests/navigator_metacognition.rs`: navigator 8
+- [ ] `tests/navigator_reflex.rs`: navigator 6
+- [ ] `tests/navigator_startup.rs`: navai 1
+- [ ] `tests/navigator_trigger_log.rs`: navigator 1
+- [ ] `tests/remarks_baseline.rs`: navigator 3
+- [ ] `tests/root_watchdog.rs`: driver 3, navigator 1
+- [ ] `tests/run_parity.rs`: driver 1, navai 2
+- [ ] `tests/server_history.rs`: driver 1, navigator 5
+- [ ] `tests/server_history_ask.rs`: driver 3, navigator 1
+- [ ] `tests/server_history_snapshot.rs`: driver 1, navigator 1
+- [ ] `tests/server_models.rs`: navai 2, navigator 2
+- [ ] `tests/server_navigator.rs`: driver 15, navigator 28
+- [ ] `tests/server_web.rs`: navai 3
+- [ ] `tests/session_agents.rs`: navai 9
+- [ ] `tests/session_archive.rs`: driver 2
+- [ ] `tests/session_commands.rs`: navai 9
+- [ ] `tests/session_permissions.rs`: driver 6, navai 11, navigator 3, review 3
+- [ ] `tests/session_plan_guard.rs`: driver 8, navigator 2
+- [ ] `tests/session_rules.rs`: navai 2, navigator 7
+- [ ] `tests/session_skills.rs`: driver 8, navigator 7
+- [ ] `tests/session_variant.rs`: navai 5
+- [ ] `tests/snapshots/tui_layers_models__model-picker-favorites.snap`: navai 1
+- [ ] `tests/snapshots/tui_layers_models__model-picker-hierarchy.snap`: navai 1
+- [ ] `tests/snapshots/tui_layers_models__model-picker-long-name-100.snap`: navai 1
+- [ ] `tests/snapshots/tui_layers_models__model-picker-long-name-60.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__agent-plan.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__approval-driver-false-70.snap`: driver 1, navai 1
+- [ ] `tests/snapshots/tui_view__approval-driver-true-70.snap`: driver 1, navai 1
+- [ ] `tests/snapshots/tui_view__approval-jev-false-70.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__approval-jev-true-70.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__approval-metacognition-false-70.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__approval-metacognition-true-70.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__approval-none-false-70.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__approval-none-true-70.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__bypass-on.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__command-results.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__done-collapsed.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__done-expanded-reasoning.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__done-expanded-tool-100.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__done-expanded-tool-60.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__empty-100.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__empty-60.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__error-yield.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__layout-100.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__layout-140.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__layout-200.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__model-pending.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__model-picker-filtered.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__overlay-commands.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__overlay-help.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__overlay-models.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__overlay-sessions.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__overlay-themes.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__palette-typed.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__panel-160.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-deny-message.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-light.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-plan-exception.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-reason-build.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-stale.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-write-large.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__permission-write.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__settings-gateways-140.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__settings-layers-variant-140.snap`: navai 1, review 2
+- [ ] `tests/snapshots/tui_view__settings-leave-140.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__settings-model-picker-140.snap`: navai 1, review 2
+- [ ] `tests/snapshots/tui_view__settings-pending-140.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__settings-row-error-140.snap`: navai 1, review 1
+- [ ] `tests/snapshots/tui_view__sidebar-hidden.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__sidebar-scrolled.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__sidebar-three-tabs.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__stopped-reconnecting.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__streaming-100.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__streaming-60.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__unicode-paste-fence.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__variant-current-running.snap`: navai 1
+- [ ] `tests/snapshots/tui_view__variant-step.snap`: navai 1
+- [ ] `tests/startup_preflight.rs`: driver 1
+- [ ] `tests/subagent_delivery.rs`: driver 9
+- [ ] `tests/subagent_steer.rs`: driver 19
+- [ ] `tests/subagent_watchdog.rs`: driver 4, navai 1
+- [ ] `tests/subagents.rs`: driver 6, review 1
+- [ ] `tests/systemone_wire_golden.rs`: navigator 1
+- [ ] `tests/tui_cli.rs`: navai 1
+- [ ] `tests/tui_e2e.rs`: driver 4
+- [ ] `tests/tui_reducer.rs`: driver 4, review 1
+- [ ] `tests/tui_view.rs`: driver 2, review 8
+- [ ] `vscode-withnav/src/chatHtml.ts`: navai 2
+- [ ] `vscode-withnav/src/chatProtocol.ts`: driver 15, navigator 1, review 1
+- [ ] `vscode-withnav/src/chatView.ts`: driver 1, navai 1, review 1
+- [ ] `vscode-withnav/src/cognition.ts`: driver 3, navai 2, navigator 1
+- [ ] `vscode-withnav/src/editorContext.ts`: driver 5
+- [ ] `vscode-withnav/src/eventView.ts`: navai 1, review 3
+- [ ] `vscode-withnav/src/extension.ts`: driver 2, navigator 2
+- [ ] `vscode-withnav/src/protocol.ts`: driver 1, navigator 3
+- [ ] `vscode-withnav/src/reflex.ts`: navigator 2
+- [ ] `vscode-withnav/src/settings.ts`: navai 2, navigator 1
+- [ ] `vscode-withnav/src/settingsHost.ts`: navai 1
+- [ ] `vscode-withnav/src/settingsHtml.ts`: navai 3
+- [ ] `vscode-withnav/src/settingsProtocol.ts`: navai 1
+- [ ] `vscode-withnav/src/settingsView.ts`: navai 1, review 1
+- [ ] `vscode-withnav/src/webview/chat.css`: driver 3, navigator 1
+- [ ] `vscode-withnav/src/webview/chat.ts`: driver 1, navigator 5, review 6
+- [ ] `vscode-withnav/src/webview/settingsModel.ts`: review 1
+- [ ] `vscode-withnav/src/webview/wake.ts`: driver 1, navigator 5
+- [ ] `vscode-withnav/tests/bypass.test.cjs`: navai 1
+- [ ] `vscode-withnav/tests/chatView.test.cjs`: navai 2, review 12
+- [ ] `vscode-withnav/tests/cognition.test.cjs`: navai 1, review 2
+- [ ] `vscode-withnav/tests/commands-integration.test.cjs`: review 5
+- [ ] `vscode-withnav/tests/eventView.test.cjs`: driver 1, navai 1
+- [ ] `vscode-withnav/tests/settings-regressions.test.cjs`: navai 3, review 10
+- [ ] `vscode-withnav/tests/settings.test.cjs`: navai 2
+- [ ] `webui/index.html`: navai 1
+- [ ] `webui/src/App.tsx`: navai 2
+- [ ] `webui/src/api/http.ts`: navai 2
+- [ ] `webui/src/components/PermissionCard.tsx`: driver 1, review 3
+- [ ] `webui/src/components/SubagentView.tsx`: driver 1
+- [ ] `webui/src/components/Transcript.tsx`: driver 2
+- [ ] `webui/src/components/WorkspaceActions.test.tsx`: navai 2
+- [ ] `webui/src/lib/compose.ts`: driver 2, navigator 1
+- [ ] `webui/src/lib/format.ts`: navigator 1
+- [ ] `webui/src/lib/workspaceExpansion.ts`: navai 1
+- [ ] `webui/src/session/reducer.test.ts`: driver 1, navai 1
+- [ ] `webui/src/session/reducer.ts`: driver 4
+- [ ] `webui/src/session/useChat.ts`: driver 1
+- [ ] `webui/src/session/wake.ts`: driver 1, navigator 5
+- [ ] `webui/src/settings/Layers.tsx`: navigator 1, review 1
+- [ ] `webui/src/settings/SettingsPage.tsx`: navai 1
+- [ ] `webui/src/settings/Simple.tsx`: review 3
+- [ ] `webui/src/settings/settings.css`: driver 1, navai 1, review 2
+- [ ] `webui/src/studio/Canvas.tsx`: review 2
+- [ ] `webui/src/studio/FlowList.tsx`: navai 1
+- [ ] `webui/src/studio/StudioPage.tsx`: driver 1, navai 1
+- [ ] `webui/src/studio/graph.test.ts`: driver 1
+- [ ] `webui/src/studio/mock/fixtures.ts`: driver 1, navai 1
+- [ ] `webui/src/studio/mock/server.ts`: navai 1
+- [ ] `webui/src/studio/studio.css`: navai 1
+- [ ] `webui/src/studio/types.ts`: navai 1
+- [ ] `webui/src/styles.css`: driver 1, navai 1, review 4
+- [ ] `webui/vite.config.ts`: navai 2
+
+## Docs
+
+- [ ] `AGENTS.md`: driver 1, navai 1
+- [ ] `ARCHITECTURE.md`: driver 39, explore 1, navai 26, navigator 27, review 17
+- [ ] `CHANGELOG.md`: driver 7, explore 1, librarian 1, navai 43, navigator 15, oracle 1, review 27
+- [ ] `CONTEXT.md`: driver 41, explore 2, navai 14, navigator 8, review 18
+- [ ] `README.md`: driver 4, explore 1, librarian 1, navai 32, navigator 6, oracle 1, review 3
+- [ ] `crates/instinct-flow/README.md`: navai 1
+- [ ] `docs/PLAN.md`: navai 7, navigator 1
+- [ ] `docs/SPEC.md`: driver 9, explore 2, navai 32, navigator 8, review 8
+- [ ] `docs/adr/0001-driver-is-the-default-author.md`: driver 5, navai 1, navigator 1, review 1
+- [ ] `docs/adr/0002-editor-surface-is-an-lsp-server.md`: driver 1, navigator 2
+- [ ] `docs/adr/0004-shared-context-is-split-durable-and-live.md`: driver 2, navigator 1
+- [ ] `docs/adr/0005-pipeline-is-data-not-code.md`: driver 1
+- [ ] `docs/adr/0006-one-process-two-channels.md`: navai 1, navigator 2
+- [ ] `docs/adr/0008-primary-agents-and-resumable-tool-authorization.md`: driver 3, navai 1
+- [ ] `docs/adr/0009-background-subagents-and-durable-delivery.md`: driver 10, navai 3, navigator 1
+- [ ] `docs/adr/0010-per-call-permission-review.md`: driver 4, navai 1, review 12
+- [ ] `docs/adr/0011-layers-models-and-agent-overrides.md`: driver 5, navigator 2
+- [ ] `docs/adr/0012-extractable-system-one-flows.md`: driver 2, navai 5, navigator 1
+- [ ] `docs/adr/0013-instinct-flow-engine-crate.md`: driver 4, navai 5, review 1
+- [ ] `docs/instinct-flow.md`: driver 21, navai 23, navigator 1, review 5
+- [ ] `examples/agents/librarian.md`: librarian 1
+- [ ] `examples/agents/oracle.md`: oracle 1, review 1
+- [ ] `src/agent/builtin/explore.md`: explore 1
+- [ ] `src/agent/builtin/plan.md`: driver 2
+- [ ] `src/agent/builtin/review.md`: review 1
+- [ ] `src/flows/NOTES.md`: driver 3, navai 3
+- [ ] `src/flows/builtin/navigator-default-conversation-state.md`: driver 2, navigator 2
+- [ ] `src/flows/builtin/navigator-default-idle-state.md`: driver 1, navigator 2
+- [ ] `src/flows/builtin/navigator-default-save-state.md`: driver 1, navigator 2
+- [ ] `src/navigator/FLOWS_MIGRATION.md`: driver 2, navai 1, navigator 1
+- [ ] `src/navigator/cognition.md`: driver 5, navigator 3
+- [ ] `src/navigator/metacognition/reflex_context_prompt.md`: driver 2
+- [ ] `tests/fixtures/navigator/legacy/prompts/conversation_remark.md`: driver 1, navigator 1
+- [ ] `tests/fixtures/navigator/legacy/prompts/conversation_state.md`: driver 2, navigator 2
+- [ ] `tests/fixtures/navigator/legacy/prompts/help_remark.md`: driver 1, navigator 1
+- [ ] `tests/fixtures/navigator/legacy/prompts/remark.md`: driver 1, navigator 1
+- [ ] `tests/fixtures/navigator/legacy/prompts/state.md`: driver 1, navigator 2
+- [ ] `tests/fixtures/navigator/replay/recorded/prompts/remark.md`: navigator 1
+- [ ] `tests/fixtures/navigator/replay/recorded/prompts/state.md`: navigator 1
+- [ ] `vscode-withnav/README.md`: navai 23, navigator 9, review 2
+- [ ] `webui/README.md`: driver 1, navai 10, navigator 1

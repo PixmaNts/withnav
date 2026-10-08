@@ -1977,8 +1977,9 @@ nav/
 │   ├── tui/                   terminal client: reducer, runtime, view, theme
 │   └── paths/                 move from the former rust-agent locations
 ├── tests/                     integration tests, common/ harnesses, fixtures
-├── vscode-withnav/          the VS Code extension (TypeScript)
-└── examples/
+├── vscode-withnav/            the VS Code extension (TypeScript)
+├── examples/agents/           example user agent files
+└── tools/                     live probes of the configured models, run by hand
 ```
 
 Modules SHOULD remain small and explicit. The project SHOULD avoid creating generic `manager`, `engine`, or `framework` abstractions unless a concrete second implementation requires them.

@@ -52,7 +52,7 @@ const triggers: TriggerSpec[] = [
     can_block: true,
     payload_fields: [f("command_id", "string"), f("author", "string"), f("text", "string"), f("selected_skill", "object", false)],
     allowed_actions: [...EFFECTS],
-    sample_payload: { command_id: "cmd_01", author: "driver", text: "Can you review the diff in incr.rs before I commit?", selected_skill: null },
+    sample_payload: { command_id: "cmd_01", author: "captain", text: "Can you review the diff in incr.rs before I commit?", selected_skill: null },
     default_fallback: null,
   },
   {
@@ -85,7 +85,7 @@ const input = (name: string, value_type: InputSpec["value_type"], source: string
 
 const inputs: InputSpec[] = [
   input("conversation.digest", "string", "conversation", ALL),
-  input("conversation.last_driver", "string", "conversation", ALL),
+  input("conversation.last_captain", "string", "conversation", ALL),
   input("conversation.last_turns", "array", "conversation", ALL),
   input("editor.cursor", "object", "editor", EDITOR),
   input("editor.open_files", "array", "editor", EDITOR),
@@ -168,10 +168,10 @@ destructive = ["blast_radius"]
 [[node]]
 id = "asked_for"
 type = "noul"
-instructions = "Did the driver or the intent record ask for this exact change?"
+instructions = "Did the Captain or the intent record ask for this exact change?"
 threshold = "constant.MIN_YES"
 [node.inputs]
-last_driver = "conversation.last_driver"
+last_captain = "conversation.last_captain"
 intent = "intent.record"
 args = "event.args"
 [node.next]
@@ -238,7 +238,7 @@ id = "deny"
 type = "action"
 action = "deny"
 [node.params]
-note = "Change not requested, or destructive reach too broad. Propose it to the driver."
+note = "Change not requested, or destructive reach too broad. Propose it to the Captain."
 [node.next]
 then = ["audit"]
 
@@ -321,7 +321,7 @@ action = "wake"
 note = "The last turn failed; look at what went wrong before going on."
 `;
 
-/** One recorded live run of guard-mutations on a `write` the driver did not ask for. */
+/** One recorded live run of guard-mutations on a `write` the Captain did not ask for. */
 export function sampleRunRecord(digest: string): RunRecord {
   const pending = (id: string) => ({ id, status: "not_reached" as const, port: null, duration_ms: null, answer: null, result: null, variables: {}, batch_id: null, error: null });
   return {
@@ -337,7 +337,7 @@ export function sampleRunRecord(digest: string): RunRecord {
     identity: { model: "typesafe/jev-1.13", variant: null },
     inputs: {
       "session.agent": { value: "build", cut: false },
-      "conversation.last_driver": { value: "Swap the toml parser, keep Config::load(p).", cut: false },
+      "conversation.last_captain": { value: "Swap the toml parser, keep Config::load(p).", cut: false },
       "intent.record": { value: "Incremental TOML parser, public API unchanged.", cut: false },
     },
     nodes: [
@@ -364,15 +364,15 @@ export function sampleRunRecord(digest: string): RunRecord {
       },
       {
         id: "b2", node_ids: ["asked_for"],
-        state: 'args = {"content":"pub fn load(p: &Path, strict: bool) -> Config { … }","path":"src/config.rs"}\nintent = "Incremental TOML parser, public API unchanged."\nlast_driver = "Swap the toml parser, keep Config::load(p)."',
-        questions: { asked_for: { type: "noul", instructions: "Did the driver or the intent record ask for this exact change?" } },
+        state: 'args = {"content":"pub fn load(p: &Path, strict: bool) -> Config { … }","path":"src/config.rs"}\nintent = "Incremental TOML parser, public API unchanged."\nlast_captain = "Swap the toml parser, keep Config::load(p)."',
+        questions: { asked_for: { type: "noul", instructions: "Did the Captain or the intent record ask for this exact change?" } },
         duration_ms: 296, usage: { input_tokens: 358, output_tokens: 12 }, cost_usd: null,
       },
     ],
     status: "success",
     failure: null,
     actions: [
-      { node_id: "deny", action: "deny", params: { note: "Change not requested, or destructive reach too broad. Propose it to the driver." } },
+      { node_id: "deny", action: "deny", params: { note: "Change not requested, or destructive reach too broad. Propose it to the Captain." } },
       { node_id: "audit", action: "log", params: { text: "guard-mutations proposed denial" } },
     ],
     fallback_actions: [],

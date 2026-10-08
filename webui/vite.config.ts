@@ -5,7 +5,7 @@ import { fallbacks } from "./dev/fallbacks.ts";
 import { devEnv } from "./dev/legacyConfig.ts";
 
 // The session server the dev build talks to. Defaults to a scratch server:
-//   XDG_DATA_HOME=/tmp/opencode/withnav-webui-data navai serve --bind 127.0.0.1:7311
+//   XDG_DATA_HOME=/tmp/opencode/withnav-webui-data nav serve --bind 127.0.0.1:7311
 const target = devEnv("SERVER") ?? "http://127.0.0.1:7311";
 // Workspaces listed by the dev stand-in for `GET /v1/workspaces`, colon-separated.
 const workspaces = (devEnv("WORKSPACES") ?? "/tmp/opencode/withnav-webui-ws").split(":").filter(Boolean);

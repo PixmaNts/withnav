@@ -30,7 +30,7 @@ const body: SettingsBody = {
     field("layers.metacognition", { model: "omniroute/combo/deepseek-v4-flash", variant: "low" }),
     field("default_agent", "build", { default: "build" }),
     field("agents.build", { model: "omniroute/cc/claude-opus-5-5", variant: "high" }),
-    field("agents.explore", null),
+    field("agents.vigie", null),
     field("permissions.automatic_review", null, { default: true }),
     field("subagents.max_concurrent", 6, { default: 4 }),
     field("tui.theme", "nord-light", { applies: "live" }),
@@ -61,7 +61,7 @@ describe("settings field mapping", () => {
     expect(choiceOf(body, "layers.metacognition")?.variant).toBe("low");
   });
   it("lists the agents the server reports a field for", () => {
-    expect(agentKeys(body)).toEqual(["build", "explore"]);
+    expect(agentKeys(body)).toEqual(["build", "vigie"]);
   });
   it("adopts the server theme only when config.json sets a known one", () => {
     expect(serverTheme(body)).toBe("nord-light");

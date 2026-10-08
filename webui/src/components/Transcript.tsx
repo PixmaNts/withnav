@@ -19,7 +19,7 @@ interface Props {
   empty?: React.ReactNode;
 }
 
-/** Follows the newest content unless the driver scrolled up to read. */
+/** Follows the newest content unless the Captain scrolled up to read. */
 function useStickToBottom(dep: unknown) {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -53,10 +53,10 @@ export function Transcript({ view, agent, onAnswer, onOpenChild, readOnly, empty
 
 function ItemView({ item, view, agent, onAnswer, onOpenChild, readOnly }: { item: Item; view: SessionView; agent?: string; onAnswer: Answer; onOpenChild: (id: string) => void; readOnly?: boolean }) {
   switch (item.kind) {
-    case "driver": {
+    case "captain": {
       const { delegated, text } = readDelegation(item.text);
       return (
-        <div className="msg-driver">
+        <div className="msg-captain">
           <div className="byline">
             <Crew id="captain" />{delegated ? " · Delegation" : ""}
             {item.skill ? ` · skill ${item.skill}` : ""}

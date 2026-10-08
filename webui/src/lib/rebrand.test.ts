@@ -12,7 +12,7 @@ it.each(["theme", "token", "expanded-workspaces"])("migrates %s on first read", 
   expect(values.get(`withnav.${suffix}`)).toBe("saved");
   expect(values.has(`navai.${suffix}`)).toBe(false);
 });
-it.each(["driver", "captain", "captain:main"])("recognizes %s as Captain", (source) => expect(authorOf(source)).toBe("driver"));
+it.each(["driver", "captain", "captain:main"])("recognizes %s as Captain", (source) => expect(authorOf(source)).toBe("captain"));
 it.each([["build", "nav"], ["plan", "nav"], ["explore", "vigie"], ["librarian", "vigie"], ["review", "lux"], ["oracle", "lux"], ["explorer", "mousse"], ["driver", "captain"]])("maps %s to %s", (old, current) => expect(crewId(old)).toBe(current));
 it.each(["nav", "vigie", "lux", "mousse", "cartographe", "sondeur", "captain"])("labels %s with a role", (id) => expect(crewLabel(id)).toContain(" · The "));
 it("reads ask_driver as ask_captain", () => {

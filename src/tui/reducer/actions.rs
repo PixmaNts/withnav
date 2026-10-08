@@ -463,7 +463,7 @@ fn toggle_agent(s: &mut State) -> Vec<Effect> {
 }
 
 /// Sends a server command to the active conversation. With no conversation yet (or one being
-/// started or resumed) there is nothing to run it in, and the driver is told so.
+/// started or resumed) there is nothing to run it in, and the Captain is told so.
 fn run_command(
     s: &mut State,
     name: String,
@@ -721,7 +721,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             vec![]
         }
         Action::TogglePanel => {
-            // Flips what the driver saw, whether the width or an earlier toggle decided it.
+            // Flips what the Captain saw, whether the width or an earlier toggle decided it.
             ui.panel_shown = Some(!ui.panel_drawn);
             vec![]
         }

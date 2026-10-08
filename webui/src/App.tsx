@@ -1,3 +1,4 @@
+import { BrandMark, Crew, crewLabel } from "./components/Crew";
 import { Compass, FlowArrow, GearSix, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -70,7 +71,7 @@ function Expired() {
           <Compass size={18} aria-hidden /> Session expired
         </h1>
         <div>
-          The Navai server no longer accepts this page. Relaunch <code>navai web</code> and open the address it prints.
+          The WithNav server no longer accepts this page. Relaunch <code>nav web</code> and open the address it prints.
         </div>
       </div>
     </div>
@@ -109,7 +110,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
 
   useEffect(() => {
-    document.title = route.session ? `${title} · Navai` : "Navai";
+    document.title = route.session ? `${title} · WithNav` : "WithNav";
   }, [route.session, title]);
 
   // A route whose workspace the stream reports differently is corrected.
@@ -149,7 +150,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     const children = Object.values(chat.view.children);
     const items: PaletteCommand[] = [
       { id: "bypass", group: "Session", label: `Turn bypass ${bypass ? "off" : "on"}`, description: "Bypass ordinary permission prompts; protected requests still ask", hint: "", disabled: bypassReason, run: () => void chat.setBypass(!bypass) },
-      { id: "agent", group: "Agent", label: `Switch agent to ${otherAgent}`, hint: "tab", run: toggleAgent, disabled: workspace ? undefined : "Choose a workspace first" },
+      { id: "agent", group: "Agent", label: `Switch to ${crewLabel(otherAgent)}`, hint: "tab", run: toggleAgent, disabled: workspace ? undefined : "Choose a workspace first" },
       { id: "model", group: "Agent", label: "Model for this session…", hint: "/model", run: () => setOverlay("models"), disabled: workspace ? undefined : "Choose a workspace first" },
       {
         id: "subagent",
@@ -160,7 +161,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         page: () => ({
           title: "Subagents",
           placeholder: "Choose a subagent…",
-          items: children.map((c) => ({ id: c.id, group: c.status, label: `@${c.agent}`, description: c.goal.slice(0, 80), run: () => openChild(c.id) })),
+          items: children.map((c) => ({ id: c.id, group: c.status, label: crewLabel(c.agent), description: c.goal.slice(0, 80), run: () => openChild(c.id) })),
         }),
       },
       { id: "delegate", group: "Agent", label: "Delegate to cognition", hint: "", run: () => composer.current?.toggleDelegate(), disabled: workspace ? undefined : "Choose a workspace first" },
@@ -212,7 +213,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       items.push({
         id: `server:${c.name}`,
         group: "Session",
-        label: c.description,
+        label: c.name === "intent" ? "Set the Course" : ["approve", "approve_plan", "confirm_route"].includes(c.name) ? "Confirm the Route" : c.description,
         hint: `/${c.name}`,
         disabled: hasSession ? undefined : "Send a first message to start the session",
         run: () => (c.args_hint.startsWith("<") ? composer.current?.fill(`/${c.name} `) : void runServer(c.name, "")),
@@ -294,15 +295,15 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const connection = chat.stream.status === "reconnecting" ? "Reconnecting…" : chat.stream.status === "error" ? chat.stream.error ?? "Disconnected" : null;
   const composerDisabled = !workspace ? "Choose a workspace on the left to start." : chat.readOnly ? chat.summary?.resume_disabled_reason ?? "This session is read-only." : undefined;
 
-  const crumbWs = workspace ? baseName(workspace) : "Navai";
+  const crumbWs = workspace ? baseName(workspace) : "WithNav";
   const crumb = route.subagent ? `${title} / ${childAgent ?? "subagent"}` : workspace ? title : "Choose a workspace";
 
   return (
     <div className="shell">
       <header className="topbar">
         <span className="brand">
-          <Compass size={16} aria-hidden />
-          Navai
+          <BrandMark />
+          WithNav
         </span>
         <span className="crumb" title={workspace ?? undefined}>
           {crumbWs} / {crumb}
@@ -404,7 +405,7 @@ function EmptyState({ workspace, sessionId, loading, agent }: { workspace: strin
     <EmptySession title={`New session in ${baseName(workspace)}`}>
       <div className="mono" style={{ fontSize: 12 }}>{shortPath(workspace)}</div>
       <div>
-        The first message starts a session as <b style={{ color: agent === "plan" ? "var(--bl)" : "var(--at)", fontWeight: 500 }}>{agent}</b>. By default the cognition guides you; turn on Delegate to have it do the work.
+        The first message starts a session as <b style={{ color: agent === "plan" ? "var(--bl)" : "var(--at)", fontWeight: 500 }}><Crew id={agent} /></b>. By default Nav guides you; turn on Delegate to have it do the work.
       </div>
     </EmptySession>
   );

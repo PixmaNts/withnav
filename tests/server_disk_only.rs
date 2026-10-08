@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use navai::bus::event::EventEnvelope;
-use navai::server::AppState;
+use withnav::bus::event::EventEnvelope;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{post_message, post_message_ok, spawn_server, TestServerConfig};
@@ -76,7 +76,7 @@ async fn restarted_after_one_turn() -> Restarted {
 async fn stored_events(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(events) => events,
+        withnav::bus::ResumeOutcome::Replay(events) => events,
         other => panic!("expected a replay: {other:?}"),
     }
 }

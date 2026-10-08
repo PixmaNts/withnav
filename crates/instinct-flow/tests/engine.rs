@@ -245,7 +245,7 @@ async fn independent_branches_run_in_parallel() {
 #[tokio::test]
 async fn failure_discards_already_proposed_deny() {
     let text = header("['deny','b']")
-        + "[fallback]\non_invalid_answer={action='ask_driver',params={note='fallback'}}\n"
+        + "[fallback]\non_invalid_answer={action='ask_captain',params={note='fallback'}}\n"
         + &action("deny", "deny", "note='do not run'")
         + &decision("b", "");
     let c = compile(&text);
@@ -260,7 +260,7 @@ async fn failure_discards_already_proposed_deny() {
         }
     ));
     assert!(outcome.trace.actions.is_empty());
-    assert_eq!(outcome.trace.fallback_actions[0].action, "ask_driver");
+    assert_eq!(outcome.trace.fallback_actions[0].action, "ask_captain");
 }
 #[tokio::test]
 async fn exhausted_deadline_selects_timeout_fallback() {
@@ -285,7 +285,7 @@ async fn exhausted_deadline_selects_timeout_fallback() {
 fn conflicts_limits_and_nonblocking_verdicts_fail_closed() {
     let text = header("['deny','ask']")
         + &action("deny", "deny", "note='deny'")
-        + &action("ask", "ask_driver", "note='ask'");
+        + &action("ask", "ask_captain", "note='ask'");
     let errors = Definition::parse(&text)
         .unwrap()
         .validate(
@@ -687,7 +687,7 @@ async fn typed_parameter_overflow_is_a_limit_not_a_string() {
     assert!(outcome.trace.actions.is_empty());
 }
 #[tokio::test]
-async fn decision_text_preserves_driver_context_until_32_kib() {
+async fn decision_text_preserves_captain_context_until_32_kib() {
     let c = compile(&(header("['b']") + &decision("b", "")));
     for (bytes, expected_bytes, cut) in [(25749, 25749, false), (33000, 32768, true)] {
         let client = Fake::new();
@@ -760,7 +760,7 @@ fn five_reference_flow() -> String {
             "state_template='fixed'\n[node.inputs]\nx='session.agent'\n[node.next]\nno=['c','d','e','f']",
         );
     for (id, reference) in [
-        ("c", "conversation.last_driver"),
+        ("c", "conversation.last_captain"),
         ("d", "intent.record"),
         ("e", "workspace.root"),
         ("f", "event.tool"),
@@ -1180,7 +1180,7 @@ async fn semaphore_wait_counts_against_run_deadline() {
 }
 #[tokio::test]
 async fn fallback_specific_general_default_and_nonblocking_suppression() {
-    for (fallback, expected) in [("[fallback]\non_invalid_answer={action='log',params={text='specific'}}\non_failure={action='log',params={text='general'}}\n", "log"), ("[fallback]\non_failure={action='log',params={text='general'}}\n", "log"), ("", "ask_driver")] {
+    for (fallback, expected) in [("[fallback]\non_invalid_answer={action='log',params={text='specific'}}\non_failure={action='log',params={text='general'}}\n", "log"), ("[fallback]\non_failure={action='log',params={text='general'}}\n", "log"), ("", "ask_captain")] {
         let c = compile(&(header("['b']") + fallback + &decision("b", "")));
         let mut client = Fake::new(); client.fail = true;
         let outcome = evaluate(&c, &client).await;
@@ -1202,7 +1202,7 @@ async fn fallback_specific_general_default_and_nonblocking_suppression() {
 #[tokio::test]
 async fn verdict_priority_ties_use_flow_name_and_merge_notes() {
     let mut outcomes = Vec::new();
-    for (name, action_name) in [("z", "deny"), ("a", "deny"), ("first", "ask_driver")] {
+    for (name, action_name) in [("z", "deny"), ("a", "deny"), ("first", "ask_captain")] {
         let text = (header("['v']") + &action("v", action_name, &format!("note='{name}'")))
             .replace("name='test'", &format!("name='{name}'"));
         outcomes.push(evaluate(&compile(&text), &Fake::new()).await);
@@ -1213,7 +1213,7 @@ async fn verdict_priority_ties_use_flow_name_and_merge_notes() {
 }
 #[test]
 fn exclusive_choice_ports_allow_different_verdicts() {
-    compile(&(header("['choice']") + "[[node]]\nid='choice'\ntype='choice'\ninstructions='Pick'\ncriteria={a='A',b='B'}\n[node.inputs]\nx='session.agent'\n[node.next]\na=['deny']\nb=['ask']\n" + &action("deny", "deny", "note='deny'") + &action("ask", "ask_driver", "note='ask'")));
+    compile(&(header("['choice']") + "[[node]]\nid='choice'\ntype='choice'\ninstructions='Pick'\ncriteria={a='A',b='B'}\n[node.inputs]\nx='session.agent'\n[node.next]\na=['deny']\nb=['ask']\n" + &action("deny", "deny", "note='deny'") + &action("ask", "ask_captain", "note='ask'")));
 }
 #[tokio::test]
 async fn reconvergent_diamond_activates_join_once() {

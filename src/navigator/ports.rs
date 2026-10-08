@@ -2,7 +2,7 @@
 //! implementations program against and tests script with fakes.
 //!
 //! - [`FimModel`]: the reflex's fill-in-the-middle engine (ghost-text
-//!   suggestions while the driver types).
+//!   suggestions while the Captain types).
 //! - [`Metacognition`]: the fast remark engine (one remark, or silence, for a
 //!   document state).
 //!
@@ -29,7 +29,7 @@ pub enum ModelError {
     #[error("malformed model output: {0}")]
     Malformed(String),
     /// The layer cannot run at all (it was disabled at startup); the message
-    /// is shown to the driver as is.
+    /// is shown to the Captain as is.
     #[error("{0}")]
     Unavailable(String),
 }

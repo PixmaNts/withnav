@@ -51,6 +51,30 @@ pub fn applies(key: &str) -> &'static str {
     }
 }
 
+pub fn label(key: &str) -> &str {
+    match key {
+        "layers.reflex" => "Reflex · Completion",
+        "layers.instinct" => "Instinct · Triage",
+        "layers.metacognition" => "Metacognition · Beacon",
+        "default_agent" => "Cognition · Nav and the crew",
+        _ => key,
+    }
+}
+
+pub fn description(key: &str) -> &'static str {
+    match key {
+        "layers.reflex" => "Completes as you type from code around the cursor.",
+        "layers.instinct" => "Triages events and runs permission review.",
+        "layers.metacognition" => {
+            "Compares code with intent, writes Beacons signed by Nav, and wakes Nav on drift."
+        }
+        "default_agent" => {
+            "Selects the primary role for Nav and the crew, with their tools, skills and rules."
+        }
+        _ => "",
+    }
+}
+
 pub fn choice(raw: &Value) -> Value {
     if let Some(model) = raw.as_str() {
         json!({"model":model,"variant":null})

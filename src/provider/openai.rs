@@ -52,7 +52,7 @@ pub enum ChatMessage {
     },
     User {
         content: String,
-        #[serde(default, skip_serializing_if = "UserProvenance::is_driver")]
+        #[serde(default, skip_serializing_if = "UserProvenance::is_captain")]
         provenance: UserProvenance,
     },
     Assistant {
@@ -76,7 +76,8 @@ pub enum ChatMessage {
 #[serde(rename_all = "snake_case")]
 pub enum UserProvenance {
     #[default]
-    Driver,
+    #[serde(alias = "driver")]
+    Captain,
     Navigator,
     Parent,
     Subagent,
@@ -93,16 +94,16 @@ pub enum FlowSource {
     Flow,
 }
 impl UserProvenance {
-    fn is_driver(&self) -> bool {
-        *self == Self::Driver
+    fn is_captain(&self) -> bool {
+        *self == Self::Captain
     }
 }
 impl ChatMessage {
-    pub fn is_driver_message(&self) -> bool {
+    pub fn is_captain_message(&self) -> bool {
         matches!(
             self,
             Self::User {
-                provenance: UserProvenance::Driver,
+                provenance: UserProvenance::Captain,
                 ..
             }
         )

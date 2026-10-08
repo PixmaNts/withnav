@@ -227,9 +227,9 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
 // and is absent from replay (no gap, no dup at the boundary).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscribe_then_replay_seam_is_complete_and_delivers_once() {
-    use navai::bus::event::EventKind;
-    use navai::bus::sequencer::{Candidate, Sequencer};
-    use navai::bus::{ResumeOutcome, SessionBus};
+    use withnav::bus::event::EventKind;
+    use withnav::bus::sequencer::{Candidate, Sequencer};
+    use withnav::bus::{ResumeOutcome, SessionBus};
 
     let seq = Sequencer::spawn(ulid::Ulid::new(), SessionBus::default(), 0);
 

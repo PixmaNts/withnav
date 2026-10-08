@@ -1,4 +1,4 @@
-/* InstinctFlow Studio. Values follow docs/design/Navai InstinctFlow.dc.html: 220px flow list,
+/* InstinctFlow Studio. Values follow docs/design/WithNav InstinctFlow.dc.html: 220px flow list,
    340px inspector, card anatomy 30/60/24/22px, accent ring on the selected card. Colours are the
    theme tokens of theme/theme.css; React Flow is themed through its --xy-* variables. */
 

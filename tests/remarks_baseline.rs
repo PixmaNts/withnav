@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::navigator::ports::Answer;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::navigator::ports::Answer;
 
 mod common;
 use common::navigator::EditorFlowsExt;
@@ -145,7 +145,7 @@ async fn diagnostics_update_context_without_a_builtin_trigger_or_log_record() {
     .await;
     nav.open_and_edit().await;
     nav.notify(
-        "navigator/diagnostics",
+        "withnav/diagnostics",
         json!({
             "uri": URI,
             "items": [{"line": 1, "severity": "error", "message": "synthetic type error"}],
@@ -153,7 +153,7 @@ async fn diagnostics_update_context_without_a_builtin_trigger_or_log_record() {
     )
     .await;
     let seen = nav.sync_notifications().await;
-    assert!(seen.iter().all(|msg| msg["method"] != "navigator/remark"));
+    assert!(seen.iter().all(|msg| msg["method"] != "withnav/remark"));
     assert_eq!(model.calls(), 0);
     assert!(triggers(&nav).is_empty());
     nav.did_save(URI).await;
@@ -198,7 +198,7 @@ async fn conversation_silence_logs_one_question_and_leaves_the_edit_for_save() {
     assert_eq!(records[0]["requested_action"], "silent");
     assert_eq!(records[0]["delivered"], "silent");
     assert_eq!(model.questions()[0].len(), 1);
-    assert!(model.states()[0].contains("driver:"));
+    assert!(model.states()[0].contains("captain:"));
     assert_eq!(records[1]["event"], "save");
     assert_eq!(records[1]["prefilter"]["inputs"]["changed_lines"], 4);
     assert_eq!(model.calls(), 2);

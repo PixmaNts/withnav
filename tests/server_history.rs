@@ -11,10 +11,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::navigator::COGNITION_PROMPT;
-use navai::provider::openai::ChatMessage;
-use navai::server::AppState;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::navigator::COGNITION_PROMPT;
+use withnav::provider::openai::ChatMessage;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{
@@ -148,7 +148,7 @@ async fn spawn_history_server() -> (ServerA, PathBuf, tempfile::TempDir) {
 
 // Given a session created with history_db set against a scripted provider
 // When a message completes its turn
-// Then the store has the session with a title from the first driver message,
+// Then the store has the session with a title from the first captain message,
 //      the events are stored (minus llm.delta/session.end), and the
 //      transcript snapshot is saved
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -186,7 +186,7 @@ async fn converse_persists_events_title_and_transcript() {
 
     // Direct store probe: events stored except llm.delta; no session.end
     // while live; transcript snapshot present.
-    let store = navai::session::store::HistoryStore::open(&db).unwrap();
+    let store = withnav::session::store::HistoryStore::open(&db).unwrap();
     let loaded = tokio::time::timeout(Duration::from_secs(5), store.load(id.parse().unwrap()))
         .await
         .expect("load")
@@ -272,14 +272,14 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
         .subscribe(id.parse().unwrap(), None)
         .await
         .expect("sub2");
-    if let navai::bus::ResumeOutcome::Replay(replay) = &sub2.replay {
+    if let withnav::bus::ResumeOutcome::Replay(replay) = &sub2.replay {
         assert!(
             replay.iter().any(|e| e.kind == "session.start"),
             "the original session.start replays"
         );
         assert!(
             replay.iter().any(|e| e.kind == "message.received"),
-            "the original driver message replays"
+            "the original captain message replays"
         );
         assert!(
             !replay.iter().any(|e| e.kind == "session.end"),
@@ -319,7 +319,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let new_message = new_events
         .iter()
         .find(|e| e.kind == "message.received")
-        .expect("the new driver message was sequenced after the stored head");
+        .expect("the new captain message was sequenced after the stored head");
     assert_eq!(
         new_message.payload["content"],
         "What word did I ask you to remember?"
@@ -391,7 +391,7 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
         .expect("resume");
     assert!(resumed);
     let sub = server.state.subscribe(ulid, None).await.expect("sub");
-    if let navai::bus::ResumeOutcome::Replay(replay) = &sub.replay {
+    if let withnav::bus::ResumeOutcome::Replay(replay) = &sub.replay {
         assert!(
             !replay.iter().any(|e| e.kind == "session.end"),
             "the old session.end is not replayed to the resumed stream"
@@ -453,7 +453,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     std::fs::create_dir_all(&ws).expect("ws");
 
     let id = ulid::Ulid::new();
-    let store = navai::session::store::HistoryStore::open(&db).expect("open");
+    let store = withnav::session::store::HistoryStore::open(&db).expect("open");
     store
         .record_session(id, &ws.display().to_string(), "mock/mock-opus", true)
         .await
@@ -507,7 +507,9 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
         .collect();
     assert_eq!(shape.len(), 5, "{shape:?}");
     assert_eq!(shape[0].0, "system");
-    assert_eq!(shape[1], ("system", COGNITION_PROMPT));
+    assert_eq!(shape[1].0, "system");
+    assert!(shape[1].1.starts_with("You are Nav · The Navigator"));
+    assert!(shape[1].1.ends_with(COGNITION_PROMPT));
     assert_eq!(shape[2], ("user", "earlier question"));
     assert_eq!(shape[3], ("assistant", "earlier answer"));
     assert_eq!(shape[4], ("user", "new question"));
@@ -546,7 +548,7 @@ async fn delete_removes_from_memory_and_store() {
     assert_eq!(resp.status(), 204);
     assert!(matches!(
         server.state.session_summary(id.parse().unwrap()).await,
-        Err(navai::error::ServerError::SessionNotFound(_))
+        Err(withnav::error::ServerError::SessionNotFound(_))
     ));
 
     // Store is empty for the workspace.
@@ -631,7 +633,7 @@ async fn test_server_config_never_resolves_to_the_users_data_dir() {
     let config = TestServerConfig::mock(&root, &mock.url);
     let db = config.config().history_db;
     assert_eq!(db, root.join("history.db"));
-    if let Some(data_dir) = navai::paths::data_dir() {
+    if let Some(data_dir) = withnav::paths::data_dir() {
         assert!(
             !db.starts_with(&data_dir),
             "{db:?} is in the user's data dir"

@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use navai::agent::actor::AgentActor;
-use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use navai::provider::config::{ProviderConfig, ReasoningHistory};
-use navai::provider::StreamDelta;
-use navai::tools::bash::BashTool;
-use navai::tools::control::AskTool;
-use navai::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
-use navai::tools::{Registry, ToolContext};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
+use withnav::agent::actor::AgentActor;
+use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use withnav::provider::config::{ProviderConfig, ReasoningHistory};
+use withnav::provider::StreamDelta;
+use withnav::tools::bash::BashTool;
+use withnav::tools::control::AskTool;
+use withnav::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
+use withnav::tools::{Registry, ToolContext};
 
 mod common;
 use common::sse::{http_sse, spawn_responding_provider, sse_body, CapturingProvider};
@@ -180,7 +180,7 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
 /// LIVE end-to-end against a real OmniRoute proxy.
 ///
 /// REQUIRED for Phase-1 completion. Run explicitly:
-///   NAVAI_LIVE=1 cargo test --test e2e -- --ignored --nocapture
+///   WITHNAV_LIVE=1 cargo test --test e2e -- --ignored --nocapture
 /// When OmniRoute is unavailable this test FAILS (or is a BLOCKED gate) — it is
 /// NEVER a passing skip.
 #[tokio::test]
@@ -273,8 +273,8 @@ async fn live_omniroute_edit_and_test() {
 }
 
 fn read_live_key() -> Option<String> {
-    let dir = navai::provider::auth::default_config_dir()?;
-    navai::provider::auth::resolve_key(&dir, "omniroute", Some("OMNIROUTE_API_KEY")).ok()
+    let dir = withnav::provider::auth::default_config_dir()?;
+    withnav::provider::auth::resolve_key(&dir, "omniroute", Some("OMNIROUTE_API_KEY")).ok()
 }
 
 async fn preflight(base_url: &str, key: &str) -> Result<(), String> {

@@ -9,13 +9,13 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use navai::error::ProviderError;
-use navai::provider::auth;
-use navai::provider::config::{
+use withnav::error::ProviderError;
+use withnav::provider::auth;
+use withnav::provider::config::{
     ApiKind, ModelConfig, ModelsConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
-use navai::provider::fim::InceptionFim;
-use navai::provider::openai::ClientCache;
+use withnav::provider::fim::InceptionFim;
+use withnav::provider::openai::ClientCache;
 
 fn resolved(base_url: String) -> ResolvedModel {
     ResolvedModel {

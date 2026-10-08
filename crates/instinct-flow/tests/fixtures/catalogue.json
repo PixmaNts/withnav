@@ -22,7 +22,7 @@
         }
       ],
       "allowed_actions": [
-        "ask_driver",
+        "ask_captain",
         "deny",
         "log",
         "no_objection"
@@ -33,7 +33,7 @@
         "call_id": "sample"
       },
       "default_fallback": {
-        "action": "ask_driver",
+        "action": "ask_captain",
         "params": {
           "note": "Flow failed: {failure_message}"
         },
@@ -43,7 +43,7 @@
   ],
   "inputs": [
     {
-      "name": "conversation.last_driver",
+      "name": "conversation.last_captain",
       "input_type": "text",
       "value_type": "string",
       "source": "conversation",
@@ -90,7 +90,7 @@
   ],
   "actions": [
     {
-      "name": "ask_driver",
+      "name": "ask_captain",
       "kind": "verdict",
       "priority": 1,
       "params": [

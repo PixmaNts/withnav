@@ -33,7 +33,7 @@ pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
     )
     .await?;
     let address = format!("{}/#token={}", server.url, server.token);
-    println!("Navai WebUI: {address}");
+    println!("WithNav WebUI: {address}");
     if !args.no_open {
         if let Err(error) = open_browser(&address) {
             println!("Could not open a browser ({error}); open the address above yourself.");

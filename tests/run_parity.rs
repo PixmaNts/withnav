@@ -13,19 +13,19 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use navai::agent::actor::AgentActor;
-use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use navai::app::{event_to_ui, exit_code_for};
-use navai::bus::inbox::ActorInbox;
-use navai::bus::runtime;
-use navai::bus::sequencer::Sequencer;
-use navai::bus::{ResumeOutcome, SessionBus};
-use navai::provider::config::{ProviderConfig, ReasoningHistory};
-use navai::provider::StreamDelta;
-use navai::render::UiEvent;
-use navai::tools::bash::BashTool;
-use navai::tools::native::ReadTool;
-use navai::tools::{Registry, ToolContext};
+use withnav::agent::actor::AgentActor;
+use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use withnav::app::{event_to_ui, exit_code_for};
+use withnav::bus::inbox::ActorInbox;
+use withnav::bus::runtime;
+use withnav::bus::sequencer::Sequencer;
+use withnav::bus::{ResumeOutcome, SessionBus};
+use withnav::provider::config::{ProviderConfig, ReasoningHistory};
+use withnav::provider::StreamDelta;
+use withnav::render::UiEvent;
+use withnav::tools::bash::BashTool;
+use withnav::tools::native::ReadTool;
+use withnav::tools::{Registry, ToolContext};
 
 mod common;
 use common::sse::{http_sse, spawn_mock_provider, sse_body};
@@ -120,7 +120,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
 /// Drive the bus event stream through `event_to_ui`, collecting rendered
 /// UiEvents until the terminal turn.end, and derive the exit code the same
 /// way `run` does (via the public `exit_code_for`).
-async fn collect_bus_render(sub: navai::bus::SubscribeReply) -> (Vec<Ui>, i32) {
+async fn collect_bus_render(sub: withnav::bus::SubscribeReply) -> (Vec<Ui>, i32) {
     let mut out = Vec::new();
     if let ResumeOutcome::Replay(events) = &sub.replay {
         for env in events {
@@ -162,7 +162,7 @@ fn phase1_exit(outcome: &RunOutcome) -> i32 {
 /// client rendering from events sees byte-identical error output.
 #[test]
 fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
-    use navai::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
+    use withnav::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
 
     let message = "provider API error (status 500): boom".to_string();
     // The Phase-1 `finish` stderr for `Err(e)` is `\nerror: {e}`.
@@ -196,7 +196,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
     // `terminal_stderr_line` that `exit_code_for` prints — equals the Phase-1
     // `finish` line, not an independent reconstruction.
     let bus_stderr =
-        navai::app::terminal_stderr_line(&payload).expect("error outcome produces a stderr line");
+        withnav::app::terminal_stderr_line(&payload).expect("error outcome produces a stderr line");
     assert_eq!(
         bus_stderr, phase1_stderr,
         "bus stderr line != Phase-1 stderr line for the same error"
@@ -204,7 +204,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
 }
 
 /// Subprocess capture of the REAL production stderr: run the actual
-/// `navai run` binary against a mock provider that returns HTTP 500, and
+/// `nav run` binary against a mock provider that returns HTTP 500, and
 /// assert the process stderr carries the `error:` line and the process exits
 /// 1. This exercises the `exit_code_for` -> `eprint!(terminal_stderr_line)`
 /// path end-to-end, so deleting the production `eprint!` would FAIL this test
@@ -238,9 +238,9 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     std::fs::create_dir_all(root.join("ws")).unwrap();
     let data_home = root.join("data");
     let config_home = root.join("config");
-    std::fs::create_dir_all(config_home.join("navai")).unwrap();
+    std::fs::create_dir_all(config_home.join("withnav")).unwrap();
     std::fs::write(
-        config_home.join("navai/config.json"),
+        config_home.join("withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/m"}}}"#,
     )
     .unwrap();
@@ -250,7 +250,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "mock/m": {
@@ -267,7 +267,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
                 .args([
                     "run",
                     "--workspace",
@@ -277,10 +277,10 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "--prompt",
                     "go",
                 ])
-                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
                 // The binary opens the conversation history in the XDG data
                 // dir and migrates legacy files there. Without these two, a
-                // test run wrote into the driver's real database and moved
+                // test run wrote into the Captain's real database and moved
                 // their data (observed 2026-10-01).
                 .env("XDG_DATA_HOME", data_home.as_os_str())
                 .env("XDG_CONFIG_HOME", config_home.as_os_str())
@@ -305,8 +305,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     );
 }
 
-fn user_command(session_id: Ulid, text: &str) -> navai::bus::command::Command {
-    use navai::bus::command::{Command, ContentBlock, DeliveryMode};
+fn user_command(session_id: Ulid, text: &str) -> withnav::bus::command::Command {
+    use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
     Command {
         command_id: Ulid::new(),
         session_id,
@@ -355,7 +355,7 @@ fn cancel_placeholder() -> CancellationToken {
     CancellationToken::new()
 }
 
-/// A chat alias without a window is refused at `navai run` startup with the
+/// A chat alias without a window is refused at `nav run` startup with the
 /// usual `error:` line naming the models.json to fix, and exits 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_binary_refuses_an_alias_without_a_known_window() {
@@ -384,9 +384,9 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("ws")).unwrap();
-    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        root.join("config/navai/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/m"}}}"#,
     )
     .unwrap();
@@ -396,7 +396,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "mock/m": {
@@ -412,7 +412,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
                 .args([
                     "run",
                     "--workspace",
@@ -422,7 +422,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
                     "--prompt",
                     "go",
                 ])
-                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
                 .env("XDG_DATA_HOME", home.join("data"))
                 .env("XDG_CONFIG_HOME", home.join("config"))
                 .env("HOME", &home)

@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { Check, TreeStructure, Warning, X } from "@phosphor-icons/react";
 import { useState } from "react";
 import type { Child, ToolCall } from "../session/reducer";
@@ -58,7 +59,7 @@ export function ToolList({
               >
                 <TreeStructure className="pu" size={14} aria-hidden />
                 <span>spawn_agent</span>
-                <span className="pu">@{agent}</span>
+                <span className="pu"><Crew id={agent} /></span>
                 <span className="meta muted">
                   {status}
                   {count !== undefined ? ` · ${count} ${count === 1 ? "tool" : "tools"}` : ""}

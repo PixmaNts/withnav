@@ -35,7 +35,7 @@ describe("mock flows API", () => {
     const doc = await api.get("guard-mutations", "workspace");
     expect(doc.errors).toEqual([]);
     expect(doc.definition?.node).toHaveLength(9);
-    expect(doc.path).toBe("/repo/.navai/flows/guard-mutations.toml");
+    expect(doc.path).toBe("/repo/.withnav/flows/guard-mutations.toml");
     expect(doc.saved_since_reload).toBe(false);
   });
 

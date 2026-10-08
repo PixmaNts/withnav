@@ -44,10 +44,10 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "first");
     let rest = client.collect_for(Duration::from_millis(100)).await;
-    assert!(rest.iter().all(|m| m["method"] != "navigator/remark"));
+    assert!(rest.iter().all(|m| m["method"] != "withnav/remark"));
 
     let records = triggers(&client);
     let delivered: Vec<&str> = records
@@ -81,7 +81,7 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
 
     gate.cancel();
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "new");
     assert!(triggers(&client)
         .iter()
@@ -105,10 +105,10 @@ async fn closing_cancels_the_deduplicated_remark() {
         )
         .await;
     let mut seen = Vec::new();
-    client.expect("navigator/clear", &mut seen).await;
+    client.expect("withnav/clear", &mut seen).await;
     gate.cancel();
     let msgs = client.collect_for(Duration::from_millis(100)).await;
-    assert!(msgs.iter().all(|m| m["method"] != "navigator/remark"));
+    assert!(msgs.iter().all(|m| m["method"] != "withnav/remark"));
     assert!(triggers(&client)
         .iter()
         .any(|r| r["delivered"] == "cancelled"));
@@ -127,7 +127,7 @@ async fn a_one_line_replacement_reaches_the_metacognition() {
         .await;
     client.did_save(URI).await;
     let mut seen = Vec::new();
-    let remark = client.expect("navigator/remark", &mut seen).await;
+    let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "x");
     assert_eq!(mock.calls(), 1);
 }

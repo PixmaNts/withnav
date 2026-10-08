@@ -801,7 +801,7 @@ mod tests {
                 .history()
                 .update_agent_override(
                     id,
-                    "oracle",
+                    "lux",
                     AgentOverride {
                         model: Some("mock/combo/chat".into()),
                         variant: AgentVariantOverride::Named("low".into()),
@@ -846,8 +846,8 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .contains("no usable fallback"));
-                assert!(agent(&body, "oracle")["effective"].is_null());
-                assert!(!agent(&body, "oracle")["warning"].is_null());
+                assert!(agent(&body, "lux")["effective"].is_null());
+                assert!(!agent(&body, "lux")["warning"].is_null());
                 assert!(agent(&body, "plan")["effective"].is_null());
                 assert!(!agent(&body, "plan")["warning"].is_null());
                 assert_eq!(
@@ -892,7 +892,7 @@ mod tests {
         }});
         std::fs::write(config_dir.join("models.json"), models.to_string()).unwrap();
         for (name, header) in [
-            ("oracle", "mode: primary\nmodel: mock/combo/chat"),
+            ("lux", "mode: primary\nmodel: mock/combo/chat"),
             ("broken", "mode: primary\nmodel: mock/missing"),
             ("child", "mode: subagent"),
         ] {
@@ -986,7 +986,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["default_agent"], "build");
         assert_eq!(agent(&body, "build")["assignment"]["source"], "config");
-        assert_eq!(agent(&body, "oracle")["assignment"]["source"], "header");
+        assert_eq!(agent(&body, "lux")["assignment"]["source"], "header");
         assert_eq!(
             agent(&body, "broken")["assignment"]["source"],
             "default_agent"
@@ -1157,14 +1157,14 @@ mod tests {
         let (status, body) = get(&state, root.path(), "agents", "").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["error"].as_str().unwrap().contains("default_agent"));
-        std::fs::write(state.config.config_dir.join("config.json"), json!({"agents":{"build":{"model":"mock/combo/chat"},"oracle":{"model":"mock/combo/chat","variant":null}}}).to_string()).unwrap();
+        std::fs::write(state.config.config_dir.join("config.json"), json!({"agents":{"build":{"model":"mock/combo/chat"},"lux":{"model":"mock/combo/chat","variant":null}}}).to_string()).unwrap();
         let (_, body) = get(&state, root.path(), "agents", "").await;
-        assert_eq!(agent(&body, "oracle")["assignment"]["source"], "config");
+        assert_eq!(agent(&body, "lux")["assignment"]["source"], "config");
         assert_eq!(
-            agent(&body, "oracle")["assignment"]["variant_source"],
+            agent(&body, "lux")["assignment"]["variant_source"],
             "config"
         );
-        assert!(agent(&body, "oracle")["assignment"]["variant"].is_null());
+        assert!(agent(&body, "lux")["assignment"]["variant"].is_null());
     }
 
     #[tokio::test]
@@ -1316,7 +1316,7 @@ mod tests {
         crate::provider::auth::set_key(&state.config.config_dir, "mock", "test-only-secret")
             .unwrap();
         let id = state
-            .create_session_as(root.path(), Some("mock/combo/chat"), false, Some("oracle"))
+            .create_session_as(root.path(), Some("mock/combo/chat"), false, Some("lux"))
             .await
             .unwrap();
         let before = state
@@ -1325,19 +1325,19 @@ mod tests {
             .status
             .selection
             .agents()
-            .get("oracle")
+            .get("lux")
             .cloned()
             .unwrap();
-        std::fs::remove_file(state.config.config_dir.join("agents/oracle.md")).unwrap();
+        std::fs::remove_file(state.config.config_dir.join("agents/lux.md")).unwrap();
         let (status, body) = get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
         assert_eq!(status, StatusCode::OK);
-        let oracle = body["agents"]
+        let lux = body["agents"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|agent| agent["id"] == "oracle")
+            .find(|agent| agent["id"] == "lux")
             .unwrap();
-        assert_eq!(oracle["effective"]["source"], "override");
+        assert_eq!(lux["effective"]["source"], "override");
         assert_eq!(
             state
                 .handle(id)
@@ -1345,7 +1345,7 @@ mod tests {
                 .status
                 .selection
                 .agents()
-                .get("oracle")
+                .get("lux")
                 .unwrap()
                 .as_ref(),
             before.as_ref()

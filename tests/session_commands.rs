@@ -1,12 +1,12 @@
 //! Session commands: the built-ins through `Service::run_command`, the
 //! refusals, the durable `command.result` and its replay, the HTTP endpoints
-//! and `navai run`.
+//! and `nav run`.
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::bus::event::EventEnvelope;
-use navai::server::{app, AppState};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{
@@ -29,7 +29,7 @@ fn state(tmp: &std::path::Path) -> AppState {
 
 #[tokio::test]
 async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
-    use navai::bus::runtime::bypass::BypassOrigin;
+    use withnav::bus::runtime::bypass::BypassOrigin;
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let first = state.create_session(&ws, None, false).await.unwrap();
@@ -61,7 +61,7 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
     assert!(disabled.bypass_seq > enabled.bypass_seq);
     state.history().flush().await.unwrap();
     let sub = state.subscribe(first, None).await.unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+    let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
     };
     let toggles: Vec<_> = events
@@ -83,7 +83,7 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
 //      anything else the resume wrote
 #[tokio::test]
 async fn resume_resets_bypass_off_with_an_event_first() {
-    use navai::bus::runtime::bypass::BypassOrigin;
+    use withnav::bus::runtime::bypass::BypassOrigin;
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let id = state.create_session(&ws, None, false).await.unwrap();
@@ -102,7 +102,7 @@ async fn resume_resets_bypass_off_with_an_event_first() {
     assert!(!summary.bypass);
     state.history().flush().await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
-    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+    let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
     };
     let resets: Vec<_> = events
@@ -131,7 +131,7 @@ async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(events) => events
+        withnav::bus::ResumeOutcome::Replay(events) => events
             .into_iter()
             .filter(|e| e.kind == "command.result")
             .collect(),
@@ -293,7 +293,10 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
         .run_command(ulid::Ulid::new(), "help", "")
         .await
         .unwrap_err();
-    assert!(matches!(err, navai::error::ServerError::SessionNotFound(_)));
+    assert!(matches!(
+        err,
+        withnav::error::ServerError::SessionNotFound(_)
+    ));
     let id = state
         .create_session(&ws, None, false)
         .await
@@ -301,7 +304,7 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     let err = state.run_command(id, "help", "").await.unwrap_err();
-    assert!(matches!(err, navai::error::ServerError::ResumeRequired));
+    assert!(matches!(err, withnav::error::ServerError::ResumeRequired));
 }
 
 // Given an agent waiting on its `ask`
@@ -708,29 +711,29 @@ async fn a_resumed_pending_ask_refuses_an_immediate_command() {
 #[test]
 fn oversized_result_data_is_replaced_by_a_marker() {
     let big = json!({"k": "x".repeat(20_000)});
-    let bounded = navai::bus::event::CommandResult::bound_data(big);
+    let bounded = withnav::bus::event::CommandResult::bound_data(big);
     assert_eq!(bounded["truncated"], true);
 }
 
-fn run_navai(
+fn run_withnav(
     root: &std::path::Path,
     models: &std::path::Path,
     ws: &std::path::Path,
     prompt: &str,
 ) -> std::process::Output {
-    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        root.join("config/navai/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")
         .arg(models)
         .args(["--prompt", prompt])
-        .env("NAVAI_TEST_KEY", "test-key")
+        .env("WITHNAV_TEST_KEY", "test-key")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CONFIG_HOME", root.join("config"))
@@ -738,19 +741,19 @@ fn run_navai(
         .expect("run the binary")
 }
 
-// Given `navai run --prompt "/help"`
+// Given `nav run --prompt "/help"`
 // Then it prints the command list and exits 0 without a provider call; an
 //      unknown command prints an error and exits 1
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_executes_a_command() {
+async fn withnav_run_executes_a_command() {
     let (tmp, ws) = tmp_ws();
     let cfg = TestServerConfig::unreachable(tmp.path());
     cfg.config();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
     let (ok, bad) = tokio::task::spawn_blocking(move || {
         (
-            run_navai(&root, &models, &ws, "/help"),
-            run_navai(&root, &models, &ws, "/nope"),
+            run_withnav(&root, &models, &ws, "/help"),
+            run_withnav(&root, &models, &ws, "/nope"),
         )
     })
     .await
@@ -765,17 +768,17 @@ async fn navai_run_executes_a_command() {
     assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown command /nope"));
 }
 
-// Given `navai run --prompt "//text"`
+// Given `nav run --prompt "//text"`
 // Then the agent receives the literal message "/text"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_double_slash_sends_a_literal_message() {
+async fn withnav_run_double_slash_sends_a_literal_message() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
     let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[done]))]).await;
     let (tmp, ws) = tmp_ws();
     let cfg = TestServerConfig::mock(tmp.path(), &provider.url);
     cfg.config();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
-    let out = tokio::task::spawn_blocking(move || run_navai(&root, &models, &ws, "//text"))
+    let out = tokio::task::spawn_blocking(move || run_withnav(&root, &models, &ws, "//text"))
         .await
         .expect("join");
     assert_eq!(out.status.code(), Some(0), "{out:?}");

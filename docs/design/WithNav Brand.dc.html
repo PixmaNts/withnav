@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>body{margin:0} *{box-sizing:border-box} a{color:inherit;text-decoration:none} a:hover{text-decoration:underline;text-underline-offset:3px} html{scroll-behavior:smooth;scroll-padding-top:72px}</style>
+</helmet>
+<div style="{{ themeVars }};background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:16px;line-height:1.6;min-height:100vh">
+
+  <header style="position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--bd)">
+    <div style="max-width:1160px;margin:0 auto;padding:10px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <a href="#top" style="display:flex;align-items:center;gap:9px;text-decoration:none"><dc-import name="WithNavGlyph" glyph="mark-a" size="26" hint-size="26px,26px"></dc-import><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:19px;letter-spacing:-0.02em">WithNav</span><span style="color:var(--mu);font-size:13px">{{ t.bookLabel }}</span></a>
+      <nav style="display:flex;gap:4px 14px;flex-wrap:wrap;font-size:13px;color:var(--mu);flex:1;min-width:0">
+        <sc-for list="{{ sections }}" as="s" hint-placeholder-count="12"><a href="{{ s.href }}">{{ s.label }}</a></sc-for>
+      </nav>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden;font-size:12.5px"><button onClick="{{ setFr }}" style="{{ langFr }}">FR</button><button onClick="{{ setEn }}" style="{{ langEn }}">EN</button></div>
+        <button onClick="{{ toggleTheme }}" aria-label="theme" style="background:transparent;border:1px solid var(--bd);color:var(--mu);border-radius:6px;padding:4px 9px;cursor:pointer;font-size:14px;display:flex"><i class="{{ themeIcon }}"></i></button>
+      </div>
+    </div>
+  </header>
+
+  <main style="max-width:1160px;margin:0 auto;padding:0 24px">
+
+    <section id="top" style="padding:96px 0 80px;display:flex;flex-direction:column;gap:22px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12.5px;letter-spacing:0.08em;color:var(--mu)">{{ t.coverKicker }}</div>
+      <h1 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(44px,7vw,92px);line-height:1;letter-spacing:-0.035em;max-width:900px"><span style="display:block">{{ t.promise1 }}</span><span style="display:block;color:var(--nav)">{{ t.promise2 }}</span></h1>
+      <p style="margin:0;font-size:19px;color:var(--mu);max-width:620px;text-wrap:pretty">{{ t.desc }}</p>
+      <div style="display:flex;gap:12px;align-items:center;margin-top:18px;flex-wrap:wrap">
+        <div style="display:flex;gap:6px">
+          <dc-import name="WithNavGlyph" glyph="captain" size="22" hint-size="22px,22px"></dc-import>
+          <dc-import name="WithNavGlyph" glyph="nav" size="22" hint-size="22px,22px"></dc-import>
+          <dc-import name="WithNavGlyph" glyph="vigie" size="22" hint-size="22px,22px"></dc-import>
+          <dc-import name="WithNavGlyph" glyph="lux" size="22" hint-size="22px,22px"></dc-import>
+          <dc-import name="WithNavGlyph" glyph="mousse" size="22" hint-size="22px,22px"></dc-import>
+          <span style="width:1px;background:var(--bd);margin:0 4px"></span>
+          <dc-import name="WithNavGlyph" glyph="cartographe" size="22" hint-size="22px,22px"></dc-import>
+          <dc-import name="WithNavGlyph" glyph="sondeur" size="22" hint-size="22px,22px"></dc-import>
+        </div>
+        <span style="color:var(--mu);font-style:italic;font-size:15px">{{ t.feeling }}</span>
+      </div>
+    </section>
+
+    <section id="positioning" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">01</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.posTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.posLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:14px">
+        <sc-for list="{{ t.posBlocks }}" as="b" hint-placeholder-count="4"><div style="border:1px solid var(--bd);border-radius:12px;padding:20px;background:var(--pn);display:flex;flex-direction:column;gap:8px"><span style="font-weight:600">{{ b.h }}</span><span style="color:var(--mu);font-size:15px;text-wrap:pretty">{{ b.p }}</span></div></sc-for>
+      </div>
+      <div style="display:flex;gap:18px;align-items:flex-start;padding:22px 24px;border:1px solid var(--bd);border-radius:12px;flex-wrap:wrap">
+        <dc-import name="WithNavGlyph" glyph="captain" size="36" hint-size="36px,36px"></dc-import>
+        <div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:240px"><span style="font-weight:600">{{ t.principleH }}</span><span style="color:var(--mu);text-wrap:pretty">{{ t.principleP }}</span></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-weight:600">{{ t.keyMsgH }}</span>
+        <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:minmax(110px,160px) minmax(0,1fr) minmax(0,1fr);gap:16px;padding:10px 18px;background:var(--pn);font-size:12.5px;color:var(--mu);font-family:'JetBrains Mono',monospace"><span></span><span>FR</span><span>EN</span></div>
+          <sc-for list="{{ keyMsgs }}" as="k" hint-placeholder-count="6"><div style="display:grid;grid-template-columns:minmax(110px,160px) minmax(0,1fr) minmax(0,1fr);gap:16px;padding:12px 18px;border-top:1px solid var(--bd);font-size:15px"><span style="color:var(--mu);font-size:13.5px">{{ k.label }}</span><span style="text-wrap:pretty">{{ k.fr }}</span><span style="text-wrap:pretty">{{ k.en }}</span></div></sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">02</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.archTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.archLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:24px;align-items:start">
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:28px 24px;background:var(--pn);display:flex;flex-direction:column;align-items:center;gap:10px">
+          <div style="display:flex;gap:10px;align-items:center;border:1px solid var(--bd);border-radius:10px;padding:10px 16px;background:var(--bg)"><dc-import name="WithNavGlyph" glyph="captain" size="22" hint-size="22px,22px"></dc-import><div style="display:flex;flex-direction:column;line-height:1.3"><span style="font-weight:600">{{ t.captain }}</span><span style="font-size:12.5px;color:var(--mu)">{{ t.captainSub }}</span></div></div>
+          <div style="display:flex;flex-direction:column;align-items:center;font-size:12.5px;color:var(--mu);font-family:'JetBrains Mono',monospace"><span style="width:1px;height:14px;background:var(--bd)"></span>{{ t.arrowCourse }}<span style="width:1px;height:14px;background:var(--bd)"></span></div>
+          <div style="display:flex;gap:10px;align-items:center;border:1px solid var(--nav);border-radius:10px;padding:10px 16px;background:var(--bg)"><dc-import name="WithNavGlyph" glyph="nav" size="26" hint-size="26px,26px"></dc-import><div style="display:flex;flex-direction:column;line-height:1.3"><span style="font-weight:600">Nav</span><span style="font-size:12.5px;color:var(--mu)">{{ t.navSub }}</span></div></div>
+          <div style="display:flex;flex-direction:column;align-items:center;font-size:12.5px;color:var(--mu);font-family:'JetBrains Mono',monospace"><span style="width:1px;height:14px;background:var(--bd)"></span>{{ t.arrowCrew }}<span style="width:1px;height:14px;background:var(--bd)"></span></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+            <sc-for list="{{ archCore }}" as="a" hint-placeholder-count="3"><div style="display:flex;gap:8px;align-items:center;border:1px solid var(--bd);border-radius:10px;padding:8px 12px;background:var(--bg)"><dc-import name="WithNavGlyph" glyph="{{ a.g }}" size="20" hint-size="20px,20px"></dc-import><div style="display:flex;flex-direction:column;line-height:1.25"><span style="font-weight:600;font-size:14.5px">{{ a.name }}</span><span style="font-size:12px;color:var(--mu)">{{ a.role }}</span></div></div></sc-for>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:6px">
+            <sc-for list="{{ crewExt }}" as="a" hint-placeholder-count="2"><div style="display:flex;gap:8px;align-items:center;border:1px dashed var(--bd);border-radius:10px;padding:8px 12px;background:var(--bg)"><dc-import name="WithNavGlyph" glyph="{{ a.g }}" size="20" hint-size="20px,20px"></dc-import><div style="display:flex;flex-direction:column;line-height:1.25"><span style="font-weight:600;font-size:14.5px">{{ a.name }}</span><span style="font-size:12px;color:var(--mu)">{{ a.role }}</span></div></div></sc-for>
+          </div>
+          <span style="font-size:12px;color:var(--mu)">{{ t.extLater }}</span>
+        </div>
+        <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+          <sc-for list="{{ archRows }}" as="r" hint-placeholder-count="5"><div style="display:grid;grid-template-columns:minmax(120px,170px) minmax(0,1fr);gap:16px;padding:13px 18px;border-bottom:1px solid var(--bd)"><span style="color:var(--mu);font-size:14px">{{ r.k }}</span><span style="font-weight:500">{{ r.v }}</span></div></sc-for>
+          <div style="padding:14px 18px;color:var(--mu);font-size:14.5px;text-wrap:pretty">{{ t.archNote }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="crew" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">03</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.crewTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.crewLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,500px),1fr));gap:16px">
+        <sc-for list="{{ crew }}" as="p" hint-placeholder-count="4">
+          <article style="border:1px solid var(--bd);border-radius:14px;background:var(--pn);padding:24px;display:flex;flex-direction:column;gap:18px">
+            <div style="display:flex;gap:16px;align-items:center">
+              <dc-import name="WithNavGlyph" glyph="{{ p.g }}" size="56" hint-size="56px,56px"></dc-import>
+              <div style="display:flex;flex-direction:column;line-height:1.25;min-width:0">
+                <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:28px;letter-spacing:-0.02em;color:{{ p.col }}">{{ p.name }}</span>
+                <span style="font-size:14.5px">{{ p.role }} <span style="color:var(--mu)">· {{ p.alt }}</span></span>
+              </div>
+            </div>
+            <p style="margin:0;font-size:17px;font-style:italic;text-wrap:pretty">{{ p.line }}</p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;font-size:13px">
+              <div style="display:flex;flex-direction:column;gap:4px"><span style="color:var(--mu)">{{ t.lblModel }}</span><span>{{ p.tier }}</span></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="color:var(--mu)">{{ t.lblCost }}</span><div style="display:flex;gap:4px"><sc-for list="{{ p.cost }}" as="d" hint-placeholder-count="3"><span style="width:18px;height:6px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></div></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="color:var(--mu)">{{ t.lblDepth }}</span><div style="display:flex;gap:4px"><sc-for list="{{ p.depth }}" as="d" hint-placeholder-count="3"><span style="width:18px;height:6px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></div></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;font-size:13.5px;border:1px solid var(--bd);border-radius:8px;padding:7px 11px;background:var(--bg)"><i class="ph ph-lock-key" style="color:var(--mu)"></i><span style="color:var(--mu)">{{ t.lblRights }}</span><span>{{ p.rights }}</span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:var(--mu)">{{ t.lblDuties }}</span><sc-for list="{{ p.duties }}" as="x" hint-placeholder-count="4"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:{{ p.col }}">—</span><span style="text-wrap:pretty">{{ x.v }}</span></span></sc-for></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:var(--mu)">{{ t.lblTraits }}</span><sc-for list="{{ p.traits }}" as="x" hint-placeholder-count="4"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:{{ p.col }}">—</span><span style="text-wrap:pretty">{{ x.v }}</span></span></sc-for></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--bd);padding-top:14px"><span style="font-size:13px;color:var(--mu)">{{ t.lblSays }}</span><sc-for list="{{ p.says }}" as="x" hint-placeholder-count="2"><span style="font-size:14.5px;font-family:'JetBrains Mono',monospace;font-size:13px">{{ x.v }}</span></sc-for></div>
+          </article>
+        </sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span style="font-weight:600;font-size:18px">{{ t.extTitle }}</span><span style="color:var(--mu);font-size:14px">{{ t.extLead }}</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,500px),1fr));gap:16px">
+        <sc-for list="{{ crewExt }}" as="p" hint-placeholder-count="2">
+          <article style="border:1px dashed var(--bd);border-radius:14px;background:var(--pn);padding:24px;display:flex;flex-direction:column;gap:18px">
+            <div style="display:flex;gap:16px;align-items:center">
+              <dc-import name="WithNavGlyph" glyph="{{ p.g }}" size="56" hint-size="56px,56px"></dc-import>
+              <div style="display:flex;flex-direction:column;line-height:1.25;min-width:0">
+                <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:28px;letter-spacing:-0.02em;color:{{ p.col }}">{{ p.name }}</span>
+                <span style="font-size:14.5px">{{ p.role }} <span style="color:var(--mu)">· {{ p.alt }}</span></span>
+              </div>
+            </div>
+            <p style="margin:0;font-size:17px;font-style:italic;text-wrap:pretty">{{ p.line }}</p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;font-size:13px">
+              <div style="display:flex;flex-direction:column;gap:4px"><span style="color:var(--mu)">{{ t.lblModel }}</span><span>{{ p.tier }}</span></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="color:var(--mu)">{{ t.lblCost }}</span><div style="display:flex;gap:4px"><sc-for list="{{ p.cost }}" as="d" hint-placeholder-count="3"><span style="width:18px;height:6px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></div></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="color:var(--mu)">{{ t.lblDepth }}</span><div style="display:flex;gap:4px"><sc-for list="{{ p.depth }}" as="d" hint-placeholder-count="3"><span style="width:18px;height:6px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></div></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;font-size:13.5px;border:1px solid var(--bd);border-radius:8px;padding:7px 11px;background:var(--bg)"><i class="ph ph-lock-key" style="color:var(--mu)"></i><span style="color:var(--mu)">{{ t.lblRights }}</span><span>{{ p.rights }}</span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:var(--mu)">{{ t.lblDuties }}</span><sc-for list="{{ p.duties }}" as="x" hint-placeholder-count="4"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:{{ p.col }}">—</span><span style="text-wrap:pretty">{{ x.v }}</span></span></sc-for></div>
+              <div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:var(--mu)">{{ t.lblTraits }}</span><sc-for list="{{ p.traits }}" as="x" hint-placeholder-count="4"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:{{ p.col }}">—</span><span style="text-wrap:pretty">{{ x.v }}</span></span></sc-for></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--bd);padding-top:14px"><span style="font-size:13px;color:var(--mu)">{{ t.lblSays }}</span><sc-for list="{{ p.says }}" as="x" hint-placeholder-count="2"><span style="font-size:14.5px;font-family:'JetBrains Mono',monospace;font-size:13px">{{ x.v }}</span></sc-for></div>
+          </article>
+        </sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section id="layers" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">04</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.lyTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.lyLead }}</p></div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1 1 560px;min-width:0;border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);gap:16px;padding:10px 18px;background:var(--pn);font-size:12.5px;color:var(--mu);font-family:'JetBrains Mono',monospace"><span>{{ t.lyFast }}</span><span style="text-align:right">{{ t.lySlow }}</span></div>
+          <sc-for list="{{ layers }}" as="l" hint-placeholder-count="4">
+            <div style="display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);gap:16px;padding:16px 18px;border-top:1px solid var(--bd)">
+              <div style="display:flex;flex-direction:column;gap:6px;line-height:1.3">
+                <span style="display:flex;gap:8px;align-items:center"><i class="{{ l.icon }}" style="color:{{ l.col }};font-size:17px"></i><span style="font-weight:600;font-size:16px">{{ l.name }}</span></span>
+                <span style="font-size:13.5px;color:{{ l.col }}">{{ l.label }}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--mu)">{{ l.api }} · {{ l.when }}</span>
+                <span style="height:4px;border-radius:2px;background:var(--bd);margin-top:4px;display:block"><span style="display:block;height:4px;border-radius:2px;width:{{ l.depth }};background:{{ l.col }}"></span></span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:8px;font-size:14.5px;min-width:0">
+                <span style="text-wrap:pretty">{{ l.desc }}</span>
+                <span style="display:flex;gap:8px;font-size:13.5px"><span style="color:var(--mu);flex:none">{{ t.lyShows }}</span><span style="text-wrap:pretty">{{ l.ui }}</span></span>
+                <span style="display:flex;gap:8px;font-size:13.5px"><span style="color:var(--mu);flex:none">{{ t.lyVoice }}</span><span style="text-wrap:pretty">{{ l.voice }}</span></span>
+              </div>
+            </div>
+          </sc-for>
+          <div style="display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);gap:16px;padding:16px 18px;border-top:1px solid var(--bd);background:var(--pn)">
+            <span style="display:flex;gap:8px;align-items:center;font-weight:600"><dc-import name="WithNavGlyph" glyph="captain" size="17" hint-size="17px,17px"></dc-import>{{ t.captain }}</span>
+            <span style="font-size:14.5px;text-wrap:pretty">{{ t.lyCaptain }}</span>
+          </div>
+        </div>
+        <div style="flex:1 1 380px;min-width:0;display:flex;flex-direction:column;gap:12px">
+          <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:var(--bg)">
+            <div style="padding:8px 14px;background:var(--pn);border-bottom:1px solid var(--bd);font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mu)">src/loader.rs</div>
+            <pre style="margin:0;padding:12px 0;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.75;white-space:pre-wrap;overflow:hidden"><span style="display:block;padding:0 14px"><span style="color:var(--mu)">41</span>  let raw = fs::read_to_string(path)?;</span><span style="display:block;padding:0 14px;background:color-mix(in srgb,var(--nav) 8%,transparent);border-left:2px solid var(--nav)"><span style="color:var(--mu)">42</span>  let cfg = toml::from_str(&amp;raw)?;</span><span style="display:block;padding:0 14px"><span style="color:var(--mu)">43</span>  cfg.<span style="color:var(--mu);font-style:italic">merge_env()?;</span></span></pre>
+            <div style="margin:0 12px 12px;border:1px solid var(--bd);border-left:2px solid var(--nav);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;font-size:13.5px">
+              <span style="display:flex;gap:7px;align-items:center;font-size:12px;color:var(--nav)"><dc-import name="WithNavGlyph" glyph="nav" size="13" hint-size="13px,13px"></dc-import>{{ t.lyBeaconHead }}</span>
+              <span style="text-wrap:pretty">{{ t.lyBeaconBody }}</span>
+              <span style="display:flex;gap:6px;flex-wrap:wrap;font-size:12.5px"><sc-for list="{{ t.lyVerdicts }}" as="v" hint-placeholder-count="3"><span style="border:1px solid var(--bd);border-radius:6px;padding:2px 9px">{{ v.v }}</span></sc-for></span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mu)">
+            <sc-for list="{{ t.lyLegend }}" as="g" hint-placeholder-count="3"><span style="display:flex;gap:8px"><span style="font-family:'JetBrains Mono',monospace;color:var(--tx);flex:none;width:84px">{{ g.k }}</span><span style="text-wrap:pretty">{{ g.v }}</span></span></sc-for>
+          </div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px">
+        <sc-for list="{{ t.lyRules }}" as="r" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:6px"><span style="font-weight:600">{{ r.h }}</span><span style="color:var(--mu);font-size:14.5px;text-wrap:pretty">{{ r.p }}</span></div></sc-for>
+      </div>
+    </section>
+
+    <section id="logo" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">05</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.logoTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.logoLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:16px">
+        <sc-for list="{{ logos }}" as="l" hint-placeholder-count="3">
+          <div id="{{ l.id }}" style="border:1px solid {{ l.bd }};border-radius:14px;background:var(--pn);padding:20px;display:flex;flex-direction:column;gap:14px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;border:1px solid var(--bd);border-radius:5px;padding:1px 7px">{{ l.letter }}</span><span style="font-weight:600">{{ l.name }}</span><sc-if value="{{ l.rec }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-size:12px;color:var(--nav);border:1px solid var(--nav);border-radius:20px;padding:1px 9px">{{ t.recommended }}</span></sc-if></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px">
+              <div style="aspect-ratio:1;background:var(--bg);border:1px solid var(--bd);border-radius:10px;display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="{{ l.g }}" size="112" hint-size="112px,112px"></dc-import></div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div style="{{ invVars }};flex:1;background:var(--bg);border-radius:10px;display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="{{ l.g }}" size="48" hint-size="48px,48px"></dc-import></div>
+                <div style="flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:10px;display:flex;align-items:center;justify-content:center;gap:12px"><dc-import name="WithNavGlyph" glyph="{{ l.g }}" size="32" hint-size="32px,32px"></dc-import><dc-import name="WithNavGlyph" glyph="{{ l.g }}" size="16" hint-size="16px,16px"></dc-import></div>
+                <div style="flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--mu)"><dc-import name="WithNavGlyph" glyph="{{ l.g }}" size="32" mono="{{ true }}" hint-size="32px,32px"></dc-import></div>
+              </div>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--bd);border-radius:10px;padding:16px 18px;display:flex;align-items:center;gap:10px"><dc-import name="WithNavGlyph" glyph="{{ l.g }}" size="34" hint-size="34px,34px"></dc-import><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:30px;letter-spacing:-0.025em;line-height:1">WithNav</span></div>
+            <p style="margin:0;color:var(--mu);font-size:14.5px;text-wrap:pretty">{{ l.p }}</p>
+          </div>
+        </sc-for>
+      </div>
+      <div style="border:1px solid var(--nav);border-radius:14px;padding:24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:24px">
+        <div style="display:flex;flex-direction:column;gap:10px"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:24px;letter-spacing:-0.02em">{{ t.recTitle }}</span><span style="color:var(--mu);text-wrap:pretty">{{ t.recLead }}</span></div>
+        <div style="display:flex;flex-direction:column;gap:10px"><sc-for list="{{ t.recWhy }}" as="r" hint-placeholder-count="4"><span style="display:flex;gap:10px;font-size:15px"><i class="ph ph-check" style="color:var(--nav);margin-top:4px"></i><span style="text-wrap:pretty">{{ r.v }}</span></span></sc-for></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px">
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:14px"><span style="font-size:13px;color:var(--mu)">{{ t.lockupH }}</span><div style="display:flex;align-items:center;gap:12px"><dc-import name="WithNavGlyph" glyph="mark-a" size="44" hint-size="44px,44px"></dc-import><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:40px;letter-spacing:-0.025em;line-height:1">WithNav</span></div><div style="display:flex;align-items:center;gap:8px"><dc-import name="WithNavGlyph" glyph="mark-a" size="20" hint-size="20px,20px"></dc-import><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:18px;letter-spacing:-0.02em">WithNav</span><span style="color:var(--mu);font-size:14px;font-family:'JetBrains Mono',monospace">withnav.dev</span></div></div>
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:8px"><span style="font-size:13px;color:var(--mu)">{{ t.logoRulesH }}</span><sc-for list="{{ t.logoRules }}" as="r" hint-placeholder-count="4"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:var(--mu)">—</span><span style="text-wrap:pretty">{{ r.v }}</span></span></sc-for></div>
+      </div>
+    </section>
+
+    <section id="color" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">06</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.colorTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.colorLead }}</p></div>
+      <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:16px;padding:10px 18px;background:var(--pn);font-size:12.5px;color:var(--mu);font-family:'JetBrains Mono',monospace"><span>{{ t.lblRole }}</span><span>{{ t.dark }} · Tide Dark</span><span>{{ t.light }} · Tide Light</span></div>
+        <sc-for list="{{ swatches }}" as="w" hint-placeholder-count="11">
+          <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:16px;padding:12px 18px;border-top:1px solid var(--bd);align-items:center">
+            <div style="display:flex;flex-direction:column;line-height:1.35;min-width:0"><span style="font-weight:500">{{ w.name }}</span><span style="color:var(--mu);font-size:13px;text-wrap:pretty">{{ w.role }}</span></div>
+            <div style="display:flex;gap:10px;align-items:center;min-width:0;flex-wrap:wrap"><span style="width:44px;height:30px;border-radius:6px;background:{{ w.d }};border:1px solid #ffffff22;flex:none"></span><span style="display:flex;flex-direction:column;line-height:1.3;font-family:'JetBrains Mono',monospace;font-size:12px"><span>{{ w.d }}</span><span style="color:var(--mu)">{{ w.dr }}</span></span></div>
+            <div style="display:flex;gap:10px;align-items:center;min-width:0;flex-wrap:wrap"><span style="width:44px;height:30px;border-radius:6px;background:{{ w.l }};border:1px solid #00000018;flex:none"></span><span style="display:flex;flex-direction:column;line-height:1.3;font-family:'JetBrains Mono',monospace;font-size:12px"><span>{{ w.l }}</span><span style="color:var(--mu)">{{ w.lr }}</span></span></div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px">
+        <sc-for list="{{ t.colorRules }}" as="r" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:6px"><span style="font-weight:600">{{ r.h }}</span><span style="color:var(--mu);font-size:14.5px;text-wrap:pretty">{{ r.p }}</span></div></sc-for>
+      </div>
+    </section>
+
+    <section id="type" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">07</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.typeTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.typeLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px">
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:22px;background:var(--pn);display:flex;flex-direction:column;gap:12px"><span style="font-size:13px;color:var(--mu)">Bricolage Grotesque 600 · {{ t.typeBrand }}</span><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:48px;line-height:1.02;letter-spacing:-0.03em">{{ t.promise1 }}</span><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:22px;letter-spacing:-0.01em;color:var(--mu)">Aa Bb Cc 0123 — Nav, Lux, Mousse, Vigie</span></div>
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:22px;background:var(--pn);display:flex;flex-direction:column;gap:12px"><span style="font-size:13px;color:var(--mu)">IBM Plex Sans 400 / 500 · {{ t.typeBody }}</span><span style="font-size:16px;line-height:1.6;text-wrap:pretty">{{ t.desc }}</span><span style="font-size:14px;font-weight:500">{{ t.typeUi }}</span></div>
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:22px;background:var(--pn);display:flex;flex-direction:column;gap:12px"><span style="font-size:13px;color:var(--mu)">JetBrains Mono 400 / 500 · {{ t.typeMono }}</span><pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.7;white-space:pre-wrap"><span style="color:var(--nav)">❯</span> nav "{{ t.typeCmd }}"
+<span style="color:var(--mu)">vigie · 3 fichiers · src/config.rs:42</span>
+<span style="color:var(--lux)">lux</span> · reasoning=high</pre></div>
+      </div>
+      <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+        <sc-for list="{{ typeScale }}" as="s" hint-placeholder-count="7"><div style="display:grid;grid-template-columns:minmax(90px,130px) minmax(110px,170px) minmax(0,1fr);gap:16px;padding:12px 18px;border-bottom:1px solid var(--bd);align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">{{ s.k }}</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mu)">{{ s.spec }}</span><span style="font-family:{{ s.ff }};font-size:{{ s.fs }};font-weight:{{ s.fw }};letter-spacing:{{ s.ls }};line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.sample }}</span></div></sc-for>
+      </div>
+    </section>
+
+    <section id="icons" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">08</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.iconsTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.iconsLead }}</p></div>
+      <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+        <sc-for list="{{ icons }}" as="i" hint-placeholder-count="5">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:16px;padding:18px;border-bottom:1px solid var(--bd);align-items:center">
+            <div style="display:flex;gap:14px;align-items:center"><dc-import name="WithNavGlyph" glyph="{{ i.g }}" size="48" hint-size="48px,48px"></dc-import><dc-import name="WithNavGlyph" glyph="{{ i.g }}" size="24" hint-size="24px,24px"></dc-import><dc-import name="WithNavGlyph" glyph="{{ i.g }}" size="16" hint-size="16px,16px"></dc-import><span style="color:var(--mu);display:flex"><dc-import name="WithNavGlyph" glyph="{{ i.g }}" size="24" mono="{{ true }}" hint-size="24px,24px"></dc-import></span></div>
+            <div style="display:flex;flex-direction:column;line-height:1.35"><span style="font-weight:600;color:{{ i.col }}">{{ i.name }}</span><span style="font-size:13px;color:var(--mu)">{{ i.colName }}</span></div>
+            <div style="display:flex;flex-direction:column;line-height:1.4;font-size:13.5px"><span style="color:var(--mu);font-size:12px">{{ t.lblShape }}</span><span>{{ i.shape }}</span><span style="color:var(--mu);font-size:12px;margin-top:4px">{{ t.lblPicto }}</span><span>{{ i.picto }}</span></div>
+            <div style="display:flex;flex-direction:column;line-height:1.4;font-size:13.5px"><span style="color:var(--mu);font-size:12px">{{ t.lblSignal }}</span><span style="text-wrap:pretty">{{ i.sig }}</span></div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-size:13px;color:var(--mu)">{{ t.chipsH }}</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <sc-for list="{{ chips }}" as="c" hint-placeholder-count="4"><span style="display:inline-flex;gap:7px;align-items:center;border:1px solid var(--bd);border-radius:20px;padding:4px 12px 4px 7px;font-size:13.5px;background:var(--pn)"><dc-import name="WithNavGlyph" glyph="{{ c.g }}" size="16" hint-size="16px,16px"></dc-import><span style="font-weight:500">{{ c.name }}</span><span style="color:var(--mu)">{{ c.state }}</span></span></sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section id="landing" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">09</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.landTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.landLead }}</p></div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1 1 620px;min-width:0;border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:var(--bg)">
+          <div style="display:flex;gap:6px;align-items:center;padding:8px 12px;background:var(--pn);border-bottom:1px solid var(--bd)"><span style="width:9px;height:9px;border-radius:50%;background:var(--bd)"></span><span style="width:9px;height:9px;border-radius:50%;background:var(--bd)"></span><span style="width:9px;height:9px;border-radius:50%;background:var(--bd)"></span><span style="margin-left:10px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--mu)">withnav.dev</span></div>
+          <div style="padding:12px 24px;display:flex;align-items:center;gap:18px;border-bottom:1px solid var(--bd);flex-wrap:wrap"><span style="display:flex;gap:7px;align-items:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="20" hint-size="20px,20px"></dc-import><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:16px">WithNav</span></span><span style="display:flex;gap:14px;font-size:12.5px;color:var(--mu)"><span>{{ t.lnCrew }}</span><span>Docs</span><span>Changelog</span></span><span style="margin-left:auto;font-size:12px;border:1px solid var(--bd);border-radius:6px;padding:3px 10px;display:flex;gap:6px;align-items:center"><i class="ph ph-github-logo"></i>GitHub</span></div>
+          <div style="padding:48px 28px 36px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:28px;align-items:center">
+            <div style="display:flex;flex-direction:column;gap:14px">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:0.12em;color:var(--mu)">WITHNAV</span>
+              <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:38px;line-height:1.02;letter-spacing:-0.03em"><span style="display:block">{{ t.promise1 }}</span><span style="display:block;color:var(--nav)">{{ t.promise2 }}</span></span>
+              <span style="color:var(--mu);font-size:14.5px;text-wrap:pretty">{{ t.desc }}</span>
+              <span style="display:flex;gap:8px;flex-wrap:wrap"><span style="background:var(--nav);color:var(--bg);border-radius:7px;padding:7px 14px;font-size:13.5px;font-weight:500">{{ t.ctaPrimary }}</span><span style="border:1px solid var(--bd);border-radius:7px;padding:7px 14px;font-size:13.5px">{{ t.ctaSecondary }}</span></span>
+            </div>
+            <div style="border:1px solid var(--bd);border-radius:10px;background:var(--pn);padding:14px;display:flex;flex-direction:column;gap:10px;font-size:12.5px">
+              <div style="display:flex;gap:7px;align-items:center"><dc-import name="WithNavGlyph" glyph="captain" size="14" hint-size="14px,14px"></dc-import><span style="color:var(--mu)">{{ t.captain }}</span></div>
+              <div style="text-wrap:pretty">{{ t.ifCaptain }}</div>
+              <div style="display:flex;gap:7px;align-items:center"><dc-import name="WithNavGlyph" glyph="nav" size="14" hint-size="14px,14px"></dc-import><span style="color:var(--nav)">Nav</span></div>
+              <div style="text-wrap:pretty">{{ t.lnNavReply }}</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ chips }}" as="c" hint-placeholder-count="4"><span style="display:inline-flex;gap:5px;align-items:center;border:1px solid var(--bd);border-radius:20px;padding:2px 8px 2px 5px;font-size:11.5px"><dc-import name="WithNavGlyph" glyph="{{ c.g }}" size="12" hint-size="12px,12px"></dc-import>{{ c.name }}</span></sc-for></div>
+            </div>
+          </div>
+          <div style="padding:0 28px 32px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+            <sc-for list="{{ crew }}" as="p" hint-placeholder-count="4"><div style="border:1px solid var(--bd);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px"><dc-import name="WithNavGlyph" glyph="{{ p.g }}" size="22" hint-size="22px,22px"></dc-import><span style="font-weight:600;font-size:14px">{{ p.name }}</span><span style="font-size:12px;color:var(--mu);text-wrap:pretty">{{ p.short }}</span></div></sc-for>
+          </div>
+        </div>
+        <div style="flex:0 0 340px;max-width:100%;border:1px solid var(--bd);border-radius:28px;overflow:hidden;background:var(--bg);padding-top:10px">
+          <div style="padding:6px 18px 10px;display:flex;align-items:center;border-bottom:1px solid var(--bd)"><span style="display:flex;gap:7px;align-items:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="20" hint-size="20px,20px"></dc-import><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:16px">WithNav</span></span><i class="ph ph-list" style="margin-left:auto;font-size:22px;padding:10px;margin-right:-10px"></i></div>
+          <div style="padding:32px 20px 24px;display:flex;flex-direction:column;gap:14px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.12em;color:var(--mu)">WITHNAV</span>
+            <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:34px;line-height:1.02;letter-spacing:-0.03em"><span style="display:block">{{ t.promise1 }}</span><span style="display:block;color:var(--nav)">{{ t.promise2 }}</span></span>
+            <span style="color:var(--mu);font-size:15px;text-wrap:pretty">{{ t.desc }}</span>
+            <span style="background:var(--nav);color:var(--bg);border-radius:8px;padding:12px;font-size:15px;font-weight:500;text-align:center">{{ t.ctaPrimary }}</span>
+            <span style="border:1px solid var(--bd);border-radius:8px;padding:12px;font-size:15px;text-align:center">{{ t.ctaSecondary }}</span>
+          </div>
+          <div style="padding:0 20px 28px;display:flex;flex-direction:column;gap:8px">
+            <sc-for list="{{ crew }}" as="p" hint-placeholder-count="4"><div style="display:flex;gap:12px;align-items:center;border:1px solid var(--bd);border-radius:10px;padding:10px 12px;min-height:52px"><dc-import name="WithNavGlyph" glyph="{{ p.g }}" size="24" hint-size="24px,24px"></dc-import><span style="display:flex;flex-direction:column;line-height:1.3"><span style="font-weight:600;font-size:14.5px">{{ p.name }}</span><span style="font-size:12.5px;color:var(--mu)">{{ p.role }}</span></span></div></sc-for>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-weight:600">{{ t.heroVarH }}</span>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px">
+          <sc-for list="{{ t.heroes }}" as="h" hint-placeholder-count="4"><div style="border:1px solid var(--bd);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:10px;background:var(--pn)"><span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--mu)">{{ h.tag }}</span><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:24px;line-height:1.08;letter-spacing:-0.02em;text-wrap:balance">{{ h.title }}</span><span style="color:var(--mu);font-size:14px;text-wrap:pretty">{{ h.sub }}</span><span style="font-size:13px;color:var(--nav)">{{ h.cta }}</span></div></sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section id="interface" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">10</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.ifTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.ifLead }}</p></div>
+      <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:var(--bg);font-size:14px">
+        <div style="display:flex;gap:10px;align-items:center;padding:10px 16px;background:var(--pn);border-bottom:1px solid var(--bd);flex-wrap:wrap"><dc-import name="WithNavGlyph" glyph="mark-a" size="18" hint-size="18px,18px"></dc-import><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">rust-agent / refactor-parser</span><span style="font-size:12px;color:var(--mu);border:1px solid var(--bd);border-radius:20px;padding:1px 9px">{{ t.ifVoyage }}</span><span style="margin-left:auto;display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--mu)"><i class="ph ph-book-open"></i>{{ t.ifLogbook }}</span></div>
+        <div style="display:flex;flex-wrap:wrap">
+          <div style="flex:1 1 520px;min-width:0;padding:22px 24px;display:flex;flex-direction:column;gap:18px;line-height:1.55">
+            <div style="display:flex;flex-direction:column;gap:4px"><span style="display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--mu)"><dc-import name="WithNavGlyph" glyph="captain" size="14" hint-size="14px,14px"></dc-import>{{ t.captain }} · {{ t.ifSetCourse }}</span><span style="text-wrap:pretty">{{ t.ifCaptain }}</span></div>
+            <div style="display:flex;flex-direction:column;gap:6px"><span style="display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--nav)"><dc-import name="WithNavGlyph" glyph="nav" size="14" hint-size="14px,14px"></dc-import>Nav</span><span style="text-wrap:pretty">{{ t.ifNav1 }}</span></div>
+            <div style="border:1px solid var(--bd);border-radius:10px;overflow:hidden">
+              <div style="display:flex;gap:8px;align-items:center;padding:9px 14px;background:color-mix(in srgb,var(--vig) 8%,var(--bg));border-bottom:1px solid var(--bd);flex-wrap:wrap"><dc-import name="WithNavGlyph" glyph="vigie" size="16" hint-size="16px,16px"></dc-import><span style="font-weight:600">{{ t.ifVigTitle }}</span><span style="font-size:12px;color:var(--mu)">{{ t.ifVigMeta }}</span></div>
+              <div style="padding:12px 14px;display:flex;flex-direction:column;gap:6px;font-size:13.5px">
+                <span style="font-size:12px;color:var(--mu)">{{ t.ifSeen }}</span>
+                <sc-for list="{{ vigFinds }}" as="f" hint-placeholder-count="3"><span style="display:flex;gap:10px;flex-wrap:wrap"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--vig)">{{ f.loc }}</span><span>{{ f.text }}</span></span></sc-for>
+                <span style="font-size:12px;color:var(--mu);margin-top:4px">{{ t.ifUnknown }}</span>
+                <span style="display:flex;gap:8px"><i class="ph ph-question" style="color:var(--lux);margin-top:3px"></i><span style="text-wrap:pretty">{{ t.ifUnknownP }}</span></span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px"><span style="display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--nav)"><dc-import name="WithNavGlyph" glyph="nav" size="14" hint-size="14px,14px"></dc-import>Nav</span><span style="text-wrap:pretty">{{ t.ifNav2 }}</span></div>
+            <div style="border:1px solid var(--bd);border-radius:10px;overflow:hidden">
+              <div style="display:flex;gap:8px;align-items:center;padding:9px 14px;background:color-mix(in srgb,var(--lux) 8%,var(--bg));border-bottom:1px solid var(--bd);flex-wrap:wrap"><dc-import name="WithNavGlyph" glyph="lux" size="16" hint-size="16px,16px"></dc-import><span style="font-weight:600">{{ t.ifLuxTitle }}</span><span style="font-size:12px;color:var(--mu)">{{ t.ifLuxMeta }}</span></div>
+              <div style="padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;font-size:13.5px">
+                <sc-for list="{{ t.ifLux }}" as="x" hint-placeholder-count="3"><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;color:var(--mu)">{{ x.k }}</span><span style="text-wrap:pretty">{{ x.v }}</span></div></sc-for>
+              </div>
+            </div>
+            <div style="border:1px solid var(--nav);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+              <span style="display:flex;gap:8px;align-items:center;font-weight:600"><i class="ph ph-path" style="color:var(--nav)"></i>{{ t.ifRouteTitle }}</span>
+              <sc-for list="{{ route }}" as="w" hint-placeholder-count="4"><div style="display:flex;gap:10px;align-items:center;font-size:13.5px;flex-wrap:wrap"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mu);width:16px">{{ w.n }}</span><span style="flex:1;min-width:200px;text-wrap:pretty">{{ w.text }}</span><span style="display:inline-flex;gap:5px;align-items:center;font-size:12px;color:var(--mu)"><dc-import name="WithNavGlyph" glyph="{{ w.g }}" size="13" hint-size="13px,13px"></dc-import>{{ w.who }}</span></div></sc-for>
+              <div style="border-top:1px solid var(--bd);padding-top:12px;display:flex;flex-direction:column;gap:10px">
+                <span style="display:flex;gap:8px"><i class="ph ph-hand-palm" style="color:var(--lux);margin-top:3px"></i><span style="text-wrap:pretty">{{ t.ifConfirmP }}</span></span>
+                <span style="display:flex;gap:8px;flex-wrap:wrap"><button style="background:var(--nav);color:var(--bg);border:0;border-radius:7px;padding:8px 14px;font:inherit;font-weight:500;font-size:13.5px;cursor:pointer">{{ t.btnConfirm }}</button><button style="background:transparent;color:var(--tx);border:1px solid var(--bd);border-radius:7px;padding:8px 14px;font:inherit;font-size:13.5px;cursor:pointer">{{ t.btnAdjust }}</button></span>
+              </div>
+            </div>
+            <div style="border:1px solid var(--bd);border-radius:10px;padding:10px 14px;color:var(--mu);display:flex;gap:8px;align-items:center"><span style="color:var(--nav)">❯</span>{{ t.ifComposer }}</div>
+          </div>
+          <aside style="flex:1 1 260px;min-width:0;border-left:1px solid var(--bd);background:var(--pn);padding:18px;display:flex;flex-direction:column;gap:12px">
+            <span style="font-size:12px;color:var(--mu);font-family:'JetBrains Mono',monospace;letter-spacing:0.06em">{{ t.ifCrewH }}</span>
+            <sc-for list="{{ panel }}" as="a" hint-placeholder-count="4">
+              <div style="border:1px solid {{ a.bd }};border-radius:10px;background:var(--bg);padding:11px 12px;display:flex;flex-direction:column;gap:7px;font-size:12.5px">
+                <div style="display:flex;gap:8px;align-items:center"><dc-import name="WithNavGlyph" glyph="{{ a.g }}" size="18" hint-size="18px,18px"></dc-import><span style="font-weight:600;font-size:14px">{{ a.name }}</span><span style="margin-left:auto;color:{{ a.stCol }}">{{ a.state }}</span></div>
+                <div style="display:flex;gap:6px"><span style="color:var(--mu);flex:none">{{ t.lblWhy }}</span><span style="text-wrap:pretty">{{ a.why }}</span></div>
+                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span style="display:flex;gap:5px;align-items:center"><span style="color:var(--mu)">{{ t.lblCostS }}</span><sc-for list="{{ a.cost }}" as="d" hint-placeholder-count="3"><span style="width:10px;height:5px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></span><span style="display:flex;gap:5px;align-items:center"><span style="color:var(--mu)">{{ t.lblDepthS }}</span><sc-for list="{{ a.depth }}" as="d" hint-placeholder-count="3"><span style="width:10px;height:5px;border-radius:3px;background:{{ d.bg }}"></span></sc-for></span></div>
+                <div style="display:flex;gap:6px;align-items:center;color:var(--mu)"><i class="{{ a.rIcon }}"></i>{{ a.rights }}</div>
+              </div>
+            </sc-for>
+            <div style="border-top:1px solid var(--bd);padding-top:12px;display:flex;flex-direction:column;gap:6px;font-size:12.5px"><span style="color:var(--mu)">{{ t.ifLogbook }}</span><sc-for list="{{ t.ifLog }}" as="g" hint-placeholder-count="3"><span style="display:flex;gap:8px"><span style="font-family:'JetBrains Mono',monospace;color:var(--mu);flex:none">{{ g.time }}</span><span style="text-wrap:pretty">{{ g.text }}</span></span></sc-for></div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="microcopy" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">11</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">Microcopy</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.mcLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:14px">
+        <sc-for list="{{ states }}" as="s" hint-placeholder-count="5">
+          <div style="border:1px solid var(--bd);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:12px;background:var(--pn)">
+            <span style="display:flex;gap:8px;align-items:center;font-weight:600"><i class="{{ s.icon }}" style="color:{{ s.col }};font-size:18px"></i>{{ s.name }}</span>
+            <sc-for list="{{ s.lines }}" as="x" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:8px;padding:9px 12px;background:var(--bg);display:flex;gap:9px;align-items:flex-start;font-size:14px"><span style="flex:none;margin-top:3px;display:flex"><dc-import name="WithNavGlyph" glyph="{{ x.g }}" size="14" hint-size="14px,14px"></dc-import></span><span style="text-wrap:pretty">{{ x.v }}</span></div></sc-for>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section id="appicon" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">12</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.favTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.favLead }}</p></div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+        <div style="{{ darkVars }};width:180px;height:180px;border-radius:40px;background:linear-gradient(160deg,var(--sf),var(--bg));border:1px solid var(--bd);display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="112" hint-size="112px,112px"></dc-import></div>
+        <div style="{{ lightVars }};width:180px;height:180px;border-radius:40px;background:linear-gradient(160deg,var(--sf),var(--bg));border:1px solid var(--bd);display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="112" hint-size="112px,112px"></dc-import></div>
+        <div style="{{ darkVars }};width:120px;height:120px;border-radius:27px;background:linear-gradient(160deg,var(--sf),var(--bg));border:1px solid var(--bd);display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="76" hint-size="76px,76px"></dc-import></div>
+        <div style="{{ darkVars }};width:64px;height:64px;border-radius:15px;background:var(--bg);border:1px solid var(--bd);display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="42" hint-size="42px,42px"></dc-import></div>
+        <div style="width:64px;height:64px;border-radius:15px;background:var(--tx);color:var(--bg);display:flex;align-items:center;justify-content:center"><dc-import name="WithNavGlyph" glyph="mark-a" size="42" mono="{{ true }}" hint-size="42px,42px"></dc-import></div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1 1 420px;min-width:0;border:1px solid var(--bd);border-radius:10px;overflow:hidden">
+          <div style="display:flex;background:var(--pn);padding:8px 8px 0;gap:4px"><span style="display:flex;gap:8px;align-items:center;background:var(--bg);border:1px solid var(--bd);border-bottom:0;border-radius:8px 8px 0 0;padding:7px 12px;font-size:12.5px;min-width:0"><dc-import name="WithNavGlyph" glyph="mark-a" size="16" hint-size="16px,16px"></dc-import><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">WithNav · {{ t.favTab }}</span><i class="ph ph-x" style="color:var(--mu)"></i></span><span style="display:flex;gap:8px;align-items:center;padding:7px 12px;font-size:12.5px;color:var(--mu)"><dc-import name="WithNavGlyph" glyph="mark-a" size="16" mono="{{ true }}" hint-size="16px,16px"></dc-import>Docs · 0.6.1</span></div>
+          <div style="padding:8px 12px;border-top:1px solid var(--bd);font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mu)">withnav.dev</div>
+        </div>
+        <div style="flex:1 1 300px;min-width:0;border:1px solid var(--bd);border-radius:10px;overflow:hidden">
+          <sc-for list="{{ t.favSpecs }}" as="f" hint-placeholder-count="5"><div style="display:grid;grid-template-columns:minmax(90px,120px) minmax(0,1fr);gap:12px;padding:9px 14px;border-bottom:1px solid var(--bd);font-size:13.5px"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mu)">{{ f.k }}</span><span style="text-wrap:pretty">{{ f.v }}</span></div></sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section id="metaphor" style="padding:72px 0;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-direction:column;gap:8px;max-width:720px"><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">13</span><h2 style="margin:0;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:clamp(30px,3.6vw,42px);line-height:1.08;letter-spacing:-0.025em">{{ t.metTitle }}</h2><p style="margin:0;color:var(--mu);font-size:17px;text-wrap:pretty">{{ t.metLead }}</p></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:14px">
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:10px"><span style="display:flex;gap:8px;align-items:center;font-weight:600"><i class="ph ph-check-circle" style="color:var(--gr)"></i>{{ t.doH }}</span><sc-for list="{{ t.dos }}" as="d" hint-placeholder-count="5"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:var(--gr)">+</span><span style="text-wrap:pretty">{{ d.v }}</span></span></sc-for></div>
+        <div style="border:1px solid var(--bd);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:10px"><span style="display:flex;gap:8px;align-items:center;font-weight:600"><i class="ph ph-x-circle" style="color:var(--rd)"></i>{{ t.dontH }}</span><sc-for list="{{ t.donts }}" as="d" hint-placeholder-count="5"><span style="font-size:14.5px;display:flex;gap:8px"><span style="color:var(--rd)">−</span><span style="text-wrap:pretty">{{ d.v }}</span></span></sc-for></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px">
+        <sc-for list="{{ t.metExamples }}" as="e" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px;font-size:14px"><span style="font-size:12.5px;color:var(--mu)">{{ e.ctx }}</span><span style="display:flex;gap:8px"><i class="ph ph-x" style="color:var(--rd);margin-top:3px"></i><span style="text-decoration:line-through;color:var(--mu)">{{ e.bad }}</span></span><span style="display:flex;gap:8px"><i class="ph ph-check" style="color:var(--gr);margin-top:3px"></i><span>{{ e.good }}</span></span></div></sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-weight:600">{{ t.vocabH }}</span>
+        <div style="border:1px solid var(--bd);border-radius:12px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr);gap:14px;padding:10px 18px;background:var(--pn);font-size:12.5px;color:var(--mu);font-family:'JetBrains Mono',monospace"><span>{{ t.lblConcept }}</span><span>FR</span><span>EN</span><span>{{ t.lblUiLabel }}</span></div>
+          <sc-for list="{{ vocab }}" as="v" hint-placeholder-count="12"><div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr);gap:14px;padding:9px 18px;border-top:1px solid var(--bd);font-size:14px;align-items:baseline"><span style="color:var(--mu);font-size:13.5px">{{ v.c }}</span><span style="font-weight:500">{{ v.fr }}</span><span style="font-weight:500">{{ v.en }}</span><span style="font-size:13px;color:var(--mu);font-family:'JetBrains Mono',monospace">{{ v.ui }}</span></div></sc-for>
+        </div>
+      </div>
+    </section>
+
+  </main>
+  <footer style="border-top:1px solid var(--bd)">
+    <div style="max-width:1160px;margin:0 auto;padding:28px 24px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--mu);font-size:13.5px"><dc-import name="WithNavGlyph" glyph="mark-a" size="20" hint-size="20px,20px"></dc-import><span style="color:var(--tx);font-weight:500">WithNav</span><span>withnav.dev</span><span style="margin-left:auto;font-style:italic">{{ t.feeling }}</span></div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;lang&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;fr&quot;,&quot;en&quot;],&quot;default&quot;:&quot;fr&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = {};
+  renderVals() {
+    const lang = this.state.lang ?? this.props.lang ?? 'fr';
+    const dark = this.state.dark ?? ((this.props.theme ?? 'dark') === 'dark');
+    const ok = ([L, C, h]) => {
+      const a = C * Math.cos(h * Math.PI / 180), b = C * Math.sin(h * Math.PI / 180);
+      const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3, s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+      return '#' + [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s]
+        .map(v => Math.min(1, Math.max(0, v))).map(v => Math.round((v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055) * 255).toString(16).padStart(2, '0')).join('');
+    };
+    const lum = (hex) => { const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+    const cr = (x, y) => { const p = lum(x), q = lum(y); return (Math.max(p, q) + 0.05) / (Math.min(p, q) + 0.05); };
+    const TD = { bg: '#061115', pn: '#0a171b', sf: '#101e23', bd: '#213135', tx: '#d5e1e1', mu: '#87999e', gr: '#81d584', rd: '#ee6570', nav: ok([0.79, 0.11, 222]), lux: ok([0.86, 0.13, 85]), mou: ok([0.76, 0.13, 35]), vig: ok([0.81, 0.11, 168]), car: ok([0.79, 0.11, 322]), son: ok([0.78, 0.10, 274]) };
+    const TL = { bg: '#f2f8f8', pn: '#e9f2f3', sf: '#fbfefe', bd: '#cddbdc', tx: '#1f3137', mu: '#53676c', gr: '#2e7c35', rd: '#c53443', nav: ok([0.50, 0.11, 238]), lux: ok([0.52, 0.11, 72]), mou: ok([0.53, 0.15, 35]), vig: ok([0.50, 0.09, 175]), car: ok([0.50, 0.13, 322]), son: ok([0.50, 0.13, 274]) };
+    const vars = (T) => Object.entries(T).map(([k, v]) => `--${k}:${v}`).join(';');
+    const T = dark ? TD : TL;
+    const fr = lang === 'fr';
+    const L = (f, e) => fr ? f : e;
+    const tb = (on) => ({ background: on ? T.sf : 'transparent', color: on ? T.tx : T.mu, border: 0, padding: '4px 10px', cursor: 'pointer', font: 'inherit' });
+    const dots = (n, col) => [0, 1, 2].map(i => ({ bg: i < n ? col : T.bd }));
+    const list = (a) => a.map(v => ({ v }));
+
+    const t = fr ? {
+      bookLabel: 'Identité de marque', coverKicker: 'WITHNAV · WITHNAV.DEV · IDENTITÉ V1',
+      promise1: 'Vous fixez le cap.', promise2: 'Nav éclaire la voie.',
+      desc: 'Un équipage d’agents IA pour explorer, comprendre et faire évoluer votre code, sans jamais vous retirer la barre.',
+      feeling: '« Je reste aux commandes, mais je ne navigue plus seul. »',
+      posTitle: 'Positionnement', posLead: 'WithNav aide les développeurs à explorer, comprendre et faire évoluer leur code avec une équipe d’agents IA spécialisés. Il apporte visibilité, compréhension et coordination. Il ne remplace pas le développeur.',
+      posBlocks: [
+        { h: 'Ce que c’est', p: 'Un environnement d’agents IA pour développeurs, en terminal, dans VS Code et sur le Web. Nav coordonne un équipage de spécialistes.' },
+        { h: 'Pour qui', p: 'Les développeurs qui veulent comprendre une codebase et la faire évoluer en gardant la décision finale.' },
+        { h: 'Ce qui le distingue', p: 'Un seul interlocuteur. Chaque intervention est visible : quel agent travaille, pourquoi, à quel coût, avec quelles sources et quels droits.' },
+        { h: 'Ce que ce n’est pas', p: 'Ni un remplaçant, ni un pilote automatique, ni une collection de bots à gérer.' }
+      ],
+      principleH: 'Principe fondamental : l’utilisateur est toujours le Capitaine.',
+      principleP: 'Il définit la destination, garde la barre et prend les décisions finales. Nav et l’équipage éclairent la route, proposent des trajectoires et signalent les dangers. Aucun agent n’est présenté comme Capitaine.',
+      keyMsgH: 'Messages clés',
+      archTitle: 'Architecture de marque', archLead: 'Une marque, un interlocuteur, un équipage. Le phare reste une métaphore et un symbole visuel, jamais un nom de produit.',
+      captain: 'Le Capitaine', captainSub: 'l’utilisateur', navSub: 'Le Navigateur · interlocuteur unique',
+      arrowCourse: 'fixe le cap', arrowCrew: 'confie, consulte, envoie',
+      extLater: 'Équipage étendu · appelé à la demande par Nav',
+      archNote: 'Nav et l’équipage tournent sur Cognition, la plus lente des quatre couches (voir 04). L’utilisateur parle à Nav. Nav comprend la demande, propose une route et fait intervenir un membre de l’équipage si besoin. L’utilisateur ne gère pas une collection de bots.',
+      crewTitle: 'L’Équipage', crewLead: 'Quatre personnages toujours à bord : Nav, la Vigie, Lux et Mousse. Deux spécialistes, le Cartographe et le Sondeur, rejoignent l’équipage à la demande. Chacun a un niveau de coût, une profondeur de raisonnement et des droits explicites.',
+      lblModel: 'Modèle', lblCost: 'Coût', lblDepth: 'Profondeur', lblRights: 'Droits', lblDuties: 'Rôle', lblTraits: 'Personnalité', lblSays: 'Formulations',
+      extTitle: 'Équipage étendu', extLead: 'Nav les appelle quand la tâche le demande. Contour en pointillé : ils ne sont pas à bord en permanence.',
+      lyTitle: 'Sous le capot · quatre couches', lyLead: 'L’équipage tourne sur quatre couches de vitesses différentes. Les couches rapides observent, les couches lentes réfléchissent, le Capitaine décide. Les noms techniques restent ; chacun reçoit un libellé explicatif, comme les autres termes originaux.',
+      lyFast: 'rapide · peu profond', lySlow: 'lent · profond', lyShows: 'Dans l’interface', lyVoice: 'Voix',
+      lyCaptain: 'Toi. Tu donnes un verdict à chaque balise, tu valides les routes et tu décides de ce qui est écrit.',
+      lyBeaconHead: 'Balise · Nav · loader.rs:42', lyBeaconBody: 'Cette ligne appelle toml::from_str directement. La décision de 14:04 fait de Config::load le seul point d’entrée.',
+      lyVerdicts: list(['Utile', 'Bruit', 'Ignorer']),
+      lyLegend: [{ k: 'Reflex', v: 'texte fantôme en italique, ligne 43' }, { k: 'Instinct', v: 'a jugé l’écart digne d’être signalé, sans rien afficher' }, { k: 'Metacog.', v: 'la balise sous la ligne 42, signée Nav' }],
+      lyRules: [
+        { h: 'Un seul interlocuteur', p: 'Les remarques de Metacognition sont signées Nav. Le Capitaine ne parle jamais à une couche.' },
+        { h: 'Les couches n’ont pas de personnage', p: 'Pas de nom, pas d’icône d’agent, pas de « je ». Elles apparaissent comme des libellés techniques, en Brume et en monospace.' },
+        { h: 'Réveil plutôt qu’interruption', p: 'Quand le code s’écarte du cap, Metacognition réveille Nav, qui le soulève à son prochain tour. Rien ne coupe la frappe.' }
+      ],
+      logoTitle: 'Logo · trois directions', logoLead: 'Chaque direction est montrée sur le fond courant et inversé, à 32 et 16 px, en monochrome et avec le wordmark. Bascule le thème pour voir l’autre fond.',
+      recommended: 'Recommandée',
+      recTitle: 'Recommandation : A, Compas-balise', recLead: 'C’est la direction qui porte le mieux la promesse : le cap du Capitaine en bas, la lumière de Nav au-dessus, aucun des deux ne recouvre l’autre.',
+      recWhy: list(['Continuité : le glyphe 2e a déjà été testé à 16 px et dans les trois clients.', 'Deux éléments, deux couleurs : la relation Capitaine–Nav est lisible sans texte.', 'Évoque le compas, la balise et le phare sans illustration littérale.', 'B est solide en monogramme mais rejoint beaucoup de logos en N ; C ressemble aux nombreux outils CLI à chevron.']),
+      lockupH: 'Wordmark et lockups', logoRulesH: 'Règles d’usage',
+      logoRules: list(['Wordmark en Bricolage Grotesque 600, toujours écrit « WithNav ».', 'Zone de protection : la hauteur des anneaux autour du symbole.', 'Monochrome : une seule couleur, la moitié basse de l’aiguille à 50 %.', 'Ne pas recolorer l’aiguille aux couleurs d’un agent.']),
+      colorTitle: 'Couleur', colorLead: 'Les fonds Tide restent. Les accents suivent le brief : cyan pour Nav, or balise pour Lux, corail pour Mousse, turquoise pour la Vigie, orchidée pour le Cartographe, indigo pour le Sondeur. Chaque teinte est accordée en OKLCH, à luminosité égale dans chaque thème. Ratios calculés sur le fond.',
+      lblRole: 'Rôle', dark: 'Sombre', light: 'Clair',
+      colorRules: [
+        { h: 'Jamais la couleur seule', p: 'Chaque agent est aussi identifié par sa forme, son pictogramme et son nom.' },
+        { h: 'Texte courant', p: 'Couleurs d’agent permises pour le texte : toutes dépassent 4,5:1 sur le fond, dans les deux thèmes.' },
+        { h: 'Pas d’aplat saturé', p: 'Les accents servent aux traits, marques et teintes à 8 %. Aucun dégradé violet.' }
+      ],
+      typeTitle: 'Typographie', typeLead: 'Une grotesque chaleureuse pour la marque, une sans-serif neutre pour lire, une monospace pour tout ce qui est code.',
+      typeBrand: 'marque, titres', typeBody: 'texte, interface', typeUi: 'Confirmer la route · Envoyer la Vigie · Consulter Lux', typeMono: 'code, terminal, chemins', typeCmd: 'remplacer toml::from_str par Config::load',
+      iconsTitle: 'Icônes des agents', iconsLead: 'Couleur, forme, pictogramme et signature lumineuse. Le contour donne la forme, le pictogramme plein donne le sens. Lisibles à 16 px et en monochrome.',
+      lblShape: 'Forme', lblPicto: 'Pictogramme', lblSignal: 'Signature lumineuse', chipsH: 'En contexte',
+      landTitle: 'Landing page', landLead: 'Desktop et mobile, sur la version recommandée de la hero. La page complète est dans WithNav Site.',
+      lnCrew: 'Équipage', lnNavReply: 'J’ai identifié deux routes possibles. J’envoie d’abord la Vigie repérer les appels.',
+      ctaPrimary: 'Fixer le cap', ctaSecondary: 'Rencontrer l’équipage', heroVarH: 'Variantes de hero',
+      heroes: [
+        { tag: 'Recommandée', title: 'Vous fixez le cap. Nav éclaire la voie.', sub: 'Un équipage d’agents IA pour explorer, comprendre et faire évoluer votre code, sans jamais vous retirer la barre.', cta: 'Fixer le cap →' },
+        { tag: 'Contrôle', title: 'Gardez la barre. Nous éclairons la route.', sub: 'Nav propose, la Vigie explore, Lux arbitre. Vous décidez.', cta: 'Rencontrer l’équipage →' },
+        { tag: 'Exploration', title: 'Votre code est vaste. Vous n’avez pas à l’explorer seul.', sub: 'La Vigie cartographie la codebase et cite ses sources avant toute modification.', cta: 'Envoyer la Vigie →' },
+        { tag: 'Équipage', title: 'Un équipage pour chaque codebase.', sub: 'Un interlocuteur, quatre spécialistes, des coûts et des droits visibles.', cta: 'Développez avec Nav →' }
+      ],
+      ifTitle: 'Interface · Nav et l’équipage', ifLead: 'Nav reste l’interlocuteur. Les interventions de l’équipage apparaissent dans le fil, et le panneau de droite montre qui travaille, pourquoi, à quel coût et avec quels droits.',
+      ifVoyage: 'Traversée · Session', ifLogbook: 'Journal de bord · Historique', ifSetCourse: 'cap',
+      ifCaptain: 'Remplace les appels directs à toml::from_str par Config::load, sans changer le comportement.',
+      ifNav1: 'Je reformule : un seul point d’entrée pour lire la config, Config::load, à comportement égal. Avant de proposer une route, j’envoie la Vigie repérer les appels.',
+      ifVigTitle: 'Rapport de la Vigie', ifVigMeta: 'lecture seule · 14 fichiers lus · 9 s', ifSeen: 'Observé', ifUnknown: 'Non vérifié',
+      ifUnknownP: 'tests/fixtures/ charge peut-être la config par un autre chemin. Je n’ai pas lu ce dossier.',
+      ifNav2: 'J’ai identifié deux routes possibles. L’une change l’ordre de priorité des variables d’environnement. Ce choix mérite l’avis de Lux.',
+      ifLuxTitle: 'Avis de Lux', ifLuxMeta: 'raisonnement profond · coût élevé · 38 s',
+      ifLux: [{ k: 'Fait', v: 'server/config.rs lit le fichier avant de fusionner les variables d’environnement.' }, { k: 'Hypothèse', v: 'Passer par Config::load inverserait cette priorité.' }, { k: 'Recommandation', v: 'Route B : écrire un test de priorité avant de migrer.' }],
+      ifRouteTitle: 'Route proposée · 4 jalons',
+      ifConfirmP: 'Cette route modifie 3 fichiers et ajoute 1 test. Rien n’est écrit avant ta validation. Tu gardes la décision finale.',
+      btnConfirm: 'Confirmer la route', btnAdjust: 'Ajuster', ifComposer: 'Réponds à Nav…', ifCrewH: 'ÉQUIPAGE', lblWhy: 'Pourquoi', lblCostS: 'coût', lblDepthS: 'profondeur',
+      ifLog: [{ time: '14:02', text: 'Cap fixé par le Capitaine' }, { time: '14:03', text: 'Rapport de la Vigie · 3 appels' }, { time: '14:04', text: 'Décision en attente · route B' }],
+      mcLead: 'Phrases courtes, sujet explicite, état réel. Nav dit ce qui se passe, ce qu’il ne sait pas et ce qui attend une décision.',
+      favTitle: 'Favicon et icône d’application', favLead: 'Le symbole A sur un carré arrondi aux fonds Tide. À 16 px, les anneaux passent de quatre à deux et l’aiguille devient pleine.', favTab: 'Passerelle',
+      favSpecs: [{ k: '16 px', v: 'Favicon : deux anneaux, aiguille pleine' }, { k: '32 px', v: 'Favicon haute densité, onglets, barre des tâches' }, { k: '180 px', v: 'apple-touch-icon, rayon 22 %' }, { k: '512 px', v: 'Manifest PWA, VS Code Marketplace' }, { k: 'mono', v: 'Une couleur, pour la barre d’état et les contextes imprimés' }],
+      metTitle: 'Employer la métaphore', metLead: 'La métaphore maritime enrichit l’expérience sans devenir un gimmick. La clarté produit passe toujours avant elle.',
+      doH: 'À faire', dontH: 'À éviter',
+      dos: list(['Garder les termes techniques standards : commit, pull request, test, branche, terminal, fichier, déploiement.', 'Ajouter un libellé explicatif aux termes originaux : « Journal de bord · Historique ».', 'Réserver le vocabulaire maritime aux noms de fonctions et d’actions, pas à chaque phrase.', 'Au plus une métaphore par message de Nav.', 'En marketing, la métaphore peut porter un titre ; le texte qui suit reste concret.']),
+      donts: list(['Le roleplay maritime permanent.', 'Pirates, ancres décoratives, gouvernails, bateaux cartoon.', 'Présenter un agent comme le Capitaine.', 'Cacher une erreur derrière une image : un écueil est aussi nommé comme une erreur.', '« Révolutionnaire », « magique », « développeur 10x », promesses de remplacement.']),
+      metExamples: [
+        { ctx: 'Erreur de test', bad: 'Nous avons heurté un écueil, Capitaine !', good: 'cargo test a échoué (2 tests). Rien n’a été commité.' },
+        { ctx: 'Démarrage', bad: 'Hissez les voiles, l’équipage est prêt à appareiller !', good: 'Quel cap souhaites-tu prendre ?' },
+        { ctx: 'Commit', bad: 'Inscrire au journal de bord', good: 'Commit · ajouté au journal de bord' }
+      ],
+      vocabH: 'Vocabulaire bilingue', lblConcept: 'Concept', lblUiLabel: 'Libellé dans l’interface'
+    } : {
+      bookLabel: 'Brand identity', coverKicker: 'WITHNAV · WITHNAV.DEV · IDENTITY V1',
+      promise1: 'You set the course.', promise2: 'Nav lights the way.',
+      desc: 'An AI crew that helps you explore, understand and evolve your code—without taking the helm away from you.',
+      feeling: '“I remain in control, but I no longer navigate alone.”',
+      posTitle: 'Positioning', posLead: 'WithNav helps developers explore, understand and evolve their code with a team of specialised AI agents. It brings visibility, understanding and coordination. It does not replace the developer.',
+      posBlocks: [
+        { h: 'What it is', p: 'An AI agent environment for developers, in the terminal, in VS Code and on the web. Nav coordinates a crew of specialists.' },
+        { h: 'Who it’s for', p: 'Developers who want to understand a codebase and evolve it while keeping the final decision.' },
+        { h: 'What sets it apart', p: 'One point of contact. Every intervention is visible: which agent is working, why, at what cost, with which sources and permissions.' },
+        { h: 'What it isn’t', p: 'Not a replacement, not an autopilot, not a collection of bots to manage.' }
+      ],
+      principleH: 'Core principle: the user is always the Captain.',
+      principleP: 'They set the destination, keep the helm and make the final decisions. Nav and the crew light the route, suggest headings and flag hazards. No agent is ever presented as the Captain.',
+      keyMsgH: 'Key messages',
+      archTitle: 'Brand architecture', archLead: 'One brand, one point of contact, one crew. The lighthouse stays a metaphor and a visual symbol, never a product name.',
+      captain: 'The Captain', captainSub: 'the user', navSub: 'The Navigator · single point of contact',
+      arrowCourse: 'sets the course', arrowCrew: 'hands off, consults, sends',
+      extLater: 'Extended crew · called on demand by Nav',
+      archNote: 'Nav and the crew run on Cognition, the slowest of the four layers (see 04). The user talks to Nav. Nav understands the request, proposes a route and brings in a crew member when needed. The user never manages a collection of bots.',
+      crewTitle: 'The Crew', crewLead: 'Four characters always on board: Nav, Vigie, Lux and Mousse. Two specialists, the Cartographer and the Deep Diver, join on demand. Each has a cost level, a reasoning depth and explicit permissions.',
+      lblModel: 'Model', lblCost: 'Cost', lblDepth: 'Depth', lblRights: 'Permissions', lblDuties: 'Role', lblTraits: 'Personality', lblSays: 'Phrasing',
+      extTitle: 'Extended crew', extLead: 'Nav calls them when the task needs it. Dashed outline: they are not on board all the time.',
+      lyTitle: 'Under the hood · four layers', lyLead: 'The crew runs on four layers of different speeds. Fast layers watch, slow layers think, the Captain decides. Technical names stay; each gets an explanatory label, like the other original terms.',
+      lyFast: 'fast · shallow', lySlow: 'slow · deep', lyShows: 'In the interface', lyVoice: 'Voice',
+      lyCaptain: 'You. You give each beacon a verdict, approve routes and decide what gets written.',
+      lyBeaconHead: 'Beacon · Nav · loader.rs:42', lyBeaconBody: 'This line calls toml::from_str directly. The 14:04 decision makes Config::load the only entry point.',
+      lyVerdicts: list(['Useful', 'Noise', 'Dismiss']),
+      lyLegend: [{ k: 'Reflex', v: 'italic ghost text, line 43' }, { k: 'Instinct', v: 'judged the drift worth raising, showed nothing' }, { k: 'Metacog.', v: 'the beacon under line 42, signed Nav' }],
+      lyRules: [
+        { h: 'One point of contact', p: 'Metacognition remarks are signed Nav. The Captain never talks to a layer.' },
+        { h: 'Layers have no character', p: 'No name, no agent icon, no “I”. They appear as technical labels, in Mist and monospace.' },
+        { h: 'Wake, don’t interrupt', p: 'When the code drifts from the course, Metacognition wakes Nav, which raises it on its next turn. Nothing breaks your typing.' }
+      ],
+      logoTitle: 'Logo · three directions', logoLead: 'Each direction is shown on the current and inverted ground, at 32 and 16 px, in monochrome and with the wordmark. Switch the theme to see the other ground.',
+      recommended: 'Recommended',
+      recTitle: 'Recommendation: A, Compass beacon', recLead: 'This direction carries the promise best: the Captain’s course below, Nav’s light above, neither covering the other.',
+      recWhy: list(['Continuity: the 2e glyph is already tested at 16 px and in all three clients.', 'Two parts, two colors: the Captain–Nav relationship reads without words.', 'Suggests compass, beacon and lighthouse without a literal illustration.', 'B is a strong monogram but joins many N logos; C looks like the many CLI tools built on a chevron.']),
+      lockupH: 'Wordmark and lockups', logoRulesH: 'Usage rules',
+      logoRules: list(['Wordmark in Bricolage Grotesque 600, always written “WithNav”.', 'Clear space: the height of the rings around the symbol.', 'Monochrome: one color, lower half of the needle at 50 %.', 'Never recolor the needle with an agent color.']),
+      colorTitle: 'Color', colorLead: 'Tide grounds stay. Accents follow the brief: cyan for Nav, beacon gold for Lux, coral for Mousse, turquoise for Vigie, orchid for the Cartographer, indigo for the Deep Diver. Each hue is tuned in OKLCH at equal lightness per theme. Ratios measured against the ground.',
+      lblRole: 'Role', dark: 'Dark', light: 'Light',
+      colorRules: [
+        { h: 'Never color alone', p: 'Each agent is also identified by its shape, pictogram and name.' },
+        { h: 'Body text', p: 'Agent colors are allowed for text: all exceed 4.5:1 on the ground, in both themes.' },
+        { h: 'No saturated floods', p: 'Accents are for lines, marks and 8 % tints. No purple gradients.' }
+      ],
+      typeTitle: 'Typography', typeLead: 'A warm grotesque for the brand, a neutral sans for reading, a monospace for everything that is code.',
+      typeBrand: 'brand, headings', typeBody: 'text, interface', typeUi: 'Confirm the Route · Send the Lookout · Ask Lux', typeMono: 'code, terminal, paths', typeCmd: 'replace toml::from_str with Config::load',
+      iconsTitle: 'Agent icons', iconsLead: 'Color, shape, pictogram and light signature. The outline gives the shape, the solid pictogram gives the meaning. Readable at 16 px and in monochrome.',
+      lblShape: 'Shape', lblPicto: 'Pictogram', lblSignal: 'Light signature', chipsH: 'In context',
+      landTitle: 'Landing page', landLead: 'Desktop and mobile, on the recommended hero. The full page is in WithNav Site.',
+      lnCrew: 'Crew', lnNavReply: 'I found two possible routes. I’ll send the Lookout to find the call sites first.',
+      ctaPrimary: 'Set the Course', ctaSecondary: 'Meet the Crew', heroVarH: 'Hero variants',
+      heroes: [
+        { tag: 'Recommended', title: 'You set the course. Nav lights the way.', sub: 'An AI crew that helps you explore, understand and evolve your code—without taking the helm away from you.', cta: 'Set the Course →' },
+        { tag: 'Control', title: 'Keep the helm. We’ll light the way.', sub: 'Nav proposes, the Lookout scouts, Lux weighs the trade-offs. You decide.', cta: 'Meet the Crew →' },
+        { tag: 'Exploration', title: 'Your codebase is vast. You don’t have to explore it alone.', sub: 'The Lookout charts the codebase and cites its sources before anything changes.', cta: 'Send the Lookout →' },
+        { tag: 'Outcome', title: 'See clearly. Choose confidently. Ship safely.', sub: 'One point of contact, four specialists, visible costs and permissions.', cta: 'Code with Nav →' }
+      ],
+      ifTitle: 'Interface · Nav and the crew', ifLead: 'Nav stays the point of contact. Crew interventions appear in the thread, and the right panel shows who is working, why, at what cost and with which permissions.',
+      ifVoyage: 'Voyage · Session', ifLogbook: 'Logbook · Activity history', ifSetCourse: 'course',
+      ifCaptain: 'Replace direct calls to toml::from_str with Config::load, without changing behavior.',
+      ifNav1: 'Restating: one entry point for reading config, Config::load, with the same behavior. Before I propose a route, I’ll send the Lookout to find the call sites.',
+      ifVigTitle: 'Lookout Report', ifVigMeta: 'read-only · 14 files read · 9 s', ifSeen: 'Observed', ifUnknown: 'Not verified',
+      ifUnknownP: 'tests/fixtures/ may load config another way. I did not read that folder.',
+      ifNav2: 'I found two possible routes. One changes the precedence of environment variables. This decision could use Lux’s expertise.',
+      ifLuxTitle: 'Lux’s assessment', ifLuxMeta: 'deep reasoning · high cost · 38 s',
+      ifLux: [{ k: 'Fact', v: 'server/config.rs reads the file before merging environment variables.' }, { k: 'Hypothesis', v: 'Going through Config::load would reverse that precedence.' }, { k: 'Recommendation', v: 'Route B: write a precedence test before migrating.' }],
+      ifRouteTitle: 'Proposed route · 4 waypoints',
+      ifConfirmP: 'This route changes 3 files and adds 1 test. Nothing is written until you approve. The final decision remains yours.',
+      btnConfirm: 'Confirm the Route', btnAdjust: 'Adjust', ifComposer: 'Reply to Nav…', ifCrewH: 'CREW', lblWhy: 'Why', lblCostS: 'cost', lblDepthS: 'depth',
+      ifLog: [{ time: '14:02', text: 'Course set by the Captain' }, { time: '14:03', text: 'Lookout Report · 3 call sites' }, { time: '14:04', text: 'Decision pending · route B' }],
+      mcLead: 'Short sentences, explicit subject, real state. Nav says what is happening, what it doesn’t know and what needs a decision.',
+      favTitle: 'Favicon and app icon', favLead: 'Symbol A on a rounded square in Tide grounds. At 16 px the rings drop from four to two and the needle turns solid.', favTab: 'Bridge',
+      favSpecs: [{ k: '16 px', v: 'Favicon: two rings, solid needle' }, { k: '32 px', v: 'High-density favicon, tabs, taskbar' }, { k: '180 px', v: 'apple-touch-icon, 22 % radius' }, { k: '512 px', v: 'PWA manifest, VS Code Marketplace' }, { k: 'mono', v: 'One color, for status bars and print' }],
+      metTitle: 'Using the metaphor', metLead: 'The maritime metaphor enriches the experience without becoming a gimmick. Product clarity always comes first.',
+      doH: 'Do', dontH: 'Avoid',
+      dos: list(['Keep standard technical terms: commit, pull request, test, branch, terminal, file, deployment.', 'Add an explanatory label to original terms: “Logbook · Activity history”.', 'Keep maritime words for feature and action names, not every sentence.', 'At most one metaphor per Nav message.', 'In marketing a metaphor can carry a headline; the copy that follows stays concrete.']),
+      donts: list(['Constant maritime roleplay.', 'Pirates, decorative anchors, ship wheels, cartoon boats.', 'Presenting an agent as the Captain.', 'Hiding an error behind imagery: a hazard is also named as an error.', '“Revolutionary”, “magic”, “10x developer”, promises to replace developers.']),
+      metExamples: [
+        { ctx: 'Test failure', bad: 'We’ve hit a hazard, Captain!', good: 'cargo test failed (2 tests). Nothing was committed.' },
+        { ctx: 'Start', bad: 'Hoist the sails, the crew is ready to cast off!', good: 'What course would you like to set?' },
+        { ctx: 'Commit', bad: 'Write to the logbook', good: 'Commit · added to the logbook' }
+      ],
+      vocabH: 'Bilingual vocabulary', lblConcept: 'Concept', lblUiLabel: 'Interface label'
+    };
+
+    const sections = [['positioning', L('Positionnement', 'Positioning')], ['architecture', 'Architecture'], ['crew', L('Équipage', 'Crew')], ['layers', L('Couches', 'Layers')], ['logo', 'Logo'], ['color', L('Couleur', 'Color')], ['type', L('Typo', 'Type')], ['icons', L('Icônes', 'Icons')], ['landing', 'Landing'], ['interface', 'Interface'], ['microcopy', 'Microcopy'], ['appicon', 'Favicon'], ['metaphor', L('Métaphore', 'Metaphor')]].map(([id, label]) => ({ href: '#' + id, label }));
+
+    const keyMsgs = [
+      [L('Promesse', 'Promise'), 'Vous fixez le cap. Nav éclaire la voie.', 'You set the course. Nav lights the way.'],
+      [L('Courte', 'Short'), 'Développez avec Nav.', 'Code with Nav.'],
+      ['Description', 'Un équipage d’agents IA pour explorer, comprendre et faire évoluer votre code, sans jamais vous retirer la barre.', 'An AI crew that helps you explore, understand and evolve your code—without taking the helm away from you.'],
+      ['CTA', 'Fixer le cap · Rencontrer l’équipage', 'Set the Course · Meet the Crew'],
+      ['Lux', 'Quand la route devient incertaine, demandez à Lux.', 'When the route becomes uncertain, ask Lux.'],
+      [L('Ressenti', 'Feeling'), 'Je reste aux commandes, mais je ne navigue plus seul.', 'I remain in control, but I no longer navigate alone.']
+    ].map(([label, f, e]) => ({ label, fr: f, en: e }));
+
+    const crewData = [
+      { g: 'nav', col: 'var(--nav)', name: 'Nav', role: L('Le Navigateur', 'The Navigator'), alt: L('The Navigator', 'Le Navigateur'), c: 2, d: 2,
+        tier: L('Modèle principal', 'Main model'), rights: L('Lit le projet · modifie après confirmation', 'Reads the project · edits after confirmation'),
+        short: L('Comprend le cap, propose la route, coordonne.', 'Understands the course, proposes the route, coordinates.'),
+        line: L('« Quel cap souhaites-tu prendre ? »', '“What course would you like to set?”'),
+        duties: L(['Point d’entrée unique de l’expérience', 'Reformule l’objectif et prépare une route', 'Choisit les spécialistes et coordonne l’équipage', 'Résume et demande confirmation avant les décisions importantes'], ['Single entry point to the experience', 'Restates the goal and prepares a route', 'Picks the specialists and coordinates the crew', 'Summarises and asks before important decisions']),
+        traits: L(['Calme, fiable, accessible', 'Direct et concis', 'Capable de dire « je ne sais pas »', 'Respecte l’autonomie du développeur'], ['Calm, reliable, approachable', 'Direct and concise', 'Able to say “I don’t know”', 'Respects the developer’s autonomy']),
+        says: L(['« J’ai identifié deux routes possibles. »', '« Voici ce que je propose. Tu gardes la décision finale. »'], ['“I found two possible routes.”', '“Here’s my proposed route. The final decision remains yours.”']) },
+      { g: 'vigie', col: 'var(--vig)', name: 'Vigie', role: L('L’Exploratrice', 'The Lookout'), alt: L('The Lookout', 'L’Exploratrice'), c: 1, d: 2,
+        tier: L('Modèle rapide · outils de recherche', 'Fast model · search tools'), rights: L('Lecture seule par défaut', 'Read-only by default'),
+        short: L('Explore, cite ses sources, signale l’inconnu.', 'Scouts, cites sources, flags the unknown.'),
+        line: L('« Envoyez la Vigie voir ce qui se trouve au-delà de l’horizon. »', '“Send the Lookout beyond the visible horizon.”'),
+        duties: L(['Explore la codebase et la documentation', 'Recherche Web', 'Découvre dépendances, usages, fichiers et symboles', 'Rapporte ses observations à Nav'], ['Explores the codebase and documentation', 'Searches the web', 'Finds dependencies, usages, files and symbols', 'Reports observations to Nav']),
+        traits: L(['Curieuse, attentive, méthodique', 'Observe avant d’interpréter', 'Sépare le vu du supposé', 'Cite ses sources'], ['Curious, attentive, methodical', 'Observes before interpreting', 'Separates seen from assumed', 'Cites its sources']),
+        says: L(['« Trois appels trouvés. tests/fixtures/ non lu. »', '« Source : src/config.rs:42. »'], ['“Three call sites found. tests/fixtures/ not read.”', '“Source: src/config.rs:42.”']) },
+      { g: 'lux', col: 'var(--lux)', name: 'Lux', role: L('Le Conseiller expert', 'The Expert Advisor'), alt: L('The Expert Advisor', 'Le Conseiller expert'), c: 3, d: 3,
+        tier: L('Modèle de raisonnement le plus puissant', 'Strongest reasoning model'), rights: L('Lecture seule · produit des recommandations', 'Read-only · produces recommendations'),
+        short: L('Arbitre les décisions complexes et les risques.', 'Weighs complex decisions and risks.'),
+        line: L('« Quand la route devient incertaine, demandez à Lux. »', '“When the route becomes uncertain, ask Lux.”'),
+        duties: L(['Architecture et arbitrages complexes', 'Risques, sécurité, performance', 'Revue des décisions importantes', 'Debugging particulièrement difficile'], ['Architecture and complex trade-offs', 'Risk, security, performance', 'Review of important decisions', 'Particularly hard debugging']),
+        traits: L(['Lumineuse, calme, précise', 'Peu bavarde, mais profonde', 'Explique les compromis', 'Sépare faits, hypothèses et recommandations'], ['Luminous, calm, precise', 'Few words, real depth', 'Explains trade-offs', 'Separates facts, hypotheses and recommendations']),
+        says: L(['« Fait, hypothèse, recommandation : dans cet ordre. »', '« Je ne peux pas l’affirmer sans un test. »'], ['“Fact, hypothesis, recommendation: in that order.”', '“I can’t claim that without a test.”']) },
+      { g: 'mousse', col: 'var(--mou)', name: 'Mousse', role: L('L’Équipier léger', 'The Lightweight Deckhand'), alt: L('The Lightweight Deckhand', 'L’Équipier léger'), c: 1, d: 1,
+        tier: L('Petit modèle rapide et économique', 'Small, fast, low-cost model'), rights: L('Modifications locales · validées par Nav ou toi', 'Local edits · approved by Nav or you'),
+        short: L('Petites tâches rapides, à faible risque.', 'Quick, low-risk tasks.'),
+        line: L('« Petit modèle, coup de main rapide. »', '“Small model, quick hand.”'),
+        duties: L(['Modifications simples et localisées', 'Formatage et renommages', 'Tests basiques, documentation courte', 'Tâches répétitives à faible risque'], ['Simple, localised edits', 'Formatting and renames', 'Basic tests, short docs', 'Repetitive, low-risk tasks']),
+        traits: L(['Rapide, enthousiaste, serviable', 'Astucieux, conscient de ses limites', 'Transmet à Nav ou Lux ce qui le dépasse'], ['Fast, eager, helpful', 'Resourceful, aware of its limits', 'Hands off to Nav or Lux when out of depth']),
+        says: L(['« 12 renommages prêts. Tu veux voir le diff ? »', '« Ça dépasse un renommage : je repasse la main à Nav. »'], ['“12 renames ready. Want to see the diff?”', '“This is more than a rename, handing back to Nav.”']) }
+    ];
+    const crewExtData = [
+      { g: 'cartographe', col: 'var(--car)', name: 'Cartographe', role: L('Le Cartographe', 'The Cartographer'), alt: L('The Cartographer', 'Le Cartographe'), c: 2, d: 2,
+        tier: L('Modèle intermédiaire · analyse statique', 'Mid-tier model · static analysis'), rights: L('Lecture seule · écrit les cartes dans .withnav/charts/', 'Read-only · writes charts to .withnav/charts/'),
+        short: L('Cartographie modules, dépendances et flux.', 'Charts modules, dependencies and flows.'),
+        line: L('« Avant de changer de route, regardons la carte. »', '“Before changing course, let’s look at the chart.”'),
+        duties: L(['Cartographie modules et dépendances', 'Trace les flux de données et les appels', 'Produit des diagrammes de la codebase', 'Repère les routes critiques'], ['Charts modules and dependencies', 'Traces data flows and call paths', 'Produces diagrams of the codebase', 'Marks critical routes']),
+        traits: L(['Patient, structuré, visuel', 'La vue d’ensemble avant le détail', 'Indique l’échelle et les zones non cartographiées', 'Met la carte à jour quand le code change'], ['Patient, structured, visual', 'Overview before detail', 'States the scale and the uncharted areas', 'Updates the chart when the code changes']),
+        says: L(['« 4 modules, 2 routes critiques. config est au centre. »', '« Zone non cartographiée : vendor/. »'], ['“4 modules, 2 critical routes. config sits at the centre.”', '“Uncharted area: vendor/.”']) },
+      { g: 'sondeur', col: 'var(--son)', name: 'Sondeur', role: L('Le Sondeur', 'The Deep Diver'), alt: L('The Deep Diver', 'Le Sondeur'), c: 2, d: 3,
+        tier: L('Modèle de raisonnement · outils de diagnostic', 'Reasoning model · diagnostic tools'), rights: L('Lecture · lance tests et profileurs après confirmation', 'Read · runs tests and profilers after confirmation'),
+        short: L('Cherche les causes profondes.', 'Looks for root causes.'),
+        line: L('« Quand la cause est sous la surface, envoyez le Sondeur. »', '“When the cause lies below the surface, send the Deep Diver.”'),
+        duties: L(['Bugs complexes et régressions', 'Performance et profilage', 'Lecture des logs et des traces', 'Comportements inattendus'], ['Complex bugs and regressions', 'Performance and profiling', 'Reading logs and traces', 'Unexpected behavior']),
+        traits: L(['Tenace, méthodique, sobre', 'Reproduit avant d’expliquer', 'Dit à quelle profondeur il est allé', 'Remonte à Lux les questions d’architecture'], ['Tenacious, methodical, sober', 'Reproduces before explaining', 'Says how deep it went', 'Passes architecture questions to Lux']),
+        says: L(['« Reproduit en 3 étapes. Cause probable : verrou dans pool.rs:118. »', '« Pas reproduit. Voici ce que j’ai écarté. »'], ['“Reproduced in 3 steps. Likely cause: lock in pool.rs:118.”', '“Not reproduced. Here’s what I ruled out.”']) }
+    ];
+    const mk = p => ({ ...p, cost: dots(p.c, p.col), depth: dots(p.d, p.col), duties: list(p.duties), traits: list(p.traits), says: list(p.says) });
+    const crew = crewData.map(mk), crewExt = crewExtData.map(mk);
+    const archCore = crewData.slice(1).map(p => ({ g: p.g, name: p.name, role: p.role }));
+    const layers = [
+      { name: 'Reflex', label: L('Complétion', 'Completion'), icon: 'ph ph-lightning', col: 'var(--mu)', api: 'fim', when: L('à chaque frappe', 'every keystroke'), depth: '12%',
+        desc: L('Complète pendant la frappe, à partir du code autour du curseur.', 'Completes as you type, from the code around the cursor.'),
+        ui: L('Texte fantôme dans l’éditeur. Tab pour accepter.', 'Ghost text in the editor. Tab to accept.'), voice: L('Aucune : du code, jamais une phrase.', 'None: code, never a sentence.') },
+      { name: 'Instinct', label: L('Tri', 'Triage'), icon: 'ph ph-funnel-simple', col: 'var(--mu)', api: 'systemone', when: L('à chaque événement', 'every event'), depth: '30%',
+        desc: L('Décide en quelques centaines de millisecondes si un changement mérite qu’on en parle. Exécute InstinctFlow et la revue des permissions.', 'Decides in a few hundred milliseconds whether a change is worth raising. Runs InstinctFlow and permission review.'),
+        ui: L('Silencieux. Ses décisions sont dans le journal de bord.', 'Silent. Its decisions are in the logbook.'), voice: L('Aucune : un choix et une probabilité.', 'None: a choice and a probability.') },
+      { name: 'Metacognition', label: L('Balise', 'Beacon'), icon: 'ph ph-lighthouse', col: 'var(--nav)', api: 'chat', when: L('quand Instinct le demande', 'when Instinct asks'), depth: '62%',
+        desc: L('Compare le code à l’intention, à la route et aux décisions. Écrit une courte remarque à côté de la ligne et réveille Nav en cas d’écart.', 'Compares the code with the intent, route and decisions. Writes a short remark beside the line and wakes Nav on drift.'),
+        ui: L('Une balise sur la ligne : Utile, Bruit, Ignorer.', 'A beacon on the line: Useful, Noise, Dismiss.'), voice: L('Celle de Nav, en une ou deux phrases.', 'Nav’s, in one or two sentences.') },
+      { name: 'Cognition', label: L('Nav et l’équipage', 'Nav and the crew'), icon: 'ph ph-users-three', col: 'var(--nav)', api: 'chat · agents', when: L('quand tu demandes', 'when you ask'), depth: '100%',
+        desc: L('Là où tournent Nav, la Vigie, Lux, Mousse, le Cartographe et le Sondeur, avec leurs outils, skills et règles.', 'Where Nav, Vigie, Lux, Mousse, the Cartographer and the Deep Diver run, with their tools, skills and rules.'),
+        ui: L('Le fil de conversation et le panneau Équipage.', 'The conversation thread and the Crew panel.'), voice: L('Nav et chaque membre, à la première personne.', 'Nav and each crew member, in the first person.') }
+    ];
+    const archRows = [[L('Marque', 'Brand'), 'WithNav'], [L('Domaine', 'Domain'), 'withnav.dev'], [L('Personnage principal', 'Main character'), 'Nav'], [L('Équipe d’agents', 'Agent team'), 'L’Équipage · The Crew'], [L('Utilisateur', 'User'), 'Le Capitaine · The Captain']].map(([k, v]) => ({ k, v }));
+
+    const logos = [
+      { id: 'logo-a', letter: 'A', g: 'mark-a', rec: true, bd: 'var(--nav)', name: L('Compas-balise', 'Compass beacon'), p: L('Repris du glyphe 2e. L’aiguille est le cap du Capitaine ; les anneaux au-dessus sont la lumière de Nav. De loin, l’ensemble se lit comme une balise.', 'Carried over from the 2e glyph. The needle is the Captain’s course; the rings above are Nav’s light. From afar, the whole reads as a beacon.') },
+      { id: 'logo-b', letter: 'B', g: 'mark-b', rec: false, bd: 'var(--bd)', name: L('Faisceau N', 'Beam N'), p: L('Deux tours et un faisceau en diagonale dessinent un N. Le faisceau s’élargit en avançant, comme un cône de lumière.', 'Two towers and a diagonal beam draw an N. The beam widens as it travels, like a cone of light.') },
+      { id: 'logo-c', letter: 'C', g: 'mark-c', rec: false, bd: 'var(--bd)', name: L('Prompt-balise', 'Prompt beacon'), p: L('Un chevron de terminal suivi d’un curseur allumé qui émet deux arcs. Le prompt devient balise.', 'A terminal chevron followed by a lit cursor emitting two arcs. The prompt becomes a beacon.') }
+    ];
+
+    const ratio = (fg, bg) => { const r = cr(fg, bg); return r.toFixed(1) + ':1 ' + (r >= 4.5 ? 'AA' : r >= 3 ? 'AA large' : '—'); };
+    const SW = [
+      ['bg', L('Fond · nuit', 'Ground · night'), L('Océan, concentration', 'Ocean, focus'), false],
+      ['pn', 'Surface', L('Panneaux, cartes', 'Panels, cards'), false],
+      ['bd', L('Bordure', 'Border'), L('Traits, séparateurs', 'Rules, dividers'), false],
+      ['tx', L('Brume · texte', 'Mist · text'), L('Texte, et le Capitaine', 'Text, and the Captain'), true],
+      ['mu', L('Texte secondaire', 'Muted text'), L('Libellés, métadonnées', 'Labels, metadata'), true],
+      ['nav', 'Nav · cyan', L('Navigation, interaction, focus', 'Navigation, interaction, focus'), true],
+      ['lux', L('Lux · or balise', 'Lux · beacon gold'), L('Attention, expertise, confirmations', 'Attention, expertise, confirmations'), true],
+      ['mou', L('Mousse · corail', 'Mousse · coral'), L('Actions rapides', 'Quick actions'), true],
+      ['vig', L('Vigie · turquoise', 'Vigie · turquoise'), L('Exploration, sources', 'Scouting, sources'), true],
+      ['car', L('Cartographe · orchidée', 'Cartographer · orchid'), L('Cartes, dépendances', 'Charts, dependencies'), true],
+      ['son', L('Sondeur · indigo', 'Deep Diver · indigo'), L('Diagnostic, causes profondes', 'Diagnosis, root causes'), true],
+      ['gr', L('Port sûr · succès', 'Safe Harbor · success'), L('Tests au vert, jalons', 'Passing tests, waypoints'), true],
+      ['rd', L('Écueil · erreur', 'Hazard · error'), L('Échecs, actions destructives', 'Failures, destructive actions'), true]
+    ];
+    const swatches = SW.map(([k, name, role, txt]) => ({ name, role, d: TD[k], l: TL[k], dr: txt ? ratio(TD[k], TD.bg) : ratio(TD[k], TD.tx) + L(' (texte)', ' (text)'), lr: txt ? ratio(TL[k], TL.bg) : ratio(TL[k], TL.tx) + L(' (texte)', ' (text)') }));
+
+    const BG = "'Bricolage Grotesque',sans-serif", PX = "'IBM Plex Sans',sans-serif", JM = "'JetBrains Mono',monospace";
+    const typeScale = [
+      ['Display', 'Bricolage 600 · 64/1.04', BG, '64px', 600, '-0.03em', t.promise1],
+      ['H1', 'Bricolage 600 · 44/1.08', BG, '44px', 600, '-0.025em', 'Rencontrer l’équipage'],
+      ['H2', 'Bricolage 600 · 30/1.1', BG, '30px', 600, '-0.02em', L('Rapport de la Vigie', 'Lookout Report')],
+      ['H3', 'Plex 600 · 20/1.3', PX, '20px', 600, '0', L('Route proposée', 'Proposed route')],
+      ['Body', 'Plex 400 · 16/1.6', PX, '16px', 400, '0', L('Nav reformule l’objectif avant de proposer une route.', 'Nav restates the goal before proposing a route.')],
+      ['Small', 'Plex 400 · 13.5/1.5', PX, '13.5px', 400, '0', L('lecture seule · 14 fichiers lus', 'read-only · 14 files read')],
+      ['Mono', 'JetBrains 400 · 13/1.7', JM, '13px', 400, '0', 'src/config.rs:42  Config::load']
+    ].map(([k, spec, ff, fs, fw, ls, sample]) => ({ k, spec, ff, fs, fw, ls, sample }));
+
+    const icons = [
+      { g: 'captain', col: 'var(--tx)', name: L('Le Capitaine', 'The Captain'), colName: L('Brume (couleur du texte)', 'Mist (text color)'), shape: L('Aucun contour : le Capitaine n’est pas un agent', 'No outline: the Captain is not an agent'), picto: L('Flèche de cap', 'Course arrow'), sig: L('Aucune. Le Capitaine ne travaille pas en arrière-plan.', 'None. The Captain never works in the background.') },
+      { g: 'nav', col: 'var(--nav)', name: 'Nav', colName: L('Cyan', 'Cyan'), shape: L('Cercle ouvert · équilibre', 'Open circle · balance'), picto: L('Aiguille de compas', 'Compass needle'), sig: L('Balayage lent : l’aiguille tourne pendant la réflexion.', 'Slow sweep: the needle turns while thinking.') },
+      { g: 'vigie', col: 'var(--vig)', name: 'Vigie', colName: 'Turquoise', shape: L('Pilule horizontale · panorama', 'Horizontal pill · panorama'), picto: L('Œil sur l’horizon', 'Eye on the horizon'), sig: L('Balayage horizontal : la lueur parcourt l’horizon de gauche à droite.', 'Horizontal scan: the glow travels the horizon left to right.') },
+      { g: 'lux', col: 'var(--lux)', name: 'Lux', colName: L('Or balise', 'Beacon gold'), shape: L('Triangle · prisme', 'Triangle · prism'), picto: L('Étoile à quatre branches', 'Four-point star'), sig: L('Point fixe : la lueur se concentre puis reste stable.', 'Fixed point: the glow concentrates, then holds steady.') },
+      { g: 'mousse', col: 'var(--mou)', name: 'Mousse', colName: L('Corail', 'Coral'), shape: L('Carré compact', 'Compact square'), picto: L('Nœud', 'Knot'), sig: L('Clignotement court : deux impulsions rapides.', 'Short blink: two quick pulses.') },
+      { g: 'cartographe', col: 'var(--car)', name: 'Cartographe', colName: L('Orchidée', 'Orchid'), shape: L('Hexagone · tuile de carte', 'Hexagon · map tile'), picto: L('Route à trois points', 'Three-point route'), sig: L('Tracé : la lueur relie les points un à un.', 'Trace: the glow joins the points one by one.') },
+      { g: 'sondeur', col: 'var(--son)', name: 'Sondeur', colName: 'Indigo', shape: L('Pilule verticale · profondeur', 'Vertical pill · depth'), picto: L('Ligne de sonde lestée', 'Weighted sounding line'), sig: L('Descente : la lueur descend la ligne et pulse au fond.', 'Descent: the glow runs down the line and pulses at the bottom.') }
+    ];
+    const chips = [['nav', 'Nav', L('coordonne', 'coordinating')], ['vigie', 'Vigie', L('explore', 'scouting')], ['lux', 'Lux', L('réfléchit', 'thinking')], ['mousse', 'Mousse', L('2 tâches', '2 tasks')]].map(([g, name, state]) => ({ g, name, state }));
+
+    const vigFinds = [['src/config.rs:42', L('Config::load, publique', 'Config::load, public')], ['src/loader.rs:88', L('appelle toml::from_str', 'calls toml::from_str')], ['src/server/config.rs:31', L('appelle toml::from_str avant les variables d’env', 'calls toml::from_str before env vars')]].map(([loc, text]) => ({ loc, text }));
+    const route = [
+      ['1', L('Écrire un test de priorité des variables d’environnement', 'Write an environment-variable precedence test'), 'mousse', 'Mousse'],
+      ['2', L('Remplacer les appels dans loader.rs et server/config.rs', 'Replace the calls in loader.rs and server/config.rs'), 'nav', 'Nav'],
+      ['3', L('Renommer parse_cfg en load_config (12 occurrences)', 'Rename parse_cfg to load_config (12 occurrences)'), 'mousse', 'Mousse'],
+      ['4', 'cargo test', 'nav', 'Nav']
+    ].map(([n, text, g, who]) => ({ n, text, g, who }));
+    const panel = [
+      { g: 'nav', name: 'Nav', state: L('actif', 'active'), stCol: 'var(--nav)', bd: 'var(--nav)', why: L('Interlocuteur, coordonne la traversée', 'Point of contact, coordinates the voyage'), cost: dots(2, 'var(--nav)'), depth: dots(2, 'var(--nav)'), rIcon: 'ph ph-pencil-simple', rights: L('Modifie après confirmation', 'Edits after confirmation') },
+      { g: 'vigie', name: 'Vigie', state: L('terminé', 'done'), stCol: 'var(--mu)', bd: 'var(--bd)', why: L('Appels inconnus avant de modifier', 'Unknown call sites before editing'), cost: dots(1, 'var(--vig)'), depth: dots(2, 'var(--vig)'), rIcon: 'ph ph-eye', rights: L('Lecture seule · 14 fichiers', 'Read-only · 14 files') },
+      { g: 'lux', name: 'Lux', state: L('consulté', 'consulted'), stCol: 'var(--mu)', bd: 'var(--bd)', why: L('Le choix change un comportement', 'The choice changes behavior'), cost: dots(3, 'var(--lux)'), depth: dots(3, 'var(--lux)'), rIcon: 'ph ph-eye', rights: L('Lecture seule', 'Read-only') },
+      { g: 'mousse', name: 'Mousse', state: L('en attente', 'waiting'), stCol: 'var(--lux)', bd: 'var(--bd)', why: L('Test et renommage, faible risque', 'Test and rename, low risk'), cost: dots(1, 'var(--mou)'), depth: dots(1, 'var(--mou)'), rIcon: 'ph ph-pencil-simple', rights: L('Local · après ta validation', 'Local · after your approval') }
+    ];
+
+    const states = [
+      { icon: 'ph ph-circle-notch', col: 'var(--nav)', name: L('Chargement', 'Loading'), lines: [['vigie', L('La Vigie explore src/… (12 fichiers lus)', 'The Lookout is scouting src/… (12 files read)')], ['nav', L('Nav prépare une route…', 'Nav is preparing a route…')], ['lux', L('Lux réfléchit. Cela peut prendre une minute.', 'Lux is thinking. This can take a minute.')], ['cartographe', L('Le Cartographe trace les dépendances de server/ (4 modules)…', 'The Cartographer is charting server/ dependencies (4 modules)…')], ['sondeur', L('Le Sondeur reproduit le bug (essai 2 sur 3)…', 'The Deep Diver is reproducing the bug (attempt 2 of 3)…')]] },
+      { icon: 'ph ph-warning-octagon', col: 'var(--rd)', name: L('Erreur', 'Error'), lines: [['nav', L('cargo test a échoué (2 tests). Rien n’a été commité.', 'cargo test failed (2 tests). Nothing was committed.')], ['nav', L('Le fournisseur de modèle ne répond pas. Nouvel essai dans 10 s.', 'The model provider isn’t responding. Retrying in 10 s.')], ['mousse', L('Le fichier a changé depuis ma lecture. Je le relis avant de continuer.', 'The file changed since I read it. Re-reading before I continue.')]] },
+      { icon: 'ph ph-check-circle', col: 'var(--gr)', name: L('Succès', 'Success'), lines: [['nav', L('Jalon atteint : 3 fichiers modifiés, tests au vert.', 'Waypoint reached: 3 files changed, tests passing.')], ['nav', L('Port sûr enregistré. Tu peux y revenir à tout moment.', 'Safe Harbor saved. You can return to it any time.')], ['nav', L('Traversée close. Le résumé est dans le journal de bord.', 'Voyage complete. The summary is in the logbook.')]] },
+      { icon: 'ph ph-question', col: 'var(--lux)', name: L('Incertitude', 'Uncertainty'), lines: [['nav', L('Je ne sais pas si ce module est utilisé ailleurs. J’envoie la Vigie vérifier ?', 'I don’t know whether this module is used elsewhere. Send the Lookout to check?')], ['nav', L('Ta demande a deux lectures possibles. Laquelle vises-tu ?', 'Your request can be read two ways. Which one do you mean?')], ['vigie', L('vendor/ n’a pas été lu : zone non vérifiée.', 'vendor/ was not read: unverified area.')], ['sondeur', L('Pas reproduit en 3 essais. Voici ce que j’ai écarté.', 'Not reproduced in 3 attempts. Here’s what I ruled out.')]] },
+      { icon: 'ph ph-hand-palm', col: 'var(--lux)', name: 'Confirmation', lines: [['nav', L('Cette action supprime 4 fichiers. Confirmer ?', 'This deletes 4 files. Confirm?')], ['nav', L('git push --force sur main est difficile à annuler. Tu confirmes ?', 'git push --force on main is hard to undo. Do you confirm?')], ['nav', L('Lux est plus lent et plus coûteux. Le consulter pour ce choix ?', 'Lux is slower and costs more. Consult Lux for this choice?')]] }
+    ].map(s => ({ ...s, lines: s.lines.map(([g, v]) => ({ g, v })) }));
+
+    const vocab = [
+      ['Marque', 'Brand', 'WithNav', 'WithNav', ''], ['Personnage principal', 'Main character', 'Nav', 'Nav', ''],
+      ['Utilisateur', 'User', 'Le Capitaine', 'The Captain', ''], ['Agents', 'Agents', 'L’Équipage', 'The Crew', ''],
+      ['Objectif principal', 'Main goal', 'Le Cap', 'The Course', ''], ['Plan d’action', 'Action plan', 'La Route', 'The Route', ''],
+      ['Étape importante', 'Milestone', 'Un Jalon', 'A Waypoint', 'Jalon · Étape / Waypoint · Step'], ['Session de travail', 'Work session', 'Une Traversée', 'A Voyage', 'Traversée · Session / Voyage · Session'],
+      ['Historique d’activité', 'Activity history', 'Le Journal de bord', 'The Logbook', 'Journal de bord · Historique / Logbook · Activity history'],
+      ['Vue générale du projet', 'Project overview', 'La Passerelle', 'The Bridge', 'Passerelle · Vue du projet / Bridge · Project overview'],
+      ['Risque ou problème', 'Risk or problem', 'Un Écueil', 'A Hazard', 'Écueil · Risque / Hazard · Risk'], ['Remarque de Metacognition sur une ligne', 'Metacognition remark on a line', 'Une Balise', 'A Beacon', 'Balise · Remarque / Beacon · Remark'], ['Metacognition alerte Nav', 'Metacognition alerts Nav', 'Réveil', 'Wake', 'Réveil · Écart détecté / Wake · Drift detected'],
+      ['Exploration', 'Exploration', 'Reconnaissance', 'Scouting', ''], ['Résultat d’exploration', 'Exploration result', 'Rapport de la Vigie', 'Lookout Report', ''],
+      ['Carte de la codebase', 'Codebase map', 'La Carte', 'The Chart', 'Carte · Architecture / Chart · Architecture'], ['Dépendance ou chemin critique', 'Critical dependency', 'Route critique', 'Critical Route', ''],
+      ['Objectif stable atteint', 'Stable state reached', 'Port sûr', 'Safe Harbor', 'Port sûr · Point stable / Safe Harbor · Checkpoint'], ['Revenir à un état stable', 'Return to a stable state', 'Retourner au port sûr', 'Return to Safe Harbor', ''],
+      ['Demander une analyse experte', 'Ask for expert analysis', 'Consulter Lux', 'Ask Lux', ''], ['Confier une tâche légère', 'Hand off a light task', 'Confier à Mousse', 'Hand to Mousse', ''],
+      ['Lancer une exploration', 'Start scouting', 'Envoyer la Vigie', 'Send the Lookout', ''],
+      ['Cartographier le code', 'Chart the code', 'Demander une carte', 'Ask the Cartographer', 'Carte · Diagramme / Chart · Diagram'], ['Chercher une cause profonde', 'Find a root cause', 'Envoyer le Sondeur', 'Send the Deep Diver', 'Sondage · Diagnostic / Dive · Diagnosis'], ['Définir l’objectif', 'Define the goal', 'Fixer le cap', 'Set the Course', ''],
+      ['Valider le plan', 'Approve the plan', 'Confirmer la route', 'Confirm the Route', ''], ['Lancer l’exécution', 'Start execution', 'Prendre la mer', 'Set Sail', ''],
+      ['Terminer une session', 'End a session', 'Clore la traversée', 'Complete the Voyage', '']
+    ].map(([cf, ce, f, e, ui]) => ({ c: L(cf, ce), fr: f, en: e, ui }));
+
+    return {
+      themeVars: vars(T), invVars: vars(dark ? TL : TD), darkVars: vars(TD), lightVars: vars(TL),
+      t, sections, keyMsgs, crew, crewExt, layers, archCore, archRows, logos, swatches, typeScale, icons, chips, vigFinds, route, panel, states, vocab,
+      langFr: tb(fr), langEn: tb(!fr), setFr: () => this.setState({ lang: 'fr' }), setEn: () => this.setState({ lang: 'en' }),
+      toggleTheme: () => this.setState({ dark: !dark }), themeIcon: dark ? 'ph ph-sun' : 'ph ph-moon'
+    };
+  }
+}
+</script>
+</body>
+</html>

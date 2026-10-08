@@ -80,6 +80,7 @@ impl Default for ApplyReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedAction {
     pub node_id: Option<String>,
+    #[serde(deserialize_with = "crate::definition::captain_action")]
     pub action: String,
     pub status: String,
     pub message: Option<String>,

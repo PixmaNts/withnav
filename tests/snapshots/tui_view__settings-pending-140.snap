@@ -1,9 +1,8 @@
 ---
 source: tests/tui_view.rs
-assertion_line: 323
 expression: snapshot
 ---
- ◆ navai  /ws/refactor-parser  —  /config                                      ● 2 unsaved  /cfg/navai/config.json · /cfg/navai/models.json 
+ ◆ withnav  /ws/refactor-parser  —  /config                                  ● 2 unsaved  /cfg/withnav/config.json · /cfg/withnav/models.jso
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │                                                                                  │                                   
  SETTINGS            │  Subagents  config.json → subagents, agent                                       │ FOCUSED                           

@@ -9,11 +9,11 @@ use std::time::Duration;
 use serde_json::json;
 use ulid::Ulid;
 
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::bus::ResumeOutcome;
-use navai::server::AppState;
-use navai::session::store::HistoryStore;
-use navai::session::Subscription;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::bus::ResumeOutcome;
+use withnav::server::AppState;
+use withnav::session::store::HistoryStore;
+use withnav::session::Subscription;
 
 mod common;
 use common::server::{create_session, post_message_ok, spawn_server, TestServerConfig};

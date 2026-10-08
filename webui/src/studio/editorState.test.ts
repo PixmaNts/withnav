@@ -5,7 +5,7 @@ import { parseFlowToml } from "./mock/toml";
 import type { FlowDocument, ValidateResult } from "./types";
 
 const doc: FlowDocument = {
-  name: "guard-mutations", location: "workspace", path: "/one/.navai/flows/guard-mutations.toml",
+  name: "guard-mutations", location: "workspace", path: "/one/.withnav/flows/guard-mutations.toml",
   revision: "r1", toml: GUARD_MUTATIONS_TOML, definition: parseFlowToml(GUARD_MUTATIONS_TOML).definition,
   templates: {}, errors: [], saved_since_reload: false, read_only: false,
 };

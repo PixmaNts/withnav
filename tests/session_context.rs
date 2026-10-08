@@ -5,7 +5,7 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::server::{app, AppState};
+use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{
@@ -46,7 +46,11 @@ fn category_sum(snapshot: &Value) -> u64 {
 async fn scripted_turn(
     tmp: &std::path::Path,
     ws: &std::path::Path,
-) -> (AppState, ulid::Ulid, Vec<navai::bus::event::EventEnvelope>) {
+) -> (
+    AppState,
+    ulid::Ulid,
+    Vec<withnav::bus::event::EventEnvelope>,
+) {
     let notes = ws.join("notes.txt");
     let call = tool_call_chunk(
         "call_1",
@@ -160,7 +164,7 @@ async fn the_snapshot_after_a_scripted_turn_keeps_estimate_and_usage_apart() {
 async fn context_updated_is_emitted_at_boundaries_and_never_stored() {
     let (tmp, ws) = tmp_ws();
     let (state, id, events) = scripted_turn(tmp.path(), &ws).await;
-    let updates: Vec<&navai::bus::event::EventEnvelope> = events
+    let updates: Vec<&withnav::bus::event::EventEnvelope> = events
         .iter()
         .filter(|e| e.kind == "context.updated")
         .collect();
@@ -191,7 +195,7 @@ async fn context_updated_is_emitted_at_boundaries_and_never_stored() {
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(replayed) => {
+        withnav::bus::ResumeOutcome::Replay(replayed) => {
             assert!(replayed.iter().all(|e| e.kind != "context.updated"));
             assert!(replayed.iter().any(|e| e.kind == "turn.end"));
         }
@@ -321,7 +325,7 @@ async fn an_impossible_budget_refuses_the_session() {
         .await
         .expect_err("refused");
     assert!(
-        matches!(err, navai::error::ServerError::ImpossibleBudget { .. }),
+        matches!(err, withnav::error::ServerError::ImpossibleBudget { .. }),
         "{err:?}"
     );
     assert!(err.to_string().contains("models.json"), "{err}");

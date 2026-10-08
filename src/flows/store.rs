@@ -262,8 +262,8 @@ impl FlowStore {
         for (location, source, target) in [
             (
                 Location::Workspace,
-                workspace.join(".navigator"),
-                workspace.join(".navai/flows"),
+                crate::paths::workspace_dir(&workspace),
+                crate::paths::workspace_dir(&workspace).join("flows"),
             ),
             (
                 Location::Global,
@@ -319,7 +319,7 @@ impl FlowStore {
     }
     pub fn directory(&self, location: Location) -> Result<PathBuf, StoreError> {
         match location {
-            Location::Workspace => Ok(self.workspace.join(".navai/flows")),
+            Location::Workspace => Ok(crate::paths::workspace_dir(&self.workspace).join("flows")),
             Location::Global => Ok(self.config_dir.join("flows")),
             Location::Builtin => Err(StoreError::reason("read_only")),
         }
@@ -820,8 +820,8 @@ mod tests {
                 content("guard", "no_objection"),
             )
             .unwrap();
-        std::fs::create_dir_all(temp.path().join(".navai")).unwrap();
-        symlink("/not-readable", temp.path().join(".navai/flows")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".withnav")).unwrap();
+        symlink("/not-readable", temp.path().join(".withnav/flows")).unwrap();
         store.reload().unwrap();
         assert!(store.snapshot().contains_key("guard"));
         let restarted = FlowStore::new(temp.path().into(), temp.path().join("config"));

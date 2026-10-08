@@ -204,7 +204,7 @@ async fn handle(
         ("GET", "") => {
             store.refresh();
             ok(
-                json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace),"propagation":"other Navai processes reload on their next event"}),
+                json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace),"propagation":"other WithNav processes reload on their next event"}),
             )
         }
         ("POST", "") => {
@@ -220,7 +220,7 @@ async fn handle(
         ("POST", "reload") => {
             store.reload()?;
             ok(
-                json!({"reloaded":true,"errors":[],"flows":store.list()?,"propagation":"other Navai processes reload on their next event"}),
+                json!({"reloaded":true,"errors":[],"flows":store.list()?,"propagation":"other WithNav processes reload on their next event"}),
             )
         }
         ("GET", "trust") | ("POST", "trust") => {
@@ -228,7 +228,7 @@ async fn handle(
                 store.set_trust(data["trusted"].as_bool().ok_or_else(invalid)?)?;
             }
             ok(
-                json!({"workspace":workspace,"has_workspace_flows":store.list()?.iter().any(|s|s.location==Location::Workspace),"trusted":store.trusted(),"propagation":"other Navai processes reload on their next event"}),
+                json!({"workspace":workspace,"has_workspace_flows":store.list()?.iter().any(|s|s.location==Location::Workspace),"trusted":store.trusted(),"propagation":"other WithNav processes reload on their next event"}),
             )
         }
         ("POST", "sample") => {
@@ -576,7 +576,7 @@ mod tests {
         assert!(listed.to_string().contains("test"));
         assert_eq!(
             listed["propagation"],
-            "other Navai processes reload on their next event"
+            "other WithNav processes reload on their next event"
         );
         let (_, trust) = handle(&state, &query, &headers, peer, Method::GET, "trust", b"")
             .await
@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(reloaded["reloaded"], true);
         assert_eq!(
             reloaded["propagation"],
-            "other Navai processes reload on their next event"
+            "other WithNav processes reload on their next event"
         );
         let (_,saved)=handle(&state,&query,&headers,peer,Method::PUT,"test",&serde_json::to_vec(&json!({"location":"workspace","revision":document["revision"],"content":{"format":"toml","toml":"broken","templates":{}}})).unwrap()).await.unwrap();
         assert!(!saved["errors"].as_array().unwrap().is_empty());

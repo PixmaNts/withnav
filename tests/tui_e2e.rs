@@ -12,13 +12,13 @@ use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
 use tokio::time::Instant;
 
-use navai::provider::Usage;
-use navai::tools::ToolStatus;
-use navai::tui::client::Client;
-use navai::tui::protocol::{ClientEvent, Effect};
-use navai::tui::runtime::Runtime;
-use navai::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
-use navai::tui::TuiOptions;
+use withnav::provider::Usage;
+use withnav::tools::ToolStatus;
+use withnav::tui::client::Client;
+use withnav::tui::protocol::{ClientEvent, Effect};
+use withnav::tui::runtime::Runtime;
+use withnav::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
+use withnav::tui::TuiOptions;
 
 mod common;
 use common::server::{spawn_server, TestServerConfig};
@@ -243,10 +243,10 @@ fn rate_limited() -> Vec<u8> {
 /// preselected variant (the default, or none) in the second step.
 fn pick_model(rt: &mut Runtime, index: usize) {
     press(rt, KeyCode::F(2));
-    let row = navai::tui::catalog::rows(&rt.state.catalog, &rt.ui)
+    let row = withnav::tui::catalog::rows(&rt.state.catalog, &rt.ui)
         .iter()
         .enumerate()
-        .filter(|(_, row)| matches!(row, navai::tui::catalog::Row::Model(_)))
+        .filter(|(_, row)| matches!(row, withnav::tui::catalog::Row::Model(_)))
         .nth(index)
         .unwrap()
         .0;
@@ -355,7 +355,7 @@ async fn pick_send_stream_tool_reconnect_stop_and_resume() {
     assert_eq!(rt.state.conversation.session_tokens, Some(110 + 170));
     assert_unique_ids(&rt.state.conversation.blocks);
     let shown = screen(&mut rt);
-    assert!(shown.contains("YOU"), "{shown}");
+    assert!(shown.contains("▸ Captain"), "{shown}");
     assert!(!shown.contains("NAVIGATOR"), "{shown}");
     assert!(shown.contains("The notes say hello."), "{shown}");
 
@@ -481,7 +481,7 @@ async fn a_rate_limited_provider_shows_an_error_block() {
     assert!(shown.contains("Quota preflight blocked"), "{shown}");
 }
 
-fn final_text_of(tab: &navai::tui::state::Tab, text: &str) -> bool {
+fn final_text_of(tab: &withnav::tui::state::Tab, text: &str) -> bool {
     tab.activity == Activity::Idle
         && tab
             .conversation
@@ -510,7 +510,7 @@ async fn next_request(rt: &mut Runtime, provider: &mut StreamingProvider) -> (St
     }
 }
 
-fn streamed_text(tab: &navai::tui::state::Tab) -> String {
+fn streamed_text(tab: &withnav::tui::state::Tab) -> String {
     tab.conversation
         .blocks
         .iter()
@@ -627,7 +627,7 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
     assert!(listed.sessions.iter().any(|s| s.id == second_id));
 }
 
-fn command_blocks(tab: &navai::tui::state::Tab) -> Vec<(String, bool, String)> {
+fn command_blocks(tab: &withnav::tui::state::Tab) -> Vec<(String, bool, String)> {
     tab.conversation
         .blocks
         .iter()
@@ -639,7 +639,7 @@ fn command_blocks(tab: &navai::tui::state::Tab) -> Vec<(String, bool, String)> {
 }
 
 // Given a conversation that answered once
-// When the driver types, key by key, `/context`, then an unknown `/contxt`, then `//context`
+// When the Captain types, key by key, `/context`, then an unknown `/contxt`, then `//context`
 // Then the first two run on the server and come back as command blocks (the editor cleared once
 //      the server took them), and the third is sent as the message "/context"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -747,8 +747,8 @@ async fn tab_switches_build_and_plan_through_the_server() {
     })
     .await;
     let shown = screen(&mut rt);
-    assert!(shown.contains("▌plan"), "{shown}");
-    assert!(shown.contains("plan · idle"), "{shown}");
+    assert!(shown.contains("▌◎ plan"), "{shown}");
+    assert!(shown.contains("◎ Nav · idle"), "{shown}");
     let summary = Client::new(env.base.clone(), None)
         .summary(&session_id(&rt))
         .await
@@ -822,11 +822,14 @@ async fn variant_step_and_slash_variant_drive_the_server() {
     press(&mut rt, KeyCode::Enter);
     // the list opens on the server's answer: what this conversation offers
     until("the variant list", &mut rt, |_, rt| {
-        rt.ui.overlay == Some(navai::tui::protocol::Overlay::Variants)
+        rt.ui.overlay == Some(withnav::tui::protocol::Overlay::Variants)
     })
     .await;
     assert_eq!(
-        navai::tui::commands::variant_choices(&rt.state, &navai::tui::state::VariantPick::Current),
+        withnav::tui::commands::variant_choices(
+            &rt.state,
+            &withnav::tui::state::VariantPick::Current
+        ),
         (
             vec!["high".into(), "low".into(), "off".into(), "inherit".into()],
             1
@@ -875,9 +878,9 @@ fn open_request(rt: &Runtime) -> Option<String> {
 }
 
 // Given a build conversation whose model asks to write a file
-// When the prompt appears and the driver presses y
+// When the prompt appears and the Captain presses y
 // Then the file is written, the prompt shows "allowed once" and the turn carries on to the answer
-// And when the model asks again and the driver presses n, types a reason and enter, the file is
+// And when the model asks again and the Captain presses n, types a reason and enter, the file is
 //     left alone and the model's next request carries the denial with that reason
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
@@ -942,7 +945,7 @@ async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
 }
 
 // Given an open permission request
-// When the driver types a message and presses enter twice
+// When the Captain types a message and presses enter twice
 // Then the first enter only warns; the second sends the text, which cancels the request
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_sent_over_an_open_request_cancels_it_after_a_warning() {
@@ -1067,7 +1070,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
     });
     luna["default_variant"] = json!("high");
     let provider = |url: &str| {
-        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+        json!({"base_url": url, "api_key_env": "WITHNAV_TEST_KEY", "headers": {},
                "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
     };
     std::fs::write(
@@ -1085,7 +1088,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
     )
     .expect("auth.json");
     std::fs::write(config.config_dir.join("config.json"), json!({"default_agent":"build","agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
-    let state = navai::server::session::AppState::new(config).expect("state");
+    let state = withnav::server::session::AppState::new(config).expect("state");
     let (addr, task) = spawn_server(state).await;
     let ws = workspace_of(&root);
     std::fs::create_dir_all(&ws).expect("workspace dir");

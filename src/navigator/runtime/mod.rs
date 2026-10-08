@@ -54,7 +54,7 @@ pub(crate) struct Runtime {
     reflex_model: Option<String>,
     /// The reflex service; None keeps the layer disabled (empty answers).
     reflex: Option<ReflexService>,
-    /// The cognition chat server's endpoint; sent as `navigator/serverInfo`
+    /// The cognition chat server's endpoint; sent as `withnav/serverInfo`
     /// after `initialized`. None keeps the chat unannounced.
     server_info: Option<ServerInfoParams>,
     /// The conversation hub shared with the session server: the seam a
@@ -68,7 +68,7 @@ pub(crate) struct Runtime {
     /// reflex-context seam (the intent summary is served instead).
     reflex_context: Arc<ReflexContext>,
     /// The focused document: the last uri that received `didOpen`,
-    /// `didChange` or `didSave`. A driver turn in the conversation is
+    /// `didChange` or `didSave`. A captain turn in the conversation is
     /// judged against it; None until the first of those arrives.
     focused: Mutex<Option<String>>,
 }
@@ -105,7 +105,7 @@ impl Runtime {
             focused: Mutex::new(None),
         });
         if let Some(turns) = turns {
-            tokio::spawn(listen_for_driver_turns(Arc::downgrade(&runtime), turns));
+            tokio::spawn(listen_for_captain_turns(Arc::downgrade(&runtime), turns));
         }
         runtime
     }
@@ -195,7 +195,7 @@ impl Runtime {
     }
 
     /// The workspace intent record, falling back to the session intent set
-    /// via `navigator/intent`. Returns the summary text and whether any
+    /// via `withnav/intent`. Returns the summary text and whether any
     /// intent exists.
     async fn current_intent(&self) -> (String, bool) {
         let workspace = self.workspace.lock().await.clone();
@@ -268,7 +268,7 @@ impl Runtime {
         }
     }
 
-    /// `navigator/reflexShown`: the extension reporting display time of a
+    /// `withnav/reflexShown`: the extension reporting display time of a
     /// suggestion, so the log holds both halves of the pause-to-display
     /// latency.
     pub(crate) async fn on_reflex_shown(&self, params: ReflexShownParams) {
@@ -278,7 +278,7 @@ impl Runtime {
         });
     }
 
-    /// `navigator/feedback` client->server notification.
+    /// `withnav/feedback` client->server notification.
     pub(crate) async fn on_feedback(&self, params: FeedbackParams) {
         self.log.append(&LogRecord::Feedback {
             id: &params.id,
@@ -286,7 +286,7 @@ impl Runtime {
         });
     }
 
-    /// `navigator/diagnostics`: keep the latest set per uri and run the
+    /// `withnav/diagnostics`: keep the latest set per uri and run the
     /// diagnostics trigger.
     pub(crate) async fn on_diagnostics(self: &Arc<Self>, params: DiagnosticsParams) {
         let items: Vec<Diag> = params
@@ -305,7 +305,7 @@ impl Runtime {
         self.evaluate(params.uri, TriggerKind::Diagnostics).await;
     }
 
-    /// `navigator/intent`: the user's current goal, global to the session.
+    /// `withnav/intent`: the user's current goal, global to the session.
     pub(crate) async fn on_intent(&self, params: IntentParams) {
         let text = params.text.trim().to_string();
         *self.intent.lock().await = if text.is_empty() { None } else { Some(text) };
@@ -361,10 +361,10 @@ impl Runtime {
 }
 
 /// Evaluates the `conversation` event on the focused document each time a
-/// driver-caused turn ends. A turn caused by a navigator wake never gets
+/// captain-caused turn ends. A turn caused by a navigator wake never gets
 /// here as a trigger (no loop). Holds the server weakly: once the server is
 /// gone the next event ends the task.
-async fn listen_for_driver_turns(
+async fn listen_for_captain_turns(
     inner: std::sync::Weak<Runtime>,
     mut turns: tokio::sync::broadcast::Receiver<ConversationEvent>,
 ) {
@@ -377,7 +377,7 @@ async fn listen_for_driver_turns(
             Err(RecvError::Closed) => return,
         };
         let ConversationEvent::TurnEnded {
-            caused_by_driver: true,
+            caused_by_captain: true,
             ..
         } = event
         else {

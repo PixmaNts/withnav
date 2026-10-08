@@ -211,7 +211,7 @@ mod tests {
             id,
             0,
             crate::bus::event::EventKind::MessageReceived,
-            serde_json::json!({"source":"user:test", "content":"driver task"}),
+            serde_json::json!({"source":"user:test", "content":"captain task"}),
         ))
         .await;
         feed.post_flow_note(
@@ -294,7 +294,7 @@ mod tests {
     fn the_cognition_prompt_keeps_guidance_narrow_and_wakes_as_hypotheses() {
         assert!(COGNITION_PROMPT.contains("answer the immediate next step"));
         assert!(COGNITION_PROMPT.contains("Do not run project-wide checks"));
-        assert!(COGNITION_PROMPT.contains("or that the driver looks stuck"));
+        assert!(COGNITION_PROMPT.contains("or that the Captain looks stuck"));
         assert!(COGNITION_PROMPT.contains("a hypothesis to check, never an order"));
     }
 }

@@ -65,7 +65,7 @@ export function createMockApi(workspace: string): StudioApi {
 
   const document = (s: Stored): FlowDocument => {
     const { definition, errors } = compile(s.toml);
-    const base = s.location === "workspace" ? `${workspace}/.navai/flows` : s.location === "global" ? "~/.config/navai/flows" : "builtin:";
+    const base = s.location === "workspace" ? `${workspace}/.withnav/flows` : s.location === "global" ? "~/.config/withnav/flows" : "builtin:";
     return {
       name: s.name,
       location: s.location,
@@ -276,7 +276,7 @@ const HOST_SAMPLE: Record<string, unknown> = {
   "session.agent": "build",
   "session.id": "01JA7Q2…",
   "session.model": "omniroute/cc/claude-opus-5-5",
-  "conversation.last_driver": "Swap the toml parser, keep Config::load(p).",
+  "conversation.last_captain": "Swap the toml parser, keep Config::load(p).",
   "intent.record": "Incremental TOML parser, public API unchanged.",
   "workspace.branch": "feat/incr-parser",
   "workspace.dirty_files": ["src/config.rs", "src/parser/incr.rs"],

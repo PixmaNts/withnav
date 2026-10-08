@@ -10,11 +10,11 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-use navai::bus::command::ContentBlock;
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::tui::client::{Client, SendError};
-use navai::tui::protocol::{ClientEvent, CreateSessionRequest, Generation, SubmitRequest};
-use navai::tui::stream::{subscribe, EventStream};
+use withnav::bus::command::ContentBlock;
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::tui::client::{Client, SendError};
+use withnav::tui::protocol::{ClientEvent, CreateSessionRequest, Generation, SubmitRequest};
+use withnav::tui::stream::{subscribe, EventStream};
 
 mod common;
 use common::server::{spawn_server, CuttableProxy, TestServer, TestServerConfig};
@@ -631,7 +631,7 @@ async fn answering(status: &'static str, body: &'static str) -> (String, Arc<Mut
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_permission_answer_posts_the_decision_and_reads_a_stale_reply() {
-    use navai::tui::protocol::{AnswerError, PermissionAnswer};
+    use withnav::tui::protocol::{AnswerError, PermissionAnswer};
     let deny = PermissionAnswer {
         decision: "deny".into(),
         message: Some("not now".into()),

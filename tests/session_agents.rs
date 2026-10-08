@@ -1,16 +1,76 @@
 //! Primary agents through the session service and the HTTP surface: the role
-//! prompt on the wire, `/agent`, persistence, resume and `navai run --agent`.
+//! prompt on the wire, `/agent`, persistence, resume and `nav run --agent`.
 
 use std::path::{Path, PathBuf};
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::bus::event::EventEnvelope;
-use navai::server::{app, AppState};
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::bus::event::EventEnvelope;
+use withnav::server::{app, AppState};
 
 mod common;
+
+#[tokio::test]
+async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
+    use withnav::tools::{Tool, ToolContext};
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root).config();
+    let state = AppState::new(config.clone()).unwrap();
+    for old in ["review", "oracle"] {
+        let id = state
+            .create_session_as(&env.ws, None, false, Some(old))
+            .await
+            .unwrap();
+        assert_eq!(state.session_summary(id).await.unwrap().agent, "lux");
+        state
+            .history()
+            .set_primary_agent(id, Some(old))
+            .await
+            .unwrap();
+        state.close_session(id).await.unwrap();
+        let resumed = AppState::new(config.clone()).unwrap();
+        resumed
+            .create_or_resume_session(&env.ws, None, false, Some(id))
+            .await
+            .unwrap();
+        assert_eq!(resumed.session_summary(id).await.unwrap().agent, "lux");
+        resumed.close_session(id).await.unwrap();
+    }
+    let parent = state.create_session(&env.ws, None, false).await.unwrap();
+    for (old, new) in withnav::agent::definitions::AGENT_ALIASES {
+        let child = state
+            .create_child_session(parent, old, "inspect")
+            .await
+            .unwrap();
+        assert_eq!(state.session_summary(child).await.unwrap().agent, *new);
+        state.close_session(child).await.unwrap();
+    }
+    let task = withnav::tools::task::TaskTool::new(state.service(), parent);
+    let cx = ToolContext {
+        binding: None,
+        workspace: env.ws.clone(),
+        writable_roots: vec![env.ws.clone()],
+        readable_roots: vec![],
+    };
+    for (old, new) in withnav::agent::definitions::AGENT_ALIASES {
+        let result = task
+            .call(
+                json!({"agent":old,"prompt":"inspect"}),
+                tokio_util::sync::CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
+        let result: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(result["agent"], *new);
+        state
+            .close_session(result["child_id"].as_str().unwrap().parse().unwrap())
+            .await
+            .unwrap();
+    }
+}
 
 #[tokio::test]
 async fn successful_switch_fallback_warning_is_durable_and_replayed() {
@@ -65,7 +125,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
                 &env.ws,
                 None,
                 false,
-                navai::session::VariantChoice::Exact("low".into()),
+                withnav::session::VariantChoice::Exact("low".into()),
                 None,
             )
             .await
@@ -74,7 +134,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         assert_eq!(meta.agent_overrides["build"].model, None);
         assert_eq!(
             meta.agent_overrides["build"].variant,
-            navai::session::store::AgentVariantOverride::Named("low".into())
+            withnav::session::store::AgentVariantOverride::Named("low".into())
         );
     }
     std::fs::write(
@@ -88,7 +148,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
             &env.ws,
             None,
             false,
-            navai::session::VariantChoice::Default,
+            withnav::session::VariantChoice::Default,
             Some("plan"),
         )
         .await
@@ -174,11 +234,11 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
         .unwrap();
     assert_eq!(
         provenance.model,
-        navai::session::store::ModelSource::Override
+        withnav::session::store::ModelSource::Override
     );
     assert_eq!(
         provenance.variant,
-        navai::session::store::VariantSource::Override
+        withnav::session::store::VariantSource::Override
     );
     assert!(
         reopened
@@ -218,7 +278,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
                 &env.ws,
                 None,
                 false,
-                navai::session::VariantChoice::Default,
+                withnav::session::VariantChoice::Default,
                 Some(agent),
             )
             .await
@@ -238,7 +298,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
             &env.ws,
             None,
             false,
-            navai::session::VariantChoice::Default,
+            withnav::session::VariantChoice::Default,
             Some("custom"),
         )
         .await
@@ -252,7 +312,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
             &env.ws,
             None,
             false,
-            navai::session::VariantChoice::Default,
+            withnav::session::VariantChoice::Default,
             Some("plan"),
         )
         .await
@@ -283,7 +343,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
 
 #[tokio::test]
 async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
-    use navai::session::{
+    use withnav::session::{
         store::{AgentVariantOverride, HistoryStore},
         VariantChoice,
     };
@@ -358,16 +418,16 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     assert_eq!(store.meta(overridden).await.unwrap().unwrap().variant, None);
     let child = reopened
         .service()
-        .create_child_session(overridden, "explore", "inspect")
+        .create_child_session(overridden, "vigie", "inspect")
         .await
         .unwrap();
     let child_meta = store.meta(child).await.unwrap().unwrap();
     assert_eq!(child_meta.model, "mock/plan-model");
     assert_eq!(child_meta.variant, None);
-    std::fs::write(env.root.join("cfg/config.json"),json!({"agents":{"build":{"model":"mock/mock-model"},"explore":{"model":"mock/mock-model","variant":"low"}}}).to_string()).unwrap();
+    std::fs::write(env.root.join("cfg/config.json"),json!({"agents":{"build":{"model":"mock/mock-model"},"vigie":{"model":"mock/mock-model","variant":"low"}}}).to_string()).unwrap();
     let assigned_child = reopened
         .service()
-        .create_child_session(overridden, "explore", "inspect own model")
+        .create_child_session(overridden, "vigie", "inspect own model")
         .await
         .unwrap();
     let own = store.meta(assigned_child).await.unwrap().unwrap();
@@ -427,7 +487,7 @@ async fn provider(count: usize) -> CapturingProvider {
     .await
 }
 
-/// A custom agent file in Navai's config directory.
+/// A custom agent file in WithNav's config directory.
 fn write_agent(env: &Env, name: &str, text: &str) {
     let dir = env.root.join("cfg/agents");
     std::fs::create_dir_all(&dir).unwrap();
@@ -476,7 +536,7 @@ async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelo
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        navai::bus::ResumeOutcome::Replay(all) => {
+        withnav::bus::ResumeOutcome::Replay(all) => {
             all.into_iter().filter(|e| e.kind == kind).collect()
         }
         other => panic!("expected replay, got {other:?}"),
@@ -506,7 +566,11 @@ async fn a_session_runs_as_build_by_default() {
     converse(&state, id, "hello").await;
 
     let roles: Vec<String> = sent(&provider, 0).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles, ["system", "user"], "build adds no role message");
+    assert_eq!(
+        roles,
+        ["system", "system", "user"],
+        "Nav adds its build role"
+    );
     assert_eq!(state.session_summary(id).await.unwrap().agent, "build");
     assert_eq!(stored_agent(&state, id).await, None);
     let listed = state.list(&env.ws.display().to_string()).await.unwrap();
@@ -558,16 +622,19 @@ async fn only_primary_agents_can_start_a_session() {
         "---\ndescription: Writes docs\n---\nYou write documentation.\n",
     );
     let state = state(&env, &provider);
-    for bad in ["nope", "explore", "Plan"] {
+    for bad in ["nope", "vigie", "Plan"] {
         let err = state
             .create_session_as(&env.ws, None, false, Some(bad))
             .await
             .unwrap_err();
         assert!(
-            matches!(err, navai::error::ServerError::UnknownAgent { .. }),
+            matches!(err, withnav::error::ServerError::UnknownAgent { .. }),
             "{bad}: {err:?}"
         );
-        assert!(err.to_string().contains("build, plan, scribe"), "{err}");
+        assert!(
+            err.to_string().contains("build, lux, plan, scribe"),
+            "{err}"
+        );
     }
     assert_eq!(state.session_count(), 0);
     assert!(state
@@ -607,7 +674,10 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, navai::error::ServerError::SavedAgentUnavailable { .. }),
+        matches!(
+            err,
+            withnav::error::ServerError::SavedAgentUnavailable { .. }
+        ),
         "{err:?}"
     );
     assert!(err.to_string().contains("scribe"));
@@ -622,7 +692,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
         .unwrap_err();
     assert!(matches!(
         err,
-        navai::error::ServerError::SavedAgentUnavailable { .. }
+        withnav::error::ServerError::SavedAgentUnavailable { .. }
     ));
 }
 
@@ -694,7 +764,10 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
     assert_eq!(stored_agent(&state, id).await.as_deref(), Some("build"));
     converse(&state, id, "third").await;
     let roles: Vec<String> = sent(&provider, 2).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles[1], "user", "build sends no role again: {roles:?}");
+    assert_eq!(
+        roles[1], "system",
+        "Nav sends its build role again: {roles:?}"
+    );
 }
 
 // Given a session
@@ -718,7 +791,11 @@ async fn agent_lists_and_refuses_bad_choices() {
         .iter()
         .map(|a| a["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["build", "plan"], "subagents are not offered");
+    assert_eq!(
+        ids,
+        ["build", "lux", "plan"],
+        "subagent-only roles are not offered"
+    );
     let text = out.render_text();
     assert!(
         text.starts_with("agent build\n") && text.contains("plan"),
@@ -727,7 +804,7 @@ async fn agent_lists_and_refuses_bad_choices() {
 
     for (args, expected) in [
         ("nope", "unknown primary agent 'nope'"),
-        ("explore", "unknown primary agent 'explore'"),
+        ("vigie", "unknown primary agent 'vigie'"),
         ("plan extra", "usage: /agent <name>"),
     ] {
         let out = state.run_command(id, "agent", args).await.unwrap();
@@ -851,20 +928,20 @@ async fn http_creates_with_an_agent_and_shows_it() {
     assert_eq!(body["data"]["previous"], "plan");
 }
 
-fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::process::Output {
-    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+fn run_withnav(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        root.join("config/navai/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")
         .arg(models)
         .args(extra)
-        .env("NAVAI_TEST_KEY", "test-key")
+        .env("WITHNAV_TEST_KEY", "test-key")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CONFIG_HOME", root.join("config"))
@@ -872,11 +949,11 @@ fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::proc
         .expect("run the binary")
 }
 
-// Given `navai run --agent plan`
+// Given `nav run --agent plan`
 // Then the request carries the plan role; an unknown agent exits 1 with the
 //      choices
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navai_run_agent_selects_the_role() {
+async fn withnav_run_agent_selects_the_role() {
     let env = env();
     let provider = provider(1).await;
     let cfg = config(&env, &provider);
@@ -885,13 +962,13 @@ async fn navai_run_agent_selects_the_role() {
     let (root, ws) = (env.root.clone(), env.ws.clone());
     let (ok, bad) = tokio::task::spawn_blocking(move || {
         (
-            run_navai(
+            run_withnav(
                 &root,
                 &models,
                 &ws,
                 &["--agent", "plan", "--prompt", "hello"],
             ),
-            run_navai(
+            run_withnav(
                 &root,
                 &models,
                 &ws,

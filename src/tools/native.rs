@@ -74,7 +74,7 @@ impl Tool for ReadTool {
                     {
                         return Err(ToolError::Denied {
                             code: "permission_required".into(),
-                            message: "sensitive file: read requires driver review".into(),
+                            message: "sensitive file: read requires captain review".into(),
                         });
                     }
                     target
@@ -434,7 +434,7 @@ mod tests {
         for tool in [&ReadTool as &dyn Tool, &GrepTool as &dyn Tool] {
             let error = tool
                 .call(
-                    json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                    json!({"path":"/etc/hostname","pattern":".","withnav_bound_destination":true}),
                     CancellationToken::new(),
                     &cx,
                 )

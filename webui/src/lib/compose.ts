@@ -18,7 +18,7 @@ export type Routed =
 
 /**
  * The first line of a delegated message. Cognition guides by default and only
- * implements when the driver explicitly delegates (`src/navigator/cognition.md`);
+ * implements when the Captain explicitly delegates (`src/navigator/cognition.md`);
  * the Delegate toggle states that in so many words, and the transcript reads it
  * back to label the message.
  */
@@ -69,7 +69,7 @@ export function sessionTitle(title: string | null | undefined): string {
   return text || "Untitled session";
 }
 
-/** Splits a stored driver message back into its delegation flag and text. */
+/** Splits a stored Captain message back into its delegation flag and text. */
 export function readDelegation(text: string): { delegated: boolean; text: string } {
   if (text.startsWith(DELEGATION_LINE)) return { delegated: true, text: text.slice(DELEGATION_LINE.length).replace(/^\s*\n/, "").trimStart() };
   return { delegated: false, text };

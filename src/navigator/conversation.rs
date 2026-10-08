@@ -1,10 +1,10 @@
 //! The conversation feed: the in-process seam between the session server
 //! (where the cognition's sessions live) and the language server (where the
-//! fast layers watch the driver). One hub shared by both — the whole
+//! fast layers watch the Captain). One hub shared by both — the whole
 //! navigator runs in one process over two channels.
 //!
 //! It tracks the ACTIVE conversation — the latest editor session
-//! that received a driver message — keeps a bounded digest of it, remembers
+//! that received a captain message — keeps a bounded digest of it, remembers
 //! whether the cognition is waiting on an `ask`, and posts wakes: short
 //! navigator-sourced messages routed in-process, never over HTTP, so the
 //! durable `message.received.source` keeps telling the panel and this feed
@@ -13,17 +13,17 @@
 //! The ask guard lives here, where the wake is posted: the first message
 //! after a yield answers the pending `ask`, and a navigator message must
 //! never become that answer. So while the active conversation waits on the
-//! driver, wakes are queued — coalesced, latest wins — and delivered right
-//! after the next driver message has been accepted. (An open permission
+//! captain, wakes are queued — coalesced, latest wins — and delivered right
+//! after the next captain message has been accepted. (An open permission
 //! request is guarded by the session runtime, not here: it holds a
 //! navigator-sourced message until nothing is pending.) A navigator-sourced
 //! message is also never a conversation trigger: the digest marks it as the
 //! navigator's own words, and the turn it provokes is reported as not
-//! driver-caused, so a wake never becomes a conversation trigger (no
+//! captain-caused, so a wake never becomes a conversation trigger (no
 //! self-reinforcing loops).
 //!
 //! The language server subscribes ([`ConversationFeed::subscribe`]) to hear
-//! when a turn ends and whether the driver caused it. Replayed events
+//! when a turn ends and whether the Captain caused it. Replayed events
 //! rebuild state but stay silent: a resumed session must not re-trigger
 //! the turns it already lived.
 
@@ -65,8 +65,8 @@ pub(crate) type FlowPost =
 pub enum WakeOutcome {
     /// Posted as a navigator-sourced message to this session.
     Posted(Ulid),
-    /// The cognition is waiting on the driver: queued (latest wins), to be
-    /// delivered right after the next driver message.
+    /// The cognition is waiting on the Captain: queued (latest wins), to be
+    /// delivered right after the next captain message.
     Queued(Ulid),
     /// No active conversation in this process.
     NoSession,
@@ -77,13 +77,13 @@ pub enum WakeOutcome {
 /// What the feed tells its subscribers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationEvent {
-    /// A navigator session finished a turn. `caused_by_driver` is true only
-    /// when the turn answered a driver message (`message.received` whose
+    /// A navigator session finished a turn. `caused_by_captain` is true only
+    /// when the turn answered a captain message (`message.received` whose
     /// source starts with `user:`); a turn provoked by a navigator wake is
     /// false, which keeps wakes from triggering themselves.
     TurnEnded {
         session_id: Ulid,
-        caused_by_driver: bool,
+        caused_by_captain: bool,
     },
 }
 
@@ -93,7 +93,7 @@ const EVENT_CAPACITY: usize = 32;
 /// Who said it, in the digest's vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Author {
-    Driver,
+    Captain,
     Cognition,
     Navigator,
     Subagent,
@@ -102,7 +102,7 @@ enum Author {
 impl Author {
     fn as_str(self) -> &'static str {
         match self {
-            Author::Driver => "driver",
+            Author::Captain => "captain",
             Author::Cognition => "cognition",
             Author::Navigator => "navigator",
             Author::Subagent => "subagent (untrusted)",
@@ -121,20 +121,20 @@ struct Exchange {
 struct SessionConversation {
     flow_post: Option<FlowPost>,
     post: SessionPost,
-    waiting_on_driver: bool,
+    waiting_on_captain: bool,
     queued_wake: Option<String>,
     exchanges: VecDeque<Exchange>,
-    /// A driver message arrived since the last `turn.end`: the next turn
-    /// end answers the driver.
-    driver_pending: bool,
+    /// A captain message arrived since the last `turn.end`: the next turn
+    /// end answers the Captain.
+    captain_pending: bool,
 }
 
 impl SessionConversation {
     fn push_exchange(&mut self, author: Author, text: &str) {
-        // Only driver messages carry the editor-context block the editor
-        // appends at send time; it describes the editor, not the driver.
+        // Only captain messages carry the editor-context block the editor
+        // appends at send time; it describes the editor, not the Captain.
         let text = match author {
-            Author::Driver => strip_editor_context(text),
+            Author::Captain => strip_editor_context(text),
             _ => text.to_string(),
         };
         let text = excerpt(text.trim(), MAX_EXCHANGE_CHARS);
@@ -148,7 +148,7 @@ impl SessionConversation {
 #[derive(Default)]
 struct FeedState {
     sessions: HashMap<Ulid, SessionConversation>,
-    /// The latest navigator session that received a driver message.
+    /// The latest navigator session that received a captain message.
     active: Option<Ulid>,
 }
 
@@ -203,10 +203,10 @@ impl ConversationFeed {
             SessionConversation {
                 flow_post: None,
                 post,
-                waiting_on_driver: false,
+                waiting_on_captain: false,
                 queued_wake: None,
                 exchanges: VecDeque::new(),
-                driver_pending: false,
+                captain_pending: false,
             },
         );
     }
@@ -251,8 +251,8 @@ impl ConversationFeed {
     /// Of the whole envelope stream only a few kinds carry meaning:
     /// `message.received` (who wrote what, and the end of a pending ask),
     /// `llm.response` (the cognition's own words), `agent.yield` (the
-    /// cognition now waits on the driver) and `turn.end` (announced to
-    /// subscribers). A driver message also makes its session the active
+    /// cognition now waits on the Captain) and `turn.end` (announced to
+    /// subscribers). A captain message also makes its session the active
     /// conversation and delivers a queued wake.
     pub async fn observe(&self, envelope: &EventEnvelope) {
         self.apply(envelope, true).await;
@@ -268,10 +268,10 @@ impl ConversationFeed {
         match envelope.kind.as_str() {
             "message.received" => self.observe_message(envelope).await,
             "turn.end" => {
-                let caused_by_driver = {
+                let caused_by_captain = {
                     let mut state = self.lock();
                     match state.sessions.get_mut(&envelope.session_id) {
-                        Some(entry) => std::mem::take(&mut entry.driver_pending),
+                        Some(entry) => std::mem::take(&mut entry.captain_pending),
                         None => return,
                     }
                 };
@@ -279,7 +279,7 @@ impl ConversationFeed {
                     // No subscriber is not an error.
                     let _ = self.events.send(ConversationEvent::TurnEnded {
                         session_id: envelope.session_id,
-                        caused_by_driver,
+                        caused_by_captain,
                     });
                 }
             }
@@ -301,7 +301,7 @@ impl ConversationFeed {
             "agent.yield" => {
                 let mut state = self.lock();
                 if let Some(entry) = state.sessions.get_mut(&envelope.session_id) {
-                    entry.waiting_on_driver = true;
+                    entry.waiting_on_captain = true;
                 }
             }
             "command.result"
@@ -310,7 +310,7 @@ impl ConversationFeed {
             {
                 let mut state = self.lock();
                 if let Some(entry) = state.sessions.get_mut(&envelope.session_id) {
-                    entry.waiting_on_driver = false;
+                    entry.waiting_on_captain = false;
                 }
             }
             _ => {}
@@ -318,7 +318,7 @@ impl ConversationFeed {
     }
 
     /// One `message.received`: records the exchange, switches the active
-    /// conversation on a driver message, ends a pending ask and delivers a
+    /// conversation on a captain message, ends a pending ask and delivers a
     /// queued wake right after it.
     async fn observe_message(&self, envelope: &EventEnvelope) {
         let source = envelope
@@ -334,24 +334,24 @@ impl ConversationFeed {
         if content.trim().is_empty() {
             return;
         }
-        let driver = crate::bus::command::is_driver_source(source);
+        let captain = crate::bus::command::is_captain_source(source);
         let flush = {
             let mut state = self.lock();
             let Some(entry) = state.sessions.get_mut(&envelope.session_id) else {
                 // An unregistered session must not become the active
-                // conversation, even on a driver message.
+                // conversation, even on a captain message.
                 return;
             };
-            if driver {
-                // A driver message makes this session the active
+            if captain {
+                // A captain message makes this session the active
                 // conversation and answers any pending ask: the wake
                 // queued behind that ask can finally be delivered.
-                entry.waiting_on_driver = false;
-                entry.driver_pending = true;
+                entry.waiting_on_captain = false;
+                entry.captain_pending = true;
             }
             entry.push_exchange(
-                if driver {
-                    Author::Driver
+                if captain {
+                    Author::Captain
                 } else if matches!(source, "subagent" | "user:subagent") {
                     Author::Subagent
                 } else {
@@ -359,13 +359,13 @@ impl ConversationFeed {
                 },
                 content,
             );
-            let queued = if driver {
+            let queued = if captain {
                 entry.queued_wake.take()
             } else {
                 None
             };
             let post = queued.map(|text| (entry.post.clone(), text));
-            if driver {
+            if captain {
                 state.active = Some(envelope.session_id);
             }
             post
@@ -381,21 +381,21 @@ impl ConversationFeed {
         }
     }
 
-    /// The active conversation's session id, if any driver message has
+    /// The active conversation's session id, if any captain message has
     /// reached a navigator session in this process.
     pub fn active_session(&self) -> Option<Ulid> {
         self.lock().active
     }
 
     /// Whether the active conversation's cognition is waiting on an `ask`
-    /// the driver has not answered yet. False when there is no active
+    /// the Captain has not answered yet. False when there is no active
     /// conversation.
-    pub fn is_waiting_on_driver(&self) -> bool {
+    pub fn is_waiting_on_captain(&self) -> bool {
         let state = self.lock();
         state
             .active
             .and_then(|id| state.sessions.get(&id))
-            .is_some_and(|entry| entry.waiting_on_driver)
+            .is_some_and(|entry| entry.waiting_on_captain)
     }
 
     /// The active conversation's digest: plain text lines, newest last,
@@ -414,9 +414,9 @@ impl ConversationFeed {
     }
 
     /// Posts a wake to the active conversation as a navigator-sourced
-    /// message. The ask guard: while the cognition waits on the driver, the
+    /// message. The ask guard: while the cognition waits on the Captain, the
     /// wake is queued instead (coalesced, latest wins) and delivered by the
-    /// next driver message. A permission request needs no guard here: the
+    /// next captain message. A permission request needs no guard here: the
     /// session runtime holds a navigator message while a request or an ask
     /// is pending, and delivers it once the turn has nothing left to wait on.
     pub async fn post_wake(&self, text: &str) -> WakeOutcome {
@@ -429,7 +429,7 @@ impl ConversationFeed {
                 state.active = None;
                 return WakeOutcome::NoSession;
             };
-            if entry.waiting_on_driver {
+            if entry.waiting_on_captain {
                 entry.queued_wake = Some(text.to_string());
                 return WakeOutcome::Queued(session_id);
             }
@@ -451,9 +451,9 @@ impl ConversationFeed {
     }
 }
 
-/// Removes the `<editor-context>` block the editor appends to driver
+/// Removes the `<editor-context>` block the editor appends to captain
 /// messages: it describes the editor state at send time, not what the
-/// driver said.
+/// captain said.
 fn strip_editor_context(text: &str) -> String {
     const OPEN: &str = "<editor-context>";
     const CLOSE: &str = "</editor-context>";
@@ -475,6 +475,15 @@ fn strip_editor_context(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn legacy_human_event_is_read_as_captain() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::new();
+        feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
+        feed.observe(&message_envelope(id, "driver", "legacy request"))
+            .await;
+        assert!(feed.digest().contains("captain: legacy request"));
+    }
     use super::*;
     use crate::bus::event::EventKind;
     use serde_json::json;
@@ -521,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn editor_context_block_is_stripped_from_driver_text() {
+    fn editor_context_block_is_stripped_from_captain_text() {
         let raw = "add the command\n\n<editor-context>\nfocused: src/main.rs\nopen files (1): src/main.rs\n</editor-context>";
         assert_eq!(
             strip_editor_context(raw),
@@ -557,7 +566,7 @@ mod tests {
         let digest = feed.digest();
         assert_eq!(
             digest,
-            "driver: add the command\ncognition: start in src/cli.rs\nnavigator: wake: drift",
+            "captain: add the command\ncognition: start in src/cli.rs\nnavigator: wake: drift",
             "plain lines, newest last, block stripped"
         );
     }
@@ -575,8 +584,8 @@ mod tests {
         let digest = feed.digest();
         let lines: Vec<&str> = digest.lines().collect();
         assert_eq!(lines.len(), MAX_EXCHANGES, "only the last twelve remain");
-        assert_eq!(lines.first().unwrap(), &"driver: m8");
-        assert_eq!(lines.last().unwrap(), &"driver: m19");
+        assert_eq!(lines.first().unwrap(), &"captain: m8");
+        assert_eq!(lines.last().unwrap(), &"captain: m19");
     }
 
     #[tokio::test]
@@ -594,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_conversation_switches_on_a_driver_message_to_another_session() {
+    async fn active_conversation_switches_on_a_captain_message_to_another_session() {
         let feed = ConversationFeed::new();
         let a = Ulid::new();
         let b = Ulid::new();
@@ -617,12 +626,12 @@ mod tests {
         // ACTIVE digest is B's now.
         assert_eq!(
             feed.digest(),
-            "navigator: wake\ndriver: second conversation"
+            "navigator: wake\ncaptain: second conversation"
         );
     }
 
     #[tokio::test]
-    async fn queued_wakes_coalesce_and_deliver_after_the_driver_answers() {
+    async fn queued_wakes_coalesce_and_deliver_after_the_captain_answers() {
         let feed = ConversationFeed::new();
         let id = Ulid::new();
         let posted = Arc::new(Mutex::new(Vec::new()));
@@ -630,10 +639,10 @@ mod tests {
 
         feed.observe(&message_envelope(id, "user:http", "add a command"))
             .await;
-        assert!(!feed.is_waiting_on_driver());
+        assert!(!feed.is_waiting_on_captain());
 
         feed.observe(&yield_envelope(id)).await;
-        assert!(feed.is_waiting_on_driver(), "agent.yield starts the wait");
+        assert!(feed.is_waiting_on_captain(), "agent.yield starts the wait");
 
         assert_eq!(
             feed.post_wake("first wake").await,
@@ -643,12 +652,12 @@ mod tests {
         assert_eq!(feed.post_wake("latest wake").await, WakeOutcome::Queued(id));
         assert!(posted.lock().unwrap().is_empty(), "nothing posted yet");
 
-        // The driver's answer ends the wait and delivers the LATEST wake;
+        // The Captain's answer ends the wait and delivers the LATEST wake;
         // what the poster emitted is what the session's subscriber would
         // observe as the navigator's own `message.received`.
         feed.observe(&message_envelope(id, "user:http", "the auth remove one"))
             .await;
-        assert!(!feed.is_waiting_on_driver());
+        assert!(!feed.is_waiting_on_captain());
         assert_eq!(
             posted.lock().unwrap().clone(),
             vec!["latest wake".to_string()],
@@ -661,23 +670,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watchdog_resolution_clears_waiting_on_driver() {
+    async fn watchdog_resolution_clears_waiting_on_captain() {
         let feed = ConversationFeed::new();
         let id = Ulid::new();
         feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
         feed.observe(&message_envelope(id, "user:http", "work"))
             .await;
         feed.observe(&yield_envelope(id)).await;
-        assert!(feed.is_waiting_on_driver());
+        assert!(feed.is_waiting_on_captain());
         let mut resolved = yield_envelope(id);
         resolved.kind = "command.result".into();
         resolved.payload = serde_json::json!({"name":"watchdog","data":{"resolution":"continued"}});
         feed.observe(&resolved).await;
-        assert!(!feed.is_waiting_on_driver());
+        assert!(!feed.is_waiting_on_captain());
     }
 
     #[tokio::test]
-    async fn paused_turn_supersession_keeps_replacement_driver_causality() {
+    async fn paused_turn_supersession_keeps_replacement_captain_causality() {
         let feed = ConversationFeed::new();
         let id = Ulid::new();
         feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
@@ -689,11 +698,11 @@ mod tests {
         assert!(matches!(
             events.try_recv().unwrap(),
             ConversationEvent::TurnEnded {
-                caused_by_driver: true,
+                caused_by_captain: true,
                 ..
             }
         ));
-        feed.observe(&message_envelope(id, "user:subagent", "not driver"))
+        feed.observe(&message_envelope(id, "user:subagent", "not captain"))
             .await;
         feed.observe(&message_envelope(id, "user:cli", "replacement"))
             .await;
@@ -710,7 +719,7 @@ mod tests {
         assert!(matches!(
             events.try_recv().unwrap(),
             ConversationEvent::TurnEnded {
-                caused_by_driver: true,
+                caused_by_captain: true,
                 ..
             }
         ));
@@ -749,7 +758,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_ended_tells_whether_the_driver_caused_it() {
+    async fn turn_ended_tells_whether_the_captain_caused_it() {
         let feed = ConversationFeed::new();
         let id = Ulid::new();
         let posted = Arc::new(Mutex::new(Vec::new()));
@@ -763,9 +772,9 @@ mod tests {
             events.try_recv().unwrap(),
             ConversationEvent::TurnEnded {
                 session_id: id,
-                caused_by_driver: true
+                caused_by_captain: true
             },
-            "a driver message's turn"
+            "a captain message's turn"
         );
 
         feed.observe(&message_envelope(id, NAVIGATOR_ACTOR_ID, "wake: drift"))
@@ -775,7 +784,7 @@ mod tests {
             events.try_recv().unwrap(),
             ConversationEvent::TurnEnded {
                 session_id: id,
-                caused_by_driver: false
+                caused_by_captain: false
             },
             "a navigator wake's turn"
         );
@@ -795,7 +804,7 @@ mod tests {
         feed.observe_replayed(&turn_end_envelope(id)).await;
         feed.observe(&turn_end_envelope(Ulid::new())).await;
         assert!(events.try_recv().is_err());
-        assert!(feed.digest().contains("driver: old chat"), "state rebuilt");
+        assert!(feed.digest().contains("captain: old chat"), "state rebuilt");
     }
 
     #[tokio::test]
@@ -806,7 +815,7 @@ mod tests {
             .await;
         feed.observe(&yield_envelope(Ulid::new())).await;
         assert_eq!(feed.active_session(), None);
-        assert!(!feed.is_waiting_on_driver());
+        assert!(!feed.is_waiting_on_captain());
         assert_eq!(feed.digest(), "");
     }
 
@@ -827,10 +836,10 @@ mod tests {
         feed.observe(&message_envelope(root, "subagent", "bounded child result"))
             .await;
         assert_eq!(feed.active_session(), Some(root));
-        assert!(feed.is_waiting_on_driver());
+        assert!(feed.is_waiting_on_captain());
         assert_eq!(
             feed.digest(),
-            "driver: root request\nsubagent (untrusted): bounded child result"
+            "captain: root request\nsubagent (untrusted): bounded child result"
         );
     }
 }

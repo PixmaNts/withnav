@@ -38,7 +38,7 @@ export function FlowList({ flows, health, current, onOpen, onToggle, toggling, o
       <button type="button" className="sf-new" onClick={onNew}>
         <Plus size={13} aria-hidden /> New flow
       </button>
-      {!flows.length && <div className="sf-note" style={{ padding: "4px 8px" }}>No flow yet in this workspace, your configuration or Navai's built-ins.</div>}
+      {!flows.length && <div className="sf-note" style={{ padding: "4px 8px" }}>No flow yet in this workspace, your configuration or WithNav's built-ins.</div>}
       {[...groups].map(([trigger, list]) => (
         <div key={trigger} className="sf-group">
           <div className="sf-group-label mono">{trigger}</div>

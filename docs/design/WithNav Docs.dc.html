@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>body{margin:0} a{color:inherit;text-decoration:none} a:hover{text-decoration:underline;text-underline-offset:3px} *{box-sizing:border-box}</style>
+</helmet>
+<div style="{{ themeVars }};background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:16px;line-height:1.65;min-height:100vh;display:grid;grid-template-columns:{{ cols }};">
+
+  <sc-if value="{{ sidebarOpen }}" hint-placeholder-val="{{ true }}">
+  <aside style="background:var(--pn);border-right:1px solid var(--bd);padding:20px 22px;font-size:14.5px;position:sticky;top:0;height:100vh;overflow:auto">
+    <sc-for list="{{ nav }}" as="g" hint-placeholder-count="5">
+      <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:18px">
+        <sc-if value="{{ g.title }}" hint-placeholder-val="{{ true }}"><div style="font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mu);margin-bottom:4px">{{ g.title }}</div></sc-if>
+        <sc-for list="{{ g.items }}" as="i" hint-placeholder-count="3">
+          <a href="#" onClick="{{ i.click }}" style="display:flex;gap:9px;align-items:center;padding:3px 0;color:{{ i.fg }};font-weight:{{ i.fw }};text-decoration:none"><span style="width:6px;height:6px;border-radius:50%;background:{{ i.dot }};flex:none;margin-left:-15px"></span>{{ i.label }}</a>
+        </sc-for>
+      </div>
+    </sc-for>
+  </aside>
+  </sc-if>
+
+  <div style="min-width:0;display:flex;flex-direction:column">
+    <header style="position:sticky;top:0;z-index:3;background:var(--bg);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px;padding:8px 14px;color:var(--mu);font-size:17px">
+      <button onClick="{{ toggleSidebar }}" aria-label="menu" style="{{ iconBtn }}"><i class="ph ph-list"></i></button>
+      <button onClick="{{ toggleTheme }}" aria-label="theme" style="{{ iconBtn }}"><i class="ph ph-paint-brush"></i></button>
+      <button aria-label="search" style="{{ iconBtn }}"><i class="ph ph-magnifying-glass"></i></button>
+      <a href="#" aria-label="WithNav" style="margin:0 auto;display:flex;align-items:center"><span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:6.6px;flex:none"><svg viewBox="0 0 64 64" width="23.1" height="23.1" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:17.6px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span></a>
+      <span style="font-size:13px;background:var(--sf);border:1px solid var(--bd);border-radius:6px;padding:3px 9px;color:var(--tx);display:flex;gap:6px;align-items:center">0.6.1 <span style="color:var(--mu)">{{ t.latest }}</span><i class="ph ph-caret-down" style="font-size:11px"></i></span>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden;font-size:12.5px;margin:0 4px"><button onClick="{{ setEn }}" style="{{ langEn }}">EN</button><button onClick="{{ setFr }}" style="{{ langFr }}">FR</button></div>
+      <button aria-label="print" style="{{ iconBtn }}"><i class="ph ph-printer"></i></button>
+      <a href="https://github.com/PixmaNts/Navai" aria-label="GitHub" style="{{ iconBtn }}"><i class="ph ph-github-logo"></i></a>
+      <a href="#" aria-label="edit" style="{{ iconBtn }}"><i class="ph ph-pencil-simple"></i></a>
+    </header>
+
+    <div style="display:grid;grid-template-columns:56px minmax(0,1fr) 56px;flex:1">
+      <a href="#" aria-label="previous" style="display:flex;align-items:center;justify-content:center;color:var(--mu);font-size:26px;text-decoration:none"><i class="ph ph-caret-left"></i></a>
+      <main style="max-width:780px;width:100%;margin:0 auto;padding:36px 8px 80px">
+        <div style="font-size:13px;color:var(--mu);margin-bottom:6px">{{ t.crumb }}</div>
+        <h1 style="margin:0 0 14px;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:38px;letter-spacing:-0.015em"><code style="font-family:inherit">config.json</code></h1>
+        <p style="margin:0 0 14px;text-wrap:pretty">{{ t.intro1a }} <strong>{{ t.intro1b }}</strong>{{ t.intro1c }}</p>
+
+        <h2 style="margin:36px 0 10px;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:25px">{{ t.hExample }}</h2>
+        <pre style="margin:0;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.7;background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:14px 16px;overflow:auto">{
+  <span style="color:var(--bl)">"layers"</span>: {
+    <span style="color:var(--bl)">"reflex"</span>: <span style="color:var(--gr)">"inception/mercury-edit-2"</span>,
+    <span style="color:var(--bl)">"instinct"</span>: <span style="color:var(--gr)">"omniroute/typesafe/jev-1.13"</span>,
+    <span style="color:var(--bl)">"metacognition"</span>: { <span style="color:var(--bl)">"model"</span>: <span style="color:var(--gr)">"omniroute/combo/deepseek-v4-flash"</span>, <span style="color:var(--bl)">"variant"</span>: <span style="color:var(--gr)">"low"</span> }
+  },
+  <span style="color:var(--bl)">"default_agent"</span>: <span style="color:var(--gr)">"build"</span>,
+  <span style="color:var(--bl)">"agents"</span>: {
+    <span style="color:var(--bl)">"build"</span>: { <span style="color:var(--bl)">"model"</span>: <span style="color:var(--gr)">"omniroute/cc/claude-opus-5-5"</span> },
+    <span style="color:var(--bl)">"lux"</span>: { <span style="color:var(--bl)">"model"</span>: <span style="color:var(--gr)">"omniroute/combo/gpt-6-astra"</span> }
+  }
+}</pre>
+        <p style="margin:12px 0 0;text-wrap:pretty">{{ t.assignNote }}</p>
+
+        <h2 style="margin:36px 0 10px;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:25px">{{ t.hKeys }}</h2>
+        <div style="overflow:auto">
+          <div style="display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(140px,1fr) minmax(120px,1fr) minmax(110px,.8fr);min-width:640px;font-size:14.5px">
+            <sc-for list="{{ t.head }}" as="hd" hint-placeholder-count="4"><div style="padding:7px 10px 7px 0;color:var(--mu);font-weight:500;border-bottom:1px solid var(--bd)">{{ hd }}</div></sc-for>
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="11">
+              <div style="padding:8px 10px 8px 0;border-bottom:1px solid var(--bd)"><code style="font-family:'JetBrains Mono',monospace;font-size:12.5px;background:var(--sf);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;color:var(--or)">{{ r.k }}</code></div>
+              <div style="padding:8px 10px 8px 0;border-bottom:1px solid var(--bd)">{{ r.type }}</div>
+              <div style="padding:8px 10px 8px 0;border-bottom:1px solid var(--bd);font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--mu)">{{ r.def }}</div>
+              <div style="padding:8px 10px 8px 0;border-bottom:1px solid var(--bd)">{{ r.applies }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <p style="margin:12px 0 0;text-wrap:pretty">{{ t.newSessions }}</p>
+
+        <h2 style="margin:36px 0 10px;font-family:'Bricolage Grotesque',sans-serif;font-weight:600;font-size:25px">{{ t.hValidation }}</h2>
+        <ul style="margin:0;padding-left:22px;display:flex;flex-direction:column;gap:6px">
+          <sc-for list="{{ t.validation }}" as="v" hint-placeholder-count="3"><li style="text-wrap:pretty">{{ v }}</li></sc-for>
+        </ul>
+        <blockquote style="margin:22px 0 0;border-left:2px solid var(--ac);background:var(--sf);border-radius:0 6px 6px 0;padding:10px 16px;color:var(--tx)">{{ t.quote }}</blockquote>
+
+        <div style="display:flex;justify-content:space-between;gap:16px;margin-top:48px;padding-top:18px;border-top:1px solid var(--bd);font-size:14.5px">
+          <a href="#" style="display:flex;flex-direction:column;gap:2px;text-decoration:none"><span style="color:var(--mu);font-size:12.5px">{{ t.prev }}</span><span style="color:var(--at)">models.json</span></a>
+          <a href="#" style="display:flex;flex-direction:column;gap:2px;text-align:right;text-decoration:none"><span style="color:var(--mu);font-size:12.5px">{{ t.next }}</span><span style="color:var(--at)">{{ t.nextTitle }}</span></a>
+        </div>
+      </main>
+      <a href="#" aria-label="next" style="display:flex;align-items:center;justify-content:center;color:var(--mu);font-size:26px;text-decoration:none"><i class="ph ph-caret-right"></i></a>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;lang&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;en&quot;, &quot;fr&quot;], &quot;default&quot;: &quot;en&quot;, &quot;tsType&quot;: &quot;'en' | 'fr'&quot;}, &quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;light&quot;, &quot;dark&quot;], &quot;default&quot;: &quot;light&quot;, &quot;tsType&quot;: &quot;'light' | 'dark'&quot;}}">
+class Component extends DCLogic {
+  state = { lang: null, dark: null, side: true, page: 'configuration/config-json' };
+  renderVals() {
+    const st = this.state;
+    const lang = st.lang ?? this.props.lang ?? 'en';
+    const dark = st.dark ?? ((this.props.theme ?? 'light') === 'dark');
+    const TD = { bg: '#061115', pn: '#0a171b', sf: '#101e23', bd: '#213135', tx: '#d5e1e1', mu: '#87999e', ac: '#5ecbcb', at: '#5ecbcb', gr: '#81d584', rd: '#ee6570', bl: '#6cb2ec', pu: '#b59be6', or: '#f69370', lh: '#f69370', la: '#5ecbcb' };
+    const TL = { bg: '#f2f8f8', pn: '#e9f2f3', sf: '#fbfefe', bd: '#cddbdc', tx: '#1f3137', mu: '#53676c', ac: '#1d9999', at: '#00696f', gr: '#2e7c35', rd: '#c53443', bl: '#0f68a2', pu: '#6f4fa1', or: '#c1552c', lh: '#c1552c', la: '#00696f' };
+    const themeVars = Object.entries(dark ? TD : TL).map(([k, v]) => `--${k}:${v}`).join(';');
+    const N = {
+      en: [[null, [['introduction', 'Introduction']]], ['Getting started', [['getting-started/install', 'Installation'], ['getting-started/quickstart', 'Quick start']]], ['Concepts', [['concepts/layers', 'Layers'], ['concepts/agents', 'Agents and subagents'], ['concepts/permissions', 'Permissions']]], ['Clients', [['clients/tui', 'Terminal (TUI)'], ['clients/vscode', 'VS Code'], ['clients/web', 'Browser'], ['clients/cli', 'Command line']]], ['Configuration', [['configuration/files', 'Files and paths'], ['configuration/models-json', 'models.json'], ['configuration/config-json', 'config.json'], ['configuration/extensions', 'Agents, rules and skills']]], ['Build a client', [['api/overview', 'Server and authentication'], ['api/endpoints', 'HTTP endpoints'], ['api/events', 'Event stream'], ['api/client', 'A minimal client']]], [null, [['changelog', 'Changelog']]]],
+      fr: [[null, [['introduction', 'Introduction']]], ['Prise en main', [['getting-started/install', 'Installation'], ['getting-started/quickstart', 'Démarrage rapide']]], ['Concepts', [['concepts/layers', 'Couches'], ['concepts/agents', 'Agents et sous-agents'], ['concepts/permissions', 'Permissions']]], ['Clients', [['clients/tui', 'Terminal (TUI)'], ['clients/vscode', 'VS Code'], ['clients/web', 'Navigateur'], ['clients/cli', 'Ligne de commande']]], ['Configuration', [['configuration/files', 'Fichiers et chemins'], ['configuration/models-json', 'models.json'], ['configuration/config-json', 'config.json'], ['configuration/extensions', 'Agents, règles et skills']]], ['Créer un client', [['api/overview', 'Serveur et authentification'], ['api/endpoints', 'Points d\u2019accès HTTP'], ['api/events', 'Flux d\u2019événements'], ['api/client', 'Un client minimal']]], [null, [['changelog', 'Journal des versions']]]]
+    };
+    const nav = N[lang].map(([title, items]) => ({ title, items: items.map(([k, label]) => { const on = k === st.page; return { label, fg: on ? 'var(--tx)' : 'var(--mu)', fw: on ? '500' : '400', dot: on ? 'var(--ac)' : 'transparent', click: (e) => { e.preventDefault(); this.setState({ page: k }); } }; }) }));
+    const C = {
+      en: { latest: 'latest', crumb: 'Configuration', intro1a: 'config.json holds the', intro1b: 'assignments', intro1c: ': which model each layer and agent uses. It also holds a few settings for permissions, subagents and the clients. Every Settings screen writes this file.', hExample: 'Example', assignNote: 'An assignment is either a model name, or an object with model and variant.', hKeys: 'Keys', head: ['Key', 'Type', 'Default', 'Applies'], newSessions: '"New sessions" also covers model or agent switches and newly started subagents; running turns keep their values.', hValidation: 'Validation', validation: ['An unknown or non-primary default_agent, or a default agent without a usable chat model, stops the server and the language server at startup with an error naming the field.', 'An unknown model on another agent falls back to the default agent\u2019s model, with a warning.', 'A lower-layer model with the wrong API disables that layer.'], quote: 'Session overrides from /model and /variant are stored with the session and never written here.', prev: 'Previous', next: 'Next', nextTitle: 'Agents, rules and skills',
+        rowsT: ['model (fim)', 'model (systemone)', 'model (chat)', 'primary agent id', 'model, or {model, variant}', 'boolean', 'absolute paths', '1 to 64', 'seconds, 0 = off', 'seconds, 0 = off', 'theme id'], rowsA: ['after restart', 'after restart', 'after restart', 'new sessions', 'new sessions', 'new sessions', 'new sessions', 'new sessions', 'new subagents', 'new sessions', 'at once'], none: 'none' },
+      fr: { latest: 'dernière', crumb: 'Configuration', intro1a: 'config.json contient les', intro1b: 'attributions', intro1c: ' : le modèle de chaque couche et de chaque agent. Il contient aussi quelques réglages de permissions, de sous-agents et des clients. Tous les écrans de Réglages écrivent ce fichier.', hExample: 'Exemple', assignNote: 'Une attribution est soit un nom de modèle, soit un objet avec model et variant.', hKeys: 'Clés', head: ['Clé', 'Type', 'Défaut', 'S\u2019applique'], newSessions: '« Nouvelles sessions » couvre aussi les changements de modèle ou d\u2019agent et les sous-agents nouvellement lancés ; les tours en cours gardent leurs valeurs.', hValidation: 'Validation', validation: ['Un default_agent inconnu ou non primaire, ou un agent par défaut sans modèle de chat utilisable, arrête le serveur et le serveur de langage au démarrage, avec une erreur qui nomme le champ.', 'Un modèle inconnu sur un autre agent retombe sur le modèle de l\u2019agent par défaut, avec un avertissement.', 'Un modèle de couche basse avec la mauvaise API désactive cette couche.'], quote: 'Les choix de session faits avec /model et /variant sont enregistrés avec la session, jamais ici.', prev: 'Précédent', next: 'Suivant', nextTitle: 'Agents, règles et skills',
+        rowsT: ['modèle (fim)', 'modèle (systemone)', 'modèle (chat)', 'id d\u2019agent primaire', 'modèle, ou {model, variant}', 'booléen', 'chemins absolus', '1 à 64', 'secondes, 0 = désactivé', 'secondes, 0 = désactivé', 'id de thème'], rowsA: ['après redémarrage', 'après redémarrage', 'après redémarrage', 'nouvelles sessions', 'nouvelles sessions', 'nouvelles sessions', 'nouvelles sessions', 'nouvelles sessions', 'nouveaux sous-agents', 'nouvelles sessions', 'immédiatement'], none: 'aucun' }
+    };
+    const t = C[lang];
+    const K = [['layers.reflex', t.none], ['layers.instinct', t.none], ['layers.metacognition', t.none], ['default_agent', 'build'], ['agents.<id>', 'default agent'], ['permissions.automatic_review', 'true'], ['permissions.scratch_dirs', '$XDG_RUNTIME_DIR/withnav, /tmp/withnav'], ['subagents.max_concurrent', '4'], ['subagents.watchdog_interval_secs', '300'], ['agent.watchdog_interval_secs', '300'], ['tui.theme', 'ayu-dark']];
+    const rows = K.map(([k, def], i) => ({ k, def, type: t.rowsT[i], applies: t.rowsA[i] }));
+    const seg = (on) => `background:${on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent'};color:${on ? 'var(--tx)' : 'var(--mu)'};border:0;padding:3px 9px;cursor:pointer;font:inherit`;
+    return {
+      t, nav, rows, themeVars, sidebarOpen: st.side, cols: st.side ? '290px minmax(0,1fr)' : 'minmax(0,1fr)',
+      iconBtn: 'background:transparent;border:0;color:var(--mu);padding:6px 8px;border-radius:6px;cursor:pointer;font-size:17px;display:flex;text-decoration:none',
+      langEn: seg(lang === 'en'), langFr: seg(lang === 'fr'),
+      setEn: () => this.setState({ lang: 'en' }), setFr: () => this.setState({ lang: 'fr' }),
+      toggleTheme: () => this.setState({ dark: !dark }), toggleSidebar: () => this.setState({ side: !st.side })
+    };
+  }
+}
+</script>
+</body>
+</html>

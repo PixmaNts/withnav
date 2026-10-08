@@ -1,10 +1,11 @@
 ---
 source: tests/tui_layers_models.rs
+assertion_line: 937
 expression: "wide.join(\"\\n\")"
 ---
- Conversations       │ ◆ navai                                          build  — · assigned · — / — 
+ Conversations       │ ◆ withnav                                      ◎ build  — · assigned · — / — 
  1 new conversation  │──────────────────────────────────────────────────────────────────────────────
-   build · idle      │                                                                              
+   ◎ Nav · idle      │                                                                              
             ┌───────────────────────────── Choose a model ─────────────────────────────┐            
             │ ❯ filter models…                                                         │            
             │ ▾ omniroute                                                              │            

@@ -9,7 +9,7 @@ pub enum FlowVerdict {
     Deny {
         note: String,
     },
-    AskDriver {
+    AskCaptain {
         note: String,
         flow: String,
         run_id: String,

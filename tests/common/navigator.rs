@@ -13,16 +13,16 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use navai::bus::event::{EventEnvelope, EventKind};
-use navai::error::ProviderError;
-use navai::navigator::conversation::SessionPost;
-use navai::navigator::metacognition::RemarkContext;
-use navai::navigator::ports::{
+use withnav::bus::event::{EventEnvelope, EventKind};
+use withnav::error::ProviderError;
+use withnav::navigator::conversation::SessionPost;
+use withnav::navigator::metacognition::RemarkContext;
+use withnav::navigator::ports::{
     Answer, Answers, FimAnswer, FimModel, FimRequest, Metacognition, ModelError, Question,
     Questions, ReflexContextModel, ReflexContextRequest,
 };
-use navai::navigator::{self, NavigatorDeps, Remark};
-use navai::provider::Usage;
+use withnav::navigator::{self, NavigatorDeps, Remark};
+use withnav::provider::Usage;
 
 // ---------- fixtures ----------
 
@@ -306,7 +306,7 @@ impl DecisionModel for ScriptedDecision {
                 .iter()
                 .map(|(name, question)| {
                     let answer = match name.as_str() {
-                        // The edit is finished and the driver not stuck.
+                        // The edit is finished and the Captain not stuck.
                         "unfinished" | "stuck" => Answer::Noul { noul: 0.1 },
                         _ => routed_answer(question),
                     };
@@ -517,7 +517,7 @@ impl LspClient {
     }
 
     /// Reads messages until one matches method; returns it. Other messages
-    /// (e.g. navigator/status) are skipped but recorded in `seen`.
+    /// (e.g. withnav/status) are skipped but recorded in `seen`.
     pub async fn expect(&mut self, method: &str, seen: &mut Vec<Value>) -> Value {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
@@ -534,14 +534,14 @@ impl LspClient {
         })
     }
 
-    /// Reads notifications until a `navigator/status` with the given state
+    /// Reads notifications until a `withnav/status` with the given state
     /// arrives; other notifications are skipped. This is the synchronization
     /// point for tests that expect no remark (silent) or an error.
     pub async fn expect_status(&mut self, state: &str) -> Value {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let msg = self.recv().await;
-                if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                if msg.get("method").and_then(|m| m.as_str()) == Some("withnav/status")
                     && msg["params"]["state"].as_str() == Some(state)
                 {
                     return msg;
@@ -549,15 +549,15 @@ impl LspClient {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("timed out waiting for navigator/status {state}"))
+        .unwrap_or_else(|_| panic!("timed out waiting for withnav/status {state}"))
     }
 
-    /// Reads messages until a `navigator/status` with one of `states`.
+    /// Reads messages until a `withnav/status` with one of `states`.
     pub async fn expect_status_in(&mut self, states: &[&str]) -> Value {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let msg = self.recv().await;
-                if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                if msg.get("method").and_then(|m| m.as_str()) == Some("withnav/status")
                     && msg["params"]["state"]
                         .as_str()
                         .is_some_and(|s| states.contains(&s))
@@ -567,7 +567,7 @@ impl LspClient {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("timed out waiting for navigator/status in {states:?}"))
+        .unwrap_or_else(|_| panic!("timed out waiting for withnav/status in {states:?}"))
     }
 
     /// Collects every message readable within a virtual-time window, then
@@ -674,7 +674,7 @@ impl LspClient {
     pub async fn sync_notifications(&mut self) -> Vec<Value> {
         self.request(
             10,
-            "navigator/inlineCompletion",
+            "withnav/inlineCompletion",
             json!({
                 "uri": URI, "version": 0, "line": 0, "character": 0,
             }),
@@ -841,9 +841,9 @@ pub fn with_intent_and_feed(
     workspace: &Path,
     feed: navigator::ConversationFeed,
 ) -> NavigatorDeps {
-    std::fs::create_dir_all(workspace.join(".navigator")).unwrap();
+    std::fs::create_dir_all(workspace.join(".withnav")).unwrap();
     std::fs::write(
-        workspace.join(".navigator/intent.md"),
+        workspace.join(".withnav/intent.md"),
         "## Intent\nadd an auth remove command",
     )
     .unwrap();
@@ -859,8 +859,8 @@ pub fn with_min_changed_lines(
     lines: usize,
 ) -> NavigatorDeps {
     let config = workspace.join("config");
-    let store = navai::flows::store::FlowStore::new(workspace.to_path_buf(), config);
-    for (mut definition, mut templates) in navai::flows::builtin::definitions() {
+    let store = withnav::flows::store::FlowStore::new(workspace.to_path_buf(), config);
+    for (mut definition, mut templates) in withnav::flows::builtin::definitions() {
         let state_name = format!("{}-state.md", definition.flow.name);
         let state = templates.remove("state.md").unwrap();
         templates.insert(state_name.clone(), state);
@@ -882,9 +882,9 @@ pub fn with_min_changed_lines(
         store
             .save(
                 &definition.flow.name.clone(),
-                navai::flows::store::Location::Global,
+                withnav::flows::store::Location::Global,
                 None,
-                navai::flows::store::Content::Graph {
+                withnav::flows::store::Content::Graph {
                     definition: Box::new(definition),
                     templates,
                 },
@@ -894,8 +894,8 @@ pub fn with_min_changed_lines(
     deps.with_dirs(Some(workspace.to_path_buf()), None)
 }
 
-/// A driver message observed by a conversation feed.
-pub fn driver_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventEnvelope {
+/// A captain message observed by a conversation feed.
+pub fn captain_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventEnvelope {
     EventEnvelope::new(
         session_id,
         seq,
@@ -910,7 +910,7 @@ pub fn driver_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventE
     )
 }
 
-/// A feed with one active session (one driver message observed) whose poster
+/// A feed with one active session (one captain message observed) whose poster
 /// records every text and answers `post_result`.
 pub async fn feed_with_session(
     post_result: Result<(), String>,
@@ -929,8 +929,12 @@ pub async fn feed_with_session(
     });
     let session_id = ulid::Ulid::new();
     feed.register_session(session_id, post);
-    feed.observe(&driver_message(session_id, 1, "add an auth remove command"))
-        .await;
+    feed.observe(&captain_message(
+        session_id,
+        1,
+        "add an auth remove command",
+    ))
+    .await;
     (feed, posted, session_id)
 }
 
@@ -991,13 +995,13 @@ impl EditorFlowsExt for NavigatorDeps {
             .workspace
             .clone()
             .unwrap_or_else(|| self.log_path.parent().unwrap().to_path_buf());
-        let store = Arc::new(navai::flows::store::FlowStore::new(
+        let store = Arc::new(withnav::flows::store::FlowStore::new(
             workspace.clone(),
             workspace.join("config"),
         ));
         let model = Arc::new(FlowDecision(model));
         self.with_flows(Arc::new(move |effects| {
-            Arc::new(navai::flows::runtime::FlowRuntime::new(
+            Arc::new(withnav::flows::runtime::FlowRuntime::new(
                 store.clone(),
                 model.clone(),
                 effects,

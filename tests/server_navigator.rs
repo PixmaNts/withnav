@@ -4,10 +4,10 @@
 //! the wire as the request the provider receives (wiremock).
 //!
 //! Also the conversation-feed seam: a feed shared with the AppState means
-//! a navigator session registers itself, driver events build the digest,
+//! a navigator session registers itself, captain events build the digest,
 //! and a wake posted through the feed lands as a navigator-sourced
 //! `message.received` that drives a real turn — queued behind a pending
-//! `ask` when the cognition is yielded, delivered right after the driver's
+//! `ask` when the cognition is yielded, delivered right after the Captain's
 //! answer.
 
 use std::path::Path;
@@ -17,7 +17,7 @@ use serde_json::Value;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer};
 
-use navai::server::AppState;
+use withnav::server::AppState;
 
 mod common;
 use common::server::{collect_until, send_text, wait_for, TestServerConfig};
@@ -38,7 +38,7 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
         .mount(&server)
         .await;
     let tmp = tempfile::tempdir().unwrap();
-    let feed = navai::navigator::ConversationFeed::new();
+    let feed = withnav::navigator::ConversationFeed::new();
     let state = test_state_with_feed(tmp.path(), &server.uri(), Some(feed.clone()));
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
@@ -49,7 +49,7 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
     let subscription = state.subscribe(parent, None).await.unwrap();
     let child = state
         .service()
-        .create_child_session(parent, "explore", "inspect child")
+        .create_child_session(parent, "vigie", "inspect child")
         .await
         .unwrap();
     let events = collect_until(subscription, |event| {
@@ -84,14 +84,14 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
         .as_array()
         .unwrap()
         .iter()
-        .any(|message| { message["content"] == navai::navigator::COGNITION_PROMPT }));
+        .any(|message| { message["content"] == withnav::navigator::COGNITION_PROMPT }));
     state.close_all().await;
 }
 
 fn test_state_with_feed(
     tmp: &Path,
     base_url: &str,
-    conversation: Option<navai::navigator::ConversationFeed>,
+    conversation: Option<withnav::navigator::ConversationFeed>,
 ) -> AppState {
     TestServerConfig::mock(tmp, base_url)
         .model_alias("cognition", "mock-opus")
@@ -168,11 +168,9 @@ async fn editor_context_sends_the_pair_programmer_prompt_as_second_system_messag
     );
     assert_eq!(messages[0]["role"], "system", "loop contract first");
     assert_eq!(messages[1]["role"], "system", "cognition prompt second");
-    assert_eq!(
-        messages[1]["content"],
-        navai::navigator::COGNITION_PROMPT,
-        "the second system message IS the cognition prompt"
-    );
+    let role = messages[1]["content"].as_str().unwrap();
+    assert!(role.starts_with("You are Nav · The Navigator"));
+    assert!(role.ends_with(withnav::navigator::COGNITION_PROMPT));
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"], "hello there");
     let tools: Vec<&str> = body["tools"]
@@ -207,7 +205,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
-    let feed = navai::navigator::ConversationFeed::new();
+    let feed = withnav::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws dir");
@@ -217,28 +215,28 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .await
         .expect("create navigator session");
 
-    // No driver message yet: the session is not the active conversation.
+    // No captain message yet: the session is not the active conversation.
     assert_eq!(feed.active_session(), None);
     assert_eq!(
         feed.post_wake("wake: drift?").await,
-        navai::navigator::WakeOutcome::NoSession
+        withnav::navigator::WakeOutcome::NoSession
     );
 
     send_text(&state, id, "add an auth remove command").await;
     wait_for_completed_message_turn(&state, id, "user:http", "add an auth remove command").await;
-    // The subscriber task needs a beat to observe the driver message.
-    wait_for("the driver message to activate the session", || {
+    // The subscriber task needs a beat to observe the Captain message.
+    wait_for("the Captain message to activate the session", || {
         feed.active_session() == Some(id)
     })
     .await;
-    assert_eq!(feed.active_session(), Some(id), "driver message activates");
+    assert_eq!(feed.active_session(), Some(id), "captain message activates");
 
     let outcome = feed
         .post_wake("wake: this edit drifts from the intent")
         .await;
     assert_eq!(
         outcome,
-        navai::navigator::WakeOutcome::Posted(id),
+        withnav::navigator::WakeOutcome::Posted(id),
         "no pending ask: the wake posts immediately"
     );
 
@@ -260,7 +258,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .expect("content")
         .contains("drifts from the intent"));
     // Turn order: the wake message precedes ITS turn (the one starting
-    // after the wake's seq, not the driver's earlier turn).
+    // after the wake's seq, not the Captain's earlier turn).
     let wake_pos = events
         .iter()
         .position(|e| e.seq == wake_received.seq)
@@ -276,7 +274,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
     assert_eq!(
         requests.len(),
         2,
-        "driver and wake each completed a provider turn"
+        "captain and wake each completed a provider turn"
     );
     let body: Value = serde_json::from_slice(&requests[1].body).expect("second request body");
     let last_user = body["messages"]
@@ -298,22 +296,22 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
     .await;
     let digest = feed.digest();
     assert!(
-        digest.contains("driver: add an auth remove command"),
+        digest.contains("captain: add an auth remove command"),
         "{digest}"
     );
     assert!(digest.contains("navigator: wake:"), "{digest}");
 }
 
 // Given the same seam with a cognition that yields on `ask`
-// When a wake is posted while the cognition waits on the driver
-// Then the wake is queued (not posted), the driver's next message answers
+// When a wake is posted while the cognition waits on the Captain
+// Then the wake is queued (not posted), the Captain's next message answers
 //      the ask as the TOOL result (the provider sees role "tool"), and the
 //      queued wake arrives after it as a navigator-sourced user message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     let server = MockServer::start().await;
     // Turn 1: the cognition asks a question (tool call `ask`). Turn 2 (the
-    // resumed turn after the driver's answer) and turn 3 (the queued wake)
+    // resumed turn after the Captain's answer) and turn 3 (the queued wake)
     // finish. Each mount matches its turn by what the transcript already
     // contains; wiremock prefers the LATEST matching mount, so they are
     // registered least-specific first.
@@ -341,7 +339,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
-    let feed = navai::navigator::ConversationFeed::new();
+    let feed = withnav::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws dir");
@@ -364,21 +362,21 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         yielded.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
     );
     wait_for("the feed to see agent.yield", || {
-        feed.is_waiting_on_driver()
+        feed.is_waiting_on_captain()
     })
     .await;
 
     // The wake while yielded: queued, coalesced, never the ask answer.
     assert_eq!(
         feed.post_wake("first wake").await,
-        navai::navigator::WakeOutcome::Queued(id)
+        withnav::navigator::WakeOutcome::Queued(id)
     );
     assert_eq!(
         feed.post_wake("latest wake").await,
-        navai::navigator::WakeOutcome::Queued(id)
+        withnav::navigator::WakeOutcome::Queued(id)
     );
 
-    // The driver answers the ask. Their message must become the TOOL
+    // The captain answers the ask. Their message must become the TOOL
     // result; only then does the queued wake arrive, as a user message.
     let sub = subscribe(&state, id).await;
     send_text(&state, id, "the local scope").await;
@@ -403,14 +401,14 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     let answer_pos = sources
         .iter()
         .position(|(s, c)| s == "user:http" && c.contains("the local scope"))
-        .expect("the driver's answer was received");
+        .expect("the Captain's answer was received");
     let wake_pos = sources
         .iter()
         .position(|(s, c)| s == "navigator" && c.contains("latest wake"))
         .expect("the queued wake arrived after the answer");
     assert!(
         answer_pos < wake_pos,
-        "driver answer before the wake: {sources:?}"
+        "captain answer before the wake: {sources:?}"
     );
     assert!(
         !sources
@@ -419,7 +417,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         "coalesced: only the latest wake is delivered"
     );
 
-    // The driver's answer must reach the provider as the ask's TOOL result,
+    // The Captain's answer must reach the provider as the ask's TOOL result,
     // and the wake as a later USER message, never the other way round. The
     // wake is flushed as soon as the answer is accepted, so it either rides
     // the same inbox batch as the answer (one resumed turn) or starts a turn
@@ -454,7 +452,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
                 && m["tool_call_id"] == "ask_1"
                 && text(m).contains("the local scope")
         })
-        .expect("the driver's answer became the ask tool result");
+        .expect("the Captain's answer became the ask tool result");
     let wake_at = messages
         .iter()
         .position(|m| m["role"] == "user" && text(m).contains("latest wake"))
@@ -478,7 +476,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 // Given a navigator conversation whose cognition waits on a permission request
 // When a wake is posted
 // Then the session runtime holds it and the request stays open; once the
-//      driver answers and the turn ends, the wake is delivered
+//      captain answers and the turn ends, the wake is delivered
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wake_never_cancels_an_open_permission_request() {
     let server = MockServer::start().await;
@@ -506,7 +504,7 @@ async fn a_wake_never_cancels_an_open_permission_request() {
             .mount(&server)
             .await;
     }
-    let feed = navai::navigator::ConversationFeed::new();
+    let feed = withnav::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let id = state.create_session(&ws, None, true).await.expect("create");
 
@@ -515,7 +513,7 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         loop {
             state.history().flush().await.expect("flush");
             let sub = subscribe(&state, id).await;
-            if let navai::bus::ResumeOutcome::Replay(all) = sub.replay {
+            if let withnav::bus::ResumeOutcome::Replay(all) = sub.replay {
                 if let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested") {
                     break found;
                 }
@@ -531,13 +529,13 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         .expect("request id");
     assert_eq!(
         feed.post_wake("a wake while asking").await,
-        navai::navigator::WakeOutcome::Posted(id),
+        withnav::navigator::WakeOutcome::Posted(id),
         "the feed posts it; the runtime holds it behind the request"
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
     state.history().flush().await.expect("flush");
     let sub = subscribe(&state, id).await;
-    let navai::bus::ResumeOutcome::Replay(all) = sub.replay else {
+    let withnav::bus::ResumeOutcome::Replay(all) = sub.replay else {
         panic!("expected a replay");
     };
     assert!(
@@ -549,7 +547,7 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         .answer_permission(
             id,
             request_id,
-            navai::agent::permissions::PermissionDecision::AllowOnce,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
         )
         .await
         .expect("answer");
@@ -573,24 +571,24 @@ async fn a_wake_never_cancels_an_open_permission_request() {
 
 /// A fresh subscription: replay (the whole retained history) then live, in
 /// the same shape `collect_until` drains.
-async fn subscribe(state: &AppState, id: ulid::Ulid) -> navai::session::Subscription {
+async fn subscribe(state: &AppState, id: ulid::Ulid) -> withnav::session::Subscription {
     state.subscribe(id, None).await.expect("subscribe")
 }
 
 /// Stored history is authoritative even if a fast turn finished before
-/// subscription. Match the message's own turn, not an earlier driver's end.
+/// subscription. Match the message's own turn, not an earlier Captain's end.
 async fn wait_for_completed_message_turn(
     state: &AppState,
     id: ulid::Ulid,
     source: &str,
     content: &str,
-) -> Vec<navai::bus::event::EventEnvelope> {
+) -> Vec<withnav::bus::event::EventEnvelope> {
     let mut seen = Vec::new();
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             state.history().flush().await.expect("flush");
             let sub = subscribe(state, id).await;
-            if let navai::bus::ResumeOutcome::Replay(events) = sub.replay {
+            if let withnav::bus::ResumeOutcome::Replay(events) = sub.replay {
                 seen = events;
                 let message = seen.iter().find(|e| {
                     e.kind == "message.received"
@@ -624,9 +622,9 @@ async fn wait_for_completed_message_turn(
     seen
 }
 
-// Given a navigator conversation with one completed driver turn, stopped
+// Given a navigator conversation with one completed captain turn, stopped
 // When it is resumed under a feed that never saw it
-// Then the feed's digest holds that turn (driver and cognition), and no
+// Then the feed's digest holds that turn (captain and cognition), and no
 //      `TurnEnded` is announced for it: replay rebuilds, it does not announce
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resumed_feed_rebuilds_without_announcing_old_turns() {
@@ -645,9 +643,9 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
     let state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
-        .assigned_navigator_state_with_conversation(
-            Some(navai::navigator::ConversationFeed::new()),
-        );
+        .assigned_navigator_state_with_conversation(Some(
+            withnav::navigator::ConversationFeed::new(),
+        ));
 
     let id = state
         .create_session(&ws, None, true)
@@ -660,7 +658,7 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
 
     // A second state over the same database: its feed has never seen the
     // conversation.
-    let feed = navai::navigator::ConversationFeed::new();
+    let feed = withnav::navigator::ConversationFeed::new();
     let resumed_state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
@@ -681,7 +679,7 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        digest.contains("driver: scope the auth removal"),
+        digest.contains("captain: scope the auth removal"),
         "{digest}"
     );
     assert!(

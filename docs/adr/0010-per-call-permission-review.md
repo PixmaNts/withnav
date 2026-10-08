@@ -4,6 +4,9 @@ Date: 2026-10-04
 
 Status: Accepted
 
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.
+
 ## Decision
 
 Review every enabled bash, write and edit call before dispatch, and native single-file read calls

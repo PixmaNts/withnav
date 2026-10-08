@@ -9,8 +9,28 @@
   },
   "default_agent": "build",
   "agents": {
-    "build": { "model": "omniroute/cc/claude-opus-5-5" },
-    "oracle": { "model": "omniroute/combo/gpt-6-astra" },
-    "librarian": { "model": "omniroute/combo/gpt-6-luna" }
+    "build": {
+      "model": "omniroute/cc/claude-opus-5-5"
+    },
+    "vigie": {
+      "model": "omniroute/openai/gpt-6-luna",
+      "variant": "medium"
+    },
+    "lux": {
+      "model": "omniroute/openai/gpt-6-astra",
+      "variant": "high"
+    },
+    "mousse": {
+      "model": "omniroute/opencode-go/deepseek-v4-flash",
+      "variant": "low"
+    },
+    "cartographe": {
+      "model": "omniroute/openai/gpt-6-luna",
+      "variant": "medium"
+    },
+    "sondeur": {
+      "model": "omniroute/cc/claude-opus-5-5",
+      "variant": "high"
+    }
   }
 }

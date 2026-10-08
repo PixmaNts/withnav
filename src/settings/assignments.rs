@@ -34,13 +34,27 @@ impl Settings {
     }
 
     pub fn agent_assignment(&self, name: &str) -> Result<Option<ModelAssignment>, String> {
-        self.assignment("agents", name, false)
+        use crate::agent::definitions::{canonical_agent_id, AGENT_ALIASES};
+        let name = canonical_agent_id(name);
+        if let Some(value) = self.assignment("agents", name, false)? {
+            return Ok(Some(value));
+        }
+        for (old, canonical) in AGENT_ALIASES {
+            if *canonical == name {
+                if let Some(value) = self.assignment("agents", old, false)? {
+                    canonical_agent_id(old);
+                    return Ok(Some(value));
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub fn default_agent(&self) -> Result<&str, String> {
         self.root
             .get("default_agent")
             .map_or(Ok("build"), |value| nonempty_string(value, "default_agent"))
+            .map(crate::agent::definitions::canonical_agent_id)
     }
 
     fn assignment(
@@ -93,4 +107,39 @@ fn nonempty_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
         .as_str()
         .filter(|s| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control()))
         .ok_or_else(|| format!("{key} must be a nonempty string without whitespace"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::definitions::AGENT_ALIASES;
+
+    #[test]
+    fn legacy_assignments_and_defaults_resolve_with_canonical_precedence() {
+        for (old, new) in AGENT_ALIASES {
+            let mut settings = Settings::default();
+            settings.set_dotted("default_agent", serde_json::json!(old));
+            settings.set_dotted(
+                &format!("agents.{old}"),
+                serde_json::json!({"model":"mock/old"}),
+            );
+            assert_eq!(settings.default_agent().unwrap(), *new);
+            assert_eq!(
+                settings.agent_assignment(new).unwrap().unwrap().model,
+                "mock/old"
+            );
+            assert_eq!(
+                settings.agent_assignment(old).unwrap().unwrap().model,
+                "mock/old"
+            );
+            settings.set_dotted(
+                &format!("agents.{new}"),
+                serde_json::json!({"model":"mock/new"}),
+            );
+            assert_eq!(
+                settings.agent_assignment(old).unwrap().unwrap().model,
+                "mock/new"
+            );
+        }
+    }
 }

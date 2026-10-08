@@ -148,7 +148,7 @@ describe("upstream and the inputs picker", () => {
     const def = guard();
     const node = def.node.find((n) => n.id === "asked_for")!;
     const state = renderState(node, def, { tool: "write", args: { path: "a" } }, null);
-    expect(state).toBe('args = {"path":"a"}\nintent = <absent>\nlast_driver = <absent>');
+    expect(state).toBe('args = {"path":"a"}\nintent = <absent>\nlast_captain = <absent>');
   });
 });
 

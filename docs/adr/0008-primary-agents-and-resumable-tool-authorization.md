@@ -23,6 +23,9 @@ say what the agent may execute.
   `*.md` file is exempt). Only a clear "conforms" lets the call run without the driver; anything else,
   including a timeout or no answer, becomes a permission request. It is advisory, never a block and never
   a sandbox. Status: built as the **role guard** (`agent/guard.rs`). It also covers `fetch`, sends the
+
+Naming status: the human role is now called the Captain and the product WithNav;
+see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.
   exact call (at most 16 KiB; a larger call goes straight to the driver), never accepts a folder grant for
   `plan`, and records a `conforms` verdict on the call's `tool.post_call`.
 - **Selection is a session property.** The session stores the primary agent (`sessions.primary_agent`,

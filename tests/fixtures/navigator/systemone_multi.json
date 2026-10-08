@@ -32,7 +32,7 @@
       },
       "contradicts_conversation": {
         "type": "noul",
-        "instructions": "Does this change contradict what the driver and the cognition just agreed in the conversation?"
+        "instructions": "Does this change contradict what the Captain and the cognition just agreed in the conversation?"
       }
     }
   },

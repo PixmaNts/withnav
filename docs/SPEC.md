@@ -1,12 +1,12 @@
-# Navai v0.1 Specification (original design)
+# WithNav v0.1 Specification (original design)
 
 **Status:** The original design, partly built. Read the notes under each section heading.  
 **Audience:** Pixma and coding agents implementing the project  
-**Repository:** https://github.com/PixmaNts/Navai  
+**Repository:** https://github.com/PixmaNts/withnav  
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
 **Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 
-> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. Navai grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, the permission gate, skills, rules, the model catalog, variants, the context budget and manual compaction were built. Plugins, MCP, subagents, hot reload and the co-agent were not.
+> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. WithNav grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, the permission gate, skills, rules, the model catalog, variants, the context budget and manual compaction were built. Plugins, MCP, subagents, hot reload and the co-agent were not.
 >
 > - **What the code does:** [`ARCHITECTURE.md`](../ARCHITECTURE.md) (modules and flows) and [`CONTEXT.md`](../CONTEXT.md) (vocabulary). The decisions are in [`docs/adr/`](adr/).
 > - **Status of each section** is the line that starts with "Status" under its heading: *built*, *partly built*, *not built*, *superseded*, *historical* or *direction*. Sections 9, 10.3, 17, 18, 20, 21, 22, 24 and 27 were rewritten to match the code. The others keep their original wording; where a statement is not true of the code, the status line says so.
@@ -16,7 +16,7 @@
 
 > **Status: direction.** The vision holds; the plugin, MCP and co-agent parts of it are not built.
 
-Navai is a personal, minimal-but-complete coding agent inspired by `pi` and `oh-my-pi`, but not constrained by compatibility with either. It must remain understandable, fast, reliable, and cooperative with its operator. The core agent loop should be approximately 200 lines of direct orchestration: call a model, execute requested tools, append results, and either continue, finish, or yield to the human.
+WithNav is a personal, minimal-but-complete coding agent inspired by `pi` and `oh-my-pi`, but not constrained by compatibility with either. It must remain understandable, fast, reliable, and cooperative with its operator. The core agent loop should be approximately 200 lines of direct orchestration: call a model, execute requested tools, append results, and either continue, finish, or yield to the human.
 
 The system is built around one unifying primitive: an asynchronous event bus connecting independent actors. Main agents, subagents, users, plugins, persistence, user interfaces, and the optional co-agent all participate through messages and events rather than bespoke integration paths.
 
@@ -165,7 +165,7 @@ When a plugin rewrites a prompt, modifies tool arguments, changes a tool result,
 
 ## 6. Architecture Overview
 
-> **Status: partly built.** The loop, bus, server, SQLite subscriber and clients exist (`navai serve`, `navai tui`, `navai run`, plus `navai-lsp`). The plugin supervisor, MCP supervisor and co-agent in the diagram do not exist. See `ARCHITECTURE.md`.
+> **Status: partly built.** The loop, bus, server, SQLite subscriber and clients exist (`nav serve`, `nav tui`, `nav run`, plus `withnav-lsp`). The plugin supervisor, MCP supervisor and co-agent in the diagram do not exist. See `ARCHITECTURE.md`.
 
 ### 6.1 System Diagram
 
@@ -178,7 +178,7 @@ flowchart LR
         USER[Human user]
     end
 
-    subgraph Core["navai core process"]
+    subgraph Core["WithNav core process"]
         API[Axum HTTP / SSE API]
         ROUTER[Inbox router]
         BUS[Session event bus and sequencer]
@@ -231,9 +231,9 @@ flowchart LR
 The core is a single Rust binary with multiple operating modes:
 
 ```text
-navai serve
-navai tui
-navai run
+nav serve
+nav tui
+nav run
 ```
 
 - `serve` starts the authoritative core, event bus, agent actors, plugin supervisor, SQLite subscriber, and Axum API.
@@ -339,7 +339,7 @@ stateDiagram-v2
 
 ## 8. Agent Loop
 
-> **Status: built.** `StepOutcome` is in `src/agent/response.rs`. A fourth outcome, a held permission request, is handled as a yield (`RunOutcome::PermissionRequired`). The step budget is 50 (`NAVAI_MAX_STEPS`); running out yields, never forces a continuation.
+> **Status: built.** `StepOutcome` is in `src/agent/response.rs`. A fourth outcome, a held permission request, is handled as a yield (`RunOutcome::PermissionRequired`). The step budget is 50 (`WITHNAV_MAX_STEPS`); running out yields, never forces a continuation.
 
 ### 8.1 Loop Outcomes
 
@@ -580,10 +580,10 @@ A session gets these tools (`src/session/actor.rs`):
 | `read` | Read a file or a bounded line range | `offset` is 1-indexed, `limit` is a line count. Reports truncation. Accepts the writable and the read-only roots. |
 | `write` | Create or replace a file | Atomic: a temporary file beside the target, then a rename. |
 | `edit` | Replace an exact literal string | Fails on no match or on several matches, unless `replace_all` is set. |
-| `bash` | Run a shell command | Runs in the workspace, in its own process group. `timeout` in milliseconds (default 120 000). On timeout or cancel it sends `SIGTERM` to the group, waits a grace period (5 s, `NAVAI_BASH_GRACE_MS`), then `SIGKILL`. |
+| `bash` | Run a shell command | Runs in the workspace, in its own process group. `timeout` in milliseconds (default 120 000). On timeout or cancel it sends `SIGTERM` to the group, waits a grace period (5 s, `WITHNAV_BASH_GRACE_MS`), then `SIGKILL`. |
 | `grep` | Search file contents by regex | Uses `rg` when it is installed, else a built-in walk. At most 1,000 matches; output bounded. |
 | `glob` | Find files by a relative pattern | Sorted relative paths. Links are not followed. Hidden entries, `node_modules` and `target` are skipped unless the pattern names them. 200 paths by default (1,000 at most), 100,000 entries visited, 5 s. Absolute patterns and `..` are refused. |
-| `fetch` | HTTP(S) GET | Returns markdown (default), text or raw HTML. Its own client, with no provider credentials. Same-origin redirects only (at most 10); another origin comes back as a URL for a new call. 5 MiB streamed cap, text types only, 30 s default timeout (120 s at most). HTML is converted by a memory- and CPU-limited child process (`navai internal-html-convert`). |
+| `fetch` | HTTP(S) GET | Returns markdown (default), text or raw HTML. Its own client, with no provider credentials. Same-origin redirects only (at most 10); another origin comes back as a URL for a new call. 5 MiB streamed cap, text types only, 30 s default timeout (120 s at most). HTML is converted by a memory- and CPU-limited child process (`nav internal-html-convert`). |
 | `ask` | Yield to the human | See 8.3. |
 
 `skill` is not in the base registry. A session registers it only when discovery found at least one skill (section 18.3).
@@ -600,23 +600,23 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 
 ### 9.3 Tool Safety Defaults
 
-- Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the Navai config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
+- Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the WithNav config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
 - `bash` is not sandboxed. It runs with the operator's OS permissions.
 - A `write` or `edit` whose destination was reviewed is opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the check is refused and the call is checked again.
 - Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
 
 ### 9.4 Permission Gate
 
-A session that runs as an agent asks the driver before it runs `write`, `edit`, `bash` or `fetch`. `read`, `grep`, `glob`, `skill` and `ask` never ask.
+A session that runs as an agent asks the Captain before it runs `write`, `edit`, `bash` or `fetch`. `read`, `grep`, `glob`, `skill` and `ask` never ask.
 
-- The call does not run. The turn yields and the server publishes a durable `permission.requested`. The scope is the canonical parent folder for `write` and `edit`, the workspace for `bash` (what the driver approves, not a confinement) and the URL origin for `fetch`.
-- The driver answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_folder` or `deny` with a message. `allow_folder` is remembered in memory, per agent, capability and scope, until the session ends. Chat text never approves a request: a message sent while a request waits cancels it.
+- The call does not run. The turn yields and the server publishes a durable `permission.requested`. The scope is the canonical parent folder for `write` and `edit`, the workspace for `bash` (what the Captain approves, not a confinement) and the URL origin for `fetch`.
+- The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_folder` or `deny` with a message. `allow_folder` is remembered in memory, per agent, capability and scope, until the session ends. Chat text never approves a request: a message sent while a request waits cancels it.
 - `permission.resolved` ends every request: `allow_once`, `allow_folder`, `deny`, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
-- `navai run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` turns on the session's bypass before the first prompt, so ordinary requests run once without asking; a request that still arrives (protected configuration, credentials or keys, for the session or a subagent) is printed with its tool, scope and reason and exits 3 (unsafe).
+- `nav run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` turns on the session's bypass before the first prompt, so ordinary requests run once without asking; a request that still arrives (protected configuration, credentials or keys, for the session or a subagent) is printed with its tool, scope and reason and exits 3 (unsafe).
 
 ### 9.5 Plan Role Guard
 
-The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Jev (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the driver. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
+The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Jev (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the Captain. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
 
 ## 10. Event Bus
 
@@ -678,7 +678,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 |---|---|---|
 | `session.start` | A session is configured and its actor is ready | `{workspace, root_actor_id}` |
 | `session.end` | A session shuts down after cleanup | `{reason, final_seq}` |
-| `message.received` | A user or actor command was accepted into an inbox, or an outbox result was committed to the parent's transcript | `{command_id, source, target, mode, content, selected_skill?{name,origin:"driver"}}`. A selected skill's event content stays driver text only; the server embeds its bounded instructions in the consuming user message. Acceptance precedes pinned-role validation: a whole-command refusal is a durable `command.result` with command-id correlation. Delivered results use `source: "subagent"` with optional `child_session_id`, `agent`, `outcome`; watchdog deliveries add `watchdog: true` and doubt adds `verdict`. The content is the bounded untrusted JSON transcript entry. Consumption, transcript and event are one acknowledged sequencer commit: live publication follows the commit and replay contains the entry exactly once even if the process dies before publication. No additional event kind. |
+| `message.received` | A user or actor command was accepted into an inbox, or an outbox result was committed to the parent's transcript | `{command_id, source, target, mode, content, selected_skill?{name,origin:"captain"}}`. A selected skill's event content stays Captain text only; the server embeds its bounded instructions in the consuming user message. Acceptance precedes pinned-role validation: a whole-command refusal is a durable `command.result` with command-id correlation. Delivered results use `source: "subagent"` with optional `child_session_id`, `agent`, `outcome`; watchdog deliveries add `watchdog: true` and doubt adds `verdict`. The content is the bounded untrusted JSON transcript entry. Consumption, transcript and event are one acknowledged sequencer commit: live publication follows the commit and replay contains the entry exactly once even if the process dies before publication. No additional event kind. |
 | `turn.start` | The actor begins a turn | `{turn_id, actor_id, task_id}` |
 | `turn.end` | A turn reaches `done`, `yielded`, `interrupted` or `error` | `{turn_id, actor_id, outcome, usage?, duration_ms, error?{code, message}}` |
 | `llm.delta` | A normalized text, reasoning or tool-call delta arrived (live-only) | `{turn_id, step_id, delta}` |
@@ -788,7 +788,7 @@ The core starts the process and sends:
   "params": {
     "protocol_version": "0.1",
     "core_version": "0.1.0",
-    "workspace": "/home/pixma/dev/navai",
+    "workspace": "/home/pixma/dev/withnav",
     "session_id": "session-01J...",
     "capabilities": {
       "json_patch": "rfc6902",
@@ -1131,14 +1131,14 @@ Version 0.1 does not require:
 - Remote HTTP MCP transport.
 - MCP resources.
 - MCP prompts.
-- Exposing Navai itself as an MCP server.
+- Exposing WithNav itself as an MCP server.
 - Dynamic installation of MCP servers.
 
 MCP covers external tools. The mini hook protocol covers inverse control flow where the core calls a plugin during lifecycle processing.
 
 ## 14. Subagents
 
-> **Status: not built.** Only the agent definitions it relies on exist (section 18.2): `explore` and `review` are defined and cannot be started yet. The current design for background child sessions lives in the maintainers' working notes, not in this file.
+> **Status: not built.** Only the agent definitions it relies on exist (section 18.2): `vigie` and `lux` are defined and cannot be started yet. The current design for background child sessions lives in the maintainers' working notes, not in this file.
 
 ### 14.1 Definition
 
@@ -1384,7 +1384,7 @@ If the co-agent rewrites a user prompt:
 
 ### 17.1 Model
 
-- One database per user: `<data dir>/navai.db` (`~/.local/share/navai/navai.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. The sequencer never waits on SQLite.
+- One database per user: `<data dir>/withnav.db` (`~/.local/share/withnav/withnav.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. The sequencer never waits on SQLite.
 - Every write is one transaction: an event insert and the `last_seq` bump commit together or not at all. A failed write is remembered until `flush`, which is also a barrier.
 - The events table is the log clients replay. The `transcript` column holds the model-facing messages. A resume rebuilds the actor from the transcript (and the checkpoint) and replays the events to the client. The transcript is not rebuilt from events.
 
@@ -1396,7 +1396,7 @@ sessions(
     workspace TEXT NOT NULL,
     model TEXT NOT NULL,
     profile TEXT,
-    title TEXT,                 -- from the first driver message, 60 characters
+    title TEXT,                 -- from the first Captain message, 60 characters
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_seq INTEGER NOT NULL DEFAULT -1,
@@ -1433,7 +1433,7 @@ Queueing is not an acknowledgement: a crash can lose events still in the channel
 - **State persistence.** Some state changes are written and acknowledged before the event that reports them. The compaction checkpoint is saved with the transcript before `context.compacted` is published. The primary agent is stored before `session.agent_changed` is published. The event is then an ordinary queued event; the state it reports is already durable.
 - **Event durability.** `publish_acked` (command results, `session.agent_changed`) waits until the event is sequenced and on the stream. It does not wait for the disk. Only `commit_acked`, used by the model switch, commits the event row itself (with the new model state, in one transaction) and emits the event only after the store acknowledged.
 
-`llm.delta` and `context.updated` are never stored. `session.end` is stored like any other durable event. Tool outputs are bounded to 64 KiB before they reach the transcript, but messages and tool payloads are stored as they are, with no redaction: a secret that a tool read or the driver typed is in the database.
+`llm.delta` and `context.updated` are never stored. `session.end` is stored like any other durable event. Tool outputs are bounded to 64 KiB before they reach the transcript, but messages and tool payloads are stored as they are, with no redaction: a secret that a tool read or the Captain typed is in the database.
 
 ### 17.3 Replay and Resume
 
@@ -1448,12 +1448,12 @@ Queueing is not an acknowledgement: a crash can lose events still in the channel
 ### 17.4 Database Defaults
 
 - WAL mode and one writer: built.
-- The file is created by SQLite with the process umask; Navai does not set user-only permissions on it. Encryption at rest is out of scope.
+- The file is created by SQLite with the process umask; WithNav does not set user-only permissions on it. Encryption at rest is out of scope.
 - `model_resolution` holds no credentials, and API keys live in `auth.json` (mode 0600). There is no general redaction: transcript messages and event payloads are stored as they are.
 
 ## 18. Standard File Loading
 
-> **Status: partly built, with other paths than the first design.** Rules, agent definitions and skills are discovered. They are read once, when a session is created or resumed, and edits take effect at the next session or resume. There is no hot reload and nothing under `/etc/navai`. Code: `src/agent/instructions.rs`, `src/agent/definitions.rs`, `src/agent/skills.rs`.
+> **Status: partly built, with other paths than the first design.** Rules, agent definitions and skills are discovered. They are read once, when a session is created or resumed, and edits take effect at the next session or resume. There is no hot reload and nothing under `/etc/withnav`. Code: `src/agent/instructions.rs`, `src/agent/definitions.rs`, `src/agent/skills.rs`.
 
 ### 18.1 Rules
 
@@ -1469,12 +1469,12 @@ The request is built in this order: the embedded agent contract, the role prompt
 
 ### 18.2 Agent Definitions
 
-Personas became **agent definitions**. A session runs as one primary agent: `build` (the default), `plan`, or a custom one. Built-ins are `build`, `plan` (primary) and `explore`, `review` (read-only subagents). Files are Markdown with a YAML header; the body is the role prompt. Sources, later ones replacing earlier ones that carry the same id:
+Personas became **agent definitions**. A session runs as one primary agent: `build` (the default), `plan`, or a custom one. Built-ins are `build`, `plan` (primary) and `vigie`, `lux` (read-only subagents). Files are Markdown with a YAML header; the body is the role prompt. Sources, later ones replacing earlier ones that carry the same id:
 
 1. the built-ins;
 2. `~/.config/opencode/agents/*.md` (only read);
-3. `~/.config/navai/agents/*.md`;
-4. `.navai/agents/*.md` of the project, from the worktree root down to the workspace (nearer directories last).
+3. `~/.config/withnav/agents/*.md`;
+4. `.withnav/agents/*.md` of the project, from the worktree root down to the workspace (nearer directories last).
 
 `build` and `plan` are reserved: a file with one of those names never replaces the built-in and is reported.
 
@@ -1562,12 +1562,12 @@ Version 0.1 is a personal local service.
 Defaults:
 
 ```text
-bind = 127.0.0.1:7310        (navai serve --bind)
+bind = 127.0.0.1:7310        (nav serve --bind)
 ```
 
 A non-loopback bind is refused unless `--allow-non-loopback` is given, and even then there is no TLS. Operators exposing it remotely are responsible for an authenticated reverse proxy or private network.
 
-When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `navai tui` starts a private server with a random per-process token, and `navai-lsp` does the same for the editor. A client reaches a running server with `navai tui --url`, and gives the token in `NAVAI_SERVER_TOKEN`. `navai serve` itself starts without a token.
+When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `nav tui` starts a private server with a random per-process token, and `withnav-lsp` does the same for the editor. A client reaches a running server with `nav tui --url`, and gives the token in `WITHNAV_SERVER_TOKEN`. `nav serve` itself starts without a token.
 
 ### 20.2 HTTP API
 
@@ -1707,7 +1707,7 @@ OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A mod
 
 ### 21.2 `models.json`
 
-Where it is read, first found wins: the explicit `--models` path, `<workspace>/models.json`, then `~/.config/navai/models.json`. The repository ships `models.example.json`, an example with the role aliases; a `models.json` at the root of a checkout is git-ignored, since it would shadow your own config for sessions started there. Shape:
+Where it is read, first found wins: the explicit `--models` path, `<workspace>/models.json`, then `~/.config/withnav/models.json`. The repository ships `models.example.json`, an example with the role aliases; a `models.json` at the root of a checkout is git-ignored, since it would shadow your own config for sessions started there. Shape:
 
 ```json
 {
@@ -1743,7 +1743,7 @@ Model fields:
 
 - `provider`, `model`: required.
 - `api`: `chat` (default), `fim` or `systemone`.
-- `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins over a discovered one. It does not always avoid the network: an alias on a provider with `catalog_format` and no `variants` of its own still fetches the model list, to generate its variants from the effort tiers. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`navai run` prints it and exits 1).
+- `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins over a discovered one. It does not always avoid the network: an alias on a provider with `catalog_format` and no `variants` of its own still fetches the model list, to generate its variants from the effort tiers. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`nav run` prints it and exits 1).
 - `max_input_tokens`, `max_output_tokens`: optional limits. They feed the context budget (section 24).
 - `supports_tools`, `supports_parallel_tool_calls`: capability flags. Tool calls are executed serially.
 - `default_variant`: the variant a new conversation starts with.
@@ -1753,7 +1753,7 @@ Model fields:
 
 Rules:
 
-- Keys live in `~/.config/navai/auth.json` (mode 0600, written by `navai auth set <provider>`), with the `api_key_env` variable as a fallback.
+- Keys live in `~/.config/withnav/auth.json` (mode 0600, written by `nav auth set <provider>`), with the `api_key_env` variable as a fallback.
 - Unknown model aliases fail before any request.
 - A conversation saves its provider, model, api and limits when it is created (`sessions.model_resolution`). A resume uses them, and refuses an alias that now points elsewhere (409 `model_identity_changed`). `/model <alias>` switches the conversation to another alias between turns; the switch is saved in one step and announced by `model.changed`. The new model gets the whole history, and the earlier reasoning is only replayed to the same provider and model. A switch is refused when the conversation does not fit the new model's input budget (`/compact` first).
 - `scripts/import-opencode-models` can generate this file from an OpenCode config (see the README).
@@ -1873,7 +1873,7 @@ A window that leaves no input budget is refused when the session is created (422
 - **Automatic compaction.** Without `/compact`, the core does not shrink a conversation by itself, and does not silently discard history. `Aim::Fit` in `compaction.rs` is the planning mode meant for it and is not called yet.
 - **Compaction hooks** (`context.pre_compact`).
 
-When a request is over the input budget the status shows it; the driver compacts, or starts a new conversation (`/new`).
+When a request is over the input budget the status shows it; the Captain compacts, or starts a new conversation (`/new`).
 
 ## 25. Security and Reliability Boundaries
 
@@ -1956,15 +1956,15 @@ The hardest practical areas are expected to be:
 > **Status: superseded by `ARCHITECTURE.md`**, which maps every module and says where new code goes. This is the top level of the tree today. The first design's `plugins/`, `persistence/`, `config/`, `agents/`, `skills/` and `tools/mcp.rs` do not exist.
 
 ```text
-navai/
-├── Cargo.toml                 crate `navai`: bins `navai`, `navai-lsp`
+nav/
+├── Cargo.toml                 crate `withnav`: bins `nav`, `withnav-lsp`
 ├── models.json                example model aliases
 ├── README.md, ARCHITECTURE.md, CONTEXT.md, CHANGELOG.md, AGENTS.md
 ├── docs/                      SPEC.md, PLAN.md, adr/, design/, agents/
 ├── scripts/                   import-opencode-models
 ├── src/
-│   ├── main.rs, app.rs, app/  the `navai` CLI: run, serve, tui, auth
-│   ├── bin/navai-lsp.rs       the editor binary: Language Server + session server
+│   ├── main.rs, app.rs, app/  the `nav` CLI: run, serve, tui, auth
+│   ├── bin/withnav-lsp.rs       the editor binary: Language Server + session server
 │   ├── lib.rs, error.rs, paths.rs, settings.rs, render.rs
 │   ├── agent/                 loop, actor, prompt, permissions, guard, context, compaction,
 │   │                          instructions (rules), skills, definitions (agents), selection
@@ -1977,7 +1977,7 @@ navai/
 │   ├── tui/                   terminal client: reducer, runtime, view, theme
 │   └── paths/                 move from the former rust-agent locations
 ├── tests/                     integration tests, common/ harnesses, fixtures
-├── vscode-navigator/          the VS Code extension (TypeScript)
+├── vscode-withnav/          the VS Code extension (TypeScript)
 └── examples/
 ```
 
@@ -2187,7 +2187,7 @@ Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_ga
 }
 ```
 
-`source` is `jev`, `metacognition` or `driver`. Verdicts are validated typed Jev answers, not
+`source` is `jev`, `metacognition` or `captain`. Verdicts are validated typed Jev answers, not
 the deterministic effective classification. Override names are fixed. Unknown model ids, verdicts
 and latencies are omitted. `truncated` reports bounded context excerpts, never cut tool arguments.
 Old events without these optional fields remain valid. No event kind is added; the catalog stays 22.

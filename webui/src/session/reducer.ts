@@ -34,7 +34,7 @@ export interface Turn {
   kind: "turn";
   key: string;
   turnId: string;
-  /** The task (driver message) the turn works on. */
+  /** The task (Captain message) the turn works on. */
   taskId: string;
   /** The agent in force when the turn started, when the stream said so. */
   agent: string | null;
@@ -60,8 +60,9 @@ export interface Permission {
 }
 
 export type Item =
-  | { kind: "driver"; key: string; text: string; skill?: string }
+  | { kind: "captain"; key: string; text: string; skill?: string }
   | { kind: "wake"; key: string; text: string; note: WakeNote }
+  | { kind: "beacon"; key: string; text: string }
   | { kind: "subagent-result"; key: string; text: string; source: string; agent?: string; outcome?: string; childId?: string }
   | Turn
   /** A permission asked outside any turn shown here (a stream cut mid-turn). */
@@ -127,9 +128,9 @@ export const emptyView = (): SessionView => ({
 
 const str = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback);
 
-export function authorOf(source: string): "driver" | "navigator" | "subagent" {
-  if (source.startsWith("user:") && source !== "user:subagent") return "driver";
-  if (source === "navigator" || source.startsWith("navigator:")) return "navigator";
+export function authorOf(source: string): "captain" | "navigator" | "subagent" {
+  if (source === "captain" || source === "driver" || source.startsWith("captain:") || source.startsWith("user:") && source !== "user:subagent") return "captain";
+  if (source === "nav" || source.startsWith("nav:") || source === "navigator" || source.startsWith("navigator:")) return "navigator";
   return "subagent";
 }
 
@@ -163,9 +164,11 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       const text = str(p.content);
       const key = `m:${envelope.seq}`;
       const author = authorOf(source);
-      if (author === "driver") {
-        const skill = p.selected_skill?.origin === "driver" ? str(p.selected_skill?.name) || undefined : undefined;
-        next.items = [...next.items, { kind: "driver", key, text, skill }];
+      if (source === "metacognition" || source === "metacognition:remark") {
+        next.items = [...next.items, { kind: "beacon", key, text }];
+      } else if (author === "captain") {
+        const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
+        next.items = [...next.items, { kind: "captain", key, text, skill }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];
       else next.items = [...next.items, { kind: "subagent-result", key, source, ...subagentResult(text, p) }];
       return next;
@@ -177,7 +180,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       next.activity = "running";
       next.pause = null;
       // A turn that yielded for a permission resumes as a new turn of the same
-      // task once the driver answers: it continues the same block.
+      // task once the Captain answers: it continues the same block.
       const last = next.items[next.items.length - 1];
       if (last?.kind === "turn" && last.status === "yielded" && taskId && last.taskId === taskId) {
         next.items = [...next.items.slice(0, -1), { ...last, turnId, status: "running" }];
@@ -234,7 +237,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
         outcome === "error" ? "error" : outcome === "interrupted" ? "interrupted" : outcome === "yielded" ? "yielded" : "done";
       const error = p.error ? str(p.error.message, JSON.stringify(p.error)) : undefined;
       next.currentTurn = null;
-      // A turn yielded to a waiting permission is not over for the driver.
+      // A turn yielded to a waiting permission is not over for the Captain.
       const waiting = status === "yielded" && Object.values(next.permissions).some((perm) => !perm.resolution);
       next.activity = next.activity === "stopped" ? "stopped" : waiting ? "running" : "idle";
       const updated = updateTurn(next, turnId, (turn) => ({ ...turn, status, error, durationMs: typeof p.duration_ms === "number" ? p.duration_ms : undefined }));
@@ -243,7 +246,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
     }
     case "agent.state":
       if (p.actor_id && p.actor_id !== "agent:main") return next;
-      // `yielded` (waiting on the driver) leaves the activity turn.end set.
+      // `yielded` (waiting on the Captain) leaves the activity turn.end set.
       if (p.to === "running") next.activity = "running";
       else if (p.to === "idle") next.activity = next.activity === "stopped" ? "stopped" : "idle";
       return next;
@@ -412,7 +415,7 @@ export function reduceAll(view: SessionView, envelopes: Envelope[]): SessionView
 /** The transcript line for a bypass change, in the TUI's words; `by` is the server's origin tag. */
 function bypassNotice(enabled: boolean, by: string): string {
   if (by === "system:resume") return "Bypass off: the session was reopened";
-  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (navai run --yes)" : "";
+  const from = by.startsWith("parent:") ? " (from the parent session)" : by === "user:cli" ? " (nav run --yes)" : "";
   return enabled
     ? `Bypass on${from}: ordinary permission prompts are skipped; protected requests still ask`
     : `Bypass off${from}`;

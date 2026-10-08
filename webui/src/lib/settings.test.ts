@@ -23,14 +23,14 @@ const field = (key: string, value: unknown, extra: Partial<SettingField> = {}): 
 
 const body: SettingsBody = {
   revision: "sha256:1",
-  paths: { config: "/home/u/.config/navai/config.json", models: "/home/u/.config/navai/models.json", agents: [] },
+  paths: { config: "/home/u/.config/withnav/config.json", models: "/home/u/.config/withnav/models.json", agents: [] },
   fields: [
     field("layers.reflex", { model: "inception/mercury-edit-2", variant: null }),
     field("layers.instinct", null),
     field("layers.metacognition", { model: "omniroute/combo/deepseek-v4-flash", variant: "low" }),
     field("default_agent", "build", { default: "build" }),
     field("agents.build", { model: "omniroute/cc/claude-opus-5-5", variant: "high" }),
-    field("agents.explore", null),
+    field("agents.vigie", null),
     field("permissions.automatic_review", null, { default: true }),
     field("subagents.max_concurrent", 6, { default: 4 }),
     field("tui.theme", "nord-light", { applies: "live" }),
@@ -61,7 +61,7 @@ describe("settings field mapping", () => {
     expect(choiceOf(body, "layers.metacognition")?.variant).toBe("low");
   });
   it("lists the agents the server reports a field for", () => {
-    expect(agentKeys(body)).toEqual(["build", "explore"]);
+    expect(agentKeys(body)).toEqual(["build", "vigie"]);
   });
   it("adopts the server theme only when config.json sets a known one", () => {
     expect(serverTheme(body)).toBe("nord-light");
@@ -93,12 +93,12 @@ describe("sidebar summaries", () => {
     expect(summaries({ ...body, fields: [field("permissions.automatic_review", false)] }).permissions).toBe("ask for every call");
   });
   it("show one folder for files that share it", () => {
-    expect(fileLines(body.paths)).toEqual(["~/.config/navai/", "config.json · models.json"]);
-    expect(fileLines({ config: "/home/u/.config/navai/config.json", models: "/ws/models.json", agents: [] })).toEqual(["~/.config/navai/config.json", "/ws/models.json"]);
+    expect(fileLines(body.paths)).toEqual(["~/.config/withnav/", "config.json · models.json"]);
+    expect(fileLines({ config: "/home/u/.config/withnav/config.json", models: "/ws/models.json", agents: [] })).toEqual(["~/.config/withnav/config.json", "/ws/models.json"]);
   });
   it("label the users of a gateway like the design", () => {
     expect(usedByLabel("layers.reflex")).toBe("reflex");
-    expect(usedByLabel("agents.build")).toBe("cognition · build");
+    expect(usedByLabel("agents.build")).toBe("cognition · Nav · The Navigator");
   });
 });
 
@@ -128,7 +128,7 @@ describe("save state", () => {
   });
   it("says when the saved change takes effect, as the server reports it", () => {
     const done = run({ type: "start", key: "layers.reflex", value: null }, { type: "saved", key: "layers.reflex" });
-    expect(statusLine(done, "restart").text).toBe("Saved · applies after restarting Navai");
+    expect(statusLine(done, "restart").text).toBe("Saved · applies after restarting WithNav");
     expect(statusLine(done, "new_sessions").text).toBe("Saved · applies to new sessions and subagents");
     expect(appliesText("live")).toBe("Applies here now; other open windows on their next start");
     expect(statusLine(initialSave, "restart").text).toBe("Saved");

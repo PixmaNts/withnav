@@ -1,8 +1,8 @@
-// Parses a navigator wake (a `message.received` whose source is `navigator`)
+// Parses a Nav wake (a `message.received` whose source is `nav` or legacy `navigator`)
 // into the parts the transcript shows. Same rules as the VS Code chat
-// (`vscode-navigator/src/webview/wake.ts`), which is the reference.
+// (`vscode-withnav/src/webview/wake.ts`), which is the reference.
 //
-// Current shape:
+// Structured shape (legacy server text, still accepted):
 //   Navigator noticed: <reason> (<score>) in <path>:<line>
 //   ```diff ... ```
 //   Intent on record:
@@ -15,7 +15,7 @@
 //   Intent on record:
 //   <intent>
 //   Recent conversation:
-//   <digest, dropped: the driver already sees it>
+//   <digest, dropped: the Captain already sees it>
 
 export interface WakeNote {
   reason: string;

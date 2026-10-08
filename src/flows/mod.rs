@@ -1,4 +1,4 @@
-//! Navai-owned flow schemas, persistence and execution adapters.
+//! WithNav-owned flow schemas, persistence and execution adapters.
 pub mod builtin;
 pub mod catalogue;
 pub mod client;

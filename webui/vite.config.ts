@@ -2,24 +2,25 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fallbacks } from "./dev/fallbacks.ts";
+import { devEnv } from "./dev/legacyConfig.ts";
 
 // The session server the dev build talks to. Defaults to a scratch server:
-//   XDG_DATA_HOME=/tmp/opencode/navai-webui-data navai serve --bind 127.0.0.1:7311
-const target = process.env.NAVAI_SERVER ?? "http://127.0.0.1:7311";
+//   XDG_DATA_HOME=/tmp/opencode/withnav-webui-data nav serve --bind 127.0.0.1:7311
+const target = devEnv("SERVER") ?? "http://127.0.0.1:7311";
 // Workspaces listed by the dev stand-in for `GET /v1/workspaces`, colon-separated.
-const workspaces = (process.env.NAVAI_WORKSPACES ?? "/tmp/opencode/navai-webui-ws").split(":").filter(Boolean);
+const workspaces = (devEnv("WORKSPACES") ?? "/tmp/opencode/withnav-webui-ws").split(":").filter(Boolean);
 
 export default defineConfig({
   base: "/",
   plugins: [
     react(),
     {
-      name: "navai-dev-fallbacks",
+      name: "withnav-dev-fallbacks",
       apply: "serve",
       configureServer(server) {
-        // Dev only: a `navai web` server wants its bearer token, which the page served by Vite
+        // Dev only: a `nav web` server wants its bearer token, which the page served by Vite
         // does not have. Added here so both the proxy and the stand-ins send it.
-        const token = process.env.NAVAI_TOKEN;
+        const token = devEnv("TOKEN");
         if (token)
           server.middlewares.use((req, _res, next) => {
             if (req.url?.startsWith("/v1") && !req.headers.authorization) req.headers.authorization = `Bearer ${token}`;

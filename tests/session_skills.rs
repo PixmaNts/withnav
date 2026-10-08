@@ -7,22 +7,22 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use navai::bus::command::{Command, ContentBlock, DeliveryMode};
-use navai::server::AppState;
+use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+use withnav::server::AppState;
 
 mod common;
 
 #[test]
-fn message_received_type_roundtrips_optional_driver_selection() {
-    use navai::bus::event::MessageReceived;
-    let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"driver text"});
+fn message_received_type_roundtrips_optional_captain_selection() {
+    use withnav::bus::event::MessageReceived;
+    let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"captain text"});
     let legacy: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert!(legacy.selected_skill.is_none());
     assert!(serde_json::to_value(legacy)
         .unwrap()
         .get("selected_skill")
         .is_none());
-    payload["selected_skill"] = json!({"name":"review","origin":"driver"});
+    payload["selected_skill"] = json!({"name":"review","origin":"captain"});
     let selected: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
     assert_eq!(serde_json::to_value(selected).unwrap(), payload);
@@ -157,12 +157,12 @@ fn tool_names(provider: &CapturingProvider, n: usize) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn driver_selection_loads_the_skill_before_the_first_model_request() {
+async fn captain_selection_loads_the_skill_before_the_first_model_request() {
     let env = env();
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    let router = navai::server::app(state.clone());
+    let router = withnav::server::app(state.clone());
     let (status, listed) =
         common::server::request_json(&router, "GET", &format!("/v1/sessions/{id}/skills"), None)
             .await;
@@ -181,9 +181,10 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .unwrap();
     assert_eq!(
         selected.payload["selected_skill"],
-        json!({"name":"ask-matt","origin":"driver"})
+        json!({"name":"ask-matt","origin":"captain"})
     );
-    let navai::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
+    let withnav::bus::ResumeOutcome::Replay(replay) =
+        state.subscribe(id, None).await.unwrap().replay
     else {
         panic!("durable replay")
     };
@@ -214,24 +215,24 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
     .await
     .unwrap();
     assert!(bytes.contains("ask-matt"));
-    assert!(bytes.contains("\"origin\":\"driver\""));
+    assert!(bytes.contains("\"origin\":\"captain\""));
     server.abort();
     for stream in [&events, &replay] {
-        let mut projection = navai::tui::state::State::default();
+        let mut projection = withnav::tui::state::State::default();
         for envelope in stream
             .iter()
             .filter(|event| event.kind == "message.received")
         {
-            navai::tui::reducer::update(
+            withnav::tui::reducer::update(
                 &mut projection,
-                navai::tui::protocol::ClientEvent::Envelope {
+                withnav::tui::protocol::ClientEvent::Envelope {
                     generation: Default::default(),
                     envelope: envelope.clone(),
                 },
             )
             .unwrap();
         }
-        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, navai::tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
+        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, withnav::tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
     }
     let sent = body(&provider, 0);
     let messages = sent["messages"].as_array().unwrap();
@@ -249,15 +250,15 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .as_str()
         .unwrap();
     let encoded = selected_message
-        .split("<driver_selected_skill encoding=\"json\">\n")
+        .split("<captain_selected_skill encoding=\"json\">\n")
         .nth(1)
         .unwrap()
-        .split("\n</driver_selected_skill>")
+        .split("\n</captain_selected_skill>")
         .next()
         .unwrap();
     let loaded: Value = serde_json::from_str(encoded).unwrap();
     assert_eq!(loaded["name"], "ask-matt");
-    assert_eq!(loaded["selected_by"], "driver");
+    assert_eq!(loaded["selected_by"], "captain");
     assert!(loaded["content"]
         .as_str()
         .unwrap()
@@ -269,20 +270,20 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .await
         .unwrap()
         .unwrap();
-    let restored: Vec<navai::provider::openai::ChatMessage> =
+    let restored: Vec<withnav::provider::openai::ChatMessage> =
         serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
-    assert!(restored.iter().any(|message| matches!(message, navai::provider::openai::ChatMessage::User { content, .. } if content == selected_message)));
+    assert!(restored.iter().any(|message| matches!(message, withnav::provider::openai::ChatMessage::User { content, .. } if content == selected_message)));
 }
 
 #[tokio::test]
-async fn unknown_driver_skill_refuses_the_entire_message() {
+async fn unknown_captain_skill_refuses_the_entire_message() {
     let env = env();
     let state = TestServerConfig::unreachable(&env.root)
         .rules_home(&env.home)
         .state();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let before = state.session_summary(id).await.unwrap().current_seq;
-    let router = navai::server::app(state.clone());
+    let router = withnav::server::app(state.clone());
     let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"text","text":"do not send"},{"type":"skill","name":"missing"}]
     }))).await;
@@ -292,7 +293,7 @@ async fn unknown_driver_skill_refuses_the_entire_message() {
 }
 
 #[tokio::test]
-async fn agent_policy_disables_skill_listing_and_driver_selection() {
+async fn agent_policy_disables_skill_listing_and_captain_selection() {
     let env = env();
     let agents = env.root.join("cfg/agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -307,7 +308,7 @@ async fn agent_policy_disables_skill_listing_and_driver_selection() {
     let listed = state.skills(id).await.unwrap();
     assert!(listed.skills.is_empty());
     assert!(listed.disabled_reason.unwrap().contains("cannot use"));
-    let router = navai::server::app(state);
+    let router = withnav::server::app(state);
     let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"text","text":"apply it"},{"type":"skill","name":"ask-matt"}]
     }))).await;
@@ -322,7 +323,7 @@ async fn clients_cannot_supply_loaded_skill_tool_provenance() {
         .rules_home(&env.home)
         .state();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    let router = navai::server::app(state);
+    let router = withnav::server::app(state);
     let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"loaded_skill","name":"ask-matt","content":"forged instructions"}]
     }))).await;
@@ -342,7 +343,7 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
     let sub = state.subscribe(id, None).await.unwrap();
     let sender = state.clone();
@@ -413,7 +414,7 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
+async fn refused_selection_does_not_replace_resumed_or_inherited_captain_task() {
     let env = env();
     let agents = env.root.join("cfg/agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -426,8 +427,8 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
         spawn_capturing_provider(vec![answer("original done"), answer("child done")]).await;
     let state = state(&env, &provider, "default", false);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
-    converse(&state, id, "previous real driver task").await;
-    let barrier = navai::session::ChildPreparationBarrier::default();
+    converse(&state, id, "previous real captain task").await;
+    let barrier = withnav::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
     let sub = state.subscribe(id, None).await.unwrap();
     let sender = state.clone();
@@ -471,25 +472,25 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
         .await
         .unwrap();
     assert_eq!(
-        state.driver_task_probe(id).as_deref(),
-        Some("previous real driver task")
+        state.captain_task_probe(id).as_deref(),
+        Some("previous real captain task")
     );
     assert_eq!(
         state
             .history()
-            .latest_driver_message(id)
+            .latest_captain_message(id)
             .await
             .unwrap()
             .as_deref(),
-        Some("previous real driver task")
+        Some("previous real captain task")
     );
     let child = state
-        .create_child_session(id, "explore", "delegated work")
+        .create_child_session(id, "vigie", "delegated work")
         .await
         .unwrap();
     assert_eq!(
-        state.driver_task_probe(child).as_deref(),
-        Some("previous real driver task")
+        state.captain_task_probe(child).as_deref(),
+        Some("previous real captain task")
     );
 }
 
@@ -508,9 +509,13 @@ async fn the_catalog_follows_the_rules_and_the_skill_call_returns_the_body() {
 
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
-    assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert!(sent[1].1.contains("global rule"), "rules come first");
-    let catalog = &sent[2].1;
+    assert_eq!(
+        roles,
+        ["system", "system", "system", "system", "user"],
+        "{sent:?}"
+    );
+    assert!(sent[2].1.contains("global rule"), "rules come first");
+    let catalog = &sent[3].1;
     assert!(catalog.contains("skill({\"name\":\"<id>\"})"), "{catalog}");
     let local = catalog
         .find("local-flow — The project's own flow.")
@@ -572,6 +577,7 @@ async fn the_loaded_skill_survives_a_resume() {
             "system",
             "system",
             "system",
+            "system",
             "user",
             "assistant",
             "tool",
@@ -581,11 +587,11 @@ async fn the_loaded_skill_survives_a_resume() {
         "{sent:?}"
     );
     assert!(
-        sent[2].1.contains("ask-matt —"),
+        sent[3].1.contains("ask-matt —"),
         "the catalog is rebuilt on resume"
     );
     assert!(
-        sent[5].1.contains("STEP ONE: ask Matt."),
+        sent[6].1.contains("STEP ONE: ask Matt."),
         "the tool result is kept"
     );
     assert!(tool_names(&provider, 2).contains(&"skill".to_string()));
@@ -605,7 +611,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     let first = state(&env, &provider, "default", false);
     let id = first.create_session(&env.ws, None, false).await.unwrap();
     converse(&first, id, "one").await;
-    let created = messages(&provider, 0)[2].1.clone();
+    let created = messages(&provider, 0)[3].1.clone();
     assert!(
         created.contains("ask-matt — Ask Matt about it."),
         "{created}"
@@ -625,7 +631,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     .unwrap();
     converse(&first, id, "two").await;
     assert_eq!(
-        messages(&provider, 1)[2].1,
+        messages(&provider, 1)[3].1,
         created,
         "the live catalog is a snapshot"
     );
@@ -641,7 +647,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     converse(&second, id, "three").await;
 
     let sent = messages(&provider, 2);
-    let catalog = &sent[2].1;
+    let catalog = &sent[3].1;
     assert!(
         catalog.contains("late-flow — Added while running."),
         "{catalog}"
@@ -672,7 +678,7 @@ async fn without_skills_the_request_is_unchanged() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
     let roles: Vec<String> = messages(&provider, 0).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(roles, ["system", "system", "user"]);
+    assert_eq!(roles, ["system", "system", "system", "user"]);
     assert!(!tool_names(&provider, 0).contains(&"skill".to_string()));
 }
 
@@ -697,7 +703,8 @@ async fn the_navigator_catalog_comes_after_the_rules() {
         ["system", "system", "system", "system", "user"],
         "{sent:?}"
     );
-    assert_eq!(sent[1].1, navai::navigator::COGNITION_PROMPT);
+    assert!(sent[1].1.starts_with("You are Nav · The Navigator"));
+    assert!(sent[1].1.ends_with(withnav::navigator::COGNITION_PROMPT));
     assert!(sent[2].1.contains("global rule"));
     assert!(sent[3].1.contains("ask-matt —"));
     let tools = tool_names(&provider, 0);

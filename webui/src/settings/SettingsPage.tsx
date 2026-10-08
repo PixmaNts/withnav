@@ -39,7 +39,7 @@ export function SettingsPage({ route, navigate, theme, setTheme }: Props) {
   const main = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    document.title = "Settings · Navai";
+    document.title = "Settings · WithNav";
   }, []);
   useEffect(() => {
     main.current?.scrollTo({ top: 0 });
@@ -99,7 +99,7 @@ export function SettingsPage({ route, navigate, theme, setTheme }: Props) {
       <header className="topbar st-top">
         <span className="brand">
           <Compass size={16} aria-hidden />
-          Navai
+          WithNav
         </span>
         <span className="crumb">Settings</span>
         <div className="topbar-right">

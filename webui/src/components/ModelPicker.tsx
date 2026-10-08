@@ -1,3 +1,4 @@
+import { Crew } from "./Crew";
 import { CaretDown, CaretRight, MagnifyingGlass, Plugs } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEntry, ModelEntry } from "../api/types";
@@ -51,7 +52,7 @@ export function ModelPicker({ chat, onClose, onSwitchAgent }: { chat: Chat; onCl
   // What each primary agent runs now: the active one per the stream, the others per the server.
   const current = (a: AgentEntry): { model: string | null; variant: string | null; source?: string } =>
     a.id === chat.agentId ? { model: sel.model, variant: sel.variant } : { model: a.effective?.model ?? null, variant: a.effective?.variant ?? null, source: a.effective?.source };
-  const usedBy = (name: string) => tabs.filter((a) => current(a).model === name).map((a) => a.id).join(", ");
+  const usedBy = (name: string) => tabs.filter((a) => current(a).model === name).map((a) => <Crew key={a.id} id={a.id} />);
 
   const shownAgent = tabs.find((a) => a.id === tab);
   const shown = shownAgent ? current(shownAgent) : { model: sel.model, variant: sel.variant };
@@ -140,7 +141,7 @@ export function ModelPicker({ chat, onClose, onSwitchAgent }: { chat: Chat; onCl
             return (
               <button key={a.id} type="button" role="tab" aria-selected={a.id === tab} className="picker-tab" onClick={() => setTab(a.id)}>
                 <span className="t">
-                  {cap(a.id)}
+                  <Crew id={a.id} />
                   {a.id === chat.agentId ? " · Active" : ""}
                 </span>
                 <span className="s">
@@ -263,7 +264,6 @@ export function ModelPicker({ chat, onClose, onSwitchAgent }: { chat: Chat; onCl
   );
 }
 
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** In the tab subtitle, the model's own id (like the design: `claude-opus-5-5`). */
 function tabModelName(name: string, models: ModelEntry[]): string {

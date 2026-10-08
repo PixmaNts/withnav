@@ -4,7 +4,7 @@ import type { Permission } from "../session/reducer";
 
 type Decision = "allow_once" | "allow_folder" | "deny";
 
-/** What the call would do, as the driver reviews it: path and content, or the command. */
+/** What the call would do, as the Captain reviews it: path and content, or the command. */
 function preview(perm: Permission): { title: string; path?: string; lines: { kind: "add" | "del" | "ctx"; text: string }[]; extra?: string } {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let args: any;
@@ -124,7 +124,7 @@ function Outcome({ perm, site }: { perm: Permission; site: boolean }) {
     case "allow_folder":
       return <div className="outcome"><span className="ok">✓</span> Allowed for this {site ? "site" : "folder"}.</div>;
     case "deny":
-      return <div className="outcome"><span className="bad">✕</span> Denied.{perm.message && perm.message !== "the user denied this tool call" ? ` ${perm.message}` : " Cognition proposes an alternative."}</div>;
+      return <div className="outcome"><span className="bad">✕</span> Denied.{perm.message && perm.message !== "the user denied this tool call" ? ` ${perm.message}` : " Nav proposes an alternative."}</div>;
     case "cancelled":
       return <div className="outcome">Cancelled: the turn stopped before an answer.</div>;
     case "expired":

@@ -1,4 +1,4 @@
-//! Binary-level tests of `navai tui` that need no terminal. Every
+//! Binary-level tests of `nav tui` that need no terminal. Every
 //! spawned binary gets its own XDG dirs so nothing touches the user's data.
 use std::process::{Command, Output, Stdio};
 
@@ -19,21 +19,22 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let config = dirs.path().join("config");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir_all(&config).unwrap();
-    std::fs::create_dir_all(config.join("navai")).unwrap();
+    std::fs::create_dir_all(config.join("withnav")).unwrap();
     std::fs::write(
-        config.join("navai/config.json"),
+        config.join("withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/model"}}}"#,
     )
     .unwrap();
-    std::fs::write(config.join("navai/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
-    navai::provider::auth::set_key(&config.join("navai"), "mock", "test-key").unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_navai"));
+    std::fs::write(config.join("withnav/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
+    withnav::provider::auth::set_key(&config.join("withnav"), "mock", "test-key").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nav"));
     command
         .arg("tui")
         .args(args)
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CONFIG_HOME", &config)
         .env("HOME", dirs.path())
+        .env_remove("WITHNAV_SERVER_TOKEN")
         .env_remove("NAVAI_SERVER_TOKEN")
         .stdin(Stdio::null());
     for (key, value) in env {
@@ -63,7 +64,7 @@ fn help_lists_every_flag() {
         assert!(help.contains(flag), "{flag} missing from:\n{help}");
     }
     assert!(
-        help.contains("NAVAI_SERVER_TOKEN"),
+        help.contains("WITHNAV_SERVER_TOKEN"),
         "the token variable is not documented:\n{help}"
     );
 }
@@ -130,7 +131,7 @@ fn without_a_terminal_the_embedded_client_stops_cleanly_and_logs_to_the_file() {
         stderr(&run)
     );
     assert!(run.out.stdout.is_empty(), "stdout must stay clean");
-    let log = std::fs::read_to_string(run.dirs.path().join("data").join("navai").join("tui.log"))
+    let log = std::fs::read_to_string(run.dirs.path().join("data").join("withnav").join("tui.log"))
         .expect("tui.log exists");
     assert!(log.contains("terminal client started"), "{log}");
 }
@@ -140,9 +141,9 @@ fn the_token_is_never_written_to_the_log() {
     let url = closed_port_url();
     let run = tui_with(
         &["--url", &url, "--workspace", "."],
-        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
+        &[("WITHNAV_SERVER_TOKEN", "super-secret-token-value")],
     );
-    let log_dir = run.dirs.path().join("data").join("navai");
+    let log_dir = run.dirs.path().join("data").join("withnav");
     let log = std::fs::read_to_string(log_dir.join("tui.log")).unwrap_or_default();
     assert!(!log.contains("super-secret-token-value"));
     assert!(!stderr(&run).contains("super-secret-token-value"));
@@ -161,7 +162,7 @@ fn the_former_token_variable_works_with_one_deprecation_warning() {
         1,
         "{err}"
     );
-    assert!(err.contains("NAVAI_SERVER_TOKEN"), "{err}");
+    assert!(err.contains("WITHNAV_SERVER_TOKEN"), "{err}");
     assert!(!err.contains("super-secret-token-value"));
 }
 
@@ -170,7 +171,7 @@ fn the_new_token_variable_prints_no_warning() {
     let url = closed_port_url();
     let run = tui_with(
         &["--url", &url, "--workspace", "."],
-        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
+        &[("WITHNAV_SERVER_TOKEN", "super-secret-token-value")],
     );
     assert!(!stderr(&run).contains("deprecated"), "{}", stderr(&run));
 }
@@ -189,7 +190,7 @@ fn a_start_moves_the_former_data_and_config_once() {
     std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
 
     for _ in 0..2 {
-        let status = Command::new(env!("CARGO_BIN_EXE_navai"))
+        let status = Command::new(env!("CARGO_BIN_EXE_nav"))
             .args(["tui", "--workspace", "."])
             .env("XDG_DATA_HOME", &data)
             .env("XDG_CONFIG_HOME", &config)
@@ -202,14 +203,32 @@ fn a_start_moves_the_former_data_and_config_once() {
     }
 
     assert_eq!(
-        std::fs::read_to_string(data.join("navai/navai.jsonl")).unwrap(),
+        std::fs::read_to_string(data.join("withnav/withnav.jsonl")).unwrap(),
         "log"
     );
     assert!(!data.join("navigator/navigator.jsonl").exists());
-    let moved = config.join("navai/auth.json");
+    let moved = config.join("withnav/auth.json");
     assert_eq!(
         std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777,
         0o600
     );
     assert!(!auth.exists());
+}
+
+#[test]
+fn the_navai_token_variable_still_works_with_a_deprecation_warning() {
+    let url = closed_port_url();
+    let run = tui_with(
+        &["--url", &url, "--workspace", "."],
+        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
+    );
+    // The terminal owns stderr, so the deprecation goes to the client log.
+    let log =
+        std::fs::read_to_string(run.dirs.path().join("data/withnav/tui.log")).unwrap_or_default();
+    assert!(
+        log.contains("NAVAI_SERVER_TOKEN is deprecated; use WITHNAV_SERVER_TOKEN"),
+        "{log}"
+    );
+    assert!(!log.contains("super-secret-token-value"));
+    assert!(!stderr(&run).contains("super-secret-token-value"));
 }

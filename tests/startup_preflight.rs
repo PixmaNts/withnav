@@ -1,12 +1,12 @@
-//! Process startup admission uses synthetic config and never the driver's credentials.
+//! Process startup admission uses synthetic config and never the Captain's credentials.
 
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use navai::agent::instructions::RulesRoots;
-use navai::session::preflight::Preflight;
 use serde_json::{json, Value};
+use withnav::agent::instructions::RulesRoots;
+use withnav::session::preflight::Preflight;
 
 fn fixture(config: Value) -> tempfile::TempDir {
     let mut config = config;
@@ -18,25 +18,30 @@ fn fixture(config: Value) -> tempfile::TempDir {
         }
     }
     let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("config/navai");
+    let cfg = dir.path().join("config/withnav");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::write(cfg.join("config.json"), config.to_string()).unwrap();
     std::fs::write(cfg.join("models.json"), json!({
-        "providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"NAVAI_STARTUP_ABSENT_KEY"}},
+        "providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"WITHNAV_STARTUP_ABSENT_KEY"}},
         "models":{
             "mock/chat":{"provider":"mock","model":"chat","context_window":128000,"supports_tools":true},
             "mock/fim":{"provider":"mock","model":"fim","api":"fim"},
             "mock/no-window":{"provider":"mock","model":"no-window"}
         }
     }).to_string()).unwrap();
-    navai::provider::auth::set_key(&cfg, "mock", "synthetic-secret-never-print").unwrap();
+    withnav::provider::auth::set_key(&cfg, "mock", "synthetic-secret-never-print").unwrap();
     dir
 }
 
 async fn captured(dir: &Path) -> Preflight {
-    Preflight::capture(&dir.join("config/navai"), None, dir, &RulesRoots::default())
-        .await
-        .unwrap()
+    Preflight::capture(
+        &dir.join("config/withnav"),
+        None,
+        dir,
+        &RulesRoots::default(),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -45,10 +50,10 @@ async fn default_admission_rejects_unknown_ineligible_and_unusable_assignments()
         (json!({}), "no assigned model"),
         (
             json!({"default_agent":"missing","agents":{"build":"mock/chat"}}),
-            "valid agents: build, plan",
+            "valid agents: build, lux, plan",
         ),
         (
-            json!({"default_agent":"explore","agents":{"explore":"mock/chat"}}),
+            json!({"default_agent":"vigie","agents":{"vigie":"mock/chat"}}),
             "not primary",
         ),
         (
@@ -103,14 +108,14 @@ async fn settings_and_models_are_captured_once_and_project_agents_use_actual_sco
         .unwrap()
         .is_none());
     let workspace = dir.path().join("project");
-    std::fs::create_dir_all(workspace.join(".navai/agents")).unwrap();
+    std::fs::create_dir_all(workspace.join(".withnav/agents")).unwrap();
     std::fs::write(
-        workspace.join(".navai/agents/local.md"),
+        workspace.join(".withnav/agents/local.md"),
         "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
     )
     .unwrap();
-    std::fs::write(dir.path().join("config/navai/config.json"), "{}").unwrap();
-    std::fs::write(dir.path().join("config/navai/models.json"), "{}").unwrap();
+    std::fs::write(dir.path().join("config/withnav/config.json"), "{}").unwrap();
+    std::fs::write(dir.path().join("config/withnav/models.json"), "{}").unwrap();
     assert_eq!(preflight.check(&workspace).await.unwrap(), "local");
     assert!(preflight
         .check(dir.path())
@@ -123,7 +128,7 @@ async fn settings_and_models_are_captured_once_and_project_agents_use_actual_sco
 #[tokio::test]
 async fn missing_or_malformed_auth_is_explicit_and_secret_safe() {
     let dir = fixture(json!({"agents":{"build":"mock/chat"}}));
-    let auth = dir.path().join("config/navai/auth.json");
+    let auth = dir.path().join("config/withnav/auth.json");
     for raw in [
         None,
         Some(r#"{"mock":{"api_key":true,"synthetic-secret":"bad"}}"#),
@@ -149,15 +154,15 @@ async fn missing_or_malformed_auth_is_explicit_and_secret_safe() {
 
 fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(if lsp {
-        env!("CARGO_BIN_EXE_navai-lsp")
+        env!("CARGO_BIN_EXE_withnav-lsp")
     } else {
-        env!("CARGO_BIN_EXE_navai")
+        env!("CARGO_BIN_EXE_nav")
     });
     cmd.current_dir(dir)
         .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))
-        .env_remove("NAVAI_STARTUP_ABSENT_KEY")
+        .env_remove("WITHNAV_STARTUP_ABSENT_KEY")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     cmd
@@ -186,7 +191,7 @@ async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_r
         );
         assert!(!output.stdout.windows(4).any(|s| s == b"\x1b[?1"));
         assert!(!err.contains("synthetic-secret"));
-        assert!(!dir.path().join("data/navai/history.sqlite3").exists());
+        assert!(!dir.path().join("data/withnav/history.sqlite3").exists());
     }
     let dir = fixture(json!({}));
     use tokio::io::AsyncWriteExt as _;
@@ -241,14 +246,14 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
         Some("mode: primary\nmodel: mock/fim"),
     ] {
         let dir = fixture(if global_header.is_some() {
-            json!({"default_agent":"oracle"})
+            json!({"default_agent":"lux"})
         } else {
             json!({"agents":{"build":{"model":"mock/chat"}},"layers":{"reflex":"mock/fim"}})
         });
         let workspace = dir.path().join("project");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::rename(
-            dir.path().join("config/navai/models.json"),
+            dir.path().join("config/withnav/models.json"),
             workspace.join("models.json"),
         )
         .unwrap();
@@ -256,14 +261,14 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             let global = dir.path().join("home/.config/opencode/agents");
             std::fs::create_dir_all(&global).unwrap();
             std::fs::write(
-                global.join("oracle.md"),
+                global.join("lux.md"),
                 format!("---\n{header}\n---\nGlobal role"),
             )
             .unwrap();
-            let project = workspace.join(".navai/agents");
+            let project = workspace.join(".withnav/agents");
             std::fs::create_dir_all(&project).unwrap();
             std::fs::write(
-                project.join("oracle.md"),
+                project.join("lux.md"),
                 "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
             )
             .unwrap();
@@ -300,7 +305,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
                     assert!(message["result"]["capabilities"].is_object(), "{message}");
                     ready = true;
                 }
-                if message["method"] == "navigator/serverInfo" {
+                if message["method"] == "withnav/serverInfo" {
                     assert!(ready);
                     break message["params"].clone();
                 }
@@ -339,7 +344,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             .unwrap();
         assert_eq!(session["model"], "mock/chat", "{session}");
         if global_header.is_some() {
-            assert_eq!(session["agent"], "oracle", "{session}");
+            assert_eq!(session["agent"], "lux", "{session}");
         } else {
             let layers: Value = client
                 .get(format!("{base}/v1/layers"))
@@ -375,7 +380,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
         let workspace = dir.path().join("project");
         std::fs::create_dir_all(&workspace).unwrap();
         let mut models: Value = serde_json::from_slice(
-            &std::fs::read(dir.path().join("config/navai/models.json")).unwrap(),
+            &std::fs::read(dir.path().join("config/withnav/models.json")).unwrap(),
         )
         .unwrap();
         models["models"]["mock/chat"]["api"] = json!("fim");
@@ -415,7 +420,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
             "{error}"
         );
         assert!(!error.contains("synthetic-secret"));
-        assert!(!dir.path().join("data/navai/history.sqlite3").exists());
+        assert!(!dir.path().join("data/withnav/history.sqlite3").exists());
     }
 }
 
@@ -432,7 +437,7 @@ async fn explicit_window_sends_no_provider_requests_and_missing_window_uses_only
         .mount(&server)
         .await;
     let dir = fixture(json!({"agents":{"build":"mock/chat"}}));
-    let models_path = dir.path().join("config/navai/models.json");
+    let models_path = dir.path().join("config/withnav/models.json");
     let mut models: Value = serde_json::from_slice(&std::fs::read(&models_path).unwrap()).unwrap();
     models["providers"]["mock"]["base_url"] = json!(format!("{}/v1", server.uri()));
     std::fs::write(&models_path, models.to_string()).unwrap();
@@ -463,10 +468,10 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
     for present in [true, false] {
         let dir = fixture(json!({"default_agent":"local"}));
         let workspace = dir.path().join("project");
-        std::fs::create_dir_all(workspace.join(".navai/agents")).unwrap();
+        std::fs::create_dir_all(workspace.join(".withnav/agents")).unwrap();
         if present {
             std::fs::write(
-                workspace.join(".navai/agents/local.md"),
+                workspace.join(".withnav/agents/local.md"),
                 "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
             )
             .unwrap();
@@ -516,7 +521,7 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
             let err = String::from_utf8_lossy(&output.stderr);
             assert!(
                 err.contains("default_agent 'local' is unknown")
-                    && err.contains("valid agents: build, plan"),
+                    && err.contains("valid agents: build, lux, plan"),
                 "{err}"
             );
         }
@@ -536,7 +541,7 @@ async fn remote_tui_reports_server_diagnostic_without_local_assignment_preflight
         .mount(&server)
         .await;
     let dir = fixture(json!({"default_agent":"local-invalid"}));
-    std::fs::write(dir.path().join("config/navai/models.json"), "not json").unwrap();
+    std::fs::write(dir.path().join("config/withnav/models.json"), "not json").unwrap();
     let output = command(dir.path(), false)
         .args(["tui", "--url", &server.uri()])
         .output()
@@ -628,7 +633,7 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
                         || error.contains("invalid percent-encoded")),
                 "{error}"
             );
-            assert!(!dir.path().join("data/navai/history.sqlite3").exists());
+            assert!(!dir.path().join("data/withnav/history.sqlite3").exists());
         }
     }
 }
@@ -637,23 +642,23 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
 async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-    let dir = fixture(json!({"default_agent":"oracle"}));
+    let dir = fixture(json!({"default_agent":"lux"}));
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/opencode/agents")).unwrap();
     std::fs::write(
-        home.join(".config/opencode/agents/oracle.md"),
+        home.join(".config/opencode/agents/lux.md"),
         "---\nmode: primary\nmodel: mock/chat\n---\nGlobal role",
     )
     .unwrap();
     let snapshot = Preflight::capture(
-        &dir.path().join("config/navai"),
+        &dir.path().join("config/withnav"),
         None,
         dir.path(),
         &RulesRoots { home: Some(home) },
     )
     .await
     .unwrap();
-    assert_eq!(snapshot.check(dir.path()).await.unwrap(), "oracle");
+    assert_eq!(snapshot.check(dir.path()).await.unwrap(), "lux");
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -664,7 +669,7 @@ async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
         .mount(&server)
         .await;
     let dir = fixture(json!({"agents":{"build":{"model":"mock/chat","variant":"missing"}}}));
-    let models_path = dir.path().join("config/navai/models.json");
+    let models_path = dir.path().join("config/withnav/models.json");
     let mut models: Value = serde_json::from_slice(&std::fs::read(&models_path).unwrap()).unwrap();
     models["providers"]["mock"]["base_url"] = json!(format!("{}/v1", server.uri()));
     models["providers"]["mock"]["catalog_format"] = json!("omniroute");

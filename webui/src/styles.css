@@ -1,4 +1,4 @@
-/* Layout and components of the WebUI. Values follow docs/design/Navai.dc.html
+/* Layout and components of the WebUI. Values follow docs/design/WithNav.dc.html
    (WebUI surface): 13px UI type, compact spacing, 5–6px control radii. */
 
 *,
@@ -544,7 +544,7 @@ a:hover {
   gap: 14px;
   line-height: 1.55;
 }
-.msg-driver {
+.msg-captain {
   min-width: 0;
   border-left: 2px solid var(--mu);
   background: linear-gradient(90deg, color-mix(in srgb, var(--mu) 10%, transparent), transparent);
@@ -1616,3 +1616,7 @@ a:hover {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+.brand, h1, h2, h3, .st-box-head .title { font-family: var(--font-brand); font-weight: 600; }
+.crew { display: inline-flex; align-items: center; gap: 5px; color: var(--crew-color); }
+.crew svg { flex-shrink: 0; }

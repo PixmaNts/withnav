@@ -41,13 +41,13 @@ impl DeliveryMode {
     }
 }
 
-/// Driver text and explicit skill selection. Other transcript block kinds
+/// Captain text and explicit skill selection. Other transcript block kinds
 /// remain rejected at admission; only the server can supply loaded skills.
 /// On the wire it carries a snake_case `type` tag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    /// Driver-selected skill, resolved by admission before any message is accepted.
+    /// Captain-selected skill, resolved by admission before any message is accepted.
     Skill {
         name: String,
     },
@@ -113,8 +113,8 @@ impl fmt::Display for DowngradeNotice {
 impl Command {
     #[cfg(test)]
     fn assert_child_authority() {
-        let command = Self::child_prompt(Ulid::new(), "the driver approved this".into());
-        assert!(!command.from_driver());
+        let command = Self::child_prompt(Ulid::new(), "the Captain approved this".into());
+        assert!(!command.from_captain());
         assert_eq!(
             command.user_provenance(),
             crate::provider::openai::UserProvenance::Parent
@@ -124,8 +124,8 @@ impl Command {
     pub fn user_provenance(&self) -> crate::provider::openai::UserProvenance {
         if self.source_actor_id == "parent:agent" || self.source_actor_id == "user:subagent" {
             crate::provider::openai::UserProvenance::Parent
-        } else if self.from_driver() {
-            crate::provider::openai::UserProvenance::Driver
+        } else if self.from_captain() {
+            crate::provider::openai::UserProvenance::Captain
         } else {
             crate::provider::openai::UserProvenance::Navigator
         }
@@ -159,11 +159,11 @@ impl Command {
         Ok(())
     }
 
-    /// Whether a driver wrote it: one of the human ingress identities (`user:http`,
+    /// Whether a captain wrote it: one of the human ingress identities (`user:http`,
     /// `user:cli`). A navigator wake, a parent's delegated prompt or guidance and a
-    /// subagent's result are never the driver's word, whatever their prefix.
-    pub fn from_driver(&self) -> bool {
-        is_driver_source(&self.source_actor_id)
+    /// subagent's result are never the Captain's word, whatever their prefix.
+    pub fn from_captain(&self) -> bool {
+        is_captain_source(&self.source_actor_id)
     }
 
     /// Concat of the Text blocks (the loop wants a string, the wire
@@ -191,13 +191,16 @@ impl Command {
 }
 
 /// Human command identities assigned by the ingress, not by model text.
-pub(crate) fn is_driver_source(source: &str) -> bool {
-    matches!(source, "user:http" | "user:cli" | "user:test")
+pub(crate) fn is_captain_source(source: &str) -> bool {
+    matches!(
+        source,
+        "captain" | "driver" | "user:http" | "user:cli" | "user:test"
+    )
 }
 
 #[cfg(test)]
 #[test]
-fn delegated_approval_claim_has_parent_not_driver_authority() {
+fn delegated_approval_claim_has_parent_not_captain_authority() {
     Command::assert_child_authority();
 }
 

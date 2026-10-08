@@ -82,6 +82,7 @@ impl FailureKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProposedAction {
     pub node_id: Option<String>,
+    #[serde(deserialize_with = "crate::definition::captain_action")]
     pub action: String,
     pub params: BTreeMap<String, serde_json::Value>,
 }

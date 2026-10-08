@@ -181,8 +181,8 @@ mod tests {
             ("when='x == \"<redacted>\"'\n[flow.inputs]\nx='event.text'\n", "type='expression'\ncondition='true'\n", "event.text", true),
             ("", "type='action'\naction='log'\n[node.params]\ntext='{x}'\n[node.inputs]\nx='event.text'\n", "event.text", true),
             ("", "type='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='event.text'\n", "event.text", true),
-            ("", "type='expression'\ncondition='x == \"driver\"'\n[node.inputs]\nx='event.author'\n", "event.author", false),
-            ("when='x == \"driver\"'\n[flow.inputs]\nx='event.author'\n", "type='expression'\ncondition='true'\n", "event.author", false),
+            ("", "type='expression'\ncondition='x == \"captain\"'\n[node.inputs]\nx='event.author'\n", "event.author", false),
+            ("when='x == \"captain\"'\n[flow.inputs]\nx='event.author'\n", "type='expression'\ncondition='true'\n", "event.author", false),
         ] {
             let text = format!("[flow]\nversion=1\nname='secret'\non='message.received'\nblocking=true\nbudget_ms=100\nstart=['a']\n{gate}[[node]]\nid='a'\n{body}");
             let compiled = Definition::parse(&text).unwrap().validate(
@@ -192,7 +192,7 @@ mod tests {
             ).unwrap();
             let event = Event {
                 trigger: "message.received".into(),
-                payload: serde_json::json!({"command_id":"test","author":"driver","text":"sk-123456789012345678901234"}),
+                payload: serde_json::json!({"command_id":"test","author":"captain","text":"sk-123456789012345678901234"}),
             };
             let mut outcome = run(&compiled, &event, &Inputs, &Client, RunOptions {
                 deadline: Instant::now() + Duration::from_secs(1),

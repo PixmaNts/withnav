@@ -365,7 +365,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
     result
 }
 
-/// Applies `e` to the active tab; `background` tells that the driver is looking at another one.
+/// Applies `e` to the active tab; `background` tells that the Captain is looking at another one.
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
@@ -1082,7 +1082,7 @@ mod skill_tests {
     use crate::bus::command::ContentBlock;
 
     #[test]
-    fn selected_skill_sends_a_typed_selection_and_driver_request() {
+    fn selected_skill_sends_a_typed_selection_and_captain_request() {
         for (draft, expected) in [
             ("/skill review check this", "check this"),
             ("/skill review ", "Apply the review skill."),

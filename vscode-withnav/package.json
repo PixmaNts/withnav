@@ -44,6 +44,7 @@
       ]
     },
     "commands": [
+      { "command": "withnav.deleteConversation", "title": "Delete Conversation…", "category": "WithNav" },
       { "command": "withnav.toggleBypassPermissions", "title": "WithNav: Toggle Bypass Permissions" },
       {
         "command": "withnav.openSettings",

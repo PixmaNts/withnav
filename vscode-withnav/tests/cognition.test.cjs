@@ -11,6 +11,27 @@ Module._load = originalLoad;
 const shortened = text => `${text.slice(0, 2000)}\n...[output elided]...\n${text.slice(-2000)}`;
 
 const commandCatalog = ["model", "variant", "agent", "compact", "context"].map(name => ({ name, description: name, args_hint: "" }));
+test('deletion counts nested children, resets current chat and silently refreshes a missing conversation', async t => {
+  const { backend } = setup(t, {});
+  let sessions = [{ id: 'parent' }, { id: 'child', parent_session_id: 'parent', promptable: false }, { id: 'nested', parent_session_id: 'child', promptable: false }];
+  let status = 204;
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push(init.method);
+    if (init.method === 'DELETE') { sessions = []; return new Response(null, { status }); }
+    return new Response(JSON.stringify({ sessions }));
+  });
+  const list = await backend.listConversations();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].subagentCount, 2);
+  await backend.deleteConversation('parent');
+  assert.equal(backend.currentConversationId(), undefined);
+  assert.equal(backend.history().some(item => item.type === 'message'), false);
+  status = 404;
+  await backend.deleteConversation('parent');
+  assert.deepEqual(calls.slice(-2), ['DELETE', 'GET']);
+  backend.dispose();
+});
 test("commands use exact body without context and unknown/no-session commands retain draft", async t => {
   const { backend, calls } = setup(t, { operation_id: "OP", ok: true });
   backend.commands = commandCatalog;

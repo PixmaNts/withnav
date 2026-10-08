@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Delete VS Code conversations from the command palette.** Choose a workspace conversation,
+  then confirm permanent deletion including its subagent count. The chat button uses the same
+  confirmation; deleted conversations reset to an empty chat and their subagent views close.
+
 ### Fixed
 
 - **VS Code's layer protocol now includes variant discovery diagnostics.** The optional server

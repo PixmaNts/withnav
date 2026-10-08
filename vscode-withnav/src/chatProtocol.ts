@@ -88,6 +88,7 @@ export type HostToWebview = { generation?: number } & (
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
+  subagentCount?: number;
   id: string;
   title: string;
   updatedAt: string;

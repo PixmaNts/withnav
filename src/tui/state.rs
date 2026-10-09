@@ -4,6 +4,11 @@ use super::protocol::{Generation, ModelEntry, SessionListEntry};
 use crate::{bus::event::EventEnvelope, provider::Usage, tools::ToolStatus};
 use serde_json::Value;
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct SkillScript {
+    pub skill: String,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Activity {
     #[default]
@@ -58,6 +63,7 @@ pub enum BlockKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
     pub allow_config_session: bool,
+    pub skill_script: Option<Box<SkillScript>>,
     pub child_session_id: Option<String>,
     pub request_id: String,
     pub tool_call_id: String,

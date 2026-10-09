@@ -72,6 +72,12 @@ pub struct Skill {
     rank: Rank,
 }
 
+impl Skill {
+    pub(crate) fn is_user(&self) -> bool {
+        self.rank.user
+    }
+}
+
 /// What went wrong, or was set aside, for one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticKind {

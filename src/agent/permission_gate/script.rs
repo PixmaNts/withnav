@@ -9,6 +9,56 @@ use super::{bash_command, sensitive_read, shell};
 
 const SCRIPT_BYTES: usize = 48 * 1024;
 
+pub(crate) fn skill_script(
+    actor: &super::super::actor::AgentActor,
+    call: &crate::provider::ToolCall,
+) -> Option<super::super::skill_grants::SkillScript> {
+    if !actor.tool_allowed("skill") || actor.skill_grants.is_none() {
+        return None;
+    }
+    let command = bash_command(call)?;
+    // Grants deliberately support less syntax than advisory evidence. Even a
+    // trailing separator/background operator must not ride a machine grant.
+    if command.contains([';', '&', '|', '$', '`', '>', '<', '\n']) {
+        return None;
+    }
+    let needed = super::super::permissions::Needed {
+        scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
+        destination: None,
+    };
+    if super::hard_floor(actor, call, &needed).is_some()
+        || super::prefilter(call, &needed, &actor.tool_context).risky
+        || super::protected_config_call(actor, call, &needed)
+    {
+        return None;
+    }
+    let mut state = json!({"host_facts": {
+        "workspace": actor.tool_context.workspace,
+        "writable_roots": actor.tool_context.writable_roots
+    }, "untrusted_evidence": {}});
+    attach(actor, call, &mut state);
+    let binding = &state["host_facts"]["script_binding"];
+    if binding["complete"] != true || !crate::tools::bash::script_matches(binding) {
+        return None;
+    }
+    let path = std::path::Path::new(binding["path"].as_str()?);
+    let mut matches = actor
+        .skills
+        .listed()
+        .into_iter()
+        .filter(|skill| skill.is_user() && path.starts_with(&skill.base_dir));
+    let skill = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(super::super::skill_grants::SkillScript {
+        skill: skill.name.clone(),
+        base_dir: skill.base_dir.clone(),
+        relative_path: path.strip_prefix(&skill.base_dir).ok()?.to_path_buf(),
+        sha256: binding["sha256"].as_str()?.to_owned(),
+    })
+}
+
 pub(super) fn attach(
     actor: &super::super::actor::AgentActor,
     call: &crate::provider::ToolCall,

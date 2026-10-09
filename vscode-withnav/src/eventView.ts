@@ -124,6 +124,7 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         arguments: String(p.arguments ?? ""),
         allowFolder: agent !== "plan" && tool === "fetch",
         allowConfigSession: p.allow_config_session === true,
+          skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
         evidence: permissionEvidence(p.permission_gate),
       } };
     }
@@ -177,6 +178,7 @@ export function permissionOutcome(resolution: string, message?: string): string 
     case "allow_once": return "Allowed once";
     case "allow_folder": return "Allowed for this scope";
     case "allow_config_session": return "Allowed WithNav config for this session";
+    case "allow_skill_machine": return "Allowed this user skill's script on this machine";
     case "deny": return message ? `Denied: ${message}` : "Denied";
     case "expired": return "Expired: the session restarted";
     case "cancelled": return "Cancelled";

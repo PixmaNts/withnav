@@ -83,6 +83,8 @@ pub struct Limits {
     pub context_length: Option<u64>,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_message_tokens: Option<u64>,
     /// The reasoning-effort tiers the provider advertises (`low`, `high`, ...;
     /// `none` included when reported). `None`: not known (never validly
     /// reported); `Some` of an empty list: the provider says there are none.
@@ -96,6 +98,7 @@ impl Limits {
             self.context_length,
             self.max_input_tokens,
             self.max_output_tokens,
+            self.max_message_tokens,
         ]
         .into_iter()
         .flatten()
@@ -177,6 +180,44 @@ impl ModelCatalog {
     }
     pub fn system() -> Self {
         Self::new(paths::data_dir())
+    }
+    /// Learned per-message bounds survive new sessions and catalog refreshes.
+    pub fn message_limit(&self, base_url: &str, model: &str) -> Option<u64> {
+        let key = endpoint_key(base_url);
+        self.current(&self.endpoint(&key), self.file(&key).as_deref())?
+            .models
+            .get(model)?
+            .max_message_tokens
+    }
+
+    pub async fn learn_message_limit(&self, base_url: &str, model: &str, limit: u64) {
+        if limit == 0 {
+            return;
+        }
+        let key = endpoint_key(base_url);
+        let ep = self.endpoint(&key);
+        let _flight = ep.flight.lock().await;
+        let path = self.file(&key);
+        let mut cache = self
+            .current(&ep, path.as_deref())
+            .unwrap_or_else(|| CacheFile {
+                version: CACHE_VERSION,
+                // A learned message cap is not a fetched model catalog: do not
+                // suppress discovery of the context window or variant tiers.
+                fetched_at: 0,
+                models: HashMap::new(),
+                carried: HashMap::new(),
+            });
+        let limits = cache.models.entry(model.into()).or_default();
+        limits.max_message_tokens = Some(
+            limits
+                .max_message_tokens
+                .map_or(limit, |old| old.min(limit)),
+        );
+        ep.mem.lock().expect("catalog state poisoned").cache = Some(cache.clone());
+        if let Some(path) = path {
+            self.persist(&path, &cache);
+        }
     }
     fn endpoint(&self, key: &str) -> Arc<Endpoint> {
         self.endpoints
@@ -386,6 +427,10 @@ fn merge(
                 l.context_length = l.context_length.or(p.context_length);
                 l.max_input_tokens = l.max_input_tokens.or(p.max_input_tokens);
                 l.max_output_tokens = l.max_output_tokens.or(p.max_output_tokens);
+                l.max_message_tokens = match (l.max_message_tokens, p.max_message_tokens) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
                 l.effort_tiers = l.effort_tiers.or_else(|| p.effort_tiers.clone());
             }
             (id, l)
@@ -442,6 +487,7 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
             context_length: positive("context_length"),
             max_input_tokens: positive("max_input_tokens"),
             max_output_tokens: positive("max_output_tokens"),
+            max_message_tokens: positive("max_message_tokens"),
             effort_tiers: effort_tiers(e),
         };
         let Some(existing) = models.get_mut(id) else {
@@ -463,6 +509,7 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
         }
         existing.context_length = existing.context_length.or(incoming.context_length);
         existing.max_input_tokens = existing.max_input_tokens.or(incoming.max_input_tokens);
+        existing.max_message_tokens = existing.max_message_tokens.or(incoming.max_message_tokens);
         existing.max_output_tokens = existing.max_output_tokens.or(incoming.max_output_tokens);
         if existing.effort_tiers.as_ref().is_none_or(Vec::is_empty)
             && incoming.effort_tiers.is_some()

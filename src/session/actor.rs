@@ -71,7 +71,8 @@ fn build_actor_with_policy(
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
         readable_roots: Vec::new(),
     };
-    AgentActor::new(
+    let max_message_tokens = resolved.model.max_message_tokens;
+    let mut actor = AgentActor::new(
         build_registry(allowed_tools, read_only),
         tool_context,
         resolved.provider,
@@ -80,7 +81,9 @@ fn build_actor_with_policy(
         resolved.model.reasoning_history,
         resolved.model.max_output_tokens,
         cancel,
-    )
+    );
+    actor.compaction_max_message_tokens = max_message_tokens;
+    actor
 }
 
 fn build_registry(

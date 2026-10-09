@@ -143,6 +143,13 @@ pub struct ModelConfig {
     pub context_window: Option<u64>,
     #[serde(default)]
     pub max_input_tokens: Option<u64>,
+    /// Optional bound for one serialized compaction message, not the window.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "positive_message_limit"
+    )]
+    pub max_message_tokens: Option<u64>,
     #[serde(default)]
     pub max_output_tokens: Option<u64>,
     #[serde(default)]
@@ -173,6 +180,18 @@ pub struct ModelsConfig {
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(deserialize_with = "deserialize_unique_map")]
     pub models: BTreeMap<String, ModelConfig>,
+}
+
+fn positive_message_limit<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    let value = Option::<u64>::deserialize(deserializer)?;
+    if value == Some(0) {
+        return Err(serde::de::Error::custom(
+            "max_message_tokens must be positive",
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone)]

@@ -411,6 +411,7 @@ export class CognitionBackend implements ChatBackend {
       if (name === "compact" && origin.compaction && origin.compaction.request === compactRequest && origin.compaction.pending) {
         origin.compaction = { ...origin.compaction, pending: false, ok: false, text: `Compaction failed: ${this.errorText(error)}` };
         this.emitForState(origin, { type: "compaction", operationId: origin.compaction.operationId, pending: origin.compaction.pending, text: origin.compaction.text, ok: origin.compaction.ok });
+        return false; // The compaction result already reports this transport failure.
       }
       throw error;
     }
@@ -444,13 +445,13 @@ export class CognitionBackend implements ChatBackend {
     if (p.name === "compact" && this.state.compaction?.pending && this.state.compaction.operationId === operation) {
       const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
       this.state.compaction = { ...this.state.compaction, pending: deferred, ok: p.ok === true,
-        text: deferred ? "Compacting the conversation… · waiting for this turn to finish. Messages you send now are queued until compaction ends." : p.ok === false ? `Compaction failed: ${p.error ?? "Refused"}` : "Conversation compacted." };
+        text: deferred ? "Compacting the conversation… · waiting for this turn to finish. Messages you send now are queued until compaction ends." : p.ok === false ? `/compact · ${p.error ?? "Refused"}` : "Conversation compacted." };
       this.publishCompaction();
     }
     const command = this.state.commands.get(operation);
     if (command) {
       this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
-      if (p.ok !== true) this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
+      if (p.ok !== true && p.name !== "compact") this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
       this.state.commands.delete(operation);
     }
     const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
@@ -1442,6 +1443,9 @@ export class CognitionBackend implements ChatBackend {
     if (envelope.kind === "command.result") {
       this.settleCommand(payload, envelope.seq);
       const name = String(payload.name ?? "command");
+      // The tracked command's progress row becomes its single durable result.
+      // Replay without that row still renders the ordinary command notice.
+      if (name === "compact" && payload.ok === false && this.state.compaction?.operationId === payload.operation_id && this.state.compaction?.ok === false) return undefined;
       const text = outcomeText(name, payload.ok === true, payload.data, payload.error);
       const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact"].includes(name);
       if (text === null && (known || payload.data?.applies === "now")) return undefined;

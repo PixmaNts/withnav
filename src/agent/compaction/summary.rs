@@ -1,5 +1,5 @@
-//! The summary step: one request to the session's own model and variant, no
-//! tools, then the answer checked before it is trusted.
+//! The summary step: optional old-output relevance pruning, then bounded
+//! rolling requests to the selected writer, checked before they are trusted.
 
 use std::collections::HashSet;
 
@@ -69,6 +69,9 @@ pub struct PrepareInput<'a> {
     pub focus: Option<&'a str>,
     pub chunk_tokens: u64,
     pub progress: Option<&'a (dyn Fn(u64, u64) + Send + Sync)>,
+    pub jev: Option<&'a dyn crate::agent::permission_gate::PermissionJudge>,
+    pub catalog: Option<&'a crate::provider::catalog::ModelCatalog>,
+    pub max_message_tokens: Option<u64>,
 }
 
 /// A checkpoint ready to persist and install. Nothing is saved yet.
@@ -87,7 +90,7 @@ pub async fn prepare(
     input: PrepareInput<'_>,
     cancel: &CancellationToken,
 ) -> Result<Prepared, CompactionError> {
-    let planned = plan(
+    let mut planned = plan(
         input.transcript,
         input.current,
         &input.components,
@@ -96,6 +99,30 @@ pub async fn prepare(
     )?;
     let estimated_before =
         estimate_effective(&input.components, input.transcript, input.current).total();
+    let first = input
+        .current
+        .map_or(0, |c| c.checkpoint.through_message + 1);
+    let projection = if let Some(judge) = input.jev {
+        super::jev::prune(
+            input.transcript,
+            first,
+            planned.through_message + 1,
+            input.current.map(|c| c.checkpoint.summary.as_str()),
+            judge,
+            cancel,
+        )
+        .await
+    } else {
+        None
+    };
+    if projection.is_some() {
+        // Jev's decisions and deterministic pins supersede size-only elision.
+        planned.prefix_elidable.clear();
+    }
+    let input = PrepareInput {
+        transcript: projection.as_deref().unwrap_or(input.transcript),
+        ..input
+    };
     let (summary, passes) = rolling_summary(&input, &planned, cancel).await?;
 
     let compaction = Compaction {
@@ -164,7 +191,15 @@ async fn rolling_summary(
         .current
         .map_or(0, |c| c.checkpoint.through_message + 1);
     let end = planned.through_message + 1;
-    let cap = input.chunk_tokens.min(input.source_budget / 2).max(1);
+    let learned = input
+        .catalog
+        .and_then(|catalog| catalog.message_limit(&input.provider.base_url, input.model));
+    let mut cap = input
+        .chunk_tokens
+        .min(input.max_message_tokens.unwrap_or(u64::MAX))
+        .min(learned.unwrap_or(u64::MAX))
+        .min(input.source_budget / 2)
+        .max(1);
     let mut elided: HashSet<usize> = input
         .current
         .map(|c| c.pruned_message_indices.iter().copied().collect())
@@ -250,6 +285,25 @@ async fn rolling_summary(
                     break;
                 }
                 Err(CompactionError::Cancelled) => return Err(CompactionError::Cancelled),
+                Err(CompactionError::Provider(ref text)) if overflow_limit(text).is_some() => {
+                    let reported = overflow_limit(text).unwrap().unwrap_or(cap / 2);
+                    let reduced = reported.min(cap / 2).max(1);
+                    if reduced >= cap {
+                        return Err(CompactionError::Provider(text.clone()));
+                    }
+                    if let Some(catalog) = input.catalog {
+                        catalog
+                            .learn_message_limit(
+                                &input.provider.base_url,
+                                input.model,
+                                reported.max(1),
+                            )
+                            .await;
+                    }
+                    cap = reduced;
+                    next = chunk_end(input.transcript, first, next, cap, &elided)?;
+                    total = total.max(passes + 2);
+                }
                 Err(error) if previous_error.is_some() => {
                     return Err(previous_error.unwrap_or(error))
                 }
@@ -266,6 +320,30 @@ async fn rolling_summary(
         }
     }
     Ok((summary.unwrap_or_default(), passes))
+}
+
+/// Only size-related provider failures trigger limit learning; an authentication
+/// or unrelated bad-request error must not poison the model's catalog entry.
+fn overflow_limit(text: &str) -> Option<Option<u64>> {
+    let text = text.to_ascii_lowercase();
+    let size = text.contains("context_length_exceeded")
+        || ((text.contains("400") || text.contains("413"))
+            && ["input", "context", "message", "payload"]
+                .iter()
+                .any(|word| text.contains(word))
+            && ["limit", "exceed", "too large", "too long"]
+                .iter()
+                .any(|word| text.contains(word)));
+    if !size {
+        return None;
+    }
+    let limit = text.split("limit ").skip(1).find_map(|tail| {
+        tail.split(|c: char| !c.is_ascii_digit() && c != ',')
+            .next()
+            .and_then(|n| n.replace(',', "").parse::<u64>().ok())
+            .filter(|n| *n > 0)
+    });
+    Some(limit)
 }
 
 async fn ask(

@@ -391,6 +391,14 @@ pub(super) async fn summarize_written_by(
             source_budget: goal.source_budget,
             focus: goal.focus,
             chunk_tokens: actor.compaction_chunk_tokens,
+            jev: actor.permission_judge.as_deref(),
+            catalog: actor.compaction_catalog.as_ref(),
+            max_message_tokens: match actor.compaction_writer.as_ref().filter(|meta| {
+                meta.model == writer.model && meta.provider.base_url == writer.provider.base_url
+            }) {
+                Some(meta) => meta.max_message_tokens,
+                None => actor.compaction_max_message_tokens,
+            },
             progress: actor.compaction_progress.as_deref(),
         },
         cancel,

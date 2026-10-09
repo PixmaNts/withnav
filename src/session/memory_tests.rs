@@ -231,6 +231,31 @@ async fn secrets_never_reach_memory_models_or_episodes() {
 }
 
 #[tokio::test]
+async fn recovery_replays_only_tracked_successful_turns_in_order() {
+    let f = fixture(false).await;
+    let first = turn(&f.watcher, 1, "goal").await;
+    f.watcher.recover().await.unwrap();
+    assert_eq!(f.observer.calls.load(Ordering::SeqCst), 0);
+    f.watcher.completed(first).await.unwrap();
+    turn(&f.watcher, 3, "clarification").await;
+    turn(&f.watcher, 5, "next task").await;
+    f.watcher.recover().await.unwrap();
+    assert_eq!(f.observer.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        f.watcher
+            .store
+            .memory_state(&f.watcher.session.to_string())
+            .await
+            .unwrap()
+            .unwrap()
+            .last_turn,
+        6
+    );
+    f.watcher.recover().await.unwrap();
+    assert_eq!(f.observer.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn quick_turns_are_ordered_and_slow_instinct_does_not_delay_turn_submission() {
     let mut f = fixture(true).await;
     let one = turn(&f.watcher, 1, "first goal").await;

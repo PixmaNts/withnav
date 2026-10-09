@@ -301,7 +301,7 @@ impl Watcher {
     pub fn start(self) -> tokio::sync::mpsc::UnboundedSender<Ulid> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            if let Err(error) = self.jobs().await {
+            if let Err(error) = self.recover().await {
                 tracing::warn!(%error,"memory recovery deferred");
             }
             loop {
@@ -312,6 +312,27 @@ impl Watcher {
             }
         });
         tx
+    }
+    pub async fn recover(&self) -> Result<(), String> {
+        // Only tracked conversations have an observation cursor; enabling memory
+        // later must not backfill the conversation's earlier untracked history.
+        if let Some(state) = self.store.memory_state(&self.session.to_string()).await? {
+            if let Some(loaded) = self.store.load(self.session).await? {
+                for event in loaded.envelopes.iter().filter(|event| {
+                    event.seq > state.last_turn
+                        && event.kind == "turn.end"
+                        && event.payload["outcome"] == "done"
+                }) {
+                    if let Some(turn) = event.payload["turn_id"]
+                        .as_str()
+                        .and_then(|id| id.parse().ok())
+                    {
+                        self.completed(turn).await?;
+                    }
+                }
+            }
+        }
+        self.jobs().await
     }
     pub async fn completed(&self, turn: Ulid) -> Result<(), String> {
         self.sequencer

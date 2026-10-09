@@ -338,15 +338,10 @@ pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
     let Some(segments) = segments(command) else {
         return true;
     };
-    segments.iter().any(|words| {
-        destructive(words)
-            || (!understood(words, facts, command)
-                && !(segments.len() == 1
-                    && facts["script_binding"]["complete"] == true
-                    && script_operand(words, facts).is_some_and(|(operand, _)| {
-                        facts["script_binding"]["operand"].as_str() == Some(operand)
-                    })))
-    }) || (command.contains('|') && segments.iter().any(|words| !read_only(words)))
+    segments
+        .iter()
+        .any(|words| destructive(words) || !understood(words, facts, command))
+        || (command.contains('|') && segments.iter().any(|words| !read_only(words)))
 }
 
 /// Exact stdin-only transforms; no file loading, modules or arbitrary Python.

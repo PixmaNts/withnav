@@ -73,7 +73,7 @@ pub(super) fn attach(
     let Ok(metadata) = file.metadata() else {
         return;
     };
-    if !metadata.is_file() || (shebang && metadata.mode() & 0o111 == 0) {
+    if !metadata.is_file() || metadata.nlink() != 1 || (shebang && metadata.mode() & 0o111 == 0) {
         return;
     }
     let mut bytes = Vec::new();
@@ -84,8 +84,31 @@ pub(super) fn attach(
     {
         return;
     }
-    if shebang && !bytes.starts_with(b"#!") {
-        return;
+    let interpreter = if shebang {
+        let Some(interpreter) = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.lines().next())
+            .and_then(|line| line.strip_prefix("#!"))
+            .and_then(|line| line.split_whitespace().next())
+            .filter(|word| std::path::Path::new(word).is_absolute())
+            .and_then(|word| shell::trusted_program(word, &state["host_facts"]))
+            .filter(|(name, _)| name != "env")
+        else {
+            return;
+        };
+        Some(interpreter.1)
+    } else {
+        None
+    };
+    let mut parents = Vec::new();
+    for parent in path.ancestors().skip(1) {
+        let Ok(parent_metadata) =
+            crate::tools::nofollow::open_read(parent).and_then(|file| Ok(file.metadata()?))
+        else {
+            return;
+        };
+        parents
+            .push(json!({"path":parent, "dev":parent_metadata.dev(), "ino":parent_metadata.ino()}));
     }
     let complete = bytes.len() <= SCRIPT_BYTES && metadata.len() == bytes.len() as u64;
     bytes.truncate(SCRIPT_BYTES);
@@ -96,11 +119,12 @@ pub(super) fn attach(
     state["untrusted_evidence"]["script"] = json!({
         "path": path, "sha256": hash, "bytes": metadata.len(),
         "sha256_scope": if complete { "full_file" } else { "read_prefix" },
-        "truncated": !complete, "text": text,
+        "truncated": !complete, "text": text, "interpreter": interpreter,
     });
     state["host_facts"]["script_binding"] = json!({
         "path": path, "spelling": spelling, "operand": operand,
         "sha256": if complete { Some(hash) } else { None }, "bytes": metadata.len(), "complete": complete,
+        "dev": metadata.dev(), "ino": metadata.ino(), "parents": parents,
     });
 }
 
@@ -137,24 +161,5 @@ pub(crate) fn still_matches(note: Option<&Value>) -> bool {
     }) else {
         return true;
     };
-    let Some(path) = binding["spelling"].as_str() else {
-        return false;
-    };
-    let Some(hash) = binding["sha256"].as_str() else {
-        return false;
-    };
-    let Ok(file) = crate::tools::nofollow::open_read(std::path::Path::new(path)) else {
-        return false;
-    };
-    if !file.metadata().is_ok_and(|metadata| {
-        metadata.is_file() && Some(metadata.len()) == binding["bytes"].as_u64()
-    }) {
-        return false;
-    }
-    let mut bytes = Vec::new();
-    file.take((SCRIPT_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .is_ok()
-        && bytes.len() <= SCRIPT_BYTES
-        && format!("{:x}", Sha256::digest(&bytes)) == hash
+    crate::tools::bash::script_matches(binding)
 }

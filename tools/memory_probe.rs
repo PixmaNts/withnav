@@ -1,4 +1,4 @@
-//! Live memory check; temporary storage, two Instinct calls, one writer call, no retries.
+//! Live memory check; temporary storage, two Instinct calls, at most two writer calls.
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use withnav::{
@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     let config = withnav::provider::auth::default_config_dir()
         .ok_or_else(|| anyhow::anyhow!("no config directory"))?;
     let models_path = withnav::navigator::resolve_models(None, &workspace);
-    let models = models_with_output_limit(models_path.as_deref(), &workspace, &config, 512);
+    let models = models_with_output_limit(models_path.as_deref(), &workspace, &config, 2048);
     let observer = models
         .observer
         .ok_or_else(|| anyhow::anyhow!("configured Instinct unavailable; no calls made"))?;
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let cancel = CancellationToken::new();
     let goal = "Add a unit test proving that two plus two equals four.";
     let stages=["The Captain requested a unit test. The agent created the test but has not run it. Work remains.","The agent ran the requested unit test, it passed, and reported that the goal is finished. There are no remaining items."];
-    for stage in stages {
+    for (index, stage) in stages.into_iter().enumerate() {
         let input=memory::framed_json(&serde_json::json!({"goal":{"anchor_seq":1,"text":goal},"recent_captain_messages":[],"visible_evidence":stage})).map_err(anyhow::Error::msg)?;
         let verdict =
             tokio::time::timeout(Duration::from_secs(2), observer.observe(&input, &cancel))
@@ -51,6 +51,15 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "Instinct: progress={:?}, new_goal={}",
             verdict.goal_progress, verdict.new_goal
+        );
+        anyhow::ensure!(
+            verdict.goal_progress
+                == if index == 0 {
+                    memory::Progress::Advancing
+                } else {
+                    memory::Progress::Done
+                },
+            "unexpected Instinct progress"
         );
     }
     let evidence = vec![
@@ -94,14 +103,23 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         .map_err(anyhow::Error::msg)?;
-    let input = memory::writer::prompt(goal, &evidence).map_err(anyhow::Error::msg)?;
-    let written = tokio::time::timeout(Duration::from_secs(30), writer.write(&input, &cancel))
-        .await
-        .map_err(|_| anyhow::anyhow!("writer deadline; no retry"))?
-        .map_err(anyhow::Error::msg)?;
-    let body = match memory::writer::parse(&written.text, goal, 1, 3, &[1, 2, 3]) {
-        Ok(body) => body,
-        Err(_) => anyhow::bail!("writer returned invalid or truncated episode JSON within the 512-token cap; no retry; startup and recall checks skipped"),
+    let mut input = memory::writer::prompt(goal, &evidence).map_err(anyhow::Error::msg)?;
+    let mut calls = 0;
+    let (written, body) = loop {
+        calls += 1;
+        let written = tokio::time::timeout(Duration::from_secs(30), writer.write(&input, &cancel))
+            .await
+            .map_err(|_| anyhow::anyhow!("writer deadline; no retry"))?
+            .map_err(anyhow::Error::msg)?;
+        match memory::writer::parse(&written.text, goal, 1, 3, &[1, 2, 3]) {
+            Ok(body) => break (written, body),
+            Err(_) if calls == 1 && written.truncated => {
+                input.push_str(memory::writer::SHORT_RETRY)
+            }
+            Err(_) => anyhow::bail!(
+                "writer returned invalid episode JSON; startup and recall checks skipped"
+            ),
+        }
     };
     println!(
         "Writer: model={}, validated=true, output_bytes={}",
@@ -121,6 +139,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     let (ids, text) = memory::render(&episodes, memory::STARTUP_BYTES);
+    anyhow::ensure!(
+        episodes.len() == 1 && text.contains(goal),
+        "stored episode missing from startup note"
+    );
+    println!("Episode: stored=1, startup_contains_goal=true");
     let new_session = ulid::Ulid::new();
     store
         .record_session(new_session, &scope, "memory-probe", false)
@@ -150,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     println!("Recall: workspace_bound=true, results={}", recalled.len());
-    println!("Caps: instinct_calls=2, writer_calls=1, writer_output_tokens=512, retries=0; memory enabled only in temporary probe storage");
+    anyhow::ensure!(recalled.len() == 1, "keyword recall did not find episode");
+    println!("Caps: instinct_calls=2, writer_calls={calls}, input_tokens<6000, writer_output_tokens<=2048; memory enabled only in temporary probe storage");
     Ok(())
 }

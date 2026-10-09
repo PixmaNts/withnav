@@ -44,6 +44,7 @@ pub struct Written {
     pub text: String,
     pub model: String,
     pub usage: String,
+    pub truncated: bool,
 }
 
 struct Instinct(SystemOneClient);
@@ -123,6 +124,7 @@ impl Writer for Metacognition {
                 .await
                 .map_err(|_| "memory writer request failed".to_owned())?;
             Ok(Written {
+                truncated: response.finish_reason.as_deref() == Some("length"),
                 text: response.text,
                 model: self.assigned.name.to_string(),
                 usage: serde_json::to_string(&response.usage).unwrap_or_default(),
@@ -175,7 +177,13 @@ pub fn models_with_output_limit(
                 &cache,
             ) {
                 result.writer = Some(Arc::new(Metacognition {
-                    output_tokens: output_tokens.min(2048),
+                    output_tokens: assigned
+                        .resolved
+                        .model
+                        .max_output_tokens
+                        .map_or(output_tokens.min(2048), |max| {
+                            max.min(output_tokens).min(2048)
+                        }),
                     client,
                     assigned,
                     key,
@@ -400,6 +408,7 @@ impl Watcher {
             {
                 continue;
             }
+            let mut shorter = false;
             for attempt in 0..2 {
                 let token = Ulid::new().to_string();
                 self.store.memory_claim(&goal.id, &token).await?;
@@ -417,7 +426,7 @@ impl Watcher {
                 };
                 let end = goal.end_seq.unwrap();
                 let events = evidence(&loaded.envelopes, goal.start_seq, end);
-                let input = match memory::writer::prompt(&goal.text, &events) {
+                let mut input = match memory::writer::prompt(&goal.text, &events) {
                     Ok(input) => input,
                     Err(error) => {
                         self.store
@@ -426,6 +435,9 @@ impl Watcher {
                         break;
                     }
                 };
+                if shorter {
+                    input.push_str(memory::writer::SHORT_RETRY);
+                }
                 let permit = tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),permit=WRITER_GATE.acquire()=>permit.map_err(|e|e.to_string())?};
                 let child = self.cancel.child_token();
                 let result = tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),result=tokio::time::timeout(Duration::from_secs(30),writer.write(&input,&child))=>result.map_err(|_|"memory writer deadline".to_owned()).and_then(|r|r)};
@@ -435,14 +447,18 @@ impl Watcher {
                     return Ok(());
                 }
                 let result = result.and_then(|written| {
-                    memory::writer::parse(
+                    let parsed = memory::writer::parse(
                         &written.text,
                         &goal.text,
                         goal.start_seq,
                         end,
                         &events.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-                    )
-                    .map(|body| (written, body))
+                    );
+                    shorter = parsed.is_err() && written.truncated;
+                    if written.text.trim().is_empty() && written.truncated {
+                        return Err("memory writer output exhausted by reasoning".into());
+                    }
+                    parsed.map(|body| (written, body))
                 });
                 match result {
                     Ok((written, body)) => {

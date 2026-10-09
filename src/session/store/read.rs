@@ -314,7 +314,7 @@ impl HistoryStore {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(work)
@@ -323,7 +323,7 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// Opens a fresh connection and runs `work` inside one read transaction.
-fn with_read_tx<T>(
+pub(super) fn with_read_tx<T>(
     path: &Path,
     work: impl FnOnce(&Transaction<'_>) -> Result<T, String>,
 ) -> Result<T, String> {

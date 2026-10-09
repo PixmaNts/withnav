@@ -77,6 +77,7 @@
 //! `/model` switch to another model identity. It is written with the model,
 //! resolution and variant of the switch, in the same transaction.
 
+pub mod memory;
 mod read;
 
 pub use read::Resumed;
@@ -312,6 +313,7 @@ type Ack = oneshot::Sender<Result<(), String>>;
 
 /// What the writer thread accepts.
 enum Write {
+    Memory(memory::Operation),
     WorkspaceVisibility {
         path: String,
         hidden: bool,
@@ -1819,6 +1821,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             )?;
         }
         Write::Delete { id } => {
+            memory::delete(&tx, &id.to_string())?;
             tx.execute(
                 "DELETE FROM permission_outbox WHERE parent_id=?1",
                 [id.to_string()],
@@ -1849,6 +1852,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 return Err(WriteError::UnknownSession(id));
             }
         }
+        Write::Memory(operation) => memory::apply(&tx, operation)?,
     }
     #[cfg(test)]
     if let Some((reached, release)) = before_commit {
@@ -1868,6 +1872,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
 fn migrate(path: &Path) -> Result<(), String> {
     let conn = Connection::open(path).map_err(|e| format!("open: {e}"))?;
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
+    memory::migrate(&conn).map_err(|e| format!("memory migration: {e}"))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS hidden_workspaces (
             path TEXT PRIMARY KEY,

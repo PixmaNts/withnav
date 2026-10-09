@@ -15,6 +15,9 @@ requests land in `develop`.
 - **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
   and task lists, strikethrough and hard breaks render without interpreting raw HTML.
   Streaming redraws are coalesced per animation frame.
+- **Cognition and Settings text scales with your editor.** Secondary text scales too,
+  and conversation, tool and card content uses the readable theme foreground.
+  Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.
 
 ## [0.7.1] - 2026-10-09
 

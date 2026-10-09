@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **File references in VS Code answers open at the referenced line.** Bare and inline-code
+  paths become keyboard-accessible links; relative paths try every workspace root,
+  and missing or outside-workspace files explain why they cannot open.
+
 - **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
   and task lists, strikethrough and hard breaks render without interpreting raw HTML.
   Streaming redraws are coalesced per animation frame.

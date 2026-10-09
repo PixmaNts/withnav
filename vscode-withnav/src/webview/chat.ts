@@ -976,6 +976,28 @@ function renderUsage(snapshot: import("../contextMeter").ContextSnapshot): void 
 }
 
 // Source text never becomes executable markup, including raw HTML nodes.
+function fileReference(parent: HTMLElement, text: string, code = false): void {
+  const pattern = /(?:https?:\/\/|mailto:)[^\s]+|(?:\.?\.?\/|\/)?[\w@.-]+(?:\/[\w@.-]+)+\.[A-Za-z0-9]+(?::[1-9]\d*(?::[1-9]\d*)?|#L[1-9]\d*)?/g;
+  let at = 0;
+  for (const match of text.matchAll(pattern)) {
+    parent.append(document.createTextNode(text.slice(at, match.index)));
+    const value = match[0];
+    const before = text[(match.index ?? 0) - 1];
+    if (/^(?:https?:\/\/|mailto:)/.test(value) || (before && /[\w/:]/.test(before))) parent.append(document.createTextNode(value));
+    else {
+      const location = /(?::([1-9]\d*)(?::[1-9]\d*)?|#L([1-9]\d*))$/.exec(value);
+      const path = location ? value.slice(0, location.index) : value;
+      const line = location ? Number(location[1] ?? location[2]) : undefined;
+      const button = el("button", "file-link", value); button.type = "button";
+      button.title = `Open ${path}${line ? ` at line ${line}` : ""}`;
+      button.addEventListener("click", () => post({ type: "openFile", path, ...(line ? { line } : {}) }));
+      if (code) { const span = el("code"); span.append(button); parent.append(span); } else parent.append(button);
+    }
+    at = (match.index ?? 0) + value.length;
+  }
+  parent.append(document.createTextNode(text.slice(at)));
+}
+
 function renderMarkdown(root: HTMLElement, source: string): void {
   const tree = fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
   const definitions = new Map<string, { url: string }>();
@@ -986,8 +1008,13 @@ function renderMarkdown(root: HTMLElement, source: string): void {
   collect(tree);
   const render = (parent: HTMLElement, node: any): void => {
     if (node.type === "definition") return;
-    if (node.type === "text" || node.type === "html") { parent.append(document.createTextNode(node.value)); return; }
-    if (node.type === "inlineCode") { parent.append(el("code", "", node.value)); return; }
+    if (node.type === "html") { parent.append(document.createTextNode(node.value)); return; }
+    if (node.type === "text") { if (parent.closest("a")) parent.append(document.createTextNode(node.value)); else fileReference(parent, node.value); return; }
+    if (node.type === "inlineCode") {
+      const span = el("code");
+      if (parent.closest("a")) span.textContent = node.value; else fileReference(span, node.value);
+      parent.append(span); return;
+    }
     if (node.type === "code") {
       parent.append(node.lang === "diff" ? diffBlock(node.value) : codeBlock(node.lang || "Code", node.value, target => { target.textContent = node.value; }));
       return;

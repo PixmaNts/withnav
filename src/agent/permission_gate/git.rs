@@ -63,9 +63,10 @@ async fn read(workspace: &Path, args: &[&str]) -> Option<String> {
     // GIT_* override, global configuration, fsmonitor or hook may execute here.
     let mut command = tokio::process::Command::new("/usr/bin/git");
     command.env_clear();
-    // `config --get` only parses data and must include effective publication
-    // settings. Ref/index probes isolate global/system settings entirely.
-    if args.first() == Some(&"config") {
+    // Config and remote get-url only parse data and must include effective
+    // publication settings (including global URL rewrites). Ref/index probes
+    // isolate global/system settings entirely.
+    if args.first() == Some(&"config") || args.starts_with(&["remote", "get-url"]) {
         for key in ["HOME", "XDG_CONFIG_HOME"] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
@@ -137,6 +138,14 @@ pub(super) async fn facts(command: &str, cx: &crate::tools::ToolContext) -> Opti
                     .map(str::to_owned)
             });
         let push = push(&words, current.as_deref());
+        let push_urls = if let Some(remote) = push.as_ref().and_then(|p| p["remote"].as_str()) {
+            read(workspace, &["remote", "get-url", "--push", "--all", remote])
+                .await
+                .filter(|text| !text.is_empty())
+                .map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
+        } else {
+            None
+        };
         let follow_tags = read(
             workspace,
             &[
@@ -186,7 +195,7 @@ pub(super) async fn facts(command: &str, cx: &crate::tools::ToolContext) -> Opti
         });
         Some(json!({"current_branch":current,"default_branch":default,
             "current_is_default":current.as_ref().zip(default.as_ref()).map(|(a,b)| a == b),
-            "safe_push_config":safe_config,"push":push,"non_default_push":non_default_push}))
+            "safe_push_config":safe_config,"push":push,"push_urls":push_urls,"non_default_push":non_default_push}))
     })
     .await
     .ok()

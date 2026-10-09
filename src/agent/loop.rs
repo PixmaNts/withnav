@@ -112,6 +112,7 @@ async fn run_steps(
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
+
     // One client (one connection pool) for every step of this run.
     let client = ModelClient::new(
         "agent",
@@ -370,6 +371,35 @@ pub async fn resolve_permission_with_origin(
     };
     actor.state = AgentState::Running;
 
+    if origin == super::permissions::PermissionOrigin::Captain {
+        // A typed denial revokes live authority even for an opaque call that
+        // cannot carry a signature. Never let older approvals survive it.
+        if matches!(&decision, PermissionDecision::Deny { .. }) {
+            actor
+                .permission_context
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .precedents
+                .clear();
+        }
+        if let Some(signature) = request
+            .permission_gate
+            .as_ref()
+            .and_then(|gate| gate.get("signature"))
+            .filter(|s| !s.is_null())
+        {
+            let decision_name = match &decision {
+                PermissionDecision::AllowOnce => Some("allow_once"),
+                PermissionDecision::AllowFolder => Some("allow_folder"),
+                PermissionDecision::Deny { .. } => Some("deny"),
+                _ => None,
+            };
+            if let Some(decision_name) = decision_name {
+                actor.permission_context.lock().unwrap_or_else(|e| e.into_inner()).record(serde_json::json!({"request_id":request.id,"tool":request.tool,"signature":signature,"scope":request.scope,"decision":decision_name,"when":request.id.to_string()}));
+            }
+        }
+    }
+
     if actor.cancel.is_cancelled() {
         append_interrupted(actor, &call.id);
         for rest in &remaining_calls {
@@ -456,7 +486,14 @@ pub async fn resolve_permission_with_origin(
             }
         }
         PermissionDecision::Deny { message } => {
-            append_tool_result(actor, &call.id, &ToolResult::permission_denied(message));
+            let result = ToolResult::permission_denied(message)
+                .with_metadata(serde_json::json!({"approved_by":"denied"}));
+            actor
+                .permission_context
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tool(&call, &result);
+            append_tool_result(actor, &call.id, &result);
         }
     }
     match run_calls(actor, remaining_calls, steps_left, observe).await {
@@ -1039,6 +1076,11 @@ fn reject_call(
         name: &call.name,
         result: &result,
     });
+    actor
+        .permission_context
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .tool(call, &result);
     append_tool_result(actor, &call.id, &result);
 }
 
@@ -2323,6 +2365,50 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "understood"));
+    }
+
+    #[tokio::test]
+    async fn captain_deny_without_signature_revokes_earlier_push_precedent() {
+        let (mut actor, _, _, _server) = yielded_on_two_writes(vec![]).await;
+        let signature = serde_json::json!({"executable":"/usr/bin/git","subcommand":"push","push":{"remote":"origin","branch":"feat/task"},"push_urls":["https://example.test/approved"]});
+        let scope = serde_json::json!(actor.pending_permission().unwrap().scope);
+        actor.permission_context.lock().unwrap().record(
+            serde_json::json!({"signature":signature,"scope":scope,"decision":"allow_once"}),
+        );
+        assert!(actor
+            .permission_context
+            .lock()
+            .unwrap()
+            .matching(&signature, &scope)
+            .is_some());
+        let id = pending_id(&actor);
+        if let Some(PendingInteraction::Permission {
+            request,
+            call,
+            remaining_calls,
+            steps_left,
+            ..
+        }) = &mut actor.pending
+        {
+            request.permission_gate = Some(Box::new(serde_json::json!({"signature":null})));
+            call.name = "bash".into();
+            call.args = serde_json::json!({"command":"git push origin feat/task"});
+            remaining_calls.clear();
+            *steps_left = 0;
+        }
+        resolve_permission(
+            &mut actor,
+            id,
+            PermissionDecision::Deny {
+                message: "do not push".into(),
+            },
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        let history = actor.permission_context.lock().unwrap();
+        assert!(history.precedents.is_empty());
+        assert!(history.matching(&signature, &scope).is_none());
     }
 
     #[tokio::test]
@@ -3626,7 +3712,7 @@ mod tests {
                 else {
                     panic!("choice");
                 };
-                assert!(instructions.contains("requested effects"));
+                assert!(instructions.contains("establish goals and constraints"));
                 Ok(super::super::permission_gate::PermissionReview {
                     decision: super::super::permission_gate::ReviewDecision::Approve,
                     reason: "understood recoverable effect explicitly requested by captain".into(),

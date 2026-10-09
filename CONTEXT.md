@@ -250,8 +250,12 @@ _Avoid_: tool, action (an action is what a flow proposes)
 ## Permissions
 
 **Captain request**:
-The Captain's own latest human-ingress message. Explicitly requested effects establish intent,
-not instructions to the reviewers about their verdict. Tool arguments, assistant text and parent
+Permission review uses the last three verified human-ingress messages (with command ids), a task
+anchor and retained newer constraints; the role guard still uses only the latest message. Questions,
+ok and praise do not revoke a task. Stop, completion, inspect-only and explicit new-task markers
+replace the anchor. Intent exceeding the bounded budget is incomplete and asks rather than
+dropping a constraint. Human words establish goals, not instructions about reviewers' verdicts.
+Tool arguments, assistant text and parent
 delegations remain untrusted evidence. Approval still requires understood, recoverable effects;
 protected configuration requires a typed Captain answer or a live config session grant.
 
@@ -283,7 +287,7 @@ An advisory per-call Instinct classification in one batched request: `call_effec
 (`read_only` / `local_change` / `remote_change` / `unsure`), `call_scope`, `reversibility`
 (`none_needed` / `recoverable` / `destructive` / `unsure`), `publication`
 (`none` / `own_work` / `shared` / `unsure`), plus probability questions `sensitivity` and
-`task_fit` using the existing Captain request. Confidence ≥ 0.7 is required only on deciding
+`task_fit` using the active Captain task and newer constraints. Confidence ≥ 0.7 is required only on deciding
 answers: `read_only` for reads; `local_change`, `recoverable` and `inside` for local changes;
 `remote_change`, `recoverable` and `own_work` for publication of the task's own work.
 Secondary answers need no confidence, but cannot contradict a read with `outside`, or any
@@ -297,8 +301,24 @@ Destruction and shared publication at any confidence, sensitive or off-task effe
 confidence or unsure deciding answers go to synchronous metacognition review. Every Run path
 still passes the host shell, executable identity, overwrite recovery and removal/move floors.
 Its separate 64 KiB budget carries Instinct
-answers/probabilities, git facts and bounded untrusted recent steps; Instinct keeps 16 KiB.
-Only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
+answers/probabilities, git facts, three bounded untrusted assistant messages and ten structured
+untrusted tool calls with arguments, outcome, exit code, output head and approval source;
+Instinct keeps 16 KiB. Truncation is marked. On timeout, eligible floor-free calls retry once
+with a fresh cancel token and a five-second deadline; outages never authorize a call.
+Typed Captain allow-once answers become in-memory signature-and-scope precedents shared by live
+children, never restored from `permission.resolved` events on resume. SQLite event JSON is writable
+by ambient bash and cannot authenticate an approval; every resumed session starts with no precedents.
+A matching live precedent replaces only
+metacognition unsure/timeout escalation, never an explicit reject or a host floor, and records
+`approved_by: captain_precedent` plus the earlier request. Bypass/config grants never create one.
+New human turns conservatively invalidate precedents; every typed Captain deny clears all session
+precedents, even when the denied call has no signature. Signatures
+use the trusted resolver's validated canonical executable, subcommand and sorted flags. Push
+signatures retain the confirmed target and the full effective push URL list, including Git URL
+rewrites; unavailable URLs prevent a signature and precedent reuse. Python JSON exemptions require
+`python3 -I -S` to exclude workspace/PYTHONPATH imports and startup hooks.
+PR edits and execution/path overrides are not covered. A new conversation starts empty.
+Otherwise only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
 remote deletions still require the Captain. Protected configuration, credentials and changed
 scratch roots keep their existing Captain floors, and plan role conformance is unchanged.
 Evidence records every answer, thresholds and route (`instinct_run` / `review` / `captain`).

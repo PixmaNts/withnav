@@ -53,20 +53,55 @@ impl Tool for RecallTool {
             let (ids, text) =
                 memory::render(&results[..results.len().min(5)], memory::RECALL_BYTES);
             let count = ids.len();
-            if !ids.is_empty() {
+            {
                 let mut parts = self
                     .memory
                     .recalled
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 parts.clear();
-                parts.push(Part {
-                    source: "recall".into(),
-                    ids,
-                    text,
-                });
+                if !ids.is_empty() {
+                    parts.push(Part {
+                        source: "recall".into(),
+                        ids,
+                        text,
+                    });
+                }
             }
             Ok(ToolResult {status:ToolStatus::Ok,output:format!("Loaded {count} unverified workspace episodes into the optional low-trust request component. If its audit cannot be saved, the episodes will not be sent."),metadata:json!({"results":count}),error:None,truncated:None})
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn successful_empty_recall_clears_previous_bundle() {
+        let memory = Component {
+            session: "s".into(),
+            turn: "t".into(),
+            startup: None,
+            recalled: Arc::new(std::sync::Mutex::new(vec![Part {
+                source: "recall".into(),
+                ids: vec![1],
+                text: "stale".into(),
+            }])),
+            record: Arc::new(|_| Box::pin(async { Ok(()) })),
+        };
+        let tool = RecallTool {
+            search: Arc::new(|_| Box::pin(async { Ok(vec![]) })),
+            memory,
+        };
+        let cx = ToolContext {
+            binding: None,
+            workspace: "/workspace".into(),
+            writable_roots: vec![],
+            readable_roots: vec![],
+        };
+        tool.call(json!({"query":"missing"}), CancellationToken::new(), &cx)
+            .await
+            .unwrap();
+        assert!(tool.memory.parts().is_empty());
     }
 }

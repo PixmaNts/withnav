@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::context::{estimate, message_tokens, Breakdown};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
+pub mod jev;
 mod summary;
 
 pub use summary::{build_summary_request, prepare, validate_summary, PrepareInput, Prepared};
@@ -34,6 +35,7 @@ pub struct SummaryWriter {
     pub variant: Option<crate::provider::config::Variant>,
     pub max_tokens: Option<u64>,
     pub input_budget: u64,
+    pub max_message_tokens: Option<u64>,
 }
 
 /// Completed turns kept verbatim, besides the latest user request and the

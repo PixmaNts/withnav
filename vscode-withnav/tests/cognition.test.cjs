@@ -11,6 +11,18 @@ Module._load = originalLoad;
 const shortened = text => `${text.slice(0, 2000)}\n...[output elided]...\n${text.slice(-2000)}`;
 
 const commandCatalog = ["model", "variant", "agent", "compact", "context"].map(name => ({ name, description: name, args_hint: "" }));
+test("a failed compact has one command result, not an extra error block", async t => {
+  const { backend, apply } = setup(t, { operation_id: "C", ok: false });
+  backend.commands = commandCatalog;
+  const events = [];
+  const original = backend.emit.bind(backend);
+  backend.emit = event => { events.push(event); original(event); };
+  await backend.runComposerCommand("/compact");
+  apply("command.result", { operation_id: "C", name: "compact", ok: false, error: "Summary unavailable" });
+  assert.equal(events.filter(event => event.type === "commandError").length, 0);
+  assert.equal(events.filter(event => event.type === "compaction" && event.ok === false).length, 1);
+  assert.match(backend.state.compaction.text, /^\/compact · Summary unavailable$/);
+});
 test('deletion counts nested children, resets current chat and silently refreshes a missing conversation', async t => {
   const { backend } = setup(t, {});
   let sessions = [{ id: 'parent' }, { id: 'child', parent_session_id: 'parent', promptable: false }, { id: 'nested', parent_session_id: 'child', promptable: false }];

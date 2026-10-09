@@ -36,6 +36,7 @@ fn resolved(base_url: String) -> ResolvedModel {
             api: ApiKind::Fim,
             context_window: None,
             max_input_tokens: None,
+            max_message_tokens: None,
             max_output_tokens: None,
             supports_tools: false,
             supports_parallel_tool_calls: None,

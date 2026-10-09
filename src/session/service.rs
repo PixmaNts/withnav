@@ -2600,6 +2600,7 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         );
+        actor.compaction_catalog = Some(self.catalog.clone());
         actor.automatic_permission_review = execution.automatic_permission_review;
         actor.protected_config_spelling = Some(self.config.config_dir.clone());
         actor.protected_config_root =
@@ -2686,6 +2687,7 @@ impl Service {
                         variant,
                         max_tokens,
                         input_budget: budget.input_budget,
+                        max_message_tokens: resolved.model.max_message_tokens,
                     })
                 }
                 .await;

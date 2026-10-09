@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Long conversations compact with relevance pruning and learned message limits.** Instinct
+  scores only old, unpinned tool outputs before metacognition writes its rolling summary;
+  unavailable scoring leaves the existing path intact. Provider size limits survive new sessions,
+  and failed `/compact` commands no longer duplicate their error in VS Code.
+
 - **VS Code answers show text and tool calls in the order they happened.** Each model step
   keeps its own Markdown and reasoning; consecutive tools share a foldable progress group.
   Permission, pause and question cards stay visible, and replayed tool groups start closed.

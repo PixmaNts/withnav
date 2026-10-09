@@ -52,6 +52,8 @@ pub struct BypassState {
 
 pub struct AgentActor {
     pub compaction_writer: Option<super::compaction::SummaryWriter>,
+    pub compaction_catalog: Option<crate::provider::catalog::ModelCatalog>,
+    pub compaction_max_message_tokens: Option<u64>,
     pub compaction_chunk_tokens: u64,
     pub compaction_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
@@ -201,6 +203,8 @@ impl AgentActor {
     ) -> Self {
         Self {
             compaction_writer: None,
+            compaction_catalog: None,
+            compaction_max_message_tokens: None,
             compaction_chunk_tokens: 64_000,
             compaction_progress: None,
             tool_flows: None,

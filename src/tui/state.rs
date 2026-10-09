@@ -57,6 +57,7 @@ pub enum BlockKind {
 /// What a permission request asks and, once it ended, how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
+    pub allow_config_session: bool,
     pub child_session_id: Option<String>,
     pub request_id: String,
     pub tool_call_id: String,

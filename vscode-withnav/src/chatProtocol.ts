@@ -8,7 +8,7 @@ export const CHAT_VIEW_ID = "withnav.chat";
 /** Who wrote a message shown in the chat. */
 export type Author = "captain" | "nav" | "driver" | "cognition" | "navigator" | "subagent";
 
-export type PermissionDecision = "allow_once" | "allow_folder" | "deny";
+export type PermissionDecision = "allow_once" | "allow_folder" | "allow_config_session" | "deny";
 export interface PermissionCard {
   requestId: string;
   callId: string;
@@ -20,6 +20,7 @@ export interface PermissionCard {
   call: string;
   arguments: string;
   allowFolder: boolean;
+  allowConfigSession?: boolean;
   evidence?: PermissionEvidence;
 }
 export interface PermissionEvidence {

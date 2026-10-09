@@ -2232,6 +2232,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
     Block {
         id: "permission:R1".into(),
         kind: BlockKind::Permission(withnav::tui::state::PermissionPrompt {
+            allow_config_session: false,
             child_session_id: None,
             request_id: "R1".into(),
             tool_call_id: "c1".into(),

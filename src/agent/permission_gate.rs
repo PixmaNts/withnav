@@ -498,6 +498,97 @@ pub enum Judged {
 }
 
 pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed: &Needed) -> bool {
+    protected_config_call(actor, call, needed) && !config_grant_covers(actor, call, needed)
+}
+
+pub fn config_grant_covers(
+    actor: &super::actor::AgentActor,
+    call: &ToolCall,
+    needed: &Needed,
+) -> bool {
+    actor
+        .config_session_grant
+        .load(std::sync::atomic::Ordering::Acquire)
+        && protected_config_call(actor, call, needed)
+        && config_grant_eligible(actor, call, needed)
+}
+
+pub fn config_grant_eligible(
+    actor: &super::actor::AgentActor,
+    call: &ToolCall,
+    needed: &Needed,
+) -> bool {
+    if actor.protected_config_unresolved || sensitive_call(call, needed, &actor.tool_context) {
+        return false;
+    }
+    if call.name == "bash" {
+        // Shell effects cannot be reconstructed safely; naming the settings
+        // file always retains the Captain hold, even for indirect commands.
+        return !bash_command(call).is_some_and(|command| command.contains("config.json"));
+    }
+    let Some(path) = needed.destination.as_deref() else {
+        return false;
+    };
+    if path.file_name().is_none_or(|name| name != "config.json") {
+        return true;
+    }
+    let before = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(_) => return false,
+    };
+    let after = match call.name.as_str() {
+        "write" => call
+            .args
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        "edit" => {
+            let Some(old) = call.args.get("old_string").and_then(Value::as_str) else {
+                return false;
+            };
+            let Some(new) = call.args.get("new_string").and_then(Value::as_str) else {
+                return false;
+            };
+            if old.is_empty() || !before.contains(old) {
+                return false;
+            }
+            if call
+                .args
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                Some(before.replace(old, new))
+            } else if before.matches(old).count() == 1 {
+                Some(before.replacen(old, new, 1))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let (Ok(before), Some(Ok(after))) = (
+        serde_json::from_str::<Value>(&before),
+        after.as_deref().map(serde_json::from_str::<Value>),
+    ) else {
+        return false;
+    };
+    config_settings_unchanged(&before, &after)
+}
+
+fn config_settings_unchanged(before: &Value, after: &Value) -> bool {
+    before.is_object()
+        && after.is_object()
+        && before.get("permissions") == after.get("permissions")
+        && before.get("automatic_permission_review") == after.get("automatic_permission_review")
+}
+
+pub fn protected_config_call(
+    actor: &super::actor::AgentActor,
+    call: &ToolCall,
+    needed: &Needed,
+) -> bool {
     if matches!(call.name.as_str(), "read" | "grep" | "glob") {
         return false;
     }
@@ -660,6 +751,9 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     evidence["canonical_target"] = json!(needed.destination);
     evidence["read_only"] = json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
     evidence["sensitive_read"] = json!(sensitive_call(call, needed, &actor.tool_context));
+    if config_grant_covers(actor, call, needed) {
+        evidence["approved_by"] = json!("config_session_grant");
+    }
     if let Some(model) = judge.model_id() {
         evidence["models"] = json!({"instinct":model});
     }
@@ -898,6 +992,20 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn config_session_grant_preserves_review_settings() {
+        let before = json!({"permissions":{"scratch_dirs":[]},"automatic_permission_review":true,"tui":{"theme":"dark"}});
+        let mut after = before.clone();
+        after["tui"]["theme"] = json!("light");
+        assert!(config_settings_unchanged(&before, &after));
+        after["permissions"]["scratch_dirs"] = json!(["/tmp"]);
+        assert!(!config_settings_unchanged(&before, &after));
+        after = before.clone();
+        after["automatic_permission_review"] = json!(false);
+        assert!(!config_settings_unchanged(&before, &after));
+        assert!(!config_settings_unchanged(&before, &json!({})));
+        assert!(!config_settings_unchanged(&json!({}), &json!(null)));
+    }
     #[test]
     fn bash_literal_aliases_and_uncertain_sensitive_expansions_force_risk() {
         let tmp = tempfile::tempdir().unwrap();

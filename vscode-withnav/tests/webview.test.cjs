@@ -163,6 +163,10 @@ test("real webview initializes with frozen VS Code API, renders history and post
   receive({ type: "permission", generation: 2, card: { requestId: "RA", callId: "C", tool: "bash", agent: "build", scope: { kind: "folder", value: "/a" }, reason: "Review", call: "pwd", allowFolder: false } });
   [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow once").click();
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: "answerPermission", sessionId: "A", requestId: "RA", decision: "allow_once", generation: 2 });
+  assert.ok(![...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "Allow WithNav config for this session"));
+  receive({ type: "permission", generation: 2, card: { requestId: "RC", callId: "CC", tool: "write", agent: "build", scope: { kind: "folder", value: "/config" }, reason: "Protected config", call: "models.json", allowFolder: false, allowConfigSession: true } });
+  [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow WithNav config for this session").click();
+  assert.equal(posts.at(-1).decision, "allow_config_session");
   assert.deepEqual(errors, []);
   dom.window.close();
 });

@@ -2990,9 +2990,15 @@ impl Service {
             } else {
                 None
             };
-        let status = Arc::new(runtime::RuntimeStatus::with_selection(AgentSelection::new(
-            agents, role,
-        )));
+        let mut runtime_status =
+            runtime::RuntimeStatus::with_selection(AgentSelection::new(agents, role));
+        // Share only live memory: a resumed root constructs a fresh grant.
+        if let Some(parent) = child_parent {
+            if let Some(handle) = self.handle(parent) {
+                runtime_status.config_session_grant = handle.status.config_session_grant.clone();
+            }
+        }
+        let status = Arc::new(runtime_status);
         status.init_variant(selected.clone());
         if let Some(seq) = resumed_bypass_seq {
             *status.bypass.lock().unwrap_or_else(|e| e.into_inner()) =

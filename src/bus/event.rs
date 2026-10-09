@@ -808,7 +808,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 24] = [
+    const KIND_NAMES: [&str; 26] = [
         "session.start",
         "session.end",
         "message.received",
@@ -833,13 +833,15 @@ mod tests {
         "subagent.done",
         "subagent.watchdog",
         "session.bypass",
+        "memory.goal_observed",
+        "memory.episode_written",
     ];
 
     #[test]
     fn event_kind_catalog_is_exactly_the_twenty_one() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 24);
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(EVENT_KIND_COUNT, 26);
+        assert_eq!(kinds.len(), 26);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -1181,6 +1183,11 @@ mod tests {
             "session.bypass",
             serde_json::json!({"enabled":true,"by":"user:http"}),
         ));
+        cases.push((
+            "memory.goal_observed",
+            serde_json::json!({"goal_id":"goal","progress":"done","start_seq":1,"end_seq":5}),
+        ));
+        cases.push(("memory.episode_written",serde_json::json!({"goal_id":"goal","start_seq":1,"end_seq":5,"model":"fake","usage":{}})));
         assert_eq!(cases.len(), EVENT_KIND_COUNT);
 
         for (kind, payload) in cases {

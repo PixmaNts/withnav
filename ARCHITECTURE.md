@@ -532,6 +532,16 @@ the later 0.6 scope, not this contract.
 
 ## Where new code goes
 
+- Workspace memory is optional and off by default. `agent/memory.rs` owns cited episode
+  types, pure Captain-goal boundaries and low-trust framing; `agent/memory/writer.rs` owns
+  the bounded tool-free writer prompt and validation. `session/memory.rs` observes completed
+  root turns off-turn in order, using exact durable event boundaries, and claims writer jobs.
+  `session/store/memory.rs` uses the history writer for transactions and snapshot read
+  connections for recovery/FTS. `tools/recall.rs` has a workspace-bound search callback.
+  `agent/memory/component.rs` gates optional request memory on a saved injection audit;
+  the actor estimates that component and the loop places it before history as low-trust data.
+  No memory is installed on children. Memory never replaces compaction or Captain authority.
+
 - Workspace visibility belongs in `session/store.rs` (`hidden_workspaces`, canonical paths, cleared on session creation); its bearer-protected HTTP actions and canonical workspace matching live in `server/web.rs`. Workspace deletion uses `Service::delete`, never direct SQL session deletion.
 
 - Settings HTTP edits live in `server/settings.rs`: shared `settings::update` locks a stable sidecar

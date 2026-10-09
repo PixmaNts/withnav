@@ -82,6 +82,7 @@ impl Observer for Instinct {
 }
 
 struct Metacognition {
+    output_tokens: u64,
     client: crate::provider::client::ModelClient,
     assigned: crate::provider::assignments::AssignedModel,
     key: String,
@@ -114,7 +115,7 @@ impl Writer for Metacognition {
                     content: input.into(),
                 }],
                 vec![],
-                Some(2048),
+                Some(self.output_tokens),
             );
             let response = self
                 .client
@@ -135,6 +136,15 @@ pub struct Models {
     pub writer: Option<Arc<dyn Writer>>,
 }
 pub fn models(models_path: Option<&Path>, workspace: &Path, config_dir: &Path) -> Models {
+    models_with_output_limit(models_path, workspace, config_dir, 2048)
+}
+
+pub fn models_with_output_limit(
+    models_path: Option<&Path>,
+    workspace: &Path,
+    config_dir: &Path,
+    output_tokens: u64,
+) -> Models {
     let mut result = Models {
         observer: None,
         writer: None,
@@ -165,6 +175,7 @@ pub fn models(models_path: Option<&Path>, workspace: &Path, config_dir: &Path) -
                 &cache,
             ) {
                 result.writer = Some(Arc::new(Metacognition {
+                    output_tokens: output_tokens.min(2048),
                     client,
                     assigned,
                     key,

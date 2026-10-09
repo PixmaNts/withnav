@@ -96,27 +96,38 @@ impl Component {
     pub async fn admitted(&self, model: &str) -> Vec<crate::provider::openai::ChatMessage> {
         use sha2::{Digest, Sha256};
         let request = ulid::Ulid::new().to_string();
-        let mut messages = Vec::new();
-        for (index, part) in self.parts().into_iter().enumerate() {
-            let hash = format!("{:x}", Sha256::digest(part.text.as_bytes()));
-            let injection = Injection {
-                request_id: format!("{request}:{index}"),
-                session: self.session.clone(),
-                turn: self.turn.clone(),
-                step: request.clone(),
-                model: model.into(),
-                source: part.source,
-                episode_ids: part.ids,
-                text: part.text.clone(),
-                hash,
-            };
-            if (self.record)(injection).await.is_ok() {
-                messages.push(crate::provider::openai::ChatMessage::User {
-                    provenance: crate::provider::openai::UserProvenance::Subagent,
-                    content: part.text,
-                });
-            }
+        let parts = self.parts();
+        if parts.is_empty() {
+            return Vec::new();
         }
-        messages
+        let text = parts
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let injection = Injection {
+            request_id: request.clone(),
+            session: self.session.clone(),
+            turn: self.turn.clone(),
+            step: request.clone(),
+            model: model.into(),
+            source: parts
+                .iter()
+                .map(|p| p.source.as_str())
+                .collect::<Vec<_>>()
+                .join("+"),
+            episode_ids: parts.iter().flat_map(|p| p.ids.iter().copied()).collect(),
+            text: text.clone(),
+            hash,
+        };
+        if (self.record)(injection).await.is_ok() {
+            vec![crate::provider::openai::ChatMessage::User {
+                provenance: crate::provider::openai::UserProvenance::Subagent,
+                content: text,
+            }]
+        } else {
+            Vec::new()
+        }
     }
 }

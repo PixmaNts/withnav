@@ -35,6 +35,9 @@ requests land in `develop`.
 - **`nav` builds for musl Linux.** Writing a flow file that must not replace an existing one now
   calls `renameat2` through the raw system call, because `nix` only wraps it with glibc. The
   behaviour is unchanged: one atomic rename that fails if the file exists.
+- **Optional workspace memory remembers closed goals without granting authority.**
+  Root conversations can track goals asynchronously, store cited unverified episodes locally,
+  and recall work in the same canonical workspace. Memory is off by default.
 
 ## [0.7.7] - 2026-10-11
 
@@ -240,7 +243,6 @@ your editor's font size, and shows a clear Safe mode / Bypass active indicator.
 - **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
   assigned model's window and fall back to the session model on provider errors; configuration
   can opt out or tune chunk size. Compaction events report the writer and successful passes.
-
 ### Changed
 
 - **Ordinary recoverable work takes the fast Instinct permission path.** Edits, commits,

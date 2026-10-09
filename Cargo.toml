@@ -104,5 +104,9 @@ name = "permission_corpus_probe"
 path = "tools/permission_corpus_probe.rs"
 
 [[example]]
+name = "memory_probe"
+path = "tools/memory_probe.rs"
+
+[[example]]
 name = "reflex_latency_probe"
 path = "tools/reflex_latency_probe.rs"

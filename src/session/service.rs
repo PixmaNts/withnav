@@ -3220,10 +3220,11 @@ impl Service {
                         Box::pin(async move { store.memory_inject(injection).await })
                     }),
                 };
-                if settings
-                    .get_dotted("memory.startup_bundle")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true)
+                if !is_resume
+                    && settings
+                        .get_dotted("memory.startup_bundle")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true)
                 {
                     let episodes = self
                         .history

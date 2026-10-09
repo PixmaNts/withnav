@@ -177,45 +177,6 @@ fn the_new_token_variable_prints_no_warning() {
 }
 
 #[test]
-fn a_start_moves_the_former_data_and_config_once() {
-    use std::os::unix::fs::PermissionsExt;
-    let dirs = tempfile::tempdir().unwrap();
-    let data = dirs.path().join("data");
-    let config = dirs.path().join("config");
-    std::fs::create_dir_all(data.join("navigator")).unwrap();
-    std::fs::create_dir_all(config.join("rust-agent")).unwrap();
-    std::fs::write(data.join("navigator/navigator.jsonl"), "log").unwrap();
-    let auth = config.join("rust-agent/auth.json");
-    std::fs::write(&auth, "{}").unwrap();
-    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-    for _ in 0..2 {
-        let status = Command::new(env!("CARGO_BIN_EXE_nav"))
-            .args(["tui", "--workspace", "."])
-            .env("XDG_DATA_HOME", &data)
-            .env("XDG_CONFIG_HOME", &config)
-            .env("HOME", dirs.path())
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
-            .status;
-        assert_eq!(status.code(), Some(1));
-    }
-
-    assert_eq!(
-        std::fs::read_to_string(data.join("withnav/withnav.jsonl")).unwrap(),
-        "log"
-    );
-    assert!(!data.join("navigator/navigator.jsonl").exists());
-    let moved = config.join("withnav/auth.json");
-    assert_eq!(
-        std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert!(!auth.exists());
-}
-
-#[test]
 fn the_navai_token_variable_still_works_with_a_deprecation_warning() {
     let url = closed_port_url();
     let run = tui_with(

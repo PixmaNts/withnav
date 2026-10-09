@@ -70,9 +70,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let migration = withnav::paths::migrate_legacy();
     init_tracing_stderr();
-    migration.log();
     let cli = Cli::parse();
 
     if let Some(Command::Replay { log, json, .. }) = cli.command {

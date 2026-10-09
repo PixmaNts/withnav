@@ -44,7 +44,7 @@
 .control-notice { white-space: pre-wrap; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background, var(--vscode-editor-background)); font: var(--vscode-font-size) / 1.5 var(--vscode-font-family); }
+body { color: var(--vscode-editor-foreground, var(--vscode-foreground)); background: var(--vscode-editor-background, var(--vscode-sideBar-background)); font: var(--vscode-editor-font-size) / 1.5 var(--vscode-font-family); }
 button, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .55; }

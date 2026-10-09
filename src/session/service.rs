@@ -3201,6 +3201,36 @@ impl Service {
             actor.system_prompt.clone(),
         );
         let skills = actor.skills.clone();
+        if child_parent.is_none() {
+            let settings = crate::settings::load(&self.config.config_dir)
+                .map_err(|e| ServerError::History(e.to_string()))?;
+            if settings
+                .get_dotted("memory.enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                let models = super::memory::models(
+                    self.config.models_path.as_deref(),
+                    &workspace,
+                    &self.config.config_dir,
+                );
+                if models.observer.is_none() {
+                    sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({"name":"memory","ok":false,"error":"Workspace memory tracking is disabled: Instinct is unavailable. Existing episodes remain searchable."}))).map_err(|e| ServerError::History(e.to_string()))?;
+                } else {
+                    actor.memory_completed = Some(
+                        super::memory::Watcher {
+                            store: self.history.as_ref().clone(),
+                            session: session_id,
+                            workspace: workspace.to_string_lossy().into_owned(),
+                            models,
+                            sequencer: sequencer.clone(),
+                            cancel: session_cancel.clone(),
+                        }
+                        .start(),
+                    );
+                }
+            }
+        }
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,

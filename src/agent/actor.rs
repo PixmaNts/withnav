@@ -51,6 +51,7 @@ pub struct BypassState {
 }
 
 pub struct AgentActor {
+    pub memory_completed: Option<tokio::sync::mpsc::UnboundedSender<ulid::Ulid>>,
     pub compaction_writer: Option<super::compaction::SummaryWriter>,
     pub compaction_catalog: Option<crate::provider::catalog::ModelCatalog>,
     pub compaction_max_message_tokens: Option<u64>,
@@ -205,6 +206,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            memory_completed: None,
             compaction_writer: None,
             compaction_catalog: None,
             compaction_max_message_tokens: None,

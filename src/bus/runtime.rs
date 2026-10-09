@@ -1516,6 +1516,9 @@ async fn runtime_loop(
                     }),
                 );
                 emit_agent_state(&mut turn, "idle");
+                if let Some(memory) = &actor.memory_completed {
+                    let _ = memory.send(turn_id);
+                }
                 active_task_id = None;
             }
             Ok(RunOutcome::Yielded(request)) => {

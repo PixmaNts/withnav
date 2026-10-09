@@ -36,3 +36,4 @@ pub use service::{
     Service, SessionId, SessionSummary, SkillEntry, SkillsBody, VariantChoice, CLEAR_WORD,
 };
 pub use subscription::Subscription;
+pub mod memory;

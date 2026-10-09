@@ -398,6 +398,45 @@ test('round2 model override inherit uses its model default, assignment null stay
   send('/variant inherit');await tick();assert.equal(b.state.selection.model,'gw/B');assert.equal(b.state.selection.variant,'low');assert.match(dom.window.document.querySelector('.topbar').title,/model source: override.*variant source: model_default/);
   await b.refreshAssignments();assert.equal(b.state.selection.variant,'low');
 });
+test('turn segments preserve step order, tool summaries, folds and visible interruptions', t => {
+  const { b, dom } = fullChat(t);
+  dom.window.requestAnimationFrame = fn => { fn(); return 1; };
+  const emit = data => b.emit(data);
+  emit({type:'turnStart',id:'T'});
+  emit({type:'delta',id:'T',stepId:'1',text:'Before'});
+  emit({type:'tool',id:'T',callId:'a',phase:'start',name:'bash',summary:'bash: work'});
+  const group = dom.window.document.querySelector('.tool-group');
+  assert.equal(group.open,true);
+  assert.match(group.querySelector('summary').textContent,/1 tool calls · running bash: work/);
+  emit({type:'tool',id:'T',callId:'a',phase:'end',name:'bash',summary:'bash: work',ok:false});
+  emit({type:'tool',id:'T',callId:'b',phase:'start',name:'read',summary:'read a.rs'});
+  assert.match(group.querySelector('summary').textContent,/2 tool calls · 1 failed/);
+  emit({type:'delta',id:'T',stepId:'2',text:'After'});
+  assert.equal(group.open,false);
+  assert.deepEqual([...dom.window.document.querySelector('.cognition').children].filter(x=>x.matches('.message-body,.tool-group')).map(x=>x.className),['message-body','tool-group','message-body']);
+  assert.deepEqual([...dom.window.document.querySelectorAll('.cognition .message-body')].map(x=>x.textContent),['Before','After']);
+  emit({type:'delta',id:'T',stepId:'3',text:'Separate step'});
+  assert.equal(dom.window.document.querySelectorAll('.cognition .message-body').length,3);
+  emit({type:'tool',id:'T',callId:'c',phase:'start',name:'read',summary:'read b.rs'});
+  const chosen = [...dom.window.document.querySelectorAll('.tool-group')].at(-1);
+  chosen.querySelector('summary').click();
+  const folded = chosen.open;
+  emit({type:'tool',id:'T',callId:'c',phase:'end',name:'read',summary:'read b.rs',ok:true});
+  emit({type:'turnEnd',id:'T',outcome:'done'});
+  assert.equal(chosen.open,folded);
+  emit({type:'permission',card:{requestId:'P',agent:'build',tool:'bash',scope:{kind:'folder',value:'.'},reason:'Review',call:'work'}});
+  emit({type:'tool',id:'T',callId:'d',phase:'start',name:'read',summary:'read c.rs'});
+  const card = dom.window.document.querySelector('.permission-card');
+  assert.equal(card.closest('.tool-group'),null);
+  assert.ok(card.compareDocumentPosition(dom.window.document.querySelector('#transcript').lastElementChild) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
+test('history tool groups remain closed', t => {
+  const { b, dom } = fullChat(t);
+  dom.window.dispatchEvent(new dom.window.MessageEvent('message', {data:{type:'history',generation:b.currentGeneration(),items:[{type:'turnStart',generation:b.currentGeneration(),id:'H'},{type:'tool',generation:b.currentGeneration(),id:'H',callId:'a',phase:'start',name:'read',summary:'read a.rs'}]}}));
+  assert.equal(dom.window.document.querySelector('.tool-group').open,false);
+});
+
 function fullChat(t, globalState = memento()) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');

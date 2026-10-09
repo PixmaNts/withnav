@@ -468,7 +468,7 @@ export class CognitionBackend implements ChatBackend {
   /** A stopped conversation to resume on the next send (Stop keeps it). */
   /** Cancels the SSE fetch of the running stream, if any. */
   /** Bumped by every deliberate stream cancel: stale connects go quiet. */
-  /** Turn ids that received a live text delta (replayed turns get none). */
+  /** Turn/step keys that received live text, so response replay cannot duplicate it. */
   private disposed = false;
 
   currentGeneration(): number { return this.state.streamGeneration; }
@@ -1489,26 +1489,26 @@ export class CognitionBackend implements ChatBackend {
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         const delta = payload.delta ?? {};
         if (delta.delta_type === "text") {
-          this.state.turnTextDelta.add(id);
-          return { type: "delta", id, text: String(delta.text ?? "") };
+          this.state.turnTextDelta.add(`${id}:${String(payload.step_id ?? "")}`);
+          return { type: "delta", id, stepId: String(payload.step_id ?? ""), text: String(delta.text ?? "") };
         }
         if (delta.delta_type === "thinking") {
-          return { type: "reasoning", id, text: String(delta.text ?? "") };
+          return { type: "reasoning", id, stepId: String(payload.step_id ?? ""), text: String(delta.text ?? "") };
         }
         return undefined; // tool_call deltas ride the tool events instead
       }
       case "llm.response": {
         // During a history replay no `llm.delta` arrives: a turn that got
-        // no live text renders its final message as one delta. Live turns
+        // no live text renders its final message as one delta. Live steps
         // (flagged above) must not be duplicated.
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
-        if (this.state.turnTextDelta.has(id)) return undefined;
+        if (this.state.turnTextDelta.has(`${id}:${String(payload.step_id ?? "")}`)) return undefined;
         if (!text && !thinking) return undefined;
-        if (thinking) this.emit({ type: "reasoning", id, text: thinking });
-        return text ? { type: "delta", id, text } : undefined;
+        if (thinking) this.emit({ type: "reasoning", id, stepId: String(payload.step_id ?? ""), text: thinking });
+        return text ? { type: "delta", id, stepId: String(payload.step_id ?? ""), text } : undefined;
       }
       case "tool.pre_call": {
         const id = this.state.currentTurn ?? String(envelope.seq);

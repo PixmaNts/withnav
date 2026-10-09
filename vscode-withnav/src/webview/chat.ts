@@ -321,7 +321,9 @@ const conversations = mountConversations(message => post(message), () => {
   if (!prompt.disabled) prompt.focus();
   else document.querySelector<HTMLElement>(".conv-trigger")?.focus();
 });
-type Turn = { root: HTMLElement; content: HTMLElement; reasoning: HTMLElement; activity: HTMLElement; text: string; thoughts: string; calls: Map<string, HTMLElement> };
+type TextSegment = { kind: "text"; stepId?: string; content: HTMLElement; reasoning: HTMLElement; details: HTMLDetailsElement; text: string; thoughts: string };
+type ToolGroup = { kind: "tools"; details: HTMLDetailsElement; summary: HTMLElement; calls: Map<string, Extract<HostToWebview, { type: "tool" }>>; chosen: boolean; finished: boolean };
+type Turn = { root: HTMLElement; last?: TextSegment | ToolGroup; calls: Map<string, HTMLElement>; groups: Map<string, ToolGroup> };
 const turns = new Map<string, Turn>();
 let state = "connecting";
 let pendingQuestion = false;
@@ -361,6 +363,10 @@ transcript.addEventListener("scroll", () => {
 });
 
 function add(element: HTMLElement): void {
+  for (const item of turns.values()) {
+    finishGroup(item);
+    item.last = undefined;
+  }
   empty.hidden = true;
   transcript.append(element);
   follow();
@@ -554,18 +560,40 @@ function turn(id: string): Turn {
   const root = el("article", "message cognition");
   root.dataset.agent = agentLabel.dataset.agent;
   const byline = el("div", "byline"); decorateCrew(byline, agentLabel.dataset.agent); root.append(byline);
+  const item: Turn = { root, calls: new Map(), groups: new Map() };
+  turns.set(id, item);
+  add(root);
+  return item;
+}
+
+function finishGroup(item: Turn): void {
+  if (item.last?.kind !== "tools") return;
+  item.last.finished = true;
+  if (!item.last.chosen) item.last.details.open = false;
+}
+
+function continueTurn(item: Turn): void {
+  if (transcript.lastElementChild === item.root) return;
+  const root = el("article", "message cognition");
+  root.dataset.agent = item.root.dataset.agent;
+  item.root = root;
+  add(root);
+}
+
+function textSegment(item: Turn, stepId?: string): TextSegment {
+  continueTurn(item);
+  if (item.last?.kind === "text" && item.last.stepId === stepId) return item.last;
+  finishGroup(item);
   const content = el("div", "message-body");
   const details = el("details", "reasoning");
   details.append(el("summary", "", "Reasoning"));
   const reasoning = el("div", "reasoning-body");
   details.append(reasoning);
   details.hidden = true;
-  const activity = el("div", "activity");
-  root.append(details, content, activity);
-  const item = { root, content, reasoning, activity, text: "", thoughts: "", calls: new Map<string, HTMLElement>() };
-  turns.set(id, item);
-  add(root);
-  return item;
+  item.root.append(details, content);
+  const segment: TextSegment = { kind: "text", stepId, content, reasoning, details, text: "", thoughts: "" };
+  item.last = segment;
+  return segment;
 }
 
 function toolPath(summary: string): { path: string; line?: number } | undefined {
@@ -579,10 +607,32 @@ function toolPath(summary: string): { path: string; line?: number } | undefined 
 function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): void {
   let row = item.calls.get(event.callId);
   if (!row) {
+    continueTurn(item);
+    if (item.last?.kind !== "tools") {
+      const details = el("details", "tool-group");
+      const summary = el("summary");
+      details.append(summary);
+      const group: ToolGroup = { kind: "tools", details, summary, calls: new Map(), chosen: false, finished: false };
+      // Native summary activation records intent, unlike asynchronous toggle events
+      // which also fire when streaming updates change `open` programmatically.
+      summary.addEventListener("click", () => { group.chosen = true; });
+      item.root.append(details);
+      item.last = group;
+    }
     row = el("div", "tool-row");
     item.calls.set(event.callId, row);
-    item.activity.append(row);
+    item.groups.set(event.callId, item.last);
+    item.last.details.append(row);
   }
+  const group = item.groups.get(event.callId)!;
+  group.calls.set(event.callId, event);
+  const calls = [...group.calls.values()];
+  const failed = calls.filter(call => call.phase === "end" && call.ok === false).length;
+  const running = calls.find(call => call.phase === "start");
+  group.summary.replaceChildren(el("span", "", `${calls.length} tool calls`));
+  if (failed) group.summary.append(el("span", "tool-group-failed", ` · ${failed} failed`));
+  if (running) group.summary.append(el("span", "tool-group-running", ` · running ${running.summary || running.name}`));
+  if (!group.chosen) group.details.open = !replaying && !group.finished;
   row.replaceChildren();
   row.className = `tool-row ${event.phase === "start" ? "working" : event.ok === false ? "failed" : "complete"}`;
   row.append(el("span", "tool-mark", event.phase === "start" ? "◌" : event.ok === false ? "×" : "✓"));
@@ -896,7 +946,7 @@ function receive(event: HostToWebview): void {
       break;
     case "turnStart": turn(event.id); setStatus("busy"); break;
     case "delta": {
-      const item = turn(event.id);
+      const item = textSegment(turn(event.id), event.stepId);
       item.text += event.text;
       if (!pendingMarkdown.has(item.content)) {
         pendingMarkdown.add(item.content);
@@ -909,9 +959,9 @@ function receive(event: HostToWebview): void {
       break;
     }
     case "reasoning": {
-      const item = turn(event.id);
+      const item = textSegment(turn(event.id), event.stepId);
       item.thoughts += event.text;
-      item.root.querySelector("details")!.hidden = false;
+      item.details.hidden = false;
       item.reasoning.textContent = item.thoughts;
       follow();
       break;
@@ -919,6 +969,9 @@ function receive(event: HostToWebview): void {
     case "tool": activity(turn(event.id), event); break;
     case "question": {
       const item = turn(event.id);
+      continueTurn(item);
+      finishGroup(item);
+      item.last = undefined;
       const note = el("div", "question");
       note.append(el("span", "question-label", "Question"));
       const body = el("div", "message-body");
@@ -932,6 +985,7 @@ function receive(event: HostToWebview): void {
     }
     case "turnEnd": {
       const item = turn(event.id);
+      finishGroup(item);
       if (event.outcome !== "done") item.root.append(el("div", "turn-result", event.error || (event.outcome === "stopped" ? "Stopped" : "The turn failed.")));
       setStatus(event.outcome === "error" ? "error" : "ready", event.error);
       follow();

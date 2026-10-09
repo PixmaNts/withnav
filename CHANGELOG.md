@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **VS Code command results stay concise.** Selection changes no longer dump JSON;
+  unknown command data stays available in a closed Details disclosure.
+
 ## [0.7.1] - 2026-10-09
 
 WithNav 0.7.1 lets you delete a saved session, with its subagent sessions, from the terminal,

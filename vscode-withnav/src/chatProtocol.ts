@@ -52,7 +52,7 @@ export type HostToWebview = { generation?: number } & (
   | { type: "permissionState"; requestId: string; resolution: string; message?: string }
   | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
   | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
-  | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string }
+  | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string; details?: string }
   | { type: "commands"; items: CommandInfo[] }
   | { type: "commandError"; text: string }
   | { type: "commandPicker"; kind: "model" | "variant" | "skills" | "agent"; items: { name: string; description: string; gateway?: string; provider_group?: string }[]; disabledReason?: string }

@@ -871,6 +871,11 @@ function receive(event: HostToWebview): void {
       const notice = el("article", "message control-notice", event.text);
       if (event.operationId) { notice.dataset.operationId = event.operationId; notice.title = `Operation: ${event.operationId}`; }
       if (event.ok === false) notice.classList.add("command-error");
+      if (event.details !== undefined) {
+        const details = el("details");
+        details.append(el("summary", "", "Details"), el("pre", "", event.details));
+        notice.append(details);
+      }
       add(notice);
       break;
     }

@@ -209,7 +209,7 @@ pub fn evidence(events: &[EventEnvelope], start: u64, end: u64) -> Vec<(u64, Str
         .iter()
         .filter(|e| e.seq >= start && e.seq <= end)
         .filter_map(|e| {
-            let value = match e.kind.as_str() {
+            let mut value = match e.kind.as_str() {
                 "message.received" => {
                     serde_json::json!({"source":e.payload["source"],"content":e.payload["content"]})
                 }
@@ -221,6 +221,7 @@ pub fn evidence(events: &[EventEnvelope], start: u64, end: u64) -> Vec<(u64, Str
                 }
                 _ => return None,
             };
+            crate::flows::redaction::response(&mut value);
             Some((e.seq, value.to_string()))
         })
         .collect()
@@ -237,7 +238,7 @@ fn anchors(events: &[EventEnvelope], end: u64) -> Vec<CaptainAnchor> {
                     .is_some_and(crate::bus::command::is_captain_source)
         })
         .filter_map(|e| {
-            let text = e.payload["content"].as_str()?.to_owned();
+            let text = safe_text(e.payload["content"].as_str()?);
             let lower = text.trim().to_lowercase();
             // Only unambiguous standalone cancellation is deterministic evidence.
             let explicit_cancellation = matches!(
@@ -265,6 +266,12 @@ pub struct Watcher {
     pub models: Models,
     pub sequencer: Sequencer,
     pub cancel: CancellationToken,
+}
+
+fn safe_text(text: &str) -> String {
+    let mut value = serde_json::Value::String(text.into());
+    crate::flows::redaction::response(&mut value);
+    value.as_str().unwrap().into()
 }
 impl Watcher {
     async fn notice(&self, text: &str) -> Result<(), String> {
@@ -351,7 +358,7 @@ impl Watcher {
             end,
         );
         let input = memory::framed_json(
-            &serde_json::json!({"goal":{"anchor_seq":goal.anchor_seq,"text":goal.text},"recent_captain_messages":recent.iter().map(|c|serde_json::json!({"seq":c.seq,"text":c.text})).collect::<Vec<_>>(),"visible_evidence":visible}),
+            &serde_json::json!({"goal":{"anchor_seq":goal.anchor_seq,"text":safe_text(&goal.text)},"recent_captain_messages":recent.iter().map(|c|serde_json::json!({"seq":c.seq,"text":c.text})).collect::<Vec<_>>(),"visible_evidence":visible}),
         )?;
         if input.len() > memory::INSTINCT_INPUT_BYTES {
             goal.end_seq = Some(end);
@@ -445,7 +452,8 @@ impl Watcher {
         let Some(writer) = &self.models.writer else {
             return Ok(());
         };
-        for goal in self.store.memory_goals(&self.session.to_string()).await? {
+        for mut goal in self.store.memory_goals(&self.session.to_string()).await? {
+            goal.text = safe_text(&goal.text);
             if goal.end_seq.is_none()
                 || !matches!(goal.writer_status.as_str(), "pending" | "writing")
             {
@@ -502,7 +510,13 @@ impl Watcher {
                     if written.text.trim().is_empty() && written.truncated {
                         return Err("memory writer output exhausted by reasoning".into());
                     }
-                    parsed.map(|body| (written, body))
+                    parsed.and_then(|body| {
+                        let mut value = serde_json::to_value(body).map_err(|e| e.to_string())?;
+                        crate::flows::redaction::response(&mut value);
+                        serde_json::from_value(value)
+                            .map(|body| (written, body))
+                            .map_err(|e| e.to_string())
+                    })
                 });
                 match result {
                     Ok((written, body)) => {

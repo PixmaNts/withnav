@@ -58,6 +58,7 @@ impl Observer for FakeObserver {
     }
 }
 struct FakeWriter {
+    inputs: Mutex<Vec<String>>,
     calls: AtomicUsize,
     fail_first: bool,
     slow: bool,
@@ -69,10 +70,11 @@ struct FakeWriter {
 impl Writer for FakeWriter {
     fn write<'a>(
         &'a self,
-        _: &'a str,
+        input: &'a str,
         _: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Written, String>> {
         Box::pin(async move {
+            self.inputs.lock().unwrap().push(input.into());
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             let goals = self.store.memory_goals(&self.session.to_string()).await?;
             let goal = &goals[0];
@@ -164,6 +166,7 @@ async fn turn(w: &Watcher, seq: u64, text: &str) -> Ulid {
 }
 fn writer(w: &Watcher, fail_first: bool, slow: bool) -> Arc<FakeWriter> {
     Arc::new(FakeWriter {
+        inputs: Mutex::new(vec![]),
         calls: AtomicUsize::new(0),
         fail_first,
         slow,
@@ -172,6 +175,59 @@ fn writer(w: &Watcher, fail_first: bool, slow: bool) -> Arc<FakeWriter> {
         store: w.store.clone(),
         session: w.session,
     })
+}
+
+#[tokio::test]
+async fn secrets_never_reach_memory_models_or_episodes() {
+    let mut f = fixture(false).await;
+    let writer = writer(&f.watcher, false, false);
+    f.watcher.models.writer = Some(writer.clone());
+    let secrets = [
+        "sk-synthetic0123456789012345",
+        "Bearer synthetic-bearer-token",
+        "API_KEY=synthetic-env-credential",
+    ];
+    let first = turn(&f.watcher, 1, secrets[0]).await;
+    f.watcher.completed(first).await.unwrap();
+    for (seq, kind, payload) in [
+        (
+            3,
+            EventKind::LlmResponse,
+            serde_json::json!({"message":{"text":secrets[1]}}),
+        ),
+        (
+            4,
+            EventKind::ToolPostCall,
+            serde_json::json!({"name":"bash","output":format!("cat .env\n{}", secrets[2]),"status":"ok"}),
+        ),
+    ] {
+        f.watcher
+            .store
+            .append_event_acked(
+                f.watcher.session,
+                EventEnvelope::new(f.watcher.session, seq, kind, payload),
+            )
+            .await
+            .unwrap();
+    }
+    let second = turn(&f.watcher, 5, "finish").await;
+    f.watcher.completed(second).await.unwrap();
+    let stored = f
+        .watcher
+        .store
+        .memory_episodes("/workspace", None, 3)
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    let outputs = format!(
+        "{:?}{:?}{:?}",
+        f.observer.inputs.lock().unwrap(),
+        writer.inputs.lock().unwrap(),
+        stored
+    );
+    for secret in secrets {
+        assert!(!outputs.contains(secret));
+    }
 }
 
 #[tokio::test]

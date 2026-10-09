@@ -4,18 +4,19 @@ requests land in `develop`.
 
 ## [Unreleased]
 
-### Changed
+## [0.7.1] - 2026-10-09
 
-- **Permission review and supervision now use the Instinct layer name.**
-  New events write `instinct` source, model, latency and guard metadata; clients
-  still read stored `jev` events and display them as `auto · instinct` until 0.8.
+WithNav 0.7.1 lets you delete a saved session, with its subagent sessions, from the terminal,
+VS Code and the WebUI. The WebUI now fits tablets and phones, and the VS Code panel shows in
+colour what waits on you, how subagents are doing and how big a change is. The decision layer is
+named Instinct everywhere, and about forty fixes land across tools, the terminal client, the
+language server, context budgeting and providers.
 
 ### Added
 
 - **Delete saved sessions from the terminal session picker.** Press `ctrl+d`, then confirm
   permanent deletion with the attached subagent count. The list refreshes near the same row,
   and tabs for the deleted session and its subagents close.
-
 - **Delete VS Code conversations from the command palette.** Choose a workspace conversation,
   then confirm permanent deletion including its subagent count. The chat button uses the same
   confirmation; deleted conversations reset to an empty chat and their subagent views close.
@@ -23,8 +24,12 @@ requests land in `develop`.
   a delete button (shown on hover or focus; the Delete key works on the row), and the command
   palette has "Delete session…" for the open one. The confirmation lists the subagents that go
   with it and says it cannot be undone; deleting the open session moves to the next one.
+
 ### Changed
 
+- **Permission review and supervision now use the Instinct layer name.**
+  New events write `instinct` source, model, latency and guard metadata; clients
+  still read stored `jev` events and display them as `auto · instinct` until 0.8.
 - **The VS Code panel colours what waits on you, how subagents are doing, and how big a change is.**
   Pause cards and pending permissions get the warning colour; a subagent's state reads blue while
   running, amber when it needs you, green when done, red when failed; a wake shows `+N −M` and its
@@ -42,7 +47,6 @@ requests land in `develop`.
 - **Brace glob alternatives can explicitly search normally skipped folders.**
   Patterns such as `{src,target}/**/*.rs` now enter `target`, while broad wildcard
   alternatives still leave hidden and generated folders skipped by default.
-
 - **Model variants cannot use the reserved name `inherit`.** Catalogue validation rejects a
   name that the CLI and commands interpret as selecting the model's default variant.
 - **Oversized model catalogue cache files are ignored without reading them whole.** Disk reads
@@ -57,7 +61,6 @@ requests land in `develop`.
 - **Fetch explains how redirect query parameters are handled.** A redirect to a new
   path without a query drops the original query under standard URL resolution;
   parameters, including credentials, are never implicitly forwarded.
-
 - **Closing a file now frees what inline completion kept for it.**
   The completion service remembered every file it had ever completed in until the server stopped, so
   long editor sessions grew without bound. Closing a file now drops its entry and cancels any
@@ -91,18 +94,15 @@ requests land in `develop`.
 - **Verbose shell commands drain excess output in larger chunks.**
   Once the output buffer fills, larger discard reads reduce reader overhead without artificial
   delays or closing the pipe. Retained bytes never exceed the buffer cap.
-
 - **Shell cancellation only signals positive process group ids.**
   Child ids are checked before conversion, and termination rejects nonpositive ids so an invalid
   id cannot signal WithNav's own process group.
-
 - **The terminal client no longer fails to load skills or toggle bypass for a session whose id needs
   escaping.** Those two requests put the id in the URL path as-is while every other one escaped it, so
   an id with a space or a slash gave a 404.
 - **VS Code keeps watchdog-paused subagents continuable without a root pause token.**
   Removed an unreachable tooltip that incorrectly implied child continuation
   required a token; the server accepts tokenless child continuation.
-
 - **The intent tool can clear an obsolete section with an empty string.** An explicit empty
   update now removes the previous text; omitted sections still retain their contents.
 - **Interrupted terminal turns no longer retain unfinished tool arguments.** Turn and session
@@ -118,7 +118,6 @@ requests land in `develop`.
   opens from a **Details** button in the top bar; below 700 px the page is one column and the
   workspace list opens from the ☰ button. Settings and the Studio work the same way. Esc closes
   a side panel and puts focus back on its button. The desktop layout does not change.
-
 - **Subagents no longer pause merely because instinct is unconfigured.** A watchdog without a
   judge skips advisory checks; configured judges still escalate repeated failures, and the step
   cap remains enforced.
@@ -128,11 +127,9 @@ requests land in `develop`.
 - **Creating files avoids resolving the same permission root twice.** Path validation
   reuses its canonical ancestor when that ancestor is an allowed root. Other roots
   are still resolved freshly so changed symlinks cannot retain stale permissions.
-
 - **Relative file destinations can name folders that do not exist yet.**
   Path validation anchors relative destinations to the first allowed root before resolving
   existing ancestors, while still refusing paths that escape the allowed roots.
-
 - **Metacognition call logs retain provider-reported token usage.** Successful chat rounds now
   record input and output counts; tools and responses without usage keep these fields unknown.
 - **Code-heavy conversation summaries no longer exceed their cap during escaping.** Angle

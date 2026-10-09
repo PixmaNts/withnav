@@ -123,6 +123,7 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
           (!p.child_session_id ? calls?.argumentsFor(p) : undefined) ?? String(p.arguments ?? "")),
         arguments: String(p.arguments ?? ""),
         allowFolder: agent !== "plan" && tool === "fetch",
+        allowConfigSession: p.allow_config_session === true,
         evidence: permissionEvidence(p.permission_gate),
       } };
     }
@@ -175,6 +176,7 @@ export function permissionOutcome(resolution: string, message?: string): string 
   switch (resolution) {
     case "allow_once": return "Allowed once";
     case "allow_folder": return "Allowed for this scope";
+    case "allow_config_session": return "Allowed WithNav config for this session";
     case "deny": return message ? `Denied: ${message}` : "Denied";
     case "expired": return "Expired: the session restarted";
     case "cancelled": return "Cancelled";

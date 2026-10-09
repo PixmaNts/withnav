@@ -38,6 +38,8 @@ pub enum PermissionDecision {
     /// Run this call and every later call of the same capability inside the
     /// same scope, for this agent, until the session ends.
     AllowFolder,
+    /// Skip the Captain-only configuration hold until this root session ends.
+    AllowConfigSession,
     /// Do not run the call; `message` is what the model reads back.
     Deny { message: String },
 }
@@ -82,6 +84,8 @@ pub struct PermissionRequest {
     pub flow_regates: usize,
     #[serde(default)]
     pub requires_captain: bool,
+    #[serde(default)]
+    pub allow_config_session: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_gate: Option<Box<Value>>,
     pub id: Ulid,
@@ -109,6 +113,7 @@ impl PermissionRequest {
             origin: RequestOrigin::Ordinary,
             flow_regates: 0,
             requires_captain: false,
+            allow_config_session: false,
             permission_gate: None,
             id: Ulid::new(),
             tool_call_id: call.id.clone(),

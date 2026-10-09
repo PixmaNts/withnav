@@ -728,6 +728,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
       ...(decision === "deny" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
   };
   buttons.append(actionButton("Allow once", () => answer("allow_once"), true));
+  if (card.allowConfigSession) buttons.append(actionButton("Allow WithNav config for this session", () => answer("allow_config_session")));
   if (card.allowFolder) buttons.append(actionButton(card.scope.kind === "origin" ? "Allow site" : "Allow folder", () => answer("allow_folder")));
   buttons.append(actionButton("Deny", () => answer("deny")));
   controls.append(denyMessage, buttons);

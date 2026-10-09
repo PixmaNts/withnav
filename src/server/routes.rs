@@ -966,6 +966,7 @@ pub struct AnswerPermissionRequest {
 pub enum DecisionKind {
     AllowOnce,
     AllowFolder,
+    AllowConfigSession,
     Deny,
 }
 
@@ -994,6 +995,7 @@ async fn answer_permission(
     let decision = match body.decision {
         DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
         DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
+        DecisionKind::AllowConfigSession => PermissionDecision::AllowConfigSession,
         DecisionKind::Deny => PermissionDecision::Deny {
             message: body
                 .message

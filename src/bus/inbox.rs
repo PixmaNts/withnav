@@ -742,6 +742,7 @@ mod tests {
                 origin: Default::default(),
                 flow_regates: 0,
                 requires_captain: false,
+                allow_config_session: false,
                 permission_gate: None,
                 id: Ulid::new(),
                 tool_call_id: "w1".into(),

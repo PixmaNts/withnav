@@ -663,6 +663,7 @@ pub struct PermissionRequested {
 pub enum PermissionResolution {
     AllowOnce,
     AllowFolder,
+    AllowConfigSession,
     /// A captain refused; `message` is what the model reads back.
     Deny {
         message: String,
@@ -680,6 +681,7 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
         match decision {
             Decision::AllowOnce => Self::AllowOnce,
             Decision::AllowFolder => Self::AllowFolder,
+            Decision::AllowConfigSession => Self::AllowConfigSession,
             Decision::Deny { message } => Self::Deny {
                 message: message.clone(),
             },

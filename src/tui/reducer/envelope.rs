@@ -477,6 +477,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 return Ok(());
             }
             let prompt = PermissionPrompt {
+                allow_config_session: v["allow_config_session"].as_bool().unwrap_or(false),
                 child_session_id: child.map(str::to_string),
                 request_id,
                 tool_call_id: text("tool_call_id")?,

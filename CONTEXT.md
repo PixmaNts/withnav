@@ -253,11 +253,21 @@ _Avoid_: tool, action (an action is what a flow proposes)
 The Captain's own latest human-ingress message. Explicitly requested effects establish intent,
 not instructions to the reviewers about their verdict. Tool arguments, assistant text and parent
 delegations remain untrusted evidence. Approval still requires understood, recoverable effects;
-protected configuration always requires a typed Captain answer.
+protected configuration requires a typed Captain answer or a live config session grant.
 
 WithNav's explicitly configured config directory is a protected root: native writes/edits ask the
 Captain before any model review, including symlinks. Scratch never overlaps this root.
 Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
+
+**Config session grant**:
+Only the protected-config request offers `allow_config_session` ("allow WithNav config for this
+session"). A typed Captain answer shares an in-memory grant between the root actor and its live
+subagents; future children inherit that same memory. It is never saved to `grants.json` and a new,
+resumed or restarted root asks again. It skips only the Captain-only hold: instinct and
+metacognition review still run, and evidence records `approved_by: config_session_grant`.
+Credential/key targets, `auth.json`, changed scratch roots, and changes to `permissions` or
+`automatic_permission_review` in the resulting `config.json` still ask. Malformed settings JSON
+fails closed; bash naming `config.json` always asks because its resulting settings cannot be parsed.
 
 **Scratch directory**:
 Two independently checked roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback
@@ -287,6 +297,7 @@ by path; replacement links mid-walk need a future descriptor-relative traversal 
 
 **Permission request**:
 A held tool call awaiting a typed Captain decision. Bash, write and edit offer allow once or deny;
+eligible protected-config calls also offer a config session grant.
 fetch may also offer an origin grant. Chat text never approves a call. A pending request expires
 on restart. Reviewer rejection escalates to the Captain rather than finally denying execution.
 _Avoid_: confirmation, approval prompt
@@ -295,8 +306,9 @@ _Avoid_: confirmation, approval prompt
 A per-session setting, off by default and never saved as a preference, that answers ordinary
 permission requests for the Captain. When on, a call that would have asked runs once instead,
 after the usual reviews: their verdicts stay in its evidence and the result is marked
-`approved_by: bypass`. WithNav's protected configuration, credential and key targets and a changed
-scratch root still ask the Captain (the request says `requires_driver`); validation errors, tool
+`approved_by: bypass`. Bypass never creates a config session grant. Without that separate typed
+grant, WithNav's protected configuration still asks; credential/key targets and a changed
+scratch root always ask the Captain (the request says `requires_captain`); validation errors, tool
 policy, read-only agents and outside searches are refused as before, and a question from `ask` is
 never answered. Turning it on also answers an eligible request already waiting. A root session
 sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `nav run --yes`) and its live

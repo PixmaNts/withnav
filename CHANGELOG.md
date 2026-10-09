@@ -28,6 +28,10 @@ requests land in `develop`.
   Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.
 ### Added
 
+- **Allow WithNav config updates for the rest of a conversation.** Protected-config
+  requests offer a session-only answer in the terminal, editor and browser. Reviews still
+  run; credentials, review settings and changed scratch roots still require your answer.
+
 - **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
   assigned model's window and fall back to the session model on provider errors; configuration
   can opt out or tune chunk size. Compaction events report the writer and successful passes.

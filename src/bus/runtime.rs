@@ -100,6 +100,7 @@ struct PermissionSlot {
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
+    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
     /// Serializes bypass changes and child starts below this root, so a
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
@@ -834,6 +835,7 @@ pub fn spawn_with_completion(
     status.init_ask(&actor);
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
+    actor.config_session_grant = status.config_session_grant.clone();
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -1135,6 +1137,18 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
+                if answer.decision
+                    == crate::agent::permissions::PermissionDecision::AllowConfigSession
+                    && (!request.allow_config_session
+                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain)
+                {
+                    status.release_pin(&actor);
+                    status.release_permission(answer.request_id);
+                    let _ = answer
+                        .reply
+                        .send(Err(crate::agent::permissions::PermissionError::Stale));
+                    continue;
+                }
                 let decision = crate::agent::permissions::offered_decision(
                     &request.agent,
                     &request.tool,
@@ -1761,6 +1775,7 @@ fn permission_requested(
         reason: request.reason.clone(),
     });
     payload["requires_captain"] = serde_json::json!(request.requires_captain);
+    payload["allow_config_session"] = serde_json::json!(request.allow_config_session);
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
             request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
@@ -2098,6 +2113,7 @@ mod tests {
                 origin: Default::default(),
                 flow_regates: 0,
                 requires_captain: false,
+                allow_config_session: false,
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),

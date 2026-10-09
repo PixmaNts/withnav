@@ -352,6 +352,12 @@ pub async fn resolve_permission_with_origin(
         }
         None => return Err(PermissionError::Stale.into()),
     }
+    if decision == PermissionDecision::AllowConfigSession
+        && (origin != super::permissions::PermissionOrigin::Captain
+            || !matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.allow_config_session))
+    {
+        return Err(PermissionError::Stale.into());
+    }
     let Some(PendingInteraction::Permission {
         request,
         call,
@@ -373,7 +379,9 @@ pub async fn resolve_permission_with_origin(
         return Ok(RunOutcome::Interrupted);
     }
     match decision {
-        PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
+        PermissionDecision::AllowOnce
+        | PermissionDecision::AllowFolder
+        | PermissionDecision::AllowConfigSession => {
             let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
             let bypass = origin == super::permissions::PermissionOrigin::Bypass;
             evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "captain" });
@@ -385,7 +393,12 @@ pub async fn resolve_permission_with_origin(
             // The approval is for the destination the Captain reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
             // not run on this approval, and goes through the gate afresh.
-            let one = if matches!(
+            let one = if decision == PermissionDecision::AllowConfigSession {
+                actor
+                    .config_session_grant
+                    .store(true, std::sync::atomic::Ordering::Release);
+                run_gated(actor, &call, observe).await
+            } else if matches!(
                 request.origin,
                 super::permissions::RequestOrigin::Flow { .. }
             ) {
@@ -570,6 +583,14 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
     let agent = role.id.as_str();
     if super::permission_gate::protected_call(actor, call, &needed) {
         let mut request = PermissionRequest::new(call, needed.scope, agent);
+        request.allow_config_session = super::permission_gate::config_grant_eligible(
+            actor,
+            call,
+            &Needed {
+                scope: request.scope.clone(),
+                destination: needed.destination.clone(),
+            },
+        );
         request.reason =
             "WithNav configuration is Captain-only; approve this call once or deny".into();
         return Gated::Ask(Box::new(request), needed.destination);
@@ -882,6 +903,9 @@ async fn run_gated(
             };
             request.requires_captain =
                 super::permission_gate::hard_floor(actor, call, &needed).is_some();
+            request.allow_config_session =
+                super::permission_gate::protected_config_call(actor, call, &needed)
+                    && super::permission_gate::config_grant_eligible(actor, call, &needed);
             if request.requires_captain
                 || !actor
                     .bypass
@@ -902,6 +926,17 @@ async fn run_gated(
                 approval["guard"] = guard;
             }
             note = Some(approval);
+        }
+        if let Some(evidence) = note.as_mut() {
+            let needed = Needed {
+                scope: Scope::Folder(actor.tool_context.workspace.clone()),
+                destination: destination.clone(),
+            };
+            if super::permission_gate::config_grant_covers(actor, call, &needed) {
+                evidence["approved_by"] = serde_json::json!("config_session_grant");
+                evidence["permission_gate"]["approved_by"] =
+                    serde_json::json!("config_session_grant");
+            }
         }
         if let Some(result) = execute_call(actor, call, destination.as_deref(), note, observe).await
         {
@@ -2940,6 +2975,142 @@ mod tests {
             .await,
             One::Ask(..)
         ));
+    }
+
+    #[tokio::test]
+    async fn config_session_grant_reviews_calls_and_expires_with_actor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.protected_config_root = Some(tmp.path().to_path_buf());
+        actor.protected_config_spelling = actor.protected_config_root.clone();
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        }));
+        let call = ToolCall {
+            id: "models".into(),
+            name: "write".into(),
+            args_valid: true,
+            args: serde_json::json!({"path":tmp.path().join("models.json"),"content":"{}"}),
+        };
+        actor.bypass.lock().unwrap().enabled = true;
+        let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await else {
+            panic!("bypass must not grant config");
+        };
+        assert!(request.allow_config_session);
+        assert!(!actor
+            .config_session_grant
+            .load(std::sync::atomic::Ordering::Acquire));
+        actor.pending = Some(PendingInteraction::Permission {
+            request: request.clone(),
+            call: call.clone(),
+            remaining_calls: vec![],
+            destination,
+            steps_left: 0,
+        });
+        let outcome = resolve_permission(
+            &mut actor,
+            request.id,
+            PermissionDecision::AllowConfigSession,
+            &mut |_| {},
+        )
+        .await;
+        // A zero-step continuation can exhaust its budget after the reviewed call.
+        assert!(!matches!(outcome, Ok(RunOutcome::PermissionRequired(_))));
+        assert!(actor
+            .config_session_grant
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(matches!(gate(&actor, &call), Gated::Reviewed(_)));
+        let Gated::Reviewed(needed) = gate(&actor, &call) else {
+            unreachable!()
+        };
+        let super::super::permission_gate::Judged::Run(evidence) =
+            super::super::permission_gate::consult(&actor, &call, &needed).await
+        else {
+            panic!("normal reviewers should approve");
+        };
+        assert_eq!(
+            evidence["permission_gate"]["approved_by"],
+            "config_session_grant"
+        );
+        let mut metadata = None;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    metadata = Some(result.metadata.clone());
+                }
+            })
+            .await,
+            One::Settled
+        ));
+        assert_eq!(metadata.unwrap()["approved_by"], "config_session_grant");
+        let mut child = plan_actor(None, "http://unused");
+        child.config_session_grant = actor.config_session_grant.clone();
+        assert!(child
+            .config_session_grant
+            .load(std::sync::atomic::Ordering::Acquire));
+        let fresh = plan_actor(None, "http://unused");
+        assert!(!fresh
+            .config_session_grant
+            .load(std::sync::atomic::Ordering::Acquire));
+        for (name, args) in [
+            (
+                "write",
+                serde_json::json!({"path":tmp.path().join("auth.json"),"content":"{}"}),
+            ),
+            (
+                "write",
+                serde_json::json!({"path":tmp.path().join("id_ed25519"),"content":"secret"}),
+            ),
+            (
+                "write",
+                serde_json::json!({"path":tmp.path().join("config.json"),"content":"{\"permissions\":{}}"}),
+            ),
+            (
+                "write",
+                serde_json::json!({"path":tmp.path().join("config.json"),"content":"{\"automatic_permission_review\":false}"}),
+            ),
+            (
+                "bash",
+                serde_json::json!({"command":format!("echo '{{}}' > {}/config.json",tmp.path().display())}),
+            ),
+        ] {
+            let excluded = ToolCall {
+                name: name.into(),
+                args,
+                ..call.clone()
+            };
+            assert!(
+                matches!(
+                    run_gated(&mut actor, &excluded, &mut |_| {}).await,
+                    One::Ask(..)
+                ),
+                "{excluded:?}"
+            );
+        }
+        std::fs::write(tmp.path().join("config.json"), r#"{"permissions":{"scratch_dirs":[]},"automatic_permission_review":true,"theme":"dark"}"#).unwrap();
+        for (old, new, covered) in [
+            ("dark", "light", true),
+            ("true", "false", false),
+            ("[]", "[\"/tmp\"]", false),
+        ] {
+            let edit = ToolCall {
+                name: "edit".into(),
+                args: serde_json::json!({"path":tmp.path().join("config.json"),"old_string":old,"new_string":new}),
+                ..call.clone()
+            };
+            let needed = Needed {
+                scope: Scope::Folder(tmp.path().to_path_buf()),
+                destination: Some(tmp.path().join("config.json")),
+            };
+            assert_eq!(
+                super::super::permission_gate::config_grant_eligible(&actor, &edit, &needed),
+                covered
+            );
+        }
     }
 
     #[tokio::test]

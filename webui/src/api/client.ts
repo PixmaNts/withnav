@@ -60,6 +60,6 @@ export const api = {
     post<CommandOutcome>(`/v1/sessions/${q(id)}/commands`, { name, arguments: args }),
   continueChild: (parent: string, child: string, token?: { incarnation: string; hold_id: string }) =>
     post<{ accepted: boolean }>(`/v1/sessions/${q(parent)}/children/${q(child)}/continue`, { pause_token: token ?? null }),
-  answerPermission: (id: string, requestId: string, decision: "allow_once" | "allow_folder" | "deny", message?: string) =>
+  answerPermission: (id: string, requestId: string, decision: "allow_once" | "allow_folder" | "allow_config_session" | "deny", message?: string) =>
     post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/permissions/${q(requestId)}`, message ? { decision, message } : { decision }),
 };

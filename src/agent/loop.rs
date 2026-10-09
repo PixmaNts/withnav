@@ -302,10 +302,12 @@ pub async fn resolve_permission(
 pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
     match &actor.pending {
         Some(PendingInteraction::Permission { call, request, .. }) => {
-            if matches!(
-                request.origin,
-                super::permissions::RequestOrigin::Flow { .. }
-            ) {
+            if request.requires_captain
+                || matches!(
+                    request.origin,
+                    super::permissions::RequestOrigin::Flow { .. }
+                )
+            {
                 return false;
             }
             pending_bypass_eligible_call(actor, call)
@@ -340,10 +342,11 @@ pub async fn resolve_permission_with_origin(
     match &actor.pending {
         Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {
             if origin == super::permissions::PermissionOrigin::Bypass
-                && matches!(
-                    request.origin,
-                    super::permissions::RequestOrigin::Flow { .. }
-                )
+                && (request.requires_captain
+                    || matches!(
+                        request.origin,
+                        super::permissions::RequestOrigin::Flow { .. }
+                    ))
             {
                 return Err(PermissionError::Stale.into());
             }
@@ -3270,6 +3273,70 @@ mod tests {
         assert!(request
             .reason
             .contains("script changed since it was reviewed"));
+    }
+
+    #[tokio::test]
+    async fn script_changed_pending_requires_typed_captain_answer_before_or_after_bypass() {
+        for bypass_before in [false, true] {
+            let mut actor = script_actor();
+            actor.bypass.lock().unwrap().enabled = bypass_before;
+            actor.permission_reviewer = Some(Arc::new(ScriptReviewer));
+            let path = actor.tool_context.workspace.join("swap.py");
+            std::fs::write(&path, "print('reviewed')\n").unwrap();
+            let call = script_call(&path, "python3");
+            on_next_dispatch({
+                let path = path.clone();
+                move || std::fs::write(path, "print('after!')\n").unwrap()
+            });
+            let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {
+                panic!("changed script dispatched")
+            })
+            .await
+            else {
+                panic!("changed script did not ask Captain");
+            };
+            assert!(request.requires_captain);
+            let id = request.id;
+            actor.pending = Some(PendingInteraction::Permission {
+                request,
+                call,
+                remaining_calls: vec![],
+                destination,
+                steps_left: 0,
+            });
+            actor.bypass.lock().unwrap().enabled = true;
+            assert!(!pending_bypass_eligible(&actor));
+            assert!(resolve_permission_with_origin(
+                &mut actor,
+                id,
+                PermissionDecision::AllowOnce,
+                super::super::permissions::PermissionOrigin::Bypass,
+                &mut |_| panic!("bypass answer dispatched changed script"),
+            )
+            .await
+            .is_err());
+            assert!(matches!(
+                &actor.pending,
+                Some(PendingInteraction::Permission { request, .. }) if request.id == id
+            ));
+            let mut posts = 0;
+            resolve_permission(
+                &mut actor,
+                id,
+                PermissionDecision::AllowOnce,
+                &mut |event| {
+                    if let AgentEvent::PostCall { result, .. } = event {
+                        posts += 1;
+                        assert!(result.output.contains("after!"), "{result:?}");
+                        assert_eq!(result.metadata["permission_gate"]["source"], "captain");
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(posts, 1);
+            assert!(actor.pending.is_none());
+        }
     }
 
     #[tokio::test]

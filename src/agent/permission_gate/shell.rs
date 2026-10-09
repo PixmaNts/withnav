@@ -4,7 +4,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
-/// Both its spelling and symlink target must be outside every writable root.
+/// Both its spelling and symlink target must be outside every writable root,
+/// with root-owned, non-writable directory chains.
 pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, PathBuf)> {
     let name = basename(word);
     let path = Path::new(word);
@@ -55,7 +56,9 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
         return None;
     }
     let canonical = resolved.canonicalize().ok()?;
-    if !outside(&resolved)
+    if !trusted_directories(&resolved)
+        || !trusted_directories(&canonical)
+        || !outside(&resolved)
         || !outside(&canonical)
         || (path.is_absolute() && (path != canonical || !outside(path)))
     {
@@ -66,6 +69,20 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
         return None;
     }
     Some((name.to_owned(), canonical))
+}
+
+fn trusted_directories(path: &Path) -> bool {
+    path.ancestors().skip(1).all(|parent| {
+        // Check the spelling's chain (including a symlink's containing directory)
+        // and every resolved directory's chain, not just the executable target.
+        parent.canonicalize().is_ok_and(|canonical| {
+            canonical.ancestors().all(|directory| {
+                directory.metadata().is_ok_and(|metadata| {
+                    metadata.is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0
+                })
+            })
+        })
+    })
 }
 
 pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
@@ -505,4 +522,58 @@ pub(super) fn removal_or_move(command: &str) -> bool {
             })
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn script_and_command_identity_reject_system_symlinks_in_writable_path_directory() {
+        const CHILD: &str = "WITHNAV_TEST_WRITABLE_PATH_SYMLINK";
+        if let Ok(workspace) = std::env::var(CHILD) {
+            let facts = json!({"workspace":workspace,"writable_roots":[workspace]});
+            // The first executable PATH hit is outside registered roots and points
+            // at a root-owned system binary. Its containing directory is untrusted.
+            assert!(trusted_program("python3", &facts).is_none());
+            assert!(script_operand(&["python3".into(), "local.py".into()], &facts).is_none());
+            assert!(trusted_program("git", &facts).is_none());
+            let call = crate::provider::ToolCall {
+                id: "command".into(),
+                name: "bash".into(),
+                args: json!({"command":"git status"}),
+                args_valid: true,
+            };
+            assert!(super::super::context::signature(&call, &facts).is_none());
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let bin = tmp.path().join("unregistered-bin");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o777)).unwrap();
+        for name in ["python3", "git"] {
+            std::os::unix::fs::symlink(format!("/usr/bin/{name}"), bin.join(name)).unwrap();
+        }
+        // Isolate PATH changes from other parallel tests.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent::permission_gate::shell::tests::script_and_command_identity_reject_system_symlinks_in_writable_path_directory",
+                "--nocapture",
+            ])
+            .env(CHILD, &workspace)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

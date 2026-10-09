@@ -327,10 +327,11 @@ mod tests {
     #[test]
     fn a_narrow_header_drops_the_least_useful_items_first() {
         let state = busy();
-        // 80 columns: the switch waiting for the turn outranks the variant, gauge and path.
+        // 80 columns: the safe-mode marker takes its place on the left; the switch waiting for
+        // the turn still outranks the crew name, variant, gauge and path.
         assert_eq!(
             row(&state, 80),
-            " ◆ withnav   ▌◎ Nav /build  omniroute/combo…  → cc/claude-op… (after this turn) "
+            " 🛡 safe    ◆ withnav  ▌◎ build  omniroute/com…  → cc/claude-… (after this turn) "
         );
         // 40 columns: the crew name, the switch and the gauge go; the agent and model_id stay.
         assert_eq!(row(&state, 40), " ◆ withnav    ▌◎ build  omnirou… · high ");

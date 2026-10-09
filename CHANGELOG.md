@@ -13,6 +13,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Instinct recognizes ordinary repository work without unnecessary review.** Described
+  choices and confidence checks on only the deciding answers restore the fast permission path;
+  destructive, shared, sensitive and host-unsafe calls retain their existing review floors.
+
 - **Long conversations compact with relevance pruning and learned message limits.** Instinct
   scores only old, unpinned tool outputs before metacognition writes its rolling summary;
   unavailable scoring leaves the existing path intact. Provider size limits survive new sessions,

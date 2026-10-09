@@ -283,15 +283,20 @@ An advisory per-call Instinct classification in one batched request: `call_effec
 (`read_only` / `local_change` / `remote_change` / `unsure`), `call_scope`, `reversibility`
 (`none_needed` / `recoverable` / `destructive` / `unsure`), `publication`
 (`none` / `own_work` / `shared` / `unsure`), plus probability questions `sensitivity` and
-`task_fit` using the existing Captain request. With confidence ≥ 0.7, sensitivity < 0.2
-and task fit ≥ 0.6, ordinary reads and recoverable project-local changes run through Instinct.
-Recoverable publication of the session's own work can also run; git pushes require bounded
+`task_fit` using the existing Captain request. Confidence ≥ 0.7 is required only on deciding
+answers: `read_only` for reads; `local_change`, `recoverable` and `inside` for local changes;
+`remote_change`, `recoverable` and `own_work` for publication of the task's own work.
+Secondary answers need no confidence, but cannot contradict a read with `outside`, or any
+route with `destructive` or `shared`. Sensitivity must stay < 0.2 and task fit ≥ 0.6.
+Git pushes require bounded
 literal-command host facts confirming the current non-default branch and no force/deletion.
 Host facts include the current/default branches, dirty state and literal git path tracking.
 Missing git, a timeout or an ambiguous push supplies no authorization fact.
 
-Destruction, shared publication, sensitive or off-task effects, low confidence and unsure
-answers go to synchronous metacognition review. Its separate 64 KiB budget carries Instinct
+Destruction and shared publication at any confidence, sensitive or off-task effects, and low
+confidence or unsure deciding answers go to synchronous metacognition review. Every Run path
+still passes the host shell, executable identity, overwrite recovery and removal/move floors.
+Its separate 64 KiB budget carries Instinct
 answers/probabilities, git facts and bounded untrusted recent steps; Instinct keeps 16 KiB.
 Only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
 remote deletions still require the Captain. Protected configuration, credentials and changed

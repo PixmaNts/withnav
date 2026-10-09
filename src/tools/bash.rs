@@ -90,6 +90,12 @@ fn bash_command() -> Result<Command, ToolError> {
     Ok(command)
 }
 
+/// The same trusted launcher used by the tool, without executing it.
+pub fn trusted_shell() -> Option<&'static std::path::Path> {
+    init_shell();
+    TRUSTED_SHELL.get().and_then(Option::as_deref)
+}
+
 pub struct BashTool;
 
 /// Revalidate the same canonical target and original spelling without following links.

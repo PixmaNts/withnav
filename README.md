@@ -35,6 +35,7 @@ by Instinct alone. On review timeout, eligible reads retain their safe fallback;
 - `nav run -p "<task>"`: one task in a terminal. It never approves a tool call by itself, unless you pass `--yes`.
 - `nav serve`: the session server alone (HTTP and SSE, loopback by default).
 - `nav auth set|list|remove <provider>`: API keys.
+- `nav doctor`: read-only configuration, assignment and live model diagnostics.
 - **Agents.** `build` (the default: implement, verify, report) and `plan` (research, write markdown
   plans). The Captain switches between turns. Agents can also be defined in Markdown files.
 - **Permissions.** `write`, `edit`, `bash` and `fetch` ask first: allow once, allow the folder, or
@@ -65,6 +66,45 @@ cognition chat discusses the work with you. See [`vscode-withnav/README.md`](vsc
 | `nav tui` | `--workspace <dir>`, `--model <gateway/id>` or `--session <id>` (resume), `--models <file>` or `--url <server>` (token in `WITHNAV_SERVER_TOKEN`) |
 | `nav serve` | `--bind <addr>` (default `127.0.0.1:7310`), `--allow-non-loopback`, `--models <file>` |
 | `nav auth` | `set <provider>`, `list`, `remove <provider>` |
+| `nav doctor` | `--offline`, `--json`, `--workspace <dir>`, `--layer <reflex\|instinct\|metacognition>` |
+
+### Check the setup: `nav doctor`
+
+```sh
+nav doctor --workspace /path/to/project
+nav doctor --offline --json
+nav doctor --layer instinct
+```
+
+By default, doctor **sends small synthetic requests to your configured providers and may incur
+charges**: two Reflex FIM calls (plain and bounded context), three Instinct calls (editor decision,
+role conformance and one permission review), and one tool-free Metacognition chat call. Instinct
+keeps its 2-second deadline; FIM is bounded at 10 seconds and chat at 20 seconds. No project source,
+session or tool is executed or sent. Provider catalogue discovery may also run to verify offers.
+
+Doctor uses the same platform config directory, workspace catalogue resolution, agent precedence,
+default fallback and layer assignments as WithNav. It reports the effective compaction writer,
+trusted system bash, `nav lsp` version and detectable VS Code server path (`nav` by default).
+Missing optional features and
+unavailable detection are warnings. Workspace flows are not even read until explicitly trusted.
+Nothing is migrated, fixed, trusted, reloaded or written, including metadata caches.
+
+Example (abbreviated):
+
+```text
+✓ ok assignment.layer.instinct: gateway/typesafe/jev variant=off
+✓ ok live.instinct.editor: valid answer (145 ms)
+⚠ warning flows.workspace_trust: untrusted: workspace flow validation skipped; no workspace flow read
+✕ failed live.metacognition.chat: HTTP 401 rejected; Check provider authentication, model id and API support.
+```
+
+`--offline` makes **zero network calls**, reads only local config/cache and marks live checks skipped;
+an unverifiable variant offer is a warning, not a false success. `--layer` restricts layer/live checks
+but retains shared config, agent, compaction and workspace checks. `--json` emits one report only on
+stdout (`schema_version`, `checks`, `summary`); each check has an id, status, measured value, optional
+sanitized error category, hint and elapsed milliseconds. Neither mode prints response bodies,
+credential-bearing URLs, keys or environment values. Exit `0` means no failed checks (warnings are
+allowed), `1` means at least one failure; invalid CLI flags/layer names use clap's exit `2`.
 
 `nav run` exit codes: `0` done, `1` error, `2` the agent asked a question, `3` a tool call needs
 approval (`permission_required`), `130` interrupted.

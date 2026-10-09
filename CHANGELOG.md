@@ -99,6 +99,12 @@ your editor's font size, and shows a clear Safe mode / Bypass active indicator.
 - **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
   assigned model's window and fall back to the session model on provider errors; configuration
   can opt out or tune chunk size. Compaction events report the writer and successful passes.
+### Added
+
+- **`nav doctor` checks your configuration and models without changing anything.** Inspect
+  assignments, credentials, legacy names, workspace/flow trust and installed binaries, then make
+  small bounded live layer calls. `--offline` avoids all network requests; `--json` reports stable
+  diagnostic ids without provider bodies or secrets.
 
 ### Changed
 

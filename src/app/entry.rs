@@ -20,6 +20,9 @@ async fn run() -> anyhow::Result<()> {
     match &cli.command {
         crate::app::Commands::Lsp(_) => crate::app::lsp::init_tracing_stderr(),
         crate::app::Commands::Tui(_) => crate::app::init_tui_logging(),
+        // Provider bodies and URLs can contain secrets. Doctor deliberately has
+        // no tracing subscriber, even when RUST_LOG requests wire diagnostics.
+        crate::app::Commands::Doctor(_) => {}
         _ => init_tracing(),
     }
     let code = dispatch(cli).await?;

@@ -163,6 +163,7 @@ pub struct ModelCatalog {
     data_dir: Option<PathBuf>,
     deadline: Duration,
     write_failures: Arc<AtomicUsize>,
+    read_only: bool,
 }
 impl Default for ModelCatalog {
     fn default() -> Self {
@@ -176,10 +177,18 @@ impl ModelCatalog {
             data_dir,
             deadline: FETCH_DEADLINE,
             write_failures: Arc::default(),
+            read_only: false,
         }
     }
     pub fn system() -> Self {
         Self::new(paths::data_dir())
+    }
+    /// Read existing metadata and refresh in memory only; never create cache files.
+    pub fn read_only(data_dir: Option<PathBuf>) -> Self {
+        Self {
+            read_only: true,
+            ..Self::new(data_dir)
+        }
     }
     /// Learned per-message bounds survive new sessions and catalog refreshes.
     pub fn message_limit(&self, base_url: &str, model: &str) -> Option<u64> {
@@ -374,6 +383,9 @@ impl ModelCatalog {
     /// leaves the process on its memory copy, with one warning per catalog.
     /// Returns whether the file was written.
     fn persist(&self, path: &Path, file: &CacheFile) -> bool {
+        if self.read_only {
+            return false;
+        }
         let write = || -> std::io::Result<()> {
             let raw = serde_json::to_vec(file).map_err(std::io::Error::other)?;
             if let Some(parent) = path.parent() {
@@ -764,6 +776,18 @@ pub async fn resolve_chat(
     } else {
         Some(catalog.lookup(resolved, key, clients).await)
     };
+    chat_from_data(resolved, data)
+}
+
+/// Resolve using an already captured metadata snapshot, including offline callers.
+pub fn chat_from_data(
+    resolved: &ResolvedModel,
+    data: Option<CatalogData>,
+) -> Result<ResolvedChat, NoContextWindow> {
+    let is_chat = resolved.model.api == ApiKind::Chat;
+    let explicit = resolved.model.context_window.filter(|n| *n > 0);
+    let needs_tiers =
+        resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
     // Freshness only describes values that came from the provider's list.
     let used = data.as_ref().filter(|d| d.limits.is_some());
     let stale = used.is_some_and(|d| d.stale);

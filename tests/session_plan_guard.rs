@@ -1,4 +1,4 @@
-//! The plan agent's role guard through the session service: Jev (a scripted
+//! The plan agent's role guard through the session service: Instinct (a scripted
 //! System One endpoint on the `instinct` alias) is asked about every exception,
 //! and only a valid `conforms` lets a call run without the Captain.
 
@@ -68,10 +68,10 @@ fn verdict(choice: &str) -> Vec<u8> {
 }
 
 /// A provider that answers chat requests from `chat` and System One requests
-/// with `jev`, in order, by path.
-async fn provider(chat: Vec<Vec<u8>>, jev: Vec<Vec<u8>>) -> CapturingProvider {
-    let count = chat.len() + jev.len();
-    let (chat_n, jev_n) = (
+/// with `instinct`, in order, by path.
+async fn provider(chat: Vec<Vec<u8>>, instinct: Vec<Vec<u8>>) -> CapturingProvider {
+    let count = chat.len() + instinct.len();
+    let (chat_n, instinct_n) = (
         std::sync::atomic::AtomicUsize::new(0),
         std::sync::atomic::AtomicUsize::new(0),
     );
@@ -80,7 +80,7 @@ async fn provider(chat: Vec<Vec<u8>>, jev: Vec<Vec<u8>>) -> CapturingProvider {
             n.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         };
         if request.starts_with("POST /v1/systemone") || request.contains("/systemone ") {
-            { let mut response = jev[next(&jev_n)].clone(); if !request.contains("role_conformance") { let text = String::from_utf8(response).unwrap(); let body = text.split("\r\n\r\n").nth(1).unwrap(); let mut value: Value = serde_json::from_str(body).unwrap(); value["answers"].as_object_mut().unwrap().remove("role_conformance"); let body = value.to_string(); response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes(); } response }
+            { let mut response = instinct[next(&instinct_n)].clone(); if !request.contains("role_conformance") { let text = String::from_utf8(response).unwrap(); let body = text.split("\r\n\r\n").nth(1).unwrap(); let mut value: Value = serde_json::from_str(body).unwrap(); value["answers"].as_object_mut().unwrap().remove("role_conformance"); let body = value.to_string(); response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes(); } response }
         } else {
             chat[next(&chat_n)].clone()
         }
@@ -88,10 +88,10 @@ async fn provider(chat: Vec<Vec<u8>>, jev: Vec<Vec<u8>>) -> CapturingProvider {
     .await
 }
 
-fn state(env: &Env, provider: &CapturingProvider, with_jev: bool) -> AppState {
+fn state(env: &Env, provider: &CapturingProvider, with_instinct: bool) -> AppState {
     let mut config = TestServerConfig::mock(&env.root, &provider.url);
-    if with_jev {
-        config = config.extra_alias("instinct", "jev-test");
+    if with_instinct {
+        config = config.extra_alias("instinct", "instinct-test");
     }
     config.state()
 }
@@ -157,7 +157,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
         .expect("wake");
 }
 
-/// The task Jev was sent in its `n`th question (0-based).
+/// The task Instinct was sent in its `n`th question (0-based).
 fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
     let body: Value = serde_json::from_str(&system_one_requests(provider)[n]).unwrap();
     let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
@@ -180,7 +180,7 @@ fn system_one_requests(provider: &CapturingProvider) -> Vec<String> {
 }
 
 // Given plan asked to write markdown
-// Then no request and no question to Jev
+// Then no request and no question to Instinct
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plan_writes_notes_md_without_a_request() {
     let env = env();
@@ -199,8 +199,8 @@ fn done() -> Vec<u8> {
     http_sse(&sse_body(&[&text_chunk("done")]))
 }
 
-// Given plan writing code and Jev answering `conforms`
-// Then the call runs without a request, Jev was asked the typed question with
+// Given plan writing code and Instinct answering `conforms`
+// Then the call runs without a request, Instinct was asked the typed question with
 //      the exact call, and the durable tool.post_call carries the verdict
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_conforming_exception_runs_and_is_recorded() {
@@ -253,38 +253,38 @@ async fn a_conforming_exception_runs_and_is_recorded() {
     assert_eq!(post.len(), 1);
     assert_eq!(
         post[0].payload["metadata"]["guard"],
-        json!({"by":"jev","verdict":"conforms","role":"plan"})
+        json!({"by":"instinct","verdict":"conforms","role":"plan"})
     );
     assert_eq!(
         post[0].payload["metadata"]["permission_gate"]["source"],
-        json!("jev")
+        json!("instinct")
     );
     let evidence = &post[0].payload["metadata"]["permission_gate"];
-    assert_eq!(evidence["models"]["jev"], "jev-test");
+    assert_eq!(evidence["models"]["instinct"], "instinct-test");
     assert_eq!(
         evidence["verdicts"],
         json!({"effect":"read_write","scope":"inside","risk":"low"})
     );
-    assert!(evidence["latency_ms"]["jev"].is_u64());
+    assert!(evidence["latency_ms"]["instinct"].is_u64());
     let pre = events(&state, id, "tool.pre_call").await;
     assert_eq!(&pre[0].payload["permission_gate"], evidence);
 }
 
-// Given plan writing code and Jev not conforming, or not available
+// Given plan writing code and Instinct not conforming, or not available
 // Then the Captain is asked, with the reason; nothing runs; allow-folder is one
 //      approval; approving runs the call
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn violates_uncertain_and_no_jev_all_ask_the_captain() {
-    for (jev, with_jev, reason) in [
+async fn violates_uncertain_and_no_instinct_all_ask_the_captain() {
+    for (instinct, with_instinct, reason) in [
         (vec![verdict("violates")], true, "uncertain"),
         (vec![verdict("uncertain")], true, "uncertain"),
         (vec![verdict("perhaps")], true, "malformed"),
-        (vec![], false, "Jev unavailable"),
+        (vec![], false, "instinct unavailable"),
     ] {
         let env = env();
         let target = env.ws.join("main.rs");
-        let provider = provider(vec![write_call(&target), done()], jev).await;
-        let state = state(&env, &provider, with_jev);
+        let provider = provider(vec![write_call(&target), done()], instinct).await;
+        let state = state(&env, &provider, with_instinct);
         let id = plan_session(&state, &env).await;
         say(&state, id, "write the stub").await;
         let requested = wait_events(&state, id, "permission.requested", 1).await;
@@ -297,7 +297,7 @@ async fn violates_uncertain_and_no_jev_all_ask_the_captain() {
         assert!(!target.exists(), "{reason}: nothing ran");
         assert_eq!(
             system_one_requests(&provider).len(),
-            usize::from(with_jev),
+            usize::from(with_instinct),
             "{reason}"
         );
 
@@ -317,7 +317,7 @@ async fn violates_uncertain_and_no_jev_all_ask_the_captain() {
 }
 
 // Given a build session
-// Then Jev is never asked and the usual request comes
+// Then Instinct is never asked and the usual request comes
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn build_is_not_guarded() {
     let env = env();
@@ -330,13 +330,13 @@ async fn build_is_not_guarded() {
     assert!(requested[0].payload["reason"]
         .as_str()
         .unwrap()
-        .contains("Jev unavailable"));
+        .contains("instinct unavailable"));
     assert!(system_one_requests(&provider).is_empty());
 }
 
 // Given a plan conversation where the Captain spoke, then stopped and resumed
 //       with a navigator wake as the only new message
-// Then Jev is sent the Captain's stored words as the task, not the wake
+// Then Instinct is sent the Captain's stored words as the task, not the wake
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resumed_session_judges_against_the_captains_stored_words() {
     let env = env();
@@ -369,7 +369,7 @@ async fn a_resumed_session_judges_against_the_captains_stored_words() {
 }
 
 // Given a plan conversation the Captain never spoke in
-// Then Jev is sent `task: null`, before and after a resume
+// Then Instinct is sent `task: null`, before and after a resume
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_a_captain_message_the_task_is_null() {
     let env = env();

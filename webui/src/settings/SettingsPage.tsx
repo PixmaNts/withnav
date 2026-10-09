@@ -1,6 +1,7 @@
-import { ArrowLeft, CheckCircle, CircleNotch, Compass, MagnifyingGlass, Palette, Plugs, ShieldCheck, Stack, TreeStructure, WarningCircle } from "@phosphor-icons/react";
+import { ArrowLeft, CheckCircle, CircleNotch, Compass, List, MagnifyingGlass, Palette, Plugs, ShieldCheck, Stack, TreeStructure, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAgents, useLayers, useModels, useSettings } from "../api/queries";
+import { Drawer, DrawerButton, MOBILE, useDrawer } from "../lib/drawer";
 import { baseName, modKey } from "../lib/format";
 import { fieldOf, fileLines, isSection, searchIndex, searchMatches, SECTIONS, statusLine, summaries, type SectionId } from "../lib/settings";
 import type { Route } from "../router";
@@ -37,6 +38,10 @@ export function SettingsPage({ route, navigate, theme, setTheme }: Props) {
   const [query, setQuery] = useState("");
   const search = useRef<HTMLInputElement>(null);
   const main = useRef<HTMLElement>(null);
+  // On a phone the section list is a drawer; choosing a section closes it.
+  const nav = useDrawer(MOBILE);
+  const { setOpen: closeNav } = nav;
+  useEffect(() => closeNav(false), [section, closeNav]);
 
   useEffect(() => {
     document.title = "Settings · WithNav";
@@ -97,11 +102,16 @@ export function SettingsPage({ route, navigate, theme, setTheme }: Props) {
   return (
     <div className="st-shell">
       <header className="topbar st-top">
+        <DrawerButton target="st-sections" state={nav} label="Settings sections" className="side-toggle">
+          <List size={18} aria-hidden />
+        </DrawerButton>
         <span className="brand">
           <Compass size={16} aria-hidden />
-          WithNav
+          <span className="brand-name">WithNav</span>
         </span>
-        <span className="crumb">Settings</span>
+        <span className="crumb">
+          Settings{nav.active && <span className="muted"> · {NAV[section].label}</span>}
+        </span>
         <div className="topbar-right">
           <label className="st-search">
             <MagnifyingGlass size={13} aria-hidden />
@@ -116,6 +126,7 @@ export function SettingsPage({ route, navigate, theme, setTheme }: Props) {
         </div>
       </header>
 
+      <Drawer id="st-sections" side="left" state={nav} label="Sections">
       <nav className="st-side" aria-label="Settings sections">
         <button type="button" className="st-back" onClick={() => navigate({ page: "chat", section: null })}>
           <ArrowLeft size={13} aria-hidden /> Back to {workspace ? baseName(workspace) : "chat"}
@@ -141,6 +152,7 @@ export function SettingsPage({ route, navigate, theme, setTheme }: Props) {
           ))}
         </div>
       </nav>
+      </Drawer>
 
       <main className="st-main" ref={main}>
         {!workspace ? (

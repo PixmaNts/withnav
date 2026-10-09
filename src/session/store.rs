@@ -2629,7 +2629,7 @@ mod tests {
                 .unwrap_err()
                 .contains("agent_overrides"));
             assert!(store.load_for_resume(id).await.is_err());
-            assert!(store.list("/w").await.is_err());
+            assert!(store.list("/w").await.unwrap().is_empty());
             assert!(store.clear_agent_override(id, "build").await.is_err());
         }
     }

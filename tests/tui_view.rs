@@ -23,6 +23,50 @@ fn message(id: &str, source: &str, text: &str) -> Block {
 }
 
 #[test]
+fn session_delete_confirmation_row_and_keys() {
+    let mut s = state();
+    let id = s.sessions[0].id.clone();
+    let mut child = s.sessions[0].clone();
+    child.id = "child".into();
+    child.parent_session_id = Some(id.clone());
+    s.sessions.push(child);
+    let mut ui = UiState {
+        overlay: Some(Overlay::Sessions),
+        ..Default::default()
+    };
+    let mut editor = Editor::new();
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::RequestDeleteSession(id.clone()))
+    );
+    ui.delete_confirm = Some(id);
+    render("sessions-delete-confirmation", (160, 30), &s, &ui, &editor);
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::CancelDeleteSession)
+    );
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::ConfirmDeleteSession)
+    );
+}
+
+#[test]
 fn bypass_header_sidebar_and_notice() {
     let mut s = state();
     s.bypass = true;
@@ -2410,7 +2454,7 @@ fn plan_exception() -> State {
     if let BlockKind::Permission(p) = &mut block.kind {
         p.agent = "plan".into();
         p.reason =
-            "Jev judged this outside the plan role. `write` acts in /ws/src (approve this call once, or deny)"
+            "Instinct judged this outside the plan role. `write` acts in /ws/src (approve this call once, or deny)"
                 .into();
     }
     asking(block)
@@ -2444,7 +2488,7 @@ fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
     );
     for want in [
         "PERMISSION · plan wants to run write in /ws/src",
-        "Jev judged this outside the plan role.",
+        "Instinct judged this outside the plan role.",
         "y allow once · n deny",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
@@ -2453,14 +2497,17 @@ fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
     let t = cells(&plan, &ui, (100, 30));
     let theme = Theme::default();
     let row = (0..30)
-        .find(|y| row_text(&t, *y, 100).contains("Jev judged"))
+        .find(|y| row_text(&t, *y, 100).contains("Instinct judged"))
         .unwrap();
-    let x = row_text(&t, row, 100).find("Jev").unwrap();
+    let x = row_text(&t, row, 100).find("Instinct").unwrap();
     let x = row_text(&t, row, 100)[..x].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(x, row)].fg, theme.muted().fg.unwrap());
     // One row, even for a narrow screen: cut with an ellipsis, never wrapped.
     let narrow = screen_text(&plan, &ui, (60, 30));
-    let reason_rows = narrow.lines().filter(|l| l.contains("Jev judged")).count();
+    let reason_rows = narrow
+        .lines()
+        .filter(|l| l.contains("Instinct judged"))
+        .count();
     assert_eq!(reason_rows, 1, "{narrow}");
 }
 
@@ -3472,7 +3519,14 @@ fn permission_layout_is_fresh_with_one_render_cache() {
 
 #[test]
 fn auto_approval_notes_render_narrow_with_optional_evidence() {
-    for source in ["jev", "metacognition", "captain", "driver", "none"] {
+    for source in [
+        "instinct",
+        "jev",
+        "metacognition",
+        "captain",
+        "driver",
+        "none",
+    ] {
         for detailed in [false, true] {
             let mut s = State::default();
             let mut block = tool_block(Some(ToolStatus::Ok));
@@ -3499,14 +3553,16 @@ fn auto_approval_notes_render_narrow_with_optional_evidence() {
             };
             let collapsed = screen_text(&s, &ui, (70, 24));
             match source {
-                "jev" => assert!(collapsed.contains("auto · Jev")),
+                "instinct" | "jev" => assert!(collapsed.contains("auto · instinct")),
                 "metacognition" => assert!(collapsed.contains("auto · metacognition")),
                 "captain" | "driver" => assert!(collapsed.contains("Captain approved")),
                 _ => assert!(!collapsed.contains("auto ·")),
             }
             ui.expanded.insert("review".into());
             let shown = screen_text(&s, &ui, (70, 24));
-            insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
+            if source != "jev" {
+                insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
+            }
         }
     }
 }

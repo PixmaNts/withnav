@@ -322,6 +322,16 @@ impl Executor {
                     }
                 });
             }
+            Effect::DeleteSession(session_id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::SessionDeleted {
+                        generation,
+                        result: client.delete_session(&session_id).await,
+                        session_id,
+                    }
+                });
+            }
             Effect::Create(request) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

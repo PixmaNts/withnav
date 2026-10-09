@@ -318,9 +318,8 @@ def convert(oc: dict, with_windows: bool, warn):
                     if lim.get(source):
                         entry[target] = int(lim[source])
             models[name] = entry
-    if "omniroute" not in providers:
-        raise ImportError_("no usable omniroute provider in the OpenCode config")
-    providers["omniroute"]["catalog_format"] = "omniroute"
+    if "omniroute" in providers:
+        providers["omniroute"]["catalog_format"] = "omniroute"
     providers, models = merge_catalog(providers, models, {})
     return providers, models, keys, env_providers
 

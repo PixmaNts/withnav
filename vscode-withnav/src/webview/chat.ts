@@ -53,6 +53,13 @@ let readOnly = false;
 let archiveReadOnly = false;
 let parentId = "";
 const childStates: Record<ChildInfo["state"], string> = { unknown: "Unknown", running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
+// The agent, then its state in the colour of what it asks of the Captain: running, waiting on
+// him, finished, failed. The words stay, so colour is never the only signal.
+function childLabel(child: ChildInfo): Node[] {
+  const state = el("span", "child-state", childStates[child.state]);
+  state.dataset.state = child.state;
+  return [document.createTextNode(`${child.agent} · `), state];
+}
 function childActions(child: ChildInfo): HTMLElement {
   const actions = el("div", "child-actions");
   const boundPost = identity.bind(rawPost);
@@ -60,7 +67,6 @@ function childActions(child: ChildInfo): HTMLElement {
     if (["unknown", "done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
     const button = actionButton(action === "stop" ? "Stop" : "Continue", () => boundPost({ type: "controlChild", parentId, childId: child.id, action }));
     button.disabled = !!child.pending;
-    if (button.disabled && !child.pending) button.title = "Pause token not yet available. Open the transcript to read the pause.";
     actions.append(button);
   }
   if (child.error) actions.append(el("span", "command-error", child.error));
@@ -325,7 +331,7 @@ let compacting = false;
 let compactionRow: HTMLElement | undefined;
 let lastConsumedDraft: string | undefined;
 const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
-const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
+const pauseCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
   prompt.disabled = readOnly || state === "connecting";
@@ -427,6 +433,7 @@ function navNote(text: string): HTMLElement {
     link.addEventListener("click", () => post({ type: "openFile", ...target }));
     meta.append(link);
   }
+  if (wake.diff) meta.append(diffCount(wake.diff));
   if (wake.score) {
     const score = el("span", "note-score", wake.score);
     score.title = "Score, from 0 to 1";
@@ -480,6 +487,12 @@ function displayPath(path: string): string {
 }
 
 const SVG = "http://www.w3.org/2000/svg";
+function strong(children: Node[]): HTMLElement {
+  const node = el("strong");
+  node.append(...children);
+  return node;
+}
+
 function svgIcon(className: string, d: string): SVGSVGElement {
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
@@ -510,6 +523,17 @@ function codeBlock(label: string, value: string, fill: (code: HTMLElement) => vo
   pre.append(code);
   wrap.append(bar, pre);
   return wrap;
+}
+
+// `+3 −1`: the size of the change a wake is about, in the editor's git colours.
+function diffCount(diff: string): HTMLElement {
+  const kinds = diff.split("\n").map(diffKind);
+  const added = kinds.filter(kind => kind === "add").length;
+  const removed = kinds.filter(kind => kind === "del").length;
+  const count = el("span", "diff-count");
+  count.title = `${added} ${added === 1 ? "line" : "lines"} added, ${removed} removed`;
+  count.append(el("span", "diff-added", `+${added}`), el("span", "diff-removed", `−${removed}`));
+  return count;
 }
 
 function diffBlock(diff: string): HTMLElement {
@@ -660,6 +684,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
   const post = identity.bind(rawPost);
   if (pauseCards.has(event.id)) return;
   const root = el("article", "control-card pause-card");
+  root.dataset.kind = event.kind;
   root.append(el("div", "control-kicker", event.kind === "budget" ? "Step limit reached" : "Watchdog pause"),
     el("h3", "control-title", event.text));
   const controls = el("div", "control-actions");
@@ -679,7 +704,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
   controls.append(resume);
   if (event.kind === "watchdog") controls.append(actionButton("Stop", () => control("stop")));
   root.append(controls, outcome);
-  pauseCards.set(event.id, { controls, outcome });
+  pauseCards.set(event.id, { root, controls, outcome });
   add(root);
   setStatus("ready");
 }
@@ -731,8 +756,9 @@ function receive(event: HostToWebview): void {
       const boundPost = identity.bind(rawPost);
       for (const child of event.items) {
         const row = el("article", "child-row");
-        const open = actionButton(`${child.agent} · ${childStates[child.state]}`, () => boundPost({ type: "openChild", parentId: event.parentId, childId: child.id }));
+        const open = actionButton("", () => boundPost({ type: "openChild", parentId: event.parentId, childId: child.id }));
         open.classList.add("child-open");
+        open.append(...childLabel(child));
         row.append(open, el("p", "child-goal", child.goal.slice(0,500)), childActions(child));
         if (child.reason || child.delivery) row.append(el("p", "child-goal", [child.reason, child.delivery].filter(Boolean).join(" · ")));
         childrenRows.append(row);
@@ -755,7 +781,7 @@ function receive(event: HostToWebview): void {
       if (event.child) {
         agentSelect.disabled = true;
         childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
-          el("strong", "", `${event.child.agent} · ${childStates[event.child.state]}`), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
+          strong(childLabel(event.child)), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
         childrenSection.hidden = true;
       }
       form.hidden = readOnly;
@@ -836,6 +862,7 @@ function receive(event: HostToWebview): void {
       if (!card) break;
       card.outcome.textContent = event.message ?? (event.state === "pending" ? "Waiting for the server…" : "No longer paused");
       card.controls.hidden = event.state === "resolved";
+      card.root.dataset.state = event.state;
       for (const button of card.controls.querySelectorAll("button")) button.disabled = readOnly || event.state === "pending";
       follow();
       break;

@@ -18,7 +18,7 @@ expression: snapshot
             │ ❯ filter…                                                                │            
             │▌Fix parser  ·  2026-10-02  ·  01JABCDEFGH                                │            
             │                                                                          │            
-            │ ↑↓ move  enter choose  esc close                                         │            
+            │ ↑↓ move  enter open  ctrl+d delete  esc close                            │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

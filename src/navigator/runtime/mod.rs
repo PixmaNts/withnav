@@ -49,6 +49,10 @@ pub(crate) struct Runtime {
     intent: Mutex<Option<String>>,
     /// The workspace root for intent and flow context; set at initialize.
     workspace: Mutex<Option<PathBuf>>,
+    /// Every workspace folder the client reported (multi-root), the primary
+    /// included. Tools anchor on the primary workspace, but a file in any of
+    /// these folders is in the workspace.
+    folders: Mutex<Vec<PathBuf>>,
     /// Model ids for the per-layer call records.
     metacognition_model: Option<String>,
     reflex_model: Option<String>,
@@ -94,6 +98,7 @@ impl Runtime {
             config: Mutex::new(NavigatorConfig::default()),
             documents: Mutex::new(Documents::default()),
             intent: Mutex::new(None),
+            folders: Mutex::new(deps.workspace.iter().cloned().collect()),
             workspace: Mutex::new(deps.workspace),
             metacognition_model: deps.metacognition_model,
             reflex,
@@ -110,18 +115,56 @@ impl Runtime {
         runtime
     }
 
-    /// Takes the workspace root from initialize, falling back to the process cwd.
+    /// Takes the workspace from initialize: the root URI wins as the primary
+    /// workspace, else the first folder; every folder stays known so its files
+    /// count as in-workspace. Falls back to the process cwd when none is given.
     pub(crate) async fn set_workspace(
         self: &Arc<Self>,
         from_root: Option<PathBuf>,
-        from_folder: Option<PathBuf>,
+        from_folders: Vec<PathBuf>,
     ) {
         let mut workspace = self.workspace.lock().await;
+        let mut folders = self.folders.lock().await;
         if from_root.is_some() {
             *workspace = from_root;
-        } else if from_folder.is_some() {
-            *workspace = from_folder;
+        } else if let Some(first) = from_folders.first() {
+            *workspace = Some(first.clone());
         }
+        for folder in from_folders {
+            if !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        }
+        if let Some(primary) = workspace.as_ref().filter(|p| !folders.contains(p)) {
+            folders.push(primary.clone());
+        }
+    }
+
+    /// `workspace/didChangeWorkspaceFolders`: folders come and go while the
+    /// server runs. When the primary workspace is removed, the first
+    /// remaining folder takes over; with none left the last primary is kept,
+    /// the flows and the intent record still need an anchor.
+    pub(crate) async fn change_workspace_folders(
+        self: &Arc<Self>,
+        added: Vec<PathBuf>,
+        removed: Vec<PathBuf>,
+    ) {
+        let mut workspace = self.workspace.lock().await;
+        let mut folders = self.folders.lock().await;
+        apply_folder_change(&mut workspace, &mut folders, added, removed);
+    }
+
+    /// The workspace folders other than the primary one, for tools that must
+    /// accept a path in any of them.
+    pub(crate) async fn extra_roots(&self) -> Vec<PathBuf> {
+        let workspace = self.workspace.lock().await.clone();
+        self.folders
+            .lock()
+            .await
+            .iter()
+            .filter(|f| Some(*f) != workspace.as_ref())
+            .cloned()
+            .collect()
     }
 
     /// Surfaces the startup notes about disabled layers as one status error.
@@ -348,6 +391,9 @@ impl Runtime {
     pub(crate) async fn on_did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = crate::navigator::uri_key(&params.text_document.uri);
         self.documents.lock().await.close(&uri);
+        if let Some(reflex) = &self.reflex {
+            reflex.close_document(&uri).await;
+        }
         {
             let mut focused = self.focused.lock().await;
             if focused.as_deref() == Some(uri.as_str()) {
@@ -404,5 +450,65 @@ mod tests {
             crate::navigator::new_ulid_string(),
             crate::navigator::new_ulid_string()
         );
+    }
+}
+
+/// The folder bookkeeping of `workspace/didChangeWorkspaceFolders`, apart from
+/// the locks so it can be tested on plain values.
+fn apply_folder_change(
+    primary: &mut Option<PathBuf>,
+    folders: &mut Vec<PathBuf>,
+    added: Vec<PathBuf>,
+    removed: Vec<PathBuf>,
+) {
+    folders.retain(|f| !removed.contains(f));
+    for folder in added {
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    if primary.as_ref().is_some_and(|p| removed.contains(p)) {
+        if let Some(next) = folders.first() {
+            *primary = Some(next.clone());
+        } else if let Some(last) = removed.first() {
+            // Nothing remains: keep the old anchor and its folder.
+            folders.push(last.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn a_folder_added_later_is_known_and_the_primary_stays() {
+        let mut primary = Some(p("/a"));
+        let mut folders = vec![p("/a")];
+        apply_folder_change(&mut primary, &mut folders, vec![p("/b")], vec![]);
+        assert_eq!(primary, Some(p("/a")));
+        assert_eq!(folders, vec![p("/a"), p("/b")]);
+    }
+
+    #[test]
+    fn removing_the_primary_promotes_the_first_remaining_folder() {
+        let mut primary = Some(p("/a"));
+        let mut folders = vec![p("/a"), p("/b")];
+        apply_folder_change(&mut primary, &mut folders, vec![], vec![p("/a")]);
+        assert_eq!(primary, Some(p("/b")));
+        assert_eq!(folders, vec![p("/b")]);
+    }
+
+    #[test]
+    fn removing_the_only_folder_keeps_the_anchor() {
+        let mut primary = Some(p("/a"));
+        let mut folders = vec![p("/a")];
+        apply_folder_change(&mut primary, &mut folders, vec![], vec![p("/a")]);
+        assert_eq!(primary, Some(p("/a")));
+        assert_eq!(folders, vec![p("/a")]);
     }
 }

@@ -11,7 +11,7 @@ No aliases in the UI. Four **layers**:
 | Layer | API | Models | Notes |
 | --- | --- | --- | --- |
 | Reflex | `fim` | exactly one | LSP only: runs when an IDE is attached (VS Code now; Zed, IntelliJ later). |
-| Instinct | `systemone` | exactly one | Jev. Fixed 2 s deadline. Runs InstinctFlow, permission review, the pipeline. |
+| Instinct | `systemone` | exactly one | Typed decisions. Fixed 2 s deadline. Runs InstinctFlow, permission review, the pipeline. |
 | Metacognition | `chat` | exactly one | Fast (flash) model. **Variant = one the model offers**, `low` by default (no fixed off/low/medium/high scale). Also approves risky calls (see Permissions). |
 | Cognition | `chat` | one per **agent** | Several agents and several flows (subagents) at once. |
 

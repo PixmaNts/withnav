@@ -79,8 +79,11 @@ async fn run_bash(
     let pid = child.id().ok_or_else(|| ToolError::Denied {
         code: "spawn_failed".into(),
         message: "child process exited before a pid was available".into(),
-    })? as i32;
-    let pgid = Pid::from_raw(pid);
+    })?;
+    let pgid = positive_pgid(pid).ok_or_else(|| ToolError::Denied {
+        code: "spawn_failed".into(),
+        message: "child process id is not a positive process group id".into(),
+    })?;
 
     let stdout = child.stdout.take().ok_or_else(|| ToolError::Denied {
         code: "spawn_failed".into(),
@@ -165,13 +168,21 @@ where
     let handle = tokio::spawn(async move {
         let mut buf = Vec::new();
         let mut r = BufReader::new(reader);
-        let mut chunk = [0u8; 8192];
+        let mut chunk = [0u8; 64 * 1024];
         loop {
-            match r.read(&mut chunk).await {
+            // Drain excess output in larger reads without slowing the command or
+            // closing its pipe (which could deliver SIGPIPE).
+            let read_size = if buf.len() < DEFAULT_MAX_OUTPUT_BYTES * 2 {
+                8192
+            } else {
+                chunk.len()
+            };
+            match r.read(&mut chunk[..read_size]).await {
                 Ok(0) => break,
                 Ok(n) => {
                     if buf.len() < DEFAULT_MAX_OUTPUT_BYTES * 2 {
-                        buf.extend_from_slice(&chunk[..n]);
+                        let remaining = DEFAULT_MAX_OUTPUT_BYTES * 2 - buf.len();
+                        buf.extend_from_slice(&chunk[..n.min(remaining)]);
                     }
                 }
                 Err(_) => break,
@@ -198,7 +209,17 @@ async fn join_reader(reader: &mut Reader) -> String {
     }
 }
 
+fn positive_pgid(pid: u32) -> Option<Pid> {
+    i32::try_from(pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .map(Pid::from_raw)
+}
+
 async fn terminate_group(pgid: Pid, grace_ms: u64) {
+    if pgid.as_raw() <= 0 {
+        return;
+    }
     if matches!(killpg(pgid, Signal::SIGTERM), Err(nix::errno::Errno::ESRCH)) {
         return;
     }
@@ -218,6 +239,25 @@ mod tests {
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),
         }
+    }
+
+    #[test]
+    fn process_group_id_rejects_zero_and_overflow() {
+        assert!(positive_pgid(0).is_none());
+        assert!(positive_pgid(i32::MAX as u32 + 1).is_none());
+        assert!(positive_pgid(u32::MAX).is_none());
+        assert_eq!(positive_pgid(1).unwrap().as_raw(), 1);
+        assert_eq!(positive_pgid(i32::MAX as u32).unwrap().as_raw(), i32::MAX);
+    }
+
+    #[tokio::test]
+    async fn output_reader_caps_retained_bytes() {
+        let input = vec![b'x'; DEFAULT_MAX_OUTPUT_BYTES * 2 + 8192];
+        let mut reader = spawn_reader(std::io::Cursor::new(input));
+        assert_eq!(
+            join_reader(&mut reader).await.len(),
+            DEFAULT_MAX_OUTPUT_BYTES * 2
+        );
     }
 
     #[tokio::test]

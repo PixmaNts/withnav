@@ -217,7 +217,16 @@ impl Matcher {
             .compile_matcher();
         let named = pattern
             .split('/')
-            .filter(|seg| !seg.is_empty() && *seg != "**" && !seg.starts_with(is_wildcard))
+            .filter(|seg| {
+                !seg.is_empty()
+                    && *seg != "**"
+                    && (!seg.starts_with(is_wildcard)
+                        || (seg.starts_with('{')
+                            && seg.ends_with('}')
+                            && seg[1..seg.len() - 1].split(',').all(|alternative| {
+                                !alternative.is_empty() && !alternative.starts_with(is_wildcard)
+                            })))
+            })
             .filter_map(|seg| Glob::new(seg).ok())
             .map(|g| g.compile_matcher())
             .collect();
@@ -377,6 +386,16 @@ fn render(mut walked: Walked, limit: usize) -> ToolResult {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn brace_alternatives_admit_explicit_skipped_directories() {
+        let matcher = super::Matcher::new("{src,target}/**/*.rs").unwrap();
+        assert!(matcher.admits("target"));
+        assert!(!matcher.admits("node_modules"));
+        let hidden = super::Matcher::new("{src,.github}/**/*").unwrap();
+        assert!(hidden.admits(".github"));
+        let broad = super::Matcher::new("{src,*}/**/*").unwrap();
+        assert!(!broad.admits("target"));
+    }
     #[tokio::test]
     async fn glob_skips_sensitive_files_even_when_pattern_explicitly_names_them() {
         let tmp = tempfile::tempdir().unwrap();

@@ -55,15 +55,15 @@ class CatalogTests(unittest.TestCase):
 
     def test_manual_api_limits_unmanaged_provider(self):
         providers, models = self.converted()
-        jev = {"provider": "omniroute", "model": "typesafe/jev-1.13",
+        instinct = {"provider": "omniroute", "model": "typesafe/jev-1.13",
                "api": "systemone", "context_window": 64000, "max_output_tokens": 2048}
         mercury = {"provider": "inception", "model": "mercury-edit-2",
                    "api": "fim", "context_window": 128000, "max_output_tokens": 512}
         old = {"providers": {"inception": {"base_url": "https://example.test/v1",
                                           "api_key_env": "FIM_KEY"}},
-               "models": {"instinct": jev, "reflex": mercury}}
+               "models": {"instinct": instinct, "reflex": mercury}}
         providers, models = importer.merge_catalog(providers, models, old)
-        self.assertEqual(models["omniroute/typesafe/jev-1.13"], jev)
+        self.assertEqual(models["omniroute/typesafe/jev-1.13"], instinct)
         self.assertEqual(models["inception/mercury-edit-2"], mercury)
         self.assertEqual(providers["inception"], old["providers"]["inception"])
 

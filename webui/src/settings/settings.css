@@ -1197,6 +1197,22 @@ input.st-input::placeholder {
   .st-agent-row > :nth-child(4) {
     display: none;
   }
+  .st-box-head {
+    flex-wrap: wrap;
+  }
+  .st-box-head .right {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .st-select,
+  .st-select select {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .st-select select {
+    text-overflow: ellipsis;
+  }
 }
 
 .st-link {
@@ -1212,4 +1228,70 @@ input.st-input::placeholder {
 }
 .st-input .muted {
   font-family: var(--font-ui);
+}
+
+/* Narrow screens: the section list opens as a drawer from the top bar; grids drop to one column. */
+@media (max-width: 700px) {
+  .st-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .st-top {
+    grid-column: 1 / -1;
+    gap: 8px;
+    padding: 6px 10px;
+  }
+  .st-top .crumb {
+    flex: 1 1 0;
+  }
+  .st-top .topbar-right {
+    order: 3;
+    flex: 1 1 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .st-search {
+    flex: 1 1 160px;
+    width: auto;
+    padding: 6px 10px;
+  }
+  .st-status {
+    margin-left: 0;
+    max-width: 100%;
+    white-space: normal;
+  }
+  .st-main {
+    padding: 16px 14px 32px;
+  }
+  .st-cards,
+  .st-themes,
+  .st-grid,
+  .st-steps,
+  .st-onoff,
+  .st-table-head,
+  .st-table-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .st-field.wide {
+    grid-column: auto;
+  }
+  .st-box-head {
+    flex-wrap: wrap;
+  }
+  .st-box-head .right {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  /* The agents table keeps agent, model and the default button; the detail below shows the rest. */
+  .st-agents-head,
+  .st-agent-row {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) 104px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .st-agents-head > :nth-child(2),
+  .st-agent-row > :nth-child(2),
+  .st-agents-head > :nth-child(5),
+  .st-agent-row > :nth-child(5) {
+    display: none;
+  }
 }

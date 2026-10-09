@@ -147,6 +147,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ("ctrl+p / /", "commands"),
     ("ctrl+n", "new conversation, in a new tab"),
     ("ctrl+o", "sessions (opens in a tab)"),
+    (
+        "ctrl+d (in sessions)",
+        "delete session (asks for confirmation)",
+    ),
     ("alt+1 … alt+9", "switch to tab 1 … 9"),
     ("alt+w", "close tab (the conversation is kept)"),
     ("alt+b", "hide / show the tab bar"),

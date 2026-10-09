@@ -3,6 +3,24 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
+test('child watchdog continuation needs no root pause token and pending actions stay disabled', () => {
+  const { dom, d, receive } = keyboardPage();
+  const child = { id: 'child', agent: 'build', goal: 'Check code', state: 'watchdog' };
+  const render = changes => receive({ type: 'subagents', parentId: 'S', items: [{ ...child, ...changes }] });
+  render({});
+  let buttons = d.querySelectorAll('.child-actions button');
+  assert.equal(buttons[0].disabled, false);
+  assert.equal(buttons[0].title, '');
+  assert.equal(buttons[1].disabled, false);
+  render({ pauseToken: { incarnation: 'run', hold_id: 'hold' } });
+  assert.equal(d.querySelector('.child-actions button').disabled, false);
+  render({ state: 'budget' });
+  assert.equal(d.querySelector('.child-actions button').disabled, false);
+  render({ pending: 'continue', pauseToken: { incarnation: 'run', hold_id: 'hold' } });
+  assert.equal(d.querySelector('.child-actions button').disabled, true);
+  dom.window.close();
+});
+
 test('conversation colour hooks preserve the agent of each turn and tool labels', () => {
   const { dom, d, receive } = keyboardPage();
   receive({ type: 'agent', name: 'build' });
@@ -329,5 +347,33 @@ test('model rows inside a group show the short name; favorites show the full nam
 test('a model whose name does not start with its gateway/provider keeps its full name in a group',()=>{
   const {dom,d}=modelPicker([{name:'odd/name',gateway:'omniroute',provider_group:'cc',upstream_id:'x'},{name:'omniroute/cc/',gateway:'omniroute',provider_group:'cc',upstream_id:'y'}]);
   assert.deepEqual([...d.querySelectorAll('#picker-options [role=option] strong')].map(e=>e.textContent),['odd/name','omniroute/cc/']);
+  dom.window.close();
+});
+
+test("subagent states, pauses and wake diffs carry their own colour hooks, with words beside them", () => {
+  const { dom, d, receive } = keyboardPage();
+  receive({ type: "conversationOpened", id: "S", title: "S" });
+  receive({ type: "subagents", parentId: "S", items: [
+    { id: "a", agent: "vigie", goal: "Look", state: "running" },
+    { id: "b", agent: "lux", goal: "Weigh", state: "watchdog" },
+    { id: "c", agent: "mousse", goal: "Rename", state: "failed" },
+  ] });
+  const states = [...d.querySelectorAll(".child-open .child-state")].map(s => [s.dataset.state, s.textContent]);
+  assert.deepEqual(states, [["running", "Running"], ["watchdog", "In doubt · watchdog paused"], ["failed", "Failed"]]);
+  assert.equal(d.querySelector(".child-open").textContent, "vigie · Running");
+  receive({ type: "pause", id: "p", kind: "watchdog", text: "Stuck", token: { incarnation: "i", hold_id: "h" } });
+  const pause = d.querySelector(".pause-card");
+  assert.equal(pause.dataset.kind, "watchdog");
+  receive({ type: "pauseState", id: "p", state: "resolved" });
+  assert.equal(pause.dataset.state, "resolved");
+  receive({ type: "message", id: "w", author: "nav", text: "Navigator noticed: drift in src/a.rs:3\n```diff\n@@ -1,2 +1,3 @@\n-old\n+new\n+more\n```" });
+  const count = d.querySelector(".note-meta .diff-count");
+  assert.equal(count.querySelector(".diff-added").textContent, "+2");
+  assert.equal(count.querySelector(".diff-removed").textContent, "−1");
+  assert.equal(count.title, "2 lines added, 1 removed");
+  const css = fs.readFileSync("src/webview/chat.css", "utf8");
+  for (const rule of [/\.child-state\[data-state=done\][^}]*--nav-passed-text/, /\.pause-card \.control-kicker[^}]*--nav-warning-text/, /\.diff-added, \.diff-line\.add[^}]*--nav-added-text/])
+    assert.match(css, rule);
+  assert.doesNotMatch(css.slice(css.indexOf("--nav-warning-text"), css.indexOf(".bypass-toggle")), /#[0-9a-f]{3,6}\b/i, "theme tokens only");
   dom.window.close();
 });

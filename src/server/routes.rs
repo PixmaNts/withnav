@@ -512,7 +512,12 @@ async fn list_sessions(
             for row in rows {
                 let summary = match state.session_summary(row.id).await {
                     Ok(summary) => summary,
-                    Err(error) => return error_response(error),
+                    Err(error) => {
+                        // A session whose stored selection cannot be read must not hide
+                        // the other conversations of the workspace.
+                        tracing::warn!(session_id = %row.id, %error, "session list: unreadable session skipped");
+                        continue;
+                    }
                 };
                 sessions.push(SessionListEntry {
                     bypass: summary.bypass,

@@ -165,16 +165,28 @@ fn the_output_reserve_prefers_models_json_then_the_smaller_bound() {
 
 #[test]
 fn the_margin_is_five_percent_with_a_floor() {
-    assert_eq!(margin(10_000), 4096);
+    assert_eq!(margin(32_768), 4096);
     assert_eq!(margin(80_000), 4096);
     assert_eq!(margin(100_000), 5000);
     assert_eq!(margin(1_000_001), 50_001);
 }
 
 #[test]
+fn a_small_window_keeps_a_proportional_margin() {
+    // An eighth of the window below 32k, so an 8k model with a 4k output
+    // limit still has room for input.
+    assert_eq!(margin(8192), 1024);
+    assert_eq!(margin(16_384), 2048);
+    let b = Budget::compute(8192, None, Some(4096), None).unwrap();
+    assert_eq!(b.input_budget, 8192 - 4096 - 1024);
+    let b = Budget::compute(8192, None, None, None).unwrap();
+    assert_eq!(b.input_budget, 8192 - 2048 - 1024);
+}
+
+#[test]
 fn an_impossible_budget_is_a_clear_error() {
-    // W = 4096: R = 1024, M = 4096 leaves nothing.
-    let err = Budget::compute(4096, None, None, None).unwrap_err();
+    // W = 4096 with an output limit as large as the window leaves nothing.
+    let err = Budget::compute(4096, None, Some(4096), None).unwrap_err();
     assert_eq!(err.window, 4096);
     let text = err.to_string();
     assert!(

@@ -350,10 +350,9 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
         for row in rows {
             match row {
                 Ok(session) => out.push(session),
-                Err(err @ rusqlite::Error::FromSqlConversionFailure(13 | 14, _, _)) => {
-                    return Err(format!("history list: bad agent_overrides: {err}"));
-                }
-                Err(err) => tracing::error!("history list: bad row skipped: {err}"),
+                // One unreadable row must not hide the healthy conversations of the
+                // workspace; opening that row (`meta`, resume) still fails explicitly.
+                Err(err) => tracing::error!("history list: unreadable row skipped: {err}"),
             }
         }
         Ok(out)

@@ -1,5 +1,5 @@
 import { Crew } from "./Crew";
-import { CaretDown, CaretRight, Folder, FolderPlus, Plus, ArrowsInLineVertical, ArrowsOutLineVertical } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Folder, FolderPlus, Plus, ArrowsInLineVertical, ArrowsOutLineVertical, Trash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api/client";
@@ -10,12 +10,15 @@ import { dayLabel, plural, shortPath } from "../lib/format";
 import type { Route } from "../router";
 import type { useWorkspaceExpansion } from "../lib/workspaceExpansion";
 import { WorkspaceMenu, type RemoveRequest } from "./WorkspaceActions";
+import { rootSessions, subagentsOf, type DeleteSessionRequest } from "./SessionActions";
 
 interface Props {
   route: Route;
   navigate: (next: Partial<Route>) => void;
   expansion: ReturnType<typeof useWorkspaceExpansion>;
   onRemove?: (request: RemoveRequest) => void;
+  /** Asks to delete a root session; the caller confirms first. */
+  onDelete?: (request: DeleteSessionRequest) => void;
 }
 
 /** The listed workspaces, plus a row for one opened by path that the server does not list yet. */
@@ -24,7 +27,7 @@ export function sidebarWorkspaces(listed: WorkspaceEntry[], current: string | nu
   return [...listed, { path: current, name: current.split("/").filter(Boolean).pop() ?? current, launched: false, session_count: 0, updated_at: null, branch: null, dirty: null }];
 }
 
-export function Sidebar({ route, navigate, expansion, onRemove }: Props) {
+export function Sidebar({ route, navigate, expansion, onRemove, onDelete }: Props) {
   const qc = useQueryClient();
   const workspaces = useWorkspaces();
   const [adding, setAdding] = useState(false);
@@ -76,7 +79,7 @@ export function Sidebar({ route, navigate, expansion, onRemove }: Props) {
             void openFolder(value.replace(/(.)\/+$/, "$1"));
           }}
         >
-          <input autoFocus className="mono" placeholder="/absolute/path" aria-label="Absolute path of a folder" aria-invalid={openError ? true : undefined} value={path} onChange={(e) => (setPath(e.target.value), setOpenError(null))} onKeyDown={(e) => e.key === "Escape" && setAdding(false)} />
+          <input autoFocus className="mono" placeholder="/absolute/path" aria-label="Absolute path of a folder" aria-invalid={openError ? true : undefined} value={path} onChange={(e) => (setPath(e.target.value), setOpenError(null))} onKeyDown={(e) => e.key === "Escape" && (e.preventDefault(), setAdding(false))} />
           <button type="submit" className="btn" disabled={opening}>
             Open
           </button>
@@ -90,18 +93,18 @@ export function Sidebar({ route, navigate, expansion, onRemove }: Props) {
       {workspaces.isError && <div className="side-empty">The workspace list is not available from this server.</div>}
       {workspaces.isSuccess && !all.length && <div className="side-empty">No workspace yet. Open a folder with the button above.</div>}
       {all.map((w) => (
-        <WorkspaceRow key={w.path} ws={w} route={route} navigate={navigate} expanded={expansion.expanded.has(w.path)} setOpen={(open) => expansion.setOpen(w.path, open)} onRemove={onRemove} />
+        <WorkspaceRow key={w.path} ws={w} route={route} navigate={navigate} expanded={expansion.expanded.has(w.path)} setOpen={(open) => expansion.setOpen(w.path, open)} onRemove={onRemove} onDelete={onDelete} />
       ))}
     </nav>
   );
 }
 
-export function WorkspaceRow({ ws, route, navigate, expanded, setOpen, onRemove }: { ws: WorkspaceEntry; route: Route; navigate: Props["navigate"]; expanded: boolean; setOpen: (open: boolean) => void; onRemove?: Props["onRemove"] }) {
+export function WorkspaceRow({ ws, route, navigate, expanded, setOpen, onRemove, onDelete }: { ws: WorkspaceEntry; route: Route; navigate: Props["navigate"]; expanded: boolean; setOpen: (open: boolean) => void; onRemove?: Props["onRemove"]; onDelete?: Props["onDelete"] }) {
   const current = route.workspace === ws.path;
   const sessions = useSessions(expanded ? ws.path : null);
   const rows = sessions.data ?? [];
-  const roots = rows.filter((s) => !s.parent_session_id && s.promptable !== false);
-  const children = (id: string) => rows.filter((s) => s.parent_session_id === id);
+  const roots = rootSessions(rows);
+  const children = (id: string) => subagentsOf(rows, id);
   const count = sessions.data ? roots.length : ws.session_count;
   return (
     <div className="ws">
@@ -146,7 +149,7 @@ export function WorkspaceRow({ ws, route, navigate, expanded, setOpen, onRemove 
           </button>
           {sessions.isError && <div className="side-note">Sessions could not be loaded.</div>}
           {roots.map((s) => (
-            <SessionRow key={s.id} s={s} kids={children(s.id)} ws={ws.path} route={route} navigate={navigate} />
+            <SessionRow key={s.id} s={s} kids={children(s.id)} ws={ws.path} route={route} navigate={navigate} onDelete={onDelete} />
           ))}
         </>
       )}
@@ -154,23 +157,39 @@ export function WorkspaceRow({ ws, route, navigate, expanded, setOpen, onRemove 
   );
 }
 
-function SessionRow({ s, kids, ws, route, navigate }: { s: SessionListEntry; kids: SessionListEntry[]; ws: string; route: Route; navigate: Props["navigate"] }) {
+function SessionRow({ s, kids, ws, route, navigate, onDelete }: { s: SessionListEntry; kids: SessionListEntry[]; ws: string; route: Route; navigate: Props["navigate"]; onDelete?: Props["onDelete"] }) {
   const selected = route.session === s.id && !route.subagent;
+  const title = sessionTitle(s.title);
+  const remove = onDelete && (() => onDelete({ workspace: ws, id: s.id, title: s.title }));
   return (
     <>
-      <button
-        type="button"
-        className="sess"
-        aria-current={selected ? "page" : undefined}
-        onClick={() => navigate({ workspace: ws, session: s.id, subagent: null })}
-        title={sessionTitle(s.title)}
-      >
-        <span className="title">{sessionTitle(s.title)}</span>
-        {s.bypass && <span className="bypass-badge">⚠ bypass</span>}
-        <span className="meta">
-          {[dayLabel(s.updated_at), plural(s.message_count, "msg")].filter(Boolean).join(" · ")}
-        </span>
-      </button>
+      <div className="sess-item" data-selected={selected || undefined}>
+        <button
+          type="button"
+          className="sess"
+          aria-current={selected ? "page" : undefined}
+          aria-keyshortcuts={remove ? "Delete" : undefined}
+          onClick={() => navigate({ workspace: ws, session: s.id, subagent: null })}
+          onKeyDown={(e) => {
+            if (remove && e.key === "Delete" && !e.altKey && !e.ctrlKey && !e.metaKey) {
+              e.preventDefault();
+              remove();
+            }
+          }}
+          title={title}
+        >
+          <span className="title">{title}</span>
+          {s.bypass && <span className="bypass-badge">⚠ bypass</span>}
+          <span className="meta">
+            {[dayLabel(s.updated_at), plural(s.message_count, "msg")].filter(Boolean).join(" · ")}
+          </span>
+        </button>
+        {remove && (
+          <button type="button" className="icon-btn sess-del" aria-label={`Delete session ${title}`} title="Delete session (Del)" onClick={remove}>
+            <Trash size={14} aria-hidden />
+          </button>
+        )}
+      </div>
       {kids.map((k) => (
         <button
           key={k.id}

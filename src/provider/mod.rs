@@ -246,6 +246,28 @@ fn nonempty(msg: AssistantMessage) -> Option<Box<AssistantMessage>> {
     }
 }
 
+pub(crate) async fn read_error_body(
+    mut response: reqwest::Response,
+    cancel: &CancellationToken,
+) -> Result<String, ProviderError> {
+    const LIMIT: usize = 64 * 1024;
+    let mut bytes = Vec::new();
+    while bytes.len() < LIMIT {
+        let chunk = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ProviderError::Canceled { partial: None }),
+            chunk = response.chunk() => chunk,
+        };
+        match chunk {
+            Ok(Some(chunk)) => {
+                bytes.extend_from_slice(&chunk[..chunk.len().min(LIMIT - bytes.len())])
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 pub async fn start_and_consume(
     response: reqwest::Response,
     cancel: &CancellationToken,
@@ -253,7 +275,7 @@ pub async fn start_and_consume(
 ) -> Result<AssistantMessage, ProviderError> {
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = read_error_body(response, cancel).await?;
         let message = extract_error_message(&body).unwrap_or(body);
         return Err(ProviderError::Api {
             status: status.as_u16(),

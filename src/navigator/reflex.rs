@@ -129,16 +129,20 @@ pub fn render_context_block(reflex_context: &str, language_id: &str) -> String {
 /// Converts an LSP position (line, UTF-16 character) to a byte offset in
 /// the document text. Returns `None` when the position is out of bounds.
 pub fn utf16_position_to_offset(text: &str, line: u32, character: u32) -> Option<usize> {
-    for (i, l) in text.lines().enumerate() {
-        if (i as u32) == line {
-            let in_line = char_utf16_to_byte_offset(l, character as usize)?;
-            // Byte offset of the line start: sum of the preceding lines
-            // plus their newlines.
-            let line_start: usize = text.lines().take(i).map(|prev| prev.len() + 1).sum();
-            return Some(line_start + in_line);
-        }
+    // Lines are separated by `\n`; a `\r` before it belongs to the terminator
+    // (CRLF documents), so the start is found on raw bytes, not by
+    // re-adding one byte per line. A trailing newline opens one more, empty
+    // line, where the cursor sits when typing at the end of a file.
+    let mut line_start = 0usize;
+    for _ in 0..line {
+        let nl = text[line_start..].find('\n')?;
+        line_start += nl + 1;
     }
-    None
+    let rest = &text[line_start..];
+    let line_text = rest.split('\n').next().unwrap_or(rest);
+    let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
+    let in_line = char_utf16_to_byte_offset(line_text, character as usize)?;
+    Some(line_start + in_line)
 }
 
 /// Converts a UTF-16 code-unit offset within one line to a byte offset.
@@ -251,6 +255,17 @@ impl ReflexService {
         }
     }
 
+    /// Forgets a closed document: cancels its in-flight request and drops its
+    /// entry, which otherwise lives as long as the server (one per file ever
+    /// completed in).
+    pub async fn close_document(&self, uri: &str) {
+        if let Some(entry) = self.per_document.lock().await.remove(uri) {
+            if let Some(token) = entry.cancel {
+                token.cancel();
+            }
+        }
+    }
+
     /// Requests a suggestion at the cursor. `doc_text`/`version` come from
     /// the full-sync document state; `position` is the LSP position
     /// (UTF-16 code units). The returned future resolves after the
@@ -313,12 +328,14 @@ impl ReflexService {
         // registration).
         {
             let per_doc = self.per_document.lock().await;
-            if let Some(entry) = per_doc.get(uri) {
-                let is_latest = entry.cancel.as_ref().is_some_and(|t| !t.is_cancelled());
-                let same_version = entry.pending.map(|(v, _)| v == version).unwrap_or(false);
-                if !is_latest || !same_version {
-                    return Err(SuggestOutcome::StaleVersion);
-                }
+            // No entry means the document was closed while the model answered.
+            let Some(entry) = per_doc.get(uri) else {
+                return Err(SuggestOutcome::StaleVersion);
+            };
+            let is_latest = entry.cancel.as_ref().is_some_and(|t| !t.is_cancelled());
+            let same_version = entry.pending.map(|(v, _)| v == version).unwrap_or(false);
+            if !is_latest || !same_version {
+                return Err(SuggestOutcome::StaleVersion);
             }
         }
         let request_id = crate::navigator::new_ulid_string();
@@ -542,6 +559,44 @@ fn numbered_excerpt(text: &str, line: usize, radius: usize) -> String {
 mod tests {
     use super::*;
 
+    struct Silent;
+    impl FimModel for Silent {
+        fn complete<'a>(
+            &'a self,
+            _request: FimRequest,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<crate::navigator::ports::FimAnswer, crate::navigator::ports::ModelError>,
+        > {
+            Box::pin(async {
+                Err(crate::navigator::ports::ModelError::Unavailable(
+                    "silent".into(),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_a_document_forgets_its_entry_and_cancels_the_request() {
+        let service = ReflexService::new(Arc::new(Silent));
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
+        let _ = service
+            .suggest("file:///a.rs", "x", 1, pos, "", "rust")
+            .await;
+        assert_eq!(service.per_document.lock().await.len(), 1);
+        let token = service.per_document.lock().await["file:///a.rs"]
+            .cancel
+            .clone()
+            .unwrap();
+        service.close_document("file:///a.rs").await;
+        assert!(service.per_document.lock().await.is_empty());
+        assert!(token.is_cancelled());
+    }
+
     #[test]
     fn utf16_offset_lands_after_a_non_ascii_char() {
         // "héllo": é is one char, two UTF-16 units. Position 3 must be the
@@ -569,6 +624,26 @@ mod tests {
         assert_eq!(utf16_position_to_offset(text, 2, 0).unwrap(), 9);
         // End of the last line is the end of the text.
         assert_eq!(utf16_position_to_offset(text, 2, 1).unwrap(), text.len());
+    }
+
+    #[test]
+    fn utf16_offset_counts_crlf_terminators_as_two_bytes() {
+        let text = "hello\r\nworld\r\nx";
+        assert_eq!(utf16_position_to_offset(text, 1, 0), Some(7));
+        assert_eq!(utf16_position_to_offset(text, 1, 3), Some(10));
+        assert_eq!(utf16_position_to_offset(text, 2, 1), Some(text.len()));
+        // The `\r` is part of the terminator, not a column.
+        assert_eq!(utf16_position_to_offset(text, 0, 5), Some(5));
+        assert_eq!(utf16_position_to_offset(text, 0, 6), None);
+    }
+
+    #[test]
+    fn utf16_offset_resolves_the_empty_line_after_a_trailing_newline() {
+        assert_eq!(utf16_position_to_offset("hello\n", 1, 0), Some(6));
+        assert_eq!(utf16_position_to_offset("hello\r\n", 1, 0), Some(7));
+        assert_eq!(utf16_position_to_offset("hello\n", 1, 1), None);
+        assert_eq!(utf16_position_to_offset("hello\n", 2, 0), None);
+        assert_eq!(utf16_position_to_offset("", 0, 0), Some(0));
     }
 
     #[test]

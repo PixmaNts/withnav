@@ -5,9 +5,28 @@ fn first_changed_line_finds_the_first_insert() {
     let (line, text) = first_changed_line("a\nb\n", "a\nb\nc\nd\n");
     assert_eq!(line, 3);
     assert_eq!(text, "c");
-    // A pure deletion quotes nothing.
-    assert_eq!(first_changed_line("a\nb\n", "a\n"), (0, String::new()));
+    // A pure deletion quotes nothing but still locates the edit.
+    assert_eq!(first_changed_line("a\nb\n", "a\n"), (1, String::new()));
+    assert_eq!(
+        first_changed_line("a\nb\nc\n", "a\nc\n"),
+        (2, String::new())
+    );
+    assert_eq!(first_changed_line("a\nb\n", ""), (0, String::new()));
     assert_eq!(first_changed_line("a\n", "a\n"), (0, String::new()));
+}
+
+#[test]
+fn a_pure_deletion_moves_the_last_edit_line() {
+    let mut docs = Documents::default();
+    let uri = "file:///ws/a.rs";
+    let text: String = (1..=12).map(|n| format!("l{n}\n")).collect();
+    docs.open(uri, "rust".to_string(), text.clone(), 1);
+    docs.change(uri, format!("{text}new\n"), 2);
+    assert_eq!(docs.open[uri].state.last_edit_line, 13);
+    let without_first_five: String =
+        (6..=12).map(|n| format!("l{n}\n")).collect::<String>() + "new\n";
+    docs.change(uri, without_first_five, 3);
+    assert_eq!(docs.open[uri].state.last_edit_line, 1);
 }
 
 #[test]

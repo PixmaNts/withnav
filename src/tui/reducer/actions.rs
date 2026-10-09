@@ -577,6 +577,81 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             effects
         }
         Action::ResumeSession(id) => resume(s, ui, id),
+        Action::RequestDeleteSession(id) => {
+            if ui.overlay == Some(Overlay::Sessions)
+                && ui.delete_pending.is_none()
+                && s.sessions.iter().any(|e| e.id == id)
+            {
+                ui.delete_confirm = Some(id);
+            }
+            vec![]
+        }
+        Action::CancelDeleteSession => {
+            ui.delete_confirm = None;
+            vec![]
+        }
+        Action::ConfirmDeleteSession => {
+            let Some(id) = ui.delete_confirm.take() else {
+                return vec![];
+            };
+            ui.delete_pending = Some(id.clone());
+            vec![Effect::DeleteSession(id)]
+        }
+        Action::SessionDeleted { session_id, result } => {
+            ui.delete_pending = None;
+            if let Err(error) = result {
+                push_local(s, BlockKind::Error(error));
+                return vec![];
+            }
+            let mut removed = vec![session_id.clone()];
+            removed.extend(
+                s.sessions
+                    .iter()
+                    .filter(|e| e.parent_session_id.as_deref() == Some(&session_id))
+                    .map(|e| e.id.clone()),
+            );
+            let mut effects = vec![];
+            let shown = s.tabs[s.active].id;
+            for index in (0..s.tabs.len()).rev() {
+                if s.tabs[index]
+                    .session
+                    .as_ref()
+                    .is_some_and(|m| removed.contains(&m.session_id))
+                    || s.tabs[index].parent_session_id.as_deref() == Some(&session_id)
+                {
+                    s.active = index;
+                    s.pending_submit_text = None;
+                    // A deleted conversation is not merely parked on the server.
+                    s.session = None;
+                    effects.extend(close_tab(s, ui));
+                }
+            }
+            if let Some(index) = s.tabs.iter().position(|t| t.id == shown) {
+                s.active = index;
+            }
+            for tab in &mut s.tabs {
+                tab.children
+                    .retain(|child| !removed.contains(&child.session_id));
+            }
+            effects.extend(removed.iter().cloned().map(Effect::UnwatchChild));
+            s.sessions.retain(|e| !removed.contains(&e.id));
+            let count = super::super::input::overlay_names(Overlay::Sessions, s, ui).len();
+            let selected = ui.selection.entry("Sessions".into()).or_default();
+            *selected = (*selected).min(count.saturating_sub(1));
+            if result == Ok(true) {
+                push_local(
+                    s,
+                    BlockKind::Notice("Deleted session and its subagent sessions.".into()),
+                );
+            }
+            ui.overlay = Some(Overlay::Sessions);
+            effects.push(Effect::SetEditor {
+                text: s.draft.clone(),
+                revision: s.draft_revision,
+            });
+            effects.push(Effect::ListSessions);
+            effects
+        }
         Action::OpenChild(id) => open_child(s, ui, id),
         Action::ContinueChild => confirm_child(s, ui, crate::tui::protocol::ChildControl::Continue),
         Action::ConfirmChildControl => {

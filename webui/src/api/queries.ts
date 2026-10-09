@@ -20,6 +20,12 @@ export const keys = {
 export const workspacesChanged = (qc: QueryClient) =>
   Promise.all([qc.invalidateQueries({ queryKey: keys.workspaces }), qc.invalidateQueries({ queryKey: ["sessions"] })]);
 
+/** After a session deletion: its cached summary goes, and every list and count is fetched again. */
+export const sessionsChanged = (qc: QueryClient, deleted: string[]) => {
+  for (const id of deleted) qc.removeQueries({ queryKey: keys.session(id), exact: true });
+  return workspacesChanged(qc);
+};
+
 export const useWorkspaces = () => useQuery({ queryKey: keys.workspaces, queryFn: api.workspaces, refetchInterval: 30_000 });
 
 export const useSessions = (ws: string | null) =>

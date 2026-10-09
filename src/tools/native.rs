@@ -224,6 +224,15 @@ impl Tool for EditTool {
             let path = arg_str(&args, "path")?;
             let old = arg_str(&args, "old_string")?;
             let new = arg_str(&args, "new_string")?;
+            // An empty needle matches at every character boundary: it would
+            // either report a bogus ambiguity or interleave `new_string`
+            // through the whole file under `replace_all`.
+            if old.is_empty() {
+                return Err(ToolError::Denied {
+                    code: "invalid_args".into(),
+                    message: "old_string cannot be empty".into(),
+                });
+            }
             let replace_all = args
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
@@ -602,6 +611,24 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ToolError::NoMatch));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "original");
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_empty_old_string_and_leaves_file_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cx = ctx(tmp.path());
+        let f = tmp.path().join("edit.txt");
+        std::fs::write(&f, "abc").unwrap();
+        let err = EditTool
+            .call(
+                json!({"path": f.to_str().unwrap(), "old_string": "", "new_string": "#", "replace_all": true}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Denied { ref code, .. } if code == "invalid_args"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "abc");
     }
 
     #[tokio::test]

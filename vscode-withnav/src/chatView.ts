@@ -45,6 +45,15 @@ export function registerChatView(
   const panels = new Map<string, vscode.WebviewPanel>();
   const openings = new Map<string, Promise<void>>();
   const favorites = favoriteStore(context.globalState);
+  const deletion = vscode.commands.registerCommand("withnav.deleteConversation", async () => {
+    try {
+      const items = await backend.listConversations();
+      const picked = await vscode.window.showQuickPick(items.map(conversation => ({
+        label: conversation.title, description: conversation.updatedAt, conversation,
+      })), { placeHolder: "Choose a conversation to delete" });
+      if (picked) await confirmDeleteConversation(backend, picked.conversation.id);
+    } catch (error) { showError(error); }
+  });
   const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
       let disposed = false;
@@ -94,6 +103,7 @@ export function registerChatView(
         vscode.window.tabGroups.onDidChangeTabs(scheduleContext),
       ];
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
+        try {
         if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
         switch (message?.type) {
           case "toggleBypass":
@@ -183,7 +193,7 @@ export function registerChatView(
             break;
           case "deleteConversation":
             if (typeof message.id === "string") {
-              void backend.deleteConversation(message.id).catch(showError);
+              void confirmDeleteConversation(backend, message.id).catch(showError);
             }
             break;
           case "selectModel":
@@ -226,6 +236,7 @@ export function registerChatView(
             }
             break;
         }
+        } catch (error) { showError(error); }
       });
       view.onDidDispose(() => {
         disposed = true;
@@ -238,7 +249,18 @@ export function registerChatView(
       });
     },
   });
-  return registration;
+  return vscode.Disposable.from(registration, deletion);
+}
+
+export async function confirmDeleteConversation(backend: ChatBackend, id: string): Promise<void> {
+  const conversation = (await backend.listConversations()).find(item => item.id === id);
+  const count = conversation?.subagentCount ?? 0;
+  const answer = await vscode.window.showWarningMessage(
+    count ? `Delete this conversation and its ${count} subagent sessions? This cannot be undone.`
+      : "Delete this conversation? This cannot be undone.",
+    { modal: true }, "Delete",
+  );
+  if (answer === "Delete") await backend.deleteConversation(id);
 }
 
 function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, child: ChatBackend, parent: ChatBackend, parentId: string, childId: string, favorites: FavoriteStore): void {
@@ -251,6 +273,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
   const favoritesOff = favorites.onChange(items => post({ type: "favorites", items, generation: child.currentGeneration() }));
   const parentOff = parent.subscribe(m => { if (m.type === "subagents") {
     const row = m.items.find(c => c.id === childId);
+    if (m.parentId === parentId && !row) { panel.dispose(); return; }
     if (row) { panel.title = `Subagent · ${row.agent} · ${row.goal.slice(0,80)}`; child.publishSubagents(); }
   } });
   webview.onDidReceiveMessage(async (m: WebviewToHost) => {

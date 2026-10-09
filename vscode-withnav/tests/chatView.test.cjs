@@ -4,7 +4,10 @@ const Module = require("node:module");
 const originalLoad = Module._load;
 const noopDisposable = () => ({ dispose() {} });
 let provider;
+let deleteCommand;
 const vscode = {
+  commands: { registerCommand(_id, handler) { deleteCommand = handler; return noopDisposable(); } },
+  Disposable: { from(...items) { return { dispose() { items.forEach(item => item.dispose()); } }; } },
   ViewColumn: { Active: 1 },
   window: {
     showErrorMessage() {},
@@ -30,6 +33,24 @@ function memento(initial = {}) {
 const { registerChatView } = require("../out/tests/chatView.js");
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
+
+test('delete palette selects a workspace root and confirms its subagent count; cancellation is safe', async () => {
+  const deleted = [];
+  const backend = { listConversations: async () => [{ id: 'P', title: 'Work', updatedAt: '', subagentCount: 3 }], deleteConversation: async id => deleted.push(id) };
+  registerChatView({ extensionUri: 'extension', globalState: memento() }, backend);
+  vscode.window.showQuickPick = async items => { assert.equal(items[0].label, 'Work'); return items[0]; };
+  vscode.window.showWarningMessage = async (text, options) => {
+    assert.equal(text, 'Delete this conversation and its 3 subagent sessions? This cannot be undone.');
+    assert.equal(options.modal, true); return 'Delete';
+  };
+  await deleteCommand();
+  assert.deepEqual(deleted, ['P']);
+  vscode.window.showWarningMessage = async () => undefined;
+  await deleteCommand();
+  vscode.window.showQuickPick = async () => undefined;
+  await deleteCommand();
+  assert.deepEqual(deleted, ['P']);
+});
 
 test('S1 real watchdog doubt continues with null; S3 confirmation revision rejects changed child; S4 late acceptance retains done', async t => {
   const {b,event,dom,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};

@@ -1,4 +1,11 @@
 use super::*;
+
+#[test]
+fn oversized_cache_is_ignored() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(100 * 1024 * 1024).unwrap();
+    assert!(read_cache(file.path()).is_none());
+}
 use crate::provider::config::{ModelConfig, ProviderConfig, ReasoningHistory};
 use std::time::Instant;
 use wiremock::matchers::{method, path};

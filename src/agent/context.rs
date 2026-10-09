@@ -14,7 +14,9 @@ use crate::provider::openai::{ChatMessage, ToolDef};
 pub const MESSAGE_FRAMING_TOKENS: u64 = 4;
 /// Output reserve cap when `models.json` sets no output limit.
 pub const DEFAULT_OUTPUT_RESERVE: u64 = 8192;
-/// Smallest safety margin, in tokens.
+/// Smallest safety margin, in tokens, for windows of 32k and up. A smaller
+/// window gets an eighth of itself instead, so the floor never eats half of an
+/// 8k model's window.
 pub const MIN_MARGIN: u64 = 4096;
 
 /// UTF-8 bytes / 4, rounded up.
@@ -155,9 +157,10 @@ pub fn output_reserve(window: u64, configured: Option<u64>, discovered: Option<u
     reserve
 }
 
-/// M: 5% of the window, at least [`MIN_MARGIN`].
+/// M: 5% of the window, at least [`MIN_MARGIN`] (an eighth of the window when
+/// that is smaller).
 pub fn margin(window: u64) -> u64 {
-    MIN_MARGIN.max(window.div_ceil(20))
+    MIN_MARGIN.min(window / 8).max(window.div_ceil(20))
 }
 
 impl Budget {

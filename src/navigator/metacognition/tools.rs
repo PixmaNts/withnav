@@ -33,18 +33,20 @@ impl LlmCommenter {
         };
         let mut args = tc.args.clone();
         if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-            if !path.starts_with('/') {
+            if !Path::new(path).is_absolute() && !path.starts_with('~') {
                 args["path"] =
                     serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
             }
         }
         // Reading requires the root in `validate_path`'s roots; the
-        // metacognition never writes, so the workspace root is the only
-        // root it gets.
+        // metacognition never writes, so the workspace folders are the only
+        // roots it gets.
         let cx = ToolContext {
             binding: None,
             workspace: workspace.clone(),
-            writable_roots: vec![workspace.clone()],
+            writable_roots: std::iter::once(workspace.clone())
+                .chain(ctx.extra_roots.iter().cloned())
+                .collect(),
             readable_roots: Vec::new(),
         };
         let output = match tc.name.as_str() {
@@ -99,7 +101,7 @@ impl LlmCommenter {
             },
             Err(e) => format!("error: {e}"),
         };
-        self.log_call("metacognition_tool", &tc.name, started, false);
+        self.log_call("metacognition_tool", &tc.name, started, false, None);
         crate::navigator::log::excerpt(&text, TOOL_OUTPUT_MAX_CHARS)
     }
 }
@@ -180,6 +182,14 @@ mod tests {
         );
         let mut ctx = RemarkContext::build("file:///file", "text", "", "", vec![], None);
         ctx.workspace = Some(tmp.path().to_path_buf());
+        let call = crate::provider::ToolCall {
+            id: "tilde".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":"~/outside-workspace.txt"}),
+            args_valid: true,
+        };
+        let output = commenter.execute_tool(&ctx, &call).await;
+        assert!(output.contains("outside the workspace"), "{output}");
         std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
         std::fs::create_dir(tmp.path().join("ordinary-dir")).unwrap();
         std::os::unix::fs::symlink(tmp.path().join("ordinary.txt"), tmp.path().join(".env"))
@@ -210,5 +220,38 @@ mod tests {
             assert!(output.contains("reserved"));
             assert!(!output.contains("secret buffer"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_file_in_another_workspace_folder_is_readable() {
+        let primary = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("lib.rs"), "in the other folder").unwrap();
+        std::fs::write(outside.path().join("lib.rs"), "elsewhere").unwrap();
+        let models: crate::provider::config::ModelsConfig =
+            serde_json::from_value(serde_json::json!({
+                "providers":{"mock":{"base_url":"http://unused"}},
+                "models":{"mock/mock":{"provider":"mock","model":"mock","api":"chat"}}
+            }))
+            .unwrap();
+        let commenter = LlmCommenter::new(
+            models.resolve("mock/mock").unwrap(),
+            "unused".into(),
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        );
+        let mut ctx = RemarkContext::build("file:///file", "text", "", "", vec![], None);
+        ctx.workspace = Some(primary.path().to_path_buf());
+        ctx.extra_roots = vec![other.path().to_path_buf()];
+        let read = |dir: &std::path::Path| crate::provider::ToolCall {
+            id: "r".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": dir.join("lib.rs")}),
+            args_valid: true,
+        };
+        let output = commenter.execute_tool(&ctx, &read(other.path())).await;
+        assert!(output.contains("in the other folder"), "{output}");
+        let output = commenter.execute_tool(&ctx, &read(outside.path())).await;
+        assert!(output.contains("outside the workspace"), "{output}");
     }
 }

@@ -109,13 +109,16 @@ pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
 }
 
 fn review_source(metadata: &Value) -> Option<&str> {
-    metadata["permission_gate"]["source"]
-        .as_str()
-        .filter(|s| matches!(*s, "jev" | "metacognition" | "driver" | "captain"))
+    metadata["permission_gate"]["source"].as_str().filter(|s| {
+        matches!(
+            *s,
+            "instinct" | "jev" | "metacognition" | "driver" | "captain"
+        )
+    })
 }
 fn reviewer(source: &str) -> &str {
-    if source == "jev" {
-        "Jev"
+    if matches!(source, "instinct" | "jev") {
+        "instinct"
     } else {
         source
     }

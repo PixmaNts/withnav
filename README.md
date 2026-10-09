@@ -33,7 +33,7 @@ owned coding-agent core with a terminal client and a local server.
 - **Agents.** `build` (the default: implement, verify, report) and `plan` (research, write markdown
   plans). The Captain switches between turns. Agents can also be defined in Markdown files.
 - **Permissions.** `write`, `edit`, `bash` and `fetch` ask first: allow once, allow the folder, or
-  deny with a message. For `plan`, a second model (Jev) checks each gated call (`write`, `edit`, `bash`,
+  deny with a message. For `plan`, a second model (Instinct) checks each gated call (`write`, `edit`, `bash`,
   `fetch`) except a plain `.md` write, and what it does not clear is asked to the Captain. This is a
   guard against drift, not a sandbox.
 - **Tools.** `read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`, and `skill` when
@@ -100,7 +100,7 @@ them to `~/.config/withnav/`. No real keys are included. Use `nav auth set omnir
 environment variables. A stored key takes precedence over the environment.
 
 The example leaves chat limits for provider discovery rather than guessing them: a usable chat
-model needs a resolvable context window. Mercury FIM and Jev System One retain fixed sample
+model needs a resolvable context window. Reflex FIM and Instinct System One retain fixed sample
 windows and output caps; verify those values against your deployment. Combo variants declare
 `low`, `medium`, `high` as request-body `reasoning_effort`, never a `-high` model-name suffix.
 
@@ -118,7 +118,7 @@ create an agent definition.
 | Layer | Assignment | API |
 |---|---|---|
 | Reflex | one model, editor-only inline completion | `fim` (Mercury in the example) |
-| Instinct | one model, typed decisions and supervision | `systemone` (Jev) |
+| Instinct | one model, typed decisions and supervision | `systemone` |
 | Metacognition | one model, remarks and review; prefers `low` when offered, otherwise model default | `chat` |
 | Cognition | agents with independent roles and model choices, not a singleton model entry | `chat` agent loop |
 

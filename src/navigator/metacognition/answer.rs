@@ -67,20 +67,24 @@ pub fn tool_attempt_instead_of_answer(msg: &crate::provider::AssistantMessage) -
     attempted && matches!(parse_answer(&msg.text), ParsedAnswer::Malformed)
 }
 
-/// Extracts the innermost balanced JSON object from prose / code fences.
+/// Extracts the last balanced answer-shaped object from prose / code fences.
 fn extract_json(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();
     // Direct hit first.
     if trimmed.starts_with('{') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
         return Some(trimmed);
     }
-    // Otherwise find the first balanced { ... } and try it.
+    // Ignore explanatory objects and prefer the final answer-shaped object.
     let bytes = trimmed.as_bytes();
-    let start = bytes.iter().position(|&b| b == b'{')?;
+    let mut start = 0;
+    let mut candidate = None;
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escaped = false;
-    for (i, &b) in bytes.iter().enumerate().skip(start) {
+    for (i, &b) in bytes.iter().enumerate() {
+        if depth == 0 && b != b'{' {
+            continue;
+        }
         if in_string {
             if escaped {
                 escaped = false;
@@ -93,17 +97,27 @@ fn extract_json(raw: &str) -> Option<&str> {
         }
         match b {
             b'"' => in_string = true,
-            b'{' => depth += 1,
+            b'{' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
             b'}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return Some(&trimmed[start..=i]);
+                    let object = &trimmed[start..=i];
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(object) {
+                        if value.get("line").is_some() || value.get("silent").is_some() {
+                            candidate = Some(object);
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
-    None
+    candidate
 }
 
 #[cfg(test)]
@@ -121,6 +135,16 @@ mod tests {
     fn the_answer_contract_per_shape() {
         use ParsedAnswer::{Malformed, Silent};
         let cases = [
+            (
+                "an example object before the answer",
+                r#"Example {"pattern":"error"}. ```json {"line":15,"text":"Handle the error"} ```"#,
+                remark(14, "Handle the error"),
+            ),
+            (
+                "the final answer wins over an example remark",
+                r#"Example {"line":1,"text":"example"}. Final {"silent":true}"#,
+                Silent,
+            ),
             (
                 "a valid remark: the model counts from 1, the wire from 0",
                 r#"{"line": 12, "text": "careful, missing error path"}"#,

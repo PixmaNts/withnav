@@ -24,7 +24,7 @@ export interface PermissionCard {
 }
 export interface PermissionEvidence {
   policy_version: number;
-  source: "jev" | "metacognition" | "captain" | "driver";
+  source: "instinct" | "jev" | "metacognition" | "captain" | "driver";
   reason?: string;
   verdicts?: unknown;
   overrides?: unknown;
@@ -88,6 +88,7 @@ export type HostToWebview = { generation?: number } & (
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
+  subagentCount?: number;
   id: string;
   title: string;
   updatedAt: string;
@@ -109,7 +110,7 @@ export interface ModelInfo {
 }
 export interface Selection { model: string; variant?: string | null; source: string; variant_source?: string }
 export interface AgentInfo { id: string; description: string; mode: string; effective: Selection | null; assignment?: Selection | null; warning?: string | null }
-export interface LayerInfo { layer: string; status: string; model?: string | null; variant?: string | null; api?: string; reason?: string | null }
+export interface LayerInfo { layer: string; status: string; model?: string | null; variant?: string | null; api?: string; reason?: string | null; variant_diagnostic?: string | null }
 
 export interface CommandInfo { name: string; description: string; args_hint: string }
 export interface ChildInfo {

@@ -1,5 +1,5 @@
 //! The role guard: a second opinion on what a role-bound agent is about to
-//! do, asked of Jev (the System One model behind the `instinct` alias) before
+//! do, asked of Instinct (the System One model behind the `instinct` alias) before
 //! the Captain is.
 //!
 //! The `plan` agent keeps every tool, and its prompt says it only writes
@@ -41,7 +41,7 @@ pub const MAX_INPUT_BYTES: usize = 16 * 1024;
 /// How much of the Captain's latest message the guard reads, in bytes.
 const MAX_TASK_BYTES: usize = 2 * 1024;
 
-/// What Jev decided about one call.
+/// What Instinct decided about one call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Conforms,
@@ -184,10 +184,10 @@ pub trait RoleGuard: Send + Sync {
     ) -> BoxFuture<'a, Result<Verdict, GuardError>>;
 }
 
-/// Jev, through `SystemOneClient` and its ~2 s deadline.
-pub struct JevGuard(pub SystemOneClient);
+/// Instinct, through `SystemOneClient` and its ~2 s deadline.
+pub struct InstinctGuard(pub SystemOneClient);
 
-impl RoleGuard for JevGuard {
+impl RoleGuard for InstinctGuard {
     fn judge<'a>(
         &'a self,
         input: &'a GuardInput,
@@ -261,11 +261,11 @@ pub async fn consult(
 ) -> Judged {
     let Some(input) = input else {
         return Judged::AskCaptain(
-            "The call is too large for Jev to judge, so the Captain decides".to_string(),
+            "The call is too large for Instinct to judge, so the Captain decides".to_string(),
         );
     };
     let Some(guard) = guard else {
-        return Judged::AskCaptain("Jev is not available".to_string());
+        return Judged::AskCaptain("Instinct is not available".to_string());
     };
     let verdict = tokio::select! {
         biased;
@@ -277,26 +277,26 @@ pub async fn consult(
     };
     match verdict {
         Ok(Ok(Verdict::Conforms)) => Judged::Allowed(json!({
-            "by": "jev",
+            "by": "instinct",
             "verdict": Verdict::Conforms.as_str(),
             "role": role_id,
         })),
         Ok(Ok(Verdict::Violates)) => {
-            Judged::AskCaptain(format!("Jev judged this outside the {role_id} role"))
+            Judged::AskCaptain(format!("Instinct judged this outside the {role_id} role"))
         }
         Ok(Ok(Verdict::Uncertain)) => Judged::AskCaptain(format!(
-            "Jev could not tell whether this fits the {role_id} role"
+            "Instinct could not tell whether this fits the {role_id} role"
         )),
         Ok(Err(GuardError::Cancelled)) => Judged::Interrupted,
         Ok(Err(GuardError::TimedOut)) | Err(_) => {
-            Judged::AskCaptain("Jev did not answer in time".to_string())
+            Judged::AskCaptain("Instinct did not answer in time".to_string())
         }
         Ok(Err(GuardError::Unavailable(why))) => {
-            Judged::AskCaptain(format!("Jev is not available ({why})"))
+            Judged::AskCaptain(format!("Instinct is not available ({why})"))
         }
-        Ok(Err(GuardError::Malformed(why))) => {
-            Judged::AskCaptain(format!("Jev gave an answer that cannot be used ({why})"))
-        }
+        Ok(Err(GuardError::Malformed(why))) => Judged::AskCaptain(format!(
+            "Instinct gave an answer that cannot be used ({why})"
+        )),
     }
 }
 

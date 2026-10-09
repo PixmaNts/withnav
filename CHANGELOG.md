@@ -4,6 +4,153 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-09
+
+WithNav 0.7.1 lets you delete a saved session, with its subagent sessions, from the terminal,
+VS Code and the WebUI. The WebUI now fits tablets and phones, and the VS Code panel shows in
+colour what waits on you, how subagents are doing and how big a change is. The decision layer is
+named Instinct everywhere, and about forty fixes land across tools, the terminal client, the
+language server, context budgeting and providers.
+
+### Added
+
+- **Delete saved sessions from the terminal session picker.** Press `ctrl+d`, then confirm
+  permanent deletion with the attached subagent count. The list refreshes near the same row,
+  and tabs for the deleted session and its subagents close.
+- **Delete VS Code conversations from the command palette.** Choose a workspace conversation,
+  then confirm permanent deletion including its subagent count. The chat button uses the same
+  confirmation; deleted conversations reset to an empty chat and their subagent views close.
+- **The WebUI can delete a session, with its subagent sessions.** Each session in the sidebar has
+  a delete button (shown on hover or focus; the Delete key works on the row), and the command
+  palette has "Delete session…" for the open one. The confirmation lists the subagents that go
+  with it and says it cannot be undone; deleting the open session moves to the next one.
+
+### Changed
+
+- **Permission review and supervision now use the Instinct layer name.**
+  New events write `instinct` source, model, latency and guard metadata; clients
+  still read stored `jev` events and display them as `auto · instinct` until 0.8.
+- **The VS Code panel colours what waits on you, how subagents are doing, and how big a change is.**
+  Pause cards and pending permissions get the warning colour; a subagent's state reads blue while
+  running, amber when it needs you, green when done, red when failed; a wake shows `+N −M` and its
+  diff lines in your theme's git colours. All from VS Code theme colours, AA contrast in Dark+,
+  Light+ and High Contrast.
+
+### Fixed
+
+- **VS Code's layer protocol now includes variant discovery diagnostics.** The optional server
+  field is represented in the extension's types instead of being omitted from its contract.
+- **Unexpected VS Code chat message errors are reported instead of escaping the dispatcher.**
+  The host boundary now catches synchronous failures as well as the existing asynchronous errors.
+- **The example default agent has an explicit context window.** Startup preflight no longer
+  needs online catalogue discovery to determine its capacity.
+- **Brace glob alternatives can explicitly search normally skipped folders.**
+  Patterns such as `{src,target}/**/*.rs` now enter `target`, while broad wildcard
+  alternatives still leave hidden and generated folders skipped by default.
+- **Model variants cannot use the reserved name `inherit`.** Catalogue validation rejects a
+  name that the CLI and commands interpret as selecting the model's default variant.
+- **Oversized model catalogue cache files are ignored without reading them whole.** Disk reads
+  are bounded to 2 MiB plus one byte, preventing corrupted caches from allocating unbounded memory.
+- **Provider error bodies are bounded and cancellable.** Chat and non-streaming failures read
+  at most 64 KiB, and Stop interrupts a slow error response rather than waiting for its end.
+- **Importing OpenCode models no longer requires an OmniRoute provider.** Direct compatible
+  providers can be imported; OmniRoute's catalogue format is attached only when present.
+- **Invalid grep expressions return the same error on every host.**
+  The ripgrep engine validates expressions before starting its process, returning
+  `invalid_regex` just like the built-in fallback rather than a generic command failure.
+- **Fetch explains how redirect query parameters are handled.** A redirect to a new
+  path without a query drops the original query under standard URL resolution;
+  parameters, including credentials, are never implicitly forwarded.
+- **Closing a file now frees what inline completion kept for it.**
+  The completion service remembered every file it had ever completed in until the server stopped, so
+  long editor sessions grew without bound. Closing a file now drops its entry and cancels any
+  completion still in flight for it.
+- **Every folder of a multi-root VS Code workspace now counts as part of the workspace.**
+  The language server only knew the first folder, so the navigator's read and search tools refused
+  files in the others. It now knows all of them, follows folders added or removed while it runs,
+  and keeps the first folder as the anchor for relative paths, the intent record and flows.
+- **The TUI header fits narrow terminals.** In a split pane the agent, model and gauge ran past the
+  right edge and were cut off. The row now gives way in order (path, model, variant, branch,
+  gauge, pending switch, then `withnav` shrinks to `◆`, then the model_id); the agent stays visible.
+- **Pickers stay inside small terminals and stay usable.** On a very short or narrow pane the model,
+  command or theme picker drew past the screen edge with overlapping rows. The popup now fits the
+  screen; as it shrinks it keeps the highlighted row first, then the filter, then `esc`.
+- **Sending a message from VS Code no longer breaks on a conversation id with special characters.**
+  The extension built the message URL from the raw id while every other call encoded it, so such an
+  id produced a malformed request and a 404.
+- **`edit` now refuses an empty `old_string` instead of scrambling the file.** An empty search text
+  matches between every character, so `replace_all` interleaved the new text through the whole file
+  and a single replace failed with a confusing "ambiguous match". The call is now rejected up front.
+- **One unreadable conversation no longer empties the session list.** A session whose stored
+  metadata cannot be decoded made `GET /v1/sessions` fail with a 500, so the picker showed none of
+  the workspace's healthy conversations. The list now skips it and logs a warning.
+- **Inline completion works on files with Windows line endings and at the end of a file.**
+  The cursor position was converted to a byte offset assuming one byte per line break, so in a CRLF
+  file the code sent to the completion model drifted one byte per line; and a cursor on the empty
+  line after a final newline got no completion at all.
+- **Remarks survive explanatory JSON before the final answer.** The navigator skips unrelated
+  objects in prose and code fences and uses the last answer-shaped object, while still rejecting
+  malformed lines and empty remark text.
+- **Verbose shell commands drain excess output in larger chunks.**
+  Once the output buffer fills, larger discard reads reduce reader overhead without artificial
+  delays or closing the pipe. Retained bytes never exceed the buffer cap.
+- **Shell cancellation only signals positive process group ids.**
+  Child ids are checked before conversion, and termination rejects nonpositive ids so an invalid
+  id cannot signal WithNav's own process group.
+- **The terminal client no longer fails to load skills or toggle bypass for a session whose id needs
+  escaping.** Those two requests put the id in the URL path as-is while every other one escaped it, so
+  an id with a space or a slash gave a 404.
+- **VS Code keeps watchdog-paused subagents continuable without a root pause token.**
+  Removed an unreachable tooltip that incorrectly implied child continuation
+  required a token; the server accepts tokenless child continuation.
+- **The intent tool can clear an obsolete section with an empty string.** An explicit empty
+  update now removes the previous text; omitted sections still retain their contents.
+- **Interrupted terminal turns no longer retain unfinished tool arguments.** Turn and session
+  boundaries discard streamed fragments so a later turn starts with an empty buffer.
+- **"Allow folder" grants from two conversations no longer cancel each other out.** Two sessions
+  of one workspace saving a grant at the same moment could each overwrite the other's entry in
+  `grants.json`, so a folder you had allowed asked again after a restart. Saves are now serialised
+  with a lock file next to it.
+- **Metacognition preserves home-relative and platform-absolute tool paths.** Only ordinary
+  relative paths are anchored to the workspace; home expansion and workspace confinement remain
+  the responsibility of the shared path validator.
+- **The WebUI now fits tablets and phones.** Below 1100 px the Intent / Crew / Extensions panel
+  opens from a **Details** button in the top bar; below 700 px the page is one column and the
+  workspace list opens from the ☰ button. Settings and the Studio work the same way. Esc closes
+  a side panel and puts focus back on its button. The desktop layout does not change.
+- **Subagents no longer pause merely because instinct is unconfigured.** A watchdog without a
+  judge skips advisory checks; configured judges still escalate repeated failures, and the step
+  cap remains enforced.
+- **Deleting lines now moves the edit point the navigator reports.**
+  A pure deletion left the "last edited line" on the previous edit, so remarks and context excerpts
+  looked at stale code. The deletion point is now used, and the edit history records it.
+- **Creating files avoids resolving the same permission root twice.** Path validation
+  reuses its canonical ancestor when that ancestor is an allowed root. Other roots
+  are still resolved freshly so changed symlinks cannot retain stale permissions.
+- **Relative file destinations can name folders that do not exist yet.**
+  Path validation anchors relative destinations to the first allowed root before resolving
+  existing ancestors, while still refusing paths that escape the allowed roots.
+- **Metacognition call logs retain provider-reported token usage.** Successful chat rounds now
+  record input and output counts; tools and responses without usage keep these fields unknown.
+- **Code-heavy conversation summaries no longer exceed their cap during escaping.** Angle
+  brackets become same-size square brackets, keeping generic types and HTML summaries bounded
+  without allowing summary text to close its data wrapper.
+- **A model with an 8k context window can be assigned again.** The safety margin was never below
+  4096 tokens, so an 8k model with a 4k output limit was refused and one with the default reserve
+  kept only a quarter of its window for input. Windows under 32k now use an eighth of their size as
+  the floor (1024 tokens at 8k); windows of 32k and above are unchanged.
+- **You can switch off a failing model even when the conversation is too big for the new one.**
+  `/model` summarises the conversation with the current model before moving to a smaller window, so
+  a revoked key or a provider outage left you stuck on the broken model. When the current model
+  cannot answer, the model you are switching to now writes the summary. It cannot rescue a
+  conversation whose text that cannot be cut down (messages, `ask` answers, loaded skills; only
+  other tool outputs can be) is larger than the new model's window: the switch is then refused.
+- **An OpenCode agent file named like a former WithNav agent no longer replaces a crew member.**
+  `~/.config/opencode/agents/explorer.md` (or `librarian`, `oracle`, `explore`, `review`) configures
+  OpenCode's own agent; WithNav read it as the former id of Mousse, Vigie or Lux, which lost its
+  built-in prompt. Those files are now skipped. The former ids still work in
+  `~/.config/withnav/agents/` and `.withnav/agents/`.
+
 ## [0.7.0] - 2026-10-08
 
 Navai is now **WithNav**. Nav is your single point of contact, with a crew behind it: Vigie scouts

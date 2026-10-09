@@ -1,17 +1,19 @@
 import { BrandMark, Crew, crewLabel } from "./components/Crew";
-import { Compass, FlowArrow, GearSix, WifiSlash } from "@phosphor-icons/react";
+import { Compass, FlowArrow, GearSix, List, SidebarSimple, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
 import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
 import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
+import { Drawer, DrawerButton, MOBILE, TABLET, useDrawer } from "./lib/drawer";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { RightPanel, type PanelTab } from "./components/RightPanel";
 import { Sidebar, sidebarWorkspaces } from "./components/Sidebar";
 import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./components/WorkspaceActions";
+import { DeleteSessionDialog, type DeleteSessionRequest } from "./components/SessionActions";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
@@ -90,6 +92,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
   const [removing, setRemoving] = useState<RemoveRequest | null>(null);
+  const [deleting, setDeleting] = useState<DeleteSessionRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
   const workspace = route.workspace;
   const expansion = useWorkspaceExpansion(workspace);
@@ -108,6 +111,22 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
   const bypass = route.subagent ? childRow?.bypass === true : chat.bypass;
   const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
+  // Narrow screens: the workspace list and the session details become drawers.
+  const side = useDrawer(MOBILE);
+  const details = useDrawer(TABLET);
+  const { setOpen: closeSide } = side;
+  const { setOpen: closeDetails } = details;
+  // Picking a session or a subagent in a drawer shows it: the drawer gets out of the way.
+  useEffect(() => {
+    closeSide(false);
+    closeDetails(false);
+  }, [route.workspace, route.session, route.subagent, closeSide, closeDetails]);
+  // The palette, the model picker and the confirmations open over the page, not under a drawer.
+  useEffect(() => {
+    if (!overlay && !removing && !deleting) return;
+    closeSide(false);
+    closeDetails(false);
+  }, [overlay, removing, deleting, closeSide, closeDetails]);
 
   useEffect(() => {
     document.title = route.session ? `${title} · WithNav` : "WithNav";
@@ -178,6 +197,15 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
           items: (sessions.data ?? []).filter((s) => !s.parent_session_id).map((s) => ({ id: s.id, group: s.agent, label: sessionTitle(s.title), description: `${s.message_count} msgs`, run: () => navigate({ session: s.id, subagent: null }) })),
         }),
       },
+      {
+        id: "delete",
+        group: "Session",
+        label: "Delete session…",
+        description: "With its subagent sessions; cannot be undone",
+        hint: "",
+        disabled: hasSession && workspace ? undefined : "No saved session is open",
+        run: () => workspace && route.session && setDeleting({ workspace, id: route.session, title: sessionRow?.title ?? null }),
+      },
       ...(hasSession && chat.running ? [{ id: "stop", group: "Session", label: "Stop the session", hint: "/stop", run: () => void chat.stop() }] : []),
       {
         id: "skill",
@@ -223,7 +251,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, openStudio, expansion.collapseAll, expandAllWorkspaces, currentWs]);
+  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, openStudio, expansion.collapseAll, expandAllWorkspaces, currentWs, sessionRow?.title]);
 
   const runServer = async (name: string, args: string) => {
     if (name === "bypass" && ["on", "off"].includes(args.trim())) {
@@ -301,9 +329,12 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   return (
     <div className="shell">
       <header className="topbar">
+        <DrawerButton target="chat-side" state={side} label="Workspaces and sessions" className="side-toggle">
+          <List size={18} aria-hidden />
+        </DrawerButton>
         <span className="brand">
           <BrandMark />
-          WithNav
+          <span className="brand-name">WithNav</span>
         </span>
         <span className="crumb" title={workspace ?? undefined}>
           {crumbWs} / {crumb}
@@ -315,7 +346,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         )}
         {bypass && <span className="bypass-badge" title="Bypass ordinary permission prompts; protected requests still ask">⚠ bypass</span>}
         <div className="topbar-right">
-          <span className="muted" style={{ fontSize: 12 }}>
+          <span className="muted agent-label" style={{ fontSize: 12 }}>
             Agent
           </span>
           {["build", "plan"].map((id) => (
@@ -332,7 +363,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             </button>
           ))}
           <button type="button" className="bypass-toggle" aria-pressed={bypass} disabled={!!bypassReason} title={bypassReason ?? "Bypass ordinary permission prompts; protected requests still ask"} onClick={() => void chat.setBypass(!bypass)}>
-            ⚠ Bypass {bypass ? "ON" : "OFF"}
+            ⚠<span className="bar-btn-text"> Bypass</span> {bypass ? "ON" : "OFF"}
           </button>
           <button type="button" className="icon-btn st-gear" onClick={openStudio} disabled={!workspace} aria-label="InstinctFlow Studio" title={workspace ? "InstinctFlow Studio: flows" : "Choose a workspace first"}>
             <FlowArrow size={16} />
@@ -341,13 +372,19 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <GearSix size={16} />
           </button>
           <button type="button" className="kbd" onClick={() => setOverlay({ palette: paletteWithSkills })} aria-label="Open the command palette" title="Command palette">
-            {modKey("K")}
+            {side.active ? "Commands" : modKey("K")}
           </button>
         </div>
+        <DrawerButton target="chat-details" state={details} label="Session details: intent, crew, extensions" className="panel-toggle">
+          <SidebarSimple size={16} style={{ transform: "scaleX(-1)" }} aria-hidden />
+          <span className="bar-btn-text">Details</span>
+        </DrawerButton>
         {bypass && <span className="bypass-warning" role="status">Bypass ordinary permission prompts; protected requests still ask</span>}
       </header>
 
-      <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} />
+      <Drawer id="chat-side" side="left" state={side} label="Workspaces">
+        <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} onDelete={setDeleting} />
+      </Drawer>
 
       {route.subagent && route.session ? (
         <main className="main">
@@ -385,9 +422,12 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         </main>
       )}
 
-      <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
+      <Drawer id="chat-details" side="right" state={details} label="Session details">
+        <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
+      </Drawer>
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}
+      {deleting && <DeleteSessionDialog request={deleting} route={route} navigate={navigate} onClose={() => setDeleting(null)} />}
       {removing && <RemoveWorkspaceDialog request={removing} workspaces={sidebarList} route={route} navigate={navigate} onClose={() => setRemoving(null)} />}
     </div>
   );

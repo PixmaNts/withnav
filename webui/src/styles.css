@@ -411,6 +411,44 @@ a:hover {
   gap: 8px;
   padding-top: 2px;
 }
+/* The subagent sessions a deletion takes with it, one line each. */
+.confirm-subs {
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  margin: 4px 0 2px;
+  max-height: 160px;
+  overflow: auto;
+}
+.confirm-subs-head {
+  padding: 5px 10px;
+  color: var(--mu);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--bd);
+}
+.confirm-sub {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12.5px;
+}
+.confirm-sub + .confirm-sub {
+  border-top: 1px solid var(--bd);
+}
+.confirm-sub > svg {
+  color: var(--pu);
+  flex-shrink: 0;
+}
+.confirm-sub .state {
+  margin-left: auto;
+  color: var(--mu);
+  font-size: 11.5px;
+}
+.confirm-sub .state[data-running] {
+  color: var(--or);
+}
 .btn.danger.solid {
   background: var(--rd);
   color: var(--bg);
@@ -485,6 +523,46 @@ a:hover {
 .sess .meta {
   color: var(--mu);
   font-size: 11px;
+}
+/* A root session row and its trash button: the button stays out of sight until the row is hovered
+   or focused, then sits on the row's right edge over the faded end of the title. */
+.sess-item {
+  position: relative;
+  margin-left: 22px;
+  display: flex;
+  min-width: 0;
+}
+.sess-item > .sess {
+  margin-left: 0;
+  flex: 1;
+  padding-right: 30px;
+}
+.sess-item:hover > .sess:not([aria-current="page"]) {
+  background: color-mix(in srgb, var(--tx) 4%, transparent);
+}
+.sess-del {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  padding: 5px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.sess-item:hover .sess-del,
+.sess-item:focus-within .sess-del {
+  opacity: 1;
+}
+.sess-del:hover,
+.sess-del:focus-visible {
+  color: var(--rd);
+  background: color-mix(in srgb, var(--rd) 12%, transparent);
+}
+@media (hover: none) {
+  .sess-del {
+    opacity: 0.7;
+  }
 }
 .sess.child {
   margin-left: 36px;
@@ -1620,3 +1698,225 @@ a:hover {
 .brand, h1, h2, h3, .st-box-head .title { font-family: var(--font-brand); font-weight: 600; }
 .crew { display: inline-flex; align-items: center; gap: 5px; color: var(--crew-color); }
 .crew svg { flex-shrink: 0; }
+
+/* ---------- narrow screens ----------
+   Side columns live in a `.drawer` wrapper (lib/drawer.tsx). Wide: the wrappers vanish from the
+   layout and the column is a grid cell. Narrow: the column slides over the page from its side. */
+.drawer,
+.drawer-body {
+  display: contents;
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--bd);
+  font-family: var(--font-brand);
+  font-weight: 600;
+  font-size: 14px;
+  flex: none;
+}
+.drawer-head .icon-btn {
+  padding: 6px;
+}
+.drawer[data-drawer] {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  /* Above the page's own layers (the Studio toolbar menus use 6), below its dialogs (20). */
+  z-index: 10;
+  width: min(380px, 88vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--pn);
+  box-shadow: 0 0 40px var(--shadow);
+  visibility: hidden;
+  transition: transform 0.2s ease, visibility 0s linear 0.2s;
+}
+.drawer[data-drawer="left"] {
+  left: 0;
+  transform: translateX(-100%);
+  border-right: 1px solid var(--bd);
+}
+.drawer[data-drawer="right"] {
+  right: 0;
+  transform: translateX(100%);
+  border-left: 1px solid var(--bd);
+}
+.drawer[data-drawer][data-open] {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.2s ease;
+}
+.drawer[data-drawer] > .drawer-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.drawer[data-drawer] > .drawer-body > * {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+}
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: var(--backdrop);
+  animation: drawer-fade 0.2s ease-out;
+}
+@keyframes drawer-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer[data-drawer],
+  .drawer[data-drawer][data-open] {
+    transition: none;
+  }
+}
+/* Top-bar buttons that open a drawer. */
+.bar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: 1px solid var(--bd);
+  border-radius: 5px;
+  color: var(--mu);
+  padding: 3px 8px;
+  font-size: 12px;
+  min-height: 26px;
+  flex-shrink: 0;
+}
+.bar-btn:hover,
+.bar-btn[aria-expanded="true"] {
+  color: var(--tx);
+  border-color: color-mix(in srgb, var(--ac) 50%, var(--bd));
+}
+.side-toggle {
+  border-color: transparent;
+  padding: 3px 4px;
+  margin-left: -4px;
+}
+
+/* Tablet: the right panel leaves the grid and opens as a drawer. */
+@media (max-width: 1100px) {
+  .shell {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+  .topbar {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Mobile: one column. Workspaces open from the left, details from the right; the composer stays
+   at the bottom; the top bar keeps the agent switch and Settings and drops what it can. */
+@media (max-width: 700px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .topbar {
+    gap: 8px;
+    padding: 6px 10px;
+    row-gap: 6px;
+  }
+  .brand .brand-name,
+  .agent-label {
+    display: none;
+  }
+  .crumb {
+    flex: 1 1 0;
+  }
+  .topbar-right {
+    margin-left: 0;
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .panel-toggle {
+    margin-left: auto;
+  }
+  .bar-btn-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .seg,
+  .bypass-toggle,
+  .kbd,
+  .topbar-right .icon-btn {
+    min-height: 32px;
+    min-width: 32px;
+    justify-content: center;
+  }
+  .seg {
+    padding: 2px 12px;
+  }
+  .kbd {
+    margin-left: auto;
+  }
+  .bypass-warning {
+    order: 4;
+    text-align: left;
+  }
+  .transcript,
+  .subview {
+    padding: 14px 14px;
+  }
+  .composer-wrap {
+    padding: 8px 10px 10px;
+  }
+  .composer-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .chip.model {
+    max-width: 100%;
+    flex: 1 1 140px;
+  }
+  .slash {
+    left: 10px;
+    right: 10px;
+  }
+  .picker {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    bottom: 96px;
+  }
+  .backdrop {
+    padding-top: 24px;
+  }
+  .p-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .p-item .group {
+    display: none;
+  }
+  /* Rows a finger can hit, and the workspace actions always visible (no hover). */
+  .sess,
+  .new-session {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .ws-more {
+    opacity: 1;
+  }
+  .sess-del {
+    opacity: 0.8;
+    padding: 8px;
+    right: 2px;
+  }
+  .sess-item > .sess {
+    padding-right: 38px;
+  }
+}

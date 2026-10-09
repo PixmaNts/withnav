@@ -6,6 +6,7 @@ import { HttpError } from "../api/http";
 import { keys, workspacesChanged } from "../api/queries";
 import type { WorkspaceEntry } from "../api/types";
 import { plural } from "../lib/format";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { Route } from "../router";
 
 export type RemoveKind = "hide" | "delete";
@@ -171,24 +172,7 @@ export function RemoveWorkspaceDialog({
   }, [qc]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const cancel = useRef<HTMLButtonElement>(null);
-  const confirm = useRef<HTMLButtonElement>(null);
-  const before = useRef<Element | null>(typeof document === "undefined" ? null : document.activeElement);
   const destructive = kind === "delete";
-  const titleId = useId();
-  const bodyId = useId();
-
-  useEffect(() => {
-    // The safe answer is the default for the destructive variant.
-    (destructive ? cancel : confirm).current?.focus();
-  }, [destructive]);
-
-  const dismiss = () => {
-    if (busy) return;
-    onClose();
-    const back = before.current;
-    if (back instanceof HTMLElement && back.isConnected) requestAnimationFrame(() => back.focus());
-  };
 
   const run = async () => {
     setBusy(true);
@@ -212,62 +196,30 @@ export function RemoveWorkspaceDialog({
 
   const sessions = plural(count, "session");
   return (
-    <div className="backdrop" onMouseDown={dismiss}>
-      <div
-        className="confirm"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={bodyId}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            dismiss();
-          } else if (e.key === "Tab") {
-            // Two buttons: keep focus inside the dialog.
-            const order = [cancel.current, confirm.current].filter((b): b is HTMLButtonElement => !!b && !b.disabled);
-            if (!order.length) return;
-            const at = order.indexOf(document.activeElement as HTMLButtonElement);
-            e.preventDefault();
-            order[(at + (e.shiftKey ? -1 : 1) + order.length) % order.length]!.focus();
-          }
-        }}
-      >
-        <h2 id={titleId} className={destructive ? "danger" : undefined}>
-          {destructive ? <Trash size={16} aria-hidden /> : <EyeSlash size={16} aria-hidden />}
-          {destructive ? `Delete the sessions of ${ws.name}` : `Remove ${ws.name} from the list`}
-        </h2>
-        <div id={bodyId} className="confirm-body">
-          {destructive ? (
-            <>
-              <p className="confirm-lead">Delete {sessions} and their subagents? This cannot be undone.</p>
-              <p>A session still running is stopped first. The folder and its files are not touched, and {ws.name} leaves the list.</p>
-            </>
-          ) : (
-            <>
-              <p className="confirm-lead">Remove {ws.name} from the list?</p>
-              <p>{count === 1 ? "Its session is kept." : count ? `Its ${sessions} are kept.` : "Nothing is deleted."} Open the folder again to bring it back.</p>
-            </>
-          )}
-          <p className="confirm-path mono" title={ws.path}>
-            {ws.path}
-          </p>
-        </div>
-        {error && (
-          <div className="confirm-error" role="alert">
-            {error}
-          </div>
-        )}
-        <div className="confirm-actions">
-          <button ref={cancel} type="button" className="btn ghost" onClick={dismiss} disabled={busy}>
-            Cancel
-          </button>
-          <button ref={confirm} type="button" className={`btn${destructive ? " danger solid" : ""}`} onClick={() => void run()} disabled={busy}>
-            {busy ? (destructive ? "Deleting…" : "Removing…") : destructive ? `Delete ${sessions}` : "Remove from list"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <ConfirmDialog
+      title={destructive ? `Delete the sessions of ${ws.name}` : `Remove ${ws.name} from the list`}
+      icon={destructive ? <Trash size={16} aria-hidden /> : <EyeSlash size={16} aria-hidden />}
+      danger={destructive}
+      error={error}
+      busy={busy}
+      confirmLabel={busy ? (destructive ? "Deleting…" : "Removing…") : destructive ? `Delete ${sessions}` : "Remove from list"}
+      onConfirm={() => void run()}
+      onDismiss={onClose}
+    >
+      {destructive ? (
+        <>
+          <p className="confirm-lead">Delete {sessions} and their subagents? This cannot be undone.</p>
+          <p>A session still running is stopped first. The folder and its files are not touched, and {ws.name} leaves the list.</p>
+        </>
+      ) : (
+        <>
+          <p className="confirm-lead">Remove {ws.name} from the list?</p>
+          <p>{count === 1 ? "Its session is kept." : count ? `Its ${sessions} are kept.` : "Nothing is deleted."} Open the folder again to bring it back.</p>
+        </>
+      )}
+      <p className="confirm-path mono" title={ws.path}>
+        {ws.path}
+      </p>
+    </ConfirmDialog>
   );
 }

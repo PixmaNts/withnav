@@ -8,7 +8,7 @@ mousse: <><rect x="5" y="5" width="54" height="54" rx="15" fill="none" stroke="c
 cartographe: <><polygon points="60,32 46,7.75 18,7.75 4,32 18,56.25 46,56.25" fill="none" stroke="currentColor" strokeWidth="4" strokeLinejoin="round" opacity=".5"></polygon><polyline points="18,41 30,23 46,36" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinejoin="round"></polyline><circle cx="18" cy="41" r="5" fill="currentColor"></circle><circle cx="30" cy="23" r="5" fill="currentColor"></circle><circle cx="46" cy="36" r="5" fill="currentColor"></circle></>,
 sondeur: <><rect x="16" y="2" width="32" height="60" rx="16" fill="none" stroke="currentColor" strokeWidth="4" opacity=".5"></rect><path d="M23 15 Q32 9 41 15" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round"></path><line x1="32" y1="13" x2="32" y2="38" stroke="currentColor" strokeWidth="4" strokeLinecap="round"></line><polygon points="32,36 39,45.5 32,55 25,45.5" fill="currentColor"></polygon></>,
 };
-const aliases: Record<string, string> = {build:"nav", plan:"nav", driver:"captain", explore:"vigie", librarian:"vigie", review:"lux", oracle:"lux", jev:"lux", explorer:"mousse"};
+const aliases: Record<string, string> = {build:"nav", plan:"nav", driver:"captain", explore:"vigie", librarian:"vigie", review:"lux", oracle:"lux", jev:"lux", instinct:"lux", explorer:"mousse"};
 export function crewId(id: string) { return aliases[id] ?? id; }
 export function crewName(id: string) { const n = crewId(id); return n.charAt(0).toUpperCase() + n.slice(1); }
 const roles: Record<string, string> = {nav: "The Navigator", captain: "The Captain", vigie: "The Lookout", lux: "The Expert Advisor", mousse: "The Lightweight Deckhand", cartographe: "The Cartographer", sondeur: "The Deep Diver"};

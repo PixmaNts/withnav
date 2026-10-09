@@ -44,6 +44,9 @@ pub struct RemarkContext {
     pub prompt: Option<String>,
     /// The workspace root; unlocks the read/grep tools for the metacognition.
     pub workspace: Option<PathBuf>,
+    /// The other folders of a multi-root workspace: readable like the
+    /// workspace itself, relative paths still anchor on the workspace root.
+    pub extra_roots: Vec<PathBuf>,
     /// Open editor buffers keyed by absolute path: `read` answers from the
     /// buffer (unsaved edits), not from disk.
     pub open_buffers: BTreeMap<PathBuf, String>,
@@ -77,6 +80,7 @@ impl RemarkContext {
             intent,
             prompt: None,
             workspace: None,
+            extra_roots: Vec::new(),
             open_buffers: BTreeMap::new(),
             tool_rounds: REMARK_TOOL_ROUNDS,
         }
@@ -203,14 +207,21 @@ impl LlmCommenter {
         &self.resolved.model.model
     }
 
-    fn log_call(&self, layer: &str, model: &str, started: Instant, cancelled: bool) {
+    fn log_call(
+        &self,
+        layer: &str,
+        model: &str,
+        started: Instant,
+        cancelled: bool,
+        usage: Option<crate::provider::Usage>,
+    ) {
         if let Some(log) = &self.log {
             log.append(&LogRecord::Call {
                 layer,
                 model,
                 latency_ms: started.elapsed().as_millis(),
-                input_tokens: None,
-                output_tokens: None,
+                input_tokens: usage.map(|u| u.prompt_tokens),
+                output_tokens: usage.map(|u| u.completion_tokens),
                 cancelled,
                 purpose: None,
             });
@@ -301,19 +312,31 @@ impl LlmCommenter {
         let response = match http.send().await {
             Ok(r) => r,
             Err(e) => {
-                self.log_call("metacognition_round", self.model_id(), started, false);
+                self.log_call("metacognition_round", self.model_id(), started, false, None);
                 return Err(crate::error::ProviderError::Http(e).into());
             }
         };
         let mut noop = |_d: StreamDelta| {};
         match start_and_consume(response, cancel, &mut noop).await {
             Ok(msg) => {
-                self.log_call("metacognition_round", self.model_id(), started, false);
+                self.log_call(
+                    "metacognition_round",
+                    self.model_id(),
+                    started,
+                    false,
+                    msg.usage,
+                );
                 Ok(msg)
             }
             Err(e) => {
                 let cancelled = matches!(e, crate::error::ProviderError::Canceled { .. });
-                self.log_call("metacognition_round", self.model_id(), started, cancelled);
+                self.log_call(
+                    "metacognition_round",
+                    self.model_id(),
+                    started,
+                    cancelled,
+                    None,
+                );
                 Err(e.into())
             }
         }

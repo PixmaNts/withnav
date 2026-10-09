@@ -2,7 +2,7 @@
   "name": "withnav",
   "displayName": "WithNav",
   "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "pixmants",
   "repository": {
     "type": "git",
@@ -44,6 +44,7 @@
       ]
     },
     "commands": [
+      { "command": "withnav.deleteConversation", "title": "Delete Conversation…", "category": "WithNav" },
       { "command": "withnav.toggleBypassPermissions", "title": "WithNav: Toggle Bypass Permissions" },
       {
         "command": "withnav.openSettings",

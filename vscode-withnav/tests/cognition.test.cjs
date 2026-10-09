@@ -11,6 +11,27 @@ Module._load = originalLoad;
 const shortened = text => `${text.slice(0, 2000)}\n...[output elided]...\n${text.slice(-2000)}`;
 
 const commandCatalog = ["model", "variant", "agent", "compact", "context"].map(name => ({ name, description: name, args_hint: "" }));
+test('deletion counts nested children, resets current chat and silently refreshes a missing conversation', async t => {
+  const { backend } = setup(t, {});
+  let sessions = [{ id: 'parent' }, { id: 'child', parent_session_id: 'parent', promptable: false }, { id: 'nested', parent_session_id: 'child', promptable: false }];
+  let status = 204;
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push(init.method);
+    if (init.method === 'DELETE') { sessions = []; return new Response(null, { status }); }
+    return new Response(JSON.stringify({ sessions }));
+  });
+  const list = await backend.listConversations();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].subagentCount, 2);
+  await backend.deleteConversation('parent');
+  assert.equal(backend.currentConversationId(), undefined);
+  assert.equal(backend.history().some(item => item.type === 'message'), false);
+  status = 404;
+  await backend.deleteConversation('parent');
+  assert.deepEqual(calls.slice(-2), ['DELETE', 'GET']);
+  backend.dispose();
+});
 test("commands use exact body without context and unknown/no-session commands retain draft", async t => {
   const { backend, calls } = setup(t, { operation_id: "OP", ok: true });
   backend.commands = commandCatalog;
@@ -83,6 +104,13 @@ test("child approval posts to parent with bearer token and exact deny body", asy
   assert.deepEqual(JSON.parse(calls[0].body), { decision: "deny", message: "Do not run" });
   assert.equal(calls[0].headers.authorization, "Bearer secret");
   assert.equal(backend.hasOpenPermissions(), true);
+});
+
+test("sending a message percent-encodes the session id in the request path", async t => {
+  const { backend, calls } = setup(t);
+  backend.state.session = "a/b c";
+  await backend.send("hello");
+  assert.equal(calls[0].url, "http://127.0.0.1:1234/v1/sessions/a%2Fb%20c/messages");
 });
 
 test("foreign session, unknown request, forbidden folder grant and malformed message never post", async t => {
@@ -183,7 +211,7 @@ test("missing watchdog token and foreign pause id never post", async t => {
 
 test("tool evidence comes from pre-call or post-call and survives row updates", t => {
   const { apply } = setup(t);
-  const evidence = { policy_version: 1, source: "jev", reason: "Low risk" };
+  const evidence = { policy_version: 1, source: "instinct", reason: "Low risk" };
   assert.equal(apply("tool.pre_call", { tool_call_id: "plain", name: "read", args: {} }).evidence, undefined);
   assert.deepEqual(apply("tool.pre_call", { tool_call_id: "C", name: "bash", args: { command: "pwd" }, permission_gate: evidence }).evidence, evidence);
   assert.deepEqual(apply("tool.post_call", { tool_call_id: "C", name: "bash", status: "ok" }).evidence, evidence);
@@ -621,7 +649,7 @@ test("failed open preserves context state and emits restored usage with the curr
 test("failed open between tool calls preserves summary and approval evidence", async t => {
   const { backend, apply } = setup(t);
   backend.connect = async () => {};
-  const evidence = { source: "jev", policy_version: 1, reason: "Read only" };
+  const evidence = { source: "instinct", policy_version: 1, reason: "Read only" };
   apply("turn.start", { turn_id: "T" });
   apply("tool.pre_call", { tool_call_id: "C", name: "bash", args: { command: "pwd" }, permission_gate: evidence });
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "missing" }), { status: 404 }));

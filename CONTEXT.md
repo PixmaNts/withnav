@@ -305,12 +305,18 @@ answers/probabilities, git facts, three bounded untrusted assistant messages and
 untrusted tool calls with arguments, outcome, exit code, output head and approval source;
 Instinct keeps 16 KiB. Truncation is marked. On timeout, eligible floor-free calls retry once
 with a fresh cancel token and a five-second deadline; outages never authorize a call.
-Typed Captain allow-once answers become signature-and-scope precedents shared by live children,
-rebuilt from host `permission.resolved` events on resume. A matching precedent replaces only
+Typed Captain allow-once answers become in-memory signature-and-scope precedents shared by live
+children, never restored from `permission.resolved` events on resume. SQLite event JSON is writable
+by ambient bash and cannot authenticate an approval; every resumed session starts with no precedents.
+A matching live precedent replaces only
 metacognition unsure/timeout escalation, never an explicit reject or a host floor, and records
 `approved_by: captain_precedent` plus the earlier request. Bypass/config grants never create one.
-New human turns conservatively invalidate precedents; deny also revokes its signature. Signatures
-use trusted executable identity, subcommand and sorted flags (confirmed push targets are retained).
+New human turns conservatively invalidate precedents; every typed Captain deny clears all session
+precedents, even when the denied call has no signature. Signatures
+use the trusted resolver's validated canonical executable, subcommand and sorted flags. Push
+signatures retain the confirmed target and the full effective push URL list, including Git URL
+rewrites; unavailable URLs prevent a signature and precedent reuse. Python JSON exemptions require
+`python3 -I -S` to exclude workspace/PYTHONPATH imports and startup hooks.
 PR edits and execution/path overrides are not covered. A new conversation starts empty.
 Otherwise only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
 remote deletions still require the Captain. Protected configuration, credentials and changed

@@ -349,7 +349,7 @@ pub fn permission_questions() -> Questions {
     questions.insert("call_effect".into(), choice(
         "What persistent state does this exact tool call change?",
         &[
-            ("read_only", "Changes nothing persistent: only reads and prints. Examples: ls, cat, grep, find, git status, git diff, git log, git show, gh pr view, gh pr list, gh pr checks, piping into jq or python3 -m json.tool."),
+            ("read_only", "Changes nothing persistent: only reads and prints. Examples: ls, cat, grep, find, git status, git diff, git log, git show, gh pr view, gh pr list, gh pr checks, piping into jq or python3 -I -S -m json.tool."),
             ("local_change", "Writes only local files, git metadata or generated artifacts, without uploading anything: git add/commit, cargo build/test/clippy, npm ci/test, make test, mkdir and touch."),
             ("remote_change", "Changes state on a remote server: git push, gh pr edit, gh pr merge, gh release create, npm publish, curl -X POST."),
             ("unsure", "The effect cannot be determined from the call."),
@@ -1133,7 +1133,7 @@ fn supported_read_only_bash(call: &ToolCall, cx: &ToolContext) -> bool {
     let Some(program) = words.next() else {
         return false;
     };
-    let Some(program) = shell::trusted_program(
+    let Some((program, _)) = shell::trusted_program(
         program,
         &json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots}),
     ) else {
@@ -1356,8 +1356,8 @@ mod tests {
     fn restricted_json_pipelines_allow_only_audited_stdin_transforms() {
         let facts = json!({"workspace":"/tmp/opencode","writable_roots":["/tmp/opencode"]});
         for command in [
-            "git status | python3 -m json.tool",
-            "git diff | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'",
+            "git status | python3 -I -S -m json.tool",
+            "git diff | python3 -I -S -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'",
             "gh pr view --json title | jq .title",
         ] {
             let programs_available = if command.contains("jq") {
@@ -1370,6 +1370,10 @@ mod tests {
             }
         }
         for command in [
+            "git status | python3 -m json.tool",
+            "git status | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'",
+            "git status | python3 -I -m json.tool",
+            "git status | python3 -S -m json.tool",
             "git status | python3 script.py",
             "git status | python3 -m os",
             "git status | jq --rawfile x file .",
@@ -1429,6 +1433,152 @@ mod tests {
             note["permission_gate"]["captain_precedent"]["request_id"],
             "earlier-captain-answer"
         );
+    }
+
+    #[test]
+    fn workspace_json_module_and_startup_hooks_cannot_run_in_audited_python() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("executed");
+        let payload = format!(
+            "open({:?}, 'w').write('executed')\nraise RuntimeError('untrusted import')\n",
+            marker.to_str().unwrap()
+        );
+        for module in ["json.py", "sitecustomize.py", "usercustomize.py"] {
+            std::fs::write(tmp.path().join(module), &payload).unwrap();
+        }
+        let facts = json!({"workspace":tmp.path(),"writable_roots":[tmp.path()]});
+        for args in [
+            vec!["-I", "-S", "-m", "json.tool"],
+            vec![
+                "-I",
+                "-S",
+                "-c",
+                "import json, sys; print(json.dumps(json.load(sys.stdin)))",
+            ],
+        ] {
+            let command = if args.contains(&"-c") {
+                "git diff | python3 -I -S -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'"
+            } else {
+                "git diff | python3 -I -S -m json.tool"
+            };
+            assert!(shell::read_only_pipeline(command, &facts));
+            let mut child = std::process::Command::new("/usr/bin/python3")
+                .args(args)
+                .current_dir(tmp.path())
+                .env("PYTHONPATH", tmp.path())
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"{\"ok\":true}")
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                json!({"ok":true})
+            );
+            assert!(!marker.exists());
+        }
+        assert!(!shell::requires_review(
+            "python3 -I -S -m json.tool",
+            &facts
+        ));
+        for command in [
+            "python3 -m json.tool",
+            "git diff | python3 -m json.tool",
+            "git diff | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'",
+        ] {
+            assert!(shell::requires_review(command, &facts), "{command}");
+        }
+    }
+
+    #[tokio::test]
+    async fn push_precedent_binds_effective_push_urls_and_fails_closed_when_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        run(&["init", "-b", "feat/task"]);
+        run(&["remote", "add", "origin", "https://example.test/fetch"]);
+        run(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ]);
+        run(&[
+            "config",
+            "remote.origin.pushurl",
+            "https://example.test/approved",
+        ]);
+        run(&[
+            "config",
+            "--add",
+            "remote.origin.pushurl",
+            "https://example.test/second",
+        ]);
+        run(&[
+            "config",
+            "url.https://rewritten.test/.pushInsteadOf",
+            "https://example.test/",
+        ]);
+        let call = ToolCall {
+            id: "push".into(),
+            name: "bash".into(),
+            args: json!({"command":"git push origin feat/task"}),
+            args_valid: true,
+        };
+        let cx = test_context(tmp.path());
+        let facts = |git| json!({"workspace":tmp.path(),"writable_roots":[tmp.path()],"git":git});
+        let mut first = facts(git::facts("git push origin feat/task", &cx).await.unwrap());
+        // Explicit pushurl bypasses pushInsteadOf; every effective destination is bound.
+        assert_eq!(
+            first["git"]["push_urls"],
+            json!([
+                "https://example.test/approved",
+                "https://example.test/second"
+            ])
+        );
+        let original = context::signature(&call, &first).unwrap();
+        let scope = json!("/project");
+        let mut history = context::ReviewContext::default();
+        history.record(json!({"signature":original,"scope":scope,"decision":"allow_once"}));
+        run(&[
+            "config",
+            "--replace-all",
+            "remote.origin.pushurl",
+            "https://example.test/attacker",
+        ]);
+        let changed = context::signature(
+            &call,
+            &facts(git::facts("git push origin feat/task", &cx).await.unwrap()),
+        )
+        .unwrap();
+        assert!(history.matching(&changed, &scope).is_none());
+        run(&["config", "--unset-all", "remote.origin.pushurl"]);
+        let rewritten = facts(git::facts("git push origin feat/task", &cx).await.unwrap());
+        assert_eq!(
+            rewritten["git"]["push_urls"],
+            json!(["https://rewritten.test/fetch"])
+        );
+        assert!(history
+            .matching(&context::signature(&call, &rewritten).unwrap(), &scope)
+            .is_none());
+        first["git"]["push_urls"] = Value::Null;
+        assert!(context::signature(&call, &first).is_none());
+        first["git"]["push_urls"] = json!([]);
+        assert!(context::signature(&call, &first).is_none());
     }
 
     struct ContextReviewer;
@@ -2059,7 +2209,9 @@ mod tests {
             );
         }
         assert_eq!(
-            shell::trusted_program("/usr/bin/git", &facts).as_deref(),
+            shell::trusted_program("/usr/bin/git", &facts)
+                .as_ref()
+                .map(|(name, _)| name.as_str()),
             Some("git")
         );
         let writable_system = json!({"workspace":tmp.path(),"writable_roots":["/usr/bin"]});

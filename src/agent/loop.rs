@@ -372,6 +372,16 @@ pub async fn resolve_permission_with_origin(
     actor.state = AgentState::Running;
 
     if origin == super::permissions::PermissionOrigin::Captain {
+        // A typed denial revokes live authority even for an opaque call that
+        // cannot carry a signature. Never let older approvals survive it.
+        if matches!(&decision, PermissionDecision::Deny { .. }) {
+            actor
+                .permission_context
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .precedents
+                .clear();
+        }
         if let Some(signature) = request
             .permission_gate
             .as_ref()
@@ -2355,6 +2365,50 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "understood"));
+    }
+
+    #[tokio::test]
+    async fn captain_deny_without_signature_revokes_earlier_push_precedent() {
+        let (mut actor, _, _, _server) = yielded_on_two_writes(vec![]).await;
+        let signature = serde_json::json!({"executable":"/usr/bin/git","subcommand":"push","push":{"remote":"origin","branch":"feat/task"},"push_urls":["https://example.test/approved"]});
+        let scope = serde_json::json!(actor.pending_permission().unwrap().scope);
+        actor.permission_context.lock().unwrap().record(
+            serde_json::json!({"signature":signature,"scope":scope,"decision":"allow_once"}),
+        );
+        assert!(actor
+            .permission_context
+            .lock()
+            .unwrap()
+            .matching(&signature, &scope)
+            .is_some());
+        let id = pending_id(&actor);
+        if let Some(PendingInteraction::Permission {
+            request,
+            call,
+            remaining_calls,
+            steps_left,
+            ..
+        }) = &mut actor.pending
+        {
+            request.permission_gate = Some(Box::new(serde_json::json!({"signature":null})));
+            call.name = "bash".into();
+            call.args = serde_json::json!({"command":"git push origin feat/task"});
+            remaining_calls.clear();
+            *steps_left = 0;
+        }
+        resolve_permission(
+            &mut actor,
+            id,
+            PermissionDecision::Deny {
+                message: "do not push".into(),
+            },
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        let history = actor.permission_context.lock().unwrap();
+        assert!(history.precedents.is_empty());
+        assert!(history.matching(&signature, &scope).is_none());
     }
 
     #[tokio::test]

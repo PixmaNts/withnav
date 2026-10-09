@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
 /// Both its spelling and symlink target must be outside every writable root.
-pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<String> {
+pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, PathBuf)> {
     let name = basename(word);
     let path = Path::new(word);
     if word.contains('/') && !path.is_absolute() {
@@ -65,7 +65,7 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<String> {
     if name == "git" && canonical != Path::new("/usr/bin/git").canonicalize().ok()? {
         return None;
     }
-    Some(name.to_owned())
+    Some((name.to_owned(), canonical))
 }
 
 pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
@@ -219,7 +219,7 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
     if i != 0 || words.iter().any(|w| w.contains('=')) {
         return false;
     }
-    let Some(program) = trusted_program(&words[0], facts) else {
+    let Some((program, _)) = trusted_program(&words[0], facts) else {
         return false;
     };
     if words.iter().any(|w| w == "<") {
@@ -280,7 +280,7 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
             }
         }
         "sh" | "bash" | "zsh" | "eval" | "source" | "." | "xargs" => false,
-        "python3" => args == ["-m", "json.tool"],
+        "python3" => args == ["-I", "-S", "-m", "json.tool"],
         "gh" => matches!(
             (
                 args.first().map(String::as_str),
@@ -324,8 +324,8 @@ pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
 
 /// Exact stdin-only transforms; no file loading, modules or arbitrary Python.
 pub(super) fn read_only_pipeline(command: &str, facts: &Value) -> bool {
-    let audited = "python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'";
-    let checked = command.replace(audited, "python3 -m json.tool");
+    let audited = "python3 -I -S -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'";
+    let checked = command.replace(audited, "python3 -I -S -m json.tool");
     if checked.contains(['$', '`', '\\', ';', '&', '<', '>', '\n']) || checked.contains("||") {
         return false;
     }
@@ -340,7 +340,7 @@ pub(super) fn read_only_pipeline(command: &str, facts: &Value) -> bool {
     if !read_only(words) || !understood(words, facts, stages[0]) || destructive(words) {
         return false;
     }
-    let Some(program) = trusted_program(&words[0], facts) else {
+    let Some((program, _)) = trusted_program(&words[0], facts) else {
         return false;
     };
     if !matches!(program.as_str(), "git" | "gh" | "cat") {
@@ -366,15 +366,18 @@ pub(super) fn read_only_pipeline(command: &str, facts: &Value) -> bool {
     }
     stages[1..].iter().all(|stage| {
         // This audited program only parses stdin JSON and writes stdout JSON.
-        if *stage == "python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'" {
+        if *stage == audited {
             return trusted_program("python3", facts).is_some();
         }
         let Some(parts) = segments(stage).filter(|s| s.len() == 1) else {
             return false;
         };
         let words = &parts[0];
-        match trusted_program(&words[0], facts).as_deref() {
-            Some("python3") => words[1..] == ["-m", "json.tool"],
+        match trusted_program(&words[0], facts)
+            .as_ref()
+            .map(|(name, _)| name.as_str())
+        {
+            Some("python3") => words[1..] == ["-I", "-S", "-m", "json.tool"],
             Some("jq") => words.len() == 2 && safe_jq_filter(&words[1]),
             _ => false,
         }
@@ -399,7 +402,7 @@ fn read_only(words: &[String]) -> bool {
             words.get(2).map(String::as_str),
             Some("view" | "list" | "checks")
         ),
-        "python3" => words[1..] == ["-m", "json.tool"],
+        "python3" => words[1..] == ["-I", "-S", "-m", "json.tool"],
         "cat" | "head" | "tail" | "wc" | "ls" | "stat" | "grep" | "diff" | "file" | "find"
         | "echo" | "printf" => !words.iter().any(|w| w == ">"),
         _ => false,

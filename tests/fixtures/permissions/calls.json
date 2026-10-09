@@ -336,7 +336,7 @@
     "confidence": 1.0
   },
   {
-    "command": "gh pr view --json title | python3 -m json.tool",
+    "command": "gh pr view --json title | python3 -I -S -m json.tool",
     "labels": {
       "call_effect": "read_only",
       "reversibility": "none_needed",

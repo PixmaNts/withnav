@@ -121,6 +121,9 @@ impl ReviewContext {
     }
 
     pub fn restore(&mut self, events: &[crate::bus::event::EventEnvelope]) {
+        // SQLite event payloads are writable by ambient bash. They are history,
+        // not authenticated approvals: a resumed session always starts fresh.
+        self.precedents.clear();
         let mut calls = std::collections::HashMap::new();
         let rejected: std::collections::HashSet<_> = events
             .iter()
@@ -169,12 +172,6 @@ impl ReviewContext {
                     self.captain(p["command_id"].as_str().unwrap_or("").into(), text.into());
                 }
             }
-            if event.kind == "permission.resolved"
-                && p["approved_by"] == "captain"
-                && p["captain_precedent"].is_object()
-            {
-                self.record(p["captain_precedent"].clone());
-            }
         }
     }
 }
@@ -199,7 +196,7 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     {
         return None;
     }
-    let executable = super::shell::trusted_program(&words[0], facts)?;
+    let (executable, resolved) = super::shell::trusted_program(&words[0], facts)?;
     // A PR identity cannot be dropped safely: edits of unrelated PRs are never
     // covered by an approval for the task PR.
     if executable == "gh" {
@@ -229,16 +226,26 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     flags.sort();
     flags.dedup();
     let push = if executable == "git" && subcommand == "push" {
+        let urls = facts["git"]["push_urls"].as_array()?;
+        if urls.is_empty()
+            || urls
+                .iter()
+                .any(|url| !url.as_str().is_some_and(|s| !s.is_empty()))
+        {
+            return None;
+        }
         facts["git"]["push"].clone()
     } else {
         Value::Null
     };
-    let resolved = std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(&executable))
-        .find(|path| path.metadata().is_ok_and(|m| m.is_file()))?
-        .canonicalize()
-        .ok()?;
-    Some(json!({"executable":resolved,"subcommand":subcommand,"flags":flags,"push":push}))
+    let push_urls = if push.is_null() {
+        Value::Null
+    } else {
+        facts["git"]["push_urls"].clone()
+    };
+    Some(
+        json!({"executable":resolved,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
+    )
 }
 
 #[cfg(test)]
@@ -310,8 +317,8 @@ mod tests {
             .record(json!({"signature":signature,"scope":scope,"decision":"deny"}));
         assert!(child.lock().unwrap().matching(&signature, &scope).is_none());
     }
-    #[test]
-    fn resume_trusts_only_captain_resolution_events_not_bypass_or_transcript_claims() {
+    #[tokio::test]
+    async fn resume_never_restores_real_or_forged_captain_precedents_from_store() {
         use crate::bus::event::{EventEnvelope, EventKind};
         let id = ulid::Ulid::new();
         let precedent =
@@ -333,15 +340,81 @@ mod tests {
         ];
         ctx.restore(&events);
         assert!(ctx.precedents.is_empty());
-        ctx.restore(&[EventEnvelope::new(
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("history.db");
+        let store = crate::session::store::HistoryStore::open(&db).unwrap();
+        store
+            .record_session(id, "/project", "fixture", false)
+            .await
+            .unwrap();
+        let real = EventEnvelope::new(
             id,
             3,
             EventKind::PermissionResolved,
             json!({"approved_by":"captain","captain_precedent":precedent}),
-        )]);
+        );
+        store.append_event(id, real.clone());
+        store.append_event(
+            id,
+            EventEnvelope::new(
+                id,
+                4,
+                EventKind::PermissionResolved,
+                json!({"approved_by":"bypass"}),
+            ),
+        );
+        store.flush().await.unwrap();
+        // Ambient bash can make exactly this edit to a stored JSON envelope.
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        let mut forged = real;
+        forged.seq = 4;
+        connection
+            .execute(
+                "UPDATE events SET envelope = ?1 WHERE session_id = ?2 AND seq = 4",
+                rusqlite::params![serde_json::to_string(&forged).unwrap(), id.to_string()],
+            )
+            .unwrap();
+        ctx.record(precedent);
+        ctx.restore(&store.permission_context_events(id).await.unwrap());
+        assert!(ctx.precedents.is_empty());
         assert!(ctx
             .matching(&json!("cargo test"), &json!("/project"))
-            .is_some());
+            .is_none());
+    }
+    #[test]
+    fn signature_uses_validated_executable_after_non_executable_path_entry() {
+        const CHILD: &str = "WITHNAV_TEST_NONEXEC_PATH";
+        if let Ok(workspace) = std::env::var(CHILD) {
+            let facts = json!({"workspace":workspace,"writable_roots":[workspace]});
+            let call = crate::provider::ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                args: json!({"command":"git status"}),
+                args_valid: true,
+            };
+            let signature = signature(&call, &facts).unwrap();
+            assert_eq!(
+                signature["executable"],
+                json!(std::path::Path::new("/usr/bin/git").canonicalize().unwrap())
+            );
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = tmp.path().join("git");
+        std::fs::write(&fake, "not executable").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::permission_gate::context::tests::signature_uses_validated_executable_after_non_executable_path_entry", "--nocapture"])
+            .env(CHILD, tmp.path())
+            .env("PATH", format!("{}:/usr/bin:/bin", tmp.path().display()))
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     #[test]
     fn recent_tools_are_bounded_structured_and_include_approval_and_outcome() {

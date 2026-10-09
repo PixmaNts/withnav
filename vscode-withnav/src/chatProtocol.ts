@@ -62,9 +62,9 @@ export type HostToWebview = { generation?: number } & (
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
-  | { type: "delta"; id: string; text: string }
+  | { type: "delta"; id: string; stepId?: string; text: string }
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
-  | { type: "reasoning"; id: string; text: string }
+  | { type: "reasoning"; id: string; stepId?: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */
   | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence }
   /** The turn is over. `error` is set when it failed. */

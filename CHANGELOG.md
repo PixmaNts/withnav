@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **VS Code answers show text and tool calls in the order they happened.** Each model step
+  keeps its own Markdown and reasoning; consecutive tools share a foldable progress group.
+  Permission, pause and question cards stay visible, and replayed tool groups start closed.
+
 - **VS Code command results stay concise.** Selection changes no longer dump JSON;
   unknown command data stays available in a closed Details disclosure.
 - **File references in VS Code answers open at the referenced line.** Bare and inline-code

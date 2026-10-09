@@ -309,6 +309,28 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
     }
 }
 
+/// Only literal interpreter operands or explicit executable paths are evidence candidates.
+pub(super) fn script_operand<'a>(words: &'a [String], facts: &Value) -> Option<(&'a str, bool)> {
+    let first = words.first()?;
+    if words
+        .iter()
+        .any(|word| word.contains('=') || matches!(word.as_str(), "<" | ">"))
+    {
+        return None;
+    }
+    let trusted = trusted_program(first, facts);
+    let index = match trusted.as_ref().map(|(name, _)| name.as_str()) {
+        Some("python" | "python3" | "bash" | "sh" | "node") => 1,
+        Some("deno" | "uv") if words.get(1).is_some_and(|word| word == "run") => 2,
+        _ if first.starts_with("./") || first.starts_with('/') || first.starts_with("~/") => {
+            return Some((first, true));
+        }
+        _ => return None,
+    };
+    let operand = words.get(index)?;
+    (!operand.starts_with('-')).then_some((operand, false))
+}
+
 pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
     if command.contains('|') {
         return !read_only_pipeline(command, facts);
@@ -316,10 +338,15 @@ pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
     let Some(segments) = segments(command) else {
         return true;
     };
-    segments
-        .iter()
-        .any(|words| destructive(words) || !understood(words, facts, command))
-        || (command.contains('|') && segments.iter().any(|words| !read_only(words)))
+    segments.iter().any(|words| {
+        destructive(words)
+            || (!understood(words, facts, command)
+                && !(segments.len() == 1
+                    && facts["script_binding"]["complete"] == true
+                    && script_operand(words, facts).is_some_and(|(operand, _)| {
+                        facts["script_binding"]["operand"].as_str() == Some(operand)
+                    })))
+    }) || (command.contains('|') && segments.iter().any(|words| !read_only(words)))
 }
 
 /// Exact stdin-only transforms; no file loading, modules or arbitrary Python.

@@ -983,10 +983,14 @@ async fn run_gated(
                     serde_json::json!("config_session_grant");
             }
         }
+        let reviewed_note = note.clone();
         if let Some(result) = execute_call(actor, call, destination.as_deref(), note, observe).await
         {
             append_tool_result(actor, &call.id, &result);
             return One::Settled;
+        }
+        if !super::permission_gate::script::still_matches(reviewed_note.as_ref()) {
+            return script_changed_request(actor, call, destination);
         }
     }
     reject_call(
@@ -1007,11 +1011,34 @@ async fn run_reviewed(
     approval_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
+    let reviewed_note = approval_note.clone();
     if let Some(result) = execute_call(actor, call, destination, approval_note, observe).await {
         append_tool_result(actor, &call.id, &result);
         return One::Settled;
     }
+    if !super::permission_gate::script::still_matches(reviewed_note.as_ref()) {
+        return script_changed_request(actor, call, destination.map(Path::to_path_buf));
+    }
     run_gated(actor, call, observe).await
+}
+
+fn script_changed_request(
+    actor: &AgentActor,
+    call: &ToolCall,
+    destination: Option<PathBuf>,
+) -> One {
+    let mut request = PermissionRequest::new(
+        call,
+        Scope::Folder(actor.tool_context.workspace.clone()),
+        actor
+            .role
+            .as_ref()
+            .map(|role| role.id.as_str())
+            .unwrap_or("build"),
+    );
+    request.reason = "The reviewed script changed (sha256 mismatch or unreadable target); approve this call once or deny".into();
+    request.requires_captain = true;
+    One::Ask(Box::new(request), destination)
 }
 
 /// What the role guard made of an exception.
@@ -1111,6 +1138,9 @@ async fn execute_call(
     }
     if actor.cancel.is_cancelled() {
         return Some(ToolResult::interrupted());
+    }
+    if !super::permission_gate::script::still_matches(guard_note.as_ref()) {
+        return None;
     }
     observe(AgentEvent::PreCall {
         permission_gate: guard_note
@@ -2877,6 +2907,227 @@ mod tests {
 
     struct OptimisticReadOnlyJudge;
     struct ReadJudge;
+
+    fn script_actor() -> AgentActor {
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
+        as_build(&mut actor);
+        actor.captain_task = Some("Run the local script".into());
+        actor
+            .registry
+            .register(Box::new(crate::tools::bash::BashTool));
+        actor
+    }
+
+    fn script_call(path: &Path, interpreter: &str) -> ToolCall {
+        ToolCall {
+            id: "script".into(),
+            name: "bash".into(),
+            args_valid: true,
+            args: serde_json::json!({"command":format!("{interpreter} {}", path.display()).trim()}),
+        }
+    }
+
+    fn script_input(
+        actor: &AgentActor,
+        call: &ToolCall,
+    ) -> super::super::permission_gate::PermissionReviewInput {
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        super::super::permission_gate::describe(actor, call, &needed, &Default::default()).unwrap()
+    }
+
+    #[test]
+    fn script_review_input_attaches_literal_python_and_executable_shebang() {
+        use std::os::unix::fs::PermissionsExt;
+        let actor = script_actor();
+        let path = actor.tool_context.workspace.join("script.py");
+        let text = "#!/usr/bin/python3\nprint('hello')\n";
+        std::fs::write(&path, text).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for interpreter in ["python3", ""] {
+            let input = script_input(&actor, &script_call(&path, interpreter));
+            let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+            assert_eq!(state["untrusted_evidence"]["script"]["text"], text);
+            assert_eq!(state["untrusted_evidence"]["script"]["truncated"], false);
+            assert_eq!(
+                state["untrusted_evidence"]["script"]["sha256"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                64
+            );
+        }
+    }
+
+    #[test]
+    fn script_host_floor_only_relaxes_for_complete_attached_text() {
+        let actor = script_actor();
+        let path = actor.tool_context.workspace.join("floor.py");
+        std::fs::write(&path, "print('hello')\n").unwrap();
+        let mut input = script_input(&actor, &script_call(&path, "python3"));
+        let answers = safety_answers(&input, Verdict::Conforms);
+        assert_eq!(
+            super::super::permission_gate::route(&input, &answers, &Default::default()),
+            Ok(super::super::permission_gate::Route::Run)
+        );
+        for complete in [false, true] {
+            let mut state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+            state["host_facts"]["script_binding"]["complete"] = serde_json::json!(complete);
+            if complete {
+                state["untrusted_evidence"]["script"] = serde_json::Value::Null;
+            }
+            input.state = state.to_string();
+            assert_eq!(
+                super::super::permission_gate::route(&input, &answers, &Default::default()),
+                Ok(super::super::permission_gate::Route::Review)
+            );
+        }
+    }
+
+    #[test]
+    fn script_review_input_is_bounded_and_refuses_sensitive_links_and_special_files() {
+        let mut actor = script_actor();
+        let root = actor.tool_context.workspace.clone();
+        let path = root.join("large.py");
+        std::fs::write(&path, "print('hello')\n".repeat(2000)).unwrap();
+        let input = script_input(&actor, &script_call(&path, "python3"));
+        assert!(
+            input.state.len() + serde_json::to_vec(&input.questions).unwrap().len()
+                <= super::super::guard::MAX_INPUT_BYTES
+        );
+        let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+        assert_eq!(state["untrusted_evidence"]["script"]["truncated"], true);
+        assert_eq!(state["host_facts"]["script_binding"]["complete"], false);
+        let alias = root.join("alias.py");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        let dir_alias = root.join("alias-dir");
+        std::os::unix::fs::symlink(&root, &dir_alias).unwrap();
+        let fifo = root.join("fifo.py");
+        nix::unistd::mkfifo(
+            &fifo,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        let config = root.join("withnav");
+        std::fs::create_dir(&config).unwrap();
+        actor.protected_config_root = Some(config.clone());
+        actor.protected_config_spelling = Some(config.clone());
+        for target in [
+            root.join("auth.json"),
+            root.join("private.key"),
+            config.join("script.py"),
+        ] {
+            std::fs::write(&target, "secret").unwrap();
+        }
+        for target in [
+            alias,
+            dir_alias.join("large.py"),
+            fifo,
+            root.clone(),
+            root.join("auth.json"),
+            root.join("private.key"),
+            config.join("script.py"),
+            PathBuf::from("/dev/null"),
+        ] {
+            let state: serde_json::Value =
+                serde_json::from_str(&script_input(&actor, &script_call(&target, "python3")).state)
+                    .unwrap();
+            assert!(
+                state["untrusted_evidence"]["script"].is_null(),
+                "{}",
+                target.display()
+            );
+        }
+    }
+
+    struct ScriptReviewer;
+    impl super::super::permission_gate::PermissionReviewer for ScriptReviewer {
+        fn review<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            Box::pin(async move {
+                let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+                assert_eq!(state["untrusted_evidence"]["script"]["truncated"], false);
+                assert!(state["untrusted_evidence"]["script"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("print('reviewed')"));
+                Ok(super::super::permission_gate::PermissionReview {
+                    decision: super::super::permission_gate::ReviewDecision::Approve,
+                    reason: "Shown recoverable task effect".into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn script_metacognition_sees_complete_text_and_approval_dispatches() {
+        let mut actor = script_actor();
+        actor.permission_reviewer = Some(Arc::new(ScriptReviewer));
+        // Larger than Instinct's budget, but fully readable by metacognition.
+        let path = actor.tool_context.workspace.join("review.py");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nprint('reviewed')\n",
+                "# ordinary comment\n".repeat(900)
+            ),
+        )
+        .unwrap();
+        let mut post = None;
+        assert!(matches!(
+            run_gated(&mut actor, &script_call(&path, "python3"), &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    post = Some(result.clone());
+                }
+            })
+            .await,
+            One::Settled
+        ));
+        let result = post.unwrap();
+        assert!(result.output.contains("reviewed"), "{result:?}");
+        assert_eq!(
+            result.metadata["permission_gate"]["source"],
+            "metacognition"
+        );
+        assert!(result.metadata["permission_gate"]["script_binding"]["sha256"].is_string());
+    }
+
+    #[tokio::test]
+    async fn script_sha256_mismatch_at_dispatch_returns_to_captain_even_with_bypass() {
+        let mut actor = script_actor();
+        actor.bypass.lock().unwrap().enabled = true;
+        let path = actor.tool_context.workspace.join("swap.py");
+        std::fs::write(&path, "print('before')\n").unwrap();
+        on_next_dispatch({
+            let path = path.clone();
+            move || std::fs::write(path, "print('after!')\n").unwrap()
+        });
+        let outcome = run_gated(&mut actor, &script_call(&path, "python3"), &mut |event| {
+            if matches!(event, AgentEvent::PostCall { .. }) {
+                panic!("changed script dispatched")
+            }
+        })
+        .await;
+        let One::Ask(request, _) = outcome else {
+            panic!("changed script did not ask Captain")
+        };
+        assert!(request.requires_captain);
+        assert!(request.reason.contains("sha256"));
+    }
     #[tokio::test]
     async fn relative_reads_in_sensitive_named_workspace_alias_require_review() {
         let tmp = tempfile::tempdir().unwrap();

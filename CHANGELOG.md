@@ -48,6 +48,10 @@ requests land in `develop`.
   Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.
 ### Added
 
+- **Permission reviewers can read the local script a shell call runs.** The host attaches
+  bounded, untrusted script text without following links or reading protected configuration
+  or credentials. Complete evidence is SHA-256 checked before dispatch; changes ask you again.
+
 - **Allow WithNav config updates for the rest of a conversation.** Protected-config
   requests offer a session-only answer in the terminal, editor and browser. Reviews still
   run; credentials, review settings and changed scratch roots still require your answer.

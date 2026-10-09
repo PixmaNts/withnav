@@ -256,6 +256,33 @@ async fn recovery_replays_only_tracked_successful_turns_in_order() {
 }
 
 #[tokio::test]
+async fn writer_gate_wait_does_not_consume_a_lease_or_attempt() {
+    let mut f = fixture(false).await;
+    let first = turn(&f.watcher, 1, "goal").await;
+    f.watcher.completed(first).await.unwrap();
+    let second = turn(&f.watcher, 3, "finish").await;
+    f.watcher.completed(second).await.unwrap();
+    f.watcher.models.writer = Some(writer(&f.watcher, false, false));
+    let permit = WRITER_GATE.acquire().await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), f.watcher.jobs())
+            .await
+            .is_err()
+    );
+    let goals = f
+        .watcher
+        .store
+        .memory_goals(&f.watcher.session.to_string())
+        .await
+        .unwrap();
+    assert_eq!(goals[0].attempts, 0);
+    assert_eq!(goals[0].writer_status, "pending");
+    assert!(goals[0].claim.is_none());
+    drop(permit);
+    f.watcher.jobs().await.unwrap();
+}
+
+#[tokio::test]
 async fn quick_turns_are_ordered_and_slow_instinct_does_not_delay_turn_submission() {
     let mut f = fixture(true).await;
     let one = turn(&f.watcher, 1, "first goal").await;

@@ -490,6 +490,7 @@ impl Watcher {
             }
             let mut shorter = false;
             for attempt in 0..2 {
+                let permit = tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),permit=WRITER_GATE.acquire()=>permit.map_err(|e|e.to_string())?};
                 let token = Ulid::new().to_string();
                 self.store.memory_claim(&goal.id, &token).await?;
                 if !self
@@ -519,7 +520,6 @@ impl Watcher {
                 if shorter {
                     input.push_str(memory::writer::SHORT_RETRY);
                 }
-                let permit = tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),permit=WRITER_GATE.acquire()=>permit.map_err(|e|e.to_string())?};
                 let child = self.cancel.child_token();
                 let result = tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),result=tokio::time::timeout(Duration::from_secs(30),writer.write(&input,&child))=>result.map_err(|_|"memory writer deadline".to_owned()).and_then(|r|r)};
                 child.cancel();

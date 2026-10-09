@@ -848,6 +848,9 @@ async fn run_gated(
                                 .unwrap_or("build"),
                         );
                         request.reason = reason;
+                        request.permission_gate = Some(Box::new(
+                            serde_json::json!({"policy_version":2,"route":"captain","source":"captain","reason":request.reason}),
+                        ));
                         (needed.destination, None, Some(request))
                     }
                 }
@@ -897,6 +900,11 @@ async fn run_gated(
             other => other,
         };
         if let Some(mut request) = request {
+            if request.permission_gate.is_none() {
+                request.permission_gate = Some(Box::new(
+                    serde_json::json!({"policy_version":2,"route":"captain","source":"captain","reason":request.reason}),
+                ));
+            }
             let needed = Needed {
                 scope: request.scope.clone(),
                 destination: destination.clone(),
@@ -2748,10 +2756,19 @@ mod tests {
             .questions
             .keys()
             .map(|name| {
+                if matches!(name.as_str(), "sensitivity" | "task_fit") {
+                    return (
+                        name.clone(),
+                        crate::provider::systemone::Answer::Noul {
+                            noul: if name == "task_fit" { 1.0 } else { 0.0 },
+                        },
+                    );
+                }
                 let choice = match name.as_str() {
-                    "call_effect" => "read_write",
+                    "call_effect" => "local_change",
                     "call_scope" => "inside",
-                    "call_risk" => "low",
+                    "reversibility" => "recoverable",
+                    "publication" => "none",
                     _ => verdict.as_str(),
                 };
                 (
@@ -3513,7 +3530,8 @@ mod tests {
             .unwrap();
             let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
             for question in input.questions.values() {
-                let crate::provider::systemone::Question::Choice { instructions, .. } = question
+                let (crate::provider::systemone::Question::Choice { instructions, .. }
+                | crate::provider::systemone::Question::Noul { instructions }) = question
                 else {
                     panic!("choice");
                 };
@@ -3569,7 +3587,7 @@ mod tests {
                 else {
                     panic!("choice");
                 };
-                assert!(instructions.contains("authorized intent"));
+                assert!(instructions.contains("requested effects"));
                 Ok(super::super::permission_gate::PermissionReview {
                     decision: super::super::permission_gate::ReviewDecision::Approve,
                     reason: "understood recoverable effect explicitly requested by captain".into(),
@@ -4836,8 +4854,8 @@ mod tests {
         assert_eq!(notes.0.len(), 1);
         assert_eq!(notes.0[0]["source"], "instinct");
         assert_eq!(
-            notes.0[0]["verdicts"],
-            serde_json::json!({"effect":"read_write","scope":"inside","risk":"low"})
+            notes.0[0]["verdicts"]["answers"]["call_effect"],
+            serde_json::json!({"type":"choice","choice":"local_change","probabilities":{},"confidence":1.0})
         );
     }
 

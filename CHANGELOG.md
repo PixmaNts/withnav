@@ -4,6 +4,13 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Ordinary recoverable work takes the fast Instinct permission path.** Edits, commits,
+  builds and publication of your task branch are graded separately from destructive or shared
+  changes. Bounded git facts, recorded routing thresholds and a 56-call corpus make decisions
+  auditable; protected configuration and credentials still ask you.
+
 ### Fixed
 
 - **Long conversations compact with relevance pruning and learned message limits.** Instinct

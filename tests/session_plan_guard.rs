@@ -52,13 +52,16 @@ fn verdict(choice: &str) -> Vec<u8> {
         "confidence": 0.9,
     }}});
     for (name, choice) in [
-        ("call_effect", "read_write"),
+        ("call_effect", "local_change"),
         ("call_scope", "inside"),
-        ("call_risk", "low"),
+        ("reversibility", "recoverable"),
+        ("publication", "none"),
     ] {
         value["answers"][name] =
             json!({"type":"choice", "choice":choice, "probabilities":{}, "confidence":1.0});
     }
+    value["answers"]["sensitivity"] = json!({"type":"noul","noul":0.0});
+    value["answers"]["task_fit"] = json!({"type":"noul","noul":1.0});
     let body = value.to_string();
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -262,8 +265,8 @@ async fn a_conforming_exception_runs_and_is_recorded() {
     let evidence = &post[0].payload["metadata"]["permission_gate"];
     assert_eq!(evidence["models"]["instinct"], "instinct-test");
     assert_eq!(
-        evidence["verdicts"],
-        json!({"effect":"read_write","scope":"inside","risk":"low"})
+        evidence["verdicts"]["answers"]["call_effect"],
+        json!({"type":"choice","choice":"local_change","probabilities":{},"confidence":1.0})
     );
     assert!(evidence["latency_ms"]["instinct"].is_u64());
     let pre = events(&state, id, "tool.pre_call").await;

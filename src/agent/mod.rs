@@ -6,6 +6,7 @@ pub mod definitions;
 pub mod flow_hook;
 pub mod guard;
 pub mod instructions;
+pub mod memory;
 pub mod permission_gate;
 pub mod permissions;
 pub mod prompt;

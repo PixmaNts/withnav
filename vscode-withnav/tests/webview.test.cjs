@@ -377,3 +377,19 @@ test("subagent states, pauses and wake diffs carry their own colour hooks, with 
   assert.doesNotMatch(css.slice(css.indexOf("--nav-warning-text"), css.indexOf(".bypass-toggle")), /#[0-9a-f]{3,6}\b/i, "theme tokens only");
   dom.window.close();
 });
+test('GFM renders structural constructs safely and coalesces streaming frames', () => {
+  const { dom, d, receive } = keyboardPage();
+  const frames = []; dom.window.requestAnimationFrame = callback => frames.push(callback);
+  receive({ type: 'delta', id: 'markdown', text: '| A | B | C |\n| :--- | :---: | ---: |\n| `code` | two | three |\n\n> quote\n\n---\n\n3. outer\n   - nested\n\n- [ ] pending\n- [x] done\n\n~~strike~~\n\n##### five\n\n###### six\n\nhard  \nbreak\n\n<img onerror="alert(1)">\n<script>alert(1)</script>\n\n[ok](https://example.com) [mail](mailto:a@example.com) [bad](javascript:alert)\n' });
+  receive({ type: 'delta', id: 'markdown', text: '\nend' });
+  assert.equal(frames.length, 1); frames.shift()();
+  assert.equal(d.querySelectorAll('.message-body th').length, 3);
+  assert.equal(d.querySelector('.message-body td code').textContent, 'code');
+  for (const selector of ['blockquote', 'hr', 'ol[start="3"] ul', 'del', 'h5', 'h6', 'br']) assert.ok(d.querySelector('.message-body ' + selector), selector);
+  assert.equal(d.querySelectorAll('.message-body input:disabled').length, 2);
+  assert.equal(d.querySelector('.message-body img'), null);
+  assert.equal(d.querySelector('.message-body script'), null);
+  assert.ok(d.querySelector('.message-body').textContent.includes('<script>'));
+  assert.equal(d.querySelectorAll('.message-body a').length, 2);
+  dom.window.close();
+});

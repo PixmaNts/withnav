@@ -8,6 +8,9 @@ requests land in `develop`.
 
 - **VS Code command results stay concise.** Selection changes no longer dump JSON;
   unknown command data stays available in a closed Details disclosure.
+- **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
+  and task lists, strikethrough and hard breaks render without interpreting raw HTML.
+  Streaming redraws are coalesced per animation frame.
 
 ## [0.7.1] - 2026-10-09
 

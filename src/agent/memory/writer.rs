@@ -7,7 +7,8 @@ pub const SHORT_RETRY: &str = "\nThe previous output exhausted its token budget.
 
 pub fn prompt(goal: &str, evidence: &[(u64, String)]) -> Result<String, String> {
     let text = framed_json(&serde_json::json!({"goal":goal,"events":evidence}))?;
-    if text.len() + SYSTEM_PROMPT.len() > WRITER_INPUT_BYTES {
+    // Reserve the single retry suffix too, so retry cannot exceed this cap.
+    if text.len() + SYSTEM_PROMPT.len() + SHORT_RETRY.len() > WRITER_INPUT_BYTES {
         return Err(
             "goal exceeds episode writer input limit; skipped without partial coverage".into(),
         );
@@ -51,6 +52,19 @@ pub fn parse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn writer_input_cap_includes_short_retry() {
+        let overhead = framed_json(&serde_json::json!({"goal":"goal","events":[(1,"" )]}))
+            .unwrap()
+            .len();
+        let fits = WRITER_INPUT_BYTES - SYSTEM_PROMPT.len() - SHORT_RETRY.len() - overhead;
+        let input = prompt("goal", &[(1, "x".repeat(fits))]).unwrap();
+        assert_eq!(
+            input.len() + SYSTEM_PROMPT.len() + SHORT_RETRY.len(),
+            WRITER_INPUT_BYTES
+        );
+        assert!(prompt("goal", &[(1, "x".repeat(fits + 1))]).is_err());
+    }
 
     #[test]
     fn validates_empty_verification_and_rejects_bad_citations() {

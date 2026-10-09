@@ -1,3 +1,7 @@
+const pendingMarkdown = new WeakSet<HTMLElement>();
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfm } from "micromark-extension-gfm";
+import { gfmFromMarkdown } from "mdast-util-gfm";
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
@@ -889,8 +893,14 @@ function receive(event: HostToWebview): void {
     case "delta": {
       const item = turn(event.id);
       item.text += event.text;
-      renderMarkdown(item.content, item.text);
-      follow();
+      if (!pendingMarkdown.has(item.content)) {
+        pendingMarkdown.add(item.content);
+        requestAnimationFrame(() => {
+          pendingMarkdown.delete(item.content);
+          renderMarkdown(item.content, item.text);
+          follow();
+        });
+      }
       break;
     }
     case "reasoning": {
@@ -965,80 +975,66 @@ function renderUsage(snapshot: import("../contextMeter").ContextSnapshot): void 
   usage.querySelector<HTMLElement>(".usage-bar")!.hidden = false;
 }
 
-// All source text is inserted as text nodes. Only explicitly created elements become markup.
+// Source text never becomes executable markup, including raw HTML nodes.
 function renderMarkdown(root: HTMLElement, source: string): void {
-  root.replaceChildren();
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  for (let i = 0; i < lines.length;) {
-    const line = lines[i];
-    if (!line.trim()) { i++; continue; }
-    const fence = /^\s{0,3}(`{3,}|~{3,})([^\s`]*)\s*$/.exec(line);
-    if (fence) {
-      const marker = fence[1];
-      const code: string[] = [];
-      i++;
-      while (i < lines.length && !new RegExp(`^\\s{0,3}${marker[0]}{${marker.length},}\\s*$`).test(lines[i])) code.push(lines[i++]);
-      if (i < lines.length) i++;
-      const value = code.join("\n");
-      root.append(fence[2] === "diff" ? diffBlock(value) : codeBlock(fence[2] || "Code", value, node => { node.textContent = value; }));
-      continue;
+  const tree = fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+  const definitions = new Map<string, { url: string }>();
+  const collect = (node: any): void => {
+    if (node.type === "definition") definitions.set(node.identifier, node);
+    for (const child of node.children ?? []) collect(child);
+  };
+  collect(tree);
+  const render = (parent: HTMLElement, node: any): void => {
+    if (node.type === "definition") return;
+    if (node.type === "text" || node.type === "html") { parent.append(document.createTextNode(node.value)); return; }
+    if (node.type === "inlineCode") { parent.append(el("code", "", node.value)); return; }
+    if (node.type === "code") {
+      parent.append(node.lang === "diff" ? diffBlock(node.value) : codeBlock(node.lang || "Code", node.value, target => { target.textContent = node.value; }));
+      return;
     }
-    const heading = /^\s{0,3}(#{1,4})\s+(.+)$/.exec(line);
-    if (heading) {
-      const title = el(`h${heading[1].length + 2}` as "h3" | "h4" | "h5" | "h6");
-      inline(title, heading[2]);
-      root.append(title);
-      i++;
-      continue;
-    }
-    const bullet = /^\s{0,3}([-*+] |\d+\. )(.+)$/.exec(line);
-    if (bullet) {
-      const numbered = /^\d/.test(bullet[1]);
-      const list = el(numbered ? "ol" : "ul");
-      while (i < lines.length) {
-        const next = /^\s{0,3}([-*+] |\d+\. )(.+)$/.exec(lines[i]);
-        if (!next || /^\d/.test(next[1]) !== numbered) break;
-        const li = el("li");
-        inline(li, next[2]);
-        list.append(li);
-        i++;
-      }
-      root.append(list);
-      continue;
-    }
-    const paragraph: string[] = [];
-    while (i < lines.length && lines[i].trim() && (i === 0 || paragraph.length === 0 || !/^\s{0,3}(?:#{1,4}\s|[-*+] |\d+\. |`{3,}|~{3,})/.test(lines[i]))) paragraph.push(lines[i++]);
-    const p = el("p");
-    inline(p, paragraph.join("\n"));
-    root.append(p);
-  }
-}
-
-function inline(parent: HTMLElement, source: string): void {
-  // Match one inline token at a time; anything else is plain text.
-  const token = /(`+)([^`\n]+?)\1|\[([^\]]+)\]\(([^\s)]+)\)|(\*\*|__)(.+?)\5|(\*|_)([^\n]+?)\7/g;
-  let at = 0;
-  for (const match of source.matchAll(token)) {
-    const index = match.index!;
-    parent.append(document.createTextNode(source.slice(at, index)));
-    if (match[1]) parent.append(el("code", "", match[2]));
-    else if (match[3]) {
+    if (node.type === "image" || node.type === "imageReference") { parent.append(document.createTextNode(node.alt || "")); return; }
+    if (node.type === "link" || node.type === "linkReference") {
       let url: URL | undefined;
-      try { url = new URL(match[4]); } catch { /* Relative and malformed links stay plain text. */ }
-      if (url && ["https:", "http:", "mailto:"].includes(url.protocol)) {
-        const a = el("a", "", match[3]);
-        a.href = url.href;
-        a.rel = "noopener noreferrer";
-        parent.append(a);
-      } else parent.append(document.createTextNode(match[0]));
-    } else {
-      const emphasis = el(match[5] ? "strong" : "em");
-      inline(emphasis, match[6] || match[8]);
-      parent.append(emphasis);
+      try { url = new URL(node.url ?? definitions.get(node.identifier)?.url); } catch { /* Unsafe or relative links stay text. */ }
+      if (!url || !["http:", "https:", "mailto:"].includes(url.protocol)) {
+        for (const child of node.children ?? []) render(parent, child);
+        return;
+      }
+      const link = el("a"); link.href = url.href; link.rel = "noopener noreferrer";
+      for (const child of node.children ?? []) render(link, child);
+      parent.append(link); return;
     }
-    at = index + match[0].length;
-  }
-  parent.append(document.createTextNode(source.slice(at)));
+    if (node.type === "table") {
+      const wrapper = el("div", "markdown-table"); const table = el("table");
+      const head = el("thead"); const body = el("tbody");
+      node.children.forEach((row: any, index: number) => {
+        const tr = el("tr");
+        row.children.forEach((cell: any, column: number) => {
+          const td = el(index === 0 ? "th" : "td");
+          if (index === 0) td.setAttribute("scope", "col");
+          if (node.align[column]) td.style.textAlign = node.align[column];
+          for (const child of cell.children) render(td, child);
+          tr.append(td);
+        });
+        (index === 0 ? head : body).append(tr);
+      });
+      table.append(head, body); wrapper.append(table); parent.append(wrapper); return;
+    }
+    const tags: Record<string, keyof HTMLElementTagNameMap> = { paragraph: "p", blockquote: "blockquote", thematicBreak: "hr", strong: "strong", emphasis: "em", delete: "del", break: "br", listItem: "li" };
+    const tag = node.type === "heading" ? `h${node.depth}` : node.type === "list" ? (node.ordered ? "ol" : "ul") : tags[node.type];
+    if (!tag) { for (const child of node.children ?? []) render(parent, child); return; }
+    const target = document.createElement(tag);
+    if (node.type === "list" && node.ordered && node.start !== null) target.setAttribute("start", String(node.start));
+    if (node.type === "listItem" && typeof node.checked === "boolean") {
+      const checkbox = el("input"); checkbox.type = "checkbox"; checkbox.disabled = true; checkbox.checked = node.checked;
+      checkbox.setAttribute("aria-label", node.checked ? "Completed task" : "Incomplete task"); target.append(checkbox);
+    }
+    for (const child of node.children ?? []) render(target, child);
+    parent.append(target);
+  };
+  const container = el("div");
+  render(container, tree);
+  root.replaceChildren(...Array.from(container.childNodes));
 }
 
 window.addEventListener("message", event => {

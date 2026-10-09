@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
+  and task lists, strikethrough and hard breaks render without interpreting raw HTML.
+  Streaming redraws are coalesced per animation frame.
+
 ## [0.7.1] - 2026-10-09
 
 WithNav 0.7.1 lets you delete a saved session, with its subagent sessions, from the terminal,

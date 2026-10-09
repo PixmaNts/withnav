@@ -478,11 +478,25 @@ impl Watcher {
         }
     }
     pub async fn jobs(&self) -> Result<(), String> {
-        let Some(writer) = &self.models.writer else {
-            return Ok(());
-        };
         for mut goal in self.store.memory_goals(&self.session.to_string()).await? {
             goal.text = safe_text(&goal.text);
+            if goal.writer_status == "writing" && goal.attempts >= 2 {
+                let store = self.store.clone();
+                let id = goal.id.clone();
+                let result = self.sequencer.commit_acked(
+                    Candidate::new(EventKind::CommandResult, serde_json::json!({"name":"memory","ok":false,"error":"Workspace memory episode failed: writer lease expired after maximum attempts; no episode was saved."})),
+                    Box::new(move |event| Box::pin(async move { store.memory_publish_expired(id, event).await }))
+                ).await;
+                if let Err(error) = result {
+                    if !error.contains("memory result stale") {
+                        return Err(error);
+                    }
+                }
+                continue;
+            }
+            let Some(writer) = &self.models.writer else {
+                continue;
+            };
             if goal.end_seq.is_none()
                 || !matches!(goal.writer_status.as_str(), "pending" | "writing")
             {

@@ -48,6 +48,9 @@ pub struct State {
 pub use crate::agent::memory::component::Injection;
 
 pub(super) enum Operation {
+    Expire {
+        goal: String,
+    },
     Published {
         operation: Box<Operation>,
         event: crate::bus::event::EventEnvelope,
@@ -133,6 +136,12 @@ pub(super) fn delete(tx: &Transaction<'_>, session: &str) -> rusqlite::Result<()
 pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), WriteError> {
     let now = crate::bus::event::now_rfc3339();
     match operation {
+        Operation::Expire { goal } => {
+            let changed = tx.execute("UPDATE memory_goals SET writer_status='failed',claim=NULL,last_error='writer lease expired after maximum attempts',updated_at=?2 WHERE id=?1 AND writer_status='writing' AND attempts>=2 AND claimed_at<unixepoch()-60", params![goal,now])?;
+            if changed == 0 {
+                return Err(WriteError::InvalidSelection("memory result stale".into()));
+            }
+        }
         Operation::Published { operation, event } => {
             apply(tx, *operation)?;
             tx.execute(
@@ -251,6 +260,17 @@ pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), Wr
 }
 
 impl HistoryStore {
+    pub(crate) async fn memory_publish_expired(
+        &self,
+        goal: String,
+        event: crate::bus::event::EventEnvelope,
+    ) -> Result<(), String> {
+        self.acked(Write::Memory(Operation::Published {
+            operation: Box::new(Operation::Expire { goal }),
+            event,
+        }))
+        .await
+    }
     pub(crate) async fn memory_publish_observe(
         &self,
         state: State,

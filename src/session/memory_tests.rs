@@ -283,6 +283,44 @@ async fn writer_gate_wait_does_not_consume_a_lease_or_attempt() {
 }
 
 #[tokio::test]
+async fn exhausted_expired_writer_fails_with_one_durable_notice() {
+    let mut f = fixture(false).await;
+    let first = turn(&f.watcher, 1, "goal").await;
+    f.watcher.completed(first).await.unwrap();
+    let second = turn(&f.watcher, 3, "finish").await;
+    f.watcher.completed(second).await.unwrap();
+    let db = rusqlite::Connection::open(f._temp.path().join("history.db")).unwrap();
+    db.execute("UPDATE memory_goals SET writer_status='writing',attempts=2,claim='expired',claimed_at=unixepoch()-61", []).unwrap();
+    f.watcher.models.writer = Some(writer(&f.watcher, false, false));
+    f.watcher.jobs().await.unwrap();
+    f.watcher.jobs().await.unwrap();
+    assert_eq!(
+        f.watcher
+            .store
+            .memory_goals(&f.watcher.session.to_string())
+            .await
+            .unwrap()[0]
+            .writer_status,
+        "failed"
+    );
+    let events = f
+        .watcher
+        .store
+        .load(f.watcher.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .envelopes;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == "command.result" && e.payload["name"] == "memory")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn quick_turns_are_ordered_and_slow_instinct_does_not_delay_turn_submission() {
     let mut f = fixture(true).await;
     let one = turn(&f.watcher, 1, "first goal").await;

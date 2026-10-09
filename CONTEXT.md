@@ -279,9 +279,25 @@ and inherited by children; `[]` disables it. It must be a real directory owned b
 Outside-project file changes receive review like bash effects; approval never extends writable roots.
 
 **Permission review**:
-An advisory per-call classification by the instinct, followed for risky or outside-project
-mutations by synchronous metacognition review. Only explicit approval runs those calls;
-uncertainty, malformed answers and deadlines escalate to the Captain. Not a sandbox.
+An advisory per-call Instinct classification in one batched request: `call_effect`
+(`read_only` / `local_change` / `remote_change` / `unsure`), `call_scope`, `reversibility`
+(`none_needed` / `recoverable` / `destructive` / `unsure`), `publication`
+(`none` / `own_work` / `shared` / `unsure`), plus probability questions `sensitivity` and
+`task_fit` using the existing Captain request. With confidence ≥ 0.7, sensitivity < 0.2
+and task fit ≥ 0.6, ordinary reads and recoverable project-local changes run through Instinct.
+Recoverable publication of the session's own work can also run; git pushes require bounded
+literal-command host facts confirming the current non-default branch and no force/deletion.
+Host facts include the current/default branches, dirty state and literal git path tracking.
+Missing git, a timeout or an ambiguous push supplies no authorization fact.
+
+Destruction, shared publication, sensitive or off-task effects, low confidence and unsure
+answers go to synchronous metacognition review. Its separate 64 KiB budget carries Instinct
+answers/probabilities, git facts and bounded untrusted recent steps; Instinct keeps 16 KiB.
+Only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
+remote deletions still require the Captain. Protected configuration, credentials and changed
+scratch roots keep their existing Captain floors, and plan role conformance is unchanged.
+Evidence records every answer, thresholds and route (`instinct_run` / `review` / `captain`).
+Malformed answers, unavailable reviewers and deadlines escalate to the Captain. Not a sandbox.
 
 Native `read` within readable roots remains ungated, except sensitive targets. Native `grep` and
 `glob` stay confined to readable roots and skip sensitive entries before opening them, with a count.

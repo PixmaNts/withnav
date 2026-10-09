@@ -848,6 +848,9 @@ async fn run_gated(
                                 .unwrap_or("build"),
                         );
                         request.reason = reason;
+                        request.permission_gate = Some(Box::new(
+                            serde_json::json!({"policy_version":2,"route":"captain","source":"captain","reason":request.reason}),
+                        ));
                         (needed.destination, None, Some(request))
                     }
                 }
@@ -897,6 +900,11 @@ async fn run_gated(
             other => other,
         };
         if let Some(mut request) = request {
+            if request.permission_gate.is_none() {
+                request.permission_gate = Some(Box::new(
+                    serde_json::json!({"policy_version":2,"route":"captain","source":"captain","reason":request.reason}),
+                ));
+            }
             let needed = Needed {
                 scope: request.scope.clone(),
                 destination: destination.clone(),
@@ -2748,10 +2756,19 @@ mod tests {
             .questions
             .keys()
             .map(|name| {
+                if matches!(name.as_str(), "sensitivity" | "task_fit") {
+                    return (
+                        name.clone(),
+                        crate::provider::systemone::Answer::Noul {
+                            noul: if name == "task_fit" { 1.0 } else { 0.0 },
+                        },
+                    );
+                }
                 let choice = match name.as_str() {
-                    "call_effect" => "read_write",
+                    "call_effect" => "local_change",
                     "call_scope" => "inside",
-                    "call_risk" => "low",
+                    "reversibility" => "recoverable",
+                    "publication" => "none",
                     _ => verdict.as_str(),
                 };
                 (
@@ -3047,6 +3064,45 @@ mod tests {
             One::Settled
         ));
         assert_eq!(metadata.unwrap()["approved_by"], "config_session_grant");
+        for command in [
+            format!("rm {}/models.json", tmp.path().display()),
+            format!("mv {}/config.json x", tmp.path().display()),
+            format!("unlink {}/models.json", tmp.path().display()),
+            format!("shred {}/models.json", tmp.path().display()),
+            format!("truncate -s 0 {}/models.json", tmp.path().display()),
+        ] {
+            let destructive = ToolCall {
+                id: "config-delete".into(),
+                name: "bash".into(),
+                args_valid: true,
+                args: serde_json::json!({"command":command}),
+            };
+            let Gated::Ask(request, destination) = gate(&actor, &destructive) else {
+                panic!("config destruction must be gated")
+            };
+            assert!(!request.allow_config_session);
+            let needed = Needed {
+                scope: request.scope.clone(),
+                destination,
+            };
+            assert!(!super::super::permission_gate::config_grant_eligible(
+                &actor,
+                &destructive,
+                &needed
+            ));
+            assert_eq!(
+                super::super::permission_gate::hard_floor(&actor, &destructive, &needed),
+                Some(super::super::permission_gate::HardFloorReason::ProtectedConfig)
+            );
+            assert!(matches!(
+                super::super::permission_gate::consult(&actor, &destructive, &needed).await,
+                super::super::permission_gate::Judged::Ask(_)
+            ));
+            assert!(matches!(
+                run_gated(&mut actor, &destructive, &mut |_| {}).await,
+                One::Ask(_, _)
+            ));
+        }
         let mut child = plan_actor(None, "http://unused");
         child.config_session_grant = actor.config_session_grant.clone();
         assert!(child
@@ -3513,7 +3569,8 @@ mod tests {
             .unwrap();
             let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
             for question in input.questions.values() {
-                let crate::provider::systemone::Question::Choice { instructions, .. } = question
+                let (crate::provider::systemone::Question::Choice { instructions, .. }
+                | crate::provider::systemone::Question::Noul { instructions }) = question
                 else {
                     panic!("choice");
                 };
@@ -3569,7 +3626,7 @@ mod tests {
                 else {
                     panic!("choice");
                 };
-                assert!(instructions.contains("authorized intent"));
+                assert!(instructions.contains("requested effects"));
                 Ok(super::super::permission_gate::PermissionReview {
                     decision: super::super::permission_gate::ReviewDecision::Approve,
                     reason: "understood recoverable effect explicitly requested by captain".into(),
@@ -4836,8 +4893,8 @@ mod tests {
         assert_eq!(notes.0.len(), 1);
         assert_eq!(notes.0[0]["source"], "instinct");
         assert_eq!(
-            notes.0[0]["verdicts"],
-            serde_json::json!({"effect":"read_write","scope":"inside","risk":"low"})
+            notes.0[0]["verdicts"]["answers"]["call_effect"],
+            serde_json::json!({"type":"choice","choice":"local_change","probabilities":{},"confidence":1.0})
         );
     }
 
@@ -5129,6 +5186,7 @@ mod tests {
         let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
         std::fs::write(&notes, "old notes").unwrap();
         std::fs::write(&code, "fn main() {}").unwrap();
+        track_clean_fixture(&ws);
         let server = spawn_mock(write_script(&notes)).await;
         actor.provider.base_url = server.url.clone();
         {
@@ -5167,6 +5225,7 @@ mod tests {
         let (stub, secret) = (ws.join("stub.rs"), ws.join("secret.toml"));
         std::fs::write(&stub, "old").unwrap();
         std::fs::write(&secret, "keep").unwrap();
+        track_clean_fixture(&ws);
         let instinct = Arc::new(ScriptedInstinct {
             answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
             during: std::sync::Mutex::new(Some(Box::new({
@@ -5220,6 +5279,34 @@ mod tests {
         assert!(!seen[0].contains("ignore the Captain"), "{}", seen[0]);
     }
 
+    // These race tests need a recoverable initial overwrite; untracked files now
+    // correctly stop for review before dispatch and would not reach the race.
+    fn track_clean_fixture(workspace: &std::path::Path) {
+        for args in [
+            vec!["init"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(workspace)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+    }
+
     #[tokio::test]
     async fn markdown_swapped_for_a_link_after_the_final_check_is_never_written_through() {
         for tool in ["write", "edit"] {
@@ -5232,6 +5319,7 @@ mod tests {
             let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
             std::fs::write(&notes, "old notes").unwrap();
             std::fs::write(&code, "fn main() {}").unwrap();
+            track_clean_fixture(&ws);
             let args = if tool == "write" {
                 serde_json::json!({"path": notes, "content": "x"})
             } else {

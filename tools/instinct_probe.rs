@@ -4,7 +4,7 @@
 //! 1. Wiring & Layer Resolution: verifies `config.json` -> `models.json` -> `auth.json`.
 //! 2. Editor-flow decision (triage): `worth_attention` (noul) + `route` (choice).
 //! 3. Role Guard (`InstinctGuard`): `role_conformance` on a `plan` agent code modification.
-//! 4. Permission Gate (`InstinctJudge`): `call_effect`, `call_scope`, `call_risk`.
+//! 4. Permission Gate (`InstinctJudge`): effects, reversibility, publication, sensitivity and task fit.
 //! 5. Latency check: verifies each call answers within the 2.0 s deadline.
 //!
 //! Run with:
@@ -158,68 +158,35 @@ async fn main() -> anyhow::Result<()> {
     }
     println!();
 
-    // 4. Test Permission Review: call_effect, call_scope, call_risk
-    println!("[4/4] Permission Review (call_effect, call_scope, call_risk)...");
-    {
-        let mut questions = Questions::new();
-        let mut effects = BTreeMap::new();
-        effects.insert(
-            "read_only".to_string(),
-            "No mutation to state or files".to_string(),
-        );
-        effects.insert(
-            "read_write".to_string(),
-            "Modifies files or state".to_string(),
-        );
-        effects.insert("unsure".to_string(), "Cannot determine".to_string());
-        questions.insert(
-            "call_effect".to_string(),
-            Question::Choice {
-                instructions: "Classify the effect of this tool call.".to_string(),
-                criteria: effects,
-            },
-        );
-
-        let mut scopes = BTreeMap::new();
-        scopes.insert("inside".to_string(), "Within workspace".to_string());
-        scopes.insert("outside".to_string(), "Outside workspace".to_string());
-        scopes.insert("unsure".to_string(), "Cannot determine".to_string());
-        questions.insert(
-            "call_scope".to_string(),
-            Question::Choice {
-                instructions: "Classify the scope of this tool call.".to_string(),
-                criteria: scopes,
-            },
-        );
-
-        let mut risks = BTreeMap::new();
-        risks.insert(
-            "low".to_string(),
-            "Standard, safe, reversible action".to_string(),
-        );
-        risks.insert(
-            "risky".to_string(),
-            "Destructive, privileged or secret-accessing".to_string(),
-        );
-        risks.insert("unsure".to_string(), "Cannot determine".to_string());
-        questions.insert(
-            "call_risk".to_string(),
-            Question::Choice {
-                instructions: "Classify the risk level.".to_string(),
-                criteria: risks,
-            },
-        );
-
-        let state = json!({
-            "tool": "bash",
-            "arguments": {"command": "cargo test --all"},
-            "workspace": "/workspace",
-            "captain_request": "run the test suite to verify tests pass"
-        })
-        .to_string();
-
-        let start = Instant::now();
-        let resp = client
+    // Replay exactly the labelled permission corpus. This sends classifications, never tools.
+    println!("[4/4] Permission corpus replay...");
+    let corpus: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../tests/fixtures/permissions/calls.json"))?;
+    let questions = withnav::agent::permission_gate::permission_questions();
+    let mut agreement: BTreeMap<String, usize> =
+        questions.keys().map(|name| (name.clone(), 0)).collect();
+    let mut fast = 0;
+    let mut route_agreement = 0;
+    for row in &corpus {
+        let call = withnav::provider::ToolCall {
+            id: "probe".into(),
+            name: "bash".into(),
+            args: json!({"command":row["command"]}),
+            args_valid: true,
+        };
+        let cx = withnav::tools::ToolContext {
+            binding: None,
+            workspace: "/workspace".into(),
+            writable_roots: vec!["/workspace".into()],
+            readable_roots: vec![],
+        };
+        let needed = withnav::agent::permissions::Needed {
+            scope: withnav::agent::permissions::Scope::Folder(cx.workspace.clone()),
+            destination: None,
+        };
+        let flags = withnav::agent::permission_gate::prefilter(&call, &needed, &cx);
+        let state = json!({"host_facts":{"workspace":"/workspace","git":row["git"]},"captain_request":"Fix the code, test, commit and publish this task branch and PR","captain_request_complete":true,"untrusted_evidence":{"arguments":call.args}}).to_string();
+        let response = client
             .decide(
                 &DecisionRequest {
                     state: &state,
@@ -228,19 +195,56 @@ async fn main() -> anyhow::Result<()> {
                 &cancel,
             )
             .await?;
-        let latency = start.elapsed();
-
-        println!("      Status: OK ({} ms)", latency.as_millis());
-        for key in ["call_effect", "call_scope", "call_risk"] {
-            if let Some(Answer::Choice {
-                choice, confidence, ..
-            }) = resp.answers.get(key)
-            {
-                println!("      {key:<12}: {choice} (confidence: {confidence:.2})");
+        for (name, answer) in &response.answers {
+            let agrees = match answer {
+                Answer::Choice { choice, .. } => row["labels"][name].as_str() == Some(choice),
+                Answer::Noul { noul } => {
+                    let threshold = if name == "sensitivity" {
+                        withnav::agent::permission_gate::MAX_SENSITIVITY
+                    } else {
+                        withnav::agent::permission_gate::MIN_TASK_FIT
+                    };
+                    (*noul >= threshold)
+                        == (row["labels"][name].as_f64().unwrap_or(0.0) >= threshold)
+                }
+                _ => false,
+            };
+            if agrees {
+                if let Some(count) = agreement.get_mut(name) {
+                    *count += 1;
+                }
             }
         }
+        let input = withnav::agent::permission_gate::PermissionReviewInput {
+            state,
+            questions: questions.clone(),
+        };
+        let runs = withnav::agent::permission_gate::route(&input, &response.answers, &flags)
+            == Ok(withnav::agent::permission_gate::Route::Run);
+        fast += usize::from(runs);
+        route_agreement += usize::from(runs == (row["route"] == "instinct_run"));
+        println!(
+            "      {} -> {}",
+            row["command"],
+            if runs {
+                "instinct_run"
+            } else {
+                "review/captain"
+            }
+        );
     }
-
-    println!("\n=== All Instinct checks passed ===");
+    for (name, count) in agreement {
+        println!(
+            "      {name}: {count}/{} agreement ({:.1}%)",
+            corpus.len(),
+            100.0 * count as f64 / corpus.len() as f64
+        );
+    }
+    println!(
+        "      Route agreement: {route_agreement}/{}; fast path: {fast}/{} ({:.1}%)",
+        corpus.len(),
+        corpus.len(),
+        100.0 * fast as f64 / corpus.len() as f64
+    );
     Ok(())
 }

@@ -178,6 +178,46 @@ fn writer(w: &Watcher, fail_first: bool, slow: bool) -> Arc<FakeWriter> {
 }
 
 #[tokio::test]
+async fn rejected_skill_text_is_absent_from_observer_and_writer_requests() {
+    let mut f = fixture(false).await;
+    let fake = writer(&f.watcher, false, false);
+    f.watcher.models.writer = Some(fake.clone());
+    let first = turn(&f.watcher, 1, "accepted goal").await;
+    f.watcher.completed(first).await.unwrap();
+    let command = Ulid::new();
+    let message = EventEnvelope::new(
+        f.watcher.session,
+        3,
+        EventKind::MessageReceived,
+        serde_json::json!({"source":"captain","content":"rejected goal text","command_id":command}),
+    );
+    let mut refusal = EventEnvelope::new(
+        f.watcher.session,
+        4,
+        EventKind::CommandResult,
+        serde_json::json!({"name":"skill","ok":false,"operation_id":command}),
+    );
+    refusal.correlation_id = Some(command);
+    for event in [message, refusal] {
+        f.watcher
+            .store
+            .append_event_acked(f.watcher.session, event)
+            .await
+            .unwrap();
+    }
+    let second = turn(&f.watcher, 5, "finish accepted goal").await;
+    f.watcher.completed(second).await.unwrap();
+    let observer_inputs = f.observer.inputs.lock().unwrap();
+    let writer_inputs = fake.inputs.lock().unwrap();
+    assert_eq!(observer_inputs.len(), 2);
+    assert_eq!(writer_inputs.len(), 1);
+    for input in observer_inputs.iter().chain(writer_inputs.iter()) {
+        assert!(!input.contains("rejected goal text"));
+        assert!(input.contains("accepted goal"));
+    }
+}
+
+#[tokio::test]
 async fn secrets_never_reach_memory_models_or_episodes() {
     let mut f = fixture(false).await;
     let writer = writer(&f.watcher, false, false);

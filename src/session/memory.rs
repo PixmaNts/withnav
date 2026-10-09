@@ -205,8 +205,7 @@ pub fn models_with_output_limit(
 
 /// Only visible result fields survive; hidden reasoning and provider metadata never enter memory.
 pub fn evidence(events: &[EventEnvelope], start: u64, end: u64) -> Vec<(u64, String)> {
-    events
-        .iter()
+    admitted_events(events)
         .filter(|e| e.seq >= start && e.seq <= end)
         .filter_map(|e| {
             let mut value = match e.kind.as_str() {
@@ -227,19 +226,27 @@ pub fn evidence(events: &[EventEnvelope], start: u64, end: u64) -> Vec<(u64, Str
         .collect()
 }
 
-fn anchors(events: &[EventEnvelope], end: u64) -> Vec<CaptainAnchor> {
+fn admitted_events(events: &[EventEnvelope]) -> impl Iterator<Item = &EventEnvelope> {
     let rejected = events
         .iter()
         .filter_map(super::store::rejected_captain_command)
         .collect::<std::collections::HashSet<_>>();
-    events
-        .iter()
+    events.iter().filter(move |e| {
+        !(e.kind == "message.received"
+            && e.payload["source"]
+                .as_str()
+                .is_some_and(crate::bus::command::is_captain_source)
+            && e.payload["command_id"]
+                .as_str()
+                .and_then(|id| id.parse::<Ulid>().ok())
+                .is_some_and(|id| rejected.contains(&id)))
+    })
+}
+
+fn anchors(events: &[EventEnvelope], end: u64) -> Vec<CaptainAnchor> {
+    admitted_events(events)
         .filter(|e| {
             e.seq <= end
-                && !e.payload["command_id"]
-                    .as_str()
-                    .and_then(|id| id.parse::<Ulid>().ok())
-                    .is_some_and(|id| rejected.contains(&id))
                 && e.kind == "message.received"
                 && e.payload["source"]
                     .as_str()
@@ -628,7 +635,9 @@ mod tests {
             serde_json::json!({"name":"skill","ok":false,"operation_id":command}),
         );
         refusal.correlation_id = Some(command);
-        assert!(anchors(&[message, refusal], 3).is_empty());
+        let events = [message, refusal];
+        assert!(anchors(&events, 3).is_empty());
+        assert!(evidence(&events, 1, 3).is_empty());
     }
     #[test]
     fn evidence_never_includes_reasoning_or_autonomous_goal_anchors() {

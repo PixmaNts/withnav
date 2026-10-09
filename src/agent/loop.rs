@@ -5147,6 +5147,7 @@ mod tests {
         let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
         std::fs::write(&notes, "old notes").unwrap();
         std::fs::write(&code, "fn main() {}").unwrap();
+        track_clean_fixture(&ws);
         let server = spawn_mock(write_script(&notes)).await;
         actor.provider.base_url = server.url.clone();
         {
@@ -5185,6 +5186,7 @@ mod tests {
         let (stub, secret) = (ws.join("stub.rs"), ws.join("secret.toml"));
         std::fs::write(&stub, "old").unwrap();
         std::fs::write(&secret, "keep").unwrap();
+        track_clean_fixture(&ws);
         let instinct = Arc::new(ScriptedInstinct {
             answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
             during: std::sync::Mutex::new(Some(Box::new({
@@ -5238,6 +5240,34 @@ mod tests {
         assert!(!seen[0].contains("ignore the Captain"), "{}", seen[0]);
     }
 
+    // These race tests need a recoverable initial overwrite; untracked files now
+    // correctly stop for review before dispatch and would not reach the race.
+    fn track_clean_fixture(workspace: &std::path::Path) {
+        for args in [
+            vec!["init"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(workspace)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+    }
+
     #[tokio::test]
     async fn markdown_swapped_for_a_link_after_the_final_check_is_never_written_through() {
         for tool in ["write", "edit"] {
@@ -5250,6 +5280,7 @@ mod tests {
             let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
             std::fs::write(&notes, "old notes").unwrap();
             std::fs::write(&code, "fn main() {}").unwrap();
+            track_clean_fixture(&ws);
             let args = if tool == "write" {
                 serde_json::json!({"path": notes, "content": "x"})
             } else {

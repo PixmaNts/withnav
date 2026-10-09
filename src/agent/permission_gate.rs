@@ -1,5 +1,6 @@
 //! Per-call advisory permission review. Failures never authorize execution.
 mod git;
+mod shell;
 use std::time::{Duration, Instant};
 
 pub const MIN_CONFIDENCE: f64 = 0.7;
@@ -114,44 +115,15 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let words: Vec<_> = command
-            .split(|c: char| c.is_whitespace() || ";|&()'\"".contains(c))
-            .filter(|s| !s.is_empty())
-            .map(|s| s.rsplit('/').next().unwrap_or(s))
-            .collect();
         // Only deterministic destructive/sensitive floors. Ordinary mutations are graded.
         flags.risky = sensitive_call(call, needed, cx)
-            || command.contains("gh release create")
-            || (words.contains(&"push")
-                && words.iter().any(|word| {
-                    matches!(
-                        *word,
-                        "-f" | "--force" | "--force-with-lease" | "-d" | "--delete"
-                    ) || word.starts_with("--force-with-lease=")
-                        || word.starts_with('+')
-                        || word.starts_with(':')
-                }))
             || command.contains("AGENTS.md")
             || command.contains("CLAUDE.md")
             || command.contains("rules.md")
-            || command.contains("hooks/")
-            || command.contains("-delete")
-            || command.contains("-exec rm")
-            || command.contains("git reset --hard")
-            || command.contains("git branch -D")
-            || (command.contains("git tag -d") && command.contains("push"))
-            || (command.contains("git clean")
-                && words
-                    .iter()
-                    .any(|word| word.starts_with('-') && word.contains('f')))
-            || words
-                .iter()
-                .any(|word| *word == "dd" || *word == "mkfs" || word.starts_with("mkfs."))
-            || (words.contains(&"rm")
-                && words.iter().any(|word| {
-                    word.starts_with('-') && (word.contains('r') || *word == "--recursive")
-                }))
-            || words.contains(&"truncate");
+            || command.contains("hooks/");
+        flags.risky |= shell::segments(command).is_none()
+            || shell::segments(command)
+                .is_some_and(|segments| segments.iter().any(|words| shell::destructive(words)));
         if let Some(words) = git::literal(command) {
             if let Some(push) = git::push(&words, None) {
                 flags.risky |= push["force"] == true || push["delete"] == true;
@@ -440,6 +412,19 @@ pub fn route(
     {
         return Ok(Route::Review);
     }
+    // Host interpretation precedes EVERY Run branch, irrespective of optimistic
+    // read_only/local_change/own_work answers. Facts only confirm one literal push.
+    if state["untrusted_evidence"]["arguments"]["command"]
+        .as_str()
+        .is_some_and(|command| {
+            shell::requires_review(command, &state["host_facts"]["git"])
+                || shell::overwrite_paths(command).is_some_and(|paths| {
+                    !paths.is_empty() && state["host_facts"]["overwrites_recoverable"] != true
+                })
+        })
+    {
+        return Ok(Route::Review);
+    }
     if label("call_effect") == "read_only" && !flags.mutation {
         return Ok(Route::Run);
     }
@@ -452,13 +437,7 @@ pub fn route(
             return Ok(Route::Run);
         }
         // PR edits are recoverable own work; git pushes additionally need literal host confirmation.
-        let git_push = state["untrusted_evidence"]["arguments"]["command"]
-            .as_str()
-            .is_some_and(|command| command.split_whitespace().any(|word| word == "git"));
-        if label("call_effect") == "remote_change"
-            && label("publication") == "own_work"
-            && (!git_push || state["host_facts"]["git"]["non_default_push"] == true)
-        {
+        if label("call_effect") == "remote_change" && label("publication") == "own_work" {
             return Ok(Route::Run);
         }
     }
@@ -749,6 +728,29 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             let mut state: Value = serde_json::from_str(&input.state).expect("host-built JSON");
             state["host_facts"]["git"] = facts;
             input.state = state.to_string();
+        }
+        if let Some(paths) = shell::overwrite_paths(command) {
+            if !paths.is_empty() {
+                let mut recoverable = paths.len() <= 16;
+                for path in paths.iter().take(16) {
+                    recoverable &= git::recoverable_file(&actor.tool_context.workspace, path).await;
+                }
+                let mut state: Value = serde_json::from_str(&input.state).expect("host-built JSON");
+                state["host_facts"]["overwrites_recoverable"] = json!(recoverable);
+                input.state = state.to_string();
+                flags.risky |= !recoverable;
+            }
+        }
+    }
+    if let Some(path) = needed
+        .destination
+        .as_ref()
+        .filter(|_| matches!(call.name.as_str(), "write" | "edit"))
+    {
+        if path.exists()
+            && !git::recoverable_file(&actor.tool_context.workspace, &path.to_string_lossy()).await
+        {
+            flags.risky = true;
         }
     }
     if input.state.len()
@@ -1138,6 +1140,170 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn fake_optimistic_judge_cannot_bypass_security_corpus() {
+        let corpus: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/permissions/calls.json"))
+                .unwrap();
+        let cx = ToolContext {
+            binding: None,
+            workspace: "/workspace".into(),
+            writable_roots: vec!["/workspace".into()],
+            readable_roots: vec![],
+        };
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
+            destination: None,
+        };
+        let mut count = 0;
+        for row in corpus.into_iter().filter(|row| row["adversarial"] == true) {
+            count += 1;
+            let call = ToolCall {
+                id: "fake".into(),
+                name: "bash".into(),
+                args: json!({"command":row["command"]}),
+                args_valid: true,
+            };
+            let input = PermissionReviewInput { questions: permission_questions(), state: json!({"captain_request_complete":true,"host_facts":{"git":row["git"]},"untrusted_evidence":{"arguments":call.args}}).to_string() };
+            let answers = LabelJudge(row.clone())
+                .judge(&input, &CancellationToken::new())
+                .await
+                .unwrap();
+            // Exercise route itself too: the floor must not depend on caller flags.
+            assert_eq!(
+                route(&input, &answers, &Overrides::default()),
+                Ok(Route::Review),
+                "{}",
+                row["command"]
+            );
+            assert_eq!(
+                route(&input, &answers, &prefilter(&call, &needed, &cx)),
+                Ok(Route::Review)
+            );
+        }
+        assert!(count >= 100);
+    }
+
+    #[tokio::test]
+    async fn git_probes_never_execute_repository_fsmonitor() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("monitor");
+        let marker = tmp.path().join("executed");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for args in [
+            vec!["init", "-b", "feat/task"],
+            vec!["config", "core.fsmonitor", script.to_str().unwrap()],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        assert!(git::facts("git push origin feat/task", tmp.path())
+            .await
+            .is_some());
+        assert!(!git::recoverable_file(tmp.path(), "missing").await);
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn push_configuration_broadening_and_unknown_default_fail_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .status
+                .success())
+        };
+        run(&["init", "-b", "feat/task"]);
+        assert_eq!(
+            git::facts("git push origin feat/task", tmp.path())
+                .await
+                .unwrap()["non_default_push"],
+            false
+        );
+        run(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ]);
+        for (key, value) in [
+            ("push.followTags", "true"),
+            ("remote.origin.mirror", "true"),
+            ("remote.origin.push", "refs/heads/*:refs/heads/*"),
+            ("push.default", "matching"),
+        ] {
+            run(&["config", key, value]);
+            assert_eq!(
+                git::facts("git push origin feat/task", tmp.path())
+                    .await
+                    .unwrap()["non_default_push"],
+                false,
+                "{key}"
+            );
+            run(&["config", "--unset", key]);
+        }
+    }
+
+    #[tokio::test]
+    async fn overwrite_recovery_requires_tracked_and_unmodified_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .status
+                .success())
+        };
+        run(&["init", "-b", "feat/task"]);
+        std::fs::write(tmp.path().join("file"), "original").unwrap();
+        run(&["add", "file"]);
+        run(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initial",
+        ]);
+        assert!(git::recoverable_file(tmp.path(), "file").await);
+        std::fs::write(tmp.path().join("file"), "uncommitted").unwrap();
+        assert!(!git::recoverable_file(tmp.path(), "file").await);
+        run(&["add", "file"]);
+        assert!(!git::recoverable_file(tmp.path(), "file").await);
+        std::fs::write(tmp.path().join("untracked"), "only copy").unwrap();
+        assert!(!git::recoverable_file(tmp.path(), "untracked").await);
+        let marker = tmp.path().join("filter-executed");
+        std::fs::write(tmp.path().join(".gitattributes"), "file filter=hostile\n").unwrap();
+        run(&[
+            "config",
+            "filter.hostile.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ]);
+        assert!(!git::recoverable_file(tmp.path(), "file").await);
+        assert!(
+            !marker.exists(),
+            "recovery probes must not run clean filters"
+        );
+    }
+
     #[tokio::test]
     async fn literal_git_facts_confirm_only_the_current_non_default_branch() {
         let tmp = tempfile::tempdir().unwrap();

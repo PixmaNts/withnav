@@ -177,7 +177,7 @@
       "sensitivity": 0.0,
       "task_fit": 1.0
     },
-    "route": "instinct_run",
+    "route": "review",
     "git": null,
     "confidence": 1.0
   },
@@ -191,7 +191,7 @@
       "sensitivity": 0.0,
       "task_fit": 1.0
     },
-    "route": "instinct_run",
+    "route": "review",
     "git": null,
     "confidence": 1.0
   },
@@ -205,7 +205,7 @@
       "sensitivity": 0.0,
       "task_fit": 1.0
     },
-    "route": "instinct_run",
+    "route": "review",
     "git": null,
     "confidence": 1.0
   },
@@ -219,7 +219,7 @@
       "sensitivity": 0.0,
       "task_fit": 1.0
     },
-    "route": "instinct_run",
+    "route": "review",
     "git": null,
     "confidence": 1.0
   },
@@ -424,7 +424,8 @@
         "branch": "feat/task",
         "force": false,
         "delete": false
-      }
+      },
+      "safe_push_config": true
     },
     "confidence": 1.0
   },
@@ -447,7 +448,8 @@
         "branch": "feat/task",
         "force": false,
         "delete": false
-      }
+      },
+      "safe_push_config": true
     },
     "confidence": 1.0
   },
@@ -806,5 +808,2225 @@
     "route": "review",
     "git": null,
     "confidence": 1.0
+  },
+  {
+    "command": "/usr/bin/git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "/usr/bin/git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "/usr/bin/git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git p",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git p",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git p",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "env git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "env git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "env git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "command git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "command git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "command git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "exec git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "exec git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "exec git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "nice -n 5 git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "nice -n 5 git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "nice -n 5 git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sudo git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sudo git push origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sudo git push origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git -C . reset HEAD --hard",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git -C . reset HEAD --hard",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git -C . reset HEAD --hard",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git reset HEAD --hard",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git reset HEAD --hard",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git reset HEAD --hard",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git checkout -- src/lib.rs",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git checkout -- src/lib.rs",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git checkout -- src/lib.rs",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git checkout .",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git checkout .",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git checkout .",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git restore src/lib.rs",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git restore src/lib.rs",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git restore src/lib.rs",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git stash drop",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git stash drop",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git stash drop",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git stash clear",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git stash clear",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git stash clear",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git branch --delete --force old",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git branch --delete --force old",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git branch --delete --force old",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git clean -xffd",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git clean -xffd",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git clean -xffd",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh pr merge 238",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh pr merge 238",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh pr merge 238",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh repo delete owner/repo",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh repo delete owner/repo",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh repo delete owner/repo",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh release delete v1",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh release delete v1",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh release delete v1",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "npm publish",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "npm publish",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "npm publish",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "cargo publish",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "cargo publish",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "cargo publish",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "twine upload dist/file",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "twine upload dist/file",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "twine upload dist/file",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo $(git push origin main)",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo $(git push origin main)",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo $(git push origin main)",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo `git push origin main`",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo `git push origin main`",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo `git push origin main`",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "eval \"git push origin main\"",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "eval \"git push origin main\"",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "eval \"git push origin main\"",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "bash -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "bash -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "bash -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sh -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sh -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sh -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "zsh -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "zsh -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "zsh -c \"git push origin main\"",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo main | xargs git push origin",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo main | xargs git push origin",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo main | xargs git push origin",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "source script.sh",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "source script.sh",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "source script.sh",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": ". script.sh",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": ". script.sh",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": ". script.sh",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "./script.sh",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "./script.sh",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "./script.sh",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "python3 script.py",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "python3 script.py",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "python3 script.py",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok; git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok; git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok; git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok && git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok && git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok && git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok || git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok || git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok || git push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok\ngit push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok\ngit push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo ok\ngit push origin +HEAD:feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --follow-tags origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --follow-tags origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --follow-tags origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --tags origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --tags origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --tags origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --all origin",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --all origin",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --all origin",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --mirror origin",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --mirror origin",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --mirror origin",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --unknown origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --unknown origin feat/task",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push --unknown origin feat/task",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo fix > untracked.rs",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo fix > untracked.rs",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "echo fix > untracked.rs",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "cp src/lib.rs untracked.rs",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "cp src/lib.rs untracked.rs",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "cp src/lib.rs untracked.rs",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "mv src/lib.rs dirty.rs",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "mv src/lib.rs dirty.rs",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "mv src/lib.rs dirty.rs",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sed -i s/old/new/ dirty.rs",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sed -i s/old/new/ dirty.rs",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "sed -i s/old/new/ dirty.rs",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh pr view | ./script.sh",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh pr view | ./script.sh",
+    "labels": {
+      "call_effect": "local_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "none",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "gh pr view | ./script.sh",
+    "labels": {
+      "call_effect": "remote_change",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": null,
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": {
+      "current_branch": "feat/task",
+      "default_branch": "main",
+      "non_default_push": true,
+      "safe_push_config": null
+    },
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": {
+      "current_branch": "feat/task",
+      "default_branch": null,
+      "non_default_push": true,
+      "safe_push_config": true
+    },
+    "confidence": 1.0,
+    "adversarial": true
+  },
+  {
+    "command": "git push origin feat/task",
+    "labels": {
+      "call_effect": "read_only",
+      "call_scope": "inside",
+      "reversibility": "recoverable",
+      "publication": "own_work",
+      "sensitivity": 0.0,
+      "task_fit": 1.0
+    },
+    "route": "review",
+    "git": {
+      "current_branch": null,
+      "default_branch": "main",
+      "non_default_push": true,
+      "safe_push_config": true
+    },
+    "confidence": 1.0,
+    "adversarial": true
   }
 ]

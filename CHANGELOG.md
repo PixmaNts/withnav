@@ -8,6 +8,10 @@ requests land in `develop`.
 
 - **VS Code command results stay concise.** Selection changes no longer dump JSON;
   unknown command data stays available in a closed Details disclosure.
+- **File references in VS Code answers open at the referenced line.** Bare and inline-code
+  paths become keyboard-accessible links; relative paths try every workspace root,
+  and missing or outside-workspace files explain why they cannot open.
+
 - **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
   and task lists, strikethrough and hard breaks render without interpreting raw HTML.
   Streaming redraws are coalesced per animation frame.

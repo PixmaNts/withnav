@@ -393,3 +393,19 @@ test('GFM renders structural constructs safely and coalesces streaming frames', 
   assert.equal(d.querySelectorAll('.message-body a').length, 2);
   dom.window.close();
 });
+test('answer file references post openFile but code fences and URLs do not', () => {
+  const { dom, d, receive, posts } = keyboardPage();
+  const frames = []; dom.window.requestAnimationFrame = callback => frames.push(callback);
+  receive({ type: 'delta', id: 'files', text: '`vscode-withnav/src/editorContext.ts:29` and vscode-withnav/src/editorContext.ts:29\n\nsrc/a.rs src/a.rs:12:3 src/a.rs#L12 ./src/a.rs /workspace/src/a.rs\n\nhttps://example.com/src/a.rs e.g. v0.7.1 1.5\n\n```\nsrc/fenced.rs:2\n```' });
+  frames.shift()();
+  const buttons = [...d.querySelectorAll('.message-body .file-link')];
+  assert.equal(buttons.length, 7);
+  assert.ok(buttons[0].closest('code'));
+  assert.equal(buttons[0].title, 'Open vscode-withnav/src/editorContext.ts at line 29');
+  buttons[0].click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'openFile', path: 'vscode-withnav/src/editorContext.ts', line: 29, generation: 1 });
+  buttons[3].click();
+  assert.equal(posts.at(-1).line, 12); assert.equal(posts.at(-1).path, 'src/a.rs');
+  assert.equal(d.querySelector('.message-body pre .file-link'), null);
+  dom.window.close();
+});

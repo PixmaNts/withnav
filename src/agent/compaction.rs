@@ -26,6 +26,16 @@ pub use summary::{build_summary_request, prepare, validate_summary, PrepareInput
 /// The longest summary accepted, in bytes.
 pub const SUMMARY_MAX_BYTES: usize = 8 * 1024;
 
+/// Resolved summary-only model, pinned when the session is prepared.
+pub struct SummaryWriter {
+    pub provider: crate::provider::config::ProviderConfig,
+    pub api_key: String,
+    pub model: String,
+    pub variant: Option<crate::provider::config::Variant>,
+    pub max_tokens: Option<u64>,
+    pub input_budget: u64,
+}
+
 /// Completed turns kept verbatim, besides the latest user request and the
 /// unfinished turn.
 pub const PROTECTED_COMPLETED_TURNS: usize = 2;

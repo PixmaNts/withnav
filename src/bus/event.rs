@@ -32,14 +32,17 @@ pub const ROOT_ACTOR_ID: &str = "agent:main";
 /// `permission.requested`, `permission.resolved`, `model.changed`,
 /// `subagent.spawned` and `subagent.done` were added without changing the
 /// envelope version.
-pub const EVENT_KIND_COUNT: usize = 23;
+pub const EVENT_KIND_COUNT: usize = 24;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta` and `context.updated` are live-only (the latter is a
 /// recomputable gauge, readable at any time from the session's context
 /// endpoint). Kept with the catalog it guards.
 const fn is_durable(kind: EventKind) -> bool {
-    !matches!(kind, EventKind::LlmDelta | EventKind::ContextUpdated)
+    !matches!(
+        kind,
+        EventKind::LlmDelta | EventKind::ContextUpdated | EventKind::ContextCompacting
+    )
 }
 
 /// DRIFT GUARD (compile-authoritative): `ALL` is DERIVED from
@@ -68,6 +71,7 @@ impl EventKind {
             | Self::TaskDone
             | Self::CommandResult
             | Self::ContextUpdated
+            | Self::ContextCompacting
             | Self::SessionAgentChanged
             | Self::ContextCompacted
             | Self::PermissionRequested
@@ -91,6 +95,7 @@ impl EventKind {
                 Self::TaskDone,
                 Self::CommandResult,
                 Self::ContextUpdated,
+                Self::ContextCompacting,
                 Self::SessionAgentChanged,
                 Self::ContextCompacted,
                 Self::PermissionRequested,
@@ -145,6 +150,8 @@ pub enum EventKind {
     CommandResult,
     #[serde(rename = "context.updated")]
     ContextUpdated,
+    #[serde(rename = "context.compacting")]
+    ContextCompacting,
     #[serde(rename = "session.agent_changed")]
     SessionAgentChanged,
     #[serde(rename = "context.compacted")]
@@ -182,6 +189,7 @@ impl EventKind {
             EventKind::TaskDone => "task.done",
             EventKind::CommandResult => "command.result",
             EventKind::ContextUpdated => "context.updated",
+            EventKind::ContextCompacting => "context.compacting",
             EventKind::SessionAgentChanged => "session.agent_changed",
             EventKind::ContextCompacted => "context.compacted",
             EventKind::PermissionRequested => "permission.requested",
@@ -211,6 +219,7 @@ impl EventKind {
             "task.done" => Some(EventKind::TaskDone),
             "command.result" => Some(EventKind::CommandResult),
             "context.updated" => Some(EventKind::ContextUpdated),
+            "context.compacting" => Some(EventKind::ContextCompacting),
             "session.agent_changed" => Some(EventKind::SessionAgentChanged),
             "context.compacted" => Some(EventKind::ContextCompacted),
             "permission.requested" => Some(EventKind::PermissionRequested),
@@ -608,6 +617,10 @@ pub enum CompactionReason {
 /// untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextCompacted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_by: Option<CompactionWriter>,
+    #[serde(default)]
+    pub passes: u64,
     /// 1 for the first compaction of the conversation, +1 for each later one.
     pub generation: u64,
     /// Index, in the full transcript, of the last message the summary
@@ -621,6 +634,12 @@ pub struct ContextCompacted {
     /// What asked for it. Absent in an event stored before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<CompactionReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionWriter {
+    pub model: String,
+    pub layer: String,
 }
 
 /// A gated tool call waits for a Captain's decision. The call has not run.
@@ -843,7 +862,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 23] = [
+    const KIND_NAMES: [&str; 24] = [
         "session.start",
         "session.end",
         "message.received",
@@ -858,6 +877,7 @@ mod tests {
         "task.done",
         "command.result",
         "context.updated",
+        "context.compacting",
         "session.agent_changed",
         "context.compacted",
         "permission.requested",
@@ -872,8 +892,8 @@ mod tests {
     #[test]
     fn event_kind_catalog_is_exactly_the_twenty_one() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 23);
-        assert_eq!(kinds.len(), 23);
+        assert_eq!(EVENT_KIND_COUNT, 24);
+        assert_eq!(kinds.len(), 24);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -890,7 +910,7 @@ mod tests {
     #[test]
     fn event_kind_durability_marks_only_llm_delta_and_context_updated_live_only() {
         let durable: Vec<bool> = EventKind::ALL.iter().map(|k| k.is_durable()).collect();
-        assert_eq!(durable.iter().filter(|d| !**d).count(), 2);
+        assert_eq!(durable.iter().filter(|d| !**d).count(), 3);
         assert!(!EventKind::LlmDelta.is_durable());
         assert!(!EventKind::ContextUpdated.is_durable());
         assert!(EventKind::TurnEnd.is_durable());
@@ -1119,6 +1139,8 @@ mod tests {
             (
                 "context.compacted",
                 serde_json::to_value(&ContextCompacted {
+                    written_by: None,
+                    passes: 1,
                     generation: 1,
                     through_message: 7,
                     pruned: 2,
@@ -1127,6 +1149,10 @@ mod tests {
                     reason: Some(CompactionReason::Manual),
                 })
                 .unwrap(),
+            ),
+            (
+                "context.compacting",
+                serde_json::json!({"pass":1,"total":6}),
             ),
             (
                 "permission.requested",

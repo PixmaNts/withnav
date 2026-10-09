@@ -507,5 +507,14 @@ boundary the request builder applies. The prompt is then the fresh system compon
 as labelled conversation data (never as instructions), and the messages after the boundary. The
 system components, the latest user request, the unfinished turn with any pending `ask` and the last
 two completed turns are always kept verbatim, and a cut never splits a tool call from its results.
-`/compact [focus]` makes one by asking the session's own model and variant for a summary.
+`/compact [focus]` asks the assigned metacognition model and variant for a summary, falling
+back to the session model on provider errors (never on cancellation). Model switches may then
+use the destination. Each writer budgets against its own window; the installed checkpoint
+still has to fit the session or destination. Summaries roll over message-boundary chunks,
+keeping tool exchanges together, with the previous summary as untrusted JSON data.
+`config.json` settings `compaction.writer` (`metacognition`, default, or `session`) and
+`compaction.chunk_tokens` (64000, capped at half the writer input budget) are exposed by
+`/v1/settings`. They apply to newly prepared sessions. Each failed pass is retried once;
+failed or empty summaries never replace a checkpoint. `context.compacted` names the writer
+and records successful passes.
 _Avoid_: snapshot (that is the context gauge), history rewrite

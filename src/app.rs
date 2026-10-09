@@ -574,6 +574,10 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::SubagentDone
         | EventKind::SubagentWatchdog
         | EventKind::ContextCompacted => None,
+        EventKind::ContextCompacting => Some(UiEvent::AssistantText(format!(
+            "Compacting… {}/{}",
+            envelope.payload["pass"], envelope.payload["total"]
+        ))),
         EventKind::ContextUpdated | EventKind::SessionBypass => None,
     }
 }

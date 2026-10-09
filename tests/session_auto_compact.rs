@@ -276,14 +276,18 @@ async fn nothing_is_compacted_while_an_ask_waits() {
     .await;
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     let bodies = provider.bodies();
-    assert_eq!(bodies.len(), 2, "the summary, then the agent's own request");
+    assert_eq!(
+        bodies.len(),
+        3,
+        "rolling summary, then the agent's own request"
+    );
     assert!(is_summary(&bodies[0]));
-    assert!(bodies[1].contains("\"ask\""));
+    assert!(bodies[2].contains("\"ask\""));
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(
         provider.bodies().len(),
-        2,
+        3,
         "nothing else was asked of the model"
     );
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
@@ -317,7 +321,7 @@ async fn nothing_is_compacted_while_a_permission_request_waits() {
     collect_until(sub, |e| e.kind == "permission.requested").await;
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert_eq!(provider.bodies().len(), 2);
+    assert_eq!(provider.bodies().len(), 3);
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     assert!(
         !env.ws.join("out.txt").exists(),
@@ -460,6 +464,89 @@ async fn a_switch_that_cannot_be_made_to_fit_is_refused_without_compacting() {
 
 const SERVER_ERROR: &[u8] = b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metacognition_provider_failure_falls_back_to_session() {
+    let env = env();
+    let a = spawn_responding_provider(20, |_, _| answer(SUMMARY)).await;
+    let b = spawn_responding_provider(20, |_, _| SERVER_ERROR.to_vec()).await;
+    let state = two_models(&env, &a, &b, 1_000_000);
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({
+            "agents":{"build":{"model":"a/model-a"}},
+            "layers":{"metacognition":"b/model-b"},
+            "permissions":{"scratch_dirs":[]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let id = seeded(&state, &env.ws, 8).await;
+    let out = state.run_command(id, "compact", "").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(b.bodies().len(), 2);
+    assert!(!a.bodies().is_empty());
+    assert_eq!(
+        stored(&state, id, "context.compacted").await[0].payload["written_by"]["model"],
+        "model-a"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metacognition_writes_manual_rolling_summary_and_session_can_opt_out() {
+    for session in [false, true] {
+        let env = env();
+        let a = spawn_responding_provider(20, |_, _| answer(SUMMARY)).await;
+        let b = spawn_responding_provider(20, |_, _| answer(SUMMARY)).await;
+        let state = two_models(&env, &a, &b, 1_000_000);
+        std::fs::write(env.root.join("cfg/config.json"), json!({
+            "agents":{"build":{"model":"a/model-a"}},
+            "layers":{"metacognition":"b/model-b"},
+            "compaction":{"writer":if session {"session"} else {"metacognition"}, "chunk_tokens":4000},
+            "permissions":{"scratch_dirs":[]}
+        }).to_string()).unwrap();
+        let id = seeded(&state, &env.ws, 8).await;
+        let out = state.run_command(id, "compact", "").await.unwrap();
+        assert!(out.ok, "{out:?}");
+        let chosen = if session { &a } else { &b };
+        let other = if session { &b } else { &a };
+        assert!(other.bodies().is_empty());
+        assert!(chosen.bodies().len() > 1);
+        assert!(chosen.requests()[0].to_lowercase().contains(if session {
+            "authorization: bearer key-a"
+        } else {
+            "authorization: bearer key-b"
+        }));
+        let requests = chosen.bodies();
+        for (index, request) in requests.iter().enumerate() {
+            let request: Value = serde_json::from_str(request).unwrap();
+            assert_eq!(
+                request["model"],
+                if session { "model-a" } else { "model-b" }
+            );
+            assert_eq!(
+                request["messages"].as_array().unwrap().len(),
+                if index == 0 { 2 } else { 3 }
+            );
+            if index > 0 {
+                assert!(request["messages"][1]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains(SUMMARY.split('\n').next().unwrap()));
+            }
+        }
+        let notices = stored(&state, id, "context.compacted").await;
+        assert_eq!(notices[0].payload["passes"], requests.len());
+        assert_eq!(
+            notices[0].payload["written_by"]["layer"],
+            if session {
+                "cognition"
+            } else {
+                "metacognition"
+            }
+        );
+    }
+}
+
 // Given a switch whose summary neither the old model nor the destination can write
 // Then the switch fails, nothing changed, and the conversation is unchanged
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -527,7 +614,7 @@ fn edit_models(env: &Env, edit: impl FnOnce(&mut Value)) {
 async fn the_fallback_summary_is_sent_with_the_destinations_own_settings() {
     let env = env();
     let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
-    let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let b = spawn_responding_provider(30, |_, _| answer(SUMMARY)).await;
     let state = two_models(&env, &a, &b, 16_000);
     edit_models(&env, |models| {
         models["providers"]["a"]["headers"] = json!({"x-gateway": "a"});
@@ -617,7 +704,7 @@ fn short_turn(n: usize) -> Vec<ChatMessage> {
 async fn the_fallback_summary_is_cut_down_to_the_destinations_window() {
     let env = env();
     let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
-    let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let b = spawn_responding_provider(30, |_, _| answer(SUMMARY)).await;
     let state = two_models(&env, &a, &b, 20_000);
     let transcript: Vec<ChatMessage> = (0..12)
         .flat_map(read_turn)
@@ -648,25 +735,21 @@ async fn the_fallback_summary_is_cut_down_to_the_destinations_window() {
 // Then the switch is refused with the way out, the destination is never
 //      asked, and nothing changed
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_fallback_summary_that_cannot_be_cut_to_the_destinations_window_is_refused() {
+async fn a_fallback_summary_without_elidable_outputs_rolls_through_the_destinations_window() {
     let env = env();
     let a = spawn_responding_provider(1, |_, _| SERVER_ERROR.to_vec()).await;
-    let b = spawn_capturing_provider(vec![]).await;
+    let b = spawn_responding_provider(30, |_, _| answer(SUMMARY)).await;
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 16).await;
 
     let out = state.run_command(id, "model", "b/model-b").await.unwrap();
-    assert!(!out.ok, "{out:?}");
-    let error = out.error.unwrap();
-    assert!(error.contains("cannot be compacted to fit it"), "{error}");
-    assert!(error.contains("the part to summarize needs"), "{error}");
+    assert!(out.ok, "{out:?}");
     assert_eq!(a.bodies().len(), 1, "the current model was tried");
-    assert!(b.bodies().is_empty(), "the destination was never asked");
-    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
-    assert!(stored(&state, id, "context.compacted").await.is_empty());
-    assert!(stored(&state, id, "model.changed").await.is_empty());
+    assert!(b.bodies().len() > 1, "the destination uses rolling chunks");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
+    assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
-    assert!(checkpoint.is_none());
+    assert!(checkpoint.is_some());
 }
 
 /// Asserts that a switch stopped mid-way left no selection, notice or
@@ -950,7 +1033,11 @@ async fn controls_during_an_automatic_summary_are_refused_or_wait_their_turn() {
         .map(|e| e.payload["reason"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(reasons, ["automatic", "manual"]);
-    assert_eq!(provider.bodies().len(), 3, "summary, turn, manual summary");
+    assert_eq!(
+        provider.bodies().len(),
+        4,
+        "rolling summary, turn, manual summary"
+    );
     assert!(stored(&state, id, "model.changed").await.is_empty());
 
     // The mark is gone: the refused commands go through.

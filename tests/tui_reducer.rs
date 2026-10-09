@@ -3491,6 +3491,8 @@ fn context_compacted_pushes_a_one_line_notice() {
     script.start().push(
         EventKind::ContextCompacted,
         &ContextCompacted {
+            written_by: None,
+            passes: 1,
             generation: 1,
             through_message: 7,
             pruned: 2,
@@ -3516,6 +3518,8 @@ fn context_compacted_pushes_a_one_line_notice() {
     script.start().push(
         EventKind::ContextCompacted,
         &ContextCompacted {
+            written_by: None,
+            passes: 1,
             generation: 2,
             through_message: 70,
             pruned: 0,

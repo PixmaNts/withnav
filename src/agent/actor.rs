@@ -51,6 +51,9 @@ pub struct BypassState {
 }
 
 pub struct AgentActor {
+    pub compaction_writer: Option<super::compaction::SummaryWriter>,
+    pub compaction_chunk_tokens: u64,
+    pub compaction_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
     pub captain_request_inherited: bool,
@@ -196,6 +199,9 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            compaction_writer: None,
+            compaction_chunk_tokens: 64_000,
+            compaction_progress: None,
             tool_flows: None,
             captain_request_inherited: false,
             protected_config_spelling: None,

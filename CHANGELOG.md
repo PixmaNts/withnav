@@ -26,6 +26,11 @@ requests land in `develop`.
 - **Cognition and Settings text scales with your editor.** Secondary text scales too,
   and conversation, tool and card content uses the readable theme foreground.
   Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.
+### Added
+
+- **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
+  assigned model's window and fall back to the session model on provider errors; configuration
+  can opt out or tune chunk size. Compaction events report the writer and successful passes.
 
 ## [0.7.1] - 2026-10-09
 

@@ -137,6 +137,14 @@ pub struct Models {
     pub observer: Option<Arc<dyn Observer>>,
     pub writer: Option<Arc<dyn Writer>>,
 }
+pub fn unavailable_notice(models: &Models) -> Option<&'static str> {
+    match (models.observer.is_some(), models.writer.is_some()) {
+        (false, false) => Some("Workspace memory tracking is disabled: Instinct and metacognition are unavailable. Existing episodes remain searchable."),
+        (false, true) => Some("Workspace memory tracking is disabled: Instinct is unavailable. Existing episodes remain searchable."),
+        (true, false) => Some("Workspace memory writing is deferred: metacognition is unavailable. Existing episodes remain searchable."),
+        (true, true) => None,
+    }
+}
 pub fn models(models_path: Option<&Path>, workspace: &Path, config_dir: &Path) -> Models {
     models_with_output_limit(models_path, workspace, config_dir, 2048)
 }
@@ -259,6 +267,22 @@ pub struct Watcher {
     pub cancel: CancellationToken,
 }
 impl Watcher {
+    async fn notice(&self, text: &str) -> Result<(), String> {
+        let store = self.store.clone();
+        let session = self.session;
+        self.sequencer
+            .commit_acked(
+                Candidate::new(
+                    EventKind::CommandResult,
+                    serde_json::json!({"name":"memory","ok":false,"error":text}),
+                ),
+                Box::new(move |event| {
+                    Box::pin(async move { store.append_event_acked(session, event).await })
+                }),
+            )
+            .await?;
+        Ok(())
+    }
     pub fn start(self) -> tokio::sync::mpsc::UnboundedSender<Ulid> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
@@ -330,7 +354,23 @@ impl Watcher {
             &serde_json::json!({"goal":{"anchor_seq":goal.anchor_seq,"text":goal.text},"recent_captain_messages":recent.iter().map(|c|serde_json::json!({"seq":c.seq,"text":c.text})).collect::<Vec<_>>(),"visible_evidence":visible}),
         )?;
         if input.len() > memory::INSTINCT_INPUT_BYTES {
-            return Err("memory instinct input too large; goal unchanged".into());
+            goal.end_seq = Some(end);
+            goal.close_reason = Some("oversized".into());
+            goal.writer_status = "skipped".into();
+            goal.progress = "blocked".into();
+            self.store
+                .memory_observe(
+                    State {
+                        session: self.session.to_string(),
+                        workspace: self.workspace.clone(),
+                        last_turn: end,
+                        active_goal: None,
+                        version: 1,
+                    },
+                    vec![goal],
+                )
+                .await?;
+            return self.notice("Workspace memory goal skipped: observation input is oversized; no partial episode was saved.").await;
         }
         let observer = self
             .models
@@ -435,6 +475,7 @@ impl Watcher {
                         self.store
                             .memory_fail(&goal.id, &token, error, true)
                             .await?;
+                        self.notice("Workspace memory goal skipped: episode input is oversized; no partial episode was saved.").await?;
                         break;
                     }
                 };

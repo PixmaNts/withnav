@@ -306,7 +306,9 @@ async fn conversation_deletion_cleans_memory_and_drops_late_writer() {
     store.delete(session).await.unwrap();
     fake.release.notify_one();
     job.await.unwrap().unwrap();
-    while let Ok(event) = events.try_recv() { assert_ne!(event.kind,"memory.episode_written"); }
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.kind, "memory.episode_written");
+    }
     assert!(store
         .memory_goals(&session.to_string())
         .await
@@ -423,4 +425,98 @@ async fn memory_events_are_durable_before_publication() {
             .iter()
             .any(|e| e.seq == event.seq && e.kind == event.kind));
     }
+}
+
+#[tokio::test]
+async fn missing_layers_produce_one_combined_captain_notice() {
+    let mut f = fixture(false).await;
+    let fake = writer(&f.watcher, false, false);
+    f.watcher.models.writer = Some(fake);
+    assert!(unavailable_notice(&f.watcher.models).is_none());
+    f.watcher.models.writer = None;
+    assert!(unavailable_notice(&f.watcher.models)
+        .unwrap()
+        .contains("metacognition"));
+    f.watcher.models.observer = None;
+    assert!(unavailable_notice(&f.watcher.models)
+        .unwrap()
+        .contains("Instinct and metacognition"));
+}
+
+#[tokio::test]
+async fn oversized_observation_is_skipped_with_one_durable_notice() {
+    let mut f = fixture(false).await;
+    let turn = turn(&f.watcher, 1, &"x".repeat(memory::INSTINCT_INPUT_BYTES)).await;
+    f.watcher.completed(turn).await.unwrap();
+    f.watcher.completed(turn).await.unwrap();
+    let event = f.events.try_recv().unwrap();
+    assert_eq!(event.kind, "command.result");
+    assert!(event.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("oversized"));
+    assert!(f.events.try_recv().is_err());
+    assert_eq!(f.observer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.watcher
+            .store
+            .memory_goals(&f.watcher.session.to_string())
+            .await
+            .unwrap()[0]
+            .writer_status,
+        "skipped"
+    );
+    assert!(f
+        .watcher
+        .store
+        .load(f.watcher.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .envelopes
+        .iter()
+        .any(|e| e.seq == event.seq));
+}
+
+#[tokio::test]
+async fn oversized_writer_input_is_skipped_with_one_notice_and_no_provider_call() {
+    let mut f = fixture(false).await;
+    let one = turn(&f.watcher, 1, "oversized episode").await;
+    f.watcher.completed(one).await.unwrap();
+    let two = turn(&f.watcher, 3, "finished").await;
+    f.watcher.completed(two).await.unwrap();
+    // Replace the earlier turn-end evidence inside the closed goal's range.
+    let conn = rusqlite::Connection::open(f._temp.path().join("history.db")).unwrap();
+    let envelope = EventEnvelope::new(
+        f.watcher.session,
+        2,
+        EventKind::ToolPostCall,
+        serde_json::json!({"output":"x".repeat(memory::WRITER_INPUT_BYTES)}),
+    );
+    conn.execute(
+        "UPDATE events SET kind=?1,envelope=?2 WHERE session_id=?3 AND seq=2",
+        rusqlite::params![
+            envelope.kind,
+            serde_json::to_string(&envelope).unwrap(),
+            f.watcher.session.to_string()
+        ],
+    )
+    .unwrap();
+    let fake = writer(&f.watcher, false, false);
+    f.watcher.models.writer = Some(fake.clone());
+    while f.events.try_recv().is_ok() {}
+    f.watcher.jobs().await.unwrap();
+    f.watcher.jobs().await.unwrap();
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(f.events.try_recv().unwrap().kind, "command.result");
+    assert!(f.events.try_recv().is_err());
+    assert_eq!(
+        f.watcher
+            .store
+            .memory_goals(&f.watcher.session.to_string())
+            .await
+            .unwrap()[0]
+            .writer_status,
+        "skipped"
+    );
 }

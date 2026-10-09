@@ -3285,9 +3285,15 @@ impl Service {
                     &workspace,
                     &self.config.config_dir,
                 );
-                if models.observer.is_none() {
-                    sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({"name":"memory","ok":false,"error":"Workspace memory tracking is disabled: Instinct is unavailable. Existing episodes remain searchable."}))).map_err(|e| ServerError::History(e.to_string()))?;
-                } else {
+                if let Some(notice) = super::memory::unavailable_notice(&models) {
+                    sequencer
+                        .publish(Candidate::new(
+                            EventKind::CommandResult,
+                            serde_json::json!({"name":"memory","ok":false,"error":notice}),
+                        ))
+                        .map_err(|e| ServerError::History(e.to_string()))?;
+                }
+                if models.observer.is_some() {
                     actor.memory_completed = Some(
                         super::memory::Watcher {
                             store: self.history.as_ref().clone(),

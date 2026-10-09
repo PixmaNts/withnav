@@ -563,15 +563,23 @@ impl Watcher {
                     parsed.and_then(|body| {
                         let mut value = serde_json::to_value(body).map_err(|e| e.to_string())?;
                         crate::flows::redaction::response(&mut value);
-                        serde_json::from_value(value)
-                            .map(|body| (written, body))
-                            .map_err(|e| e.to_string())
+                        let output = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+                        memory::writer::parse(
+                            &output,
+                            &goal.text,
+                            goal.start_seq,
+                            end,
+                            &events.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+                        )
+                        .map(|body| (written, body))
+                        .map_err(|e| e.to_string())
                     })
                 });
-                match result {
+                let result = match result {
                     Ok((written, body)) => {
                         let store = self.store.clone();
                         let id = goal.id.clone();
+                        let claim = token.clone();
                         let payload = serde_json::json!({"goal_id":goal.id,"start_seq":goal.start_seq,"end_seq":end,"model":written.model,"usage":written.usage});
                         let committed = self
                             .sequencer
@@ -582,7 +590,7 @@ impl Watcher {
                                         store
                                             .memory_publish_complete(
                                                 id,
-                                                token,
+                                                claim,
                                                 body,
                                                 written.model,
                                                 written.usage,
@@ -593,17 +601,20 @@ impl Watcher {
                                 }),
                             )
                             .await;
-                        if let Err(error) = committed {
-                            if !error.contains("memory result stale") {
-                                return Err(error);
-                            }
-                        }
-                        break;
+                        committed
                     }
+                    Err(error) => Err(error),
+                };
+                match result {
+                    Ok(_) => break,
                     Err(error) => {
+                        let stale = error.contains("memory result stale");
                         self.store
                             .memory_fail(&goal.id, &token, error, false)
                             .await?;
+                        if stale {
+                            break;
+                        }
                         if attempt == 0 {
                             tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(Duration::from_secs(1))=>{}}
                         }

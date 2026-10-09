@@ -58,6 +58,7 @@ impl Observer for FakeObserver {
     }
 }
 struct FakeWriter {
+    output: Option<String>,
     inputs: Mutex<Vec<String>>,
     calls: AtomicUsize,
     fail_first: bool,
@@ -88,15 +89,17 @@ impl Writer for FakeWriter {
                 self.release.notified().await;
             }
             Ok(Written {
-                text: serde_json::to_string(&EpisodeBody {
-                    version: 1,
-                    goal: goal.text.clone(),
-                    decisions: vec![],
-                    changes: vec![],
-                    verification: vec![],
-                    open_items: vec![],
-                })
-                .unwrap(),
+                text: self.output.clone().unwrap_or_else(|| {
+                    serde_json::to_string(&EpisodeBody {
+                        version: 1,
+                        goal: goal.text.clone(),
+                        decisions: vec![],
+                        changes: vec![],
+                        verification: vec![],
+                        open_items: vec![],
+                    })
+                    .unwrap()
+                }),
                 model: "fake".into(),
                 usage: "{}".into(),
                 truncated: false,
@@ -166,6 +169,7 @@ async fn turn(w: &Watcher, seq: u64, text: &str) -> Ulid {
 }
 fn writer(w: &Watcher, fail_first: bool, slow: bool) -> Arc<FakeWriter> {
     Arc::new(FakeWriter {
+        output: None,
         inputs: Mutex::new(vec![]),
         calls: AtomicUsize::new(0),
         fail_first,
@@ -214,6 +218,94 @@ async fn rejected_skill_text_is_absent_from_observer_and_writer_requests() {
     for input in observer_inputs.iter().chain(writer_inputs.iter()) {
         assert!(!input.contains("rejected goal text"));
         assert!(input.contains("accepted goal"));
+    }
+}
+
+#[tokio::test]
+async fn redaction_growth_past_writer_output_cap_settles_job() {
+    let mut f = fixture(false).await;
+    let first = turn(&f.watcher, 1, "near cap goal").await;
+    f.watcher.completed(first).await.unwrap();
+    let mut body = EpisodeBody {
+        version: 1,
+        goal: "near cap goal".into(),
+        decisions: vec![],
+        changes: vec![
+            crate::agent::memory::CitedItem {
+                text: "token=x".into(),
+                sequences: vec![1],
+            };
+            100
+        ],
+        verification: vec![],
+        open_items: vec![crate::agent::memory::CitedItem {
+            text: String::new(),
+            sequences: vec![1],
+        }],
+    };
+    let padding = memory::WRITER_OUTPUT_BYTES - serde_json::to_string(&body).unwrap().len();
+    body.open_items[0].text = "x".repeat(padding);
+    let output = serde_json::to_string(&body).unwrap();
+    assert_eq!(output.len(), memory::WRITER_OUTPUT_BYTES);
+    assert!(memory::writer::parse(&output, &body.goal, 1, 4, &[1, 3]).is_ok());
+    let mut redacted = serde_json::to_value(&body).unwrap();
+    crate::flows::redaction::response(&mut redacted);
+    assert!(serde_json::to_string(&redacted).unwrap().len() > memory::WRITER_OUTPUT_BYTES);
+    let mut fake = writer(&f.watcher, false, false);
+    Arc::get_mut(&mut fake).unwrap().output = Some(output);
+    f.watcher.models.writer = Some(fake.clone());
+    let second = turn(&f.watcher, 3, "finished").await;
+    f.watcher.completed(second).await.unwrap();
+    let goals = f
+        .watcher
+        .store
+        .memory_goals(&f.watcher.session.to_string())
+        .await
+        .unwrap();
+    assert_eq!(goals[0].writer_status, "skipped");
+    assert_eq!(goals[0].attempts, 2);
+    assert!(goals[0].claim.is_none());
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+    assert!(f
+        .watcher
+        .store
+        .memory_episodes("/workspace", None, 5)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn storage_rejection_retries_and_settles_writer_claim() {
+    let mut f = fixture(false).await;
+    let first = turn(&f.watcher, 1, "storage rejection goal").await;
+    f.watcher.completed(first).await.unwrap();
+    let fake = writer(&f.watcher, false, false);
+    f.watcher.models.writer = Some(fake.clone());
+    let conn = rusqlite::Connection::open(f._temp.path().join("history.db")).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_episode BEFORE INSERT ON episodes BEGIN SELECT RAISE(ABORT,'forced storage rejection'); END;").unwrap();
+    let second = turn(&f.watcher, 3, "finished").await;
+    f.watcher.completed(second).await.unwrap();
+    f.watcher.jobs().await.unwrap();
+    let goals = f
+        .watcher
+        .store
+        .memory_goals(&f.watcher.session.to_string())
+        .await
+        .unwrap();
+    assert_eq!(goals[0].writer_status, "skipped");
+    assert_eq!(goals[0].attempts, 2);
+    assert!(goals[0].claim.is_none());
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+    assert!(f
+        .watcher
+        .store
+        .memory_episodes("/workspace", None, 5)
+        .await
+        .unwrap()
+        .is_empty());
+    while let Ok(event) = f.events.try_recv() {
+        assert_ne!(event.kind, "memory.episode_written");
     }
 }
 

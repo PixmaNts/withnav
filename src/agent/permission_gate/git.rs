@@ -13,7 +13,7 @@ pub(super) fn literal(command: &str) -> Option<Vec<&str>> {
     let words: Vec<_> = command.split_whitespace().collect();
     (words
         .first()
-        .is_some_and(|word| word.rsplit('/').next() == Some("git"))
+        .is_some_and(|word| matches!(*word, "git" | "/usr/bin/git"))
         && words.get(1).is_some_and(|word| !word.starts_with('-')))
     .then_some(words)
 }
@@ -120,8 +120,13 @@ async fn read(workspace: &Path, args: &[&str]) -> Option<String> {
         .map(|text| text.trim().to_owned())
 }
 
-pub(super) async fn facts(command: &str, workspace: &Path) -> Option<Value> {
+pub(super) async fn facts(command: &str, cx: &crate::tools::ToolContext) -> Option<Value> {
     let words = literal(command)?;
+    super::shell::trusted_program(
+        words[0],
+        &json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots}),
+    )?;
+    let workspace = &cx.workspace;
     tokio::time::timeout(Duration::from_millis(300), async {
         let current = read(workspace, &["symbolic-ref", "--short", "HEAD"]).await;
         let default = read(workspace, &["symbolic-ref", "refs/remotes/origin/HEAD"])

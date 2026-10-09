@@ -124,6 +124,7 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
         flags.risky |= shell::segments(command).is_none()
             || shell::segments(command)
                 .is_some_and(|segments| segments.iter().any(|words| shell::destructive(words)));
+        flags.mutation |= shell::removal_or_move(command);
         if let Some(words) = git::literal(command) {
             if let Some(push) = git::push(&words, None) {
                 flags.risky |= push["force"] == true || push["delete"] == true;
@@ -417,7 +418,7 @@ pub fn route(
     if state["untrusted_evidence"]["arguments"]["command"]
         .as_str()
         .is_some_and(|command| {
-            shell::requires_review(command, &state["host_facts"]["git"])
+            shell::requires_review(command, &state["host_facts"])
                 || shell::overwrite_paths(command).is_some_and(|paths| {
                     !paths.is_empty() && state["host_facts"]["overwrites_recoverable"] != true
                 })
@@ -425,7 +426,12 @@ pub fn route(
     {
         return Ok(Route::Review);
     }
-    if label("call_effect") == "read_only" && !flags.mutation {
+    if label("call_effect") == "read_only"
+        && !flags.mutation
+        && !state["untrusted_evidence"]["arguments"]["command"]
+            .as_str()
+            .is_some_and(shell::removal_or_move)
+    {
         return Ok(Route::Run);
     }
     if label("reversibility") == "recoverable" {
@@ -478,7 +484,20 @@ pub fn config_grant_eligible(
     if call.name == "bash" {
         // Shell effects cannot be reconstructed safely; naming the settings
         // file always retains the Captain hold, even for indirect commands.
-        return !bash_command(call).is_some_and(|command| command.contains("config.json"));
+        return bash_command(call).is_some_and(|command| {
+            !command.contains("config.json")
+                && !shell::removal_or_move(command)
+                && !shell::requires_review(
+                    command,
+                    &json!({
+                        "workspace": actor.tool_context.workspace,
+                        "writable_roots": actor.tool_context.writable_roots
+                    }),
+                )
+        });
+    }
+    if !matches!(call.name.as_str(), "write" | "edit") {
+        return false;
     }
     let Some(path) = needed.destination.as_deref() else {
         return false;
@@ -547,7 +566,7 @@ pub fn protected_config_call(
         return false;
     }
     if call.name == "bash"
-        && supported_read_only_bash(call)
+        && supported_read_only_bash(call, &actor.tool_context)
         && !sensitive_call(call, needed, &actor.tool_context)
     {
         return false;
@@ -717,7 +736,7 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
         return Judged::Ask("Permission review: oversized input; approve once or deny".into());
     };
     if let Some(command) = bash_command(call) {
-        if let Some(facts) = git::facts(command, &actor.tool_context.workspace).await {
+        if let Some(facts) = git::facts(command, &actor.tool_context).await {
             if facts["push"]["branch"]
                 .as_str()
                 .zip(facts["default_branch"].as_str())
@@ -958,7 +977,7 @@ fn bash_names_root(call: &ToolCall, root: &std::path::Path, cx: &ToolContext) ->
     })
 }
 
-fn supported_read_only_bash(call: &ToolCall) -> bool {
+fn supported_read_only_bash(call: &ToolCall, cx: &ToolContext) -> bool {
     let Some(command) = call.args.get("command").and_then(Value::as_str) else {
         return false;
     };
@@ -971,8 +990,14 @@ fn supported_read_only_bash(call: &ToolCall) -> bool {
     let Some(program) = words.next() else {
         return false;
     };
-    if !matches!(
+    let Some(program) = shell::trusted_program(
         program,
+        &json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots}),
+    ) else {
+        return false;
+    };
+    if !matches!(
+        program.as_str(),
         "cat" | "head" | "tail" | "wc" | "ls" | "stat" | "grep" | "diff" | "file"
     ) {
         return false;
@@ -1056,6 +1081,14 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_context(workspace: &std::path::Path) -> ToolContext {
+        ToolContext {
+            binding: None,
+            workspace: workspace.to_path_buf(),
+            writable_roots: vec![workspace.to_path_buf()],
+            readable_roots: vec![],
+        }
+    }
     struct LabelJudge(Value);
     impl PermissionJudge for LabelJudge {
         fn judge<'a>(
@@ -1109,7 +1142,7 @@ mod tests {
                 args_valid: true,
             };
             let flags = prefilter(&call, &needed, &cx);
-            let input = PermissionReviewInput { questions: permission_questions(), state: json!({"host_facts":{"git":row["git"]},"captain_request":"Fix the code, test, commit and publish this task branch and PR","captain_request_complete":true,"untrusted_evidence":{"arguments":call.args}}).to_string() };
+            let input = PermissionReviewInput { questions: permission_questions(), state: json!({"host_facts":{"workspace":cx.workspace,"writable_roots":cx.writable_roots,"git":row["git"]},"captain_request":"Fix the code, test, commit and publish this task branch and PR","captain_request_complete":true,"untrusted_evidence":{"arguments":call.args}}).to_string() };
             let judge = LabelJudge(row.clone());
             let answers = judge
                 .judge(&input, &CancellationToken::new())
@@ -1164,7 +1197,7 @@ mod tests {
                 args: json!({"command":row["command"]}),
                 args_valid: true,
             };
-            let input = PermissionReviewInput { questions: permission_questions(), state: json!({"captain_request_complete":true,"host_facts":{"git":row["git"]},"untrusted_evidence":{"arguments":call.args}}).to_string() };
+            let input = PermissionReviewInput { questions: permission_questions(), state: json!({"captain_request_complete":true,"host_facts":{"workspace":cx.workspace,"writable_roots":cx.writable_roots,"git":row["git"]},"untrusted_evidence":{"arguments":call.args}}).to_string() };
             let answers = LabelJudge(row.clone())
                 .judge(&input, &CancellationToken::new())
                 .await
@@ -1208,9 +1241,11 @@ mod tests {
                 .status
                 .success());
         }
-        assert!(git::facts("git push origin feat/task", tmp.path())
-            .await
-            .is_some());
+        assert!(
+            git::facts("git push origin feat/task", &test_context(tmp.path()))
+                .await
+                .is_some()
+        );
         assert!(!git::recoverable_file(tmp.path(), "missing").await);
         assert!(!marker.exists());
     }
@@ -1229,7 +1264,7 @@ mod tests {
         };
         run(&["init", "-b", "feat/task"]);
         assert_eq!(
-            git::facts("git push origin feat/task", tmp.path())
+            git::facts("git push origin feat/task", &test_context(tmp.path()))
                 .await
                 .unwrap()["non_default_push"],
             false
@@ -1247,7 +1282,7 @@ mod tests {
         ] {
             run(&["config", key, value]);
             assert_eq!(
-                git::facts("git push origin feat/task", tmp.path())
+                git::facts("git push origin feat/task", &test_context(tmp.path()))
                     .await
                     .unwrap()["non_default_push"],
                 false,
@@ -1305,6 +1340,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_fast_path_requires_clean_recovery_and_never_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cx = test_context(tmp.path());
+        for args in [
+            vec!["init", "-b", "feat/task"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "user.email", "test@example.com"],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        std::fs::write(tmp.path().join("clean"), "original").unwrap();
+        std::fs::write(tmp.path().join("dirty"), "original").unwrap();
+        for args in [
+            vec!["add", "clean", "dirty"],
+            vec!["commit", "-m", "fixture"],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        std::fs::write(tmp.path().join("dirty"), "changed").unwrap();
+        std::fs::write(tmp.path().join("untracked"), "only copy").unwrap();
+        for (command, recoverable) in [
+            ("rm clean", true),
+            ("unlink clean", true),
+            ("rm dirty", false),
+            ("rm untracked", false),
+            ("mv clean dirty", false),
+        ] {
+            let paths = shell::overwrite_paths(command).unwrap();
+            let mut actual = !paths.is_empty();
+            for path in paths {
+                actual &= git::recoverable_file(tmp.path(), &path).await;
+            }
+            assert_eq!(actual, recoverable, "{command}");
+            let input = PermissionReviewInput { questions: permission_questions(), state: json!({"captain_request_complete":true,"host_facts":{"workspace":cx.workspace,"writable_roots":cx.writable_roots,"overwrites_recoverable":actual},"untrusted_evidence":{"arguments":{"command":command}}}).to_string() };
+            for effect in ["read_only", "local_change"] {
+                let answers = LabelJudge(json!({"confidence":1.0,"labels":{"call_effect":effect,"call_scope":"inside","reversibility":"recoverable","publication":"none","sensitivity":0.0,"task_fit":1.0}})).judge(&input, &CancellationToken::new()).await.unwrap();
+                assert_eq!(
+                    route(&input, &answers, &Overrides::default()),
+                    Ok(if recoverable && effect == "local_change" {
+                        Route::Run
+                    } else {
+                        Route::Review
+                    }),
+                    "{command}: {effect}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn literal_git_facts_confirm_only_the_current_non_default_branch() {
         let tmp = tempfile::tempdir().unwrap();
         for args in [
@@ -1323,7 +1420,7 @@ mod tests {
                 .status
                 .success());
         }
-        let facts = git::facts("git push origin feat/task", tmp.path())
+        let facts = git::facts("git push origin feat/task", &test_context(tmp.path()))
             .await
             .unwrap();
         assert_eq!(facts["non_default_push"], true);
@@ -1336,18 +1433,68 @@ mod tests {
             "git push --all origin",
         ] {
             assert_eq!(
-                git::facts(command, tmp.path()).await.unwrap()["non_default_push"],
+                git::facts(command, &test_context(tmp.path()))
+                    .await
+                    .unwrap()["non_default_push"],
                 false,
                 "{command}"
             );
         }
         for command in [
             "git push origin $BRANCH",
+            "/workspace/git status",
+            "./git push origin feat/task",
             "git status | cat",
             "git -C elsewhere push",
             "echo git push",
         ] {
-            assert!(git::facts(command, tmp.path()).await.is_none());
+            assert!(git::facts(command, &test_context(tmp.path()))
+                .await
+                .is_none());
+        }
+    }
+    #[test]
+    fn executable_identity_rejects_relative_workspace_and_writable_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let facts = json!({"workspace":tmp.path(),"writable_roots":[tmp.path()]});
+        for name in ["git", "cat", "jq", "python3", "gh"] {
+            assert!(shell::trusted_program(&format!("./{name}"), &facts).is_none());
+            assert!(
+                shell::trusted_program(&tmp.path().join(name).to_string_lossy(), &facts).is_none()
+            );
+        }
+        assert_eq!(
+            shell::trusted_program("/usr/bin/git", &facts).as_deref(),
+            Some("git")
+        );
+        let writable_system = json!({"workspace":tmp.path(),"writable_roots":["/usr/bin"]});
+        assert!(shell::trusted_program("git", &writable_system).is_none());
+        assert!(shell::trusted_program("cat", &writable_system).is_none());
+    }
+
+    #[test]
+    fn sed_fast_path_accepts_only_substitutions_without_execution_or_file_io() {
+        let facts = json!({"workspace":"/workspace","writable_roots":["/workspace"]});
+        for command in [
+            "sed -i 's/a/b/' f",
+            "sed -i -e 's/a/b/g' -e 's/c/d/2ip' f",
+            "sed -i 's/a/b/;s/c/d/g' f",
+        ] {
+            assert!(!shell::requires_review(command, &facts), "{command}");
+        }
+        for command in [
+            "sed -i 's/a/b/e' f",
+            "sed -i -e 'w /tmp/x' f",
+            "sed -i '1e id' f",
+            "sed -i 's/a/b/w /tmp/x' f",
+            "sed -i -f script f",
+            "sed -i -s 's/a/b/' f",
+            "sed -i 'r /tmp/x' f",
+            "sed -i 'R /tmp/x' f",
+            "sed -i 'W /tmp/x' f",
+            "perl -i -pe 's/a/b/' f",
+        ] {
+            assert!(shell::requires_review(command, &facts), "{command}");
         }
     }
     #[tokio::test]

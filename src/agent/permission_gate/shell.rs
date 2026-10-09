@@ -1,5 +1,57 @@
 //! Conservative shell understanding: unknown execution can never inherit optimistic labels.
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+
+/// Resolve the actual PATH executable, not a script borrowing a tool's basename.
+/// Both its spelling and symlink target must be outside every writable root.
+pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<String> {
+    let name = basename(word);
+    let path = Path::new(word);
+    if word.contains('/') && !path.is_absolute() {
+        return None;
+    }
+    let mut roots: Vec<PathBuf> = facts["writable_roots"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(PathBuf::from)
+        .collect();
+    roots.push(PathBuf::from(facts["workspace"].as_str()?));
+    let outside = |candidate: &Path| {
+        roots.iter().all(|root| {
+            !candidate.starts_with(root)
+                && !candidate.starts_with(root.canonicalize().unwrap_or_else(|_| root.clone()))
+        })
+    };
+    let resolved = std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| {
+            if dir.is_absolute() {
+                dir
+            } else {
+                roots.last().unwrap().join(dir)
+            }
+        })
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            use std::os::unix::fs::PermissionsExt;
+            candidate
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })?;
+    let canonical = resolved.canonicalize().ok()?;
+    if !outside(&resolved)
+        || !outside(&canonical)
+        || (path.is_absolute() && (path != canonical || !outside(path)))
+    {
+        return None;
+    }
+    // Publication probes deliberately use this exact system binary.
+    if name == "git" && canonical != Path::new("/usr/bin/git").canonicalize().ok()? {
+        return None;
+    }
+    Some(name.to_owned())
+}
 
 pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
     if command.contains(['$', '`', '\\', '(', ')', '{', '}', '*', '?', '[', '#']) {
@@ -152,12 +204,14 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
     if i != 0 || words.iter().any(|w| w.contains('=')) {
         return false;
     }
-    let program = basename(&words[0]);
+    let Some(program) = trusted_program(&words[0], facts) else {
+        return false;
+    };
     if words.iter().any(|w| w == "<") {
         return false;
     }
     let args = &words[1..];
-    match program {
+    match program.as_str() {
         "git" => {
             let Some(i) = git_subcommand(words) else {
                 return false;
@@ -167,19 +221,21 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
             }
             match words[i].as_str() {
                 "push" => super::git::literal(whole)
-                    .and_then(|w| super::git::push(&w, facts["current_branch"].as_str()))
+                    .and_then(|w| super::git::push(&w, facts["git"]["current_branch"].as_str()))
                     .is_some_and(|push| {
-                        facts["non_default_push"] == true
-                            && facts["safe_push_config"] == true
+                        facts["git"]["non_default_push"] == true
+                            && facts["git"]["safe_push_config"] == true
                             && push["literal_target"] == true
                             && push["own_branch"] == true
                             && push["force"] == false
                             && push["delete"] == false
-                            && facts["default_branch"].as_str().is_some_and(|default| {
-                                push["branch"]
-                                    .as_str()
-                                    .is_some_and(|branch| branch != default)
-                            })
+                            && facts["git"]["default_branch"]
+                                .as_str()
+                                .is_some_and(|default| {
+                                    push["branch"]
+                                        .as_str()
+                                        .is_some_and(|branch| branch != default)
+                                })
                     }),
                 "add" => words[2..].iter().all(|w| {
                     !w.starts_with('-')
@@ -224,15 +280,16 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
         "npm" => matches!(args.first().map(String::as_str), Some("ci" | "test")),
         "make" => args == ["test"],
         "cp" | "mv" => args.len() == 2 && args.iter().all(|w| !w.starts_with('-')),
-        "sed" => {
-            args.len() == 3
-                && args[0] == "-i"
-                && !args[2].starts_with('-')
-                && args[1].starts_with("s/")
-                && args[1].ends_with('/')
+        "sed" => sed_paths(args).is_some(),
+        "perl" => false,
+        "rm" | "unlink" | "shred" => {
+            !args.is_empty()
+                && args
+                    .iter()
+                    .all(|w| !w.starts_with('-') || matches!(w.as_str(), "--" | "-f" | "--force"))
         }
         "cat" | "head" | "tail" | "wc" | "ls" | "stat" | "grep" | "diff" | "file" | "find"
-        | "echo" | "printf" | "mkdir" | "touch" | "rm" => true,
+        | "echo" | "printf" | "mkdir" | "touch" | "jq" => true,
         _ => false,
     }
 }
@@ -273,10 +330,69 @@ pub(super) fn overwrite_paths(command: &str) -> Option<Vec<String>> {
             }
         }
         match basename(&words[0]) {
-            "cp" | "mv" => paths.push(words.last()?.clone()),
-            "sed" if words.iter().any(|w| w.starts_with("-i")) => paths.push(words.last()?.clone()),
+            "cp" => paths.push(words.last()?.clone()),
+            "mv" => paths.extend(
+                words
+                    .iter()
+                    .skip(1)
+                    .filter(|w| !w.starts_with('-'))
+                    .cloned(),
+            ),
+            "rm" | "unlink" | "shred" | "truncate" => paths.extend(
+                words
+                    .iter()
+                    .skip(1)
+                    .filter(|w| !w.starts_with('-'))
+                    .cloned(),
+            ),
+            "sed" => paths.extend(sed_paths(&words[1..])?),
             _ => {}
         }
     }
     Some(paths)
+}
+
+fn sed_paths(args: &[String]) -> Option<Vec<String>> {
+    if args.first()?.as_str() != "-i" {
+        return None;
+    }
+    let substitution = |expression: &str| {
+        expression.split(';').all(|expr| {
+            let parts: Vec<_> = expr.split('/').collect();
+            parts.len() == 4
+                && parts[0] == "s"
+                && parts[3]
+                    .chars()
+                    .all(|c| matches!(c, 'g' | 'i' | 'p' | '0'..='9'))
+        })
+    };
+    let mut i = 1;
+    if args.get(i)?.as_str() == "-e" {
+        while args.get(i).is_some_and(|arg| arg == "-e") {
+            if !substitution(args.get(i + 1)?) {
+                return None;
+            }
+            i += 2;
+        }
+    } else {
+        if !substitution(args.get(i)?) {
+            return None;
+        }
+        i += 1;
+    }
+    let paths = &args[i..];
+    (!paths.is_empty() && paths.iter().all(|p| !p.starts_with('-'))).then(|| paths.to_vec())
+}
+
+pub(super) fn removal_or_move(command: &str) -> bool {
+    segments(command).is_none_or(|segments| {
+        segments.iter().any(|words| {
+            executable(words).is_none_or(|i| {
+                matches!(
+                    basename(&words[i]),
+                    "rm" | "unlink" | "shred" | "truncate" | "mv"
+                )
+            })
+        })
+    })
 }

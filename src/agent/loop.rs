@@ -3064,6 +3064,45 @@ mod tests {
             One::Settled
         ));
         assert_eq!(metadata.unwrap()["approved_by"], "config_session_grant");
+        for command in [
+            format!("rm {}/models.json", tmp.path().display()),
+            format!("mv {}/config.json x", tmp.path().display()),
+            format!("unlink {}/models.json", tmp.path().display()),
+            format!("shred {}/models.json", tmp.path().display()),
+            format!("truncate -s 0 {}/models.json", tmp.path().display()),
+        ] {
+            let destructive = ToolCall {
+                id: "config-delete".into(),
+                name: "bash".into(),
+                args_valid: true,
+                args: serde_json::json!({"command":command}),
+            };
+            let Gated::Ask(request, destination) = gate(&actor, &destructive) else {
+                panic!("config destruction must be gated")
+            };
+            assert!(!request.allow_config_session);
+            let needed = Needed {
+                scope: request.scope.clone(),
+                destination,
+            };
+            assert!(!super::super::permission_gate::config_grant_eligible(
+                &actor,
+                &destructive,
+                &needed
+            ));
+            assert_eq!(
+                super::super::permission_gate::hard_floor(&actor, &destructive, &needed),
+                Some(super::super::permission_gate::HardFloorReason::ProtectedConfig)
+            );
+            assert!(matches!(
+                super::super::permission_gate::consult(&actor, &destructive, &needed).await,
+                super::super::permission_gate::Judged::Ask(_)
+            ));
+            assert!(matches!(
+                run_gated(&mut actor, &destructive, &mut |_| {}).await,
+                One::Ask(_, _)
+            ));
+        }
         let mut child = plan_actor(None, "http://unused");
         child.config_session_grant = actor.config_session_grant.clone();
         assert!(child

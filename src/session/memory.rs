@@ -228,10 +228,18 @@ pub fn evidence(events: &[EventEnvelope], start: u64, end: u64) -> Vec<(u64, Str
 }
 
 fn anchors(events: &[EventEnvelope], end: u64) -> Vec<CaptainAnchor> {
+    let rejected = events
+        .iter()
+        .filter_map(super::store::rejected_captain_command)
+        .collect::<std::collections::HashSet<_>>();
     events
         .iter()
         .filter(|e| {
             e.seq <= end
+                && !e.payload["command_id"]
+                    .as_str()
+                    .and_then(|id| id.parse::<Ulid>().ok())
+                    .is_some_and(|id| rejected.contains(&id))
                 && e.kind == "message.received"
                 && e.payload["source"]
                     .as_str()
@@ -568,6 +576,25 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejected_skill_message_cannot_anchor_a_goal() {
+        let session = Ulid::new();
+        let command = Ulid::new();
+        let message = EventEnvelope::new(
+            session,
+            1,
+            EventKind::MessageReceived,
+            serde_json::json!({"source":"captain","content":"rejected goal","command_id":command}),
+        );
+        let mut refusal = EventEnvelope::new(
+            session,
+            2,
+            EventKind::CommandResult,
+            serde_json::json!({"name":"skill","ok":false,"operation_id":command}),
+        );
+        refusal.correlation_id = Some(command);
+        assert!(anchors(&[message, refusal], 3).is_empty());
+    }
     #[test]
     fn evidence_never_includes_reasoning_or_autonomous_goal_anchors() {
         let event = EventEnvelope::new(

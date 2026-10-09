@@ -79,6 +79,7 @@
 
 pub mod memory;
 mod read;
+pub(crate) use read::rejected_captain_command;
 
 pub use read::Resumed;
 

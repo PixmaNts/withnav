@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cognition and Settings text scales with your editor.** Secondary text scales too,
+  and conversation, tool and card content uses the readable theme foreground.
+  Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.
+
 ## [0.7.1] - 2026-10-09
 
 WithNav 0.7.1 lets you delete a saved session, with its subagent sessions, from the terminal,

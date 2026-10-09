@@ -267,7 +267,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
   let disposed = false;
   const webview = panel.webview;
   webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")] };
-  webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource);
+  webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource).replace("<body>", '<body class="editor-tab">');
   const post = (m: HostToWebview): void => { if (!disposed) void webview.postMessage(m); };
   const off = child.subscribe(post);
   const favoritesOff = favorites.onChange(items => post({ type: "favorites", items, generation: child.currentGeneration() }));

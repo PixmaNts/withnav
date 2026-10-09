@@ -13,6 +13,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Permission review follows the ongoing task rather than just the latest small talk.**
+  Review sees bounded human intent and recent work with provenance, retries one eligible timeout,
+  and reuses typed Captain approvals for the same safe command and scope without overriding rejects.
+
 - **Instinct recognizes ordinary repository work without unnecessary review.** Described
   choices and confidence checks on only the deciding answers restore the fast permission path;
   destructive, shared, sensitive and host-unsafe calls retain their existing review floors.

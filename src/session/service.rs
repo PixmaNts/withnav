@@ -2582,6 +2582,16 @@ impl Service {
                 .latest_captain_message(session_id)
                 .await
                 .map_err(ServerError::History)?;
+            let events = self
+                .history
+                .permission_context_events(session_id)
+                .await
+                .map_err(ServerError::History)?;
+            actor
+                .permission_context
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .restore(&events);
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
@@ -2994,10 +3004,12 @@ impl Service {
             };
         let mut runtime_status =
             runtime::RuntimeStatus::with_selection(AgentSelection::new(agents, role));
+        runtime_status.permission_context = actor.permission_context.clone();
         // Share only live memory: a resumed root constructs a fresh grant.
         if let Some(parent) = child_parent {
             if let Some(handle) = self.handle(parent) {
                 runtime_status.config_session_grant = handle.status.config_session_grant.clone();
+                runtime_status.permission_context = handle.status.permission_context.clone();
             }
         }
         let status = Arc::new(runtime_status);

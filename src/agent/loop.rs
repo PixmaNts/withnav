@@ -112,6 +112,7 @@ async fn run_steps(
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
+
     // One client (one connection pool) for every step of this run.
     let client = ModelClient::new(
         "agent",
@@ -370,6 +371,25 @@ pub async fn resolve_permission_with_origin(
     };
     actor.state = AgentState::Running;
 
+    if origin == super::permissions::PermissionOrigin::Captain {
+        if let Some(signature) = request
+            .permission_gate
+            .as_ref()
+            .and_then(|gate| gate.get("signature"))
+            .filter(|s| !s.is_null())
+        {
+            let decision_name = match &decision {
+                PermissionDecision::AllowOnce => Some("allow_once"),
+                PermissionDecision::AllowFolder => Some("allow_folder"),
+                PermissionDecision::Deny { .. } => Some("deny"),
+                _ => None,
+            };
+            if let Some(decision_name) = decision_name {
+                actor.permission_context.lock().unwrap_or_else(|e| e.into_inner()).record(serde_json::json!({"request_id":request.id,"tool":request.tool,"signature":signature,"scope":request.scope,"decision":decision_name,"when":request.id.to_string()}));
+            }
+        }
+    }
+
     if actor.cancel.is_cancelled() {
         append_interrupted(actor, &call.id);
         for rest in &remaining_calls {
@@ -456,7 +476,14 @@ pub async fn resolve_permission_with_origin(
             }
         }
         PermissionDecision::Deny { message } => {
-            append_tool_result(actor, &call.id, &ToolResult::permission_denied(message));
+            let result = ToolResult::permission_denied(message)
+                .with_metadata(serde_json::json!({"approved_by":"denied"}));
+            actor
+                .permission_context
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tool(&call, &result);
+            append_tool_result(actor, &call.id, &result);
         }
     }
     match run_calls(actor, remaining_calls, steps_left, observe).await {
@@ -1039,6 +1066,11 @@ fn reject_call(
         name: &call.name,
         result: &result,
     });
+    actor
+        .permission_context
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .tool(call, &result);
     append_tool_result(actor, &call.id, &result);
 }
 
@@ -3626,7 +3658,7 @@ mod tests {
                 else {
                     panic!("choice");
                 };
-                assert!(instructions.contains("requested effects"));
+                assert!(instructions.contains("establish goals and constraints"));
                 Ok(super::super::permission_gate::PermissionReview {
                     decision: super::super::permission_gate::ReviewDecision::Approve,
                     reason: "understood recoverable effect explicitly requested by captain".into(),

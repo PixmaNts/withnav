@@ -310,6 +310,9 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
 }
 
 pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
+    if command.contains('|') {
+        return !read_only_pipeline(command, facts);
+    }
     let Some(segments) = segments(command) else {
         return true;
     };
@@ -317,6 +320,73 @@ pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
         .iter()
         .any(|words| destructive(words) || !understood(words, facts, command))
         || (command.contains('|') && segments.iter().any(|words| !read_only(words)))
+}
+
+/// Exact stdin-only transforms; no file loading, modules or arbitrary Python.
+pub(super) fn read_only_pipeline(command: &str, facts: &Value) -> bool {
+    let audited = "python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'";
+    let checked = command.replace(audited, "python3 -m json.tool");
+    if checked.contains(['$', '`', '\\', ';', '&', '<', '>', '\n']) || checked.contains("||") {
+        return false;
+    }
+    let stages: Vec<_> = command.split('|').map(str::trim).collect();
+    if stages.len() < 2 || stages.iter().any(|s| s.is_empty()) {
+        return false;
+    }
+    let Some(producer) = segments(stages[0]).filter(|s| s.len() == 1) else {
+        return false;
+    };
+    let words = &producer[0];
+    if !read_only(words) || !understood(words, facts, stages[0]) || destructive(words) {
+        return false;
+    }
+    let Some(program) = trusted_program(&words[0], facts) else {
+        return false;
+    };
+    if !matches!(program.as_str(), "git" | "gh" | "cat") {
+        return false;
+    }
+    if program == "gh" && !words.iter().any(|w| w == "--json") {
+        return false;
+    }
+    if program == "cat"
+        && (words.len() < 2
+            || words[1..].iter().any(|w| {
+                w.starts_with('-')
+                    || !Path::new(facts["workspace"].as_str().unwrap_or(""))
+                        .join(w)
+                        .canonicalize()
+                        .is_ok_and(|p| {
+                            p.starts_with(facts["workspace"].as_str().unwrap_or(""))
+                                && !super::sensitive_read(&p)
+                        })
+            }))
+    {
+        return false;
+    }
+    stages[1..].iter().all(|stage| {
+        // This audited program only parses stdin JSON and writes stdout JSON.
+        if *stage == "python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'" {
+            return trusted_program("python3", facts).is_some();
+        }
+        let Some(parts) = segments(stage).filter(|s| s.len() == 1) else {
+            return false;
+        };
+        let words = &parts[0];
+        match trusted_program(&words[0], facts).as_deref() {
+            Some("python3") => words[1..] == ["-m", "json.tool"],
+            Some("jq") => words.len() == 2 && safe_jq_filter(&words[1]),
+            _ => false,
+        }
+    })
+}
+
+fn safe_jq_filter(filter: &str) -> bool {
+    // A deliberately small filter grammar: identity and property selection.
+    filter.starts_with('.')
+        && filter
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'))
 }
 
 fn read_only(words: &[String]) -> bool {

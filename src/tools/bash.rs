@@ -67,6 +67,63 @@ fn bash_command() -> Result<Command, ToolError> {
 
 pub struct BashTool;
 
+/// Revalidate the same canonical target and original spelling without following links.
+pub(crate) fn script_matches(binding: &Value) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let (Some(path), Some(spelling), Some(hash), Some(parents)) = (
+        binding["path"].as_str(),
+        binding["spelling"].as_str(),
+        binding["sha256"].as_str(),
+        binding["parents"].as_array(),
+    ) else {
+        return false;
+    };
+    if !std::path::Path::new(spelling)
+        .canonicalize()
+        .is_ok_and(|resolved| resolved == std::path::Path::new(path))
+    {
+        return false;
+    }
+    for parent in parents {
+        let Some(path) = parent["path"].as_str() else {
+            return false;
+        };
+        if !crate::tools::nofollow::open_read(std::path::Path::new(path))
+            .and_then(|file| Ok(file.metadata()?))
+            .is_ok_and(|m| {
+                m.is_dir()
+                    && Some(m.dev()) == parent["dev"].as_u64()
+                    && Some(m.ino()) == parent["ino"].as_u64()
+            })
+        {
+            return false;
+        }
+    }
+    // The spelling must not acquire a symlink even if it resolves to the same file.
+    if crate::tools::nofollow::open_read(std::path::Path::new(spelling)).is_err() {
+        return false;
+    }
+    let Ok(file) = crate::tools::nofollow::open_read(std::path::Path::new(path)) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| {
+        m.is_file()
+            && m.nlink() == 1
+            && Some(m.len()) == binding["bytes"].as_u64()
+            && Some(m.dev()) == binding["dev"].as_u64()
+            && Some(m.ino()) == binding["ino"].as_u64()
+    }) {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take((48 * 1024 + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_ok()
+        && bytes.len() <= 48 * 1024
+        && format!("{:x}", Sha256::digest(&bytes)) == hash
+}
+
 impl Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
@@ -115,14 +172,25 @@ async fn run_bash(
     timeout_ms: u64,
     grace_ms: u64,
 ) -> Result<ToolResult, ToolError> {
-    let mut child = bash_command()?
+    let mut launcher = bash_command()?;
+    launcher
         .arg(command)
         .current_dir(&cx.workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()?;
+        .process_group(0);
+    // No snapshot copy is executed: this final check narrows, but does not close,
+    // the path-to-spawn race. Bash remains advisory, not a sandbox.
+    if cx
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.script.as_ref())
+        .is_some_and(|binding| !script_matches(binding))
+    {
+        return Err(ToolError::ScriptChanged);
+    }
+    let mut child = launcher.spawn()?;
 
     let pid = child.id().ok_or_else(|| ToolError::Denied {
         code: "spawn_failed".into(),

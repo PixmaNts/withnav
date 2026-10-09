@@ -324,6 +324,19 @@ scratch roots keep their existing Captain floors, and plan role conformance is u
 Evidence records every answer, thresholds and route (`instinct_run` / `review` / `captain`).
 Malformed answers, unavailable reviewers and deadlines escalate to the Captain. Not a sandbox.
 
+Script execution always retains the opaque-script floor and goes to metacognition review,
+never the Instinct-only fast path. Bounded script content is untrusted evidence, not authorization;
+it makes the effects visible so the reviewer can return fewer `unsure` decisions. Direct executable
+scripts attach only with a trusted canonical shebang interpreter (the executable identity resolver:
+root-owned, not group/other writable, outside workspace/writable roots), without `env` indirection.
+Evidence records that interpreter identity. No-follow reads reject multiply linked files as well
+as symlinks, sensitive targets and protected configuration. Complete evidence binds the canonical
+path, original spelling, file/parent identities and SHA-256. Validation is repeated before dispatch
+and immediately before bash spawn; any mismatch or inability to revalidate goes straight to the
+Captain with `script changed since it was reviewed`, even under bypass, without re-reading to
+decide escalation. No snapshot copy is executed: a path-to-spawn race remains, and bash is advisory,
+not a sandbox.
+
 Native `read` within readable roots remains ungated, except sensitive targets. Native `grep` and
 `glob` stay confined to readable roots and skip sensitive entries before opening them, with a count.
 Outside single-file reads use the same per-call classification as bash. Approval binds one canonical target,

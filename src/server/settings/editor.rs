@@ -13,6 +13,8 @@ pub fn keys(agents: &Agents) -> Vec<String> {
         "layers.reflex",
         "layers.instinct",
         "layers.metacognition",
+        "compaction.writer",
+        "compaction.chunk_tokens",
         "default_agent",
         "permissions.automatic_review",
         "permissions.scratch_dirs",
@@ -30,6 +32,8 @@ pub fn keys(agents: &Agents) -> Vec<String> {
 
 pub fn default_value(key: &str) -> Value {
     match key {
+        "compaction.writer" => json!("metacognition"),
+        "compaction.chunk_tokens" => json!(64_000),
         "default_agent" => json!("build"),
         "permissions.automatic_review" => json!(true),
         "permissions.scratch_dirs" => json!(Settings::default()
@@ -53,6 +57,8 @@ pub fn applies(key: &str) -> &'static str {
 
 pub fn label(key: &str) -> &str {
     match key {
+        "compaction.writer" => "Compaction summary writer",
+        "compaction.chunk_tokens" => "Compaction chunk tokens",
         "layers.reflex" => "Reflex · Completion",
         "layers.instinct" => "Instinct · Triage",
         "layers.metacognition" => "Metacognition · Beacon",
@@ -63,6 +69,12 @@ pub fn label(key: &str) -> &str {
 
 pub fn description(key: &str) -> &'static str {
     match key {
+        "compaction.writer" => {
+            "Metacognition writes summaries, falling back to the session model; session opts out."
+        }
+        "compaction.chunk_tokens" => {
+            "Rolling summary chunk size, capped at half the writer input budget."
+        }
         "layers.reflex" => "Completes as you type from code around the cursor.",
         "layers.instinct" => "Triages events and runs permission review.",
         "layers.metacognition" => {
@@ -121,6 +133,12 @@ pub fn validate(
     }
     let invalid = || format!("invalid value for {key}");
     match key {
+        "compaction.writer" if !matches!(value.as_str(), Some("metacognition" | "session")) => {
+            return Err(invalid())
+        }
+        "compaction.chunk_tokens" if !value.as_u64().is_some_and(|n| n > 0) => {
+            return Err(invalid())
+        }
         "permissions.automatic_review" if !value.is_boolean() => return Err(invalid()),
         "permissions.scratch_dirs"
             if !value.as_array().is_some_and(|a| {

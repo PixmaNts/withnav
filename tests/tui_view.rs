@@ -2957,6 +2957,8 @@ fn with_panel_data() -> State {
         messages: 27_000,
     }));
     s.conversation.last_compaction = Some(withnav::bus::event::ContextCompacted {
+        written_by: None,
+        passes: 1,
         generation: 1,
         through_message: 40,
         pruned: 6,

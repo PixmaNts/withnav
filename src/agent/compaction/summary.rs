@@ -67,11 +67,14 @@ pub struct PrepareInput<'a> {
     pub source_budget: u64,
     /// What the user asked the summary to pay particular attention to.
     pub focus: Option<&'a str>,
+    pub chunk_tokens: u64,
+    pub progress: Option<&'a (dyn Fn(u64, u64) + Send + Sync)>,
 }
 
 /// A checkpoint ready to persist and install. Nothing is saved yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
+    pub passes: u64,
     pub compaction: Compaction,
     /// The estimated prompt before and after, on the destination's terms.
     pub estimated_before: u64,
@@ -93,9 +96,7 @@ pub async fn prepare(
     )?;
     let estimated_before =
         estimate_effective(&input.components, input.transcript, input.current).total();
-    let request = build_summary_request(&input, &planned)?;
-    let message = ask(&input, request, cancel).await?;
-    let summary = validate_summary(&message)?;
+    let (summary, passes) = rolling_summary(&input, &planned, cancel).await?;
 
     let compaction = Compaction {
         checkpoint: Checkpoint {
@@ -115,10 +116,156 @@ pub async fn prepare(
         });
     }
     Ok(Prepared {
+        passes,
         compaction,
         estimated_before,
         estimated_after,
     })
+}
+
+/// Chunk boundaries keep the assistant call and all following tool results together.
+fn chunk_end(
+    transcript: &[ChatMessage],
+    first: usize,
+    end: usize,
+    cap: u64,
+    elided: &HashSet<usize>,
+) -> Result<usize, CompactionError> {
+    let mut accepted = first;
+    for next in first + 1..=end {
+        if next < end && matches!(transcript[next], ChatMessage::Tool { .. }) {
+            continue;
+        }
+        let message = ChatMessage::User {
+            provenance: Default::default(),
+            content: render_part(None, transcript, first, next - first, elided),
+        };
+        let needed = message_tokens(&message);
+        if needed > cap {
+            if accepted == first {
+                return Err(CompactionError::SummaryInputTooLarge {
+                    needed,
+                    budget: cap,
+                });
+            }
+            break;
+        }
+        accepted = next;
+    }
+    Ok(accepted)
+}
+
+async fn rolling_summary(
+    input: &PrepareInput<'_>,
+    planned: &Plan,
+    cancel: &CancellationToken,
+) -> Result<(String, u64), CompactionError> {
+    let mut first = input
+        .current
+        .map_or(0, |c| c.checkpoint.through_message + 1);
+    let end = planned.through_message + 1;
+    let cap = input.chunk_tokens.min(input.source_budget / 2).max(1);
+    let mut elided: HashSet<usize> = input
+        .current
+        .map(|c| c.pruned_message_indices.iter().copied().collect())
+        .unwrap_or_default();
+    // Preserve the existing biggest-first elision before splitting the prefix.
+    let whole = ChatMessage::User {
+        provenance: Default::default(),
+        content: render_part(None, input.transcript, first, end - first, &elided),
+    };
+    if message_tokens(&whole) > input.source_budget {
+        for &index in &planned.prefix_elidable {
+            elided.insert(index);
+            let reduced = ChatMessage::User {
+                provenance: Default::default(),
+                content: render_part(None, input.transcript, first, end - first, &elided),
+            };
+            if message_tokens(&reduced) <= input.source_budget {
+                break;
+            }
+        }
+    }
+    let mut summary = input.current.map(|c| c.checkpoint.summary.clone());
+    let mut passes = 0;
+    let mut count_first = first;
+    let mut total = 0;
+    while count_first < end {
+        count_first = chunk_end(input.transcript, count_first, end, cap, &elided)?;
+        total += 1;
+    }
+    while first < end {
+        if cancel.is_cancelled() {
+            return Err(CompactionError::Cancelled);
+        }
+        let mut next = chunk_end(input.transcript, first, end, cap, &elided)?;
+        if total > 1 {
+            if let Some(progress) = input.progress {
+                progress(passes + 1, total.max(passes + 1));
+            }
+        }
+        tracing::info!(
+            pass = passes + 1,
+            remaining_messages = end - first,
+            "Compacting rolling summary"
+        );
+        let mut previous_error = None;
+        loop {
+            let mut request = ChatRequest {
+                model: input.model.into(),
+                messages: vec![ChatMessage::System { content: match input.focus {
+                    Some(focus) => format!("{SUMMARY_PROMPT}\n\nThe user asked you to pay particular attention to: {focus}"),
+                    None => SUMMARY_PROMPT.into(),
+                }}], tools: vec![], stream: true,
+                stream_options: Some(StreamOptions { include_usage: true }),
+                max_tokens: Some(input.max_tokens.unwrap_or(SUMMARY_MAX_BYTES as u64).min(SUMMARY_MAX_BYTES as u64)),
+                temperature: None, extra: Default::default(),
+            };
+            if let Some(earlier) = &summary {
+                request.messages.push(ChatMessage::User {
+                    provenance: Default::default(),
+                    content: render_part(Some(earlier), &[], 0, 0, &HashSet::new()),
+                });
+            }
+            request.messages.push(ChatMessage::User {
+                provenance: Default::default(),
+                content: render_part(None, input.transcript, first, next - first, &elided),
+            });
+            let needed = request.messages.iter().map(message_tokens).sum();
+            if needed > input.source_budget {
+                return Err(CompactionError::SummaryInputTooLarge {
+                    needed,
+                    budget: input.source_budget,
+                });
+            }
+            let result = match ask(input, request, cancel).await {
+                Ok(message) => validate_summary(&message),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(value) => {
+                    summary = Some(value);
+                    passes += 1;
+                    first = next;
+                    break;
+                }
+                Err(CompactionError::Cancelled) => return Err(CompactionError::Cancelled),
+                Err(error) if previous_error.is_some() => {
+                    return Err(previous_error.unwrap_or(error))
+                }
+                Err(error) => {
+                    previous_error = Some(error);
+                    let size = message_tokens(&ChatMessage::User {
+                        provenance: Default::default(),
+                        content: render_part(None, input.transcript, first, next - first, &elided),
+                    });
+                    next =
+                        chunk_end(input.transcript, first, next, size / 2, &elided).unwrap_or(next);
+                }
+            }
+        }
+    }
+    Ok((summary.unwrap_or_default(), passes))
 }
 
 async fn ask(

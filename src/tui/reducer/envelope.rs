@@ -589,12 +589,25 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             s.conversation.last_compaction = serde_json::from_value(v.clone()).ok();
             let tokens = |key: &str| super::tokens(v[key].as_u64().unwrap_or(0));
+            let writer = v["written_by"]["model"]
+                .as_str()
+                .map(|model| format!(" by {}", strip_controls(model)))
+                .unwrap_or_default();
             s.conversation.blocks.push(block(
                 format!("notice:{}", e.seq),
                 BlockKind::Notice(format!(
-                    "context compacted: ~{} -> ~{}",
+                    "context compacted{writer}: ~{} -> ~{}",
                     tokens("estimate_before"),
                     tokens("estimate_after")
+                )),
+            ));
+        }
+        Some(EventKind::ContextCompacting) => {
+            s.conversation.blocks.push(block(
+                format!("notice:{}", e.seq),
+                BlockKind::Notice(format!(
+                    "Compacting… {}/{}",
+                    e.payload["pass"], e.payload["total"]
                 )),
             ));
         }

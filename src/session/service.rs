@@ -2639,6 +2639,57 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         ) {
+            let settings = crate::settings::load(&self.config.config_dir)
+                .map_err(|e| ServerError::History(e.to_string()))?;
+            actor.compaction_chunk_tokens = settings
+                .compaction_chunk_tokens()
+                .map_err(ServerError::History)?;
+            if settings.compaction_writer().map_err(ServerError::History)? == "metacognition" {
+                actor.compaction_writer = async {
+                    let assigned = crate::provider::layers::assigned(
+                        &models,
+                        &self.config.config_dir,
+                        crate::provider::assignments::Layer::Metacognition,
+                    )
+                    .ok()?;
+                    let resolved = &assigned.resolved;
+                    let api_key = crate::provider::auth::resolve_key(
+                        &self.config.config_dir,
+                        &resolved.provider_name,
+                        resolved.provider.api_key_env.as_deref(),
+                    )
+                    .ok()?;
+                    let chat = crate::provider::catalog::resolve_chat(
+                        &self.catalog,
+                        resolved,
+                        &api_key,
+                        &crate::provider::openai::ClientCache::new(),
+                    )
+                    .await
+                    .ok()?;
+                    let variant = crate::provider::layers::chat_variant(&assigned, &chat).ok()?;
+                    let max_tokens = resolved
+                        .model
+                        .max_output_tokens
+                        .map(|n| n.min(crate::agent::compaction::SUMMARY_MAX_BYTES as u64));
+                    let budget = crate::agent::context::Budget::compute(
+                        chat.window,
+                        chat.max_input_tokens,
+                        max_tokens,
+                        chat.reported_output,
+                    )
+                    .ok()?;
+                    Some(crate::agent::compaction::SummaryWriter {
+                        provider: resolved.provider.clone(),
+                        api_key,
+                        model: resolved.model.model.clone(),
+                        variant,
+                        max_tokens,
+                        input_budget: budget.input_budget,
+                    })
+                }
+                .await;
+            }
             let reviewer_present = crate::provider::layers::assigned(
                 &models,
                 &self.config.config_dir,
@@ -2799,6 +2850,13 @@ impl Service {
             None
         };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        let progress_sequencer = sequencer.clone();
+        actor.compaction_progress = Some(Arc::new(move |pass, total| {
+            let _ = progress_sequencer.publish(Candidate::new(
+                EventKind::ContextCompacting,
+                serde_json::json!({"pass":pass,"total":total}),
+            ));
+        }));
         // A resumed session starts with bypass off, said in its history
         // before its runtime can run anything.
         let resumed_bypass_seq = if is_resume {

@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
+  assigned model's window and fall back to the session model on provider errors; configuration
+  can opt out or tune chunk size. Compaction events report the writer and successful passes.
+
 ## [0.7.1] - 2026-10-09
 
 WithNav 0.7.1 lets you delete a saved session, with its subagent sessions, from the terminal,

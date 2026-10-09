@@ -183,6 +183,8 @@ fn input<'a>(
         aim: Aim::Fit,
         source_budget: 100_000,
         focus: None,
+        chunk_tokens: 64_000,
+        progress: None,
     }
 }
 
@@ -288,7 +290,7 @@ async fn a_second_summary_carries_the_first_and_counts_generations() {
 async fn an_invalid_summary_is_refused() {
     let t = five_turns(200);
     let provider_cfg = |url| provider(url);
-    let (url, _) = serve(vec![text_answer("   ")]).await;
+    let (url, _) = serve(vec![text_answer("   "), text_answer("   ")]).await;
     let cfg = provider_cfg(url);
     let err = prepare(input(&cfg, &t, None), &CancellationToken::new())
         .await
@@ -318,6 +320,36 @@ fn validation_rules() {
     let mut cut = msg("partial");
     cut.finish_reason = Some("length".into());
     assert!(validate_summary(&cut).is_err());
+}
+
+#[tokio::test]
+async fn rolling_pass_retries_smaller_and_carries_running_summary() {
+    let t = five_turns(200);
+    let (url, seen) = serve(vec![
+        text_answer(""),
+        text_answer("first memory"),
+        text_answer("updated memory"),
+        text_answer("updated memory"),
+        text_answer("updated memory"),
+        text_answer("updated memory"),
+    ])
+    .await;
+    let cfg = provider(url);
+    let mut i = input(&cfg, &t, None);
+    i.aim = Aim::Shrink;
+    i.chunk_tokens = 300;
+    let prepared = prepare(i, &CancellationToken::new()).await.unwrap();
+    assert!(prepared.passes > 1);
+    let requests = seen.lock().await;
+    let first: serde_json::Value =
+        serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let retry: serde_json::Value =
+        serde_json::from_str(requests[1].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert!(
+        retry["messages"][1]["content"].as_str().unwrap().len()
+            < first["messages"][1]["content"].as_str().unwrap().len()
+    );
+    assert!(requests[2].contains("first memory"));
 }
 
 #[test]

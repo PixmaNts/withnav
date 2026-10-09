@@ -2288,7 +2288,13 @@ impl Service {
             ),
             None => {
                 let alias = model.unwrap_or("");
-                (workspace.to_path_buf(), alias.to_string(), editor)
+                (
+                    std::fs::canonicalize(workspace).map_err(|error| {
+                        ServerError::History(format!("canonical workspace: {error}"))
+                    })?,
+                    alias.to_string(),
+                    editor,
+                )
             }
         };
         // The agent is chosen before anything is built or written: an unknown

@@ -459,6 +459,7 @@ mod tests {
             }
         }
         let components = Components {
+            memory_tokens: actor.memory_tokens_at(actor.reasoning_floor),
             system_prompt: None,
             rules: None,
             skills: None,

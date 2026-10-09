@@ -40,6 +40,7 @@ fn result(id: &str, bytes: usize) -> ChatMessage {
 
 fn components() -> Components<'static> {
     Components {
+        memory_tokens: 0,
         system_prompt: None,
         rules: None,
         skills: None,

@@ -27,6 +27,30 @@ pub struct Part {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn small_window_drops_whole_optional_entries() {
+        let component = Component {
+            session: "session".into(),
+            turn: "turn".into(),
+            startup: Some(Part {
+                source: "startup".into(),
+                ids: vec![1],
+                text: "x".repeat(1000),
+            }),
+            recalled: Arc::new(Mutex::new(vec![Part {
+                source: "recall".into(),
+                ids: vec![2],
+                text: "short".into(),
+            }])),
+            record: Arc::new(|_| Box::pin(async { Ok(()) })),
+        };
+        assert_eq!(component.tokens_with_budget(0), 0);
+        assert!(component.admitted_with_budget("model", 0).await.is_empty());
+        let messages = component.admitted_with_budget("model", 20).await;
+        assert_eq!(messages.len(), 1);
+        assert!(serde_json::to_string(&messages).unwrap().contains("short"));
+        assert!(!serde_json::to_string(&messages).unwrap().contains("xxxx"));
+    }
+    #[tokio::test]
     async fn request_memory_is_stable_low_trust_and_requires_audit() {
         let records = Arc::new(Mutex::new(Vec::new()));
         let saved = records.clone();
@@ -85,7 +109,10 @@ impl Component {
             .collect()
     }
     pub fn tokens(&self) -> u64 {
-        self.parts()
+        self.tokens_with_budget(u64::MAX)
+    }
+    pub fn tokens_with_budget(&self, budget: u64) -> u64 {
+        self.fitting_parts(budget)
             .iter()
             .map(|p| {
                 crate::agent::context::text_tokens(&p.text)
@@ -93,10 +120,54 @@ impl Component {
             })
             .sum()
     }
+    fn fitting_parts(&self, mut budget: u64) -> Vec<Part> {
+        self.parts()
+            .into_iter()
+            .flat_map(|part| {
+                // Rendered bundles contain whole episodes; never truncate an entry.
+                let episodes = part
+                    .text
+                    .split_once("<workspace_memory encoding=\"json\">")
+                    .and_then(|(_, rest)| rest.strip_suffix("</workspace_memory>"))
+                    .and_then(|json| serde_json::from_str::<Vec<super::Episode>>(json).ok());
+                match episodes {
+                    Some(episodes) => episodes
+                        .into_iter()
+                        .map(|episode| {
+                            let (ids, text) = super::render(&[episode], usize::MAX);
+                            Part {
+                                source: part.source.clone(),
+                                ids,
+                                text,
+                            }
+                        })
+                        .collect(),
+                    None => vec![part],
+                }
+            })
+            .filter(|part| {
+                let tokens = crate::agent::context::text_tokens(&part.text)
+                    + crate::agent::context::MESSAGE_FRAMING_TOKENS;
+                if tokens > budget {
+                    false
+                } else {
+                    budget -= tokens;
+                    true
+                }
+            })
+            .collect()
+    }
     pub async fn admitted(&self, model: &str) -> Vec<crate::provider::openai::ChatMessage> {
+        self.admitted_with_budget(model, u64::MAX).await
+    }
+    pub async fn admitted_with_budget(
+        &self,
+        model: &str,
+        budget: u64,
+    ) -> Vec<crate::provider::openai::ChatMessage> {
         use sha2::{Digest, Sha256};
         let request = ulid::Ulid::new().to_string();
-        let parts = self.parts();
+        let parts = self.fitting_parts(budget);
         if parts.is_empty() {
             return Vec::new();
         }

@@ -317,6 +317,7 @@ impl AgentActor {
             rules: self.rules.message(),
             skills: self.effective_skills_catalog(),
             tools,
+            memory_tokens: self.memory_tokens_at(self.reasoning_floor),
         }
     }
 
@@ -365,10 +366,32 @@ impl AgentActor {
             &self.effective_history_at(floor),
             &self.effective_tool_schemas(),
         );
-        if let Some(memory) = &self.memory {
-            breakdown.messages += memory.tokens();
-        }
+        breakdown.messages += self.memory.as_ref().map_or(0, |memory| {
+            memory.tokens_with_budget(
+                self.input_budget
+                    .unwrap_or(u64::MAX)
+                    .saturating_sub(breakdown.total()),
+            )
+        });
         breakdown
+    }
+
+    pub fn memory_budget_at(&self, floor: usize) -> u64 {
+        let role = self.role_message();
+        let base = crate::agent::context::estimate(
+            role.as_deref(),
+            self.rules.message(),
+            self.effective_skills_catalog(),
+            &self.effective_history_at(floor),
+            &self.effective_tool_schemas(),
+        )
+        .total();
+        self.input_budget.unwrap_or(u64::MAX).saturating_sub(base)
+    }
+    pub fn memory_tokens_at(&self, floor: usize) -> u64 {
+        self.memory.as_ref().map_or(0, |memory| {
+            memory.tokens_with_budget(self.memory_budget_at(floor))
+        })
     }
 
     /// Whether the actor waits for an answer or a decision.

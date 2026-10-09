@@ -19,6 +19,10 @@ requests land in `develop`.
 - **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
   and task lists, strikethrough and hard breaks render without interpreting raw HTML.
   Streaming redraws are coalesced per animation frame.
+- **Permission mode is visible without cluttering your conversation.** Safe mode and
+  Bypass active replace the ambiguous toggle labels; mode changes update the header
+  without adding transcript lines in the editor, browser or terminal.
+
 - **Cognition and Settings text scales with your editor.** Secondary text scales too,
   and conversation, tool and card content uses the readable theme foreground.
   Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.

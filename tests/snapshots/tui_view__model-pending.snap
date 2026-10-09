@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav  ~/dev/project                ▌◎ Nav /build  cognition · assigned · 12.4k / 200k  → luna (after this turn) 
+ Conversations       │ 🛡 safe    ◆ withnav  ~/dev/project      ▌◎ Nav /build  cognition · assigned · 12.4k / 200k  → luna (after this turn) 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · running   │ │ ▸ Captain                                                                      │                                   
                      │ │  Explain the failure, then fix it.                                             │ AGENTS                            

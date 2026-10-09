@@ -296,8 +296,11 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .diff-removed, .diff-line.del { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground, var(--vscode-foreground))); }
 .bypass-toggle { margin-left: auto; padding: 3px 7px; font-size: 0.846rem; background: transparent; color: var(--vscode-foreground, #cccccc); border: 1px solid var(--vscode-widget-border, #555555); border-radius: 4px; }
 .bypass-toggle:disabled { opacity: .55; cursor: default; }
-.bypass-badge { padding: 3px 7px; border-radius: 4px; font-size: 0.846rem; font-weight: 600; color: var(--vscode-editorWarning-foreground, #bf8803); background: var(--vscode-inputValidation-warningBackground, transparent); border: 1px solid var(--vscode-inputValidation-warningBorder, #bf8803); }
-.bypass-badge[hidden] { display: none; }
+.bypass-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.bypass-toggle[aria-pressed="true"] { color: var(--vscode-editorWarning-foreground); }
+body.vscode-light .bypass-toggle[aria-pressed="true"] { color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 60%, var(--vscode-foreground)); }
+.bypass-toggle[data-pending="true"] .icon { border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: compaction-spin 1s linear infinite; }
+.bypass-toggle[data-pending="true"] .icon path { display: none; }
 
 :root { --nav:#5ecaed; --lux:#f8ca65; --mou:#f89177; --vig:#72d8b3; --car:#dca3e5; --son:#a3b3f8; }
 body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d04; --mou:#b14328; --vig:#107460; --car:#85468f; --son:#4d5aac; }

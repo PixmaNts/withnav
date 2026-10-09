@@ -132,15 +132,6 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     let actor = e.actor_id.clone();
     if e.kind == "session.bypass" {
         let enabled = e.payload["enabled"].as_bool().ok_or_else(bad)?;
-        s.conversation.blocks.push(block(
-            format!("bypass:{}", e.seq),
-            BlockKind::Notice(if enabled {
-                "bypass on: ordinary permission prompts are skipped; protected requests still ask"
-                    .into()
-            } else {
-                "bypass off".into()
-            }),
-        ));
         if e.seq > s.bypass_seq {
             super::keep_bypass(s, enabled, e.seq);
         }

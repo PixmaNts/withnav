@@ -298,6 +298,7 @@ async fn conversation_deletion_cleans_memory_and_drops_late_writer() {
     let two = turn(&f.watcher, 3, "finished").await;
     let store = f.watcher.store.clone();
     let session = f.watcher.session;
+    let mut events = f.events;
     let job = tokio::spawn(async move { f.watcher.completed(two).await });
     tokio::time::timeout(Duration::from_secs(3), fake.entered.notified())
         .await
@@ -305,6 +306,7 @@ async fn conversation_deletion_cleans_memory_and_drops_late_writer() {
     store.delete(session).await.unwrap();
     fake.release.notify_one();
     job.await.unwrap().unwrap();
+    while let Ok(event) = events.try_recv() { assert_ne!(event.kind,"memory.episode_written"); }
     assert!(store
         .memory_goals(&session.to_string())
         .await
@@ -371,4 +373,54 @@ async fn startup_snapshot_is_identical_across_requests_and_resume() {
     );
     store.delete(f.watcher.session).await.unwrap();
     assert!(store.memory_startup(&session).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn failed_memory_commit_publishes_nothing_and_rolls_back_goal() {
+    let mut f = fixture(false).await;
+    let one = turn(&f.watcher, 1, "atomic goal").await;
+    // Reject the explanatory event insertion after the goal mutation in the same transaction.
+    let conn = rusqlite::Connection::open(f._temp.path().join("history.db")).unwrap();
+    conn.execute_batch("CREATE TRIGGER fail_memory_event BEFORE INSERT ON events WHEN new.kind='memory.goal_observed' BEGIN SELECT RAISE(ABORT,'fake commit failure'); END;").unwrap();
+    assert!(f.watcher.completed(one).await.is_err());
+    assert!(f.events.try_recv().is_err());
+    assert!(f
+        .watcher
+        .store
+        .memory_goals(&f.watcher.session.to_string())
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(f
+        .watcher
+        .store
+        .memory_state(&f.watcher.session.to_string())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn memory_events_are_durable_before_publication() {
+    let mut f = fixture(false).await;
+    let one = turn(&f.watcher, 1, "atomic goal").await;
+    f.watcher.completed(one).await.unwrap();
+    let fake = writer(&f.watcher, false, false);
+    f.watcher.models.writer = Some(fake);
+    let two = turn(&f.watcher, 3, "finished").await;
+    f.watcher.completed(two).await.unwrap();
+    let loaded = f
+        .watcher
+        .store
+        .load(f.watcher.session)
+        .await
+        .unwrap()
+        .unwrap();
+    for _ in 0..3 {
+        let event = f.events.recv().await.unwrap();
+        assert!(loaded
+            .envelopes
+            .iter()
+            .any(|e| e.seq == event.seq && e.kind == event.kind));
+    }
 }

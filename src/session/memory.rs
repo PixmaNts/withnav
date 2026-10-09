@@ -365,21 +365,24 @@ impl Watcher {
         if self.cancel.is_cancelled() {
             return Ok(());
         }
-        self.store
-            .memory_observe(
-                State {
-                    session: self.session.to_string(),
-                    workspace: self.workspace.clone(),
-                    last_turn: end,
-                    active_goal,
-                    version: 1,
-                },
-                updates,
+        let state = State {
+            session: self.session.to_string(),
+            workspace: self.workspace.clone(),
+            last_turn: end,
+            active_goal,
+            version: 1,
+        };
+        let store = self.store.clone();
+        self.sequencer
+            .commit_acked(
+                Candidate::new(EventKind::MemoryGoalObserved, payload),
+                Box::new(move |event| {
+                    Box::pin(
+                        async move { store.memory_publish_observe(state, updates, event).await },
+                    )
+                }),
             )
             .await?;
-        self.sequencer
-            .publish(Candidate::new(EventKind::MemoryGoalObserved, payload))
-            .map_err(|e| e.to_string())?;
         self.jobs().await
     }
     fn new_goal(&self, c: &CaptainAnchor) -> Goal {
@@ -462,16 +465,34 @@ impl Watcher {
                 });
                 match result {
                     Ok((written, body)) => {
-                        self.store
-                            .memory_complete(
-                                &goal.id,
-                                &token,
-                                body,
-                                written.model.clone(),
-                                written.usage.clone(),
+                        let store = self.store.clone();
+                        let id = goal.id.clone();
+                        let payload = serde_json::json!({"goal_id":goal.id,"start_seq":goal.start_seq,"end_seq":end,"model":written.model,"usage":written.usage});
+                        let committed = self
+                            .sequencer
+                            .commit_acked(
+                                Candidate::new(EventKind::MemoryEpisodeWritten, payload),
+                                Box::new(move |event| {
+                                    Box::pin(async move {
+                                        store
+                                            .memory_publish_complete(
+                                                id,
+                                                token,
+                                                body,
+                                                written.model,
+                                                written.usage,
+                                                event,
+                                            )
+                                            .await
+                                    })
+                                }),
                             )
-                            .await?;
-                        self.sequencer.publish(Candidate::new(EventKind::MemoryEpisodeWritten,serde_json::json!({"goal_id":goal.id,"start_seq":goal.start_seq,"end_seq":end,"model":written.model,"usage":written.usage}))).map_err(|e|e.to_string())?;
+                            .await;
+                        if let Err(error) = committed {
+                            if !error.contains("memory result stale") {
+                                return Err(error);
+                            }
+                        }
                         break;
                     }
                     Err(error) => {

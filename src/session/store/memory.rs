@@ -48,6 +48,10 @@ pub struct State {
 pub use crate::agent::memory::component::Injection;
 
 pub(super) enum Operation {
+    Published {
+        operation: Box<Operation>,
+        event: crate::bus::event::EventEnvelope,
+    },
     Observe {
         state: State,
         goals: Vec<Goal>,
@@ -129,6 +133,25 @@ pub(super) fn delete(tx: &Transaction<'_>, session: &str) -> rusqlite::Result<()
 pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), WriteError> {
     let now = crate::bus::event::now_rfc3339();
     match operation {
+        Operation::Published { operation, event } => {
+            apply(tx, *operation)?;
+            tx.execute(
+                "INSERT INTO events(session_id,seq,kind,envelope) VALUES(?1,?2,?3,?4)",
+                params![
+                    event.session_id.to_string(),
+                    sql_seq(event.seq)?,
+                    event.kind,
+                    serde_json::to_string(&event)?
+                ],
+            )?;
+            let touched = tx.execute(
+                "UPDATE sessions SET updated_at=?2,last_seq=MAX(last_seq,?3) WHERE id=?1",
+                params![event.session_id.to_string(), now, sql_seq(event.seq)?],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(event.session_id));
+            }
+        }
         Operation::Observe { state, goals } => {
             let exists = tx
                 .query_row(
@@ -151,7 +174,7 @@ pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), Wr
                 )
                 .optional()?;
             if previous.is_some_and(|turn| turn >= state.last_turn) {
-                return Ok(());
+                return Err(WriteError::InvalidSelection("memory result stale".into()));
             }
             for goal in goals {
                 if goal.session != state.session
@@ -185,7 +208,7 @@ pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), Wr
             let raw = serde_json::to_string(&body)?;
             let row: Option<(String,u64,u64)> = tx.query_row("SELECT goal_text,start_seq,end_seq FROM memory_goals WHERE id=?1 AND claim=?2 AND writer_status='writing'", params![goal,token], |r| Ok((r.get(0)?,seq(r,1)?,seq(r,2)?))).optional()?;
             let Some((text, start, end)) = row else {
-                return Ok(());
+                return Err(WriteError::InvalidSelection("memory result stale".into()));
             };
             let mut query = tx.prepare("SELECT seq FROM events WHERE session_id=(SELECT session FROM memory_goals WHERE id=?1) AND seq BETWEEN ?2 AND ?3")?;
             let sequences = query
@@ -228,6 +251,39 @@ pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), Wr
 }
 
 impl HistoryStore {
+    pub(crate) async fn memory_publish_observe(
+        &self,
+        state: State,
+        goals: Vec<Goal>,
+        event: crate::bus::event::EventEnvelope,
+    ) -> Result<(), String> {
+        self.acked(Write::Memory(Operation::Published {
+            operation: Box::new(Operation::Observe { state, goals }),
+            event,
+        }))
+        .await
+    }
+    pub(crate) async fn memory_publish_complete(
+        &self,
+        goal: String,
+        token: String,
+        body: EpisodeBody,
+        model: String,
+        usage: String,
+        event: crate::bus::event::EventEnvelope,
+    ) -> Result<(), String> {
+        self.acked(Write::Memory(Operation::Published {
+            operation: Box::new(Operation::Complete {
+                goal,
+                token,
+                body,
+                model,
+                usage,
+            }),
+            event,
+        }))
+        .await
+    }
     pub async fn memory_save_startup(
         &self,
         session: &str,

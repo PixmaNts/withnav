@@ -3220,11 +3220,16 @@ impl Service {
                         Box::pin(async move { store.memory_inject(injection).await })
                     }),
                 };
-                if !is_resume
-                    && settings
-                        .get_dotted("memory.startup_bundle")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(true)
+                if is_resume {
+                    memory.startup = self
+                        .history
+                        .memory_startup(&session_id.to_string())
+                        .await
+                        .map_err(ServerError::History)?;
+                } else if settings
+                    .get_dotted("memory.startup_bundle")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
                 {
                     let episodes = self
                         .history
@@ -3247,6 +3252,12 @@ impl Service {
                             text,
                         });
                     }
+                }
+                if !is_resume {
+                    self.history
+                        .memory_save_startup(&session_id.to_string(), memory.startup.clone())
+                        .await
+                        .map_err(ServerError::History)?;
                 }
                 if settings
                     .get_dotted("memory.recall")

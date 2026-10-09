@@ -504,3 +504,7 @@ mod tests {
         assert!(!evidence(&[event], 0, 1)[0].1.contains("SECRET"));
     }
 }
+
+#[cfg(test)]
+#[path = "memory_tests.rs"]
+mod integration_tests;

@@ -16,7 +16,7 @@ pub struct Injection {
 }
 
 pub type Recorder = Arc<dyn Fn(Injection) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Part {
     pub source: String,
     pub ids: Vec<i64>,

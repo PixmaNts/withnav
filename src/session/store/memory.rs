@@ -70,6 +70,10 @@ pub(super) enum Operation {
         skipped: bool,
     },
     Inject(Injection),
+    Startup {
+        session: String,
+        part: Option<crate::agent::memory::component::Part>,
+    },
 }
 
 pub(super) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
@@ -100,6 +104,7 @@ pub(super) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TRIGGER IF NOT EXISTS episodes_update AFTER UPDATE ON episodes BEGIN
             INSERT INTO episodes_fts(episodes_fts,rowid,goal,search_text) VALUES('delete',old.id,old.goal,old.search_text);
             INSERT INTO episodes_fts(rowid,goal,search_text) VALUES(new.id,new.goal,new.search_text); END;
+        CREATE TABLE IF NOT EXISTS memory_startup (session TEXT PRIMARY KEY, part TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_injections (
             request_id TEXT PRIMARY KEY, session TEXT NOT NULL, turn TEXT NOT NULL,
             step TEXT NOT NULL, model TEXT NOT NULL, source TEXT NOT NULL,
@@ -114,6 +119,7 @@ pub(super) fn delete(tx: &Transaction<'_>, session: &str) -> rusqlite::Result<()
         "memory_goals",
         "episodes",
         "memory_injections",
+        "memory_startup",
     ] {
         tx.execute(&format!("DELETE FROM {table} WHERE session=?1"), [session])?;
     }
@@ -214,11 +220,48 @@ pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), Wr
             }
             tx.execute("INSERT INTO memory_injections(request_id,session,turn,step,model,source,episode_ids,rendered_text,hash,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![i.request_id,i.session,i.turn,i.step,i.model,i.source,serde_json::to_string(&i.episode_ids)?,i.text,i.hash,now])?;
         }
+        Operation::Startup { session, part } => {
+            tx.execute("INSERT INTO memory_startup(session,part) SELECT ?1,?2 WHERE EXISTS(SELECT 1 FROM sessions WHERE id=?1) ON CONFLICT(session) DO NOTHING", params![session, serde_json::to_string(&part)?])?;
+        }
     }
     Ok(())
 }
 
 impl HistoryStore {
+    pub async fn memory_save_startup(
+        &self,
+        session: &str,
+        part: Option<crate::agent::memory::component::Part>,
+    ) -> Result<(), String> {
+        self.acked(Write::Memory(Operation::Startup {
+            session: session.into(),
+            part,
+        }))
+        .await
+    }
+    pub async fn memory_startup(
+        &self,
+        session: &str,
+    ) -> Result<Option<crate::agent::memory::component::Part>, String> {
+        let path = Arc::clone(&self.path);
+        let session = session.to_owned();
+        read::blocking(move || {
+            read::with_read_tx(&path, |tx| {
+                let raw: Option<String> = tx
+                    .query_row(
+                        "SELECT part FROM memory_startup WHERE session=?1",
+                        [session],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                raw.map(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+                    .transpose()
+                    .map(Option::flatten)
+            })
+        })
+        .await
+    }
     pub async fn memory_observe(&self, state: State, goals: Vec<Goal>) -> Result<(), String> {
         self.acked(Write::Memory(Operation::Observe { state, goals }))
             .await

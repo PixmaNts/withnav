@@ -318,7 +318,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
         next.bypass = p.enabled;
         next.bypassSeq = envelope.seq;
       }
-      return notice(next, envelope.seq, bypassNotice(p.enabled, str(p.by)), "info");
+      return str(p.by) === "system:resume" ? notice(next, envelope.seq, bypassNotice(p.enabled, str(p.by)), "info") : next;
     }
     case "session.agent_changed": {
       // Turns before the first change ran as `previous`: label them now.

@@ -1,9 +1,8 @@
 ---
 source: tests/tui_view.rs
-assertion_line: 349
 expression: snapshot
 ---
- ◆ withnav  ~/dev/project                        ▌◎ Nav /build  cognition · assigned · 12.4k / 200k 
+ 🛡 safe    ◆ withnav  ~/dev/project              ▌◎ Nav /build  cognition · assigned · 12.4k / 200k 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  │ ▸ Captain                                                                                        
  │  Explain the failure, then fix it.                                                               

@@ -23,10 +23,10 @@ test('confirmation once per session incarnation is shared by typed and header to
   b.state.incarnation = 'next'; await b.toggleBypassPermissions(); await b.toggleBypassPermissions();
   assert.equal(confirmations, 2);
 });
-test('snapshot watermark rejects replay ON, newer events apply, end clears and notices remain', () => {
+test('snapshot watermark rejects replay ON, newer events apply, end clears without notices', () => {
   const b = setup();
   const old = b.mapEvent({ kind: 'session.bypass', seq: 9, payload: { enabled: true } });
-  assert.equal(b.state.bypass, false); assert.match(old.text, /Bypass ON/);
+  assert.equal(b.state.bypass, false); assert.equal(old, undefined);
   b.mapEvent({ kind: 'session.bypass', seq: 11, payload: { enabled: true } });
   assert.equal(b.state.bypass, true);
   b.acceptBypassSnapshot({ bypass: false, bypass_seq: 10, incarnation: 'runtime' });
@@ -34,6 +34,10 @@ test('snapshot watermark rejects replay ON, newer events apply, end clears and n
   b.mapEvent({ kind: 'session.end', seq: 12, payload: {} });
   b.mapEvent({ kind: 'session.bypass', seq: 11, payload: { enabled: true } });
   assert.equal(b.state.bypass, false);
+});
+test('ten toggles add no notices', () => {
+  const b = setup();
+  for (let seq = 20; seq < 30; seq++) assert.equal(b.mapEvent({ kind: 'session.bypass', seq, payload: { enabled: seq % 2 === 0 } }), undefined);
 });
 test('pending setter never optimistically enables and rejects repeat submission', async () => {
   const b = setup(); let finish;

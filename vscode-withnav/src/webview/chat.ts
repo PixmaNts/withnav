@@ -23,12 +23,17 @@ const identity = new ConversationIdentity(() => {
 const post = (message: WebviewToHost): void => rawPost({ ...message, generation: identity.generation });
 const bypassToggle = document.createElement("button");
 bypassToggle.type = "button"; bypassToggle.className = "bypass-toggle";
-bypassToggle.textContent = "Bypass OFF"; bypassToggle.setAttribute("aria-pressed", "false");
-bypassToggle.title = "Bypass ordinary permission prompts; protected requests still ask";
-const bypassBadge = document.createElement("span");
-bypassBadge.className = "bypass-badge"; bypassBadge.textContent = "⚠ Bypass ON"; bypassBadge.hidden = true;
-bypassBadge.title = bypassToggle.title;
-document.querySelector(".topbar .identity")!.after(bypassToggle, bypassBadge);
+function renderBypass(enabled: boolean, pending = false): void {
+  const label = enabled ? "Bypass active" : "Safe mode";
+  bypassToggle.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 1 14 3v5c0 3-6 7-6 7S2 11 2 8V3Z"/>${enabled ? '<path d="m2 2 12 12"/>' : ''}</svg><span></span>`;
+  bypassToggle.querySelector("span")!.textContent = label;
+  bypassToggle.setAttribute("aria-label", label);
+  bypassToggle.setAttribute("aria-pressed", String(enabled));
+  bypassToggle.dataset.pending = String(pending);
+  bypassToggle.title = enabled ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.";
+}
+renderBypass(false);
+document.querySelector(".topbar .identity")!.after(bypassToggle);
 bypassToggle.addEventListener("click", () => post({ type: "toggleBypass" }));
 const transcript = document.querySelector<HTMLElement>("#transcript")!;
 const empty = document.querySelector<HTMLElement>("#empty")!;
@@ -766,7 +771,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
-    bypassToggle.textContent = "Bypass OFF"; bypassToggle.setAttribute("aria-pressed", "false"); bypassBadge.hidden = true;
+    renderBypass(false);
     form.hidden = false;
     archiveReadOnly = false;
     compacting = false; compactionRow = undefined;
@@ -786,8 +791,7 @@ function receive(event: HostToWebview): void {
   switch (event.type) {
     case "bypass":
       bypassToggle.disabled = event.disabled || event.pending;
-      bypassToggle.textContent = event.pending ? "Bypass…" : event.enabled ? "Turn bypass off" : "Bypass OFF";
-      bypassToggle.setAttribute("aria-pressed", String(event.enabled)); bypassBadge.hidden = !event.enabled;
+      renderBypass(event.enabled, event.pending);
       break;
     case "compaction": {
       compacting = event.pending;

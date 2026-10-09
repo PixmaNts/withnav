@@ -1452,7 +1452,7 @@ export class CognitionBackend implements ChatBackend {
     if (envelope.kind === "session.bypass" && typeof payload.enabled === "boolean") {
       if (this.state.bypassSeq < 0) this.state.bypassEvents.push({ seq: envelope.seq, enabled: payload.enabled });
       else if (envelope.seq > this.state.bypassSeq) { this.state.bypass = payload.enabled; this.state.bypassSeq = envelope.seq; this.publishBypass(); }
-      return { type: "notice", text: `Bypass ${payload.enabled ? "ON" : "OFF"} · Bypass ordinary permission prompts; protected requests still ask` };
+      return undefined;
     }
     if (envelope.kind === "context.compacted") {
       const text = `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens`;

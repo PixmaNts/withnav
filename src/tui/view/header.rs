@@ -39,8 +39,20 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         return;
     }
     frame.buffer_mut().set_style(area, theme.panel());
-    if state.bypass {
-        let marker_width = 11.min(area.width);
+    {
+        let marker = if state.bypass {
+            " ⚠ bypass "
+        } else {
+            " 🛡 safe "
+        };
+        let marker_width = (if state.bypass {
+            11
+        } else if area.width >= 80 {
+            10
+        } else {
+            0
+        })
+        .min(area.width.saturating_sub(13));
         frame.render_widget(
             Paragraph::new(line(state, theme, usize::from(area.width - marker_width))),
             Rect::new(
@@ -52,17 +64,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         );
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " ⚠ bypass ",
-                theme.warning().add_modifier(Modifier::BOLD),
+                marker,
+                if state.bypass {
+                    theme.warning().add_modifier(Modifier::BOLD)
+                } else {
+                    theme.muted()
+                },
             )),
             Rect::new(area.x, area.y, marker_width, 1),
         );
-        return;
     }
-    frame.render_widget(
-        Paragraph::new(line(state, theme, usize::from(area.width))),
-        area,
-    );
 }
 
 /// The header row for `total` columns: never wider than that.

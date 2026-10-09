@@ -1393,7 +1393,7 @@ fn sidebar_hides_on_demand_and_on_narrow_terminals() {
     ui.sidebar_hidden = true;
     render("sidebar-hidden", (100, 24), &s, &ui, &Editor::new());
     let hidden = cells(&s, &ui, (100, 24));
-    assert!(row_text(&hidden, 0, 100).starts_with(" ◆ withnav"));
+    assert!(row_text(&hidden, 0, 100).starts_with(" 🛡 safe"));
     assert!(!(0..24).any(|y| row_text(&hidden, y, 100).contains("build · ")));
 }
 

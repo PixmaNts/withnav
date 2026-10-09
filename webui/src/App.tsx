@@ -362,8 +362,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
               {id}
             </button>
           ))}
-          <button type="button" className="bypass-toggle" aria-pressed={bypass} disabled={!!bypassReason} title={bypassReason ?? "Bypass ordinary permission prompts; protected requests still ask"} onClick={() => void chat.setBypass(!bypass)}>
-            ⚠<span className="bar-btn-text"> Bypass</span> {bypass ? "ON" : "OFF"}
+          <button type="button" className="bypass-toggle" aria-pressed={bypass} aria-label={bypass ? "Bypass active" : "Safe mode"} disabled={!!bypassReason} title={bypassReason ?? (bypass ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.")} onClick={() => void chat.setBypass(!bypass)}>
+            <span aria-hidden="true">{chat.bypassPending ? "◌" : bypass ? "⚠" : "🛡"}</span> {bypass ? "Bypass active" : "Safe mode"}
           </button>
           <button type="button" className="icon-btn st-gear" onClick={openStudio} disabled={!workspace} aria-label="InstinctFlow Studio" title={workspace ? "InstinctFlow Studio: flows" : "Choose a workspace first"}>
             <FlowArrow size={16} />

@@ -120,9 +120,11 @@ fn bypass_is_acknowledged_pending_and_scoped_to_the_tab() {
         .unwrap();
     }
     assert!(s.bypass);
-    assert!(
-        matches!(s.conversation.blocks.last().map(|b| &b.kind), Some(BlockKind::Notice(text)) if text == "bypass off")
-    );
+    assert!(!s
+        .conversation
+        .blocks
+        .iter()
+        .any(|b| b.id.starts_with("bypass:")));
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert!(!s.bypass);
     assert!(s.tabs.iter().any(|tab| tab.bypass));

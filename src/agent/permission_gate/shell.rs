@@ -1,5 +1,6 @@
 //! Conservative shell understanding: unknown execution can never inherit optimistic labels.
 use serde_json::Value;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
@@ -18,6 +19,14 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<String> {
         .map(PathBuf::from)
         .collect();
     roots.push(PathBuf::from(facts["workspace"].as_str()?));
+    roots.extend(
+        facts["scratch_roots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(PathBuf::from),
+    );
     let outside = |candidate: &Path| {
         roots.iter().all(|root| {
             !candidate.starts_with(root)
@@ -29,16 +38,22 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<String> {
             if dir.is_absolute() {
                 dir
             } else {
-                roots.last().unwrap().join(dir)
+                Path::new(facts["workspace"].as_str().unwrap()).join(dir)
             }
         })
         .map(|dir| dir.join(name))
         .find(|candidate| {
-            use std::os::unix::fs::PermissionsExt;
             candidate
                 .metadata()
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0)
         })?;
+    // Check identity at review time, without skipping an untrusted PATH hit.
+    // A root-owned binary replaced between review and spawn is a remaining TOCTOU
+    // outside this advisory gate's scope: bash is advisory, not a sandbox (CONTEXT.md).
+    let metadata = resolved.metadata().ok()?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return None;
+    }
     let canonical = resolved.canonicalize().ok()?;
     if !outside(&resolved)
         || !outside(&canonical)

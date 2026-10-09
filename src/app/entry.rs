@@ -2,6 +2,7 @@ use crate::app::{dispatch, init_tracing, Cli};
 use clap::Parser;
 
 pub fn main() -> anyhow::Result<()> {
+    crate::tools::bash::init_shell();
     // A conversion child touches no data file, logs nothing, and starts no
     // async runtime: it runs under a memory limit set by its parent.
     let args: Vec<String> = std::env::args().collect();

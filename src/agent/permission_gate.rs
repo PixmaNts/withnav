@@ -1148,7 +1148,16 @@ mod tests {
                 .judge(&input, &CancellationToken::new())
                 .await
                 .unwrap();
-            let expected = if row["route"] == "instinct_run" {
+            // The corpus describes known system tools. Developer installations
+            // (e.g. npm/cargo in a user-owned PATH directory) are opaque instead.
+            let facts = json!({"workspace": cx.workspace, "writable_roots": cx.writable_roots});
+            let trusted_identity =
+                shell::segments(row["command"].as_str().unwrap()).is_some_and(|segments| {
+                    segments
+                        .iter()
+                        .all(|words| shell::trusted_program(&words[0], &facts).is_some())
+                });
+            let expected = if row["route"] == "instinct_run" && trusted_identity {
                 Route::Run
             } else {
                 Route::Review
@@ -1215,6 +1224,63 @@ mod tests {
             );
         }
         assert!(count >= 100);
+    }
+
+    #[tokio::test]
+    async fn user_owned_binary_outside_workspace_requires_review_with_optimistic_judge() {
+        const CHILD: &str = "WITHNAV_TEST_USER_BINARY";
+        if let Some(workspace) = std::env::var_os(CHILD) {
+            let input = PermissionReviewInput {
+                questions: permission_questions(),
+                state: json!({
+                    "captain_request_complete": true,
+                    "host_facts": {"workspace": workspace, "writable_roots": [workspace]},
+                    "untrusted_evidence": {"arguments": {"command": "cat ordinary.txt"}}
+                })
+                .to_string(),
+            };
+            let answers = LabelJudge(json!({
+                "labels": {
+                    "call_effect": "read_only", "reversibility": "recoverable",
+                    "publication": "none", "call_scope": "inside",
+                    "sensitivity": 0.0, "task_fit": 1.0
+                },
+                "confidence": 1.0
+            }))
+            .judge(&input, &CancellationToken::new())
+            .await
+            .unwrap();
+            assert_eq!(
+                route(&input, &answers, &Overrides::default()),
+                Ok(Route::Review)
+            );
+            return;
+        }
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let bin = tmp.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        let binary = bin.join("cat");
+        std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_ne!(
+            binary.metadata().unwrap().uid(),
+            0,
+            "run this regression as a non-root user"
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::permission_gate::tests::user_owned_binary_outside_workspace_requires_review_with_optimistic_judge", "--nocapture"])
+            .env(CHILD, &workspace)
+            .env("PATH", format!("{}:/usr/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     #[tokio::test]

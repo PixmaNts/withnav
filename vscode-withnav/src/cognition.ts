@@ -1441,8 +1441,12 @@ export class CognitionBackend implements ChatBackend {
     }
     if (envelope.kind === "command.result") {
       this.settleCommand(payload, envelope.seq);
-      return { type: "notice", operationId: payload.operation_id, name: String(payload.name ?? "command"), ok: payload.ok === true,
-        text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
+      const name = String(payload.name ?? "command");
+      const text = outcomeText(name, payload.ok === true, payload.data, payload.error);
+      const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact"].includes(name);
+      if (text === null && (known || payload.data?.applies === "now")) return undefined;
+      return { type: "notice", operationId: payload.operation_id, name, ok: payload.ok === true,
+        text: `/${name} · ${text ?? "done"}`, ...(text === null ? { details: JSON.stringify(payload.data ?? null, null, 2) } : {}) };
     }
     if (envelope.kind === "session.agent_changed") return undefined; // Secondary notification, not effective identity.
     if (envelope.kind === "session.bypass" && typeof payload.enabled === "boolean") {
@@ -1743,3 +1747,4 @@ function toolSummary(name: any, args: any, fallback?: string): string {
       return fallback ?? tool;
   }
 }
+import { outcomeText } from "./outcome";

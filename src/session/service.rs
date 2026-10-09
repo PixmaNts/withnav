@@ -3202,10 +3202,6 @@ impl Service {
         // The role is on the actor before the first estimate: a session that
         // starts as `plan` counts plan's role before any turn runs.
         actor.role = Some(status.selection.current());
-        status.install_context(
-            ContextTracker::new(limits.clone(), actor.context_breakdown()),
-            actor.system_prompt.clone(),
-        );
         let skills = actor.skills.clone();
         if child_parent.is_none() {
             let settings = crate::settings::load(&self.config.config_dir)
@@ -3314,6 +3310,11 @@ impl Service {
                 }
             }
         }
+        // Memory and recall schemas are part of the very first snapshot too.
+        status.install_context(
+            ContextTracker::new(limits.clone(), actor.context_breakdown()),
+            actor.system_prompt.clone(),
+        );
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,

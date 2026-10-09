@@ -3197,7 +3197,7 @@ impl Service {
         // starts as `plan` counts plan's role before any turn runs.
         actor.role = Some(status.selection.current());
         status.install_context(
-            ContextTracker::new(limits, actor.context_breakdown()),
+            ContextTracker::new(limits.clone(), actor.context_breakdown()),
             actor.system_prompt.clone(),
         );
         let skills = actor.skills.clone();
@@ -3209,6 +3209,65 @@ impl Service {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
             {
+                let record_store = self.history.clone();
+                let mut memory = crate::agent::memory::component::Component {
+                    turn: String::new(),
+                    session: session_id.to_string(),
+                    startup: None,
+                    recalled: Arc::default(),
+                    record: Arc::new(move |injection| {
+                        let store = record_store.clone();
+                        Box::pin(async move { store.memory_inject(injection).await })
+                    }),
+                };
+                if settings
+                    .get_dotted("memory.startup_bundle")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    let episodes = self
+                        .history
+                        .memory_episodes(&workspace.to_string_lossy(), None, 3)
+                        .await
+                        .map_err(ServerError::History)?;
+                    let remaining = limits
+                        .budget
+                        .input_budget
+                        .saturating_sub(actor.context_breakdown().total());
+                    let (ids, text) = crate::agent::memory::render(
+                        &episodes,
+                        crate::agent::memory::STARTUP_BYTES
+                            .min(remaining.saturating_sub(32).saturating_mul(4) as usize),
+                    );
+                    if !ids.is_empty() {
+                        memory.startup = Some(crate::agent::memory::component::Part {
+                            source: "startup".into(),
+                            ids,
+                            text,
+                        });
+                    }
+                }
+                if settings
+                    .get_dotted("memory.recall")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    let search_store = self.history.clone();
+                    let search_workspace = workspace.to_string_lossy().into_owned();
+                    actor
+                        .registry
+                        .register(Box::new(crate::tools::recall::RecallTool {
+                            memory: memory.clone(),
+                            search: Arc::new(move |query| {
+                                let store = search_store.clone();
+                                let workspace = search_workspace.clone();
+                                Box::pin(async move {
+                                    store.memory_episodes(&workspace, Some(&query), 5).await
+                                })
+                            }),
+                        }));
+                }
+                actor.memory = Some(memory);
                 let models = super::memory::models(
                     self.config.models_path.as_deref(),
                     &workspace,

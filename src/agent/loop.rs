@@ -231,12 +231,17 @@ async fn run_steps_inner(
 
         observe(AgentEvent::StepStarted);
 
+        let mut request_history = match &actor.memory {
+            Some(memory) => memory.admitted(&actor.model).await,
+            None => Vec::new(),
+        };
+        request_history.extend(history);
         let request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
             actor.effective_skills_catalog(),
-            history,
+            request_history,
             tools,
             actor.max_tokens,
         );

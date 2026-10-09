@@ -1,4 +1,5 @@
 //! Model-written workspace history, never a source of authority.
+pub mod component;
 pub mod writer;
 
 use serde::{Deserialize, Serialize};

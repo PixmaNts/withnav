@@ -45,18 +45,7 @@ pub struct State {
     pub version: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Injection {
-    pub request_id: String,
-    pub session: String,
-    pub turn: String,
-    pub step: String,
-    pub model: String,
-    pub source: String,
-    pub episode_ids: Vec<i64>,
-    pub text: String,
-    pub hash: String,
-}
+pub use crate::agent::memory::component::Injection;
 
 pub(super) enum Operation {
     Observe {

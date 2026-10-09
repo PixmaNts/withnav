@@ -51,6 +51,7 @@ pub struct BypassState {
 }
 
 pub struct AgentActor {
+    pub memory: Option<super::memory::component::Component>,
     pub memory_completed: Option<tokio::sync::mpsc::UnboundedSender<ulid::Ulid>>,
     pub compaction_writer: Option<super::compaction::SummaryWriter>,
     pub compaction_catalog: Option<crate::provider::catalog::ModelCatalog>,
@@ -206,6 +207,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            memory: None,
             memory_completed: None,
             compaction_writer: None,
             compaction_catalog: None,
@@ -356,13 +358,17 @@ impl AgentActor {
         // The same role message `build_request` sends: the selected agent's
         // prompt composed with the editor's.
         let role = self.role_message();
-        crate::agent::context::estimate(
+        let mut breakdown = crate::agent::context::estimate(
             role.as_deref(),
             self.rules.message(),
             self.effective_skills_catalog(),
             &self.effective_history_at(floor),
             &self.effective_tool_schemas(),
-        )
+        );
+        if let Some(memory) = &self.memory {
+            breakdown.messages += memory.tokens();
+        }
+        breakdown
     }
 
     /// Whether the actor waits for an answer or a decision.

@@ -6,9 +6,10 @@ requests land in `develop`.
 
 ### Added
 
-- **Questions can carry short choices and structured Captain answers.** The session API
-  validates optional ask choices, keeps invalid asks as plain text, and records human answers
-  for replay without changing permission authority. Client question cards are a follow-up.
+- **Answer Nav's questions with a choice in the terminal, VS Code or browser.** Question
+  cards offer single or multiple choices, optional other answers and recommendation hints.
+  Answers remain Captain messages; replay shows the chosen options without changing permission
+  authority, and plain-text asks keep working as before.
 
 ## [0.7.2] - 2026-10-10
 

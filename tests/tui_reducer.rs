@@ -19,6 +19,52 @@ use withnav::{
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn choice_answers_retry_refusals_and_replay_by_call_id() {
+    let mut s = subagent_parent();
+    let mut event = load("yield_ask")
+        .into_iter()
+        .find(|e| e.kind.as_str() == "agent.yield")
+        .unwrap();
+    event.seq = s.last_applied_seq.unwrap_or(0) + 1;
+    event.payload = json!({"question":"Where next?","question_call_id":"ask","choices":{"options":[{"label":"Develop"},{"label":"Leave open"}],"multiple":true,"allow_custom":true,"recommended":0}});
+    feed(&mut s, &[event.clone()]);
+    let answer = withnav::tools::control::AskAnswer {
+        question_call_id: "ask".into(),
+        selected: vec![1],
+        custom: Some("After review".into()),
+    };
+    let effects = handle_action(&mut s, &mut ui(), Action::AnswerQuestion(answer.clone()));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::AnswerQuestion { .. }]
+    ));
+    assert!(handle_action(&mut s, &mut ui(), Action::AnswerQuestion(answer.clone())).is_empty());
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::QuestionAnswered {
+            generation,
+            call_id: "ask".into(),
+            result: Err("invalid or stale answer".into()),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&s.conversation.blocks.last().unwrap().kind, BlockKind::Question(p) if !p.sending && p.error.is_some())
+    );
+    event.seq += 1;
+    event.kind = "message.received".into();
+    event.payload =
+        json!({"source":"user:http","content":"Leave open\nAfter review","answer":answer});
+    feed(&mut s, &[event]);
+    assert!(s
+        .conversation
+        .blocks
+        .iter()
+        .any(|b| matches!(&b.kind, BlockKind::Question(p) if p.answer.as_ref() == Some(&answer))));
+}
+
+#[test]
 fn session_delete_requires_confirmation_and_closes_parent_and_child_tabs() {
     let mut s = subagent_parent();
     let root = s.session.as_ref().unwrap().session_id.clone();

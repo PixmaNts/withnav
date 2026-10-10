@@ -1,4 +1,5 @@
 import { del, get, post, put, q } from "./http";
+import type { AskAnswer } from "../session/reducer";
 import type {
   AgentsBody,
   CommandInfo,
@@ -56,6 +57,8 @@ export const api = {
       content,
     }),
   stop: (id: string) => post<{ accepted: boolean; actor_state: string }>(`/v1/sessions/${q(id)}/stop`),
+  answerQuestion: (id: string, answer: AskAnswer) =>
+    post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/messages`, { target_actor_id: "agent:main", mode: "next-turn", content: [], answer }),
   command: (id: string, name: string, args = "") =>
     post<CommandOutcome>(`/v1/sessions/${q(id)}/commands`, { name, arguments: args }),
   continueChild: (parent: string, child: string, token?: { incarnation: string; hold_id: string }) =>

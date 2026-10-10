@@ -229,6 +229,18 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             let source = v["source"].as_str().ok_or_else(bad)?.to_string();
             let text = v["content"].as_str().ok_or_else(bad)?;
+            if let Ok(answer) =
+                serde_json::from_value::<crate::tools::control::AskAnswer>(v["answer"].clone())
+            {
+                for block in &mut s.conversation.blocks {
+                    if let BlockKind::Question(prompt) = &mut block.kind {
+                        if prompt.call_id == answer.question_call_id {
+                            prompt.answer = Some(answer.clone());
+                            prompt.sending = false;
+                        }
+                    }
+                }
+            }
             s.conversation.blocks.push(block(
                 e.seq.to_string(),
                 BlockKind::Message {
@@ -399,7 +411,28 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 } else if v["kind"] == "watchdog" {
                     BlockKind::Notice(format!("Watchdog pause · {}", strip_controls(q)))
                 } else {
-                    BlockKind::YieldQuestion(strip_controls(q))
+                    match (
+                        v["question_call_id"].as_str(),
+                        serde_json::from_value::<crate::tools::control::AskChoices>(
+                            v["choices"].clone(),
+                        ),
+                    ) {
+                        (Some(call_id), Ok(choices)) => {
+                            BlockKind::Question(crate::tui::state::QuestionPrompt {
+                                text: strip_controls(q),
+                                call_id: call_id.into(),
+                                choices,
+                                answer: None,
+                                cursor: 0,
+                                selected: vec![],
+                                sending: false,
+                                dismissed: false,
+                                custom: false,
+                                error: None,
+                            })
+                        }
+                        _ => BlockKind::YieldQuestion(strip_controls(q)),
+                    }
                 },
             ));
         }

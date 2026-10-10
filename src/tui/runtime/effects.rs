@@ -423,6 +423,19 @@ impl Executor {
                     }
                 });
             }
+            Effect::AnswerQuestion { session_id, answer } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::QuestionAnswered {
+                        generation,
+                        call_id: answer.question_call_id.clone(),
+                        result: client
+                            .answer_question(&session_id, answer)
+                            .await
+                            .map_err(|e| format!("{e:?}")),
+                    }
+                });
+            }
             Effect::FetchCommands => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

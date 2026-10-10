@@ -23,6 +23,78 @@ fn message(id: &str, source: &str, text: &str) -> Block {
 }
 
 #[test]
+fn choice_question_requires_explicit_selection_and_replays_answered() {
+    use withnav::tools::control::{AskAnswer, AskChoices, AskOption};
+    use withnav::tui::{reducer::handle_action, state::QuestionPrompt};
+    let mut s = state();
+    s.conversation.blocks.push(Block {
+        id: "ask".into(),
+        kind: BlockKind::Question(QuestionPrompt {
+            text: "Where should the changes go?".into(),
+            call_id: "call".into(),
+            choices: AskChoices {
+                header: Some("Next step".into()),
+                options: vec![
+                    AskOption {
+                        label: "Develop".into(),
+                        description: Some("Integration branch".into()),
+                    },
+                    AskOption {
+                        label: "Leave open".into(),
+                        description: Some("Wait for review".into()),
+                    },
+                ],
+                multiple: true,
+                allow_custom: true,
+                recommended: Some(0),
+            },
+            answer: None,
+            cursor: 0,
+            selected: vec![],
+            sending: false,
+            dismissed: false,
+            custom: false,
+            error: None,
+        }),
+    });
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let empty = route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    assert!(handle_action(&mut s, &mut ui, empty).is_empty());
+    handle_action(&mut s, &mut ui, Action::QuestionMove(1));
+    handle_action(&mut s, &mut ui, Action::QuestionToggle);
+    let screen = render("question-choices", (100, 30), &s, &ui, &editor);
+    assert!(screen.contains("[ ] Develop"));
+    assert!(screen.contains("[x] Leave open"));
+    let action = route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    assert!(
+        matches!(action, Action::AnswerQuestion(AskAnswer { selected, .. }) if selected == vec![1])
+    );
+    handle_action(&mut s, &mut ui, Action::QuestionMove(1));
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::QuestionCustom)
+    );
+}
+
+#[test]
 fn session_delete_confirmation_row_and_keys() {
     let mut s = state();
     let id = s.sessions[0].id.clone();

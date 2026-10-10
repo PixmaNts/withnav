@@ -168,6 +168,11 @@ export function registerChatView(
               void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message, message.generation).catch(showError);
             }
             break;
+          case "answerQuestion":
+            if (typeof message.sessionId === "string" && message.answer && typeof message.answer.question_call_id === "string") {
+              void backend.answerQuestion(message.sessionId, message.answer, message.generation).catch(showError);
+            }
+            break;
           case "controlPause":
             if (typeof message.sessionId === "string" && typeof message.id === "string" &&
                 ["continue", "stop"].includes(message.action)) {

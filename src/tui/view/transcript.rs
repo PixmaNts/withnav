@@ -173,6 +173,81 @@ fn block_text(
             ));
             lines.extend(clean(question).lines().map(|s| Line::raw(format!(" {s}"))));
         }
+        BlockKind::Question(p) => {
+            lines.push(Line::styled(
+                format!(
+                    "{} · {}",
+                    p.choices.header.as_deref().unwrap_or("QUESTION"),
+                    if p.answer.is_some() {
+                        "answered"
+                    } else if p.sending {
+                        "sending…"
+                    } else {
+                        "awaiting answer"
+                    }
+                ),
+                theme.warning().add_modifier(Modifier::BOLD),
+            ));
+            lines.extend(clean(&p.text).lines().map(|s| Line::raw(format!(" {s}"))));
+            let selected = p
+                .answer
+                .as_ref()
+                .map(|a| &a.selected)
+                .unwrap_or(&p.selected);
+            for (i, option) in p.choices.options.iter().enumerate() {
+                let focus = p.answer.is_none() && !p.dismissed && p.cursor == i;
+                lines.push(Line::styled(
+                    format!(
+                        " {} {} {}{}",
+                        if focus { "›" } else { " " },
+                        if selected.contains(&i) { "[x]" } else { "[ ]" },
+                        clean(&option.label),
+                        if p.choices.recommended == Some(i) {
+                            " · recommended"
+                        } else {
+                            ""
+                        }
+                    ),
+                    if focus || selected.contains(&i) {
+                        theme.warning()
+                    } else {
+                        theme.muted()
+                    },
+                ));
+                if let Some(description) = &option.description {
+                    lines.push(Line::styled(
+                        format!("       {}", clean(description)),
+                        theme.muted(),
+                    ));
+                }
+            }
+            if p.answer.is_none() && p.choices.allow_custom {
+                lines.push(Line::raw(format!(
+                    " {} Other answer…",
+                    if !p.dismissed && p.cursor == p.choices.options.len() {
+                        "›"
+                    } else {
+                        " "
+                    }
+                )));
+            }
+            if let Some(custom) = p.answer.as_ref().and_then(|a| a.custom.as_ref()) {
+                lines.push(Line::raw(format!(" {}", clean(custom))));
+            }
+            if p.answer.is_none() {
+                lines.push(Line::styled(
+                    if p.custom {
+                        "Type your answer · enter Send · esc plain typing"
+                    } else {
+                        "↑↓ move · space select · enter Send · esc plain typing"
+                    },
+                    theme.muted(),
+                ));
+            }
+            if let Some(error) = &p.error {
+                lines.push(Line::styled(clean(error), theme.error()));
+            }
+        }
         BlockKind::Error(error) => {
             lines.push(Line::styled(
                 "ERROR",
@@ -393,7 +468,7 @@ pub fn draw(
         let selected = ui.selected_block.as_deref() == Some(&block.id);
         let gutter = match &block.kind {
             BlockKind::Error(_) => theme.error(),
-            BlockKind::YieldQuestion(_) => theme.warning(),
+            BlockKind::YieldQuestion(_) | BlockKind::Question(_) => theme.warning(),
             BlockKind::Message { source, .. } => match Origin::of(source) {
                 Origin::User => theme.muted(),
                 Origin::Navigator => theme.error(),
@@ -453,6 +528,7 @@ pub(crate) fn copy_block(block: &Block) -> Option<String> {
             return Some(lines.join("\n"));
         }
         BlockKind::YieldQuestion(text) | BlockKind::Error(text) | BlockKind::Notice(text) => text,
+        BlockKind::Question(p) => &p.text,
         BlockKind::Permission(_) => return None,
     };
     Some(clean(text))
@@ -505,7 +581,9 @@ fn sender(block: &Block, state: &State) -> String {
         BlockKind::ToolCall { name, .. } => format!("Tool {}", clean(name)),
         BlockKind::Notice(_) => "Notice".into(),
         BlockKind::Error(_) => "Error".into(),
-        BlockKind::YieldQuestion(_) => super::sidebar::agent_label(state.agent_name()),
+        BlockKind::YieldQuestion(_) | BlockKind::Question(_) => {
+            super::sidebar::agent_label(state.agent_name())
+        }
         BlockKind::Command { name, .. } => format!("/{}", clean(name)),
         BlockKind::Permission(_) => "Permission".into(),
     }
@@ -554,6 +632,9 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
         }
         BlockKind::Notice(text) | BlockKind::Error(text) | BlockKind::YieldQuestion(text) => {
             text.hash(&mut h)
+        }
+        BlockKind::Question(p) => {
+            format!("{p:?}").hash(&mut h);
         }
         BlockKind::Permission(_) => {}
     }

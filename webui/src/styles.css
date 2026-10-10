@@ -895,6 +895,16 @@ a:hover {
   border-radius: 6px;
   padding: 8px 12px;
 }
+
+.question-options { display: grid; gap: 6px; padding: 0 12px 12px; }
+.question-option { display: flex; gap: 8px; text-align: left; white-space: normal; height: auto; justify-content: flex-start; padding: 10px 12px; }
+.question-option-label { display: block; }
+.question-description { display: block; color: var(--mu); font-size: 12px; margin-top: 3px; font-weight: normal; }
+.question-option.selected { border-color: var(--ac); background: color-mix(in srgb, var(--ac) 12%, transparent); }
+.question-card .question-option:disabled { opacity: 1; }
+.question-card .question-option:focus-visible, .question-custom input:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
+.question-custom { display: grid; gap: 6px; margin: 0 12px 12px; font-size: 12px; }
+.question-custom input { width: 100%; padding: 8px; border: 1px solid var(--bd); border-radius: 4px; background: var(--bg); color: inherit; }
 .question .label {
   color: var(--at);
 }

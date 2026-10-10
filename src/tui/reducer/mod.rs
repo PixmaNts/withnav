@@ -59,6 +59,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
+        | ClientEvent::QuestionAnswered { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::ChildControlled { generation, .. }
@@ -647,6 +648,20 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                             "the answer to the permission request did not reach the server: {error}"
                         )),
                     )
+                }
+            }
+        }
+        ClientEvent::QuestionAnswered {
+            call_id, result, ..
+        } => {
+            if let Err(error) = result {
+                for block in &mut s.conversation.blocks {
+                    if let BlockKind::Question(p) = &mut block.kind {
+                        if p.call_id == call_id && p.answer.is_none() {
+                            p.sending = false;
+                            p.error = Some(error.clone());
+                        }
+                    }
                 }
             }
         }

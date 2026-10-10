@@ -345,6 +345,56 @@ pub fn route_key(
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if !state.read_only() && !ctrl && !alt {
+        if let Some(p) = state
+            .conversation
+            .blocks
+            .iter()
+            .rev()
+            .find_map(|b| match &b.kind {
+                super::state::BlockKind::Question(p) if p.answer.is_none() => Some(p),
+                _ => None,
+            })
+        {
+            if !p.dismissed && editor.text().is_empty() {
+                return match key.code {
+                    KeyCode::Up => Some(Action::QuestionMove(-1)),
+                    KeyCode::Down => Some(Action::QuestionMove(1)),
+                    KeyCode::Char(' ') => Some(Action::QuestionToggle),
+                    KeyCode::Esc => Some(Action::QuestionDismiss),
+                    KeyCode::Enter if p.cursor == p.choices.options.len() => {
+                        Some(Action::QuestionCustom)
+                    }
+                    KeyCode::Enter => {
+                        Some(Action::AnswerQuestion(crate::tools::control::AskAnswer {
+                            question_call_id: p.call_id.clone(),
+                            selected: if p.choices.multiple {
+                                p.selected.clone()
+                            } else {
+                                vec![p.cursor]
+                            },
+                            custom: None,
+                        }))
+                    }
+                    _ => None,
+                };
+            }
+            if p.custom {
+                if key.code == KeyCode::Esc {
+                    return Some(Action::QuestionDismiss);
+                }
+                if key.code == KeyCode::Enter && !editor.text().trim().is_empty() {
+                    let custom = editor.text().trim().to_owned();
+                    editor.clear_if_revision(editor.revision());
+                    return Some(Action::AnswerQuestion(crate::tools::control::AskAnswer {
+                        question_call_id: p.call_id.clone(),
+                        selected: p.selected.clone(),
+                        custom: Some(custom),
+                    }));
+                }
+            }
+        }
+    }
     // tab on an empty message switches build/plan; with text in it, or as shift+tab, it moves the
     // focus between the editor and the transcript.
     if key.code == KeyCode::Tab

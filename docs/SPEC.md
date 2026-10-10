@@ -165,7 +165,7 @@ When a plugin rewrites a prompt, modifies tool arguments, changes a tool result,
 
 ## 6. Architecture Overview
 
-> **Status: partly built.** The loop, bus, server, SQLite subscriber and clients exist (`nav serve`, `nav tui`, `nav run`, plus `withnav-lsp`). The plugin supervisor, MCP supervisor and co-agent in the diagram do not exist. See `ARCHITECTURE.md`.
+> **Status: partly built.** The loop, bus, server, SQLite subscriber and clients exist (`nav serve`, `nav tui`, `nav run`, plus `nav lsp`). The plugin supervisor, MCP supervisor and co-agent in the diagram do not exist. See `ARCHITECTURE.md`.
 
 ### 6.1 System Diagram
 
@@ -1567,7 +1567,7 @@ bind = 127.0.0.1:7310        (nav serve --bind)
 
 A non-loopback bind is refused unless `--allow-non-loopback` is given, and even then there is no TLS. Operators exposing it remotely are responsible for an authenticated reverse proxy or private network.
 
-When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `nav tui` starts a private server with a random per-process token, and `withnav-lsp` does the same for the editor. A client reaches a running server with `nav tui --url`, and gives the token in `WITHNAV_SERVER_TOKEN`. `nav serve` itself starts without a token.
+When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `nav tui` starts a private server with a random per-process token, and `nav lsp` does the same for the editor. A client reaches a running server with `nav tui --url`, and gives the token in `WITHNAV_SERVER_TOKEN`. `nav serve` itself starts without a token.
 
 ### 20.2 HTTP API
 
@@ -1957,14 +1957,14 @@ The hardest practical areas are expected to be:
 
 ```text
 nav/
-├── Cargo.toml                 crate `withnav`: bins `nav`, `withnav-lsp`
+├── Cargo.toml                 crate `withnav`: binary `nav`
 ├── models.json                example model aliases
 ├── README.md, ARCHITECTURE.md, CONTEXT.md, CHANGELOG.md, AGENTS.md
 ├── docs/                      SPEC.md, PLAN.md, adr/, design/, agents/
 ├── scripts/                   import-opencode-models
 ├── src/
-│   ├── main.rs, app.rs, app/  the `nav` CLI: run, serve, tui, auth
-│   ├── bin/withnav-lsp.rs       the editor binary: Language Server + session server
+│   ├── main.rs, app.rs, app/  the `nav` CLI: run, serve, tui, web, auth, lsp
+│   │   └── lsp.rs              editor startup (Language Server + session server) and replay
 │   ├── lib.rs, error.rs, paths.rs, settings.rs, render.rs
 │   ├── agent/                 loop, actor, prompt, permissions, guard, context, compaction,
 │   │                          instructions (rules), skills, definitions (agents), selection

@@ -1,4 +1,4 @@
-//! Process wiring for the `withnav-lsp` binary: builds the model layers
+//! Process wiring for `nav lsp`: builds the model layers
 //! from models.json and auth.json, starts the in-process cognition chat
 //! server, assembles the [`NavigatorDeps`] and serves the Language Server
 //! over stdio. A layer whose alias, key or config is missing is disabled

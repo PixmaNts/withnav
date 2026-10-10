@@ -16,7 +16,7 @@ VS Code ── vscode-withnav (TypeScript)
    │   ├─ LSP over stdio ─────────────────┐  edits, saves, diagnostics, inline completion, remarks
    │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
    ▼                                  ▼   ▼
-withnav-lsp   (one process, two channels: ADR 0006)
+nav lsp   (one process, two channels: ADR 0006)
    ├─ navigator/   Language Server, the four layers, editor flows, log, replay
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
@@ -25,8 +25,9 @@ withnav-lsp   (one process, two channels: ADR 0006)
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
-A second binary, `nav` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
-`run` (one task in a terminal), `serve` (the session server alone), `auth`, `tui` (the terminal
+The single binary, `nav` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
+`lsp` (the editor server above, or offline `lsp replay`), `run` (one task in a terminal),
+`serve` (the session server alone), `auth`, `tui` (the terminal
 chat client, below) and `web` (the browser chat client, below). `nav run` exits 3 when permission is required and 130 when interrupted.
 
 ## Modules
@@ -35,6 +36,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
+| `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |

@@ -47,3 +47,10 @@ Compatibility readers must be tested, not implemented as silent renames. Existin
 data remains readable; migration must not overwrite a new configuration. Historical
 ADRs and released changelog entries retain their original names, with status notes
 pointing here where needed. No documentation site is introduced by this decision.
+
+## Amendment — 2026-10-10
+
+The LSP binary is folded into `nav lsp`: `nav` is now the only build and install target.
+The extension launches `nav lsp` and maps configured `withnav-lsp` or `navai-lsp` basenames
+to `nav` in the same directory, with a one-time setting migration notice. After reinstalling,
+delete the leftover `~/.cargo/bin/withnav-lsp`; no compatibility executable is built.

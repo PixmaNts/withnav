@@ -12,6 +12,10 @@ requests land in `develop`.
   authority, and plain-text asks keep working as before.
 ### Removed
 
+- **`withnav-lsp` is gone: the editor server is now `nav lsp`.** The extension launches
+  `nav lsp` and migrates a `withnav.serverPath` that pointed at `withnav-lsp` to `nav` in
+  the same directory, with a notice to update the setting. Delete the leftover
+  `~/.cargo/bin/withnav-lsp` after reinstalling.
 - **The `navai` command is gone: run `nav`.** It only printed a deprecation notice and started
   `nav`, but every build still linked it as a third 37 MB binary. Update any script or shortcut
   that still calls `navai`, and delete the leftover `~/.cargo/bin/navai` after reinstalling.

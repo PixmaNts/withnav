@@ -4,12 +4,23 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-10
+
+WithNav 0.7.3 stops permission prompts from piling up in real sessions. Plain reads run when
+Instinct is sure they only read, wherever they read; fd redirections such as `2>&1` no longer look
+like writes. Permission review follows the conversation and your selected skill, so finishing one
+task and starting the next in the same conversation works, and the input sent to Instinct is sized
+from its context window instead of 16 KiB. One binary now does everything: the editor server is
+`nav lsp`, and the deprecated `navai` command is gone. You can also answer Nav's questions with a
+choice in the terminal, VS Code or the browser.
+
 ### Added
 
 - **Answer Nav's questions with a choice in the terminal, VS Code or browser.** Question
   cards offer single or multiple choices, optional other answers and recommendation hints.
   Answers remain Captain messages; replay shows the chosen options without changing permission
   authority, and plain-text asks keep working as before.
+
 ### Removed
 
 - **`withnav-lsp` is gone: the editor server is now `nav lsp`.** The extension launches
@@ -29,7 +40,6 @@ requests land in `develop`.
 - **Starting another task in the same conversation keeps working.** Permission review sees
   the conversation and your selected skill, not the first greeting as a permanent task. Its
   input budget follows the Instinct model's window instead of squeezing everything into 16 KiB.
-
 - **Local-instruction ordering tests no longer fail on random temporary paths.**
   Checks compare complete labelled sections and source order, rather than matching short
   content tokens that can also occur in a file's path. Instruction discovery is unchanged.

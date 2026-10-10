@@ -323,6 +323,7 @@ async fn next(rx: &mut mpsc::Receiver<ClientEvent>) -> ClientEvent {
 
 fn submit() -> SubmitRequest {
     SubmitRequest {
+        answer: None,
         target_actor_id: "agent:main".into(),
         mode: "next-turn".into(),
         content: vec![],

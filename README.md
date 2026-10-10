@@ -47,7 +47,7 @@ owned coding-agent core with a terminal client and a local server.
 - **Session commands.** `/help`, `/stop`, `/context`, `/compact`, and selection commands.
   `/model`, `/variant`, `/agent` and `/new [agent]` are explained below.
 
-**The navigator** (`withnav-lsp` and the VS Code extension in `vscode-withnav/`): a Language
+**The navigator** (`nav lsp` and the VS Code extension in `vscode-withnav/`): a Language
 Server that watches your edits. A reflex layer offers ghost-text suggestions, an instinct layer
 decides when to speak, a metacognition layer writes short remarks beside your code, and a
 cognition chat discusses the work with you. See [`vscode-withnav/README.md`](vscode-withnav/README.md).
@@ -68,7 +68,7 @@ approval (`permission_required`), `130` interrupted.
 
 ```bash
 cargo build --release --bins
-install -m755 target/release/nav target/release/withnav-lsp ~/.local/bin/
+install -m755 target/release/nav ~/.local/bin/
 (cd vscode-withnav && npm ci && npm run package)
 code --install-extension vscode-withnav/withnav-*.vsix
 ```
@@ -145,7 +145,7 @@ and the current agent's model, marked when overridden. The historical `navai.mod
 
 ### Startup errors and migration
 
-During 0.7, `navai` remains a deprecated alias for `nav`. New project files go in
+The `navai` command is gone: run `nav`. New project files go in
 `.withnav/`; when absent, `.navai/` then `.navigator/` are read with a migration hint.
 Old config/data files move to the WithNav directories on first start without
 overwriting new files. `NAVAI_*` variables remain fallbacks for `WITHNAV_*`, with
@@ -183,7 +183,7 @@ environment (other entries are kept; the script says what it removed). Other ref
 Each file is replaced atomically; the two are not replaced together. If the second replacement
 fails, the first file has already been updated, and the script says which one was and which was not.
 
-Coming from `rust-agent`? The first start of `nav` or `withnav-lsp` moves your data and config from
+Coming from `rust-agent`? The first start of `nav` moves your data and config from
 `~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new
 dirs; nothing is overwritten. Remove the old `rust-agent` binaries and the old `Navigator`
 extension (`rust-agent.navigator`) yourself.

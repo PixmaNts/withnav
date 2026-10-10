@@ -109,7 +109,7 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
       const selectedSkill = author === "captain" && typeof p.selected_skill?.name === "string"
         ? { name: p.selected_skill.name, origin: String(p.selected_skill.origin ?? "") } : undefined;
       return { type: "message", id: String(p.command_id ?? envelope.seq), author, source,
-        text: String(p.content ?? ""), selectedSkill };
+         text: String(p.content ?? ""), selectedSkill, answer: author === "captain" ? p.answer : undefined };
     }
     case "permission.requested": {
       if (typeof p.request_id !== "string") return undefined;
@@ -137,7 +137,7 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
       if (p.kind === "budget") return { type: "pause", id, kind: "budget", text: "Out of steps", token };
       if (p.kind === "watchdog") return { type: "pause", id, kind: "watchdog",
         text: `Paused by the watchdog: ${String(p.question ?? p.details?.reason ?? "")}`, token };
-      return { type: "question", id: String(p.turn_id ?? currentTurn ?? envelope.seq), text: String(p.question ?? "") };
+       return { type: "question", id: String(p.turn_id ?? currentTurn ?? envelope.seq), text: String(p.question ?? ""), ...(p.question_call_id ? { questionCallId: p.question_call_id } : {}), ...(p.choices ? { choices: p.choices } : {}) };
     }
     case "command.result":
       if (p.name === "watchdog") return { type: "notice", text: String(p.data?.message ?? "Watchdog notice") };

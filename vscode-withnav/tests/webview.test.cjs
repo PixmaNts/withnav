@@ -44,6 +44,26 @@ function keyboardPage(){
   const key=(key,extra={})=>{const target=d.activeElement;const event=new dom.window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...extra});target.dispatchEvent(event);if(!event.defaultPrevented&&key.length===1){target.value+=key;target.dispatchEvent(new dom.window.Event('input',{bubbles:true}));}};
   return {dom,d,posts,receive,key,type:text=>{for(const c of text)key(c);}};
 }
+test('question card requires explicit selection, retries errors and replays a read-only answer', () => {
+  const {dom,d,posts,receive}=keyboardPage();
+  const question={type:'question',id:'T',questionCallId:'ask',text:'Where next?',choices:{options:[{label:'Develop',description:'Integration branch'},{label:'Leave open'}],multiple:true,allow_custom:true,recommended:0}};
+  receive(question);
+  const buttons=d.querySelectorAll('.question-option');
+  assert.equal(buttons[0].getAttribute('aria-pressed'),'false');
+  const send=d.querySelector('.question-card .control-primary');
+  assert.equal(send.disabled,true);
+  buttons[1].click();send.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1).answer)),{question_call_id:'ask',selected:[1]});
+  assert.equal(buttons[0].disabled,true);
+  receive({type:'questionState',questionCallId:'ask',error:'Stale answer'});
+  assert.equal(buttons[0].disabled,false);
+  assert.match(d.querySelector('.control-outcome').textContent,/Stale answer/);
+  receive({type:'history',items:[{...question,generation:1},{type:'message',generation:1,id:'m',author:'captain',text:'Leave open',answer:{question_call_id:'ask',selected:[1],custom:'Until reviewed'}}]});
+  assert.equal(d.querySelectorAll('.question-option')[1].getAttribute('aria-pressed'),'true');
+  assert.equal(d.querySelector('.question-option').disabled,true);
+  assert.match(d.querySelector('.question-card').textContent,/Until reviewed/);
+  dom.window.close();
+});
 test('R1.3 focused composer key-by-key preserves literal slash, command arguments and palette completion',()=>{
   const {dom,d,posts,receive,key,type}=keyboardPage();receive({type:'commands',items:[{name:'model',description:'Choose model',args_hint:'[name]'}]});const prompt=d.querySelector('#prompt');prompt.focus();
   type('//text');assert.equal(d.activeElement,prompt);key('Enter');assert.equal(posts.at(-1).text,'//text');receive({type:'sendResult',text:'//text',accepted:true});

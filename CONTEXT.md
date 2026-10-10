@@ -287,11 +287,19 @@ An advisory per-call Instinct classification in one batched request: `call_effec
 (`read_only` / `local_change` / `remote_change` / `unsure`), `call_scope`, `reversibility`
 (`none_needed` / `recoverable` / `destructive` / `unsure`), `publication`
 (`none` / `own_work` / `shared` / `unsure`), plus probability questions `sensitivity` and
-`task_fit` using the active Captain task and newer constraints. Confidence ≥ 0.7 is required only on deciding
+`task_fit` using ordered Captain and untrusted assistant turns, not a host-selected task anchor.
+Only Captain turns establish goals/restrictions; latest Captain turns may finish and start tasks
+in any language. Selected skills contribute name, description and base directory, not body or
+grants; reading/working in their described folders fits the task. Older editor-context blocks
+are stripped. Confidence ≥ 0.7 is required only on deciding
 answers: `read_only` for reads; `local_change`, `recoverable` and `inside` for local changes;
 `remote_change`, `recoverable` and `own_work` for publication of the task's own work.
-Secondary answers need no confidence, but cannot contradict a read with `outside`, or any
-route with `destructive` or `shared`. Sensitivity must stay < 0.2 and task fit ≥ 0.6.
+Secondary answers need no confidence, but cannot contradict a route with `destructive` or `shared`.
+Floor-free confident read-only calls run before task-fit/scope checks at sensitivity < 0.5,
+including outside-workspace reads and plain unknown programs. Listing key filenames or reading
+SOPS-encrypted configuration is not credential-content access. Mutations retain sensitivity
+< 0.2 and task fit ≥ 0.6. Credential, overwrite, removal, opaque-wrapper and executable-identity
+floors remain. Fd duplication and redirects to `/dev/null` are not writes.
 Git pushes require bounded
 literal-command host facts confirming the current non-default branch and no force/deletion.
 Host facts include the current/default branches, dirty state and literal git path tracking.
@@ -303,14 +311,25 @@ still passes the host shell, executable identity, overwrite recovery and removal
 Its separate 64 KiB budget carries Instinct
 answers/probabilities, git facts, three bounded untrusted assistant messages and ten structured
 untrusted tool calls with arguments, outcome, exit code, output head and approval source;
-Instinct keeps 16 KiB. Truncation is marked. On timeout, eligible floor-free calls retry once
-with a fresh cancel token and a five-second deadline; outages never authorize a call.
+Instinct uses `context_window_tokens * 3 / 2` bytes or 16 KiB when unconfigured; the plan role
+guard retains 16 KiB. Rules appear once. Budgeting drops oldest turns, then shortens older pasted
+text with byte-cut markers; the latest Captain turn is never partially shown. If it cannot fit
+alongside arguments, the request is incomplete. Arguments too large get a size-specific reason.
+Evidence records input/budget bytes and dropped/cut turns. On 2026-10-10, OmniRoute →
+openrouter/typesafe/jev-1.13 (64000 tokens → 96000 bytes) measured 4 KiB 0.33 s,
+16 KiB 0.34 s, 32 KiB 0.40 s, 64 KiB 0.44 s, 96 KiB 0.52 s, 112 KiB 0.57 s;
+~134 KiB returned HTTP 400. The 2 s deadline is not the input constraint. Truncation is marked.
+On timeout, eligible floor-free calls retry once with a fresh cancel token and five-second
+deadline; a floor-free Instinct read-only verdict below normal sensitivity can still run,
+but writes still ask.
 Typed Captain allow-once answers become in-memory signature-and-scope precedents shared by live
 children, never restored from `permission.resolved` events on resume. SQLite event JSON is writable
 by ambient bash and cannot authenticate an approval; every resumed session starts with no precedents.
 A matching live precedent replaces only
 metacognition unsure/timeout escalation, never an explicit reject or a host floor, and records
 `approved_by: captain_precedent` plus the earlier request. Bypass/config grants never create one.
+Edit/write approvals bind canonical file and scope; later writes/edits reuse them directly until
+the next Captain message, never for sensitive or protected-config paths.
 New human turns conservatively invalidate precedents; every typed Captain deny clears all session
 precedents, even when the denied call has no signature. Signatures
 use the trusted resolver's validated canonical executable, subcommand and sorted flags. Push
@@ -342,7 +361,7 @@ Native `read` within readable roots remains ungated, except sensitive targets. N
 Outside single-file reads use the same per-call classification as bash. Approval binds one canonical target,
 re-resolved before dispatch and opened without following replacement links. No root is added.
 Credential/key targets deterministically force risky review and then a typed Captain decision even
-if both models approve. A risky read-only bash call also needs review. Reading ordinary WithNav
+if both models approve. A read-only bash call with a deterministic floor needs review. Reading ordinary WithNav
 configuration follows normal read review; `auth.json` is sensitive.
 Bash is not confined: its sensitive-file detection is best effort (literal canonical operands and
 recognized expansions), not enforcement against arbitrary shell programs. Only native file tools

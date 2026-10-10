@@ -174,6 +174,31 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
         .open_permission()
         .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
     let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
+    if answerable.is_none() && !state.read_only() {
+        if let Some(p) = state
+            .conversation
+            .blocks
+            .iter()
+            .rev()
+            .find_map(|b| match &b.kind {
+                crate::tui::state::BlockKind::Question(p) if p.answer.is_none() => Some(p),
+                _ => None,
+            })
+        {
+            if !p.dismissed && editor.text().is_empty() {
+                return &[Hints {
+                    hints: &["↑↓ move", "space select", "enter Send", "esc plain typing"],
+                    required: 4,
+                }];
+            }
+            if p.custom {
+                return &[Hints {
+                    hints: &["enter Send", "esc plain typing"],
+                    required: 2,
+                }];
+            }
+        }
+    }
     match (answerable, draft) {
         (Some(_), Some(_)) => &[
             Hints {

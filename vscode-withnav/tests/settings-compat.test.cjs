@@ -28,3 +28,45 @@ test('WithNav settings prefer explicit new values and notify once for legacy fal
     assert.equal(affectsSettings({ affectsConfiguration: key => key === 'navai' }), true);
   } finally { Module._load = original; }
 });
+
+test('editor server paths migrate old basenames in either settings section and notify once', () => {
+  const values = { withnav: {}, navai: {} };
+  const notices = [];
+  const original = Module._load;
+  const settingsPath = require.resolve('../out/tests/settings.js');
+  delete require.cache[settingsPath];
+  Module._load = function(name, ...args) {
+    if (name === 'vscode') return {
+      workspace: { getConfiguration: section => ({
+        inspect: key => ({ globalValue: values[section][key] }),
+        get: (key, fallback) => values[section][key] ?? fallback,
+      }) },
+      window: { showInformationMessage: message => notices.push(message) },
+    };
+    return original.call(this, name, ...args);
+  };
+  try {
+    const { readServerPath } = require(settingsPath);
+    assert.equal(readServerPath(), 'nav');
+    assert.equal(notices.length, 0);
+    for (const section of ['withnav', 'navai']) {
+      values.withnav = {};
+      values.navai = {};
+      for (const binary of ['withnav-lsp', 'navai-lsp']) {
+        for (const prefix of ['', '/opt/withnav/bin/', 'relative/bin/', 'C:\\tools\\']) {
+          values[section].serverPath = prefix + binary;
+          assert.equal(readServerPath(), prefix + 'nav');
+        }
+      }
+    }
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /nav lsp.*Update withnav\.serverPath/);
+    values.withnav.serverPath = '/custom/nav-wrapper';
+    assert.equal(readServerPath(), '/custom/nav-wrapper');
+    values.withnav.serverPath = '/custom/not-withnav-lsp';
+    assert.equal(readServerPath(), '/custom/not-withnav-lsp');
+  } finally {
+    Module._load = original;
+    delete require.cache[settingsPath];
+  }
+});

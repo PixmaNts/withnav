@@ -98,6 +98,14 @@ pre code { padding: 0; white-space: pre; background: none; }
 .file-link { background: none; border: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
 .question { margin-top: 12px; border-left: 2px solid var(--vscode-focusBorder); padding: 4px 0 4px 10px; }
 .question-label { display: block; margin-bottom: 4px; font-size: 0.846rem; font-weight: 600; color: var(--vscode-foreground); }
+.question-options { display: grid; gap: 6px; margin: 12px 0; }
+.question-option { display: flex; gap: 8px; text-align: left; white-space: normal; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; }
+.question-description { display: block; margin-top: 4px; color: var(--vscode-descriptionForeground); font-size: 0.92em; }
+.question-card .question-option.selected { border-color: var(--vscode-focusBorder); background: color-mix(in srgb, var(--vscode-focusBorder) 15%, var(--vscode-editor-background)); color: var(--vscode-foreground); }
+.question-card .deny-message { width: 100%; box-sizing: border-box; padding: 8px; font: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); }
+.question-card .deny-message::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 1; }
+.question-card .question-option:disabled { opacity: 1; }
+.question-card button:focus-visible, .question-card input:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .turn-result { margin-top: 9px; font-size: 0.923rem; }
 /* Navigator note (a wake): a quiet aside, not a message block. */
 .message.note { --note-accent: var(--vscode-errorForeground, var(--vscode-foreground)); position: relative; padding: 9px 0 10px 12px; font-size: 0.923rem; line-height: 1.45; color: var(--vscode-foreground); }

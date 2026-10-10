@@ -260,11 +260,23 @@ impl ActorInbox {
             let mut text = cmd.text_content();
             if cmd.from_captain() {
                 actor.captain_task = Some(text.clone());
-                actor
+                let mut context = actor
                     .permission_context
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .captain(cmd.command_id.to_string(), text.clone());
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(answer) = cmd.ask_answer() {
+                    context.captain_answer(cmd.command_id.to_string(), text.clone(), answer);
+                } else {
+                    context.captain(cmd.command_id.to_string(), text.clone());
+                }
+                for block in &cmd.content {
+                    if let crate::bus::command::ContentBlock::LoadedSkill { name, .. } = block {
+                        let skill = actor.skills.listed().into_iter().find(|skill| &skill.name == name)
+                            .map(|skill| serde_json::json!({"name":name,"description":skill.description,"base_dir":skill.base_dir}))
+                            .unwrap_or_else(|| serde_json::json!({"name":name}));
+                        context.selected_skill(skill);
+                    }
+                }
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {

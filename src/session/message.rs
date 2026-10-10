@@ -27,7 +27,7 @@ pub struct MessageAccepted {
 /// rejected command.
 pub(super) async fn accept(
     handle: &SessionHandle,
-    command: Command,
+    mut command: Command,
 ) -> Result<MessageAccepted, ServerError> {
     if command.target_actor_id != ROOT_ACTOR_ID {
         return Err(ServerError::MalformedBody(format!(
@@ -44,6 +44,26 @@ pub(super) async fn accept(
         return Err(ServerError::MalformedBody(
             "skill selection must be resolved by the session service".into(),
         ));
+    }
+    // Serialize admission with other Captain answers, including plain text, so a
+    // question can be answered only once before the runtime consumes its inbox.
+    let _question_guard = handle.status.question_gate.lock().await;
+    if let Some(answer) = command.ask_answer() {
+        if !command.from_captain() {
+            return Err(ServerError::MalformedBody(
+                "only human ingress may answer a question".into(),
+            ));
+        }
+        let text = handle
+            .status
+            .render_answer(answer)
+            .map_err(ServerError::MalformedBody)?;
+        command
+            .content
+            .retain(|block| !matches!(block, crate::bus::command::ContentBlock::Text { .. }));
+        command
+            .content
+            .insert(0, crate::bus::command::ContentBlock::Text { text });
     }
     route(handle, command).await
 }
@@ -68,6 +88,7 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
     let actor_state = handle.actor_state.clone();
     let notice = command.downgrade_notice().map(|n| n.to_string());
     let pending = PendingCommand {
+        answer: command.ask_answer().cloned(),
         selected_skill: command.content.iter().find_map(|block| match block {
             crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name.clone()),
             _ => None,
@@ -86,6 +107,7 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
             pending,
             Box::new(move || {
                 if committed.from_captain() {
+                    status.clear_question();
                     status.queue_captain();
                 }
                 permit.send(committed);

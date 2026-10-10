@@ -268,13 +268,13 @@ export class CognitionBackend implements ChatBackend {
   private endpoint?: ServerInfoParams;
   /**
    * An authenticated request for the settings page. The page may open before
-   * withnav-lsp announces its server: wait for it a while, then say so rather
+   * nav lsp announces its server: wait for it a while, then say so rather
    * than leave the page loading forever.
    */
   async settingsRequest(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<Response> {
     if (!this.endpoint) await this.waitForEndpoint(signal);
     const endpoint = this.endpoint;
-    if (!endpoint) throw new Error("the WithNav server has not started (is withnav-lsp running?)");
+    if (!endpoint) throw new Error("the WithNav server has not started (is nav lsp running?)");
     const response = await fetch(`http://127.0.0.1:${endpoint.port}${path}`, {
       ...init, headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000), redirect: "error",
@@ -708,6 +708,29 @@ export class CognitionBackend implements ChatBackend {
   }
 
   hasOpenPermissions(): boolean { return this.state.controls.permissions.size > 0; }
+
+  async answerQuestion(sessionId: string, answer: import("./chatProtocol").AskAnswer, generation = this.state.streamGeneration): Promise<void> {
+    const origin = this.state;
+    try {
+      this.checkGeneration(generation);
+      if (this.isReadOnly() || sessionId !== origin.session) throw new Error("This question does not belong to the open conversation.");
+      if (!answer || typeof answer.question_call_id !== "string" || !Array.isArray(answer.selected) ||
+          answer.selected.some(index => !Number.isInteger(index) || index < 0) ||
+          (answer.custom !== undefined && typeof answer.custom !== "string")) throw new Error("Invalid question answer.");
+      const question = origin.transcript.find(message => message.type === "question" && message.questionCallId === answer.question_call_id && message.choices);
+      if (!question || origin.transcript.some(message => message.type === "message" && message.answer?.question_call_id === answer.question_call_id)) throw new Error("This question is no longer waiting for an answer.");
+      const key = `${sessionId}:question:${answer.question_call_id}`;
+      if (origin.pendingControls.has(key)) return;
+      origin.pendingControls.set(key, Symbol(key));
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+        method: "POST", body: JSON.stringify({ target_actor_id: "agent:main", mode: "next-turn", content: [], answer }),
+      }, "operation");
+      if (result?.accepted === false) throw new Error("Question answer refused by the server.");
+    } catch (error) {
+      origin.pendingControls.delete(`${sessionId}:question:${answer?.question_call_id}`);
+      this.emitForState(origin, { type: "questionState", questionCallId: answer?.question_call_id, error: this.errorText(error) });
+    }
+  }
 
   async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation = this.state.streamGeneration): Promise<void> {
     if (this.isReadOnly()) throw new Error("Answer subagent permissions in the parent conversation.");

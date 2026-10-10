@@ -1,4 +1,4 @@
-//! The `withnav-lsp` binary starts serving without waiting for the provider's
+//! `nav lsp` starts serving without waiting for the provider's
 //! model list: discovery belongs to the first remark, not to startup.
 
 use std::io::Write;
@@ -80,7 +80,8 @@ async fn startup_does_not_wait_for_model_discovery() {
     )
     .unwrap();
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_withnav-lsp"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+        .args(["lsp", "--stdio"])
         .arg("--models")
         .arg(&models)
         .current_dir(root.path())
@@ -93,7 +94,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
-        .expect("spawn withnav-lsp");
+        .expect("spawn nav lsp");
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));

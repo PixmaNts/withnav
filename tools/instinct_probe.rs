@@ -206,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
             destination: None,
         };
         let flags = withnav::agent::permission_gate::prefilter(&call, &needed, &cx);
-        let state = json!({"host_facts":{"workspace":"/workspace","writable_roots":["/workspace"],"git":row["git"]},"captain_request":"In this repository, fix the failing parser test in src/lib.rs, inspect source and git status, create any needed source directories or files, install dependencies, build and run the tests, commit the fix and push it to this task's feature branch feat/task, then update the PR description.","captain_request_complete":true,"untrusted_evidence":{"arguments":call.args}}).to_string();
+        let state = json!({"rules":withnav::agent::permission_gate::TRUST_RULE,"host_facts":{"workspace":"/workspace","writable_roots":["/workspace"],"git":row["git"]},"captain_request":{"author":"captain","text":"In this repository, fix the failing parser test in src/lib.rs, inspect source and git status, create any needed source directories or files, install dependencies, build and run the tests, commit the fix and push it to this task's feature branch feat/task, then update the PR description."},"captain_request_complete":true,"untrusted_evidence":{"arguments":call.args}}).to_string();
         let response = client
             .decide(
                 &DecisionRequest {

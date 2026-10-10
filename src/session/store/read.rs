@@ -17,7 +17,7 @@ impl HistoryStore {
     pub async fn permission_context_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
         let path = Arc::clone(&self.path);
         blocking(move || with_read_tx(&path, |tx| {
-            let mut stmt = tx.prepare("SELECT envelope FROM events WHERE session_id=?1 AND kind IN ('message.received','command.result','permission.resolved','tool.pre_call','tool.post_call') ORDER BY seq").map_err(|e| e.to_string())?;
+            let mut stmt = tx.prepare("SELECT envelope FROM events WHERE session_id=?1 AND kind IN ('message.received','command.result','permission.resolved','tool.pre_call','tool.post_call','llm.response') ORDER BY seq").map_err(|e| e.to_string())?;
             let rows = stmt.query_map(params![id.to_string()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
             rows.map(|row| serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())).collect()
         })).await
@@ -210,6 +210,11 @@ impl HistoryStore {
                         continue;
                     }
                     if source.is_some_and(crate::bus::command::is_captain_source) {
+                        if let Some(answer) = envelope.payload.get("answer").filter(|a| !a.is_null()) {
+                            let answer = serde_json::from_value::<crate::tools::control::AskAnswer>(answer.clone())
+                                .map_err(|e| format!("event seq {seq} answer does not decode: {e}"))?;
+                            return Ok(envelope.payload["content"].as_str().map(|text| answer.historical_text(text)));
+                        }
                         return Ok(envelope
                             .payload
                             .get("content")

@@ -4,6 +4,46 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-10
+
+WithNav 0.7.3 stops permission prompts from piling up in real sessions. Plain reads run when
+Instinct is sure they only read, wherever they read; fd redirections such as `2>&1` no longer look
+like writes. Permission review follows the conversation and your selected skill, so finishing one
+task and starting the next in the same conversation works, and the input sent to Instinct is sized
+from its context window instead of 16 KiB. One binary now does everything: the editor server is
+`nav lsp`, and the deprecated `navai` command is gone. You can also answer Nav's questions with a
+choice in the terminal, VS Code or the browser.
+
+### Added
+
+- **Answer Nav's questions with a choice in the terminal, VS Code or browser.** Question
+  cards offer single or multiple choices, optional other answers and recommendation hints.
+  Answers remain Captain messages; replay shows the chosen options without changing permission
+  authority, and plain-text asks keep working as before.
+
+### Removed
+
+- **`withnav-lsp` is gone: the editor server is now `nav lsp`.** The extension launches
+  `nav lsp` and migrates a `withnav.serverPath` that pointed at `withnav-lsp` to `nav` in
+  the same directory, with a notice to update the setting. Delete the leftover
+  `~/.cargo/bin/withnav-lsp` after reinstalling.
+- **The `navai` command is gone: run `nav`.** It only printed a deprecation notice and started
+  `nav`, but every build still linked it as a third 37 MB binary. Update any script or shortcut
+  that still calls `navai`, and delete the leftover `~/.cargo/bin/navai` after reinstalling.
+
+### Fixed
+
+- **Read-only work no longer asks just because it is outside the workspace.** Instinct decides
+  ordinary reads, including fd redirections and read-filter pipes; credential reads and real
+  writes keep their safeguards. A Captain-approved file edit covers subsequent edits of that
+  same file until your next message.
+- **Starting another task in the same conversation keeps working.** Permission review sees
+  the conversation and your selected skill, not the first greeting as a permanent task. Its
+  input budget follows the Instinct model's window instead of squeezing everything into 16 KiB.
+- **Local-instruction ordering tests no longer fail on random temporary paths.**
+  Checks compare complete labelled sections and source order, rather than matching short
+  content tokens that can also occur in a file's path. Instruction discovery is unchanged.
+
 ## [0.7.2] - 2026-10-10
 
 WithNav 0.7.2 makes permissions smarter and long conversations sturdier. Instinct now tells a

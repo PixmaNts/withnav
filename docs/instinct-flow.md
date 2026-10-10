@@ -562,7 +562,7 @@ instinct-flow run .withnav/flows/message-test.toml --payload event.json \
   --model your-systemone-model
 instinct-flow replay .withnav/flows/message-test.toml --runs runs.jsonl \
   --catalogue catalogue.json
-withnav-lsp replay --flows --log withnav.jsonl
+nav lsp replay --flows --log withnav.jsonl
 ```
 
 For `run`, `event.json` contains just the payload object shown in quick start.
@@ -573,7 +573,7 @@ run record with proposed actions and no application; it is not a live host.
 `validate` checks `.toml` files in the directory and sibling templates without
 model calls. `replay` prints a replay result for each JSONL record.
 
-`withnav-lsp replay --flows` replays the **embedded editor flows** against legacy
+`nav lsp replay --flows` replays the **embedded editor flows** against legacy
 `withnav.jsonl` captures, preserving question/state provenance, without model calls.
 It is not a path option for arbitrary workspace flows. `--json` produces a
 machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`.

@@ -35,6 +35,8 @@ export interface PermissionEvidence {
   truncated?: boolean;
 }
 export interface PauseToken { incarnation: string; hold_id: string }
+export interface AskChoices { header?: string; options: { label: string; description?: string }[]; multiple: boolean; allow_custom: boolean; recommended?: number }
+export interface AskAnswer { question_call_id: string; selected: number[]; custom?: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
@@ -48,7 +50,7 @@ export type HostToWebview = { generation?: number } & (
   /** A message already complete when shown (the Captain's own, or a Nav wake).
    *  `context` is the chip label of the editor context attached to a Captain message;
    *  `text` then holds the Captain's own text only, without the raw block. */
-  | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string } }
+   | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
   | { type: "permissionState"; requestId: string; resolution: string; message?: string }
@@ -72,7 +74,8 @@ export type HostToWebview = { generation?: number } & (
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the Captain a question and waits for the next message as the answer. */
-  | { type: "question"; id: string; text: string }
+   | { type: "question"; id: string; text: string; questionCallId?: string; choices?: AskChoices }
+   | { type: "questionState"; questionCallId: string; error: string }
   /** Live preview of the editor context the next message would carry (chip label). */
   | { type: "editorContext"; label: string }
   /** Past conversations of this workspace, newest first. `currentId` is the open one. */
@@ -137,7 +140,8 @@ export type WebviewToHost = { generation?: number } & (
   | { type: "send"; text: string; includeContext?: boolean }
   /** The Captain interrupts the current turn. */
   | { type: "stop" }
-  | { type: "answerPermission"; sessionId: string; requestId: string; decision: PermissionDecision; message?: string }
+   | { type: "answerPermission"; sessionId: string; requestId: string; decision: PermissionDecision; message?: string }
+   | { type: "answerQuestion"; sessionId: string; answer: AskAnswer }
   | { type: "controlPause"; sessionId: string; id: string; action: "continue" | "stop" }
   /** The Captain opens a file mentioned in the chat. */
   | { type: "openFile"; path: string; line?: number }
@@ -184,6 +188,7 @@ export interface ChatBackend {
   stop(): Promise<void>;
   hasOpenPermissions(): boolean;
   answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation?: number): Promise<void>;
+  answerQuestion(sessionId: string, answer: AskAnswer, generation?: number): Promise<void>;
   controlPause(sessionId: string, id: string, action: "continue" | "stop", generation?: number): Promise<void>;
   /** Saved conversations of the workspace, newest first. */
   listConversations(): Promise<ConversationSummary[]>;

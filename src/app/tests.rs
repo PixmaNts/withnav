@@ -12,6 +12,8 @@ async fn typed_watchdog_pause_exits_yielded_and_notice_renders() {
     let pause = kind_envelope(
         EventKind::AgentYield,
         serde_json::to_value(AgentYield {
+            choices: None,
+            question_call_id: None,
             actor_id: "agent:main".into(),
             turn_id: ulid::Ulid::new(),
             question: "watchdog pause".into(),
@@ -231,6 +233,8 @@ fn event_to_ui_matches_phase1_on_delta_and_finish_sequence() {
 #[test]
 fn event_to_ui_maps_agent_yield_to_the_yielded_ui_event() {
     let yield_payload = AgentYieldPayload {
+        choices: None,
+        question_call_id: None,
         actor_id: "agent:main".into(),
         turn_id: Ulid::new(),
         question: "insert SD card?".into(),

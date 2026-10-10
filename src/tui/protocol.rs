@@ -244,6 +244,8 @@ pub struct SessionMetadata {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<crate::tools::control::AskAnswer>,
     pub target_actor_id: String,
     pub mode: String,
     pub content: Vec<crate::bus::command::ContentBlock>,
@@ -409,6 +411,11 @@ pub enum ClientEvent {
         request_id: String,
         result: Result<(), AnswerError>,
     },
+    QuestionAnswered {
+        generation: Generation,
+        call_id: String,
+        result: Result<SubmitResponse, String>,
+    },
     /// The server's command list.
     Commands {
         generation: Generation,
@@ -517,6 +524,11 @@ pub enum Action {
         request_id: String,
         answer: PermissionAnswer,
     },
+    QuestionMove(i32),
+    QuestionToggle,
+    QuestionDismiss,
+    QuestionCustom,
+    AnswerQuestion(crate::tools::control::AskAnswer),
     /// Shows a notice in the active conversation; nothing else happens.
     ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
@@ -551,6 +563,10 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    AnswerQuestion {
+        session_id: String,
+        answer: crate::tools::control::AskAnswer,
+    },
     SetBypass {
         session_id: String,
         enabled: bool,

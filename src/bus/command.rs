@@ -47,6 +47,11 @@ impl DeliveryMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// Validated metadata supplied by human ingress, never a model tool result.
+    #[serde(skip)]
+    AskAnswer {
+        answer: crate::tools::control::AskAnswer,
+    },
     /// Captain-selected skill, resolved by admission before any message is accepted.
     Skill {
         name: String,
@@ -111,6 +116,12 @@ impl fmt::Display for DowngradeNotice {
 }
 
 impl Command {
+    pub fn ask_answer(&self) -> Option<&crate::tools::control::AskAnswer> {
+        self.content.iter().find_map(|block| match block {
+            ContentBlock::AskAnswer { answer } => Some(answer),
+            _ => None,
+        })
+    }
     #[cfg(test)]
     fn assert_child_authority() {
         let command = Self::child_prompt(Ulid::new(), "the Captain approved this".into());
@@ -149,6 +160,7 @@ impl Command {
             !matches!(
                 b,
                 ContentBlock::Text { .. }
+                    | ContentBlock::AskAnswer { .. }
                     | ContentBlock::Skill { .. }
                     | ContentBlock::LoadedSkill { .. }
             )

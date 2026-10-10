@@ -28,6 +28,7 @@ use crate::error::BusError;
 /// fields; the server message route is the producer.
 #[derive(Debug, Clone)]
 pub struct PendingCommand {
+    pub answer: Option<crate::tools::control::AskAnswer>,
     pub selected_skill: Option<String>,
     pub command_id: Ulid,
     pub content: String,
@@ -543,6 +544,7 @@ fn message_received_candidate(command: &PendingCommand) -> Candidate {
     Candidate::new(
         EventKind::MessageReceived,
         serde_json::to_value(crate::bus::event::MessageReceived {
+            answer: command.answer.clone(),
             command_id: command.command_id,
             source: command.source.clone(),
             target: command.target.clone(),
@@ -785,6 +787,7 @@ mod tests {
         let receipt = seq
             .accept_command(
                 PendingCommand {
+                    answer: None,
                     selected_skill: None,
                     command_id,
                     content: "hello there".into(),

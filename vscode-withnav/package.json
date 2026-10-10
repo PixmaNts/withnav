@@ -2,7 +2,7 @@
   "name": "withnav",
   "displayName": "WithNav",
   "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "publisher": "pixmants",
   "repository": {
     "type": "git",
@@ -121,8 +121,8 @@
         },
         "withnav.serverPath": {
           "type": "string",
-          "default": "withnav-lsp",
-          "description": "Path to the withnav-lsp server binary (absolute path, or a command found on PATH)."
+          "default": "nav",
+          "description": "Path to the nav binary (absolute path, or a command found on PATH). The editor launches it with the lsp subcommand."
         },
         "withnav.idleMs": {
           "type": "integer",

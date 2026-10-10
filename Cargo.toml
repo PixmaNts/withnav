@@ -94,10 +94,6 @@ flate2 = "1.1.10"
 [profile.release]
 lto = "thin"
 
-[[bin]]
-name = "navai"
-path = "src/bin/navai.rs"
-
 # Live probes against the configured models: tooling run by hand, never by CI. They live in
 # tools/ rather than examples/ because they check a setup, they do not show how to use the crate.
 [[example]]

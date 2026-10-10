@@ -145,7 +145,7 @@ and the current agent's model, marked when overridden. The historical `navai.mod
 
 ### Startup errors and migration
 
-During 0.7, `navai` remains a deprecated alias for `nav`. New project files go in
+The `navai` command is gone: run `nav`. New project files go in
 `.withnav/`; when absent, `.navai/` then `.navigator/` are read with a migration hint.
 Old config/data files move to the WithNav directories on first start without
 overwriting new files. `NAVAI_*` variables remain fallbacks for `WITHNAV_*`, with

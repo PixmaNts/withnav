@@ -22,7 +22,7 @@ import {
   Verdict,
 } from "./protocol";
 import { registerReflex } from "./reflex";
-import { affectsSettings, readSetting } from "./settings";
+import { affectsSettings, readServerPath, readSetting } from "./settings";
 import { CognitionBackend } from "./cognition";
 import { registerChatView } from "./chatView";
 import { registerSettingsView } from "./settingsView";
@@ -135,10 +135,6 @@ function readConfig(): WithNavConfig {
   };
 }
 
-function readServerPath(): string {
-  return readSetting<string>("serverPath", "withnav-lsp");
-}
-
 async function startClient(): Promise<void> {
   if (client) {
     return;
@@ -146,6 +142,7 @@ async function startClient(): Promise<void> {
   const serverPath = readServerPath();
   const serverOptions: ServerOptions = {
     command: serverPath,
+    args: ["lsp"],
     transport: TransportKind.stdio,
   };
   const clientOptions: LanguageClientOptions = {
@@ -178,7 +175,7 @@ async function startClient(): Promise<void> {
   } catch (err) {
     clientStartFailed = true;
     state = "error";
-    stateMessage = `cannot start server: ${serverPath} (${errorText(err)})`;
+    stateMessage = `cannot start server: ${serverPath} lsp (${errorText(err)})`;
     refreshStatusBar();
   }
 }

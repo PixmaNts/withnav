@@ -268,13 +268,13 @@ export class CognitionBackend implements ChatBackend {
   private endpoint?: ServerInfoParams;
   /**
    * An authenticated request for the settings page. The page may open before
-   * withnav-lsp announces its server: wait for it a while, then say so rather
+   * nav lsp announces its server: wait for it a while, then say so rather
    * than leave the page loading forever.
    */
   async settingsRequest(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<Response> {
     if (!this.endpoint) await this.waitForEndpoint(signal);
     const endpoint = this.endpoint;
-    if (!endpoint) throw new Error("the WithNav server has not started (is withnav-lsp running?)");
+    if (!endpoint) throw new Error("the WithNav server has not started (is nav lsp running?)");
     const response = await fetch(`http://127.0.0.1:${endpoint.port}${path}`, {
       ...init, headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000), redirect: "error",

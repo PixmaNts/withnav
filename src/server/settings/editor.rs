@@ -17,6 +17,7 @@ pub fn keys(agents: &Agents) -> Vec<String> {
         "compaction.chunk_tokens",
         "default_agent",
         "permissions.automatic_review",
+        "permissions.review_timeout_secs",
         "permissions.scratch_dirs",
         "subagents.max_concurrent",
         "subagents.watchdog_interval_secs",
@@ -36,6 +37,7 @@ pub fn default_value(key: &str) -> Value {
         "compaction.chunk_tokens" => json!(64_000),
         "default_agent" => json!("build"),
         "permissions.automatic_review" => json!(true),
+        "permissions.review_timeout_secs" => json!(40),
         "permissions.scratch_dirs" => json!(Settings::default()
             .permissions_scratch_dirs()
             .unwrap_or_default()),
@@ -74,6 +76,9 @@ pub fn description(key: &str) -> &'static str {
         }
         "compaction.chunk_tokens" => {
             "Rolling summary chunk size, capped at half the writer input budget."
+        }
+        "permissions.review_timeout_secs" => {
+            "Single risky-call metacognition deadline in seconds (5–300, default 40)."
         }
         "layers.reflex" => "Completes as you type from code around the cursor.",
         "layers.instinct" => "Triages events and runs permission review.",
@@ -140,6 +145,11 @@ pub fn validate(
             return Err(invalid())
         }
         "permissions.automatic_review" if !value.is_boolean() => return Err(invalid()),
+        "permissions.review_timeout_secs"
+            if !value.as_u64().is_some_and(|n| (5..=300).contains(&n)) =>
+        {
+            return Err(invalid())
+        }
         "permissions.scratch_dirs"
             if !value.as_array().is_some_and(|a| {
                 a.iter()

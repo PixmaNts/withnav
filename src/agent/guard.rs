@@ -142,7 +142,7 @@ impl GuardInput {
         self.instructions.len() + self.state.len()
     }
 
-    fn questions(&self) -> Questions {
+    pub fn questions(&self) -> Questions {
         let criteria: BTreeMap<String, String> = [
             (
                 "conforms",

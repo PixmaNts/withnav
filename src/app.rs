@@ -34,6 +34,8 @@ pub struct Cli {
 pub enum Commands {
     /// WithNav language server: Reflex, Instinct and Metacognition in your editor.
     Lsp(lsp::LspArgs),
+    /// Read-only diagnostics. Live checks send small requests and may incur provider charges.
+    Doctor(DoctorArgs),
     /// Inspect the host flow schema.
     Flows {
         #[command(subcommand)]
@@ -62,10 +64,25 @@ pub struct HtmlConvertArgs {
     pub format: crate::tools::fetch::ConvertFormat,
 }
 
+pub mod doctor;
 mod embedded;
 pub mod lsp;
 pub mod tui;
 pub mod web;
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    /// Make no network requests; use only local configuration and cached metadata.
+    #[arg(long)]
+    pub offline: bool,
+    /// Emit one machine-readable report instead of human output.
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long, default_value_os_t = std::env::current_dir().unwrap_or_default())]
+    pub workspace: PathBuf,
+    #[arg(long, value_enum)]
+    pub layer: Option<doctor::DoctorLayer>,
+}
 
 /// Logging for `tui`: a file in the data dir, never the terminal.
 pub fn init_tui_logging() {
@@ -183,6 +200,7 @@ pub fn init_tracing() {
 
 pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
+        Commands::Doctor(args) => doctor::command(args).await,
         Commands::Flows {
             command: FlowCommand::Catalogue,
         } => {

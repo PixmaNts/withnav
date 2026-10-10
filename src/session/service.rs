@@ -152,6 +152,7 @@ pub struct SelectedModel {
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
     pub(crate) automatic_permission_review: bool,
+    pub(crate) permission_review_timeout_secs: u64,
     pub(crate) scratch_choice: Vec<PathBuf>,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
@@ -2501,6 +2502,15 @@ impl Service {
         })?;
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
+            permission_review_timeout_secs: match inherited
+                .as_ref()
+                .and_then(|parent| parent.execution.as_ref())
+            {
+                Some(execution) => execution.permission_review_timeout_secs,
+                None => settings
+                    .permissions_review_timeout_secs()
+                    .map_err(ServerError::MalformedBody)?,
+            },
             scratch_choice: match &child_policy {
                 Some((_, _, _, _, choice)) => choice.clone(),
                 None => match settings.permissions_scratch_dirs() {
@@ -2615,6 +2625,7 @@ impl Service {
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.automatic_permission_review = execution.automatic_permission_review;
+        actor.permission_review_timeout_secs = execution.permission_review_timeout_secs;
         actor.protected_config_spelling = Some(self.config.config_dir.clone());
         actor.protected_config_root =
             crate::agent::permissions::resolve_protected_root(&self.config.config_dir).ok();

@@ -4,7 +4,14 @@ requests land in `develop`.
 
 ## [Unreleased]
 
-- The bash tool now works on NixOS: it finds bash through /etc/shells and runs the resolved, root-locked binary.
+## [0.7.5] - 2026-10-11
+
+WithNav 0.7.5 lets ordinary work run without waiting on review. Instinct alone decides confident
+reads and recoverable edits in the project, so metacognition only reviews risky calls, with a
+smaller input and one configurable deadline. Printing `sed` and filename globs count as reads. The
+bash tool works on NixOS, `nav doctor` checks your setup and models without changing anything, and
+subagent controls in VS Code look like the rest of the panel.
+
 ### Added
 
 - **`nav doctor` checks your configuration and models without changing anything.** Inspect
@@ -14,9 +21,30 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Ordinary work no longer waits 20–40 seconds for metacognition.** Instinct alone decides
+  confident reads and recoverable workspace edits, including regex grep, executable lookups,
+  scheduling wrappers, secure mise-style symlinks and ordinary `nix` commands. Selecting Nav's
+  offered “Fais-le” option establishes that task. Destruction, credentials, opaque execution,
+  unsafe executables and outside changes keep their safeguards.
+- **Printing `sed` and filename globs are reads.** `sed -n 250,285p file` and `grep … tests/*`
+  no longer go to review. `sed -i` and scripts that write or run files still do, and a glob that
+  would reach a key or credential file (`cat .ssh/id_*`) is still treated as sensitive.
+- **The bash tool works on NixOS.** It finds bash through `/etc/shells` and runs the resolved,
+  root-owned binary; on other systems `/usr/bin/bash` is still chosen first.
 - **Subagent controls fit the VS Code panel.** Stop sits beside the name and state, with themed
   buttons and a clear keyboard focus ring. Goals take two lines with the full text in a tooltip,
   and internal delivery labels no longer appear below them.
+- **The wire golden test no longer needs a git tag.** It checks each fixture's SHA-256 against
+  its manifest, so it passes on a fresh clone and in CI.
+
+### Changed
+
+- **Risk review is smaller and has one configurable deadline.** Ten of eleven real reviews timed
+  out with 45–54 KB of messages; one answer took 40.4 seconds and 3817 reasoning tokens out of a
+  4096-token cap. Reviews now keep the latest 16 KiB of conversation and three tool calls (512-byte
+  output excerpts), preserve the configured `low` variant, and allow up to 16384 output tokens.
+  `permissions.review_timeout_secs` defaults to 40 seconds (5–300); the second five-second attempt
+  is gone. Timed-out changes still ask you.
 
 ## [0.7.4] - 2026-10-10
 
@@ -28,22 +56,6 @@ extension, and its overlay adds both to a system configuration.
 - A Nix flake at the repository root builds `nav` and the VS Code extension
   (`nix build .#withnav .#vscode-withnav`), and its `overlays.default` adds both to a NixOS system.
   `Cargo.lock` is now committed so builds are reproducible.
-### Fixed
-
-- **Ordinary work no longer waits 20–40 seconds for metacognition.** Instinct alone decides
-  confident reads and recoverable workspace edits, including regex grep, executable lookups,
-  scheduling wrappers, secure mise-style symlinks and ordinary `nix` commands. Selecting Nav's
-  offered “Fais-le” option establishes that task. Destruction, credentials, opaque execution,
-  unsafe executables and outside changes keep their safeguards.
-
-### Changed
-
-- **Risk review is smaller and has one configurable deadline.** Ten of eleven real reviews timed
-  out with 45–54 KB of messages; one answer took 40.4 seconds and 3817 reasoning tokens out of a
-  4096-token cap. Reviews now keep the latest 16 KiB of conversation and three tool calls (512-byte
-  output excerpts), preserve the configured `low` variant, and allow up to 16384 output tokens.
-  `permissions.review_timeout_secs` defaults to 40 seconds (5–300); the second five-second attempt
-  is gone. Timed-out changes still ask you.
 
 ## [0.7.3] - 2026-10-10
 

@@ -898,6 +898,7 @@ a:hover {
 
 .question-options { display: grid; gap: 6px; padding: 0 12px 12px; }
 .question-option { display: flex; gap: 8px; text-align: left; white-space: normal; height: auto; justify-content: flex-start; padding: 10px 12px; }
+.question-card .question-option { color: var(--tx); }
 .question-option-label { display: block; }
 .question-description { display: block; color: var(--mu); font-size: 12px; margin-top: 3px; font-weight: normal; }
 .question-option.selected { border-color: var(--ac); background: color-mix(in srgb, var(--ac) 12%, transparent); }

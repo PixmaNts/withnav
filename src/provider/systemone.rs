@@ -47,6 +47,7 @@ fn excerpt(text: &str, max_chars: usize) -> String {
 pub struct SystemOneClient {
     base_url: String,
     model: String,
+    context_window: Option<u64>,
     client: ModelClient,
 }
 
@@ -89,6 +90,7 @@ impl SystemOneClient {
         Ok(Self {
             base_url,
             model: model.model.clone(),
+            context_window: model.context_window,
             client: ModelClient::new(provider_name, &layer_config, api_key, &cache)?,
         })
     }
@@ -96,6 +98,10 @@ impl SystemOneClient {
     /// The model identifier sent on the wire (`model` field of the body).
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn context_window(&self) -> Option<u64> {
+        self.context_window
     }
 
     /// Resolves the `instinct` alias from a loaded models config and builds
@@ -196,6 +202,7 @@ mod tests {
         let client = SystemOneClient {
             base_url: "http://localhost/v1".to_string(),
             model: "m".to_string(),
+            context_window: None,
             client: ModelClient::new(
                 "p",
                 &ProviderConfig {

@@ -164,7 +164,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
 fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
     let body: Value = serde_json::from_str(&system_one_requests(provider)[n]).unwrap();
     let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
-    state["captain_request"].clone()
+    state["captain_request"]["text"].clone()
 }
 
 async fn plan_session(state: &AppState, env: &Env) -> ulid::Ulid {
@@ -237,7 +237,7 @@ async fn a_conforming_exception_runs_and_is_recorded() {
         "the role prompt"
     );
     let evidence = &described["untrusted_evidence"];
-    assert_eq!(described["captain_request"], "write the stub");
+    assert_eq!(described["captain_request"]["text"], "write the stub");
     assert_eq!(
         described["host_facts"]["destination"],
         target.to_str().unwrap()

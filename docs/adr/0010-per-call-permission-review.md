@@ -52,3 +52,17 @@ answers are normalized to one call. Persisted grants remain readable without mig
 
 The review is advisory, not a sandbox. Bash retains the process's ambient permissions, and a
 mistaken classification remains a residual risk. Approval never widens writable roots.
+
+## Amendment — 2026-10-10
+
+Confident read-only effects are decided by Instinct before task-fit and workspace checks, below
+sensitivity 0.5 and without deterministic credential, mutation, overwrite, removal, destructive,
+opaque-execution or executable-identity floors. Unknown plain programs and read-filter pipes are
+not grounds for review alone; fd duplication and redirects to `/dev/null` are not writes.
+Metacognition timeout retains a floor-free read-only verdict below normal sensitivity; writes ask.
+Captain intent is an ordered conversation, including untrusted assistant replies and selected skill
+metadata, rather than a keyword-reset task anchor. Rules appear once; Instinct budgets from the
+configured context window (`tokens * 3 / 2` bytes, fallback 16 KiB), preserving the latest Captain
+turn or marking the request incomplete. Metacognition retains 64 KiB; the plan guard is unchanged.
+Typed edit/write allow-once precedents bind canonical file and scope until the next Captain turn,
+never sensitive or protected-config paths, and never restored from durable history.

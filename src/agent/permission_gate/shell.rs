@@ -86,15 +86,16 @@ fn trusted_directories(path: &Path) -> bool {
 }
 
 pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
-    if command.contains(['$', '`', '\\', '(', ')', '{', '}', '*', '?', '[', '#']) {
-        return None;
-    }
     let mut segments = vec![];
     let mut words = vec![];
     let mut word = String::new();
     let mut quote = None;
-    for c in command.chars() {
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
         if let Some(q) = quote {
+            if q == '"' && matches!(c, '$' | '`' | '\\') {
+                return None;
+            }
             if c == q {
                 quote = None;
             } else {
@@ -102,7 +103,62 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             }
         } else if c == '\'' || c == '"' {
             quote = Some(c);
-        } else if c.is_whitespace() || ";|&<>".contains(c) {
+        } else if matches!(
+            c,
+            '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '*' | '?' | '[' | '#'
+        ) {
+            return None;
+        } else if c == '>' || (c == '&' && chars.peek() == Some(&'>')) {
+            if c == '&' {
+                chars.next();
+            }
+            if word.chars().all(|c| c.is_ascii_digit()) {
+                word.clear();
+            }
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            if chars.peek() == Some(&'>') {
+                chars.next();
+            }
+            let fd = chars.peek() == Some(&'&');
+            if fd {
+                chars.next();
+            }
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_whitespace() && *c != '\n')
+            {
+                chars.next();
+            }
+            let mut target = String::new();
+            let mut target_quote = None;
+            while let Some(&next) = chars.peek() {
+                if let Some(q) = target_quote {
+                    chars.next();
+                    if next == q {
+                        target_quote = None;
+                    } else {
+                        target.push(next);
+                    }
+                } else if matches!(next, '\'' | '"') {
+                    target_quote = Some(next);
+                    chars.next();
+                } else if next.is_whitespace() || ";|&<>".contains(next) {
+                    break;
+                } else {
+                    target.push(next);
+                    chars.next();
+                }
+            }
+            if target.is_empty() || target_quote.is_some() {
+                return None;
+            }
+            if !(target == "/dev/null" || (fd && target.chars().all(|c| c.is_ascii_digit()))) {
+                words.push(">".into());
+                words.push(target);
+            }
+        } else if c.is_whitespace() || ";|&<".contains(c) {
             if !word.is_empty() {
                 words.push(std::mem::take(&mut word));
             }
@@ -361,11 +417,81 @@ pub(super) fn requires_review(command: &str, facts: &Value) -> bool {
         || (command.contains('|') && segments.iter().any(|words| !read_only(words)))
 }
 
+/// Literal read classifications may bypass the small mutation vocabulary, but
+/// command-hiding wrappers and deterministic writes still need review.
+pub(super) fn read_floor(command: &str) -> bool {
+    let Some(parts) = segments(command) else {
+        return true;
+    };
+    removal_or_move(command)
+        || overwrite_paths(command).is_none_or(|paths| !paths.is_empty())
+        || parts.iter().any(|words| {
+            let program = basename(&words[0]);
+            destructive(words)
+                || words[0].starts_with("./")
+                // These write or change files through their operands rather than
+                // a `>` redirection, so the redirection parser cannot see them.
+                || matches!(
+                    program,
+                    "cp" | "mv"
+                        | "rm"
+                        | "unlink"
+                        | "shred"
+                        | "truncate"
+                        | "tee"
+                        | "ln"
+                        | "install"
+                        | "chmod"
+                        | "chown"
+                        | "chgrp"
+                )
+                || (program == "git"
+                    && git_subcommand(words).is_none_or(|i| {
+                        !matches!(
+                            words[i].as_str(),
+                            "status"
+                                | "diff"
+                                | "log"
+                                | "show"
+                                | "ls-files"
+                                | "rev-parse"
+                                | "remote"
+                                | "branch"
+                        )
+                    }))
+                || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
+                    && words.get(1).is_some_and(|w| !w.starts_with('-')))
+                || (program == "perl" && words.iter().any(|w| w.starts_with("-i")))
+                || words[0].contains('=')
+                || matches!(
+                    program,
+                    "sh" | "bash"
+                        | "zsh"
+                        | "eval"
+                        | "source"
+                        | "."
+                        | "xargs"
+                        | "sudo"
+                        | "exec"
+                        | "command"
+                        | "nice"
+                        | "nohup"
+                        | "timeout"
+                )
+                || (program == "env"
+                    && (words.iter().any(|w| w.contains('='))
+                        || words.get(1).is_none_or(|w| w.starts_with('-'))
+                        || read_floor(&words[1..].join(" "))))
+                || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
+                    && words.iter().any(|w| matches!(w.as_str(), "-c" | "-e")))
+        })
+}
+
 /// Exact stdin-only transforms; no file loading, modules or arbitrary Python.
 pub(super) fn read_only_pipeline(command: &str, facts: &Value) -> bool {
     let audited = "python3 -I -S -c 'import json, sys; print(json.dumps(json.load(sys.stdin)))'";
     let checked = command.replace(audited, "python3 -I -S -m json.tool");
-    if checked.contains(['$', '`', '\\', ';', '&', '<', '>', '\n']) || checked.contains("||") {
+    if segments(&checked).is_none() || checked.contains("||") {
         return false;
     }
     let stages: Vec<_> = command.split('|').map(str::trim).collect();
@@ -418,6 +544,9 @@ pub(super) fn read_only_pipeline(command: &str, facts: &Value) -> bool {
         {
             Some("python3") => words[1..] == ["-I", "-S", "-m", "json.tool"],
             Some("jq") => words.len() == 2 && safe_jq_filter(&words[1]),
+            Some("head" | "tail" | "grep" | "wc" | "sort" | "uniq" | "cut" | "cat") => {
+                read_only(words)
+            }
             _ => false,
         }
     })
@@ -432,6 +561,9 @@ fn safe_jq_filter(filter: &str) -> bool {
 }
 
 fn read_only(words: &[String]) -> bool {
+    if words.iter().any(|w| w == ">") {
+        return false;
+    }
     match basename(&words[0]) {
         "git" => matches!(
             words.get(1).map(String::as_str),
@@ -443,7 +575,7 @@ fn read_only(words: &[String]) -> bool {
         ),
         "python3" => words[1..] == ["-I", "-S", "-m", "json.tool"],
         "cat" | "head" | "tail" | "wc" | "ls" | "stat" | "grep" | "diff" | "file" | "find"
-        | "echo" | "printf" => !words.iter().any(|w| w == ">"),
+        | "echo" | "printf" | "sort" | "uniq" | "cut" => true,
         _ => false,
     }
 }
@@ -528,6 +660,35 @@ pub(super) fn removal_or_move(command: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn fd_redirections_do_not_create_writes_or_command_boundaries() {
+        for command in [
+            "ls x 2>&1",
+            "ls x >&2",
+            "ls x 1>&2",
+            "cmd 2>/dev/null",
+            "ls >/dev/null",
+            "ls &>/dev/null",
+        ] {
+            let parts = segments(command).unwrap();
+            assert_eq!(parts.len(), 1, "{command}");
+            assert!(!parts[0].iter().any(|w| w == ">"), "{command}");
+            assert_eq!(overwrite_paths(command), Some(vec![]), "{command}");
+            assert!(!read_floor(command), "{command}");
+        }
+        for (command, target) in [
+            ("ls > out.txt", "out.txt"),
+            ("echo x 2> err.log", "err.log"),
+            ("echo x >> 'out.txt'", "out.txt"),
+        ] {
+            assert_eq!(overwrite_paths(command), Some(vec![target.into()]));
+            assert!(!read_only(&segments(command).unwrap()[0]));
+        }
+        for command in ["ls | tee out.txt", "chmod +x run.sh", "ln -s a b"] {
+            assert!(read_floor(command), "{command}");
+        }
+    }
 
     #[test]
     fn script_and_command_identity_reject_system_symlinks_in_writable_path_directory() {

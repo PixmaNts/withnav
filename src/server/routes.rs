@@ -127,6 +127,8 @@ pub struct CreateSessionResponse {
 /// no impersonatable sender field.
 #[derive(Debug, Deserialize)]
 pub struct PostMessageRequest {
+    #[serde(default)]
+    pub answer: Option<crate::tools::control::AskAnswer>,
     pub target_actor_id: String,
     #[serde(default)]
     pub mode: Option<String>,
@@ -907,7 +909,15 @@ pub fn build_command(
         source_actor_id: HTTP_USER_ACTOR_ID.to_string(),
         target_actor_id: request.target_actor_id.clone(),
         mode,
-        content: request.content.clone(),
+        content: {
+            let mut content = request.content.clone();
+            if let Some(answer) = &request.answer {
+                content.push(ContentBlock::AskAnswer {
+                    answer: answer.clone(),
+                });
+            }
+            content
+        },
         created_at: SystemTime::now(),
     }
 }

@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
@@ -9,19 +10,129 @@ use crate::tools::{Tool, ToolContext, ToolResult};
 
 pub struct AskTool;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskChoices {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub options: Vec<AskOption>,
+    pub multiple: bool,
+    pub allow_custom: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<usize>,
+}
+
+/// Malformed choice arguments never prevent a plain-text ask.
+pub fn validated_choices(args: &Value) -> Option<AskChoices> {
+    for option in args.get("options")?.as_array()? {
+        if option.get("description").is_some_and(|v| !v.is_string()) {
+            return None;
+        }
+    }
+    let options: Vec<AskOption> = serde_json::from_value(args.get("options")?.clone()).ok()?;
+    if !(2..=8).contains(&options.len()) {
+        return None;
+    }
+    let mut labels = std::collections::HashSet::new();
+    for option in &options {
+        if option.label.trim().is_empty()
+            || option.label.chars().count() > 60
+            || !labels.insert(option.label.trim())
+            || option
+                .description
+                .as_ref()
+                .is_some_and(|s| s.chars().count() > 200)
+        {
+            return None;
+        }
+    }
+    let boolean = |key: &str, default| match args.get(key) {
+        None => Some(default),
+        Some(v) => v.as_bool(),
+    };
+    let header = match args.get("header") {
+        None => None,
+        Some(v) => Some(v.as_str()?.to_owned()),
+    };
+    if header.as_ref().is_some_and(|s| s.chars().count() > 30) {
+        return None;
+    }
+    let recommended = match args.get("recommended") {
+        None => None,
+        Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
+    };
+    if recommended.is_some_and(|i| i >= options.len()) {
+        return None;
+    }
+    Some(AskChoices {
+        header,
+        options,
+        multiple: boolean("multiple", false)?,
+        allow_custom: boolean("allow_custom", true)?,
+        recommended,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskAnswer {
+    pub question_call_id: String,
+    pub selected: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<String>,
+}
+
+impl AskChoices {
+    pub fn answer_text(&self, answer: &AskAnswer) -> Result<String, String> {
+        if !self.multiple && answer.selected.len() > 1 {
+            return Err("this question allows only one selection".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut text = Vec::new();
+        for &index in &answer.selected {
+            let option = self.options.get(index).ok_or("choice index out of range")?;
+            if !seen.insert(index) {
+                return Err("duplicate choice index".into());
+            }
+            text.push(option.label.clone());
+        }
+        if let Some(custom) = &answer.custom {
+            if !self.allow_custom || custom.trim().is_empty() {
+                return Err("custom answer is not allowed or is empty".into());
+            }
+            text.push(custom.clone());
+        }
+        if text.is_empty() {
+            return Err("select a choice or provide a custom answer".into());
+        }
+        Ok(text.join("\n"))
+    }
+}
+
 impl Tool for AskTool {
     fn name(&self) -> &str {
         "ask"
     }
     fn schema(&self) -> Value {
         json!({
-            "description": "Pause and ask the human operator for input or a physical action. Use when progress requires a human, missing credentials, or a decision only the operator can make.",
+            "description": "Pause and ask the Captain for input or a physical action. Offer options for a few short, mutually exclusive choices; use plain text for open questions. Do not use ask for confirmations already handled by permission review. The recommended index is a hint, never an automatic answer.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "question": {"type": "string"},
                     "kind": {"type": "string"},
-                    "details": {"type": "object"}
+                    "details": {"type": "object"},
+                    "options": {"type":"array", "minItems":2, "maxItems":8, "items":{"type":"object", "properties":{"label":{"type":"string", "minLength":1, "maxLength":60}, "description":{"type":"string", "maxLength":200}}, "required":["label"]}},
+                    "multiple": {"type":"boolean", "default":false},
+                    "allow_custom": {"type":"boolean", "default":true},
+                    "recommended": {"type":"integer", "minimum":0, "maximum":7},
+                    "header": {"type":"string", "maxLength":30}
                 },
                 "required": ["question"]
             }
@@ -52,5 +163,73 @@ mod tests {
     fn ask_schema_advertises_question() {
         let schema = AskTool.schema();
         assert_eq!(schema["parameters"]["required"][0], "question");
+    }
+
+    #[test]
+    fn choices_defaults_and_unicode_limits() {
+        let choices = validated_choices(&json!({"options":[{"label":"é".repeat(60)}, {"label":"Other", "description":"é".repeat(200)}], "header":"é".repeat(30), "recommended":1})).unwrap();
+        assert!(!choices.multiple);
+        assert!(choices.allow_custom);
+        assert_eq!(choices.recommended, Some(1));
+    }
+
+    #[test]
+    fn malformed_choices_fall_back_to_plain_text() {
+        let base = json!({"question":"Where?", "options":[{"label":"A"}, {"label":"B"}]});
+        for (key, value) in [
+            ("options", json!([])),
+            ("options", json!([{"label":"A"}])),
+            ("options", json!(vec![json!({"label":"A"}); 9])),
+            ("options", json!([{"label":" "},{"label":"B"}])),
+            ("options", json!([{"label":"A"},{"label":" A "}])),
+            ("options", json!([{"label":"é".repeat(61)},{"label":"B"}])),
+            (
+                "options",
+                json!([{"label":"A","description":"é".repeat(201)},{"label":"B"}]),
+            ),
+            (
+                "options",
+                json!([{"label":"A","description":null},{"label":"B"}]),
+            ),
+            ("options", json!("not an array")),
+            ("multiple", json!("true")),
+            ("allow_custom", json!(null)),
+            ("recommended", json!(-1)),
+            ("recommended", json!(2)),
+            ("recommended", json!(0.5)),
+            ("header", json!("é".repeat(31))),
+        ] {
+            let mut args = base.clone();
+            args[key] = value;
+            assert!(validated_choices(&args).is_none(), "{args}");
+        }
+        assert!(validated_choices(&json!({"question":"Where?"})).is_none());
+    }
+
+    #[test]
+    fn structured_answer_validates_and_renders_labels_and_custom() {
+        let mut choices =
+            validated_choices(&json!({"options":[{"label":"A"},{"label":"B"}]})).unwrap();
+        let mut answer = AskAnswer {
+            question_call_id: "ask_1".into(),
+            selected: vec![1],
+            custom: None,
+        };
+        assert_eq!(choices.answer_text(&answer).unwrap(), "B");
+        answer.selected = vec![0, 1];
+        assert!(choices.answer_text(&answer).is_err());
+        choices.multiple = true;
+        answer.custom = Some("C".into());
+        assert_eq!(choices.answer_text(&answer).unwrap(), "A\nB\nC");
+        choices.allow_custom = false;
+        assert!(choices.answer_text(&answer).is_err());
+        answer.custom = None;
+        for indices in [vec![2], vec![0, 0], vec![]] {
+            answer.selected = indices;
+            assert!(choices.answer_text(&answer).is_err());
+        }
+        choices.allow_custom = true;
+        answer.custom = Some(" ".into());
+        assert!(choices.answer_text(&answer).is_err());
     }
 }

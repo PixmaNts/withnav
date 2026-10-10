@@ -284,7 +284,7 @@ async fn an_oversized_source_cuts_the_biggest_outputs_of_the_part_to_summarize()
     };
     let provider = provider("http://127.0.0.1:1/v1".into());
     let mut i = input(&provider, &t, None);
-    i.destination_budget = crate::agent::compaction::summary_reserve_tokens() + 330;
+    i.destination_budget = crate::agent::compaction::summary_reserve_tokens() + 370;
     let planned = plan(&t, None, &i.components, i.destination_budget, Aim::Fit).unwrap();
     assert!(planned.through_message > 2);
     i.source_budget = 2_000;

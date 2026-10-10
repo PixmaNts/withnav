@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Questions can carry short choices and structured Captain answers.** The session API
+  validates optional ask choices, keeps invalid asks as plain text, and records human answers
+  for replay without changing permission authority. Client question cards are a follow-up.
+
 ## [0.7.2] - 2026-10-10
 
 WithNav 0.7.2 makes permissions smarter and long conversations sturdier. Instinct now tells a

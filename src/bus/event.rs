@@ -340,6 +340,8 @@ pub struct SessionEnd {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageReceived {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<crate::tools::control::AskAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_skill: Option<SelectedSkill>,
     pub command_id: Ulid,
     pub source: String,
@@ -423,6 +425,10 @@ pub struct AgentStateChanged {
 /// Reuses the `HumanRequest` fields (question/kind/details) with turn context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentYield {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<crate::tools::control::AskChoices>,
     pub actor_id: String,
     pub turn_id: Ulid,
     pub question: String,
@@ -988,6 +994,7 @@ mod tests {
             (
                 "message.received",
                 serde_json::to_value(&MessageReceived {
+                    answer: None,
                     selected_skill: None,
                     command_id: Ulid::new(),
                     source: "user:http".into(),
@@ -1079,6 +1086,8 @@ mod tests {
             (
                 "agent.yield",
                 serde_json::to_value(&AgentYield {
+                    choices: None,
+                    question_call_id: None,
                     actor_id: ROOT_ACTOR_ID.into(),
                     turn_id: Ulid::new(),
                     question: "proceed?".into(),

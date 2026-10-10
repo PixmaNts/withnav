@@ -221,6 +221,24 @@ impl Client {
         })
     }
 
+    /// Sends a structured question answer through the ordinary Captain-message ingress.
+    pub async fn answer_question(
+        &self,
+        id: &str,
+        answer: crate::tools::control::AskAnswer,
+    ) -> Result<SubmitResponse, SendError> {
+        self.send(
+            id,
+            SubmitRequest {
+                target_actor_id: "agent:main".into(),
+                mode: "next-turn".into(),
+                content: vec![],
+                answer: Some(answer),
+            },
+        )
+        .await
+    }
+
     /// Answers a permission request. A 409 `permission_stale` is [`AnswerError::Stale`].
     pub async fn answer_permission(
         &self,

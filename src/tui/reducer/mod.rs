@@ -325,6 +325,7 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
     };
     Effect::SendAt {
         request: SubmitRequest {
+            answer: None,
             target_actor_id: "agent:main".into(),
             mode: "next-turn".into(),
             content,

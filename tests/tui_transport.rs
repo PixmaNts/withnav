@@ -32,10 +32,59 @@ fn answer(text: &str) -> Vec<u8> {
 
 fn submit(text: &str) -> SubmitRequest {
     SubmitRequest {
+        answer: None,
         target_actor_id: "agent:main".into(),
         mode: "next-turn".into(),
         content: vec![ContentBlock::Text { text: text.into() }],
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn question_client_sends_structured_answer_as_a_captain_message() {
+    let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_tui","function":{"name":"ask","arguments":"{\"question\":\"Which?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}"}}]},"finish_reason":"tool_calls"}]}"#;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[ask])), answer("ok")]).await;
+    let client = Client::new(&server.base, None);
+    let id = create(&client, &server).await;
+    let sub = server
+        .state
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .unwrap();
+    client.send(&id, submit("Choose")).await.unwrap();
+    common::server::collect_until(sub, |e| {
+        e.kind == "agent.state" && e.payload["to"] == "yielded"
+    })
+    .await;
+    let sub = server
+        .state
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .unwrap();
+    client
+        .answer_question(
+            &id,
+            withnav::tools::control::AskAnswer {
+                question_call_id: "ask_tui".into(),
+                selected: vec![0],
+                custom: None,
+            },
+        )
+        .await
+        .unwrap();
+    let events = common::server::collect_until(sub, |e| {
+        e.kind == "turn.end" && e.payload["outcome"] == "done"
+    })
+    .await;
+    let received = events
+        .iter()
+        .find(|e| e.kind == "message.received" && e.payload["answer"].is_object())
+        .unwrap();
+    assert_eq!(received.payload["source"], "user:http");
+    assert_eq!(received.payload["content"], "A");
+    assert_eq!(
+        received.payload["answer"],
+        json!({"question_call_id":"ask_tui", "selected":[0]})
+    );
 }
 
 fn workspace(server: &TestServer) -> String {

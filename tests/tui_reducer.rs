@@ -1221,6 +1221,7 @@ impl Script {
         self.push(
             EventKind::MessageReceived,
             &MessageReceived {
+                answer: None,
                 selected_skill: None,
                 command_id: Ulid(7),
                 source: "user:http".into(),
@@ -1533,6 +1534,8 @@ fn yield_ask() -> Vec<EventEnvelope> {
     s.push(
         EventKind::AgentYield,
         &AgentYield {
+            choices: None,
+            question_call_id: None,
             actor_id: ROOT_ACTOR_ID.into(),
             turn_id: Ulid(100),
             question: "insert SD card".into(),

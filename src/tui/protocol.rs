@@ -244,6 +244,8 @@ pub struct SessionMetadata {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<crate::tools::control::AskAnswer>,
     pub target_actor_id: String,
     pub mode: String,
     pub content: Vec<crate::bus::command::ContentBlock>,

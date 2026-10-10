@@ -99,6 +99,8 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub(crate) question_gate: tokio::sync::Mutex<()>,
+    pending_question: Mutex<Option<crate::agent::response::HumanRequest>>,
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
     pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
     pub permission_context: Arc<Mutex<crate::agent::permission_gate::context::ReviewContext>>,
@@ -151,6 +153,72 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    fn update_question(&self, actor: &AgentActor) {
+        let question = match &actor.pending {
+            Some(crate::agent::actor::PendingInteraction::Ask { tool_call_id }) => {
+                actor.transcript.iter().rev().find_map(|message| {
+                    if let crate::provider::openai::ChatMessage::Assistant { tool_calls, .. } =
+                        message
+                    {
+                        tool_calls
+                            .iter()
+                            .find(|call| &call.id == tool_call_id)
+                            .map(|call| {
+                                crate::agent::response::human_request_from(
+                                    &crate::provider::ToolCall {
+                                        id: call.id.clone(),
+                                        name: call.function.name.clone(),
+                                        args: serde_json::from_str(&call.function.arguments)
+                                            .unwrap_or_default(),
+                                        args_valid: true,
+                                    },
+                                )
+                            })
+                    } else {
+                        None
+                    }
+                })
+            }
+            _ => None,
+        };
+        *self
+            .pending_question
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = question;
+    }
+
+    pub(crate) fn render_answer(
+        &self,
+        answer: &crate::tools::control::AskAnswer,
+    ) -> Result<String, String> {
+        if self
+            .queued_captain
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+        {
+            return Err("a Captain message is already queued for this question".into());
+        }
+        let pending = self
+            .pending_question
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let question = pending
+            .as_ref()
+            .filter(|q| q.tool_call_id == answer.question_call_id)
+            .ok_or("answer does not match the pending question")?;
+        question
+            .choices
+            .as_ref()
+            .ok_or("pending question has no choices")?
+            .answer_text(answer)
+    }
+
+    pub(crate) fn clear_question(&self) {
+        *self
+            .pending_question
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
     pub fn install_captain_commit(&self, commit: CaptainCommit) {
         *self
             .captain_commit
@@ -515,12 +583,14 @@ impl RuntimeStatus {
 
     /// A policy pin that applied no input must preserve a concurrent permission claim.
     fn release_pin(&self, actor: &AgentActor) {
+        self.update_question(actor);
         self.selection.end_turn(actor.has_pending());
         self.slot().running = false;
     }
 
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
+        self.update_question(actor);
         #[cfg(debug_assertions)]
         {
             *self
@@ -614,6 +684,7 @@ impl RuntimeStatus {
 
     /// Records that the session starts with `actor`'s unanswered `ask`, if any.
     pub fn init_ask(&self, actor: &AgentActor) {
+        self.update_question(actor);
         #[cfg(debug_assertions)]
         {
             *self
@@ -1364,6 +1435,7 @@ async fn runtime_loop(
         if let Some(hold) = status.watchdog.publish_root_hold() {
             snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
             turn.publish(EventKind::AgentYield, to_value(&AgentYield {
+                choices: None, question_call_id: None,
                 actor_id: ROOT_ACTOR_ID.into(), turn_id,
                 question: "Watchdog uncertain: paused; alt+c to continue, Stop to stop, or send a fresh instruction. Partial work is kept.".into(),
                 kind: Some("watchdog".into()),
@@ -1450,6 +1522,8 @@ async fn runtime_loop(
                 turn.publish(
                     EventKind::AgentYield,
                     to_value(&AgentYield {
+                        question_call_id: Some(request.tool_call_id),
+                        choices: request.choices,
                         actor_id: ROOT_ACTOR_ID.to_string(),
                         turn_id,
                         question: request.question,
@@ -1541,6 +1615,8 @@ async fn runtime_loop(
                     to_value(&AgentYield {
                         actor_id: ROOT_ACTOR_ID.to_string(),
                         turn_id,
+                        choices: None,
+                        question_call_id: None,
                         question: "step budget exhausted".to_string(),
                         kind: Some("budget".to_string()),
                         details: None,

@@ -13,6 +13,141 @@ mod common;
 use common::server::{collect_until, create_session, post_message, post_message_body, TestServer};
 use common::sse::{http_sse, sse_body};
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn structured_ask_answer_validates_preserves_captain_authority_and_replays() {
+    let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_choices","function":{"name":"ask","arguments":"{\"question\":\"Which scope?\",\"header\":\"Scope\",\"options\":[{\"label\":\"Local\",\"description\":\"This project\"},{\"label\":\"Global\"}],\"allow_custom\":false,\"recommended\":0}"}}]},"finish_reason":"tool_calls"}]}"#;
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+    let server = TestServer::start(vec![
+        http_sse(&sse_body(&[ask])),
+        http_sse(&sse_body(&[done])),
+    ])
+    .await;
+    let id = create_session(&server.base, &server.ws).await;
+    let session_id = id.parse().unwrap();
+    let sub = server.state.subscribe(session_id, None).await.unwrap();
+    assert_eq!(
+        post_message(&server.base, &id, "Choose a scope")
+            .await
+            .status(),
+        200
+    );
+    let events = collect_until(sub, |e| {
+        e.kind == "agent.state" && e.payload["to"] == "yielded"
+    })
+    .await;
+    let question = events.iter().find(|e| e.kind == "agent.yield").unwrap();
+    assert_eq!(question.payload["question_call_id"], "ask_choices");
+    assert_eq!(
+        question.payload["choices"],
+        json!({"header":"Scope", "options":[{"label":"Local","description":"This project"},{"label":"Global"}], "multiple":false,"allow_custom":false,"recommended":0})
+    );
+    for answer in [
+        json!({"question_call_id":"wrong", "selected":[0]}),
+        json!({"question_call_id":"ask_choices", "selected":[2]}),
+        json!({"question_call_id":"ask_choices", "selected":[0,1]}),
+        json!({"question_call_id":"ask_choices", "selected":[], "custom":"Other"}),
+        json!({"question_call_id":"ask_choices", "selected":[0,0]}),
+        json!({"question_call_id":"ask_choices", "selected":[]}),
+    ] {
+        let body = json!({"target_actor_id":"agent:main", "content":[], "answer":answer});
+        assert_eq!(
+            post_message_body(&server.base, &id, &body).await.status(),
+            400
+        );
+    }
+    let answer = json!({"question_call_id":"ask_choices", "selected":[1]});
+    let body = json!({"target_actor_id":"agent:main", "content":[{"type":"text","text":"spoofed text"}], "answer":answer});
+    let request: withnav::server::routes::PostMessageRequest =
+        serde_json::from_value(body.clone()).unwrap();
+    let command = withnav::server::routes::build_command(
+        session_id,
+        &request,
+        withnav::bus::command::DeliveryMode::NextTurn,
+    );
+    assert!(command.from_captain());
+    assert_eq!(
+        command.user_provenance(),
+        withnav::provider::openai::UserProvenance::Captain
+    );
+    let sub = server
+        .state
+        .subscribe(session_id, Some(question.seq))
+        .await
+        .unwrap();
+    assert_eq!(
+        post_message_body(&server.base, &id, &body).await.status(),
+        200
+    );
+    let events = collect_until(sub, |e| {
+        e.kind == "turn.end" && e.payload["outcome"] == "done"
+    })
+    .await;
+    let received = events
+        .iter()
+        .find(|e| e.kind == "message.received" && e.payload["answer"].is_object())
+        .unwrap();
+    assert_eq!(received.payload["answer"], answer);
+    assert_eq!(received.payload["content"], "Global");
+    assert_eq!(received.payload["source"], "user:http");
+    assert_eq!(
+        post_message_body(&server.base, &id, &body).await.status(),
+        400
+    );
+    let sub = server.state.subscribe(session_id, None).await.unwrap();
+    let withnav::bus::ResumeOutcome::Replay(replayed) = sub.replay else {
+        panic!("expected replay");
+    };
+    assert!(replayed
+        .iter()
+        .any(|e| e.kind == "message.received" && e.payload["answer"] == answer));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn structured_ask_accepts_multiple_and_custom_answers() {
+    for (selected, custom, text) in [
+        (json!([0, 1]), Some("Other"), "A\nB\nOther"),
+        (json!([]), Some("Other"), "Other"),
+    ] {
+        let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_many","function":{"name":"ask","arguments":"{\"question\":\"Which?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}],\"multiple\":true}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = TestServer::start(vec![
+            http_sse(&sse_body(&[ask])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let id = create_session(&server.base, &server.ws).await;
+        let session_id = id.parse().unwrap();
+        let sub = server.state.subscribe(session_id, None).await.unwrap();
+        post_message(&server.base, &id, "Choose").await;
+        collect_until(sub, |e| {
+            e.kind == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let sub = server.state.subscribe(session_id, None).await.unwrap();
+        let answer = json!({"question_call_id":"ask_many", "selected":selected, "custom":custom});
+        assert_eq!(
+            post_message_body(
+                &server.base,
+                &id,
+                &json!({"target_actor_id":"agent:main", "content":[], "answer":answer})
+            )
+            .await
+            .status(),
+            200
+        );
+        let events = collect_until(sub, |e| {
+            e.kind == "turn.end" && e.payload["outcome"] == "done"
+        })
+        .await;
+        let received = events
+            .iter()
+            .find(|e| e.kind == "message.received" && e.payload["answer"].is_object())
+            .unwrap();
+        assert_eq!(received.payload["content"], text);
+        assert_eq!(received.payload["answer"], answer);
+    }
+}
+
 /// A provider that sends one partial chunk, signals `started`, then either
 /// holds the stream open (`finish_after: None`, until the client leaves) or
 /// completes it after the given pause.

@@ -14,4 +14,5 @@ pub mod response;
 pub mod run_loop;
 pub mod scratch;
 pub mod selection;
+pub mod skill_grants;
 pub mod skills;

@@ -122,6 +122,7 @@ pub struct AgentActor {
     /// The folder and origin approvals: given in this session, or kept for
     /// its workspace when the session service loads them.
     pub grants: Grants,
+    pub skill_grants: Option<super::skill_grants::SkillGrants>,
     /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// captain (a human ingress identity), never from a navigator wake, delegated
@@ -244,6 +245,7 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
+            skill_grants: None,
             captain_task: None,
             guard: None,
         }

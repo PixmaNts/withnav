@@ -4,6 +4,13 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Allow a user skill's script once on this machine.** A deliberate permission
+  answer persists the skill location and each approved script's SHA-256. Reviews
+  still run; changes, rejects and protected targets still ask. Grants can be
+  listed and revoked through `/v1/skill-grants`; Settings controls are follow-up.
+
 ### Changed
 
 - **Ordinary recoverable work takes the fast Instinct permission path.** Edits, commits,

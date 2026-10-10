@@ -748,6 +748,7 @@ mod tests {
                 flow_regates: 0,
                 requires_captain: false,
                 allow_config_session: false,
+                skill_script: None,
                 permission_gate: None,
                 id: Ulid::new(),
                 tool_call_id: "w1".into(),

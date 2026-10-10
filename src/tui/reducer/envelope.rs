@@ -478,6 +478,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             }
             let prompt = PermissionPrompt {
                 allow_config_session: v["allow_config_session"].as_bool().unwrap_or(false),
+                skill_script: serde_json::from_value(v["skill_script"].clone()).ok(),
                 child_session_id: child.map(str::to_string),
                 request_id,
                 tool_call_id: text("tool_call_id")?,

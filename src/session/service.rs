@@ -2544,6 +2544,9 @@ impl Service {
             ),
         };
         // "Allow folder" answers are kept per workspace, across sessions. A
+        actor.skill_grants = Some(crate::agent::skill_grants::SkillGrants {
+            file: self.config.config_dir.join("skill-grants.json"),
+        });
         // subagent keeps its own in memory, as its parent's policy decides.
         if child_policy.is_none() {
             actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);

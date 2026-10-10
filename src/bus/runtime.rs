@@ -1151,6 +1151,21 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 }
+                if answer.decision
+                    == crate::agent::permissions::PermissionDecision::AllowSkillMachine
+                    && (request.skill_script.is_none()
+                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain
+                        || !matches!(&actor.pending, Some(crate::agent::actor::PendingInteraction::Permission { call, .. })
+                            if crate::agent::permission_gate::script::skill_script(&actor, call).as_ref()
+                                == request.skill_script.as_deref()))
+                {
+                    status.release_pin(&actor);
+                    status.release_permission(answer.request_id);
+                    let _ = answer
+                        .reply
+                        .send(Err(crate::agent::permissions::PermissionError::Stale));
+                    continue;
+                }
                 let decision = crate::agent::permissions::offered_decision(
                     &request.agent,
                     &request.tool,
@@ -1790,6 +1805,7 @@ fn permission_requested(
     });
     payload["requires_captain"] = serde_json::json!(request.requires_captain);
     payload["allow_config_session"] = serde_json::json!(request.allow_config_session);
+    payload["skill_script"] = serde_json::json!(request.skill_script);
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
             request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
@@ -2128,6 +2144,7 @@ mod tests {
                 flow_regates: 0,
                 requires_captain: false,
                 allow_config_session: false,
+                skill_script: None,
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),

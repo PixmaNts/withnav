@@ -362,6 +362,25 @@ pub async fn resolve_permission_with_origin(
     {
         return Err(PermissionError::Stale.into());
     }
+    if decision == PermissionDecision::AllowSkillMachine {
+        let Some(PendingInteraction::Permission { request, call, .. }) = &actor.pending else {
+            return Err(PermissionError::Stale.into());
+        };
+        let current = super::permission_gate::script::skill_script(actor, call);
+        if origin != super::permissions::PermissionOrigin::Captain
+            || request.skill_script.is_none()
+            || current.as_ref() != request.skill_script.as_deref()
+        {
+            return Err(PermissionError::Stale.into());
+        }
+        if actor.skill_grants.as_ref().is_none_or(|store| {
+            store
+                .grant(current.as_ref().expect("checked skill script"))
+                .is_err()
+        }) {
+            return Err(PermissionError::Stale.into());
+        }
+    }
     let Some(PendingInteraction::Permission {
         request,
         call,
@@ -414,13 +433,19 @@ pub async fn resolve_permission_with_origin(
     match decision {
         PermissionDecision::AllowOnce
         | PermissionDecision::AllowFolder
-        | PermissionDecision::AllowConfigSession => {
+        | PermissionDecision::AllowConfigSession
+        | PermissionDecision::AllowSkillMachine => {
             let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
             let bypass = origin == super::permissions::PermissionOrigin::Bypass;
             evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "captain" });
             let mut approval = serde_json::json!({"permission_gate":evidence});
             if bypass {
                 approval["approved_by"] = serde_json::json!("bypass");
+            }
+            if decision == PermissionDecision::AllowSkillMachine {
+                approval["approved_by"] = serde_json::json!("skill_grant");
+                approval["permission_gate"]["approved_by"] = serde_json::json!("skill_grant");
+                approval["skill_script"] = serde_json::json!(request.skill_script);
             }
             let approval_note = Some(approval);
             // The approval is for the destination the Captain reviewed. Resolve
@@ -959,6 +984,33 @@ async fn run_gated(
             request.allow_config_session =
                 super::permission_gate::protected_config_call(actor, call, &needed)
                     && super::permission_gate::config_grant_eligible(actor, call, &needed);
+            if !request.requires_captain {
+                request.skill_script =
+                    super::permission_gate::script::skill_script(actor, call).map(Box::new);
+                if let Some(script) = &request.skill_script {
+                    if let Some(input) =
+                        super::permission_gate::describe(actor, call, &needed, &Default::default())
+                    {
+                        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&input.state) {
+                            request.permission_gate.as_mut().unwrap()["script_binding"] =
+                                state["host_facts"]["script_binding"].clone();
+                        }
+                    }
+                    if actor
+                        .skill_grants
+                        .as_ref()
+                        .is_some_and(|store| store.changed(script))
+                    {
+                        request.requires_captain = true;
+                        request.reason = format!(
+                            "{} changed since you allowed skill {}; {}",
+                            script.relative_path.display(),
+                            script.skill,
+                            request.reason
+                        );
+                    }
+                }
+            }
             if request.requires_captain
                 || !actor
                     .bypass
@@ -2968,6 +3020,238 @@ mod tests {
     }
     struct ReadJudge;
 
+    struct UnsureScriptReviewer;
+    struct RejectScriptReviewer;
+    impl super::super::permission_gate::PermissionReviewer for RejectScriptReviewer {
+        fn review<'a>(
+            &'a self,
+            _: &'a super::super::permission_gate::PermissionReviewInput,
+            _: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            Box::pin(async {
+                Ok(super::super::permission_gate::PermissionReview {
+                    decision: super::super::permission_gate::ReviewDecision::Reject,
+                    reason: "unacceptable effects".into(),
+                })
+            })
+        }
+    }
+    impl super::super::permission_gate::PermissionReviewer for UnsureScriptReviewer {
+        fn review<'a>(
+            &'a self,
+            _: &'a super::super::permission_gate::PermissionReviewInput,
+            _: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            Box::pin(async {
+                Ok(super::super::permission_gate::PermissionReview {
+                    decision: super::super::permission_gate::ReviewDecision::Unsure,
+                    reason: "unknown supporting effects".into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn user_skill_machine_grant_keeps_review_and_rejects_changes_and_chaining() {
+        let home = tempfile::tempdir().unwrap();
+        let skill = home.path().join(".agents/skills/sync");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: sync\ndescription: Sync models\n---\nInstructions\n",
+        )
+        .unwrap();
+        let path = skill.join("sync.py");
+        std::fs::write(&path, "print('hello')\n").unwrap();
+        let mut actor = script_actor();
+        actor.set_skills(super::super::skills::Skills::load(
+            &super::super::instructions::RulesRoots {
+                home: Some(home.path().to_path_buf()),
+            },
+            &actor.tool_context.workspace,
+        ));
+        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
+            file: home.path().join("config/skill-grants.json"),
+        });
+        actor.permission_reviewer = Some(Arc::new(UnsureScriptReviewer));
+        let call = script_call(&path, "python3");
+        let script = super::super::permission_gate::script::skill_script(&actor, &call).unwrap();
+        actor.skill_grants.as_ref().unwrap().grant(&script).unwrap();
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        assert!(
+            matches!(super::super::permission_gate::consult(&actor, &call, &needed).await,
+            super::super::permission_gate::Judged::Run(note) if note["approved_by"] == "skill_grant" && note["permission_gate"]["metacognition"]["decision"] == "unsure")
+        );
+        actor.permission_reviewer = Some(Arc::new(RejectScriptReviewer));
+        assert!(matches!(
+            super::super::permission_gate::consult(&actor, &call, &needed).await,
+            super::super::permission_gate::Judged::AskWithEvidence(_, _)
+        ));
+        actor.permission_reviewer = Some(Arc::new(UnsureScriptReviewer));
+        actor.skill_grants.as_ref().unwrap().revoke("sync").unwrap();
+        let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await else {
+            panic!("ungranted skill must ask");
+        };
+        assert_eq!(request.skill_script.as_deref(), Some(&script));
+        actor.pending = Some(PendingInteraction::Permission {
+            request: request.clone(),
+            call: call.clone(),
+            remaining_calls: vec![],
+            destination,
+            steps_left: 0,
+        });
+        assert!(resolve_permission_with_origin(
+            &mut actor,
+            request.id,
+            PermissionDecision::AllowSkillMachine,
+            super::super::permissions::PermissionOrigin::Bypass,
+            &mut |_| {}
+        )
+        .await
+        .is_err());
+        assert!(!actor.skill_grants.as_ref().unwrap().covers(&script));
+        resolve_permission_with_origin(
+            &mut actor,
+            request.id,
+            PermissionDecision::AllowSkillMachine,
+            super::super::permissions::PermissionOrigin::Captain,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(actor.skill_grants.as_ref().unwrap().covers(&script));
+        for suffix in [
+            "; true",
+            " && true",
+            " | cat",
+            " > /tmp/output",
+            " &",
+            " $(true)",
+        ] {
+            let mut chained = call.clone();
+            chained.args["command"] =
+                serde_json::json!(format!("python3 {}{suffix}", path.display()));
+            assert!(
+                super::super::permission_gate::script::skill_script(&actor, &chained).is_none()
+            );
+        }
+        std::fs::write(&path, "print('changed')\n").unwrap();
+        assert!(matches!(
+            super::super::permission_gate::consult(&actor, &call, &needed).await,
+            super::super::permission_gate::Judged::AskWithEvidence(_, _)
+        ));
+        let project = actor.tool_context.workspace.join(".agents/skills/sync");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("SKILL.md"),
+            "---\nname: sync\ndescription: Project sync\n---\nInstructions\n",
+        )
+        .unwrap();
+        std::fs::write(project.join("sync.py"), "print('hello')\n").unwrap();
+        actor.set_skills(super::super::skills::Skills::load(
+            &super::super::instructions::RulesRoots {
+                home: Some(home.path().to_path_buf()),
+            },
+            &actor.tool_context.workspace,
+        ));
+        assert!(super::super::permission_gate::script::skill_script(&actor, &call).is_none());
+        assert!(super::super::permission_gate::script::skill_script(
+            &actor,
+            &script_call(&project.join("sync.py"), "python3")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn user_skill_machine_grant_rejects_user_root_symlinked_into_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let mut actor = script_actor();
+        let root = actor.tool_context.workspace.join("user-skills");
+        let skill = root.join("sync");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: sync\ndescription: Sync models\n---\nInstructions\n",
+        )
+        .unwrap();
+        let script = skill.join("sync.py");
+        std::fs::write(&script, "print('hello')\n").unwrap();
+        std::fs::create_dir_all(home.path().join(".agents")).unwrap();
+        std::os::unix::fs::symlink(&root, home.path().join(".agents/skills")).unwrap();
+        actor.set_skills(super::super::skills::Skills::load(
+            &super::super::instructions::RulesRoots {
+                home: Some(home.path().to_path_buf()),
+            },
+            &actor.tool_context.workspace,
+        ));
+        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
+            file: home.path().join("config/skill-grants.json"),
+        });
+        assert!(actor.skills.listed().iter().any(|skill| skill.is_user()));
+        assert!(super::super::permission_gate::script::skill_script(
+            &actor,
+            &script_call(&script, "python3")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn user_skill_machine_grant_rejects_user_alias_to_project_skill() {
+        let home = tempfile::tempdir().unwrap();
+        let mut actor = script_actor();
+        let project_root = actor.tool_context.workspace.join(".agents/skills");
+        let skill = project_root.join("sync");
+        std::fs::create_dir_all(&skill).unwrap();
+        // A manifest at the root stops discovery before the nested skill;
+        // the user alias therefore wins with user provenance, not project rank.
+        for (dir, name) in [(&project_root, "container"), (&skill, "sync")] {
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Test skill\n---\nInstructions\n"),
+            )
+            .unwrap();
+        }
+        let script = skill.join("sync.py");
+        std::fs::write(&script, "print('hello')\n").unwrap();
+        let user_root = home.path().join(".agents/skills");
+        std::fs::create_dir_all(&user_root).unwrap();
+        std::os::unix::fs::symlink(&skill, user_root.join("alias")).unwrap();
+        actor.set_skills(super::super::skills::Skills::load(
+            &super::super::instructions::RulesRoots {
+                home: Some(home.path().to_path_buf()),
+            },
+            &actor.tool_context.workspace,
+        ));
+        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
+            file: home.path().join("config/skill-grants.json"),
+        });
+        assert!(actor
+            .skills
+            .listed()
+            .iter()
+            .any(|skill| skill.name == "sync" && skill.is_user()));
+        assert!(super::super::permission_gate::script::skill_script(
+            &actor,
+            &script_call(&script, "python3")
+        )
+        .is_none());
+    }
+
     fn script_actor() -> AgentActor {
         let mut actor = plan_actor(
             Some(FakeInstinct::new(Ok(Verdict::Conforms))),
@@ -3630,6 +3914,51 @@ mod tests {
             .await,
             One::Ask(..)
         ));
+    }
+
+    #[tokio::test]
+    async fn config_session_grant_cannot_write_or_edit_persisted_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut actor = script_actor();
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::EditTool));
+        actor.protected_config_root = Some(tmp.path().to_path_buf());
+        actor.protected_config_spelling = actor.protected_config_root.clone();
+        actor
+            .config_session_grant
+            .store(true, std::sync::atomic::Ordering::Release);
+        actor.bypass.lock().unwrap().enabled = true;
+        for file in ["skill-grants.json", "grants.json"] {
+            let path = tmp.path().join(file);
+            std::fs::write(&path, "{}").unwrap();
+            for (name, args) in [
+                (
+                    "write",
+                    serde_json::json!({"path":path,"content":"{\"forged\":true}"}),
+                ),
+                (
+                    "edit",
+                    serde_json::json!({"path":path,"old_string":"{}","new_string":"{\"forged\":true}"}),
+                ),
+                (
+                    "bash",
+                    serde_json::json!({"command":format!("printf forged > {}", path.display())}),
+                ),
+            ] {
+                let call = ToolCall {
+                    id: "forge-grant".into(),
+                    name: name.into(),
+                    args_valid: true,
+                    args,
+                };
+                let One::Ask(request, _) = run_gated(&mut actor, &call, &mut |_| {}).await else {
+                    panic!("{name} of {file} must retain the Captain hold");
+                };
+                assert!(!request.allow_config_session);
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+            }
+        }
     }
 
     #[tokio::test]

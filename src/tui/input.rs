@@ -693,6 +693,9 @@ fn permission_key(
     }
     match key.code {
         KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
+        KeyCode::Char('a') if open.skill_script.is_some() => {
+            Some(Some(answer("allow_skill_machine", None)))
+        }
         KeyCode::Char('a') if open.allow_config_session => {
             Some(Some(answer("allow_config_session", None)))
         }

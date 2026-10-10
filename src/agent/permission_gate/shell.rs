@@ -1,11 +1,11 @@
-//! Conservative shell understanding: unknown execution can never inherit optimistic labels.
+//! Deterministic shell risk floors; ordinary effects belong to Instinct.
 use serde_json::Value;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
 /// Both its spelling and symlink target must be outside every writable root,
-/// with root-owned, non-writable directory chains.
+/// with non-writable directory chains (secure current-user shim links are allowed).
 pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, PathBuf)> {
     let name = basename(word);
     let path = Path::new(word);
@@ -56,7 +56,11 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
         return None;
     }
     let canonical = resolved.canonicalize().ok()?;
-    if !trusted_directories(&resolved)
+    // Executable identity, 2026-10-10: mise links point to root-owned binaries;
+    // accept secure owned link directories, never user-owned regular executables.
+    let safe_shim =
+        resolved.symlink_metadata().ok()?.is_symlink() && trusted_shim_directories(&resolved);
+    if (!trusted_directories(&resolved) && !safe_shim)
         || !trusted_directories(&canonical)
         || !outside(&resolved)
         || !outside(&canonical)
@@ -85,6 +89,21 @@ fn trusted_directories(path: &Path) -> bool {
     })
 }
 
+fn trusted_shim_directories(path: &Path) -> bool {
+    let uid = nix::unistd::getuid().as_raw();
+    path.ancestors().skip(1).all(|parent| {
+        parent.canonicalize().is_ok_and(|canonical| {
+            canonical.ancestors().all(|directory| {
+                directory.metadata().is_ok_and(|metadata| {
+                    metadata.is_dir()
+                        && (metadata.uid() == 0 || metadata.uid() == uid)
+                        && metadata.mode() & 0o022 == 0
+                })
+            })
+        })
+    })
+}
+
 pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
     let mut segments = vec![];
     let mut words = vec![];
@@ -93,7 +112,16 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         if let Some(q) = quote {
-            if q == '"' && matches!(c, '$' | '`' | '\\') {
+            if q == '"' && c == '\\' {
+                let next = chars.next()?;
+                if !"|.()[]{}+?*".contains(next) {
+                    return None;
+                }
+                word.push('\\');
+                word.push(next);
+                continue;
+            }
+            if q == '"' && matches!(c, '$' | '`') {
                 return None;
             }
             if c == q {
@@ -187,6 +215,136 @@ fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
+/// Scheduling wrappers expose their operands; execution-string wrappers do not.
+pub(super) fn inner_command(mut words: &[String]) -> Option<&[String]> {
+    loop {
+        let program = basename(words.first()?);
+        let mut i = 1;
+        match program {
+            "timeout" => {
+                while words.get(i).is_some_and(|w| w.starts_with('-')) {
+                    let option = words[i].as_str();
+                    match option {
+                        "--" => {
+                            i += 1;
+                            break;
+                        }
+                        "-s" | "--signal" | "-k" | "--kill-after" => i += 2,
+                        "--foreground" | "--preserve-status" | "-v" | "--verbose" => i += 1,
+                        w if w.starts_with("--signal=") || w.starts_with("--kill-after=") => i += 1,
+                        _ => return None,
+                    }
+                }
+                let duration = words.get(i)?;
+                if !duration
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ".smhd".contains(c))
+                    || !duration.chars().any(|c| c.is_ascii_digit())
+                {
+                    return None;
+                }
+                i += 1;
+            }
+            "nice" => {
+                match words.get(i).map(String::as_str) {
+                    Some("-n" | "--adjustment") => {
+                        words.get(i + 1)?.parse::<i64>().ok()?;
+                        i += 2;
+                    }
+                    Some(w) if w.starts_with("--adjustment=") => {
+                        w.strip_prefix("--adjustment=")?.parse::<i64>().ok()?;
+                        i += 1;
+                    }
+                    Some(w) if w.starts_with('-') && w != "--" => {
+                        w[1..].parse::<i64>().ok()?;
+                        i += 1;
+                    }
+                    _ => {}
+                }
+                if words.get(i).is_some_and(|w| w == "--") {
+                    i += 1;
+                }
+            }
+            "nohup" => {
+                if words.get(i).is_some_and(|w| w == "--") {
+                    i += 1;
+                }
+            }
+            "env" => {
+                while words
+                    .get(i)
+                    .is_some_and(|w| !w.starts_with('-') && w.contains('='))
+                {
+                    i += 1;
+                }
+                if words.get(i)?.starts_with('-') {
+                    return None;
+                }
+            }
+            _ => return Some(words),
+        }
+        words = words.get(i..)?;
+    }
+}
+
+fn lookup(words: &[String]) -> bool {
+    matches!(basename(&words[0]), "type" | "which")
+        || (basename(&words[0]) == "command"
+            && words
+                .get(1)
+                .is_some_and(|w| matches!(w.as_str(), "-v" | "-V")))
+}
+
+pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
+    let Some(inner) = inner_command(words) else {
+        return true;
+    };
+    words
+        .iter()
+        .take(words.len() - inner.len())
+        .filter(|word| matches!(basename(word), "timeout" | "nice" | "nohup" | "env"))
+        .chain(inner.first())
+        .any(|word| {
+            if lookup(inner) && word == &inner[0] && matches!(word.as_str(), "command" | "type") {
+                return false;
+            }
+            let exists = word.contains('/')
+                || std::env::var_os("PATH").is_some_and(|path| {
+                    std::env::split_paths(&path)
+                        .any(|dir| dir.join(word).metadata().is_ok_and(|m| m.is_file()))
+                });
+            exists && trusted_program(word, facts).is_none()
+        })
+}
+
+pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
+    segments(command).is_none_or(|parts| {
+        parts.iter().any(|words| {
+            inner_command(words).is_none_or(|inner| {
+                let program = basename(&inner[0]);
+            identity_floor(words, facts)
+                || destructive(inner)
+                // Shell identity, 2026-10-10: aliases can hide shell bodies;
+                // keep that floor while leaving ordinary programs to Instinct.
+                || (program == "git" && git_subcommand(inner).is_none_or(|i| !matches!(inner[i].as_str(), "add" | "commit" | "status" | "diff" | "log" | "show" | "push" | "restore" | "reset" | "checkout" | "switch" | "branch" | "remote" | "ls-files" | "rev-parse" | "fetch" | "merge" | "rebase" | "stash" | "tag" | "clean" | "config")))
+                    || (program == "git"
+                        && git_subcommand(inner).is_some_and(|i| inner[i] == "push")
+                        && !understood(inner, facts, command))
+                    || inner[0].starts_with("./")
+                    || inner[0].contains('=')
+                    || matches!(
+                        program,
+                        "sh" | "bash" | "zsh" | "eval" | "source" | "." | "sudo" | "xargs" | "exec"
+                    )
+                    || (program == "command" && !lookup(inner))
+                    || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
+                        && (inner.get(1).is_some_and(|w| !w.starts_with('-'))
+                            || inner.iter().any(|w| matches!(w.as_str(), "-c" | "-e"))))
+            })
+        })
+    })
+}
+
 // Wrappers/options are not interpreted optimistically. Still locate the real executable
 // for destructive/publication classification (including git -C and absolute paths).
 fn executable(words: &[String]) -> Option<usize> {
@@ -214,6 +372,12 @@ fn git_subcommand(words: &[String]) -> Option<usize> {
 }
 
 pub(super) fn destructive(words: &[String]) -> bool {
+    let Some(words) = inner_command(words) else {
+        return true;
+    };
+    if lookup(words) {
+        return false;
+    }
     let Some(i) = executable(words) else {
         return true;
     };
@@ -426,6 +590,12 @@ pub(super) fn read_floor(command: &str) -> bool {
     removal_or_move(command)
         || overwrite_paths(command).is_none_or(|paths| !paths.is_empty())
         || parts.iter().any(|words| {
+            let Some(words) = inner_command(words) else {
+                return true;
+            };
+            if lookup(words) {
+                return false;
+            }
             let program = basename(&words[0]);
             destructive(words)
                 || words[0].starts_with("./")
@@ -474,14 +644,7 @@ pub(super) fn read_floor(command: &str) -> bool {
                         | "sudo"
                         | "exec"
                         | "command"
-                        | "nice"
-                        | "nohup"
-                        | "timeout"
                 )
-                || (program == "env"
-                    && (words.iter().any(|w| w.contains('='))
-                        || words.get(1).is_none_or(|w| w.starts_with('-'))
-                        || read_floor(&words[1..].join(" "))))
                 || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
                     && words.iter().any(|w| matches!(w.as_str(), "-c" | "-e")))
         })
@@ -583,6 +746,7 @@ fn read_only(words: &[String]) -> bool {
 pub(super) fn overwrite_paths(command: &str) -> Option<Vec<String>> {
     let mut paths = vec![];
     for words in segments(command)? {
+        let words = inner_command(&words)?;
         for pair in words.windows(2) {
             if pair[0] == ">" && pair[1] != ">" {
                 paths.push(pair[1].clone());
@@ -660,6 +824,65 @@ pub(super) fn removal_or_move(command: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn literal_regex_and_transparent_wrappers_preserve_effects() {
+        assert!(segments(r#"grep -n "^name\|^version" Cargo.toml"#).is_some());
+        for command in [r#"echo "$HOME""#, r#"echo "\$x""#] {
+            assert!(segments(command).is_none());
+        }
+        for command in [
+            "timeout 15 ls",
+            "timeout -k 2s 15 ls",
+            "nice -n 5 ls",
+            "nohup ls",
+            "env LANG=C ls",
+            "command -v nix",
+            "command -V nix",
+            "type nix",
+            "which nix",
+        ] {
+            assert!(!read_floor(command), "{command}");
+        }
+        assert!(destructive(&segments("timeout 15 rm -r x").unwrap()[0]));
+        for command in ["env -i ls", "env -S ls", "timeout 15 bash -c 'make'"] {
+            assert!(read_floor(command));
+        }
+    }
+
+    #[test]
+    fn secure_user_shim_accepts_system_target_but_not_regular_binary() {
+        const CHILD: &str = "WITHNAV_TEST_SECURE_SHIM";
+        if let Ok(workspace) = std::env::var(CHILD) {
+            let facts = json!({"workspace":workspace,"writable_roots":[workspace]});
+            assert!(trusted_program("cargo", &facts).is_some());
+            assert!(trusted_program("local-binary", &facts).is_none());
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::var_os("HOME").unwrap();
+        let tmp = tempfile::tempdir_in(home).unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/true", bin.join("cargo")).unwrap();
+        std::fs::copy("/usr/bin/true", bin.join("local-binary")).unwrap();
+        std::fs::set_permissions(
+            bin.join("local-binary"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::permission_gate::shell::tests::secure_user_shim_accepts_system_target_but_not_regular_binary"])
+            .env(CHILD, "/nonexistent-workspace")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     #[test]
     fn fd_redirections_do_not_create_writes_or_command_boundaries() {

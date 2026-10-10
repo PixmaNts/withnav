@@ -3177,6 +3177,81 @@ mod tests {
         .is_none());
     }
 
+    #[test]
+    fn user_skill_machine_grant_rejects_user_root_symlinked_into_workspace() {
+        let home = tempfile::tempdir().unwrap();
+        let mut actor = script_actor();
+        let root = actor.tool_context.workspace.join("user-skills");
+        let skill = root.join("sync");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: sync\ndescription: Sync models\n---\nInstructions\n",
+        )
+        .unwrap();
+        let script = skill.join("sync.py");
+        std::fs::write(&script, "print('hello')\n").unwrap();
+        std::fs::create_dir_all(home.path().join(".agents")).unwrap();
+        std::os::unix::fs::symlink(&root, home.path().join(".agents/skills")).unwrap();
+        actor.set_skills(super::super::skills::Skills::load(
+            &super::super::instructions::RulesRoots {
+                home: Some(home.path().to_path_buf()),
+            },
+            &actor.tool_context.workspace,
+        ));
+        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
+            file: home.path().join("config/skill-grants.json"),
+        });
+        assert!(actor.skills.listed().iter().any(|skill| skill.is_user()));
+        assert!(super::super::permission_gate::script::skill_script(
+            &actor,
+            &script_call(&script, "python3")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn user_skill_machine_grant_rejects_user_alias_to_project_skill() {
+        let home = tempfile::tempdir().unwrap();
+        let mut actor = script_actor();
+        let project_root = actor.tool_context.workspace.join(".agents/skills");
+        let skill = project_root.join("sync");
+        std::fs::create_dir_all(&skill).unwrap();
+        // A manifest at the root stops discovery before the nested skill;
+        // the user alias therefore wins with user provenance, not project rank.
+        for (dir, name) in [(&project_root, "container"), (&skill, "sync")] {
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Test skill\n---\nInstructions\n"),
+            )
+            .unwrap();
+        }
+        let script = skill.join("sync.py");
+        std::fs::write(&script, "print('hello')\n").unwrap();
+        let user_root = home.path().join(".agents/skills");
+        std::fs::create_dir_all(&user_root).unwrap();
+        std::os::unix::fs::symlink(&skill, user_root.join("alias")).unwrap();
+        actor.set_skills(super::super::skills::Skills::load(
+            &super::super::instructions::RulesRoots {
+                home: Some(home.path().to_path_buf()),
+            },
+            &actor.tool_context.workspace,
+        ));
+        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
+            file: home.path().join("config/skill-grants.json"),
+        });
+        assert!(actor
+            .skills
+            .listed()
+            .iter()
+            .any(|skill| skill.name == "sync" && skill.is_user()));
+        assert!(super::super::permission_gate::script::skill_script(
+            &actor,
+            &script_call(&script, "python3")
+        )
+        .is_none());
+    }
+
     fn script_actor() -> AgentActor {
         let mut actor = plan_actor(
             Some(FakeInstinct::new(Ok(Verdict::Conforms))),
@@ -3839,6 +3914,51 @@ mod tests {
             .await,
             One::Ask(..)
         ));
+    }
+
+    #[tokio::test]
+    async fn config_session_grant_cannot_write_or_edit_persisted_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut actor = script_actor();
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::EditTool));
+        actor.protected_config_root = Some(tmp.path().to_path_buf());
+        actor.protected_config_spelling = actor.protected_config_root.clone();
+        actor
+            .config_session_grant
+            .store(true, std::sync::atomic::Ordering::Release);
+        actor.bypass.lock().unwrap().enabled = true;
+        for file in ["skill-grants.json", "grants.json"] {
+            let path = tmp.path().join(file);
+            std::fs::write(&path, "{}").unwrap();
+            for (name, args) in [
+                (
+                    "write",
+                    serde_json::json!({"path":path,"content":"{\"forged\":true}"}),
+                ),
+                (
+                    "edit",
+                    serde_json::json!({"path":path,"old_string":"{}","new_string":"{\"forged\":true}"}),
+                ),
+                (
+                    "bash",
+                    serde_json::json!({"command":format!("printf forged > {}", path.display())}),
+                ),
+            ] {
+                let call = ToolCall {
+                    id: "forge-grant".into(),
+                    name: name.into(),
+                    args_valid: true,
+                    args,
+                };
+                let One::Ask(request, _) = run_gated(&mut actor, &call, &mut |_| {}).await else {
+                    panic!("{name} of {file} must retain the Captain hold");
+                };
+                assert!(!request.allow_config_session);
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+            }
+        }
     }
 
     #[tokio::test]

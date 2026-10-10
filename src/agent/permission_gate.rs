@@ -558,10 +558,11 @@ pub fn config_grant_eligible(
         return false;
     }
     if call.name == "bash" {
-        // Shell effects cannot be reconstructed safely; naming the settings
-        // file always retains the Captain hold, even for indirect commands.
+        // Shell effects cannot be reconstructed safely; naming settings or
+        // persisted authorization retains the Captain hold, even indirectly.
         return bash_command(call).is_some_and(|command| {
             !command.contains("config.json")
+                && !command.contains("grants.json")
                 && !shell::removal_or_move(command)
                 && !shell::requires_review(
                     command,
@@ -578,6 +579,12 @@ pub fn config_grant_eligible(
     let Some(path) = needed.destination.as_deref() else {
         return false;
     };
+    if path
+        .file_name()
+        .is_some_and(|name| name == "skill-grants.json" || name == "grants.json")
+    {
+        return false;
+    }
     if path.file_name().is_none_or(|name| name != "config.json") {
         return true;
     }

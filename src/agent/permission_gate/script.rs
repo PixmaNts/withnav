@@ -51,10 +51,26 @@ pub(crate) fn skill_script(
     if matches.next().is_some() {
         return None;
     }
+    let base_dir = skill.base_dir.canonicalize().ok()?;
+    let path = path.canonicalize().ok()?;
+    if !path.starts_with(&base_dir) || !actor.skills.machine_grant_location(&base_dir, &path) {
+        return None;
+    }
+    // User rank records discovery, not trust. Symlinked roots/aliases must
+    // never turn model-writable project or scratch content into machine grants.
+    for root in std::iter::once(&actor.tool_context.workspace)
+        .chain(actor.tool_context.writable_roots.iter())
+        .chain(actor.scratch_roots.iter().map(|root| &root.path))
+    {
+        let root = root.canonicalize().ok()?;
+        if base_dir.starts_with(&root) || root.starts_with(&base_dir) || path.starts_with(&root) {
+            return None;
+        }
+    }
     Some(super::super::skill_grants::SkillScript {
         skill: skill.name.clone(),
-        base_dir: skill.base_dir.clone(),
-        relative_path: path.strip_prefix(&skill.base_dir).ok()?.to_path_buf(),
+        relative_path: path.strip_prefix(&base_dir).ok()?.to_path_buf(),
+        base_dir,
         sha256: binding["sha256"].as_str()?.to_owned(),
     })
 }

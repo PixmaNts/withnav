@@ -10,6 +10,7 @@ pub struct HumanRequest {
     pub question: String,
     pub kind: Option<String>,
     pub details: Option<Value>,
+    pub choices: Option<crate::tools::control::AskChoices>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +40,7 @@ pub fn classify_with_ask(msg: AssistantMessage, allow_ask: bool) -> StepOutcome 
     StepOutcome::Done { response: msg }
 }
 
-fn human_request_from(ask: &ToolCall) -> HumanRequest {
+pub(crate) fn human_request_from(ask: &ToolCall) -> HumanRequest {
     let question = ask
         .args
         .get("question")
@@ -57,6 +58,7 @@ fn human_request_from(ask: &ToolCall) -> HumanRequest {
         question,
         kind,
         details,
+        choices: crate::tools::control::validated_choices(&ask.args),
     }
 }
 
@@ -94,6 +96,27 @@ mod tests {
                 assert_eq!(request.tool_call_id, "call_1");
             }
             other => panic!("expected Yield, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ask_yield_preserves_valid_choices_and_drops_malformed_choices() {
+        for (args, has_choices) in [
+            (
+                json!({"question":"Where?", "options":[{"label":"A"},{"label":"B"}]}),
+                true,
+            ),
+            (
+                json!({"question":"Where?", "options":[{"label":"A"}]}),
+                false,
+            ),
+        ] {
+            let StepOutcome::Yield { request } = classify(msg(vec![tc("ask_1", "ask", args)], ""))
+            else {
+                panic!("ask must yield");
+            };
+            assert_eq!(request.question, "Where?");
+            assert_eq!(request.choices.is_some(), has_choices);
         }
     }
 

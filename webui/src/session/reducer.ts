@@ -12,6 +12,16 @@ import { parseWake, type WakeNote } from "./wake";
 
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
 
+export interface AskChoices {
+  header?: string;
+  options: { label: string; description?: string }[];
+  multiple: boolean;
+  allow_custom: boolean;
+  recommended?: number;
+}
+export interface AskAnswer { question_call_id: string; selected: number[]; custom?: string }
+export type Question = { type: "question"; text: string; questionCallId?: string; choices?: AskChoices; answer?: AskAnswer };
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -28,7 +38,7 @@ export type TurnPart =
   | { type: "text"; stepId: string; text: string }
   | { type: "tools"; calls: string[] }
   | { type: "permission"; requestId: string }
-  | { type: "question"; text: string };
+  | Question;
 
 export interface Turn {
   kind: "turn";
@@ -169,6 +179,11 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       if (source === "metacognition" || source === "metacognition:remark") {
         next.items = [...next.items, { kind: "beacon", key, text }];
       } else if (author === "captain") {
+        if (p.answer?.question_call_id) {
+          next.items = next.items.map((item) => item.kind === "turn" ? {
+            ...item, parts: item.parts.map((part) => part.type === "question" && part.questionCallId === p.answer.question_call_id ? { ...part, answer: p.answer as AskAnswer } : part),
+          } : item);
+        }
         const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
         next.items = [...next.items, { kind: "captain", key, text, skill }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];
@@ -268,7 +283,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       }
       return updateTurn(next, str(p.turn_id, next.currentTurn ?? ""), (turn) => ({
         ...turn,
-        parts: [...turn.parts, { type: "question", text: str(p.question) }],
+        parts: [...turn.parts, { type: "question", text: str(p.question), questionCallId: p.question_call_id, choices: p.choices }],
       }));
     }
     case "permission.requested": {

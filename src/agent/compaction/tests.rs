@@ -675,7 +675,7 @@ fn adjacent_non_captain_input_does_not_inflate_no_skill_minimum_capacity() {
         else {
             panic!("capacity")
         };
-        assert_eq!(needed, 7_431);
+        assert_eq!(needed, 7_471);
         let baseline: Vec<_> = transcript
             .iter()
             .enumerate()

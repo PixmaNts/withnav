@@ -48,6 +48,7 @@ pub enum BlockKind {
         exit_code: Option<i32>,
     },
     YieldQuestion(String),
+    Question(QuestionPrompt),
     Error(String),
     Notice(String),
     /// A gated tool call waiting for the Captain's decision, then how it ended.
@@ -58,6 +59,19 @@ pub enum BlockKind {
         ok: bool,
         text: String,
     },
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionPrompt {
+    pub text: String,
+    pub call_id: String,
+    pub choices: crate::tools::control::AskChoices,
+    pub answer: Option<crate::tools::control::AskAnswer>,
+    pub cursor: usize,
+    pub selected: Vec<usize>,
+    pub sending: bool,
+    pub dismissed: bool,
+    pub custom: bool,
+    pub error: Option<String>,
 }
 /// What a permission request asks and, once it ended, how.
 #[derive(Debug, Clone, PartialEq)]

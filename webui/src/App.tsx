@@ -396,6 +396,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             view={chat.view}
             agent={chat.summary?.agent}
             onAnswer={chat.answerPermission}
+            onAnswerQuestion={chat.answerQuestion}
             onOpenChild={openChild}
             readOnly={chat.readOnly}
             empty={<EmptyState workspace={workspace} sessionId={route.session} loading={chat.stream.status === "connecting"} agent={chat.agentId} />}

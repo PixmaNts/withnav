@@ -183,7 +183,8 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
         .prompt
         .len()
         .div_ceil(4) as u64;
-    assert!(after <= 11_000 / 10 * 7 + 1 + role_tokens, "{after}");
+    // Expanded ask guidance and its choice schema increase the fixed prompt overhead.
+    assert!(after <= 11_000 / 10 * 7 + 1 + role_tokens + 250, "{after}");
 
     // The provider saw: read, read, summary request, then the turn on.
     let bodies = provider.bodies();

@@ -78,7 +78,7 @@ async fn collect_until(
 //      id, and no user message other than the first
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resumed_ask_is_answered_as_a_tool_result() {
-    let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"which scope?\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+    let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"which scope?\",\"options\":[{\"label\":\"the local scope\"},{\"label\":\"the global scope\"}]}"}}]},"finish_reason":"tool_calls"}]}"#;
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
 
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -138,11 +138,43 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     let (addr2, _task2) = spawn_server(state2.clone()).await;
     let base2 = format!("http://{addr2}");
     let sub2 = state2.subscribe(resumed_id, None).await.expect("sub2");
-    post_message_ok(&base2, &id, "the local scope").await;
+    let answer = json!({"question_call_id":"ask_1", "selected":[0]});
+    assert_eq!(
+        common::server::post_message_body(
+            &base2,
+            &id,
+            &json!({"target_actor_id":"agent:main", "content":[], "answer":answer})
+        )
+        .await
+        .status(),
+        200
+    );
     let events2 = collect_until(sub2, |e| {
         e.kind == "turn.end" && e.payload["outcome"] == "done"
     })
     .await;
+    assert!(events2.iter().any(|e| e.kind == "agent.yield"
+        && e.payload["choices"]["options"][0]["label"] == "the local scope"));
+    let received = events2
+        .iter()
+        .find(|e| e.kind == "message.received" && e.payload["answer"] == answer)
+        .unwrap();
+    assert_eq!(received.payload["source"], "user:http");
+    // The sequencer persists the same payload, not only the in-memory replay ring.
+    let mut persisted = false;
+    for _ in 0..100 {
+        let loaded = store.load(resumed_id).await.unwrap().unwrap();
+        if loaded
+            .envelopes
+            .iter()
+            .any(|e| e.kind == "message.received" && e.payload["answer"] == answer)
+        {
+            persisted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(persisted, "structured answer persisted for history replay");
     assert!(
         events2
             .iter()
@@ -166,7 +198,12 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
         .find(|m| m["role"] == "tool")
         .unwrap_or_else(|| panic!("no tool message: {messages:?}"));
     assert_eq!(tool["tool_call_id"], "ask_1");
-    assert_eq!(tool["content"], "the local scope");
+    // The selected label is assistant-written text: the server frames it instead of passing it
+    // off as the Captain's own words.
+    assert_eq!(
+        tool["content"],
+        "Answer to \"which scope?\": selected option(s) offered by the assistant: [\"the local scope\"]"
+    );
     let users: Vec<&Value> = messages.iter().filter(|m| m["role"] == "user").collect();
     assert_eq!(users.len(), 1, "no stray user message: {users:?}");
     assert_eq!(users[0]["content"], "remove an auth scope");

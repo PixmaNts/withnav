@@ -779,6 +779,73 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 _ => vec![],
             }
         }
+        Action::QuestionMove(_)
+        | Action::QuestionToggle
+        | Action::QuestionDismiss
+        | Action::QuestionCustom
+        | Action::AnswerQuestion(_) => {
+            if s.read_only() {
+                return vec![];
+            }
+            let session = s.session.as_ref().map(|m| m.session_id.clone());
+            let prompt = s
+                .conversation
+                .blocks
+                .iter_mut()
+                .rev()
+                .find_map(|b| match &mut b.kind {
+                    BlockKind::Question(p) if p.answer.is_none() => Some(p),
+                    _ => None,
+                });
+            let Some(p) = prompt else {
+                return vec![];
+            };
+            if p.sending {
+                return vec![];
+            }
+            match a {
+                Action::QuestionMove(delta) => {
+                    let count = p.choices.options.len() + usize::from(p.choices.allow_custom);
+                    p.cursor = (p.cursor as i32 + delta).rem_euclid(count as i32) as usize;
+                }
+                Action::QuestionToggle => {
+                    if p.cursor < p.choices.options.len() && p.choices.multiple {
+                        if p.selected.contains(&p.cursor) {
+                            p.selected.retain(|i| *i != p.cursor);
+                        } else {
+                            p.selected.push(p.cursor);
+                            p.selected.sort_unstable();
+                        }
+                    }
+                }
+                Action::QuestionDismiss => {
+                    p.dismissed = true;
+                    p.custom = false;
+                }
+                Action::QuestionCustom => {
+                    p.dismissed = true;
+                    p.custom = true;
+                    return vec![Effect::SetEditor {
+                        text: String::new(),
+                        revision: 0,
+                    }];
+                }
+                Action::AnswerQuestion(answer) => {
+                    if p.call_id != answer.question_call_id
+                        || p.choices.answer_text(&p.text, &answer).is_err()
+                    {
+                        return vec![];
+                    }
+                    if let Some(session_id) = session {
+                        p.sending = true;
+                        p.error = None;
+                        return vec![Effect::AnswerQuestion { session_id, answer }];
+                    }
+                }
+                _ => {}
+            }
+            vec![]
+        }
         Action::ShowNotice(text) => {
             push_local(s, BlockKind::Notice(text));
             vec![]

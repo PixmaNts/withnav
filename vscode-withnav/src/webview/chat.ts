@@ -342,6 +342,7 @@ let compacting = false;
 let compactionRow: HTMLElement | undefined;
 let lastConsumedDraft: string | undefined;
 const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
+const questionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; answered: boolean }>();
 const pauseCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
@@ -688,6 +689,70 @@ function actionButton(label: string, action: () => void, primary = false): HTMLB
   return button;
 }
 
+function renderQuestion(event: Extract<HostToWebview, { type: "question" }>, parent: HTMLElement): void {
+  const choices = event.choices!;
+  const id = event.questionCallId!;
+  if (questionCards.has(id)) return;
+  const post = identity.bind(rawPost);
+  const root = el("article", "control-card question-card");
+  root.setAttribute("aria-label", choices.header ?? "Question");
+  root.append(el("div", "control-kicker", choices.header ?? "Question"));
+  const body = el("div", "message-body");
+  renderMarkdown(body, event.text);
+  root.append(body);
+  const selected = new Set<number>();
+  const custom = el("input", "deny-message");
+  custom.placeholder = "Other answer…";
+  custom.setAttribute("aria-label", "Other answer…");
+  const options = el("div", "question-options");
+  const outcome = el("div", "control-outcome", readOnly ? "Waiting for an answer in the parent conversation." : "Waiting for your answer");
+  outcome.setAttribute("role", "status");
+  const send = actionButton("Send", () => submit([...selected]), true);
+  const refresh = () => {
+    for (const [index, button] of Array.from(options.querySelectorAll("button")).entries()) {
+      button.classList.toggle("selected", selected.has(index));
+      button.setAttribute("aria-pressed", String(selected.has(index)));
+      const check = button.querySelector(".question-check");
+      if (check) check.textContent = selected.has(index) ? "☑" : "☐";
+    }
+    send.disabled = readOnly || (!selected.size && !custom.value.trim());
+  };
+  const submit = (indices: number[]) => {
+    if (!sessionId || readOnly) return;
+    for (const control of root.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button,input")) control.disabled = true;
+    outcome.textContent = "Sending…";
+    post({ type: "answerQuestion", sessionId, answer: { question_call_id: id, selected: indices, ...(custom.value.trim() ? { custom: custom.value.trim() } : {}) } });
+  };
+  choices.options.forEach((option, index) => {
+    const button = actionButton("", () => {
+      if (choices.multiple) { if (selected.has(index)) selected.delete(index); else selected.add(index); refresh(); }
+      else { selected.clear(); selected.add(index); refresh(); submit([index]); }
+    });
+    button.classList.add("question-option");
+    button.disabled = readOnly;
+    button.setAttribute("aria-pressed", "false");
+    if (choices.multiple) button.append(el("span", "question-check", "☐"));
+    const text = el("span", "question-option-text");
+    text.append(el("span", "", option.label));
+    if (choices.recommended === index) text.append(el("span", "control-meta", " · Recommended"));
+    if (option.description) text.append(el("span", "question-description", option.description));
+    button.append(text);
+    options.append(button);
+  });
+  root.append(options);
+  if (choices.allow_custom) {
+    custom.disabled = readOnly;
+    custom.addEventListener("input", refresh);
+    custom.addEventListener("keydown", e => { if (e.key === "Enter" && custom.value.trim()) { e.preventDefault(); submit([...selected]); } });
+    root.append(custom);
+  }
+  if (choices.multiple || choices.allow_custom) { const actions = el("div", "control-actions"); actions.append(send); root.append(actions); }
+  refresh();
+  root.append(outcome);
+  questionCards.set(id, { root, outcome, answered: false });
+  parent.append(root);
+}
+
 function renderPermission(event: Extract<HostToWebview, { type: "permission" }>): void {
   if (readOnly) {
     const note = el("article", "control-card");
@@ -876,6 +941,7 @@ function receive(event: HostToWebview): void {
       empty.hidden = false;
       turns.clear();
       permissionCards.clear();
+      questionCards.clear();
       pauseCards.clear();
       pendingQuestion = false;
       stickToBottom = true;
@@ -887,7 +953,31 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     case "status": setStatus(event.state, event.message); break;
-    case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
+    case "message": {
+      if (event.answer) {
+        const card = questionCards.get(event.answer.question_call_id);
+        if (card) {
+          card.answered = true;
+          for (const [index, button] of Array.from(card.root.querySelectorAll<HTMLButtonElement>(".question-option")).entries()) {
+            button.classList.toggle("selected", event.answer.selected.includes(index));
+            button.setAttribute("aria-pressed", String(event.answer.selected.includes(index)));
+            const check = button.querySelector(".question-check");
+            if (check) check.textContent = event.answer.selected.includes(index) ? "☑" : "☐";
+          }
+          for (const control of card.root.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button,input")) control.disabled = true;
+          card.outcome.textContent = `Answered${event.answer.custom ? ` · ${event.answer.custom}` : ""}`;
+        }
+      }
+      message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
+    }
+    case "questionState": {
+      const card = questionCards.get(event.questionCallId);
+      if (card && !card.answered) {
+        for (const control of card.root.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button,input")) control.disabled = readOnly;
+        card.outcome.textContent = event.error;
+      }
+      break;
+    }
     case "sendResult":
       if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; }
       if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
@@ -978,6 +1068,10 @@ function receive(event: HostToWebview): void {
       continueTurn(item);
       finishGroup(item);
       item.last = undefined;
+      if (event.choices && event.questionCallId) {
+        renderQuestion(event, item.root);
+        pendingQuestion = true; setStatus("ready"); follow(); break;
+      }
       const note = el("div", "question");
       note.append(el("span", "question-label", "Question"));
       const body = el("div", "message-body");

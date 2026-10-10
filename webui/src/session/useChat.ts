@@ -253,6 +253,10 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   );
 
   return {
+    answerQuestion: async (answer: import("./reducer").AskAnswer) => {
+      if (!sessionId || readOnly) throw new Error("This conversation is read-only.");
+      await api.answerQuestion(sessionId, answer);
+    },
     bypass: !!sessionId && view.bypass,
     bypassReason,
     bypassPending,

@@ -489,6 +489,7 @@ pub fn text_command(id: ulid::Ulid, text: &str) -> Command {
     withnav::server::routes::build_command(
         id,
         &withnav::server::routes::PostMessageRequest {
+            answer: None,
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
             content: vec![ContentBlock::Text {

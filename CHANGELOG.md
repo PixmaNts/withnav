@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Answer Nav's questions with a choice in the terminal, VS Code or browser.** Question
+  cards offer single or multiple choices, optional other answers and recommendation hints.
+  Answers remain Captain messages; replay shows the chosen options without changing permission
+  authority, and plain-text asks keep working as before.
 ### Fixed
 
 - **Local-instruction ordering tests no longer fail on random temporary paths.**

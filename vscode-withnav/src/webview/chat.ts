@@ -75,10 +75,10 @@ function childActions(child: ChildInfo): HTMLElement {
   for (const action of ["continue", "stop"] as const) {
     if (["unknown", "done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
     const button = actionButton(action === "stop" ? "Stop" : "Continue", () => boundPost({ type: "controlChild", parentId, childId: child.id, action }));
+    if (action === "stop") button.classList.add("control-danger");
     button.disabled = !!child.pending;
     actions.append(button);
   }
-  if (child.error) actions.append(el("span", "command-error", child.error));
   return actions;
 }
 const palette = document.createElement("div");
@@ -828,7 +828,11 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
     outcome.textContent = "Pause token unavailable. Send a new message or stop instead.";
   }
   controls.append(resume);
-  if (event.kind === "watchdog") controls.append(actionButton("Stop", () => control("stop")));
+  if (event.kind === "watchdog") {
+    const stop = actionButton("Stop", () => control("stop"));
+    stop.classList.add("control-danger");
+    controls.append(stop);
+  }
   root.append(controls, outcome);
   pauseCards.set(event.id, { root, controls, outcome });
   add(root);
@@ -884,8 +888,14 @@ function receive(event: HostToWebview): void {
         const open = actionButton("", () => boundPost({ type: "openChild", parentId: event.parentId, childId: child.id }));
         open.classList.add("child-open");
         open.append(...childLabel(child));
-        row.append(open, el("p", "child-goal", child.goal.slice(0,500)), childActions(child));
-        if (child.reason || child.delivery) row.append(el("p", "child-goal", [child.reason, child.delivery].filter(Boolean).join(" · ")));
+        const heading = el("div", "child-row-heading");
+        heading.append(open, childActions(child));
+        const goal = el("p", "child-goal", child.goal);
+        goal.title = child.goal;
+        row.append(heading, goal);
+        // Delivery routing is protocol metadata, not a status for the Captain.
+        if (child.reason) row.append(el("p", "child-reason", child.reason));
+        if (child.error) row.append(el("p", "command-error", child.error));
         childrenRows.append(row);
       }
       break;
@@ -907,6 +917,7 @@ function receive(event: HostToWebview): void {
         agentSelect.disabled = true;
         childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
           strong(childLabel(event.child)), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
+        if (event.child.error) childHeader.append(el("p", "command-error", event.child.error));
         childrenSection.hidden = true;
       }
       form.hidden = readOnly;

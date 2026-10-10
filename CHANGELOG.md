@@ -12,6 +12,12 @@ requests land in `develop`.
   small bounded live layer calls. `--offline` avoids all network requests; `--json` reports stable
   diagnostic ids without provider bodies or secrets.
 
+### Fixed
+
+- **Subagent controls fit the VS Code panel.** Stop sits beside the name and state, with themed
+  buttons and a clear keyboard focus ring. Goals take two lines with the full text in a tooltip,
+  and internal delivery labels no longer appear below them.
+
 ## [0.7.4] - 2026-10-10
 
 WithNav 0.7.4 installs on NixOS from the repository itself: a flake builds `nav` and the VS Code

@@ -248,7 +248,7 @@ races remain a documented follow-up, not grounds to permit outside walks.
 Every gated call goes to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
 families, canonical destinations) only tighten, then Instinct answers `call_effect`, `call_scope` and
 `reversibility`, `publication`, `sensitivity` and `task_fit` in one bounded request (plus `role_conformance` for `plan`). Confident read-only calls run on Instinct alone regardless of task fit or workspace, below sensitivity 0.5 and without credential, mutation, overwrite, destructive, opaque-wrapper or executable-identity floors. Fd duplication and redirects to `/dev/null` are not writes; plain unknown programs and read-filter pipelines leave effects to Instinct. Low-risk recoverable project changes can also run. Other calls go to a synchronous,
-tool-free metacognition review (20 s); only `approve` runs it. Anything else (reject, unsure, a
+tool-free metacognition review (configurable `permissions.review_timeout_secs`, default 40 s); only `approve` runs it. Anything else (reject, unsure, a
 malformed answer, a timeout, an oversized call, no reviewer) becomes a permission request. The
 verdicts are recorded as `permission_gate` on `tool.pre_call`, `tool.post_call` and
 `permission.requested`. Only `fetch` keeps reusable origin grants (`Grants`); saved bash/file folder
@@ -261,11 +261,22 @@ restrictions still bind. Selected skills contribute name, description and base d
 the body or filesystem grants. Older editor-context blocks are stripped. Instinct input uses
 `context_window_tokens * 3 / 2` bytes (64000 → 96000), falling back to 16 KiB; rules appear once.
 Oldest turns are dropped first, then older pasted text shortened; the latest Captain turn is
-never partially shown, and an unshowable request is incomplete. Metacognition retains its 64 KiB
-budget and recent untrusted work. A metacognition timeout can retain a floor-free Instinct read-only
+never partially shown, and an unshowable request is incomplete. Metacognition sees at most the latest
+16 KiB of conversation and three tool calls with outputs capped at 512 bytes, within its 64 KiB total
+budget. It uses the configured variant (normally `low`) and up to 16384 output tokens.
+A metacognition timeout can retain a floor-free Instinct read-only
 verdict below the normal sensitivity threshold; writes still ask. Captain allow-once edit/write
 precedents bind canonical file and scope until the next Captain turn, never credentials or protected
 configuration. Resume restores conversation, never precedents.
+
+On 2026-10-10, ten of eleven real reviews timed out; 45–54 KB requests took up to 40.4 seconds.
+Instinct now decides ordinary reads and confident inside, recoverable changes alone, without requiring
+a known program or task fit ≥ 0.6. Only clear task contradiction (< 0.2), uncertainty or risk floors
+require metacognition. Destruction, shared publication, sensitive changes, outside changes, unsafe
+executable identity, opaque execution and unrecoverable overwrites retain review. Remote own-work
+publication keeps its existing host confirmation and task-fit requirements. A structured Captain
+selection establishes the selected option's task, never an unrelated permission. Review has one
+attempt, not a second five-second retry; evidence records input bytes and the configured deadline.
 
 **Bypass.** `BypassState {enabled, seq}` is the actor's ephemeral setting, shared with `RuntimeStatus`;
 only `Control::Bypass` changes it, after the `session.bypass` event is durable (`commit_acked`), in the

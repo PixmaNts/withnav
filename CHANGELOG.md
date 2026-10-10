@@ -9,6 +9,22 @@ requests land in `develop`.
 - A Nix flake at the repository root builds `nav` and the VS Code extension
   (`nix build .#withnav .#vscode-withnav`), and its `overlays.default` adds both to a NixOS system.
   `Cargo.lock` is now committed so builds are reproducible.
+### Fixed
+
+- **Ordinary work no longer waits 20–40 seconds for metacognition.** Instinct alone decides
+  confident reads and recoverable workspace edits, including regex grep, executable lookups,
+  scheduling wrappers, secure mise-style symlinks and ordinary `nix` commands. Selecting Nav's
+  offered “Fais-le” option establishes that task. Destruction, credentials, opaque execution,
+  unsafe executables and outside changes keep their safeguards.
+
+### Changed
+
+- **Risk review is smaller and has one configurable deadline.** Ten of eleven real reviews timed
+  out with 45–54 KB of messages; one answer took 40.4 seconds and 3817 reasoning tokens out of a
+  4096-token cap. Reviews now keep the latest 16 KiB of conversation and three tool calls (512-byte
+  output excerpts), preserve the configured `low` variant, and allow up to 16384 output tokens.
+  `permissions.review_timeout_secs` defaults to 40 seconds (5–300); the second five-second attempt
+  is gone. Timed-out changes still ask you.
 
 ## [0.7.3] - 2026-10-10
 

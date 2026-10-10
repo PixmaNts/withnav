@@ -250,13 +250,13 @@ _Avoid_: tool, action (an action is what a flow proposes)
 ## Permissions
 
 **Captain request**:
-Permission review uses the last three verified human-ingress messages (with command ids), a task
-anchor and retained newer constraints; the role guard still uses only the latest message. Questions,
+Permission review uses the ordered verified Captain turns and retained newer constraints;
+the role guard still uses only the latest message. Questions,
 ok and praise do not revoke a task. Stop, completion, inspect-only and explicit new-task markers
 replace the anchor. Intent exceeding the bounded budget is incomplete and asks rather than
 dropping a constraint. Human words establish goals, not instructions about reviewers' verdicts.
 Tool arguments, assistant text and parent
-delegations remain untrusted evidence. Approval still requires understood, recoverable effects;
+delegations remain untrusted evidence. Ordinary local approval requires confident, recoverable effects;
 protected configuration requires a typed Captain answer or a live config session grant.
 
 WithNav's explicitly configured config directory is a protected root: native writes/edits ask the
@@ -298,7 +298,9 @@ Secondary answers need no confidence, but cannot contradict a route with `destru
 Floor-free confident read-only calls run before task-fit/scope checks at sensitivity < 0.5,
 including outside-workspace reads and plain unknown programs. Listing key filenames or reading
 SOPS-encrypted configuration is not credential-content access. Mutations retain sensitivity
-< 0.2 and task fit ≥ 0.6. Credential, overwrite, removal, opaque-wrapper and executable-identity
+< 0.2. Confident inside, recoverable local changes run on Instinct alone unless task fit < 0.2
+clearly contradicts the Captain; unknown program names alone no longer require metacognition.
+Remote own-work publication retains task fit ≥ 0.6. Credential, overwrite, removal, opaque-wrapper and executable-identity
 floors remain. Fd duplication and redirects to `/dev/null` are not writes.
 Git pushes require bounded
 literal-command host facts confirming the current non-default branch and no force/deletion.
@@ -309,7 +311,7 @@ Destruction and shared publication at any confidence, sensitive or off-task effe
 confidence or unsure deciding answers go to synchronous metacognition review. Every Run path
 still passes the host shell, executable identity, overwrite recovery and removal/move floors.
 Its separate 64 KiB budget carries Instinct
-answers/probabilities, git facts, three bounded untrusted assistant messages and ten structured
+answers/probabilities, git facts, three bounded untrusted assistant messages and three structured
 untrusted tool calls with arguments, outcome, exit code, output head and approval source;
 Instinct uses `context_window_tokens * 3 / 2` bytes or 16 KiB when unconfigured; the plan role
 guard retains 16 KiB. Rules appear once. Budgeting drops oldest turns, then shortens older pasted
@@ -319,9 +321,16 @@ Evidence records input/budget bytes and dropped/cut turns. On 2026-10-10, OmniRo
 openrouter/typesafe/jev-1.13 (64000 tokens → 96000 bytes) measured 4 KiB 0.33 s,
 16 KiB 0.34 s, 32 KiB 0.40 s, 64 KiB 0.44 s, 96 KiB 0.52 s, 112 KiB 0.57 s;
 ~134 KiB returned HTTP 400. The 2 s deadline is not the input constraint. Truncation is marked.
-On timeout, eligible floor-free calls retry once with a fresh cancel token and five-second
-deadline; a floor-free Instinct read-only verdict below normal sensitivity can still run,
+Metacognition receives at most the latest 16 KiB of conversation and three tool calls with outputs
+bounded to 512 bytes, within the separate 64 KiB total budget. It keeps the configured variant
+(`low` by default) and caps output at min(model limit, 16384 tokens). The single deadline is
+`permissions.review_timeout_secs` (default 40, integer 5–300). There is no second attempt;
+a floor-free Instinct read-only verdict below normal sensitivity can still run,
 but writes still ask.
+On 2026-10-10, ten of eleven reviews timed out: 45–54 KB input, one 40.4 s answer with 3817
+reasoning tokens against the old 4096 output cap. Instinct decides ordinary calls; metacognition
+reviews only risky or uncertain calls. A structured `assistant_offered_selection` is the Captain's
+go-ahead for the selected option's task, not an unrelated permission grant.
 Typed Captain allow-once answers become in-memory signature-and-scope precedents shared by live
 children, never restored from `permission.resolved` events on resume. SQLite event JSON is writable
 by ambient bash and cannot authenticate an approval; every resumed session starts with no precedents.

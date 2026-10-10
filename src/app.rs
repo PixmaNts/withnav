@@ -174,7 +174,7 @@ pub fn init_tracing() {
     let _ = fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .try_init();
 }
 

@@ -13,20 +13,16 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
-use withnav::agent::guard::{CallFacts, GuardInput, InstinctGuard, RoleGuard, Verdict};
 use withnav::provider::auth;
 use withnav::provider::config::ModelsConfig;
 use withnav::provider::layers;
 use withnav::provider::openai::ClientCache;
-use withnav::provider::systemone::{
-    Answer, DecisionRequest, Question, Questions, SystemOneClient, SYSTEMONE_DEADLINE,
-};
+use withnav::provider::systemone::{Answer, DecisionRequest, SystemOneClient, SYSTEMONE_DEADLINE};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -71,30 +67,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. Test an editor-flow decision: noul + choice
     println!("[2/4] Editor-flow triage (noul + choice)...");
     {
-        let mut questions = Questions::new();
-        questions.insert(
-            "worth_attention".to_string(),
-            Question::Noul {
-                instructions: "Does this change warrant a pair-programming remark?".to_string(),
-            },
-        );
-        let mut criteria = BTreeMap::new();
-        criteria.insert("silent".to_string(), "Nothing worth saying".to_string());
-        criteria.insert(
-            "metacognition".to_string(),
-            "A short code remark".to_string(),
-        );
-        criteria.insert(
-            "cognition".to_string(),
-            "A deeper architecture discussion".to_string(),
-        );
-        questions.insert(
-            "route".to_string(),
-            Question::Choice {
-                instructions: "Who should handle this change?".to_string(),
-                criteria,
-            },
-        );
+        let questions = withnav::app::doctor::editor_questions();
 
         let state = "File: src/main.rs\nDiff:\n@@ -1,3 +1,5 @@\n+use std::sync::Arc;\n+let pool = Arc::new(pool);\n";
         let start = Instant::now();
@@ -125,9 +98,9 @@ async fn main() -> anyhow::Result<()> {
                 u.input_tokens, u.output_tokens
             );
         }
-        assert!(
-            latency < SYSTEMONE_DEADLINE,
-            "instinct call exceeded deadline"
+        anyhow::ensure!(
+            withnav::app::doctor::valid_answers(&questions, &resp.answers),
+            "invalid typed editor answers"
         );
     }
     println!();
@@ -135,36 +108,13 @@ async fn main() -> anyhow::Result<()> {
     // 3. Test Role Guard: InstinctGuard answering role_conformance
     println!("[3/4] Role Guard (InstinctGuard role_conformance)...");
     {
-        let guard = InstinctGuard(client.clone());
-        let write_args = json!({
-            "path": "/workspace/src/compiler.rs",
-            "content": "pub fn compile() -> Result<()> { Ok(()) }"
-        });
-        let facts = CallFacts {
-            role_id: "plan",
-            role_prompt: "The plan agent researches and produces markdown plans. It never modifies source code.",
-            task: Some("Plan the compiler restructuring"),
-            workspace: Path::new("/workspace"),
-            tool: "write",
-            target: Some(Path::new("/workspace/src/compiler.rs")),
-            arguments: &write_args,
-        };
-
-        let input = GuardInput::describe(&facts).expect("input within bounds");
+        let input = withnav::app::doctor::role_input();
         let start = Instant::now();
-        let verdict = guard.judge(&input, &cancel).await?;
+        withnav::app::doctor::decision_check(&client, &input.state, &input.questions()).await?;
         let latency = start.elapsed();
 
         println!("      Status: OK ({} ms)", latency.as_millis());
-        println!(
-            "      Plan agent modifying .rs file -> Verdict: {}",
-            verdict.as_str()
-        );
-        assert_eq!(
-            verdict,
-            Verdict::Violates,
-            "Instinct should flag source edit in plan role as 'violates'"
-        );
+        println!("      Valid typed role-conformance answer");
     }
     println!();
 

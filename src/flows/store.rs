@@ -238,6 +238,65 @@ struct Grant {
     trusted: bool,
     granted_at: String,
 }
+/// Read-only trust inspection: does not instantiate a store or create reload state.
+pub fn inspect_trust(
+    config: &std::path::Path,
+    workspace: &std::path::Path,
+) -> Result<bool, StoreError> {
+    let dir = match Directory::open(config, false) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    let text = match dir.read("flows-trust.json", 262144, true) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    let file: TrustFile = serde_json::from_str(&text).map_err(|_| StoreError::reason("invalid"))?;
+    if file.version != 1 {
+        return Err(StoreError::reason("invalid"));
+    }
+    Ok(file
+        .workspaces
+        .get(&workspace.to_string_lossy().to_string())
+        .is_some_and(|g| g.trusted))
+}
+
+/// Validate local documents with the runtime's no-follow access and byte/entry limits.
+/// The caller must not invoke this for an untrusted workspace directory.
+pub fn inspect_directory(path: &std::path::Path) -> Result<Vec<(String, bool)>, StoreError> {
+    let dir = match Directory::open(path, false) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.into()),
+    };
+    let mut results = vec![];
+    let mut names = dir.names()?;
+    names.sort();
+    for file in names.into_iter().filter(|n| n.ends_with(".toml")) {
+        let toml = dir.read(&file, 262144, false)?;
+        let mut templates = BTreeMap::new();
+        let mut readable = true;
+        if let Ok(definition) = Definition::parse(&toml) {
+            for node in &definition.node {
+                if let Some(name) = node.kind.template() {
+                    match dir.read(name, 65536, false) {
+                        Ok(text) => {
+                            templates.insert(name.into(), text);
+                        }
+                        Err(_) => readable = false,
+                    }
+                }
+            }
+        }
+        results.push((
+            file,
+            readable && validate(Content::Toml { toml, templates }).valid,
+        ));
+    }
+    Ok(results)
+}
 impl FlowStore {
     pub fn new(workspace: PathBuf, config_dir: PathBuf) -> Self {
         Self::construct(workspace, config_dir, None)

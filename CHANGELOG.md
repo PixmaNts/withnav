@@ -5,6 +5,12 @@ requests land in `develop`.
 ## [Unreleased]
 
 - The bash tool now works on NixOS: it finds bash through /etc/shells and runs the resolved, root-locked binary.
+### Added
+
+- **`nav doctor` checks your configuration and models without changing anything.** Inspect
+  assignments, credentials, legacy names, workspace/flow trust and installed binaries, then make
+  small bounded live layer calls. `--offline` avoids all network requests; `--json` reports stable
+  diagnostic ids without provider bodies or secrets.
 
 ## [0.7.4] - 2026-10-10
 

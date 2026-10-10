@@ -80,7 +80,11 @@ async fn question_client_sends_structured_answer_as_a_captain_message() {
         .find(|e| e.kind == "message.received" && e.payload["answer"].is_object())
         .unwrap();
     assert_eq!(received.payload["source"], "user:http");
-    assert_eq!(received.payload["content"], "A");
+    // The selected label is assistant-written: the server frames it as a selection.
+    assert_eq!(
+        received.payload["content"],
+        "Answer to \"Which?\": selected option(s) offered by the assistant: [\"A\"]"
+    );
     assert_eq!(
         received.payload["answer"],
         json!({"question_call_id":"ask_tui", "selected":[0]})

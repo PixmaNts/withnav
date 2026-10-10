@@ -19,12 +19,24 @@ use serde::{Deserialize, Serialize};
 use crate::agent::context::{estimate, message_tokens, Breakdown};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
+pub mod jev;
 mod summary;
 
 pub use summary::{build_summary_request, prepare, validate_summary, PrepareInput, Prepared};
 
 /// The longest summary accepted, in bytes.
 pub const SUMMARY_MAX_BYTES: usize = 8 * 1024;
+
+/// Resolved summary-only model, pinned when the session is prepared.
+pub struct SummaryWriter {
+    pub provider: crate::provider::config::ProviderConfig,
+    pub api_key: String,
+    pub model: String,
+    pub variant: Option<crate::provider::config::Variant>,
+    pub max_tokens: Option<u64>,
+    pub input_budget: u64,
+    pub max_message_tokens: Option<u64>,
+}
 
 /// Completed turns kept verbatim, besides the latest user request and the
 /// unfinished turn.

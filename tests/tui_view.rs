@@ -1393,7 +1393,7 @@ fn sidebar_hides_on_demand_and_on_narrow_terminals() {
     ui.sidebar_hidden = true;
     render("sidebar-hidden", (100, 24), &s, &ui, &Editor::new());
     let hidden = cells(&s, &ui, (100, 24));
-    assert!(row_text(&hidden, 0, 100).starts_with(" ◆ withnav"));
+    assert!(row_text(&hidden, 0, 100).starts_with(" 🛡 safe"));
     assert!(!(0..24).any(|y| row_text(&hidden, y, 100).contains("build · ")));
 }
 
@@ -2232,6 +2232,8 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
     Block {
         id: "permission:R1".into(),
         kind: BlockKind::Permission(withnav::tui::state::PermissionPrompt {
+            allow_config_session: false,
+            skill_script: None,
             child_session_id: None,
             request_id: "R1".into(),
             tool_call_id: "c1".into(),
@@ -2957,6 +2959,8 @@ fn with_panel_data() -> State {
         messages: 27_000,
     }));
     s.conversation.last_compaction = Some(withnav::bus::event::ContextCompacted {
+        written_by: None,
+        passes: 1,
         generation: 1,
         through_message: 40,
         pruned: 6,

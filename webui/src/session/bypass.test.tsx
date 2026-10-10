@@ -17,11 +17,11 @@ vi.mock("./useSessionStream", () => ({ useSessionStream: () => ({ view: emptyVie
 const event = (seq: number, enabled: boolean): Envelope => ({ seq, kind: "session.bypass", payload: { enabled, by: "user:http" } } as Envelope);
 afterEach(() => { vi.restoreAllMocks(); summary.read_only = false; });
 
-it("renders historical notices without relighting a snapshot; end clears live bypass", () => {
+it("updates the mode without notices or relighting a snapshot; end clears live bypass", () => {
   let view = { ...emptyView(), bypassSeq: 10 };
   view = reduce(view, event(8, true));
   expect(view.bypass).toBe(false);
-  expect(view.items[0]).toMatchObject({ kind: "notice", text: expect.stringContaining("Bypass on: ordinary permission prompts are skipped") });
+  expect(view.items).toHaveLength(0);
   view = reduce(view, event(11, true));
   expect(view.bypass).toBe(true);
   view = reduce(view, { seq: 12, kind: "session.end" } as Envelope);

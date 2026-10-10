@@ -12,6 +12,8 @@ const PREVIEW_LINES: usize = 6;
 #[cfg(test)]
 pub(crate) fn test_prompt() -> PermissionPrompt {
     PermissionPrompt {
+        allow_config_session: false,
+        skill_script: None,
         child_session_id: None,
         request_id: "R".into(),
         tool_call_id: "C".into(),
@@ -220,6 +222,20 @@ fn build(
                 theme.muted(),
             ));
         }
+        (None, Keys::Ready) if p.skill_script.is_some() => lines.push(Line::styled(
+            format!(
+                " y allow once · a allow scripts of skill {} on this machine · n deny",
+                p.skill_script.as_ref().unwrap().skill
+            ),
+            theme.muted(),
+        )),
+        (None, Keys::Ready) if p.allow_config_session => lines.push(Line::from(vec![
+            Span::styled(" y", theme.strong()),
+            Span::styled(
+                " allow once · a allow WithNav config for this session · n deny",
+                theme.muted(),
+            ),
+        ])),
         (None, Keys::Ready) if !offers_always(p) => lines.push(Line::from(vec![
             Span::styled(" y", theme.strong()),
             Span::styled(" allow once · ", theme.muted()),
@@ -259,6 +275,8 @@ pub(crate) fn offers_always(p: &PermissionPrompt) -> bool {
 #[test]
 fn only_fetch_offers_reusable_approval() {
     let mut prompt = PermissionPrompt {
+        allow_config_session: false,
+        skill_script: None,
         child_session_id: None,
         request_id: String::new(),
         tool_call_id: String::new(),
@@ -277,6 +295,38 @@ fn only_fetch_offers_reusable_approval() {
         prompt.agent = "build".into();
         assert_eq!(offers_always(&prompt), tool == "fetch");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn config_session_answer_is_only_shown_when_offered() {
+    let mut prompt = test_prompt();
+    prompt.resolution = None;
+    prompt.allow_config_session = true;
+    let theme = super::super::theme::Theme::default();
+    let rendered = lines(&prompt, None, Keys::Ready, &theme, 200);
+    assert!(rendered.iter().any(|line| line
+        .to_string()
+        .contains("allow WithNav config for this session")));
+}
+
+#[cfg(test)]
+#[test]
+fn skill_machine_answer_is_only_shown_when_offered() {
+    let mut prompt = test_prompt();
+    prompt.resolution = None;
+    let theme = super::super::theme::Theme::default();
+    assert!(!lines(&prompt, None, Keys::Ready, &theme, 200)
+        .iter()
+        .any(|line| line.to_string().contains("on this machine")));
+    prompt.skill_script = Some(Box::new(super::super::state::SkillScript {
+        skill: "sync".into(),
+    }));
+    assert!(lines(&prompt, None, Keys::Ready, &theme, 200)
+        .iter()
+        .any(|line| line
+            .to_string()
+            .contains("allow scripts of skill sync on this machine")));
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.
@@ -300,6 +350,11 @@ fn always_text(p: &PermissionPrompt) -> &'static str {
 fn outcome(p: &PermissionPrompt, resolution: &str, theme: &Theme) -> Line<'static> {
     let (text, style) = match resolution {
         "allow_once" => ("allowed once".to_string(), theme.success()),
+        "allow_skill_machine" => ("allowed skill on this machine".to_string(), theme.success()),
+        "allow_config_session" => (
+            "allowed WithNav config for this session".to_string(),
+            theme.success(),
+        ),
         "allow_folder" => (format!("allowed {}", always_text(p)), theme.success()),
         "deny" => match p.message.as_deref().filter(|m| !m.is_empty()) {
             Some(message) => (format!("denied: {message}"), theme.error()),

@@ -72,6 +72,12 @@ pub struct Skill {
     rank: Rank,
 }
 
+impl Skill {
+    pub(crate) fn is_user(&self) -> bool {
+        self.rank.user
+    }
+}
+
 /// What went wrong, or was set aside, for one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticKind {
@@ -137,6 +143,9 @@ pub struct Skills {
     ambiguous: BTreeMap<String, Vec<PathBuf>>,
     diagnostics: Vec<Diagnostic>,
     roots: Vec<PathBuf>,
+    /// Discovery spellings retained so machine grants recheck canonical location.
+    grant_user_roots: Vec<PathBuf>,
+    grant_project_roots: Vec<PathBuf>,
     catalog: Option<String>,
     /// How many skills the catalog lists and how many fell out of its bound.
     catalog_listed: usize,
@@ -183,11 +192,40 @@ impl Skills {
         let workspace =
             std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         let mut walk = Walk::default();
-        for (dir, root) in candidate_roots(roots, &workspace) {
-            walk.add_root(dir, root);
+        let candidates = candidate_roots(roots, &workspace);
+        for (dir, root) in &candidates {
+            walk.add_root(dir.clone(), *root);
         }
         walk.run();
-        walk.finish()
+        let mut skills = walk.finish();
+        for (dir, rank) in candidates {
+            if rank.user {
+                skills.grant_user_roots.push(dir);
+            } else {
+                skills.grant_project_roots.push(dir);
+            }
+        }
+        skills
+    }
+
+    /// Discovery provenance alone does not make project content machine-trusted.
+    pub(crate) fn machine_grant_location(&self, base_dir: &Path, script: &Path) -> bool {
+        let inside_user = self.grant_user_roots.iter().any(|root| {
+            root.canonicalize()
+                .is_ok_and(|root| base_dir.starts_with(&root) && script.starts_with(&root))
+        });
+        inside_user
+            && self
+                .grant_project_roots
+                .iter()
+                .all(|root| match root.canonicalize() {
+                    Ok(root) => {
+                        !base_dir.starts_with(&root)
+                            && !root.starts_with(base_dir)
+                            && !script.starts_with(&root)
+                    }
+                    Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+                })
     }
 
     /// The catalog message; `None` when no skill is offered.
@@ -471,6 +509,8 @@ impl Walk {
             diagnostics,
             roots,
             catalog,
+            grant_user_roots: Vec::new(),
+            grant_project_roots: Vec::new(),
         }
     }
 }

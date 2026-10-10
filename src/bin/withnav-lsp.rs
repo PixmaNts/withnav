@@ -56,6 +56,7 @@ fn init_tracing_stderr() {
 }
 
 fn main() -> anyhow::Result<()> {
+    withnav::tools::bash::init_shell();
     // The editor host runs the agent too, and its `fetch` converts pages in
     // a child started from this same executable: handle that invocation
     // before the async runtime exists (see `conversion_child`).
@@ -70,9 +71,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let migration = withnav::paths::migrate_legacy();
     init_tracing_stderr();
-    migration.log();
     let cli = Cli::parse();
 
     if let Some(Command::Replay { log, json, .. }) = cli.command {

@@ -1,4 +1,6 @@
 import { chatHtml } from "./chatHtml";
+import { realpath } from "node:fs/promises";
+import { relative, sep, isAbsolute } from "node:path";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { buildEditorContext, presentMessage } from "./editorContext";
@@ -161,7 +163,7 @@ export function registerChatView(
             break;
           case "answerPermission":
             if (typeof message.sessionId === "string" && typeof message.requestId === "string" &&
-                ["allow_once", "allow_folder", "deny"].includes(message.decision) &&
+                ["allow_once", "allow_folder", "allow_config_session", "allow_skill_machine", "deny"].includes(message.decision) &&
                 (message.message === undefined || typeof message.message === "string")) {
               void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message, message.generation).catch(showError);
             }
@@ -267,7 +269,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
   let disposed = false;
   const webview = panel.webview;
   webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")] };
-  webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource);
+  webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource).replace("<body>", '<body class="editor-tab">');
   const post = (m: HostToWebview): void => { if (!disposed) void webview.postMessage(m); };
   const off = child.subscribe(post);
   const favoritesOff = favorites.onChange(items => post({ type: "favorites", items, generation: child.currentGeneration() }));
@@ -308,10 +310,22 @@ function showError(error: unknown): void {
 
 async function openFile(path: string, line?: number): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
-  if (!path.trim() || !folders?.length) return;
+  if (!path.trim() || !folders?.length) { void vscode.window.showInformationMessage("WithNav: no workspace for this file."); return; }
   const absolute = /^(\/|[A-Za-z]:[\\/])/.test(path);
-  const uri = absolute ? vscode.Uri.file(path) : vscode.Uri.joinPath(folders[0].uri, path);
-  if (!vscode.workspace.getWorkspaceFolder(uri)) return;
+  const candidates = absolute ? [vscode.Uri.file(path)] : folders.map(folder => vscode.Uri.joinPath(folder.uri, path));
+  let uri: vscode.Uri | undefined;
+  for (const candidate of candidates) {
+    if (!vscode.workspace.getWorkspaceFolder(candidate)) continue;
+    try {
+      const stat = await vscode.workspace.fs.stat(candidate);
+      if (!(stat.type & vscode.FileType.File)) continue;
+      const realPath = await realpath(candidate.fsPath);
+      const roots = await Promise.all(folders.map(folder => realpath(folder.uri.fsPath)));
+      if (!roots.some(root => { const rel = relative(root, realPath); return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel)); })) continue;
+      uri = candidate; break;
+    } catch { /* Try the next workspace root for missing or inaccessible paths. */ }
+  }
+  if (!uri) { void vscode.window.showInformationMessage(`WithNav: file missing or outside the workspace: ${path}`); return; }
   const document = await vscode.workspace.openTextDocument(uri);
   const editor = await vscode.window.showTextDocument(document);
   if (typeof line === "number" && Number.isInteger(line) && line > 0) {

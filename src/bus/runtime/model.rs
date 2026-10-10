@@ -51,6 +51,7 @@ pub struct ModelTarget {
     pub model: String,
     pub reasoning_history: ReasoningHistory,
     pub max_tokens: Option<u64>,
+    pub max_message_tokens: Option<u64>,
     /// The target's own default variant.
     pub variant: SelectedVariant,
     /// The saved resolution the conversation keeps from now on.
@@ -379,6 +380,7 @@ pub(super) async fn run(
     actor.model = target.model.clone();
     actor.reasoning_history = target.reasoning_history;
     actor.max_tokens = target.max_tokens;
+    actor.compaction_max_message_tokens = target.max_message_tokens;
     actor.variant = target.variant.clone().map(|(_, variant)| variant);
     #[cfg(debug_assertions)]
     {

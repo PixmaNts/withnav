@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ withnav  ~/dev/project                                                                  ▌◎ Nav /build  cognition · assigned · — / 200k 
+ Conversations       │ 🛡 safe    ◆ withnav  ~/dev/project                                                        ▌◎ Nav /build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · idle      │                                                                                                      │                                   
                      │                                                                                                      │ AGENTS                            

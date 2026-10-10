@@ -1,5 +1,48 @@
 use super::*;
 
+#[tokio::test]
+async fn learned_message_limit_is_monotone_and_survives_refresh_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = ModelCatalog::new(Some(dir.path().into()));
+    catalog
+        .learn_message_limit("http://localhost/v1", "m", 128000)
+        .await;
+    catalog
+        .learn_message_limit("http://localhost/v1", "m", 200000)
+        .await;
+    let restarted = ModelCatalog::new(Some(dir.path().into()));
+    assert_eq!(
+        restarted.message_limit("http://localhost/v1", "m"),
+        Some(128000)
+    );
+    let key = endpoint_key("http://localhost/v1");
+    let cache = catalog
+        .current(&catalog.endpoint(&key), catalog.file(&key).as_deref())
+        .unwrap();
+    let (merged, _) = merge(
+        Some(&cache),
+        HashMap::from([(
+            "m".into(),
+            Limits {
+                context_length: Some(1000000),
+                ..Default::default()
+            },
+        )]),
+    );
+    assert_eq!(merged["m"].max_message_tokens, Some(128000));
+}
+
+#[test]
+fn optional_configured_message_limit_rejects_zero_and_keeps_legacy_models() {
+    let model = |field: &str| format!(r#"{{"provider":"p","model":"m"{field}}}"#);
+    let legacy: ModelConfig = serde_json::from_str(&model("")).unwrap();
+    assert_eq!(legacy.max_message_tokens, None);
+    let configured: ModelConfig =
+        serde_json::from_str(&model(",\"max_message_tokens\":12000")).unwrap();
+    assert_eq!(configured.max_message_tokens, Some(12000));
+    assert!(serde_json::from_str::<ModelConfig>(&model(",\"max_message_tokens\":0")).is_err());
+}
+
 #[test]
 fn oversized_cache_is_ignored() {
     let file = tempfile::NamedTempFile::new().unwrap();
@@ -31,6 +74,7 @@ fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> R
             api,
             context_window: window,
             max_input_tokens: None,
+            max_message_tokens: None,
             max_output_tokens: None,
             supports_tools: true,
             supports_parallel_tool_calls: None,
@@ -300,6 +344,7 @@ fn limits(context: u64) -> Limits {
         max_input_tokens: None,
         max_output_tokens: None,
         effort_tiers: None,
+        max_message_tokens: None,
     }
 }
 
@@ -672,6 +717,7 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
             max_input_tokens: Some(400_000),
             max_output_tokens: Some(1_000),
             effort_tiers: None,
+            max_message_tokens: None,
         },
     );
     let d = lookup(&catalog, &base, "m").await;

@@ -260,6 +260,11 @@ impl ActorInbox {
             let mut text = cmd.text_content();
             if cmd.from_captain() {
                 actor.captain_task = Some(text.clone());
+                actor
+                    .permission_context
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .captain(cmd.command_id.to_string(), text.clone());
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
@@ -742,6 +747,8 @@ mod tests {
                 origin: Default::default(),
                 flow_regates: 0,
                 requires_captain: false,
+                allow_config_session: false,
+                skill_script: None,
                 permission_gate: None,
                 id: Ulid::new(),
                 tool_call_id: "w1".into(),

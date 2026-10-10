@@ -9,6 +9,17 @@ const request = (extra = {}) => envelope("permission.requested", {
   scope: { kind: "folder", value: "/workspace" }, reason: "Full reason\nSecond line", ...extra,
 });
 
+test("config session answer is offered only by the protected request", () => {
+  assert.equal(eventView(request()).card.allowConfigSession, false);
+  assert.equal(eventView(request({ allow_config_session: true })).card.allowConfigSession, true);
+});
+
+test("machine skill answer uses only the host skill binding", () => {
+  assert.equal(eventView(request()).card.skillName, undefined);
+  assert.equal(eventView(request({ skill_script: { skill: "sync" } })).card.skillName, "sync");
+  assert.equal(eventView(request({ skill_script: { skill: 123 } })).card.skillName, undefined);
+});
+
 test("permission card preserves full reason, command, scope and ids", () => {
   const { card } = eventView(request());
   assert.equal(card.requestId, "R");

@@ -1,5 +1,5 @@
-//! The summary step: one request to the session's own model and variant, no
-//! tools, then the answer checked before it is trusted.
+//! The summary step: optional old-output relevance pruning, then bounded
+//! rolling requests to the selected writer, checked before they are trusted.
 
 use std::collections::HashSet;
 
@@ -67,11 +67,17 @@ pub struct PrepareInput<'a> {
     pub source_budget: u64,
     /// What the user asked the summary to pay particular attention to.
     pub focus: Option<&'a str>,
+    pub chunk_tokens: u64,
+    pub progress: Option<&'a (dyn Fn(u64, u64) + Send + Sync)>,
+    pub jev: Option<&'a dyn crate::agent::permission_gate::PermissionJudge>,
+    pub catalog: Option<&'a crate::provider::catalog::ModelCatalog>,
+    pub max_message_tokens: Option<u64>,
 }
 
 /// A checkpoint ready to persist and install. Nothing is saved yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
+    pub passes: u64,
     pub compaction: Compaction,
     /// The estimated prompt before and after, on the destination's terms.
     pub estimated_before: u64,
@@ -84,7 +90,7 @@ pub async fn prepare(
     input: PrepareInput<'_>,
     cancel: &CancellationToken,
 ) -> Result<Prepared, CompactionError> {
-    let planned = plan(
+    let mut planned = plan(
         input.transcript,
         input.current,
         &input.components,
@@ -93,9 +99,31 @@ pub async fn prepare(
     )?;
     let estimated_before =
         estimate_effective(&input.components, input.transcript, input.current).total();
-    let request = build_summary_request(&input, &planned)?;
-    let message = ask(&input, request, cancel).await?;
-    let summary = validate_summary(&message)?;
+    let first = input
+        .current
+        .map_or(0, |c| c.checkpoint.through_message + 1);
+    let projection = if let Some(judge) = input.jev {
+        super::jev::prune(
+            input.transcript,
+            first,
+            planned.through_message + 1,
+            input.current.map(|c| c.checkpoint.summary.as_str()),
+            judge,
+            cancel,
+        )
+        .await
+    } else {
+        None
+    };
+    if projection.is_some() {
+        // Jev's decisions and deterministic pins supersede size-only elision.
+        planned.prefix_elidable.clear();
+    }
+    let input = PrepareInput {
+        transcript: projection.as_deref().unwrap_or(input.transcript),
+        ..input
+    };
+    let (summary, passes) = rolling_summary(&input, &planned, cancel).await?;
 
     let compaction = Compaction {
         checkpoint: Checkpoint {
@@ -115,10 +143,207 @@ pub async fn prepare(
         });
     }
     Ok(Prepared {
+        passes,
         compaction,
         estimated_before,
         estimated_after,
     })
+}
+
+/// Chunk boundaries keep the assistant call and all following tool results together.
+fn chunk_end(
+    transcript: &[ChatMessage],
+    first: usize,
+    end: usize,
+    cap: u64,
+    elided: &HashSet<usize>,
+) -> Result<usize, CompactionError> {
+    let mut accepted = first;
+    for next in first + 1..=end {
+        if next < end && matches!(transcript[next], ChatMessage::Tool { .. }) {
+            continue;
+        }
+        let message = ChatMessage::User {
+            provenance: Default::default(),
+            content: render_part(None, transcript, first, next - first, elided),
+        };
+        let needed = message_tokens(&message);
+        if needed > cap {
+            if accepted == first {
+                return Err(CompactionError::SummaryInputTooLarge {
+                    needed,
+                    budget: cap,
+                });
+            }
+            break;
+        }
+        accepted = next;
+    }
+    Ok(accepted)
+}
+
+async fn rolling_summary(
+    input: &PrepareInput<'_>,
+    planned: &Plan,
+    cancel: &CancellationToken,
+) -> Result<(String, u64), CompactionError> {
+    let mut first = input
+        .current
+        .map_or(0, |c| c.checkpoint.through_message + 1);
+    let end = planned.through_message + 1;
+    let learned = input
+        .catalog
+        .and_then(|catalog| catalog.message_limit(&input.provider.base_url, input.model));
+    let mut cap = input
+        .chunk_tokens
+        .min(input.max_message_tokens.unwrap_or(u64::MAX))
+        .min(learned.unwrap_or(u64::MAX))
+        .min(input.source_budget / 2)
+        .max(1);
+    let mut elided: HashSet<usize> = input
+        .current
+        .map(|c| c.pruned_message_indices.iter().copied().collect())
+        .unwrap_or_default();
+    // Preserve the existing biggest-first elision before splitting the prefix.
+    let whole = ChatMessage::User {
+        provenance: Default::default(),
+        content: render_part(None, input.transcript, first, end - first, &elided),
+    };
+    if message_tokens(&whole) > input.source_budget {
+        for &index in &planned.prefix_elidable {
+            elided.insert(index);
+            let reduced = ChatMessage::User {
+                provenance: Default::default(),
+                content: render_part(None, input.transcript, first, end - first, &elided),
+            };
+            if message_tokens(&reduced) <= input.source_budget {
+                break;
+            }
+        }
+    }
+    let mut summary = input.current.map(|c| c.checkpoint.summary.clone());
+    let mut passes = 0;
+    let mut count_first = first;
+    let mut total = 0;
+    while count_first < end {
+        count_first = chunk_end(input.transcript, count_first, end, cap, &elided)?;
+        total += 1;
+    }
+    while first < end {
+        if cancel.is_cancelled() {
+            return Err(CompactionError::Cancelled);
+        }
+        let mut next = chunk_end(input.transcript, first, end, cap, &elided)?;
+        if total > 1 {
+            if let Some(progress) = input.progress {
+                progress(passes + 1, total.max(passes + 1));
+            }
+        }
+        tracing::info!(
+            pass = passes + 1,
+            remaining_messages = end - first,
+            "Compacting rolling summary"
+        );
+        let mut previous_error = None;
+        loop {
+            let mut request = ChatRequest {
+                model: input.model.into(),
+                messages: vec![ChatMessage::System { content: match input.focus {
+                    Some(focus) => format!("{SUMMARY_PROMPT}\n\nThe user asked you to pay particular attention to: {focus}"),
+                    None => SUMMARY_PROMPT.into(),
+                }}], tools: vec![], stream: true,
+                stream_options: Some(StreamOptions { include_usage: true }),
+                max_tokens: Some(input.max_tokens.unwrap_or(SUMMARY_MAX_BYTES as u64).min(SUMMARY_MAX_BYTES as u64)),
+                temperature: None, extra: Default::default(),
+            };
+            if let Some(earlier) = &summary {
+                request.messages.push(ChatMessage::User {
+                    provenance: Default::default(),
+                    content: render_part(Some(earlier), &[], 0, 0, &HashSet::new()),
+                });
+            }
+            request.messages.push(ChatMessage::User {
+                provenance: Default::default(),
+                content: render_part(None, input.transcript, first, next - first, &elided),
+            });
+            let needed = request.messages.iter().map(message_tokens).sum();
+            if needed > input.source_budget {
+                return Err(CompactionError::SummaryInputTooLarge {
+                    needed,
+                    budget: input.source_budget,
+                });
+            }
+            let result = match ask(input, request, cancel).await {
+                Ok(message) => validate_summary(&message),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(value) => {
+                    summary = Some(value);
+                    passes += 1;
+                    first = next;
+                    break;
+                }
+                Err(CompactionError::Cancelled) => return Err(CompactionError::Cancelled),
+                Err(CompactionError::Provider(ref text)) if overflow_limit(text).is_some() => {
+                    let reported = overflow_limit(text).unwrap().unwrap_or(cap / 2);
+                    let reduced = reported.min(cap / 2).max(1);
+                    if reduced >= cap {
+                        return Err(CompactionError::Provider(text.clone()));
+                    }
+                    if let Some(catalog) = input.catalog {
+                        catalog
+                            .learn_message_limit(
+                                &input.provider.base_url,
+                                input.model,
+                                reported.max(1),
+                            )
+                            .await;
+                    }
+                    cap = reduced;
+                    next = chunk_end(input.transcript, first, next, cap, &elided)?;
+                    total = total.max(passes + 2);
+                }
+                Err(error) if previous_error.is_some() => {
+                    return Err(previous_error.unwrap_or(error))
+                }
+                Err(error) => {
+                    previous_error = Some(error);
+                    let size = message_tokens(&ChatMessage::User {
+                        provenance: Default::default(),
+                        content: render_part(None, input.transcript, first, next - first, &elided),
+                    });
+                    next =
+                        chunk_end(input.transcript, first, next, size / 2, &elided).unwrap_or(next);
+                }
+            }
+        }
+    }
+    Ok((summary.unwrap_or_default(), passes))
+}
+
+/// Only size-related provider failures trigger limit learning; an authentication
+/// or unrelated bad-request error must not poison the model's catalog entry.
+fn overflow_limit(text: &str) -> Option<Option<u64>> {
+    let text = text.to_ascii_lowercase();
+    let size = text.contains("context_length_exceeded")
+        || ((text.contains("400") || text.contains("413"))
+            && ["input", "context", "message", "payload"]
+                .iter()
+                .any(|word| text.contains(word))
+            && ["limit", "exceed", "too large", "too long"]
+                .iter()
+                .any(|word| text.contains(word)));
+    if !size {
+        return None;
+    }
+    let limit = text.split("limit ").skip(1).find_map(|tail| {
+        tail.split(|c: char| !c.is_ascii_digit() && c != ',')
+            .next()
+            .and_then(|n| n.replace(',', "").parse::<u64>().ok())
+            .filter(|n| *n > 0)
+    });
+    Some(limit)
 }
 
 async fn ask(

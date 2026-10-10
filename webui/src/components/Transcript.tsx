@@ -7,7 +7,7 @@ import { Markdown } from "./Markdown";
 import { PermissionCard } from "./PermissionCard";
 import { ToolList } from "./ToolList";
 
-type Answer = (requestId: string, decision: "allow_once" | "allow_folder" | "deny") => Promise<void>;
+type Answer = (requestId: string, decision: "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny") => Promise<void>;
 
 interface Props {
   view: SessionView;

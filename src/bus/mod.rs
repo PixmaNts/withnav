@@ -351,8 +351,8 @@ mod tests {
             .copied()
             .filter(|k| k.is_durable())
             .collect();
-        // Only `llm.delta` and `context.updated` are live-only.
-        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 2);
+        // Only `llm.delta`, `context.updated` and `context.compacting` are live-only.
+        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 3);
 
         let mut bus = SessionBus::default();
         let mut seq: u64 = 0;

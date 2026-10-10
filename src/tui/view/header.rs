@@ -39,8 +39,20 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         return;
     }
     frame.buffer_mut().set_style(area, theme.panel());
-    if state.bypass {
-        let marker_width = 11.min(area.width);
+    {
+        let marker = if state.bypass {
+            " ⚠ bypass "
+        } else {
+            " 🛡 safe "
+        };
+        let marker_width = (if state.bypass {
+            11
+        } else if area.width >= 80 {
+            10
+        } else {
+            0
+        })
+        .min(area.width.saturating_sub(13));
         frame.render_widget(
             Paragraph::new(line(state, theme, usize::from(area.width - marker_width))),
             Rect::new(
@@ -52,17 +64,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         );
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " ⚠ bypass ",
-                theme.warning().add_modifier(Modifier::BOLD),
+                marker,
+                if state.bypass {
+                    theme.warning().add_modifier(Modifier::BOLD)
+                } else {
+                    theme.muted()
+                },
             )),
             Rect::new(area.x, area.y, marker_width, 1),
         );
-        return;
     }
-    frame.render_widget(
-        Paragraph::new(line(state, theme, usize::from(area.width))),
-        area,
-    );
 }
 
 /// The header row for `total` columns: never wider than that.
@@ -316,10 +327,11 @@ mod tests {
     #[test]
     fn a_narrow_header_drops_the_least_useful_items_first() {
         let state = busy();
-        // 80 columns: the switch waiting for the turn outranks the variant, gauge and path.
+        // 80 columns: the safe-mode marker takes its place on the left; the switch waiting for
+        // the turn still outranks the crew name, variant, gauge and path.
         assert_eq!(
             row(&state, 80),
-            " ◆ withnav   ▌◎ Nav /build  omniroute/combo…  → cc/claude-op… (after this turn) "
+            " 🛡 safe    ◆ withnav  ▌◎ build  omniroute/com…  → cc/claude-… (after this turn) "
         );
         // 40 columns: the crew name, the switch and the gauge go; the agent and model_id stay.
         assert_eq!(row(&state, 40), " ◆ withnav    ▌◎ build  omnirou… · high ");

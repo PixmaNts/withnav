@@ -3,16 +3,11 @@
 //! Data (the conversation database, the decision log and the terminal log)
 //! lives in the XDG data dir, `~/.local/share/withnav` on Linux. Configuration
 //! (models.json, auth.json, the user pipeline dir) lives in the config dir,
-//! `~/.config/withnav`, see [`crate::provider::auth::default_config_dir`]. The
-//! move from the former locations is in [`migrate`].
+//! `~/.config/withnav`, see [`crate::provider::auth::default_config_dir`].
 
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
-
-pub mod migrate;
-
-pub use migrate::{migrate_legacy, MigrationReport};
 
 /// The application name every dir is derived from.
 pub(crate) const APP_NAME: &str = "withnav";
@@ -23,13 +18,8 @@ pub fn data_dir() -> Option<PathBuf> {
     ProjectDirs::from("", "", APP_NAME).map(|dirs| dirs.data_dir().to_path_buf())
 }
 
-/// The conversation-history database, `<data_dir>/withnav.db`. When the move of
-/// a former database was refused, the former path, so that this run keeps
-/// using the existing history.
+/// The conversation-history database, `<data_dir>/withnav.db`.
 pub fn history_db() -> Option<PathBuf> {
-    if let Some(kept) = migrate::kept_history_db() {
-        return Some(kept);
-    }
     data_dir().map(|dir| dir.join("withnav.db"))
 }
 

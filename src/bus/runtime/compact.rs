@@ -38,8 +38,10 @@ pub type CheckpointSaver = Arc<
 >;
 
 /// What a finished compaction did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Compacted {
+    pub written_by: crate::bus::event::CompactionWriter,
+    pub passes: u64,
     pub generation: u64,
     pub through_message: usize,
     /// Tool outputs the prompt now shows as markers.
@@ -58,6 +60,8 @@ impl Compacted {
             "estimate_before": self.estimate_before,
             "estimate_after": self.estimate_after,
             "applies": applies,
+            "written_by": self.written_by,
+            "passes": self.passes,
         })
     }
 }
@@ -319,6 +323,35 @@ pub(super) async fn summarize_with_components(
     goal: Goal<'_>,
     components: compaction::Components<'_>,
 ) -> Result<Summarized, Failure> {
+    if let Some(meta) = &actor.compaction_writer {
+        let writer = Writer {
+            provider: &meta.provider,
+            api_key: meta.api_key.clone(),
+            model: &meta.model,
+            variant: meta.variant.as_ref(),
+            max_tokens: meta.max_tokens,
+        };
+        match summarize_written_by(
+            actor,
+            writer,
+            cancel,
+            transcript,
+            Goal {
+                source_budget: meta.input_budget,
+                ..goal
+            },
+            components,
+        )
+        .await
+        {
+            Ok(mut summary) => {
+                summary.done.written_by.layer = "metacognition".into();
+                return Ok(summary);
+            }
+            Err(Failure::Compaction(CompactionError::Provider(_))) => {}
+            Err(error) => return Err(error),
+        }
+    }
     let variant = status.active_variant().map(|(_, variant)| variant);
     let writer = Writer {
         provider: &actor.provider,
@@ -339,6 +372,10 @@ pub(super) async fn summarize_written_by(
     goal: Goal<'_>,
     components: compaction::Components<'_>,
 ) -> Result<Summarized, Failure> {
+    let written_by = crate::bus::event::CompactionWriter {
+        model: writer.model.to_string(),
+        layer: "cognition".into(),
+    };
     let prepared = compaction::prepare(
         PrepareInput {
             provider: writer.provider,
@@ -353,6 +390,16 @@ pub(super) async fn summarize_written_by(
             aim: goal.aim,
             source_budget: goal.source_budget,
             focus: goal.focus,
+            chunk_tokens: actor.compaction_chunk_tokens,
+            jev: actor.permission_judge.as_deref(),
+            catalog: actor.compaction_catalog.as_ref(),
+            max_message_tokens: match actor.compaction_writer.as_ref().filter(|meta| {
+                meta.model == writer.model && meta.provider.base_url == writer.provider.base_url
+            }) {
+                Some(meta) => meta.max_message_tokens,
+                None => actor.compaction_max_message_tokens,
+            },
+            progress: actor.compaction_progress.as_deref(),
         },
         cancel,
     )
@@ -360,6 +407,8 @@ pub(super) async fn summarize_written_by(
     .map_err(Failure::Compaction)?;
     let installed = prepared.compaction;
     let done = Compacted {
+        written_by,
+        passes: prepared.passes,
         generation: installed.checkpoint.generation,
         through_message: installed.checkpoint.through_message,
         pruned: installed.pruned_message_indices.len(),
@@ -569,6 +618,8 @@ fn publish_compacted(
         estimate_before: done.estimate_before,
         estimate_after: done.estimate_after,
         reason: Some(reason),
+        written_by: Some(done.written_by.clone()),
+        passes: done.passes,
     })
     .unwrap_or(serde_json::Value::Null);
     let _ = sequencer.publish(Candidate::new(EventKind::ContextCompacted, notice));

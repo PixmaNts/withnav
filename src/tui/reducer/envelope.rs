@@ -132,15 +132,6 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     let actor = e.actor_id.clone();
     if e.kind == "session.bypass" {
         let enabled = e.payload["enabled"].as_bool().ok_or_else(bad)?;
-        s.conversation.blocks.push(block(
-            format!("bypass:{}", e.seq),
-            BlockKind::Notice(if enabled {
-                "bypass on: ordinary permission prompts are skipped; protected requests still ask"
-                    .into()
-            } else {
-                "bypass off".into()
-            }),
-        ));
         if e.seq > s.bypass_seq {
             super::keep_bypass(s, enabled, e.seq);
         }
@@ -486,6 +477,8 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 return Ok(());
             }
             let prompt = PermissionPrompt {
+                allow_config_session: v["allow_config_session"].as_bool().unwrap_or(false),
+                skill_script: serde_json::from_value(v["skill_script"].clone()).ok(),
                 child_session_id: child.map(str::to_string),
                 request_id,
                 tool_call_id: text("tool_call_id")?,
@@ -589,12 +582,25 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             s.conversation.last_compaction = serde_json::from_value(v.clone()).ok();
             let tokens = |key: &str| super::tokens(v[key].as_u64().unwrap_or(0));
+            let writer = v["written_by"]["model"]
+                .as_str()
+                .map(|model| format!(" by {}", strip_controls(model)))
+                .unwrap_or_default();
             s.conversation.blocks.push(block(
                 format!("notice:{}", e.seq),
                 BlockKind::Notice(format!(
-                    "context compacted: ~{} -> ~{}",
+                    "context compacted{writer}: ~{} -> ~{}",
                     tokens("estimate_before"),
                     tokens("estimate_after")
+                )),
+            ));
+        }
+        Some(EventKind::ContextCompacting) => {
+            s.conversation.blocks.push(block(
+                format!("notice:{}", e.seq),
+                BlockKind::Notice(format!(
+                    "Compacting… {}/{}",
+                    e.payload["pass"], e.payload["total"]
                 )),
             ));
         }

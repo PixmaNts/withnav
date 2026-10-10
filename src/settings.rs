@@ -44,6 +44,23 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn compaction_writer(&self) -> Result<&str, String> {
+        match self.get_dotted("compaction.writer").and_then(Value::as_str) {
+            Some(value @ ("metacognition" | "session")) => Ok(value),
+            None if self.get_dotted("compaction.writer").is_none() => Ok("metacognition"),
+            _ => Err("compaction.writer must be metacognition or session".into()),
+        }
+    }
+
+    pub fn compaction_chunk_tokens(&self) -> Result<u64, String> {
+        match self.get_dotted("compaction.chunk_tokens") {
+            None => Ok(64_000),
+            Some(value) => value
+                .as_u64()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| "compaction.chunk_tokens must be a positive integer".into()),
+        }
+    }
     /// Reads a dotted settings key without dropping unknown sibling keys.
     pub fn get_dotted(&self, key: &str) -> Option<&Value> {
         let mut parts = key.split('.');

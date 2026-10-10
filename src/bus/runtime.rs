@@ -100,6 +100,8 @@ struct PermissionSlot {
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
+    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
+    pub permission_context: Arc<Mutex<crate::agent::permission_gate::context::ReviewContext>>,
     /// Serializes bypass changes and child starts below this root, so a
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
@@ -834,6 +836,8 @@ pub fn spawn_with_completion(
     status.init_ask(&actor);
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
+    actor.config_session_grant = status.config_session_grant.clone();
+    actor.permission_context = status.permission_context.clone();
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -1135,6 +1139,33 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
+                if answer.decision
+                    == crate::agent::permissions::PermissionDecision::AllowConfigSession
+                    && (!request.allow_config_session
+                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain)
+                {
+                    status.release_pin(&actor);
+                    status.release_permission(answer.request_id);
+                    let _ = answer
+                        .reply
+                        .send(Err(crate::agent::permissions::PermissionError::Stale));
+                    continue;
+                }
+                if answer.decision
+                    == crate::agent::permissions::PermissionDecision::AllowSkillMachine
+                    && (request.skill_script.is_none()
+                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain
+                        || !matches!(&actor.pending, Some(crate::agent::actor::PendingInteraction::Permission { call, .. })
+                            if crate::agent::permission_gate::script::skill_script(&actor, call).as_ref()
+                                == request.skill_script.as_deref()))
+                {
+                    status.release_pin(&actor);
+                    status.release_permission(answer.request_id);
+                    let _ = answer
+                        .reply
+                        .send(Err(crate::agent::permissions::PermissionError::Stale));
+                    continue;
+                }
                 let decision = crate::agent::permissions::offered_decision(
                     &request.agent,
                     &request.tool,
@@ -1703,6 +1734,18 @@ fn publish_resolved_with_origin(
     );
     if origin == crate::agent::permissions::PermissionOrigin::Bypass {
         candidate.payload["approved_by"] = serde_json::json!("bypass");
+    } else if matches!(
+        candidate.payload["resolution"].as_str(),
+        Some("allow_once" | "allow_folder" | "deny")
+    ) {
+        candidate.payload["approved_by"] = serde_json::json!("captain");
+        if let Some(signature) = request
+            .permission_gate
+            .as_ref()
+            .and_then(|gate| gate.get("signature"))
+        {
+            candidate.payload["captain_precedent"] = serde_json::json!({"request_id": request.id, "tool": request.tool, "signature": signature, "scope": request.scope, "decision": candidate.payload["resolution"], "when": request.id.to_string()});
+        }
     }
     if let Some(task) = task_id {
         candidate = candidate.with_correlation_id(task);
@@ -1761,6 +1804,8 @@ fn permission_requested(
         reason: request.reason.clone(),
     });
     payload["requires_captain"] = serde_json::json!(request.requires_captain);
+    payload["allow_config_session"] = serde_json::json!(request.allow_config_session);
+    payload["skill_script"] = serde_json::json!(request.skill_script);
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
             request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
@@ -2098,6 +2143,8 @@ mod tests {
                 origin: Default::default(),
                 flow_regates: 0,
                 requires_captain: false,
+                allow_config_session: false,
+                skill_script: None,
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),
@@ -2587,7 +2634,7 @@ mod tests {
             }
         }
         assert_eq!(resolved.len(), 1);
-        assert!(resolved[0].payload.get("approved_by").is_none());
+        assert_eq!(resolved[0].payload["approved_by"], "captain");
         assert_eq!(resolved[0].payload["resolution"], "allow_once");
         cancel.cancel();
         task.await.unwrap();

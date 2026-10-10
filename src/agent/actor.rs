@@ -51,8 +51,15 @@ pub struct BypassState {
 }
 
 pub struct AgentActor {
+    pub compaction_writer: Option<super::compaction::SummaryWriter>,
+    pub compaction_catalog: Option<crate::provider::catalog::ModelCatalog>,
+    pub compaction_max_message_tokens: Option<u64>,
+    pub compaction_chunk_tokens: u64,
+    pub compaction_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
+    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
+    pub permission_context: Arc<std::sync::Mutex<super::permission_gate::context::ReviewContext>>,
     pub captain_request_inherited: bool,
     pub protected_config_spelling: Option<std::path::PathBuf>,
     pub protected_config_unresolved: bool,
@@ -115,6 +122,7 @@ pub struct AgentActor {
     /// The folder and origin approvals: given in this session, or kept for
     /// its workspace when the session service loads them.
     pub grants: Grants,
+    pub skill_grants: Option<super::skill_grants::SkillGrants>,
     /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// captain (a human ingress identity), never from a navigator wake, delegated
@@ -196,6 +204,11 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            compaction_writer: None,
+            compaction_catalog: None,
+            compaction_max_message_tokens: None,
+            compaction_chunk_tokens: 64_000,
+            compaction_progress: None,
             tool_flows: None,
             captain_request_inherited: false,
             protected_config_spelling: None,
@@ -205,6 +218,8 @@ impl AgentActor {
             permission_reviewer_unavailable: "no alias",
             automatic_permission_review: true,
             bypass: Arc::default(),
+            config_session_grant: Arc::default(),
+            permission_context: Arc::default(),
             permission_judge: None,
             permission_reviewer: None,
             transcript: Vec::new(),
@@ -230,6 +245,7 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
+            skill_grants: None,
             captain_task: None,
             guard: None,
         }

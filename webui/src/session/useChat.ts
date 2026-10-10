@@ -240,7 +240,7 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   }, [agentEntry, sessionId, selection.model, command]);
 
   const answerPermission = useCallback(
-    async (requestId: string, decision: "allow_once" | "allow_folder" | "deny") => {
+    async (requestId: string, decision: "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny") => {
       if (!sessionId) return;
       try {
         await api.answerPermission(sessionId, requestId, decision);

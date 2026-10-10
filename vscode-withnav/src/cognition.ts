@@ -411,6 +411,7 @@ export class CognitionBackend implements ChatBackend {
       if (name === "compact" && origin.compaction && origin.compaction.request === compactRequest && origin.compaction.pending) {
         origin.compaction = { ...origin.compaction, pending: false, ok: false, text: `Compaction failed: ${this.errorText(error)}` };
         this.emitForState(origin, { type: "compaction", operationId: origin.compaction.operationId, pending: origin.compaction.pending, text: origin.compaction.text, ok: origin.compaction.ok });
+        return false; // The compaction result already reports this transport failure.
       }
       throw error;
     }
@@ -444,13 +445,13 @@ export class CognitionBackend implements ChatBackend {
     if (p.name === "compact" && this.state.compaction?.pending && this.state.compaction.operationId === operation) {
       const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
       this.state.compaction = { ...this.state.compaction, pending: deferred, ok: p.ok === true,
-        text: deferred ? "Compacting the conversation… · waiting for this turn to finish. Messages you send now are queued until compaction ends." : p.ok === false ? `Compaction failed: ${p.error ?? "Refused"}` : "Conversation compacted." };
+        text: deferred ? "Compacting the conversation… · waiting for this turn to finish. Messages you send now are queued until compaction ends." : p.ok === false ? `/compact · ${p.error ?? "Refused"}` : "Conversation compacted." };
       this.publishCompaction();
     }
     const command = this.state.commands.get(operation);
     if (command) {
       this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
-      if (p.ok !== true) this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
+      if (p.ok !== true && p.name !== "compact") this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
       this.state.commands.delete(operation);
     }
     const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
@@ -468,7 +469,7 @@ export class CognitionBackend implements ChatBackend {
   /** A stopped conversation to resume on the next send (Stop keeps it). */
   /** Cancels the SSE fetch of the running stream, if any. */
   /** Bumped by every deliberate stream cancel: stale connects go quiet. */
-  /** Turn ids that received a live text delta (replayed turns get none). */
+  /** Turn/step keys that received live text, so response replay cannot duplicate it. */
   private disposed = false;
 
   currentGeneration(): number { return this.state.streamGeneration; }
@@ -714,7 +715,9 @@ export class CognitionBackend implements ChatBackend {
     const card = this.state.controls.permissions.get(requestId);
     const owner = this.state.controlOwners.get(`permission:${requestId}`);
     if (sessionId !== this.state.session || owner?.session !== sessionId || owner.generation !== generation || !card ||
-        !["allow_once", "allow_folder", "deny"].includes(decision) ||
+        !["allow_once", "allow_folder", "allow_config_session", "allow_skill_machine", "deny"].includes(decision) ||
+        (decision === "allow_config_session" && !card.allowConfigSession) ||
+        (decision === "allow_skill_machine" && !card.skillName) ||
         (decision === "allow_folder" && !card.allowFolder) ||
         (message !== undefined && typeof message !== "string")) {
       throw new Error("This permission request does not belong to the open conversation.");
@@ -1441,14 +1444,21 @@ export class CognitionBackend implements ChatBackend {
     }
     if (envelope.kind === "command.result") {
       this.settleCommand(payload, envelope.seq);
-      return { type: "notice", operationId: payload.operation_id, name: String(payload.name ?? "command"), ok: payload.ok === true,
-        text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
+      const name = String(payload.name ?? "command");
+      // The tracked command's progress row becomes its single durable result.
+      // Replay without that row still renders the ordinary command notice.
+      if (name === "compact" && payload.ok === false && this.state.compaction?.operationId === payload.operation_id && this.state.compaction?.ok === false) return undefined;
+      const text = outcomeText(name, payload.ok === true, payload.data, payload.error);
+      const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact"].includes(name);
+      if (text === null && (known || payload.data?.applies === "now")) return undefined;
+      return { type: "notice", operationId: payload.operation_id, name, ok: payload.ok === true,
+        text: `/${name} · ${text ?? "done"}`, ...(text === null ? { details: JSON.stringify(payload.data ?? null, null, 2) } : {}) };
     }
     if (envelope.kind === "session.agent_changed") return undefined; // Secondary notification, not effective identity.
     if (envelope.kind === "session.bypass" && typeof payload.enabled === "boolean") {
       if (this.state.bypassSeq < 0) this.state.bypassEvents.push({ seq: envelope.seq, enabled: payload.enabled });
       else if (envelope.seq > this.state.bypassSeq) { this.state.bypass = payload.enabled; this.state.bypassSeq = envelope.seq; this.publishBypass(); }
-      return { type: "notice", text: `Bypass ${payload.enabled ? "ON" : "OFF"} · Bypass ordinary permission prompts; protected requests still ask` };
+      return undefined;
     }
     if (envelope.kind === "context.compacted") {
       const text = `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens`;
@@ -1485,26 +1495,26 @@ export class CognitionBackend implements ChatBackend {
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         const delta = payload.delta ?? {};
         if (delta.delta_type === "text") {
-          this.state.turnTextDelta.add(id);
-          return { type: "delta", id, text: String(delta.text ?? "") };
+          this.state.turnTextDelta.add(`${id}:${String(payload.step_id ?? "")}`);
+          return { type: "delta", id, stepId: String(payload.step_id ?? ""), text: String(delta.text ?? "") };
         }
         if (delta.delta_type === "thinking") {
-          return { type: "reasoning", id, text: String(delta.text ?? "") };
+          return { type: "reasoning", id, stepId: String(payload.step_id ?? ""), text: String(delta.text ?? "") };
         }
         return undefined; // tool_call deltas ride the tool events instead
       }
       case "llm.response": {
         // During a history replay no `llm.delta` arrives: a turn that got
-        // no live text renders its final message as one delta. Live turns
+        // no live text renders its final message as one delta. Live steps
         // (flagged above) must not be duplicated.
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
-        if (this.state.turnTextDelta.has(id)) return undefined;
+        if (this.state.turnTextDelta.has(`${id}:${String(payload.step_id ?? "")}`)) return undefined;
         if (!text && !thinking) return undefined;
-        if (thinking) this.emit({ type: "reasoning", id, text: thinking });
-        return text ? { type: "delta", id, text } : undefined;
+        if (thinking) this.emit({ type: "reasoning", id, stepId: String(payload.step_id ?? ""), text: thinking });
+        return text ? { type: "delta", id, stepId: String(payload.step_id ?? ""), text } : undefined;
       }
       case "tool.pre_call": {
         const id = this.state.currentTurn ?? String(envelope.seq);
@@ -1743,3 +1753,4 @@ function toolSummary(name: any, args: any, fallback?: string): string {
       return fallback ?? tool;
   }
 }
+import { outcomeText } from "./outcome";

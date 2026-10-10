@@ -358,7 +358,7 @@ async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
     wait_events(&state, id, "task.done", 1).await;
     let resolved = events(&state, id, "permission.resolved").await;
     assert_eq!(resolved.len(), 1);
-    assert!(resolved[0].payload.get("approved_by").is_none());
+    assert_eq!(resolved[0].payload["approved_by"], "captain");
     assert_eq!(
         std::fs::read_to_string(target).unwrap(),
         "from captain-write"

@@ -1,6 +1,9 @@
 use std::future::Future;
+use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use nix::sys::signal::{killpg, Signal};
@@ -16,7 +19,110 @@ use crate::tools::{DEFAULT_BASH_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES};
 
 const READER_JOIN_DEADLINE_MS: u64 = 500;
 
+static TRUSTED_SHELL: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Snapshot the trusted launcher at process startup; never resolve it through PATH.
+pub fn init_shell() {
+    TRUSTED_SHELL.get_or_init(|| {
+        ["/usr/bin/bash", "/bin/bash"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| {
+                path.metadata()
+                    .is_ok_and(|m| m.is_file() && m.uid() == 0 && m.mode() & 0o022 == 0)
+            })
+    });
+}
+
+fn bash_command() -> Result<Command, ToolError> {
+    // Also initialize for library callers that do not use our binary entry points.
+    init_shell();
+    let shell = TRUSTED_SHELL.get().and_then(Option::as_ref).ok_or_else(|| {
+        ToolError::Denied {
+            code: "untrusted_shell".into(),
+            message: "bash tool unavailable: neither /usr/bin/bash nor /bin/bash is a regular root-owned file without group/other write permission".into(),
+        }
+    })?;
+    let mut command = Command::new(shell);
+    command.args(["--noprofile", "--norc", "-c"]);
+    for key in [
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "PROMPT_COMMAND",
+        "CDPATH",
+        "GLOBIGNORE",
+        "IFS",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        if key.as_encoded_bytes().starts_with(b"BASH_FUNC_") {
+            command.env_remove(key);
+        }
+    }
+    Ok(command)
+}
+
 pub struct BashTool;
+
+/// Revalidate the same canonical target and original spelling without following links.
+pub(crate) fn script_matches(binding: &Value) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let (Some(path), Some(spelling), Some(hash), Some(parents)) = (
+        binding["path"].as_str(),
+        binding["spelling"].as_str(),
+        binding["sha256"].as_str(),
+        binding["parents"].as_array(),
+    ) else {
+        return false;
+    };
+    if !std::path::Path::new(spelling)
+        .canonicalize()
+        .is_ok_and(|resolved| resolved == std::path::Path::new(path))
+    {
+        return false;
+    }
+    for parent in parents {
+        let Some(path) = parent["path"].as_str() else {
+            return false;
+        };
+        if !crate::tools::nofollow::open_read(std::path::Path::new(path))
+            .and_then(|file| Ok(file.metadata()?))
+            .is_ok_and(|m| {
+                m.is_dir()
+                    && Some(m.dev()) == parent["dev"].as_u64()
+                    && Some(m.ino()) == parent["ino"].as_u64()
+            })
+        {
+            return false;
+        }
+    }
+    // The spelling must not acquire a symlink even if it resolves to the same file.
+    if crate::tools::nofollow::open_read(std::path::Path::new(spelling)).is_err() {
+        return false;
+    }
+    let Ok(file) = crate::tools::nofollow::open_read(std::path::Path::new(path)) else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| {
+        m.is_file()
+            && m.nlink() == 1
+            && Some(m.len()) == binding["bytes"].as_u64()
+            && Some(m.dev()) == binding["dev"].as_u64()
+            && Some(m.ino()) == binding["ino"].as_u64()
+    }) {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take((48 * 1024 + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_ok()
+        && bytes.len() <= 48 * 1024
+        && format!("{:x}", Sha256::digest(&bytes)) == hash
+}
 
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -66,15 +172,25 @@ async fn run_bash(
     timeout_ms: u64,
     grace_ms: u64,
 ) -> Result<ToolResult, ToolError> {
-    let mut child = Command::new("bash")
-        .arg("-c")
+    let mut launcher = bash_command()?;
+    launcher
         .arg(command)
         .current_dir(&cx.workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()?;
+        .process_group(0);
+    // No snapshot copy is executed: this final check narrows, but does not close,
+    // the path-to-spawn race. Bash remains advisory, not a sandbox.
+    if cx
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.script.as_ref())
+        .is_some_and(|binding| !script_matches(binding))
+    {
+        return Err(ToolError::ScriptChanged);
+    }
+    let mut child = launcher.spawn()?;
 
     let pid = child.id().ok_or_else(|| ToolError::Denied {
         code: "spawn_failed".into(),
@@ -239,6 +355,97 @@ mod tests {
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn impostor_bash_first_in_path_is_never_executed() {
+        const CHILD: &str = "WITHNAV_TEST_IMPOSTOR_BASH";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let res = run_bash(
+                "echo trusted",
+                &ctx(Path::new(&root)),
+                CancellationToken::new(),
+                5000,
+                200,
+            )
+            .await
+            .unwrap();
+            assert_eq!(res.status, ToolStatus::Ok);
+            assert_eq!(res.output.trim(), "trusted");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let marker = tmp.path().join("executed");
+        let impostor = bin.join("bash");
+        std::fs::write(
+            &impostor,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&impostor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tools::bash::tests::impostor_bash_first_in_path_is_never_executed",
+                "--nocapture",
+            ])
+            .env(CHILD, tmp.path())
+            .env("PATH", format!("{}:/usr/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn bash_env_and_exported_functions_are_not_sourced() {
+        const CHILD: &str = "WITHNAV_TEST_BASH_ENV";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let res = run_bash(
+                "echo trusted",
+                &ctx(Path::new(&root)),
+                CancellationToken::new(),
+                5000,
+                200,
+            )
+            .await
+            .unwrap();
+            assert_eq!(res.status, ToolStatus::Ok);
+            assert_eq!(res.output.trim(), "trusted");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("executed");
+        let script = tmp.path().join("startup.sh");
+        std::fs::write(&script, format!("touch '{}'\n", marker.display())).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tools::bash::tests::bash_env_and_exported_functions_are_not_sourced",
+                "--nocapture",
+            ])
+            .env(CHILD, tmp.path())
+            .env("BASH_ENV", &script)
+            .env("ENV", &script)
+            .env(
+                "BASH_FUNC_echo%%",
+                format!("() {{ touch '{}'; }}", marker.display()),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!marker.exists());
     }
 
     #[test]

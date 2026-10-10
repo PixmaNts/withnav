@@ -163,6 +163,10 @@ test("real webview initializes with frozen VS Code API, renders history and post
   receive({ type: "permission", generation: 2, card: { requestId: "RA", callId: "C", tool: "bash", agent: "build", scope: { kind: "folder", value: "/a" }, reason: "Review", call: "pwd", allowFolder: false } });
   [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow once").click();
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: "answerPermission", sessionId: "A", requestId: "RA", decision: "allow_once", generation: 2 });
+  assert.ok(![...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "Allow WithNav config for this session"));
+  receive({ type: "permission", generation: 2, card: { requestId: "RC", callId: "CC", tool: "write", agent: "build", scope: { kind: "folder", value: "/config" }, reason: "Protected config", call: "models.json", allowFolder: false, allowConfigSession: true } });
+  [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow WithNav config for this session").click();
+  assert.equal(posts.at(-1).decision, "allow_config_session");
   assert.deepEqual(errors, []);
   dom.window.close();
 });
@@ -375,5 +379,37 @@ test("subagent states, pauses and wake diffs carry their own colour hooks, with 
   for (const rule of [/\.child-state\[data-state=done\][^}]*--nav-passed-text/, /\.pause-card \.control-kicker[^}]*--nav-warning-text/, /\.diff-added, \.diff-line\.add[^}]*--nav-added-text/])
     assert.match(css, rule);
   assert.doesNotMatch(css.slice(css.indexOf("--nav-warning-text"), css.indexOf(".bypass-toggle")), /#[0-9a-f]{3,6}\b/i, "theme tokens only");
+  dom.window.close();
+});
+test('GFM renders structural constructs safely and coalesces streaming frames', () => {
+  const { dom, d, receive } = keyboardPage();
+  const frames = []; dom.window.requestAnimationFrame = callback => frames.push(callback);
+  receive({ type: 'delta', id: 'markdown', text: '| A | B | C |\n| :--- | :---: | ---: |\n| `code` | two | three |\n\n> quote\n\n---\n\n3. outer\n   - nested\n\n- [ ] pending\n- [x] done\n\n~~strike~~\n\n##### five\n\n###### six\n\nhard  \nbreak\n\n<img onerror="alert(1)">\n<script>alert(1)</script>\n\n[ok](https://example.com) [mail](mailto:a@example.com) [bad](javascript:alert)\n' });
+  receive({ type: 'delta', id: 'markdown', text: '\nend' });
+  assert.equal(frames.length, 1); frames.shift()();
+  assert.equal(d.querySelectorAll('.message-body th').length, 3);
+  assert.equal(d.querySelector('.message-body td code').textContent, 'code');
+  for (const selector of ['blockquote', 'hr', 'ol[start="3"] ul', 'del', 'h5', 'h6', 'br']) assert.ok(d.querySelector('.message-body ' + selector), selector);
+  assert.equal(d.querySelectorAll('.message-body input:disabled').length, 2);
+  assert.equal(d.querySelector('.message-body img'), null);
+  assert.equal(d.querySelector('.message-body script'), null);
+  assert.ok(d.querySelector('.message-body').textContent.includes('<script>'));
+  assert.equal(d.querySelectorAll('.message-body a').length, 2);
+  dom.window.close();
+});
+test('answer file references post openFile but code fences and URLs do not', () => {
+  const { dom, d, receive, posts } = keyboardPage();
+  const frames = []; dom.window.requestAnimationFrame = callback => frames.push(callback);
+  receive({ type: 'delta', id: 'files', text: '`vscode-withnav/src/editorContext.ts:29` and vscode-withnav/src/editorContext.ts:29\n\nsrc/a.rs src/a.rs:12:3 src/a.rs#L12 ./src/a.rs /workspace/src/a.rs\n\nhttps://example.com/src/a.rs e.g. v0.7.1 1.5\n\n```\nsrc/fenced.rs:2\n```' });
+  frames.shift()();
+  const buttons = [...d.querySelectorAll('.message-body .file-link')];
+  assert.equal(buttons.length, 7);
+  assert.ok(buttons[0].closest('code'));
+  assert.equal(buttons[0].title, 'Open vscode-withnav/src/editorContext.ts at line 29');
+  buttons[0].click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'openFile', path: 'vscode-withnav/src/editorContext.ts', line: 29, generation: 1 });
+  buttons[3].click();
+  assert.equal(posts.at(-1).line, 12); assert.equal(posts.at(-1).path, 'src/a.rs');
+  assert.equal(d.querySelector('.message-body pre .file-link'), null);
   dom.window.close();
 });

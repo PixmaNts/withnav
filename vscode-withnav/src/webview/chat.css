@@ -1,5 +1,6 @@
-:root { color-scheme: light dark; }
-.picker-group { display: block; width: 100%; text-align: left; background: transparent; color: var(--vscode-descriptionForeground); border: 0; padding: 6px 8px; font-weight: 600; font-size: 11px; }
+:root { color-scheme: light dark; font-size: var(--vscode-editor-font-size); --withnav-background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
+body.editor-tab { --withnav-background: var(--vscode-editor-background); }
+.picker-group { display: block; width: 100%; text-align: left; background: transparent; color: var(--vscode-foreground); border: 0; padding: 6px 8px; font-weight: 600; font-size: 0.846rem; }
 /* Model picker hierarchy: gateway 0, provider 1, model 2 (1 under a direct gateway), 12px per level. */
 #picker-options { --picker-indent: 12px; }
 #picker-options [data-level="1"] { margin-left: var(--picker-indent); }
@@ -9,51 +10,51 @@
 .picker-group[aria-expanded="false"]::before { content: "▸ "; }
 .command-option strong { overflow-wrap: anywhere; }
 /* Favorites: a heading that never folds, and a star on every model option. */
-.picker-section { margin: 0; padding: 6px 8px; font-weight: 600; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.picker-section { margin: 0; padding: 6px 8px; font-weight: 600; font-size: 0.846rem; color: var(--vscode-foreground); }
 .picker-section::before { content: "★ "; }
 .command-option { position: relative; }
-.favorite-toggle { position: absolute; top: 4px; right: 6px; background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; }
+.favorite-toggle { position: absolute; top: 4px; right: 6px; background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 1.000rem; line-height: 1; padding: 2px 4px; }
 .favorite-toggle[aria-pressed="true"] { color: var(--vscode-charts-yellow, var(--vscode-list-highlightForeground)); }
 #picker-options .command-option strong { padding-right: 22px; }
 .picker-search { display: block; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; border-radius: 3px; }
-.picker-count, .picker-empty { padding: 5px 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.picker-count, .picker-empty { padding: 5px 8px; font-size: 0.846rem; color: var(--vscode-descriptionForeground); }
 .conv-row[aria-selected="true"] { background: var(--vscode-list-hoverBackground); }
 .compaction-progress[data-pending="true"]::before { content: ""; display: inline-block; width: 12px; height: 12px; border: 2px solid var(--vscode-descriptionForeground); border-right-color: transparent; border-radius: 50%; margin-right: 8px; vertical-align: middle; animation: compaction-spin 1s linear infinite; }
-#usage[data-updating="true"]::after { content: " · updating"; font-size: 11px; color: var(--vscode-descriptionForeground); }
+#usage[data-updating="true"]::after { content: " · updating"; font-size: 0.846rem; color: var(--vscode-descriptionForeground); }
 @keyframes compaction-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .compaction-progress[data-pending="true"]::before { animation: none; } }
 .subagents { flex: none; border-top: 1px solid var(--vscode-widget-border); padding: 8px 10px; max-height: 28vh; overflow: auto; }
-.subagents summary { cursor: pointer; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
+.subagents summary { cursor: pointer; font-size: 0.846rem; font-weight: 600; color: var(--vscode-foreground); }
 .child-row { padding: 8px 0; border-bottom: 1px solid var(--vscode-widget-border); }
 .child-open { text-align: left; width: 100%; background: transparent; color: var(--vscode-foreground); border: 0; font-weight: 600; }
-.child-goal { margin: 3px 0 6px; font-size: 11px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; white-space: pre-wrap; }
+.child-goal { margin: 3px 0 6px; font-size: 0.846rem; color: var(--vscode-foreground); overflow-wrap: anywhere; white-space: pre-wrap; }
 .child-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .child-header { flex: none; padding: 10px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-background); }
 .child-header strong { display: block; margin-top: 6px; }
-.child-header p { color: var(--vscode-descriptionForeground); font-size: 11px; margin: 4px 0 8px; }
+.child-header p { color: var(--vscode-foreground); font-size: 0.846rem; margin: 4px 0 8px; }
 .composer { position: relative; }
 .command-palette { position: absolute; bottom: calc(100% + 4px); left: 8px; right: 8px; max-height: min(300px, 45vh); overflow-y: auto; padding: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-quickInput-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px var(--vscode-widget-shadow); z-index: 4; }
 .command-option { padding: 7px 9px; border-radius: 3px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
-.command-option strong { font-size: 12px; font-weight: 600; }
-.command-option span { font-size: 11px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+.command-option strong { font-size: 0.923rem; font-weight: 600; }
+.command-option span { font-size: 0.846rem; color: var(--vscode-foreground); overflow-wrap: anywhere; }
 .command-option:hover, .command-option[aria-selected="true"] { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 .command-option[aria-selected="true"] span { color: inherit; opacity: .85; }
-.command-error { color: var(--vscode-errorForeground); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.agent-label { font-size: 11px; color: var(--vscode-descriptionForeground); border-left: 1px solid var(--vscode-widget-border); padding-left: 8px; }
-.pending-model { color: var(--vscode-descriptionForeground); font-size: 11px; overflow-wrap: anywhere; }
+.command-error { color: var(--vscode-errorForeground); font-size: 0.923rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-label { font-size: 0.846rem; color: var(--vscode-descriptionForeground); border-left: 1px solid var(--vscode-widget-border); padding-left: 8px; }
+.pending-model { color: var(--vscode-descriptionForeground); font-size: 0.846rem; overflow-wrap: anywhere; }
 .control-notice { white-space: pre-wrap; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background, var(--vscode-editor-background)); font: var(--vscode-font-size) / 1.5 var(--vscode-font-family); }
+body { color: var(--vscode-editor-foreground, var(--vscode-foreground)); background: var(--withnav-background); font: var(--vscode-editor-font-size) / 1.5 var(--vscode-font-family); }
 button, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .55; }
 button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 .shell { position: relative; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
-.topbar { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; min-height: 43px; padding: 0 8px 0 10px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
+.topbar { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; min-height: 43px; padding: 0 8px 0 10px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); background: var(--withnav-background); }
 .identity { font-weight: 600; letter-spacing: .01em; }
-.status { display: inline-flex; gap: 7px; align-items: center; min-width: 0; font-size: 11px; color: var(--vscode-descriptionForeground); text-transform: capitalize; }
+.status { display: inline-flex; gap: 7px; align-items: center; min-width: 0; font-size: 0.846rem; color: var(--vscode-descriptionForeground); text-transform: capitalize; }
 #status-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--vscode-descriptionForeground); }
 .status[data-state=ready] .status-dot { background: var(--vscode-testing-iconPassed, var(--vscode-foreground)); }
@@ -61,11 +62,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visib
 .status[data-state=error] { color: var(--vscode-errorForeground); }
 .status[data-state=error] .status-dot { background: var(--vscode-errorForeground); }
 .transcript { flex: 1; min-height: 0; overflow: auto; padding: 0 16px 22px; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
-.empty { color: var(--vscode-descriptionForeground); padding: 28px 0; max-width: 32ch; }
+.empty { color: var(--vscode-foreground); padding: 28px 0; max-width: 32ch; }
 [hidden] { display: none !important; }
 .message { padding: 16px 0 18px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); overflow-wrap: anywhere; }
 .message.captain { padding: 16px 0 18px; }
-.byline { font-size: 11px; font-weight: 600; margin-bottom: 7px; color: var(--vscode-descriptionForeground); }
+.byline { font-size: 0.846rem; font-weight: 600; margin-bottom: 7px; color: var(--vscode-descriptionForeground); }
 .message.captain .byline { color: var(--vscode-foreground); }
 .message-body > :first-child { margin-top: 0; }
 .message-body > :last-child { margin-bottom: 0; }
@@ -79,27 +80,27 @@ a, .file-link { color: var(--vscode-textLink-foreground); }
 a:hover, .file-link:hover { color: var(--vscode-textLink-activeForeground); }
 code { font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-size: .92em; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); padding: 1px 3px; border-radius: 3px; }
 .code-block { margin: 12px 0; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-radius: 4px; overflow: hidden; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background)); }
-.code-bar { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); color: var(--vscode-descriptionForeground); font-size: 11px; }
+.code-bar { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); color: var(--vscode-descriptionForeground); font-size: 0.846rem; }
 .copy { border: 0; padding: 2px 5px; background: none; color: var(--vscode-textLink-foreground); }
 pre { overflow-x: auto; margin: 0; padding: 10px; }
 pre code { padding: 0; white-space: pre; background: none; }
-.reasoning { margin: 0 0 10px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+.reasoning { margin: 0 0 10px; color: var(--vscode-foreground); font-size: 0.923rem; }
 .reasoning summary { cursor: pointer; width: fit-content; }
 .reasoning-body { white-space: pre-wrap; margin: 6px 0 0 11px; padding-left: 9px; border-left: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); }
 .activity { display: grid; gap: 3px; margin-top: 9px; }
 .activity:empty { display: none; }
-.tool-row { display: flex; align-items: baseline; gap: 7px; min-width: 0; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.6; }
+.tool-row { display: flex; align-items: baseline; gap: 7px; min-width: 0; color: var(--vscode-foreground); font-size: 0.846rem; line-height: 1.6; }
 .tool-row.failed, .turn-result { color: var(--vscode-errorForeground); }
-.tool-mark { flex: none; width: 12px; text-align: center; font-size: 13px; }
+.tool-mark { flex: none; width: 12px; text-align: center; font-size: 1.000rem; }
 .tool-verb { white-space: pre; }
 .tool-row > :last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-row.working .tool-mark { display: inline-block; animation: pulse 1.2s ease-in-out infinite; }
 .file-link { background: none; border: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
 .question { margin-top: 12px; border-left: 2px solid var(--vscode-focusBorder); padding: 4px 0 4px 10px; }
-.question-label { display: block; margin-bottom: 4px; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
-.turn-result { margin-top: 9px; font-size: 12px; }
+.question-label { display: block; margin-bottom: 4px; font-size: 0.846rem; font-weight: 600; color: var(--vscode-foreground); }
+.turn-result { margin-top: 9px; font-size: 0.923rem; }
 /* Navigator note (a wake): a quiet aside, not a message block. */
-.message.note { --note-accent: var(--vscode-errorForeground, var(--vscode-foreground)); position: relative; padding: 9px 0 10px 12px; font-size: 12px; line-height: 1.45; color: var(--vscode-descriptionForeground); }
+.message.note { --note-accent: var(--vscode-errorForeground, var(--vscode-foreground)); position: relative; padding: 9px 0 10px 12px; font-size: 0.923rem; line-height: 1.45; color: var(--vscode-foreground); }
 .message.note::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 11px; width: 2px; border-radius: 1px; background: var(--note-accent); }
 .message.note.arrived::before { animation: note-rule 2.4s ease-out; }
 .message.note.arrived .note-mark { animation: note-mark 2.4s ease-out; }
@@ -108,19 +109,19 @@ pre code { padding: 0; white-space: pre; background: none; }
 .note-line { min-width: 0; }
 .note-label { font-weight: 600; color: var(--vscode-foreground); }
 .note-reason::before { content: " · "; opacity: .7; }
-.note-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; margin: 2px 0 0 18px; font-size: 11px; }
-.note-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-size: 11px; }
+.note-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; margin: 2px 0 0 18px; font-size: 0.846rem; }
+.note-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-size: 0.846rem; }
 .note-score { font-variant-numeric: tabular-nums; opacity: .8; }
 .note-score::before { content: "score "; }
-.note-toggle { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding: 0 4px 0 2px; border: 0; border-radius: 3px; color: var(--vscode-descriptionForeground); background: none; font-size: 11px; }
+.note-toggle { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding: 0 4px 0 2px; border: 0; border-radius: 3px; color: var(--vscode-descriptionForeground); background: none; font-size: 0.846rem; }
 .note-toggle:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
 .note-chevron { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform .14s ease; }
 .note-toggle[aria-expanded=true] .note-chevron { transform: rotate(90deg); }
 .note-details { margin: 8px 0 0 18px; color: var(--vscode-foreground); }
 .note-details > :first-child { margin-top: 0; }
 .note-details .code-block { margin: 0 0 10px; }
-.note-lead { margin: 0 0 8px; color: var(--vscode-descriptionForeground); }
-.note-section { margin-bottom: 3px; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
+.note-lead { margin: 0 0 8px; color: var(--vscode-foreground); }
+.note-section { margin-bottom: 3px; font-size: 0.846rem; font-weight: 600; color: var(--vscode-foreground); }
 .note-intent { margin-bottom: 10px; padding-left: 9px; border-left: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); }
 .note-intent p { margin-bottom: 6px; }
 .code-block.diff pre { padding: 6px 0; }
@@ -130,21 +131,21 @@ pre code { padding: 0; white-space: pre; background: none; }
 .diff-line.del { background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground)); }
 .diff-line.hunk { color: var(--vscode-textPreformat-foreground, var(--vscode-descriptionForeground)); }
 .diff-line.meta { color: var(--vscode-descriptionForeground); }
-.composer { flex: none; display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); padding: 10px 12px 12px; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
+.composer { flex: none; display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); padding: 10px 12px 12px; background: var(--withnav-background); }
 textarea { width: 100%; min-height: 62px; max-height: 32vh; resize: vertical; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 4px; padding: 8px 9px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); line-height: 1.45; }
 textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.hint { color: var(--vscode-descriptionForeground); font-size: 10px; }
+.hint { color: var(--vscode-descriptionForeground); font-size: 0.769rem; }
 .actions { display: flex; align-items: center; gap: 6px; flex: none; }
-.actions button { border-radius: 3px; padding: 4px 9px; font-size: 11px; }
+.actions button { border-radius: 3px; padding: 4px 9px; font-size: 0.846rem; }
 #send { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid transparent; }
 #send:not(:disabled):hover { background: var(--vscode-button-hoverBackground); }
 .stop { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-panel-border, transparent); }
 .stop:hover { background: var(--vscode-button-secondaryHoverBackground); }
-.context-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.context-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 0.846rem; color: var(--vscode-descriptionForeground); }
 .context-toggle { display: inline-flex; align-items: center; gap: 5px; flex: none; cursor: pointer; }
 .context-toggle input { margin: 0; accent-color: var(--vscode-focusBorder); }
-.context-chip { display: inline-block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-radius: 3px; font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-size: 10.5px; line-height: 17px; color: var(--vscode-descriptionForeground); background: var(--vscode-input-background); transition: opacity .15s ease; }
+.context-chip { display: inline-block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-radius: 3px; font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-size: 0.808rem; line-height: 17px; color: var(--vscode-descriptionForeground); background: var(--vscode-input-background); transition: opacity .15s ease; }
 .context-chip.off { opacity: .4; text-decoration: line-through; }
 .context-chip.sent { display: block; width: fit-content; margin-top: 9px; background: none; }
 .icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
@@ -156,10 +157,10 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .conv-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-trigger .icon { width: 14px; height: 14px; color: var(--vscode-descriptionForeground); transition: transform .16s ease; }
 .conv-trigger[aria-expanded=true] .icon { transform: rotate(180deg); }
-.conv-panel { position: absolute; top: 100%; left: 0; right: 0; display: flex; flex-direction: column; max-height: min(420px, 62vh); border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); background: var(--vscode-sideBar-background, var(--vscode-editor-background)); box-shadow: 0 8px 16px -6px var(--vscode-widget-shadow, transparent); font-weight: normal; animation: conv-in .16s ease-out; }
+.conv-panel { position: absolute; top: 100%; left: 0; right: 0; display: flex; flex-direction: column; max-height: min(420px, 62vh); border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); background: var(--withnav-background); box-shadow: 0 8px 16px -6px var(--vscode-widget-shadow, transparent); font-weight: normal; animation: conv-in .16s ease-out; }
 .conv-panel:focus { outline: none; }
-.conv-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 9px 16px 5px; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
-.conv-keys { font-weight: normal; font-size: 10px; white-space: nowrap; opacity: .8; }
+.conv-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 9px 16px 5px; font-size: 0.846rem; font-weight: 600; color: var(--vscode-descriptionForeground); }
+.conv-keys { font-weight: normal; font-size: 0.769rem; white-space: nowrap; opacity: .8; }
 .conv-list { list-style: none; margin: 0; padding: 0 8px 8px; overflow-y: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
 .conv-row { position: relative; display: flex; align-items: center; gap: 2px; margin: 0; border-radius: 4px; }
 .conv-row + .conv-row { margin-top: 1px; }
@@ -171,14 +172,14 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .conv-open:focus-visible, .conv-delete:focus-visible { outline-offset: -2px; }
 .conv-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-row.current .conv-row-title { font-weight: 600; }
-.conv-meta { display: flex; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.conv-meta { display: flex; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 0.846rem; color: var(--vscode-descriptionForeground); }
 .conv-dot { opacity: .6; }
 .conv-delete { margin-right: 4px; width: auto; min-width: 24px; color: var(--vscode-descriptionForeground); opacity: 0; }
 .conv-row:hover .conv-delete, .conv-row:focus-within .conv-delete, .conv-delete.armed { opacity: 1; }
 .conv-delete:hover { color: var(--vscode-errorForeground); }
-.conv-delete.armed { padding: 0 8px; font-size: 11px; font-weight: 600; color: var(--vscode-button-foreground); background: var(--vscode-errorForeground); }
+.conv-delete.armed { padding: 0 8px; font-size: 0.846rem; font-weight: 600; color: var(--vscode-button-foreground); background: var(--vscode-errorForeground); }
 .conv-delete.armed:hover { color: var(--vscode-button-foreground); background: var(--vscode-errorForeground); opacity: .88; }
-.conv-note { margin: 0; padding: 4px 16px 14px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+.conv-note { margin: 0; padding: 4px 16px 14px; color: var(--vscode-foreground); font-size: 0.923rem; }
 .conv-scrim { position: absolute; inset: 43px 0 0; z-index: 2; background: var(--vscode-editor-background); opacity: .55; animation: conv-fade .16s ease-out; }
 @media (hover: none) { .conv-delete { opacity: 1; } }
 @keyframes conv-in { from { opacity: 0; transform: translateY(-6px); } }
@@ -191,7 +192,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
   .conv-trigger .icon, .context-chip, .note-chevron { transition: none; }
 }
 @media (max-width: 310px) { .hint, .conv-keys { display: none; } }
-.model-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.model-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 0.846rem; color: var(--vscode-descriptionForeground); }
 .model-select { min-width: 0; max-width: 50%; height: 22px; padding: 0 4px; border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border)); border-radius: 3px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); font: inherit; }
 .model-select:disabled { opacity: .7; }
 .model-select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
@@ -202,34 +203,34 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .usage[data-level=high] .usage-fill { background: var(--vscode-errorForeground); }
 .usage[data-level=high] .usage-label { color: var(--vscode-errorForeground); }
 .usage[data-level=mid] .usage-label { color: var(--vscode-editorWarning-foreground); }
-.skill-note { margin-left: 9px; font-weight: normal; color: var(--vscode-descriptionForeground); }
+.skill-note { margin-left: 9px; font-weight: normal; color: var(--vscode-foreground); }
 .message.subagent { padding-left: 10px; border-left: 2px solid var(--vscode-descriptionForeground); }
 .control-card { margin: 14px 0; padding: 12px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-left: 2px solid var(--vscode-focusBorder); border-radius: 4px; background: var(--vscode-editor-background); overflow-wrap: anywhere; }
 .permission-card { border-left-color: var(--vscode-editorWarning-foreground, var(--vscode-focusBorder)); }
-.control-kicker { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
-.control-title { margin: 4px 0 8px; font-size: 13px; }
-.control-meta { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+.control-kicker { font-size: 0.846rem; font-weight: 600; color: var(--vscode-foreground); }
+.control-title { margin: 4px 0 8px; font-size: 1.000rem; }
+.control-meta { font-size: 0.846rem; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
 .permission-reason { white-space: pre-wrap; }
 .control-card .code-block { margin: 10px 0; }
 .control-card pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .control-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.control-actions button { padding: 5px 9px; border: 1px solid transparent; border-radius: 3px; font-size: 12px; }
+.control-actions button { padding: 5px 9px; border: 1px solid transparent; border-radius: 3px; font-size: 0.923rem; }
 .control-primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
 .control-primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
 .control-secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
 .control-secondary:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
-.deny-message { min-height: 48px; margin-top: 8px; font-size: 12px; }
-.control-outcome { margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+.deny-message { min-height: 48px; margin-top: 8px; font-size: 0.923rem; }
+.control-outcome { margin-top: 8px; font-size: 0.846rem; color: var(--vscode-foreground); white-space: pre-wrap; }
 .permission-card[data-resolution=error] .control-outcome { color: var(--vscode-errorForeground); }
 .permission-card[data-resolution=expired], .permission-card[data-resolution=cancelled], .permission-card[data-resolution=stale] { border-left-color: var(--vscode-panel-border, var(--vscode-widget-border)); }
 .tool-row { flex-wrap: wrap; }
 .tool-row .tool-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-row > .approval-evidence { flex-basis: 100%; margin-left: 19px; overflow: visible; white-space: normal; }
-.approval-evidence { color: var(--vscode-descriptionForeground); font-size: 11px; min-width: 0; }
+.approval-evidence { color: var(--vscode-descriptionForeground); font-size: 0.846rem; min-width: 0; }
 .approval-evidence summary { cursor: pointer; width: fit-content; }
 .evidence-body { margin-top: 6px; padding: 6px 0 6px 8px; border-left: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); white-space: pre-wrap; overflow-wrap: anywhere; }
 .evidence-field { margin-top: 4px; }
-.control-notice { font-size: 12px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+.control-notice { font-size: 0.923rem; color: var(--vscode-foreground); white-space: pre-wrap; }
 
 /* Theme role colours belong to the conversation, not the surrounding chrome. */
 .agent-label, .message.cognition .byline {
@@ -293,10 +294,13 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .diff-count { display: inline-flex; gap: 5px; font-family: "JetBrains Mono", var(--vscode-editor-font-family); font-variant-numeric: tabular-nums; }
 .diff-added, .diff-line.add { color: var(--nav-added-text); }
 .diff-removed, .diff-line.del { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground, var(--vscode-foreground))); }
-.bypass-toggle { margin-left: auto; padding: 3px 7px; font-size: 11px; background: transparent; color: var(--vscode-foreground, #cccccc); border: 1px solid var(--vscode-widget-border, #555555); border-radius: 4px; }
+.bypass-toggle { margin-left: auto; padding: 3px 7px; font-size: 0.846rem; background: transparent; color: var(--vscode-foreground, #cccccc); border: 1px solid var(--vscode-widget-border, #555555); border-radius: 4px; }
 .bypass-toggle:disabled { opacity: .55; cursor: default; }
-.bypass-badge { padding: 3px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--vscode-editorWarning-foreground, #bf8803); background: var(--vscode-inputValidation-warningBackground, transparent); border: 1px solid var(--vscode-inputValidation-warningBorder, #bf8803); }
-.bypass-badge[hidden] { display: none; }
+.bypass-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.bypass-toggle[aria-pressed="true"] { color: var(--vscode-editorWarning-foreground); }
+body.vscode-light .bypass-toggle[aria-pressed="true"] { color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 60%, var(--vscode-foreground)); }
+.bypass-toggle[data-pending="true"] .icon { border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: compaction-spin 1s linear infinite; }
+.bypass-toggle[data-pending="true"] .icon path { display: none; }
 
 :root { --nav:#5ecaed; --lux:#f8ca65; --mou:#f89177; --vig:#72d8b3; --car:#dca3e5; --son:#a3b3f8; }
 body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d04; --mou:#b14328; --vig:#107460; --car:#85468f; --son:#4d5aac; }
@@ -316,3 +320,10 @@ body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d0
 [data-crew="sondeur"] .crew-glyph { mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%20role%3D%22img%22%20aria-label%3D%22sondeur%22%20xmlns%3Ac2pa%3D%22http%3A%2F%2Fc2pa.org%2Fmanifest%22%3E%3Cmetadata%3E%3Cc2pa%3Amanifest%3EAAAWgmp1bWIAAAAeanVtZGMycGEAEQAQgAAAqgA4m3EDYzJwYQAAABZcanVtYgAAAEdqdW1kYzJtYQARABCAAACqADibcQN1cm46YzJwYTo1M2MwZjBhYy1hMmU0LTQ0YTYtYjFkZi1jZWJkOGUwZWYyOGQAAAADl2p1bWIAAAApanVtZGMyYXMAEQAQgAAAqgA4m3EDYzJwYS5hc3NlcnRpb25zAAAAALxqdW1iAAAARGp1bWRjYm9yABEAEIAAAKoAOJtxE2MycGEuaW5ncmVkaWVudC52MwAAAAAYYzJzaFDu84BuiUDn0I7OZlN8C4EAAABwY2JvcqNpZGM6Zm9ybWF0bWltYWdlL3N2Zyt4bWxqaW5zdGFuY2VJRHgseG1wOmlpZDpkZTI3NGZmMi1lZDY3LTRjYWEtOWQ0MC04MTZhNTk2YTZjNDVscmVsYXRpb25zaGlwaHBhcmVudE9mAAAB4mp1bWIAAABBanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5hY3Rpb25zLnYyAAAAABhjMnNowaxQtqKGw8fiJssVJRsjLwAAAZljYm9yomdhY3Rpb25zgqJmYWN0aW9ua2MycGEub3BlbmVkanBhcmFtZXRlcnOha2luZ3JlZGllbnRzgaJjdXJseC1zZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmluZ3JlZGllbnQudjNkaGFzaFgg9NqM3P95Ha3OKFqZE5dTpxGLGqiIReu2DlUiivA%2BwR2kZmFjdGlvbngdY29tLmFudGhyb3BpYy5jbGF1ZGUucHJvdmlkZWRqcGFyYW1ldGVyc6F4H2NvbS5hbnRocm9waWMub3JpZ2luLWNvbmZpZGVuY2VndW5rbm93bmtkZXNjcmlwdGlvbnhmQ2xhdWRlIHByb3ZpZGVkIHRoaXMgZmlsZSBhdCB0aGUgcmVxdWVzdCBvZiBhIHVzZXIgYW5kIG1heSBoYXZlIGNyZWF0ZWQgb3IgbW9kaWZpZWQgdGhlIGZpbGUgY29udGVudHMubXNvZnR3YXJlQWdlbnShZG5hbWVmQ2xhdWRlcmFsbEFjdGlvbnNJbmNsdWRlZPUAAADIanVtYgAAAEBqdW1kY2JvcgARABCAAACqADibcRNjMnBhLmhhc2guZGF0YQAAAAAYYzJzaHaMW0LhjvhwmjMT5FEd0X0AAACAY2JvcqVjYWxnZnNoYTI1NmNwYWRNAAAAAAAAAAAAAAAAAGRoYXNoWCCfdakJg1NPcVIJWbnpA1fr%2FLWs%2BmDUGrFunb4n1wxUcmRuYW1lbmp1bWJmIG1hbmlmZXN0amV4Y2x1c2lvbnOBomVzdGFydBibZmxlbmd0aBkeBAAAAj5qdW1iAAAAJ2p1bWRjMmNsABEAEIAAAKoAOJtxA2MycGEuY2xhaW0udjIAAAACD2Nib3KlY2FsZ2ZzaGEyNTZpc2lnbmF0dXJleE1zZWxmI2p1bWJmPS9jMnBhL3VybjpjMnBhOjUzYzBmMGFjLWEyZTQtNDRhNi1iMWRmLWNlYmQ4ZTBlZjI4ZC9jMnBhLnNpZ25hdHVyZWppbnN0YW5jZUlEeCx4bXA6aWlkOjcxOTU2MjQwLTg5OTgtNGQzNy1hYTBmLTZlMjQ2MThiN2I4NHJjcmVhdGVkX2Fzc2VydGlvbnODomN1cmx4LXNlbGYjanVtYmY9YzJwYS5hc3NlcnRpb25zL2MycGEuaW5ncmVkaWVudC52M2RoYXNoWCD02ozc%2F3kdrc4oWpkTl1OnEYsaqIhF67YOVSKK8D7BHaJjdXJseCpzZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmFjdGlvbnMudjJkaGFzaFggybh3ugdOoUPei2cMd1ZkULO2N%2FKULu1rdOCfjjIj%2BuGiY3VybHgpc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5oYXNoLmRhdGFkaGFzaFggHVW9Y2DbhMlEU80Li0Z%2BwH83PyG1DIIFt5lbEA5PODB0Y2xhaW1fZ2VuZXJhdG9yX2luZm%2BjZG5hbWVvQW50aHJvcGljIEZpbGVzZ3ZlcnNpb25lMS4wLjBrc3BlY1ZlcnNpb25lMi40LjAAABA4anVtYgAAAChqdW1kYzJjcwARABCAAACqADibcQNjMnBhLnNpZ25hdHVyZQAAABAIY2JvctKEWQISogEmGCFZAgowggIGMIIBjaADAgECAhRA5aAK7sI50L64g%2FoGQgU9Z1UTADAKBggqhkjOPQQDAzBJMRcwFQYDVQQKEw5BbnRocm9waWMsIFBCQzEuMCwGA1UEAxMlQW50aHJvcGljIENvbnRlbnQgQ3JlZGVudGlhbHMgUm9vdCBDQTAeFw0yNjA4MDcxODQzNTZaFw0yODA4MDYxOTQzNTZaMEQxFzAVBgNVBAoTDkFudGhyb3BpYywgUEJDMSkwJwYDVQQDEyBBbnRocm9waWMgQ2xhdWRlIENvbnRlbnQgU2lnbmluZzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABJh6CmvLUBgFFNU0vUKlOVtE6djd17L5SuwX0LemFisBM3dkd%2F3cyjxFA3Qo5S46fX0%2FihY0VZ7mfb9KF703t5OjWDBWMA4GA1UdDwEB%2FwQEAwIHgDAVBgNVHSUEDjAMBgorBgEEAYPoXgIBMAwGA1UdEwEB%2FwQCMAAwHwYDVR0jBBgwFoAUzlHiBIFOZFsj%2BOPEz5o%2BnMHXXMIwCgYIKoZIzj0EAwMDZwAwZAIwMXMdFJ4BetLLVY7ORuE9noqbbAZOZn%2FaArXyTwFAZfKrPzxF2vPoJNf1%2BUCdg1XGAjBwX1zd9WGqYkqmL5SFqw1QySjr1zJfpJM9%2B1rdDwSPLMOPOjKuiXjoU%2FpUUeG9RwmhY3BhZFkNngAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPZYQNh7IagowjwrI1h4TZEdUsV56%2FuoSEQMRE%2B%2Bxzb1QiYQxBUHSNtku%2FeYjj69tIQ4jy8W6%2BT9vrkq5N3mjisdQXA%3D%3C%2Fc2pa%3Amanifest%3E%3C%2Fmetadata%3E%3Crect%20x%3D%2216%22%20y%3D%222%22%20width%3D%2232%22%20height%3D%2260%22%20rx%3D%2216%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%224%22%20opacity%3D%22.5%22%3E%3C%2Frect%3E%3Cpath%20d%3D%22M23%2015%20Q32%209%2041%2015%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%224%22%20stroke-linecap%3D%22round%22%3E%3C%2Fpath%3E%3Cline%20x1%3D%2232%22%20y1%3D%2213%22%20x2%3D%2232%22%20y2%3D%2238%22%20stroke%3D%22currentColor%22%20stroke-width%3D%224%22%20stroke-linecap%3D%22round%22%3E%3C%2Fline%3E%3Cpolygon%20points%3D%2232%2C36%2039%2C45.5%2032%2C55%2025%2C45.5%22%20fill%3D%22currentColor%22%3E%3C%2Fpolygon%3E%3C%2Fsvg%3E"); }
 [data-crew="captain"] { color:var(--vscode-foreground); }
 [data-crew="captain"] .crew-glyph { mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%20role%3D%22img%22%20aria-label%3D%22captain%22%20xmlns%3Ac2pa%3D%22http%3A%2F%2Fc2pa.org%2Fmanifest%22%3E%3Cmetadata%3E%3Cc2pa%3Amanifest%3EAAAWgmp1bWIAAAAeanVtZGMycGEAEQAQgAAAqgA4m3EDYzJwYQAAABZcanVtYgAAAEdqdW1kYzJtYQARABCAAACqADibcQN1cm46YzJwYTpjYzA0ZGQ1My0zMmZkLTRkMTMtYjA5MC05NjdiYzRkZDVjM2UAAAADl2p1bWIAAAApanVtZGMyYXMAEQAQgAAAqgA4m3EDYzJwYS5hc3NlcnRpb25zAAAAALxqdW1iAAAARGp1bWRjYm9yABEAEIAAAKoAOJtxE2MycGEuaW5ncmVkaWVudC52MwAAAAAYYzJzaAPfbuhnW7vmoizp1RDXrpIAAABwY2JvcqNpZGM6Zm9ybWF0bWltYWdlL3N2Zyt4bWxqaW5zdGFuY2VJRHgseG1wOmlpZDo5ODYzY2E1YS00N2M2LTRmZGMtOTNhMy05NzcyZjMwZmU1NmRscmVsYXRpb25zaGlwaHBhcmVudE9mAAAB4mp1bWIAAABBanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5hY3Rpb25zLnYyAAAAABhjMnNo5HAqDu0Z%2BPTEI4CXIX9gJQAAAZljYm9yomdhY3Rpb25zgqJmYWN0aW9ua2MycGEub3BlbmVkanBhcmFtZXRlcnOha2luZ3JlZGllbnRzgaJjdXJseC1zZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmluZ3JlZGllbnQudjNkaGFzaFggINEzjgE0D1fJtrTSSldQVOA0px6tVBQFf0tKxFMgjGukZmFjdGlvbngdY29tLmFudGhyb3BpYy5jbGF1ZGUucHJvdmlkZWRqcGFyYW1ldGVyc6F4H2NvbS5hbnRocm9waWMub3JpZ2luLWNvbmZpZGVuY2VndW5rbm93bmtkZXNjcmlwdGlvbnhmQ2xhdWRlIHByb3ZpZGVkIHRoaXMgZmlsZSBhdCB0aGUgcmVxdWVzdCBvZiBhIHVzZXIgYW5kIG1heSBoYXZlIGNyZWF0ZWQgb3IgbW9kaWZpZWQgdGhlIGZpbGUgY29udGVudHMubXNvZnR3YXJlQWdlbnShZG5hbWVmQ2xhdWRlcmFsbEFjdGlvbnNJbmNsdWRlZPUAAADIanVtYgAAAEBqdW1kY2JvcgARABCAAACqADibcRNjMnBhLmhhc2guZGF0YQAAAAAYYzJzaHVf2uV9YCrXFxScfn7pPE4AAACAY2JvcqVjYWxnZnNoYTI1NmNwYWRNAAAAAAAAAAAAAAAAAGRoYXNoWCAUCKbq%2BWf17niPmBdyjWPBRh%2FqSwIkT%2Bcx5Kdf6cWeK2RuYW1lbmp1bWJmIG1hbmlmZXN0amV4Y2x1c2lvbnOBomVzdGFydBibZmxlbmd0aBkeBAAAAj5qdW1iAAAAJ2p1bWRjMmNsABEAEIAAAKoAOJtxA2MycGEuY2xhaW0udjIAAAACD2Nib3KlY2FsZ2ZzaGEyNTZpc2lnbmF0dXJleE1zZWxmI2p1bWJmPS9jMnBhL3VybjpjMnBhOmNjMDRkZDUzLTMyZmQtNGQxMy1iMDkwLTk2N2JjNGRkNWMzZS9jMnBhLnNpZ25hdHVyZWppbnN0YW5jZUlEeCx4bXA6aWlkOjI4Yzg5Nzg3LTZkYTMtNDJhNi04YTgwLWY4YzlkNDY1ZjdiOXJjcmVhdGVkX2Fzc2VydGlvbnODomN1cmx4LXNlbGYjanVtYmY9YzJwYS5hc3NlcnRpb25zL2MycGEuaW5ncmVkaWVudC52M2RoYXNoWCAg0TOOATQPV8m2tNJKV1BU4DSnHq1UFAV%2FS0rEUyCMa6JjdXJseCpzZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmFjdGlvbnMudjJkaGFzaFgggKCeNcRbBSEvK0AqCkMS%2FcdRPxw8yV9bXBWFFQkZq0OiY3VybHgpc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5oYXNoLmRhdGFkaGFzaFggXPsshUictLQ2qjQaXlCuxwCZ%2F33rhy3Oswx67%2FxejQt0Y2xhaW1fZ2VuZXJhdG9yX2luZm%2BjZG5hbWVvQW50aHJvcGljIEZpbGVzZ3ZlcnNpb25lMS4wLjBrc3BlY1ZlcnNpb25lMi40LjAAABA4anVtYgAAAChqdW1kYzJjcwARABCAAACqADibcQNjMnBhLnNpZ25hdHVyZQAAABAIY2JvctKEWQISogEmGCFZAgowggIGMIIBjaADAgECAhRA5aAK7sI50L64g%2FoGQgU9Z1UTADAKBggqhkjOPQQDAzBJMRcwFQYDVQQKEw5BbnRocm9waWMsIFBCQzEuMCwGA1UEAxMlQW50aHJvcGljIENvbnRlbnQgQ3JlZGVudGlhbHMgUm9vdCBDQTAeFw0yNjA4MDcxODQzNTZaFw0yODA4MDYxOTQzNTZaMEQxFzAVBgNVBAoTDkFudGhyb3BpYywgUEJDMSkwJwYDVQQDEyBBbnRocm9waWMgQ2xhdWRlIENvbnRlbnQgU2lnbmluZzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABJh6CmvLUBgFFNU0vUKlOVtE6djd17L5SuwX0LemFisBM3dkd%2F3cyjxFA3Qo5S46fX0%2FihY0VZ7mfb9KF703t5OjWDBWMA4GA1UdDwEB%2FwQEAwIHgDAVBgNVHSUEDjAMBgorBgEEAYPoXgIBMAwGA1UdEwEB%2FwQCMAAwHwYDVR0jBBgwFoAUzlHiBIFOZFsj%2BOPEz5o%2BnMHXXMIwCgYIKoZIzj0EAwMDZwAwZAIwMXMdFJ4BetLLVY7ORuE9noqbbAZOZn%2FaArXyTwFAZfKrPzxF2vPoJNf1%2BUCdg1XGAjBwX1zd9WGqYkqmL5SFqw1QySjr1zJfpJM9%2B1rdDwSPLMOPOjKuiXjoU%2FpUUeG9RwmhY3BhZFkNngAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPZYQC6OXrDiSC6cpMrKS3LcKKWbTDtWgtneg6g7zBfHpzChXol7ZVgL%2Bo9ISlW4c3JITrdY7wiDRnU48mJS5hTV0uA%3D%3C%2Fc2pa%3Amanifest%3E%3C%2Fmetadata%3E%3Cpath%20d%3D%22M32%207%20L48%2055%20L32%2045%20L16%2055Z%22%20fill%3D%22currentColor%22%3E%3C%2Fpath%3E%3C%2Fsvg%3E"); }
+
+/* Markdown structural containment; intentionally separate from conversation styling. */
+.markdown-table { max-width: 100%; overflow-x: auto; }
+.markdown-table table { border-collapse: collapse; }
+.markdown-table th, .markdown-table td { border: 1px solid var(--vscode-editorWidget-border); padding: .3em .6em; }
+.message-body blockquote { border-left: 3px solid var(--vscode-textBlockQuote-border); background: var(--vscode-textBlockQuote-background); margin-inline: 0; padding-inline: 1em; }
+.message-body hr { border: 0; border-top: 1px solid var(--vscode-editorWidget-border); }

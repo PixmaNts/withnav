@@ -250,14 +250,28 @@ _Avoid_: tool, action (an action is what a flow proposes)
 ## Permissions
 
 **Captain request**:
-The Captain's own latest human-ingress message. Explicitly requested effects establish intent,
-not instructions to the reviewers about their verdict. Tool arguments, assistant text and parent
+Permission review uses the last three verified human-ingress messages (with command ids), a task
+anchor and retained newer constraints; the role guard still uses only the latest message. Questions,
+ok and praise do not revoke a task. Stop, completion, inspect-only and explicit new-task markers
+replace the anchor. Intent exceeding the bounded budget is incomplete and asks rather than
+dropping a constraint. Human words establish goals, not instructions about reviewers' verdicts.
+Tool arguments, assistant text and parent
 delegations remain untrusted evidence. Approval still requires understood, recoverable effects;
-protected configuration always requires a typed Captain answer.
+protected configuration requires a typed Captain answer or a live config session grant.
 
 WithNav's explicitly configured config directory is a protected root: native writes/edits ask the
 Captain before any model review, including symlinks. Scratch never overlaps this root.
 Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
+
+**Config session grant**:
+Only the protected-config request offers `allow_config_session` ("allow WithNav config for this
+session"). A typed Captain answer shares an in-memory grant between the root actor and its live
+subagents; future children inherit that same memory. It is never saved to `grants.json` and a new,
+resumed or restarted root asks again. It skips only the Captain-only hold: instinct and
+metacognition review still run, and evidence records `approved_by: config_session_grant`.
+Credential/key targets, `auth.json`, changed scratch roots, and changes to `permissions` or
+`automatic_permission_review` in the resulting `config.json` still ask. Malformed settings JSON
+fails closed; bash naming `config.json` always asks because its resulting settings cannot be parsed.
 
 **Scratch directory**:
 Two independently checked roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback
@@ -269,9 +283,59 @@ and inherited by children; `[]` disables it. It must be a real directory owned b
 Outside-project file changes receive review like bash effects; approval never extends writable roots.
 
 **Permission review**:
-An advisory per-call classification by the instinct, followed for risky or outside-project
-mutations by synchronous metacognition review. Only explicit approval runs those calls;
-uncertainty, malformed answers and deadlines escalate to the Captain. Not a sandbox.
+An advisory per-call Instinct classification in one batched request: `call_effect`
+(`read_only` / `local_change` / `remote_change` / `unsure`), `call_scope`, `reversibility`
+(`none_needed` / `recoverable` / `destructive` / `unsure`), `publication`
+(`none` / `own_work` / `shared` / `unsure`), plus probability questions `sensitivity` and
+`task_fit` using the active Captain task and newer constraints. Confidence ≥ 0.7 is required only on deciding
+answers: `read_only` for reads; `local_change`, `recoverable` and `inside` for local changes;
+`remote_change`, `recoverable` and `own_work` for publication of the task's own work.
+Secondary answers need no confidence, but cannot contradict a read with `outside`, or any
+route with `destructive` or `shared`. Sensitivity must stay < 0.2 and task fit ≥ 0.6.
+Git pushes require bounded
+literal-command host facts confirming the current non-default branch and no force/deletion.
+Host facts include the current/default branches, dirty state and literal git path tracking.
+Missing git, a timeout or an ambiguous push supplies no authorization fact.
+
+Destruction and shared publication at any confidence, sensitive or off-task effects, and low
+confidence or unsure deciding answers go to synchronous metacognition review. Every Run path
+still passes the host shell, executable identity, overwrite recovery and removal/move floors.
+Its separate 64 KiB budget carries Instinct
+answers/probabilities, git facts, three bounded untrusted assistant messages and ten structured
+untrusted tool calls with arguments, outcome, exit code, output head and approval source;
+Instinct keeps 16 KiB. Truncation is marked. On timeout, eligible floor-free calls retry once
+with a fresh cancel token and a five-second deadline; outages never authorize a call.
+Typed Captain allow-once answers become in-memory signature-and-scope precedents shared by live
+children, never restored from `permission.resolved` events on resume. SQLite event JSON is writable
+by ambient bash and cannot authenticate an approval; every resumed session starts with no precedents.
+A matching live precedent replaces only
+metacognition unsure/timeout escalation, never an explicit reject or a host floor, and records
+`approved_by: captain_precedent` plus the earlier request. Bypass/config grants never create one.
+New human turns conservatively invalidate precedents; every typed Captain deny clears all session
+precedents, even when the denied call has no signature. Signatures
+use the trusted resolver's validated canonical executable, subcommand and sorted flags. Push
+signatures retain the confirmed target and the full effective push URL list, including Git URL
+rewrites; unavailable URLs prevent a signature and precedent reuse. Python JSON exemptions require
+`python3 -I -S` to exclude workspace/PYTHONPATH imports and startup hooks.
+PR edits and execution/path overrides are not covered. A new conversation starts empty.
+Otherwise only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
+remote deletions still require the Captain. Protected configuration, credentials and changed
+scratch roots keep their existing Captain floors, and plan role conformance is unchanged.
+Evidence records every answer, thresholds and route (`instinct_run` / `review` / `captain`).
+Malformed answers, unavailable reviewers and deadlines escalate to the Captain. Not a sandbox.
+
+Script execution always retains the opaque-script floor and goes to metacognition review,
+never the Instinct-only fast path. Bounded script content is untrusted evidence, not authorization;
+it makes the effects visible so the reviewer can return fewer `unsure` decisions. Direct executable
+scripts attach only with a trusted canonical shebang interpreter (the executable identity resolver:
+root-owned, not group/other writable, outside workspace/writable roots), without `env` indirection.
+Evidence records that interpreter identity. No-follow reads reject multiply linked files as well
+as symlinks, sensitive targets and protected configuration. Complete evidence binds the canonical
+path, original spelling, file/parent identities and SHA-256. Validation is repeated before dispatch
+and immediately before bash spawn; any mismatch or inability to revalidate goes straight to the
+Captain with `script changed since it was reviewed`, even under bypass, without re-reading to
+decide escalation. No snapshot copy is executed: a path-to-spawn race remains, and bash is advisory,
+not a sandbox.
 
 Native `read` within readable roots remains ungated, except sensitive targets. Native `grep` and
 `glob` stay confined to readable roots and skip sensitive entries before opening them, with a count.
@@ -287,6 +351,7 @@ by path; replacement links mid-walk need a future descriptor-relative traversal 
 
 **Permission request**:
 A held tool call awaiting a typed Captain decision. Bash, write and edit offer allow once or deny;
+eligible protected-config calls also offer a config session grant.
 fetch may also offer an origin grant. Chat text never approves a call. A pending request expires
 on restart. Reviewer rejection escalates to the Captain rather than finally denying execution.
 _Avoid_: confirmation, approval prompt
@@ -295,8 +360,9 @@ _Avoid_: confirmation, approval prompt
 A per-session setting, off by default and never saved as a preference, that answers ordinary
 permission requests for the Captain. When on, a call that would have asked runs once instead,
 after the usual reviews: their verdicts stay in its evidence and the result is marked
-`approved_by: bypass`. WithNav's protected configuration, credential and key targets and a changed
-scratch root still ask the Captain (the request says `requires_driver`); validation errors, tool
+`approved_by: bypass`. Bypass never creates a config session grant. Without that separate typed
+grant, WithNav's protected configuration still asks; credential/key targets and a changed
+scratch root always ask the Captain (the request says `requires_captain`); validation errors, tool
 policy, read-only agents and outside searches are refused as before, and a question from `ask` is
 never answered. Turning it on also answers an eligible request already waiting. A root session
 sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `nav run --yes`) and its live
@@ -507,5 +573,14 @@ boundary the request builder applies. The prompt is then the fresh system compon
 as labelled conversation data (never as instructions), and the messages after the boundary. The
 system components, the latest user request, the unfinished turn with any pending `ask` and the last
 two completed turns are always kept verbatim, and a cut never splits a tool call from its results.
-`/compact [focus]` makes one by asking the session's own model and variant for a summary.
+`/compact [focus]` asks the assigned metacognition model and variant for a summary, falling
+back to the session model on provider errors (never on cancellation). Model switches may then
+use the destination. Each writer budgets against its own window; the installed checkpoint
+still has to fit the session or destination. Summaries roll over message-boundary chunks,
+keeping tool exchanges together, with the previous summary as untrusted JSON data.
+`config.json` settings `compaction.writer` (`metacognition`, default, or `session`) and
+`compaction.chunk_tokens` (64000, capped at half the writer input budget) are exposed by
+`/v1/settings`. They apply to newly prepared sessions. Each failed pass is retried once;
+failed or empty summaries never replace a checkpoint. `context.compacted` names the writer
+and records successful passes.
 _Avoid_: snapshot (that is the context gauge), history rewrite

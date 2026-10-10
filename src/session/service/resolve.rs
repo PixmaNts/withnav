@@ -918,6 +918,7 @@ impl Service {
             .map(|r| ModelIdentity::from_upstream(&r.provider, &r.model))
             .unwrap_or_else(|| ModelIdentity::from_upstream("", ""));
         Ok(ModelTarget {
+            max_message_tokens: resolved.model.max_message_tokens,
             warning: None,
             provenance: None,
             source: String::new(),

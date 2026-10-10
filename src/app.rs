@@ -32,6 +32,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// WithNav language server: Reflex, Instinct and Metacognition in your editor.
+    Lsp(lsp::LspArgs),
     /// Inspect the host flow schema.
     Flows {
         #[command(subcommand)]
@@ -61,6 +63,7 @@ pub struct HtmlConvertArgs {
 }
 
 mod embedded;
+pub mod lsp;
 pub mod tui;
 pub mod web;
 
@@ -190,6 +193,7 @@ pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             Ok(EXIT_DONE)
         }
         Commands::Run(args) => run_command(args).await,
+        Commands::Lsp(args) => lsp::run(args).await,
         Commands::Serve(args) => serve_command(args).await,
         Commands::Auth(args) => auth_command(args),
         Commands::Tui(args) => tui::run(args).await,

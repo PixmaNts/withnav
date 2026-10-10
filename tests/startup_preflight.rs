@@ -153,11 +153,10 @@ async fn missing_or_malformed_auth_is_explicit_and_secret_safe() {
 }
 
 fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(if lsp {
-        env!("CARGO_BIN_EXE_withnav-lsp")
-    } else {
-        env!("CARGO_BIN_EXE_nav")
-    });
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    if lsp {
+        cmd.args(["lsp", "--stdio"]);
+    }
     cmd.current_dir(dir)
         .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("config"))

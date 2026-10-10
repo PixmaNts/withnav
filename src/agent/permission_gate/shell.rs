@@ -58,8 +58,15 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
     let canonical = resolved.canonicalize().ok()?;
     // Executable identity, 2026-10-10: mise links point to root-owned binaries;
     // accept secure owned link directories, never user-owned regular executables.
-    let safe_shim =
-        resolved.symlink_metadata().ok()?.is_symlink() && trusted_shim_directories(&resolved);
+    // The link's name is what the host classifies, so it must not impersonate another
+    // program (`~/.local/bin/ls -> /usr/bin/rm`): only same-name links or version-manager
+    // dispatchers, which run the tool named by the link, qualify.
+    let safe_shim = resolved.symlink_metadata().ok()?.is_symlink()
+        && trusted_shim_directories(&resolved)
+        && canonical
+            .file_name()
+            .and_then(|target| target.to_str())
+            .is_some_and(|target| target == name || matches!(target, "mise" | "asdf" | "rtx"));
     if (!trusted_directories(&resolved) && !safe_shim)
         || !trusted_directories(&canonical)
         || !outside(&resolved)
@@ -857,6 +864,7 @@ mod tests {
             let facts = json!({"workspace":workspace,"writable_roots":[workspace]});
             assert!(trusted_program("cargo", &facts).is_some());
             assert!(trusted_program("local-binary", &facts).is_none());
+            assert!(trusted_program("ls", &facts).is_none());
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -865,7 +873,8 @@ mod tests {
         let bin = tmp.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::os::unix::fs::symlink("/usr/bin/true", bin.join("cargo")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/mise", bin.join("cargo")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/rm", bin.join("ls")).unwrap();
         std::fs::copy("/usr/bin/true", bin.join("local-binary")).unwrap();
         std::fs::set_permissions(
             bin.join("local-binary"),

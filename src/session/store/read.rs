@@ -210,6 +210,11 @@ impl HistoryStore {
                         continue;
                     }
                     if source.is_some_and(crate::bus::command::is_captain_source) {
+                        if let Some(answer) = envelope.payload.get("answer").filter(|a| !a.is_null()) {
+                            let answer = serde_json::from_value::<crate::tools::control::AskAnswer>(answer.clone())
+                                .map_err(|e| format!("event seq {seq} answer does not decode: {e}"))?;
+                            return Ok(envelope.payload["content"].as_str().map(|text| answer.historical_text(text)));
+                        }
                         return Ok(envelope
                             .payload
                             .get("content")

@@ -12,7 +12,8 @@ use ratatui::{
 };
 
 fn clean(text: &str) -> String {
-    text.chars()
+    crate::tui::reducer::strip_controls(text)
+        .chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
                 ' '
@@ -177,7 +178,7 @@ fn block_text(
             lines.push(Line::styled(
                 format!(
                     "{} · {}",
-                    p.choices.header.as_deref().unwrap_or("QUESTION"),
+                    clean(p.choices.header.as_deref().unwrap_or("QUESTION")),
                     if p.answer.is_some() {
                         "answered"
                     } else if p.sending {
@@ -233,16 +234,6 @@ fn block_text(
             }
             if let Some(custom) = p.answer.as_ref().and_then(|a| a.custom.as_ref()) {
                 lines.push(Line::raw(format!(" {}", clean(custom))));
-            }
-            if p.answer.is_none() {
-                lines.push(Line::styled(
-                    if p.custom {
-                        "Type your answer · enter Send · esc plain typing"
-                    } else {
-                        "↑↓ move · space select · enter Send · esc plain typing"
-                    },
-                    theme.muted(),
-                ));
             }
             if let Some(error) = &p.error {
                 lines.push(Line::styled(clean(error), theme.error()));

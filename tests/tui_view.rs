@@ -72,6 +72,14 @@ fn choice_question_requires_explicit_selection_and_replays_answered() {
     let screen = render("question-choices", (100, 30), &s, &ui, &editor);
     assert!(screen.contains("[ ] Develop"));
     assert!(screen.contains("[x] Leave open"));
+    assert_eq!(screen.matches("space select").count(), 1);
+    if let BlockKind::Question(p) = &mut s.conversation.blocks[0].kind {
+        p.choices.header = Some("\x1b[31mSafe\x1b[0m\x1b]0;owned\x07".into());
+    }
+    let screen = render("question-header-controls", (100, 30), &s, &ui, &editor);
+    assert!(screen.contains("Safe · awaiting answer"));
+    assert!(!screen.contains("owned"));
+    assert!(!screen.contains('\x1b'));
     let action = route_key(
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &s,

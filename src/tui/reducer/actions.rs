@@ -832,7 +832,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 }
                 Action::AnswerQuestion(answer) => {
                     if p.call_id != answer.question_call_id
-                        || p.choices.answer_text(&answer).is_err()
+                        || p.choices.answer_text(&p.text, &answer).is_err()
                     {
                         return vec![];
                     }

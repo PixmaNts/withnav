@@ -87,8 +87,19 @@ async fn structured_ask_answer_validates_preserves_captain_authority_and_replays
         .find(|e| e.kind == "message.received" && e.payload["answer"].is_object())
         .unwrap();
     assert_eq!(received.payload["answer"], answer);
-    assert_eq!(received.payload["content"], "Global");
+    assert!(received.payload["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("Answer to "));
+    assert!(received.payload["content"]
+        .as_str()
+        .unwrap()
+        .ends_with("selected option(s) offered by the assistant: [\"Global\"]"));
     assert_eq!(received.payload["source"], "user:http");
+    assert_eq!(
+        server.state.captain_task_probe(session_id).as_deref(),
+        received.payload["content"].as_str()
+    );
     assert_eq!(
         post_message_body(&server.base, &id, &body).await.status(),
         400
@@ -105,8 +116,8 @@ async fn structured_ask_answer_validates_preserves_captain_authority_and_replays
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn structured_ask_accepts_multiple_and_custom_answers() {
     for (selected, custom, text) in [
-        (json!([0, 1]), Some("Other"), "A\nB\nOther"),
-        (json!([]), Some("Other"), "Other"),
+        (json!([0, 1]), Some("Other"), "Answer to \"Which?\": selected option(s) offered by the assistant: [\"A\",\"B\"]\nCaptain's own words: Other"),
+        (json!([]), Some("Other"), "Answer to \"Which?\": selected option(s) offered by the assistant: []\nCaptain's own words: Other"),
     ] {
         let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_many","function":{"name":"ask","arguments":"{\"question\":\"Which?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}],\"multiple\":true}"}}]},"finish_reason":"tool_calls"}]}"#;
         let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;

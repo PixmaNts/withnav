@@ -210,7 +210,7 @@ impl RuntimeStatus {
             .choices
             .as_ref()
             .ok_or("pending question has no choices")?
-            .answer_text(answer)
+            .answer_text(&question.question, answer)
     }
 
     pub(crate) fn clear_question(&self) {

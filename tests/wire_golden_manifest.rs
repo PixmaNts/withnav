@@ -1,39 +1,43 @@
 //! The recorded wire-body golden fixtures (tests/fixtures/phase1_wire, asserted
-//! byte-for-byte by tests/phase1_wire_golden.rs) must stay anchored to the
-//! `phase-1-complete` commit they were captured from.
+//! byte-for-byte by tests/phase1_wire_golden.rs) must match the SHA-256 digests
+//! listed in their MANIFEST, so changing a fixture is a deliberate two-file edit.
+//!
+//! The check reads only the working tree: it used to resolve a git tag that was
+//! never pushed, so it failed on every fresh clone and in CI.
 
-use std::process::Command;
+use sha2::{Digest, Sha256};
 
-/// The tag the golden fixtures were captured from.
-const BASELINE: &str = "phase-1-complete^{commit}";
-
-fn git(args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("git runs");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// The MANIFEST `base_commit` is the dereferenced tag COMMIT (not the
-/// annotated-tag object).
 #[test]
 fn locked_golden_fixtures_are_unchanged() {
-    let manifest = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/phase1_wire/MANIFEST.txt"
-    ))
-    .expect("read MANIFEST");
-    let base = manifest
-        .lines()
-        .find_map(|l| l.split("base_commit:").nth(1))
-        .map(str::trim)
-        .expect("MANIFEST has base_commit");
-    let commit = git(&["rev-parse", BASELINE]);
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/phase1_wire");
+    let manifest = std::fs::read_to_string(format!("{dir}/MANIFEST.txt")).expect("read MANIFEST");
+    let mut listed = 0;
+    for line in manifest.lines() {
+        let Some(rest) = line.strip_prefix("SHA-256") else {
+            continue;
+        };
+        let mut fields = rest.split_whitespace();
+        let (Some(name), Some(expected)) = (fields.next(), fields.next()) else {
+            panic!("malformed MANIFEST line: {line}");
+        };
+        let bytes = std::fs::read(format!("{dir}/{name}")).expect("read fixture");
+        let actual = format!("{:x}", Sha256::digest(&bytes));
+        assert_eq!(
+            actual, expected,
+            "{name} changed: update its SHA-256 in MANIFEST.txt only if the wire change is intended"
+        );
+        listed += 1;
+    }
+    let fixtures = std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        })
+        .count();
     assert_eq!(
-        base,
-        commit.trim(),
-        "MANIFEST base_commit must be the dereferenced phase-1-complete commit"
+        listed, fixtures,
+        "every fixture must be listed in MANIFEST.txt"
     );
 }

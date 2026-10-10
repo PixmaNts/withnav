@@ -838,7 +838,7 @@ mod tests {
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_twenty_one() {
+    fn event_kind_catalog_matches_all_wire_names() {
         let kinds = EventKind::ALL;
         assert_eq!(EVENT_KIND_COUNT, 26);
         assert_eq!(kinds.len(), 26);

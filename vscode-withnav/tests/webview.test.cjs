@@ -44,6 +44,53 @@ function keyboardPage(){
   const key=(key,extra={})=>{const target=d.activeElement;const event=new dom.window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...extra});target.dispatchEvent(event);if(!event.defaultPrevented&&key.length===1){target.value+=key;target.dispatchEvent(new dom.window.Event('input',{bubbles:true}));}};
   return {dom,d,posts,receive,key,type:text=>{for(const c of text)key(c);}};
 }
+
+test('subagent controls sit beside the state and goals keep their full tooltip without delivery labels', () => {
+  const { dom, d, receive, posts } = keyboardPage();
+  const goal = 'Review a long delegated task. '.repeat(30);
+  const child = { id: 'child', agent: 'lux', goal, state: 'running' };
+  for (const delivery of ['next_turn', 'steer', 'interrupt', 'future_wire_value']) {
+    receive({ type: 'subagents', parentId: 'S', items: [{ ...child, delivery }] });
+    const row = d.querySelector('.child-row');
+    assert.ok(!row.textContent.includes(delivery));
+    assert.equal(row.querySelector('.child-goal').textContent, goal);
+    assert.equal(row.querySelector('.child-goal').title, goal);
+    const heading = row.querySelector('.child-row-heading');
+    assert.match(heading.textContent, /lux · RunningStop/);
+    assert.ok(heading.querySelector('.child-open.control-secondary'));
+    const stop = heading.querySelector('.child-actions button');
+    assert.equal(stop.className, 'control-secondary control-danger');
+    assert.equal(stop.type, 'button');
+  }
+  d.querySelector('.child-actions button').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'controlChild', parentId: 'S', childId: 'child', action: 'stop', generation: 1 });
+  receive({ type: 'subagents', parentId: 'S', items: [{ ...child, state: 'watchdog', error: 'Cannot stop: connection lost', reason: 'Please review the result' }] });
+  assert.equal(d.querySelector('.child-row .command-error').textContent, 'Cannot stop: connection lost');
+  assert.equal(d.querySelector('.child-reason').textContent, 'Please review the result');
+  assert.equal(d.querySelector('.child-actions button').className, 'control-secondary');
+  dom.window.close();
+});
+
+test('subagent view and watchdog controls share panel button classes and preserve errors', () => {
+  const { dom, d, receive } = keyboardPage();
+  receive({ type: 'childView', parentId: 'S', child: { id: 'child', agent: 'lux', goal: 'Review', state: 'watchdog', error: 'Connection lost' } });
+  assert.deepEqual([...d.querySelectorAll('.child-header .child-actions button')].map(b => b.className), ['control-secondary', 'control-secondary control-danger']);
+  assert.equal(d.querySelector('.child-header .command-error').textContent, 'Connection lost');
+  receive({ type: 'childView' });
+  receive({ type: 'pause', id: 'pause', kind: 'watchdog', text: 'Please review', token: { incarnation: 'run', hold_id: 'hold' } });
+  assert.deepEqual([...d.querySelectorAll('.pause-card .control-actions button')].map(b => b.className), ['control-primary', 'control-secondary control-danger']);
+  dom.window.close();
+});
+
+test('shared control styles reset native buttons with theme borders, focus and two-line goals', () => {
+  const css = fs.readFileSync('out/chat.css', 'utf8').replace(/\s+/g, ' ');
+  assert.match(css, /\.control-primary, \.control-secondary\s*\{[^}]*padding: 5px 9px;[^}]*border: 1px solid var\(--vscode-contrastBorder, transparent\);[^}]*border-radius: 3px;[^}]*font-size:/);
+  assert.match(css, /\.control-primary:focus-visible, \.control-secondary:focus-visible\s*\{[^}]*outline: 2px solid var\(--vscode-contrastActiveBorder, var\(--vscode-focusBorder\)\)/);
+  assert.match(css, /\.control-secondary\s*\{[^}]*--vscode-button-secondaryForeground[^}]*--vscode-button-secondaryBackground/);
+  assert.match(css, /\.control-danger:hover:not\(:disabled\), \.control-danger:focus-visible\s*\{[^}]*--vscode-inputValidation-errorBorder[^}]*--vscode-errorForeground/);
+  assert.match(css, /\.child-goal\s*\{[^}]*-webkit-line-clamp: 2;[^}]*overflow: hidden/);
+});
+
 test('question card requires explicit selection, retries errors and replays a read-only answer', () => {
   const {dom,d,posts,receive}=keyboardPage();
   const question={type:'question',id:'T',questionCallId:'ask',text:'Where next?',choices:{options:[{label:'Develop',description:'Integration branch'},{label:'Leave open'}],multiple:true,allow_custom:true,recommended:0}};

@@ -198,7 +198,12 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
         .find(|m| m["role"] == "tool")
         .unwrap_or_else(|| panic!("no tool message: {messages:?}"));
     assert_eq!(tool["tool_call_id"], "ask_1");
-    assert_eq!(tool["content"], "the local scope");
+    // The selected label is assistant-written text: the server frames it instead of passing it
+    // off as the Captain's own words.
+    assert_eq!(
+        tool["content"],
+        "Answer to \"which scope?\": selected option(s) offered by the assistant: [\"the local scope\"]"
+    );
     let users: Vec<&Value> = messages.iter().filter(|m| m["role"] == "user").collect();
     assert_eq!(users.len(), 1, "no stray user message: {users:?}");
     assert_eq!(users[0]["content"], "remove an auth scope");

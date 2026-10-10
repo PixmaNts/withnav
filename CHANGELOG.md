@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Local-instruction ordering tests no longer fail on random temporary paths.**
+  Checks compare complete labelled sections and source order, rather than matching short
+  content tokens that can also occur in a file's path. Instruction discovery is unchanged.
+
 ## [0.7.2] - 2026-10-10
 
 WithNav 0.7.2 makes permissions smarter and long conversations sturdier. Instinct now tells a

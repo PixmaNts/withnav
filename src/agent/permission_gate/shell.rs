@@ -138,10 +138,11 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             }
         } else if c == '\'' || c == '"' {
             quote = Some(c);
-        } else if matches!(
-            c,
-            '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '*' | '?' | '[' | '#'
-        ) {
+        // Filename globs (`*`, `?`, `[...]`) only pick existing paths: the program and
+        // its flags still decide the effect, and sensitive-target checks strip glob
+        // characters before matching. Real session, 2026-10-10: `grep … tests/*` and
+        // `--include=*.ts` reads were sent to review only because of the glob.
+        } else if matches!(c, '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '#') {
             return None;
         } else if c == '>' || (c == '&' && chars.peek() == Some(&'>')) {
             if c == '&' {
@@ -775,11 +776,79 @@ pub(super) fn overwrite_paths(command: &str) -> Option<Vec<String>> {
                     .filter(|w| !w.starts_with('-'))
                     .cloned(),
             ),
-            "sed" => paths.extend(sed_paths(&words[1..])?),
+            "sed" if in_place(&words[1..]) => paths.extend(sed_paths(&words[1..])?),
+            // Without -i, sed prints to stdout, unless its script writes files (`w`,
+            // `s///w`) or runs commands (`e`, `s///e`): only recognised print and
+            // substitution scripts are known to change nothing.
+            "sed" if !stdout_sed(&words[1..]) => return None,
             _ => {}
         }
     }
     Some(paths)
+}
+
+fn in_place(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg.starts_with("-i") || arg.starts_with("--in-place"))
+}
+
+fn stdout_sed(args: &[String]) -> bool {
+    // An address (line numbers, `$`, or a `/regex/`) followed by at most one p, d or q.
+    let print = |script: &str| {
+        script.split(';').all(|part| {
+            let part = part.trim();
+            let address = part.trim_end_matches(['p', 'd', 'q']);
+            address.len() + 1 >= part.len()
+                && address.split(',').all(|a| {
+                    a.chars().all(|c| c.is_ascii_digit() || c == '$')
+                        || (a.len() >= 2
+                            && a.starts_with('/')
+                            && a.ends_with('/')
+                            && !a[1..a.len() - 1].contains('/'))
+                })
+        })
+    };
+    let substitution = |script: &str| {
+        let parts: Vec<_> = script.split('/').collect();
+        parts.len() == 4
+            && parts[0] == "s"
+            && parts[3]
+                .chars()
+                .all(|c| matches!(c, 'g' | 'i' | 'p' | '0'..='9'))
+    };
+    // GNU sed accepts options after operands, and with any -e the first operand is a
+    // file, not the script: scan every argument before deciding what the script is.
+    let mut scripts = vec![];
+    let mut operands = vec![];
+    let mut options_done = false;
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match arg.as_str() {
+            _ if options_done => operands.push(arg.as_str()),
+            "--" => options_done = true,
+            "-n" | "--quiet" | "--silent" | "-E" | "-r" | "--regexp-extended" | "-s"
+            | "--separate" | "-u" | "--unbuffered" | "-z" | "--null-data" => {}
+            "-e" | "--expression" => {
+                i += 1;
+                match args.get(i) {
+                    Some(script) => scripts.push(script.as_str()),
+                    None => return false,
+                }
+            }
+            option if option.starts_with('-') && option != "-" => return false,
+            operand => operands.push(operand),
+        }
+        i += 1;
+    }
+    if scripts.is_empty() {
+        match operands.first() {
+            Some(script) => scripts.push(script),
+            None => return false,
+        }
+    }
+    scripts
+        .iter()
+        .all(|script| print(script) || substitution(script))
 }
 
 fn sed_paths(args: &[String]) -> Option<Vec<String>> {
@@ -891,6 +960,37 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
+    }
+
+    #[test]
+    fn printing_sed_and_globs_are_reads_but_writing_sed_is_not() {
+        for command in [
+            "sed -n 250,285p tests/settings.test.cjs",
+            "sed -n '78,90p' src/webview/settingsModel.ts",
+            "sed -n '/fn main/,/^}/p' src/main.rs",
+            "sed -n -e 1p -e '$p' notes.md",
+            "sed 's/a/b/g' notes.md",
+            "sed -n 1,5p a.txt -E",
+            "grep -n theme tests/*",
+            "ls src/*.rs",
+        ] {
+            assert_eq!(overwrite_paths(command), Some(vec![]), "{command}");
+            assert!(!read_floor(command), "{command}");
+        }
+        for command in [
+            "sed -n '1w out.txt' notes.md",
+            "sed 's/a/b/w out.txt' notes.md",
+            "sed 's/a/b/e' notes.md",
+            "sed -n 1e notes.md",
+            "sed -f script.sed notes.md",
+            "sed -e 'w out.txt' notes.md",
+            "sed -i 's/a/b/' notes.md",
+            "sed --in-place 's/a/b/' notes.md",
+            "rm *.log",
+            "cp * backup",
+        ] {
+            assert!(read_floor(command), "{command}");
+        }
     }
 
     #[test]

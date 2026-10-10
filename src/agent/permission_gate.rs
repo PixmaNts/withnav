@@ -1335,8 +1335,83 @@ fn sensitive_call(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> bool {
                     sensitive_read(std::path::Path::new(&simplified))
                         || super::permissions::resolve_read_target(std::path::Path::new(word), cx)
                             .is_ok_and(|path| sensitive_read(&path))
+                        || (word.contains(['*', '?', '['])
+                            && glob_hits_sensitive(word, &glob_base(command, cx)))
                 })
             }))
+}
+
+/// Where the shell expands a relative glob: the literal `cd DIR` the command starts
+/// with, else the workspace.
+fn glob_base(command: &str, cx: &ToolContext) -> std::path::PathBuf {
+    let home = || std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let resolve = |word: &str| match word.strip_prefix("~/") {
+        Some(rest) => home().map(|home| home.join(rest)),
+        None if word == "~" => home(),
+        None => Some(cx.workspace.join(word)),
+    };
+    shell::segments(command)
+        .and_then(|segments| {
+            segments.first().and_then(|words| match words.as_slice() {
+                [cd, dir] if cd == "cd" => resolve(dir),
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| cx.workspace.clone())
+}
+
+/// Whether a filename glob would expand to a credential or key file. A glob names
+/// files the host cannot see in the literal operand (`cat id_*` reads `id_ed25519`),
+/// so it is expanded the way the shell would: in its directory, hidden files only
+/// for a pattern starting with a dot. Globs in directory components, unreadable
+/// patterns and very large directories count as sensitive.
+fn glob_hits_sensitive(word: &str, base: &std::path::Path) -> bool {
+    const MAX_ENTRIES: usize = 10_000;
+    let path = match word.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::Path::new(&home).join(rest),
+            None => return true,
+        },
+        None => base.join(word),
+    };
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return true;
+    };
+    if parent.to_string_lossy().contains(['*', '?', '[']) {
+        return true;
+    }
+    let Ok(glob) = globset::GlobBuilder::new(name)
+        .literal_separator(true)
+        .build()
+    else {
+        return true;
+    };
+    let matcher = glob.compile_matcher();
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        // Nothing to expand: bash passes the pattern through literally.
+        return false;
+    };
+    let mut seen = 0;
+    for entry in entries.flatten() {
+        seen += 1;
+        if seen > MAX_ENTRIES {
+            return true;
+        }
+        let file = entry.file_name();
+        let file = file.to_string_lossy();
+        let candidate = parent.join(file.as_ref());
+        if (!file.starts_with('.') || name.starts_with('.'))
+            && matcher.is_match(file.as_ref())
+            && (sensitive_read(&candidate)
+                || candidate
+                    .canonicalize()
+                    .is_ok_and(|path| sensitive_read(&path)))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn bash_command(call: &ToolCall) -> Option<&str> {
@@ -3009,6 +3084,50 @@ mod tests {
                 args_valid: true,
             };
             assert!(prefilter(&call, &needed, &cx).risky, "{command}");
+        }
+    }
+
+    #[test]
+    fn filename_globs_parse_but_never_hide_a_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
+        let key = tmp.path().join(".ssh/id_ed25519");
+        std::fs::write(&key, "secret").unwrap();
+        std::fs::create_dir(tmp.path().join("tests")).unwrap();
+        std::fs::write(tmp.path().join("tests/settings.test.cjs"), "x").unwrap();
+        std::fs::create_dir(tmp.path().join("links")).unwrap();
+        std::os::unix::fs::symlink(&key, tmp.path().join("links/innocent")).unwrap();
+        let cx = ToolContext {
+            binding: None,
+            workspace: tmp.path().to_path_buf(),
+            writable_roots: vec![tmp.path().to_path_buf()],
+            readable_roots: vec![],
+        };
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
+            destination: None,
+        };
+        let call = |command: &str| ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: json!({"command":command}),
+            args_valid: true,
+        };
+        for command in [
+            "cd .ssh && cat id_*",
+            "cat .ssh/id_*",
+            "cat links/*",
+            "cat */id_ed25519",
+        ] {
+            assert!(prefilter(&call(command), &needed, &cx).risky, "{command}");
+        }
+        for command in [
+            r#"grep -n "theme\|Appearance" tests/*"#,
+            "grep -rln settingsModel --include=*.ts .",
+            "ls tests/*.cjs",
+            "cat *",
+        ] {
+            assert!(!prefilter(&call(command), &needed, &cx).risky, "{command}");
         }
     }
 

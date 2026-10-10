@@ -4,6 +4,8 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+- The bash tool now works on NixOS: it finds bash through /etc/shells and runs the resolved, root-locked binary.
+
 ## [0.7.4] - 2026-10-10
 
 WithNav 0.7.4 installs on NixOS from the repository itself: a flake builds `nav` and the VS Code

@@ -10,6 +10,12 @@ requests land in `develop`.
   cards offer single or multiple choices, optional other answers and recommendation hints.
   Answers remain Captain messages; replay shows the chosen options without changing permission
   authority, and plain-text asks keep working as before.
+### Removed
+
+- **The `navai` command is gone: run `nav`.** It only printed a deprecation notice and started
+  `nav`, but every build still linked it as a third 37 MB binary. Update any script or shortcut
+  that still calls `navai`, and delete the leftover `~/.cargo/bin/navai` after reinstalling.
+
 ### Fixed
 
 - **Local-instruction ordering tests no longer fail on random temporary paths.**

@@ -10,6 +10,11 @@ requests land in `develop`.
   cards offer single or multiple choices, optional other answers and recommendation hints.
   Answers remain Captain messages; replay shows the chosen options without changing permission
   authority, and plain-text asks keep working as before.
+### Fixed
+
+- **Local-instruction ordering tests no longer fail on random temporary paths.**
+  Checks compare complete labelled sections and source order, rather than matching short
+  content tokens that can also occur in a file's path. Instruction discovery is unchanged.
 
 ## [0.7.2] - 2026-10-10
 

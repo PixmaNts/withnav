@@ -9,7 +9,14 @@ struct Fixture {
 
 /// A temp home next to a temp repository (`<tmp>/repo/.git/`).
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
+    fixture_with_prefix("instructions-")
+}
+
+fn fixture_with_prefix(prefix: &str) -> Fixture {
+    let tmp = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .expect("tempdir");
     let base = fs::canonicalize(tmp.path()).expect("canonical");
     let home = base.join("home");
     let root = base.join("repo");
@@ -35,23 +42,6 @@ fn load(fx: &Fixture, workspace: &Path) -> Instructions {
         },
         workspace,
     )
-}
-
-/// The position of each needle in the message, which must all be present.
-fn positions(rules: &Instructions, needles: &[&str]) -> Vec<usize> {
-    let message = rules.message().expect("a message");
-    needles
-        .iter()
-        .map(|n| {
-            message
-                .find(n)
-                .unwrap_or_else(|| panic!("{n} in {message}"))
-        })
-        .collect()
-}
-
-fn is_sorted(positions: &[usize]) -> bool {
-    positions.windows(2).all(|w| w[0] < w[1])
 }
 
 fn status_of<'a>(rules: &'a Instructions, path: &Path) -> &'a SourceStatus {
@@ -128,7 +118,8 @@ fn project_claude_md_is_shadowed_by_agents_md() {
 //      nested rules.md, and each file carries its own label
 #[test]
 fn order_runs_from_global_to_the_closest_directory() {
-    let fx = fixture();
+    // Source labels can contain the same tokens as the file contents.
+    let fx = fixture_with_prefix("G2-R2-N2-");
     let nested = fx.root.join("crates/inner");
     write(&fx.home.join(".agents/AGENTS.md"), "G1");
     write(&fx.home.join(".agents/rules.md"), "G2");
@@ -137,15 +128,26 @@ fn order_runs_from_global_to_the_closest_directory() {
     write(&nested.join("CLAUDE.md"), "N1");
     write(&nested.join("rules.md"), "N2");
     let rules = load(&fx, &nested);
-    assert!(is_sorted(&positions(
-        &rules,
-        &["G1", "G2", "R1", "R2", "N1", "N2"]
-    )));
-    let message = rules.message().unwrap();
-    assert!(message.contains(&format!(
-        "Instructions from {}:",
-        nested.join("CLAUDE.md").display()
-    )));
+    let expected = [
+        (fx.home.join(".agents/AGENTS.md"), "G1"),
+        (fx.home.join(".agents/rules.md"), "G2"),
+        (fx.root.join("AGENTS.md"), "R1"),
+        (fx.root.join("rules.md"), "R2"),
+        (nested.join("CLAUDE.md"), "N1"),
+        (nested.join("rules.md"), "N2"),
+    ];
+    assert_eq!(
+        rules.sources().iter().map(|s| &s.path).collect::<Vec<_>>(),
+        expected.iter().map(|(path, _)| path).collect::<Vec<_>>()
+    );
+    let mut message = FRAMING.to_string();
+    for (path, text) in expected {
+        message.push_str(&format!(
+            "\n\nInstructions from {}:\n{text}",
+            path.display()
+        ));
+    }
+    assert_eq!(rules.message().unwrap(), message);
 }
 
 // Given a rules.md and no AGENTS.md or CLAUDE.md in a directory

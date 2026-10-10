@@ -21,10 +21,6 @@ path = "src/lib.rs"
 name = "nav"
 path = "src/main.rs"
 
-[[bin]]
-name = "withnav-lsp"
-path = "src/bin/withnav-lsp.rs"
-
 [dependencies]
 instinct-flow = { path = "crates/instinct-flow" }
 tokio = { version = "1.53", features = [

@@ -2,7 +2,7 @@
 
 [Repository](https://github.com/PixmaNts/withnav) · [Report an issue](https://github.com/PixmaNts/withnav/issues)
 
-WithNav pair-programming companion client. Launches the `withnav-lsp` language server over stdio,
+WithNav pair-programming companion client. Launches the `nav lsp` language server over stdio,
 renders its end-of-line remarks, offers inline suggestions from the reflex layer, forwards
 diagnostics and user feedback, and hosts the Cognition chat view.
 
@@ -25,7 +25,7 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 - **Suggestions**: ghost text from the reflex layer, as native inline completion. Turn them off with
   `withnav.reflex.enabled`.
 - **Cognition chat**: a webview in the WithNav activity-bar container (view id `withnav.chat`, named
-  "Nav"). It talks to the session server that `withnav-lsp` runs over HTTP and SSE. It streams
+  "Nav"). It talks to the session server that `nav lsp` runs over HTTP and SSE. It streams
   the conversation, lists past conversations of the workspace to resume, and has a model picker for
   new and open conversations (switches during a running turn apply after it finishes) and a gauge of the next request’s estimated context against the model’s window; hover or focus it for the breakdown, input budget and last request’s count.
   Type `/` for a keyboard-accessible command palette: `/model`, `/variant`, `/agent`, `/compact`,
@@ -46,7 +46,9 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 
 ## Requirements
 
-- A `withnav-lsp` binary on `PATH`, or set `withnav.serverPath` to an absolute path.
+- A `nav` binary on `PATH`, or set `withnav.serverPath` to its absolute path. The extension
+  appends `lsp`; do not put the subcommand in the setting. Old `withnav-lsp` and `navai-lsp`
+  paths use `nav` in the same directory, with a one-time notice to update the setting.
 - Node.js 18+ to build.
 
 ## Build and package
@@ -100,7 +102,7 @@ Keybindings are active only when a remark is visible (`withnav.remarkVisible` co
 | Setting | Default | Description |
 | --- | --- | --- |
 | `withnav.enabled` | `true` | Enable Nav |
-| `withnav.serverPath` | `withnav-lsp` | Server binary (PATH or absolute) |
+| `withnav.serverPath` | `nav` | Binary (PATH or absolute), launched with `lsp` |
 | `withnav.idleMs` | `3000` | Idle delay before Nav may speak |
 | `withnav.minChangedLines` | `3` | Minimum changed lines to consider speaking |
 | `withnav.cooldownMs` | `20000` | Cooldown between remarks on one file |

@@ -17,10 +17,10 @@ pub fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if !matches!(cli.command, crate::app::Commands::Tui(_)) {
-        init_tracing();
-    } else {
-        crate::app::init_tui_logging();
+    match &cli.command {
+        crate::app::Commands::Lsp(_) => crate::app::lsp::init_tracing_stderr(),
+        crate::app::Commands::Tui(_) => crate::app::init_tui_logging(),
+        _ => init_tracing(),
     }
     let code = dispatch(cli).await?;
     std::process::exit(code);

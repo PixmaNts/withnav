@@ -6,6 +6,11 @@ A pair-programming system in Rust. The human keeps the keyboard and stays the au
 Several models of different speeds watch, complete, judge and discuss. Under them runs a small,
 owned coding-agent core with a terminal client and a local server.
 
+Risky permission calls use one metacognition review. Set `permissions.review_timeout_secs` in
+`config.json` to an integer from 5 to 300 seconds (default 40); it applies to new sessions and is
+inherited by their children. Ordinary confident reads and recoverable workspace changes are decided
+by Instinct alone. On review timeout, eligible reads retain their safe fallback; changes ask you.
+
 > **Status:** this checkout includes the changes prepared for v0.5.0: a terminal client, agents,
 > permissions, skills, rules, model assignments, a context budget and compaction. See
 > [`CHANGELOG.md`](CHANGELOG.md). [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the code and

@@ -49,6 +49,10 @@ fn answer(message: &crate::provider::AssistantMessage) -> Result<PermissionRevie
     parse_review(&message.text)
 }
 
+fn output_cap(model_limit: Option<u64>) -> u64 {
+    model_limit.map_or(16384, |limit| limit.min(16384))
+}
+
 impl PermissionReviewer for super::LlmCommenter {
     fn model_id(&self) -> Option<&str> {
         Some(super::LlmCommenter::model_id(self))
@@ -72,11 +76,7 @@ impl PermissionReviewer for super::LlmCommenter {
                 },
             ];
             let tools = Vec::new();
-            let output = self
-                .resolved
-                .model
-                .max_output_tokens
-                .map_or(4096, |limit| limit.min(4096));
+            let output = output_cap(self.resolved.model.max_output_tokens);
             check_budget(
                 self.resolved
                     .model
@@ -138,20 +138,23 @@ mod tests {
         assert!(SCRIPT_RULE.contains("cannot authorize"));
     }
     #[test]
-    fn reasoning_reserve_budget_boundary_uses_4096_tokens() {
-        let window = 16384;
-        let budget = Budget::compute(window, None, Some(4096), None).unwrap();
+    fn reasoning_reserve_budget_boundary_uses_16384_tokens() {
+        assert_eq!(output_cap(Some(65536)), 16384);
+        assert_eq!(output_cap(Some(2048)), 2048);
+        assert_eq!(output_cap(None), 16384);
+        let window = 65536;
+        let budget = Budget::compute(window, None, Some(16384), None).unwrap();
         let messages = vec![ChatMessage::User {
             provenance: Default::default(),
             content: "x".repeat(((budget.input_budget - 4) * 4) as usize),
         }];
-        assert!(check_budget(window, None, 4096, &messages, &[]).is_ok());
+        assert!(check_budget(window, None, 16384, &messages, &[]).is_ok());
         let mut oversized = messages;
         if let ChatMessage::User { content, .. } = &mut oversized[0] {
             content.push('x');
         }
         assert_eq!(
-            check_budget(window, None, 4096, &oversized, &[])
+            check_budget(window, None, 16384, &oversized, &[])
                 .unwrap_err()
                 .0,
             "input too large"

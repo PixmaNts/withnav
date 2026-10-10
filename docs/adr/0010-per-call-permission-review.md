@@ -66,3 +66,26 @@ configured context window (`tokens * 3 / 2` bytes, fallback 16 KiB), preserving 
 turn or marking the request incomplete. Metacognition retains 64 KiB; the plan guard is unchanged.
 Typed edit/write allow-once precedents bind canonical file and scope until the next Captain turn,
 never sensitive or protected-config paths, and never restored from durable history.
+
+## Amendment — 2026-10-10: Instinct decides ordinary calls; metacognition reviews only risky ones
+
+Ten of eleven real reviews timed out. OmniRoute measured 45–54 KB of messages and one 40.4 s
+answer, with 3817 reasoning tokens consuming most of the old 4096-token output allowance.
+Ordinary permission decisions must not wait for that reflective pass.
+
+Confident read-only calls and confident inside, recoverable changes are Instinct's decision alone.
+Local changes need no known-program vocabulary or task-fit score ≥ 0.6; a score < 0.2 still requires
+review because it clearly contradicts the Captain. Remote own-work publication keeps its prior
+requirements. Destruction, shared publication, sensitive changes, outside changes, opaque execution,
+scripts, unsafe executable identity, removal/move and unrecoverable overwrites retain their floors.
+Scheduling wrappers expose the inner command; lookups are reads. Regex escapes inside double quotes
+are literal, while shell expansion remains opaque. Secure current-user shim directories may contain
+symlinks to trusted root-owned binaries, never user-owned regular executables or workspace binaries.
+
+A structured Captain choice authenticates the selected option as the agreed task, never permission
+for unrelated effects. Metacognition uses its configured variant (normally `low`), min(model output
+limit, 16384) tokens, the latest 16 KiB of conversation (latest Captain turn intact), and three tool
+calls with at most 512 bytes of output each. Review uses one configurable deadline:
+`permissions.review_timeout_secs`, default 40, range 5–300. Timeout retains the read-only fallback;
+other effects ask the Captain. Evidence records input bytes and deadline. Instinct is System One;
+no reasoning parameter is added. This remains advisory, not a sandbox.

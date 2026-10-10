@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-10-10
+
+WithNav 0.7.4 installs on NixOS from the repository itself: a flake builds `nav` and the VS Code
+extension, and its overlay adds both to a system configuration.
+
 ### Added
 
 - A Nix flake at the repository root builds `nav` and the VS Code extension

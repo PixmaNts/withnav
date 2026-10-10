@@ -4,12 +4,32 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-10
+
+WithNav 0.7.2 makes permissions smarter and long conversations sturdier. Instinct now tells a
+local, recoverable change from a destructive or public one, so commits, builds, tests and reads no
+longer wait for review; the review sees the ongoing task, recent work and the scripts a command
+runs, and remembers what you already approved in the conversation. You can allow WithNav config
+edits for a whole conversation, and a user skill's scripts once per machine. Compaction is written
+by the metacognition model in rolling chunks, after Instinct prunes old tool outputs. The VS Code
+panel renders full Markdown, keeps text and tool calls in order, opens file references, follows
+your editor's font size, and shows a clear Safe mode / Bypass active indicator.
+
 ### Added
 
 - **Allow a user skill's script once on this machine.** A deliberate permission
   answer persists the skill location and each approved script's SHA-256. Reviews
   still run; changes, rejects and protected targets still ask. Grants can be
   listed and revoked through `/v1/skill-grants`; Settings controls are follow-up.
+- **Permission reviewers can read the local script a shell call runs.** The host attaches
+  bounded, untrusted script text without following links or reading protected configuration
+  or credentials. Complete evidence is SHA-256 checked before dispatch; changes ask you again.
+- **Allow WithNav config updates for the rest of a conversation.** Protected-config
+  requests offer a session-only answer in the terminal, editor and browser. Reviews still
+  run; credentials, review settings and changed scratch roots still require your answer.
+- **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
+  assigned model's window and fall back to the session model on provider errors; configuration
+  can opt out or tune chunk size. Compaction events report the writer and successful passes.
 
 ### Changed
 
@@ -23,49 +43,30 @@ requests land in `develop`.
 - **Permission review follows the ongoing task rather than just the latest small talk.**
   Review sees bounded human intent and recent work with provenance, retries one eligible timeout,
   and reuses typed Captain approvals for the same safe command and scope without overriding rejects.
-
 - **Instinct recognizes ordinary repository work without unnecessary review.** Described
   choices and confidence checks on only the deciding answers restore the fast permission path;
   destructive, shared, sensitive and host-unsafe calls retain their existing review floors.
-
 - **Long conversations compact with relevance pruning and learned message limits.** Instinct
   scores only old, unpinned tool outputs before metacognition writes its rolling summary;
   unavailable scoring leaves the existing path intact. Provider size limits survive new sessions,
   and failed `/compact` commands no longer duplicate their error in VS Code.
-
 - **VS Code answers show text and tool calls in the order they happened.** Each model step
   keeps its own Markdown and reasoning; consecutive tools share a foldable progress group.
   Permission, pause and question cards stay visible, and replayed tool groups start closed.
-
 - **VS Code command results stay concise.** Selection changes no longer dump JSON;
   unknown command data stays available in a closed Details disclosure.
 - **File references in VS Code answers open at the referenced line.** Bare and inline-code
   paths become keyboard-accessible links; relative paths try every workspace root,
   and missing or outside-workspace files explain why they cannot open.
-
 - **VS Code answers render GitHub-flavoured Markdown safely.** Tables, quotes, nested
   and task lists, strikethrough and hard breaks render without interpreting raw HTML.
   Streaming redraws are coalesced per animation frame.
 - **Permission mode is visible without cluttering your conversation.** Safe mode and
   Bypass active replace the ambiguous toggle labels; mode changes update the header
   without adding transcript lines in the editor, browser or terminal.
-
 - **Cognition and Settings text scales with your editor.** Secondary text scales too,
   and conversation, tool and card content uses the readable theme foreground.
   Sidebar conversations retain the sidebar surface; child editor tabs use the editor surface.
-### Added
-
-- **Permission reviewers can read the local script a shell call runs.** The host attaches
-  bounded, untrusted script text without following links or reading protected configuration
-  or credentials. Complete evidence is SHA-256 checked before dispatch; changes ask you again.
-
-- **Allow WithNav config updates for the rest of a conversation.** Protected-config
-  requests offer a session-only answer in the terminal, editor and browser. Reviews still
-  run; credentials, review settings and changed scratch roots still require your answer.
-
-- **Metacognition writes compacted conversation memory in rolling chunks.** Summaries use the
-  assigned model's window and fall back to the session model on provider errors; configuration
-  can opt out or tune chunk size. Compaction events report the writer and successful passes.
 
 ## [0.7.1] - 2026-10-09
 

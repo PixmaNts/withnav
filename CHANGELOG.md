@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The VS Code Settings page no longer shows a theme setting.** The panel follows the editor's
+  theme, so that row had no effect there. Change the terminal and WebUI theme from the TUI
+  (`/themes`) or the WebUI Settings.
+
 ## [0.7.5] - 2026-10-11
 
 WithNav 0.7.5 lets ordinary work run without waiting on review. Instinct alone decides confident

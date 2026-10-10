@@ -22,6 +22,14 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Read-only work no longer asks just because it is outside the workspace.** Instinct decides
+  ordinary reads, including fd redirections and read-filter pipes; credential reads and real
+  writes keep their safeguards. A Captain-approved file edit covers subsequent edits of that
+  same file until your next message.
+- **Starting another task in the same conversation keeps working.** Permission review sees
+  the conversation and your selected skill, not the first greeting as a permanent task. Its
+  input budget follows the Instinct model's window instead of squeezing everything into 16 KiB.
+
 - **Local-instruction ordering tests no longer fail on random temporary paths.**
   Checks compare complete labelled sections and source order, rather than matching short
   content tokens that can also occur in a file's path. Instruction discovery is unchanged.

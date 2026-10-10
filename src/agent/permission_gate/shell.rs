@@ -429,9 +429,21 @@ pub(super) fn read_floor(command: &str) -> bool {
             let program = basename(&words[0]);
             destructive(words)
                 || words[0].starts_with("./")
+                // These write or change files through their operands rather than
+                // a `>` redirection, so the redirection parser cannot see them.
                 || matches!(
                     program,
-                    "cp" | "mv" | "rm" | "unlink" | "shred" | "truncate"
+                    "cp" | "mv"
+                        | "rm"
+                        | "unlink"
+                        | "shred"
+                        | "truncate"
+                        | "tee"
+                        | "ln"
+                        | "install"
+                        | "chmod"
+                        | "chown"
+                        | "chgrp"
                 )
                 || (program == "git"
                     && git_subcommand(words).is_none_or(|i| {
@@ -672,6 +684,9 @@ mod tests {
         ] {
             assert_eq!(overwrite_paths(command), Some(vec![target.into()]));
             assert!(!read_only(&segments(command).unwrap()[0]));
+        }
+        for command in ["ls | tee out.txt", "chmod +x run.sh", "ln -s a b"] {
+            assert!(read_floor(command), "{command}");
         }
     }
 

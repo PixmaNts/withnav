@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- A Nix flake at the repository root builds `nav` and the VS Code extension
+  (`nix build .#withnav .#vscode-withnav`), and its `overlays.default` adds both to a NixOS system.
+  `Cargo.lock` is now committed so builds are reproducible.
+
 ## [0.7.3] - 2026-10-10
 
 WithNav 0.7.3 stops permission prompts from piling up in real sessions. Plain reads run when

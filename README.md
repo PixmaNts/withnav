@@ -73,6 +73,11 @@ install -m755 target/release/nav ~/.local/bin/
 code --install-extension vscode-withnav/withnav-*.vsix
 ```
 
+On NixOS, the flake at the root builds both: `nix build .#withnav .#vscode-withnav`. In a
+system flake, add this repository as an input and apply `overlays.default`; it provides
+`pkgs.withnav` (the `nav` command) and `pkgs.vscode-withnav` (for Home Manager's
+`programs.vscode.profiles.<name>.extensions`).
+
 ## Configuration and data
 
 `models.json` is a **catalogue**, not a list of choices. Each model name is

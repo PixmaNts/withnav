@@ -10,8 +10,9 @@ use withnav::session::preflight::Preflight;
 
 /// A hang guard for waits on a child process, not a performance assertion. `nav` starts in
 /// about 45 ms alone and 0.1 to 1.4 s on a CPU-limited, oversubscribed container; on the
-/// 2026-10-12 GitHub runner the 5 s guard fired in 2 of 3 runs. 30 s only fires on a real
-/// hang or deadlock.
+/// 2026-10-12 GitHub runner the 5 s guard fired in 2 of 3 runs, because of a lost `initialized`
+/// frame (see `lsp_workspace_catalog_and_project_primary_override_are_authoritative`), not
+/// slowness. 30 s leaves load headroom and still fires on a real hang or deadlock.
 const HANG_GUARD: Duration = Duration::from_secs(30);
 
 fn fixture(config: Value) -> tempfile::TempDir {

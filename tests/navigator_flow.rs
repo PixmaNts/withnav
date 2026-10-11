@@ -7,11 +7,40 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+use withnav::navigator::{Metacognition, ModelError, Remark, RemarkContext};
 
 mod common;
 use common::navigator::{
     big_edit, Nav, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, URI,
 };
+
+struct ObservedCommenter {
+    inner: MockCommenter,
+    started: tokio::sync::Semaphore,
+}
+
+impl ObservedCommenter {
+    async fn wait_for_calls(&self, count: u32) {
+        tokio::time::timeout(Duration::from_secs(20), self.started.acquire_many(count))
+            .await
+            .expect("metacognition calls started")
+            .expect("metacognition call signal open")
+            .forget();
+    }
+}
+
+impl Metacognition for ObservedCommenter {
+    fn remark<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Remark>, ModelError>> {
+        Box::pin(async move {
+            self.started.add_permits(1);
+            self.inner.remark(ctx, cancel).await
+        })
+    }
+}
 
 /// The trigger records of the log, in order.
 fn triggers(client: &Nav) -> Vec<Value> {
@@ -66,7 +95,15 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
         vec![Answer::Remark(0, "old"), Answer::Remark(0, "new")],
         gate.clone(),
     );
-    let mut client = Nav::start(mock.clone()).await;
+    let observed = Arc::new(ObservedCommenter {
+        inner: mock.clone(),
+        started: tokio::sync::Semaphore::new(0),
+    });
+    let mut client = Nav::start_with(mock.clone(), serde_json::json!({}), |mut deps, _| {
+        deps.commenter = observed.clone();
+        deps
+    })
+    .await;
     client.open_and_edit().await;
     client.did_save(URI).await;
     client.expect_status("thinking").await;
@@ -75,7 +112,7 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
         .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
         .await;
     client.did_save(URI).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    observed.wait_for_calls(2).await;
     assert_eq!(mock.calls(), 2, "the newer text asked for its own remark");
 
     gate.cancel();

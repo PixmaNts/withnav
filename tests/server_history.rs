@@ -17,7 +17,8 @@ use withnav::server::AppState;
 
 mod common;
 use common::server::{
-    collect_until, list_sessions, post_create_session, post_message_ok, spawn_server, TestServerConfig,
+    collect_until, list_sessions, post_create_session, post_message_ok, spawn_server,
+    TestServerConfig,
 };
 use common::sse::{spawn_capturing_provider, text_response as done_response, CapturingProvider};
 
@@ -36,7 +37,10 @@ async fn wait_for_list(state: &AppState, base: &str, workspace: &Path, min: usiz
         state.history().flush().await.expect("flush");
         let body = list_sessions(&reqwest::Client::new(), base, workspace).await;
         let sessions = body["sessions"].as_array().expect("sessions").clone();
-        assert!(sessions.len() >= min, "expected {min} sessions: {sessions:?}");
+        assert!(
+            sessions.len() >= min,
+            "expected {min} sessions: {sessions:?}"
+        );
         sessions
     })
     .await
@@ -356,8 +360,8 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
 /// The messages of the last request the mock provider saw.
 fn last_request_messages(mock: &CapturingProvider) -> Vec<Value> {
     let requests = mock.bodies();
-    let body: Value = serde_json::from_str(requests.last().expect("provider called"))
-        .expect("request json");
+    let body: Value =
+        serde_json::from_str(requests.last().expect("provider called")).expect("request json");
     body["messages"].as_array().expect("messages").clone()
 }
 
@@ -476,7 +480,12 @@ async fn delete_removes_from_memory_and_store() {
     // Store is empty for the workspace after the writer acknowledges deletion.
     let client = reqwest::Client::new();
     let body = tokio::time::timeout(Duration::from_secs(10), async {
-        server.state.history().flush().await.expect("flush deletion");
+        server
+            .state
+            .history()
+            .flush()
+            .await
+            .expect("flush deletion");
         list_sessions(&client, &server.base, &server.ws).await
     })
     .await

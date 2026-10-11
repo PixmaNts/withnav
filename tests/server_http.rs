@@ -114,8 +114,13 @@ async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) 
 #[tokio::test]
 async fn health_returns_200_ok_body() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, value) =
-        request_json(&app(TestServerConfig::unreachable(tmp.path()).state()), "GET", "/v1/health", None).await;
+    let (status, value) = request_json(
+        &app(TestServerConfig::unreachable(tmp.path()).state()),
+        "GET",
+        "/v1/health",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value, json!({ "status": "ok" }));
 }

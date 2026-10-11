@@ -27,7 +27,9 @@ fn message_received_type_roundtrips_optional_captain_selection() {
 }
 use common::server::{captain_command, collect_until, TestServerConfig};
 use common::sse::CapturingProvider;
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_response as answer, tool_call_chunk};
+use common::sse::{
+    http_sse, spawn_capturing_provider, sse_body, text_response as answer, tool_call_chunk,
+};
 
 use common::TestEnv as Env;
 

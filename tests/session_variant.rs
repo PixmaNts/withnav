@@ -493,7 +493,10 @@ async fn serve_down(server: &wiremock::MockServer) {
     mount_models_response(server, wiremock::ResponseTemplate::new(503)).await;
 }
 
-async fn mount_models_response(server: &wiremock::MockServer, response: wiremock::ResponseTemplate) {
+async fn mount_models_response(
+    server: &wiremock::MockServer,
+    response: wiremock::ResponseTemplate,
+) {
     server.reset().await;
     wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
         .respond_with(response)

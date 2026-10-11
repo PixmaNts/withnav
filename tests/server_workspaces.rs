@@ -117,12 +117,48 @@ async fn workspace_mutations_require_auth_and_existing_absolute_directories_and_
         .state();
     let missing = tmp.path().join("missing");
     for (case, method, path, authenticated, expected) in [
-        ("unauthenticated reopen", "POST", tmp.path(), false, StatusCode::UNAUTHORIZED),
-        ("relative reopen", "POST", Path::new("relative"), true, StatusCode::BAD_REQUEST),
-        ("missing reopen", "POST", missing.as_path(), true, StatusCode::BAD_REQUEST),
-        ("unauthenticated hide", "DELETE", tmp.path(), false, StatusCode::UNAUTHORIZED),
-        ("relative hide", "DELETE", Path::new("relative"), true, StatusCode::BAD_REQUEST),
-        ("missing hide", "DELETE", missing.as_path(), true, StatusCode::BAD_REQUEST),
+        (
+            "unauthenticated reopen",
+            "POST",
+            tmp.path(),
+            false,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "relative reopen",
+            "POST",
+            Path::new("relative"),
+            true,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "missing reopen",
+            "POST",
+            missing.as_path(),
+            true,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "unauthenticated hide",
+            "DELETE",
+            tmp.path(),
+            false,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "relative hide",
+            "DELETE",
+            Path::new("relative"),
+            true,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "missing hide",
+            "DELETE",
+            missing.as_path(),
+            true,
+            StatusCode::BAD_REQUEST,
+        ),
     ] {
         let (status, body) = request(&state, method, &uri(path), Value::Null, authenticated).await;
         assert_eq!(status, expected, "{case}: {body}");

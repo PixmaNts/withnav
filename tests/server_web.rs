@@ -119,23 +119,26 @@ async fn hashed_assets_are_cached_for_good() {
         .filter(|path| path.extension().is_some_and(|x| x == "js" || x == "css"))
         .collect();
     assets.sort();
-    assert!(!assets.is_empty(), "webui/dist/assets must contain JS/CSS files");
+    assert!(
+        !assets.is_empty(),
+        "webui/dist/assets must contain JS/CSS files"
+    );
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = web_state(tmp.path(), vec![]);
     for file in assets {
-    let name = file.file_name().unwrap().to_string_lossy().into_owned();
-    let (status, headers, _) = get(&state, &format!("/assets/{name}"), false).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        headers["cache-control"],
-        "public, max-age=31536000, immutable"
-    );
-    let expected = if name.ends_with(".js") {
-        "text/javascript; charset=utf-8"
-    } else {
-        "text/css; charset=utf-8"
-    };
-    assert_eq!(headers["content-type"], expected, "asset {name}");
+        let name = file.file_name().unwrap().to_string_lossy().into_owned();
+        let (status, headers, _) = get(&state, &format!("/assets/{name}"), false).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        let expected = if name.ends_with(".js") {
+            "text/javascript; charset=utf-8"
+        } else {
+            "text/css; charset=utf-8"
+        };
+        assert_eq!(headers["content-type"], expected, "asset {name}");
     }
 }
 

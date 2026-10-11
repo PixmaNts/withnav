@@ -497,7 +497,9 @@ async fn a_wake_never_cancels_an_open_permission_request() {
     }
     let wake_guard = Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .and(wiremock::matchers::body_string_contains("a wake while asking"))
+        .and(wiremock::matchers::body_string_contains(
+            "a wake while asking",
+        ))
         .respond_with(sse_response(&[done]))
         .with_priority(2)
         .expect(1..)

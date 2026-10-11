@@ -443,7 +443,9 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
         .await
         .is_err());
 }
-use common::server::{captain_command, collect_until, request_json, stored_events as events, TestServerConfig};
+use common::server::{
+    captain_command, collect_until, request_json, stored_events as events, TestServerConfig,
+};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
 
 use common::TestEnv as Env;

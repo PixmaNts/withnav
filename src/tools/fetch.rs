@@ -517,6 +517,9 @@ pub fn conversion_child(args: &[String]) -> Option<i32> {
     if args.get(1).map(String::as_str) != Some(CONVERT_SUBCOMMAND) {
         return None;
     }
+    if args.len() != 4 {
+        return Some(2);
+    }
     let format = match (
         args.get(2).map(String::as_str),
         args.get(3).map(String::as_str),

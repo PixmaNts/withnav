@@ -211,4 +211,18 @@ fn nav_converts_under_the_child_memory_limit() {
     assert!(out.status.success(), "{exe}: {:?}", out.status);
     assert!(text.contains("# Hello"), "{exe}: {text}");
     assert!(text.contains("[link](https://x.test/)"), "{exe}: {text}");
+
+    for args in [
+        vec!["internal-html-convert", "--format"],
+        vec!["internal-html-convert", "--format", "markdown", "extra"],
+    ] {
+        let out = Command::new(exe)
+            .args(&args)
+            .env_clear()
+            .stdin(Stdio::null())
+            .output()
+            .expect("run malformed conversion child");
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
 }

@@ -30,18 +30,8 @@ impl Tool for DecideSubagent {
         _: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
-            if cancel.is_cancelled() {
-                return Err(ToolError::Canceled);
-            }
-            let denied = |message: String| ToolError::Denied {
-                code: "subagent_decision".into(),
-                message,
-            };
-            let child = args["child_id"]
-                .as_str()
-                .ok_or_else(|| denied("child_id must be a string".into()))?
-                .parse()
-                .map_err(|_| denied("invalid child_id".into()))?;
+            let denied = |message| super::subagent_denied("subagent_decision", message);
+            let child = super::parse_child_id(&args, &cancel, "subagent_decision")?;
             let stop = match args["decision"].as_str() {
                 Some("continue") => false,
                 Some("stop") => true,

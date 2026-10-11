@@ -53,7 +53,7 @@ pub(super) enum Operation {
     },
     Published {
         operation: Box<Operation>,
-        event: crate::bus::event::EventEnvelope,
+        event: Arc<crate::bus::event::EventEnvelope>,
     },
     Observe {
         state: State,
@@ -144,22 +144,7 @@ pub(super) fn apply(tx: &Transaction<'_>, operation: Operation) -> Result<(), Wr
         }
         Operation::Published { operation, event } => {
             apply(tx, *operation)?;
-            tx.execute(
-                "INSERT INTO events(session_id,seq,kind,envelope) VALUES(?1,?2,?3,?4)",
-                params![
-                    event.session_id.to_string(),
-                    sql_seq(event.seq)?,
-                    event.kind,
-                    serde_json::to_string(&event)?
-                ],
-            )?;
-            let touched = tx.execute(
-                "UPDATE sessions SET updated_at=?2,last_seq=MAX(last_seq,?3) WHERE id=?1",
-                params![event.session_id.to_string(), now, sql_seq(event.seq)?],
-            )?;
-            if touched == 0 {
-                return Err(WriteError::UnknownSession(event.session_id));
-            }
+            super::append_durable_event(tx, event.session_id, event.as_ref())?;
         }
         Operation::Observe { state, goals } => {
             let exists = tx
@@ -263,7 +248,7 @@ impl HistoryStore {
     pub(crate) async fn memory_publish_expired(
         &self,
         goal: String,
-        event: crate::bus::event::EventEnvelope,
+        event: Arc<crate::bus::event::EventEnvelope>,
     ) -> Result<(), String> {
         self.acked(Write::Memory(Operation::Published {
             operation: Box::new(Operation::Expire { goal }),
@@ -275,7 +260,7 @@ impl HistoryStore {
         &self,
         state: State,
         goals: Vec<Goal>,
-        event: crate::bus::event::EventEnvelope,
+        event: Arc<crate::bus::event::EventEnvelope>,
     ) -> Result<(), String> {
         self.acked(Write::Memory(Operation::Published {
             operation: Box::new(Operation::Observe { state, goals }),
@@ -290,7 +275,7 @@ impl HistoryStore {
         body: EpisodeBody,
         model: String,
         usage: String,
-        event: crate::bus::event::EventEnvelope,
+        event: Arc<crate::bus::event::EventEnvelope>,
     ) -> Result<(), String> {
         self.acked(Write::Memory(Operation::Published {
             operation: Box::new(Operation::Complete {

@@ -681,6 +681,54 @@ async fn failed_memory_commit_publishes_nothing_and_rolls_back_goal() {
 }
 
 #[tokio::test]
+async fn conflicting_memory_event_rolls_back_observation_without_replacing_history() {
+    let f = fixture(false).await;
+    let session = f.watcher.session;
+    let existing = EventEnvelope::new(
+        session,
+        1,
+        EventKind::MessageReceived,
+        serde_json::json!({"source":"captain","content":"original"}),
+    );
+    f.watcher
+        .store
+        .append_event_acked(session, existing.clone())
+        .await
+        .unwrap();
+    let error = f
+        .watcher
+        .store
+        .memory_publish_observe(
+            State {
+                session: session.to_string(),
+                workspace: f.watcher.workspace.clone(),
+                last_turn: 1,
+                active_goal: None,
+                version: 1,
+            },
+            vec![],
+            Arc::new(EventEnvelope::new(
+                session,
+                1,
+                EventKind::MemoryGoalObserved,
+                serde_json::json!({}),
+            )),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("conflicting event"), "{error}");
+    assert!(f
+        .watcher
+        .store
+        .memory_state(&session.to_string())
+        .await
+        .unwrap()
+        .is_none());
+    let loaded = f.watcher.store.load(session).await.unwrap().unwrap();
+    assert_eq!(loaded.envelopes, vec![existing]);
+}
+
+#[tokio::test]
 async fn memory_events_are_durable_before_publication() {
     let mut f = fixture(false).await;
     let one = turn(&f.watcher, 1, "atomic goal").await;

@@ -1442,6 +1442,48 @@ fn finish_child_link_sync(
     row.decode().map(Some)
 }
 
+fn append_durable_event(
+    tx: &rusqlite::Transaction<'_>,
+    id: Ulid,
+    envelope: &EventEnvelope,
+) -> Result<(), WriteError> {
+    let seq = i64::try_from(envelope.seq)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let payload = serde_json::to_string(envelope)?;
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![id.to_string(), seq, envelope.kind, payload],
+    )?;
+    if inserted == 0 {
+        let (kind, existing): (String, String) = tx.query_row(
+            "SELECT kind, envelope FROM events WHERE session_id=?1 AND seq=?2",
+            params![id.to_string(), seq],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        // Compare JSON values so formatting of an existing row is immaterial.
+        if kind != envelope.kind
+            || serde_json::from_str::<serde_json::Value>(&existing)?
+                != serde_json::from_str::<serde_json::Value>(&payload)?
+        {
+            return Err(WriteError::EventConflict {
+                id,
+                seq: envelope.seq,
+            });
+        }
+    }
+    let touched = tx.execute(
+        "UPDATE sessions SET updated_at = ?2, last_seq = MAX(last_seq, ?3)
+         WHERE id = ?1",
+        params![id.to_string(), now_rfc3339(), seq],
+    )?;
+    if touched == 0 {
+        // Dropping the transaction rolls the orphan event back.
+        return Err(WriteError::UnknownSession(id));
+    }
+    Ok(())
+}
+
 fn insert_committed_event(
     tx: &rusqlite::Transaction<'_>,
     envelope: &EventEnvelope,
@@ -1757,38 +1799,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     queue_permission_resolution(&tx, parent, &payload)?;
                 }
             }
-            let payload = serde_json::to_string(envelope.as_ref())?;
-            let inserted = tx.execute(
-                "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![id.to_string(), envelope.seq as i64, envelope.kind, payload],
-            )?;
-            if inserted == 0 {
-                let (kind, existing): (String, String) = tx.query_row(
-                    "SELECT kind, envelope FROM events WHERE session_id=?1 AND seq=?2",
-                    params![id.to_string(), envelope.seq as i64],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?;
-                // Compare JSON values so formatting of an existing row is immaterial.
-                if kind != envelope.kind
-                    || serde_json::from_str::<serde_json::Value>(&existing)?
-                        != serde_json::from_str::<serde_json::Value>(&payload)?
-                {
-                    return Err(WriteError::EventConflict {
-                        id,
-                        seq: envelope.seq,
-                    });
-                }
-            }
-            let touched = tx.execute(
-                "UPDATE sessions SET updated_at = ?2, last_seq = MAX(last_seq, ?3)
-                 WHERE id = ?1",
-                params![id.to_string(), now_rfc3339(), envelope.seq as i64],
-            )?;
-            if touched == 0 {
-                // Dropping the transaction rolls the orphan event back.
-                return Err(WriteError::UnknownSession(id));
-            }
+            append_durable_event(&tx, id, envelope.as_ref())?;
         }
         Write::SaveTranscript { id, transcript } => {
             let payload = serde_json::to_string(&transcript)?;

@@ -221,7 +221,10 @@ async fn run_steps_inner(
             &tools,
         )
         .total();
-        if actor.input_budget.is_some_and(|budget| base_tokens > budget) {
+        if actor
+            .input_budget
+            .is_some_and(|budget| base_tokens > budget)
+        {
             return Ok(RunOutcome::NeedsCompaction {
                 steps_left: budget - step,
             });
@@ -234,7 +237,10 @@ async fn run_steps_inner(
                 memory
                     .admitted_with_budget(
                         &actor.model,
-                        actor.input_budget.unwrap_or(u64::MAX).saturating_sub(base_tokens),
+                        actor
+                            .input_budget
+                            .unwrap_or(u64::MAX)
+                            .saturating_sub(base_tokens),
                     )
                     .await
             }

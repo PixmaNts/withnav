@@ -112,6 +112,15 @@ async fn resolve(
     resolve_chat(&catalog, &r, "key", &ClientCache::new()).await
 }
 
+async fn resolve_fixture(model: &str, window: Option<u64>) -> (ResolvedChat, MockServer) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve(FIXTURE).await;
+    let chat = resolve(&dir, &server, model, ApiKind::Chat, window)
+        .await
+        .unwrap();
+    (chat, server)
+}
+
 #[tokio::test]
 async fn exact_id_match_including_prefixed_ids() {
     let models = parse_models(FIXTURE.as_bytes()).unwrap();
@@ -137,10 +146,7 @@ async fn exact_id_match_including_prefixed_ids() {
 
 #[tokio::test]
 async fn opus_resolves_to_one_million_without_override() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    let r = resolve(&dir, &server, "cc/claude-opus-5-5", ApiKind::Chat, None)
-        .await
-        .unwrap();
+    let (r, _server) = resolve_fixture("cc/claude-opus-5-5", None).await;
     assert_eq!(r.window, 1_000_000);
     assert_eq!(r.window_source, "discovered.context_length");
     assert_eq!(r.max_input_tokens, Some(900_000));
@@ -199,16 +205,7 @@ async fn explicit_window_equal_to_the_reported_one_is_no_discrepancy() {
 
 #[tokio::test]
 async fn explicit_window_makes_no_network_call() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    let r = resolve(
-        &dir,
-        &server,
-        "cc/claude-opus-5-5",
-        ApiKind::Chat,
-        Some(200_000),
-    )
-    .await
-    .unwrap();
+    let (r, server) = resolve_fixture("cc/claude-opus-5-5", Some(200_000)).await;
     assert_eq!(r.window, 200_000);
     assert_eq!(r.discrepancy, None, "nothing cached, nothing to compare");
     assert_eq!(requests(&server).await, 0);
@@ -216,10 +213,7 @@ async fn explicit_window_makes_no_network_call() {
 
 #[tokio::test]
 async fn max_input_tokens_is_the_labelled_fallback() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    let r = resolve(&dir, &server, "typesafe/jev-1.13", ApiKind::Chat, None)
-        .await
-        .unwrap();
+    let (r, _server) = resolve_fixture("typesafe/jev-1.13", None).await;
     assert_eq!(r.window, 64_000);
     assert_eq!(r.window_source, "discovered.max_input_tokens (fallback)");
 }

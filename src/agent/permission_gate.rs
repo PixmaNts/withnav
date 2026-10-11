@@ -1432,6 +1432,9 @@ fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBu
         return super::permissions::requested_path(std::path::Path::new(word), cx).ok();
     };
     let (login, rest) = tilde.split_once('/').unwrap_or((tilde, ""));
+    // Repeated shell separators are still relative to the expanded home/PWD.
+    // Path::join would otherwise replace that base with an absolute suffix.
+    let rest = rest.trim_start_matches('/');
     if login == "+" {
         return Some(cx.workspace.join(rest));
     }
@@ -1654,6 +1657,7 @@ mod tests {
         for command in [
             format!("cat ~{user}/.config/withnav/auth.json"),
             format!("printf x > ~{user}/.config/withnav/x"),
+            format!("printf x > ~{user}//.config/withnav/models.json"),
         ] {
             let call = ToolCall {
                 id: "protected-tilde".into(),
@@ -1684,6 +1688,27 @@ mod tests {
             bash_requested_path("~+/src", &actor.tool_context),
             Some(actor.tool_context.workspace.join("src"))
         );
+        for (word, base) in [
+            (format!("~{user}//.config/withnav/x"), home),
+            (
+                "~root//.config/withnav/x".into(),
+                nix::unistd::User::from_name("root").unwrap().unwrap().dir,
+            ),
+            (
+                "~+//.config/withnav/x".into(),
+                actor.tool_context.workspace.clone(),
+            ),
+            (
+                "~//.config/withnav/x".into(),
+                std::env::var_os("HOME").unwrap().into(),
+            ),
+        ] {
+            assert_eq!(
+                bash_requested_path(&word, &actor.tool_context),
+                Some(base.join(".config/withnav/x")),
+                "{word}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -3012,16 +3037,20 @@ mod tests {
             };
             let facts = json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots});
             assert!(shell::identity_floor(&["helper".into()], &facts));
+            let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+                .unwrap()
+                .unwrap();
             let mut count = 0;
             for row in corpus.into_iter().filter(|row| row["fixture"].is_string()) {
                 assert!(matches!(
                     row["fixture"].as_str(),
-                    Some("relative_path" | "overwrite_recovery")
+                    Some("relative_path" | "overwrite_recovery" | "protected_config")
                 ));
                 count += 1;
                 let command = row["command"]
                     .as_str()
                     .unwrap()
+                    .replace("~pixma/", &format!("~{}/", user.name))
                     .replace("/tmp/daemon", base.join("daemon").to_str().unwrap())
                     .replace("/tmp/outside", base.join("outside").to_str().unwrap());
                 let call = ToolCall {
@@ -3051,6 +3080,29 @@ mod tests {
                 }
                 let mut actor = review_actor();
                 actor.tool_context = cx.clone();
+                if row["protected_hold"] == true {
+                    let config = match row["protected_base"].as_str().unwrap() {
+                        "alias" => base.join("project/real-config"),
+                        "login" => user.dir.join(".config/withnav"),
+                        "workspace" => cx.workspace.join(".config/withnav"),
+                        "home" => std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                            .join(".config/withnav"),
+                        "root" => nix::unistd::User::from_name("root")
+                            .unwrap()
+                            .unwrap()
+                            .dir
+                            .join(".config/withnav"),
+                        other => panic!("unknown protected base: {other}"),
+                    };
+                    actor.protected_config_root =
+                        Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+                    actor.protected_config_spelling = Some(config);
+                    assert_eq!(
+                        hard_floor(&actor, &call, &needed),
+                        Some(HardFloorReason::ProtectedConfig),
+                        "{command}"
+                    );
+                }
                 actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row)));
                 assert!(
                     matches!(
@@ -3060,7 +3112,7 @@ mod tests {
                     "{command}"
                 );
             }
-            assert_eq!(count, 17);
+            assert_eq!(count, 25);
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -3075,6 +3127,9 @@ mod tests {
         }
         let project = tmp.path().join("project");
         std::os::unix::fs::symlink(&project, tmp.path().join("project-link")).unwrap();
+        std::fs::create_dir(project.join("real-config")).unwrap();
+        std::os::unix::fs::symlink(project.join("real-config"), project.join("config alias"))
+            .unwrap();
         std::fs::write(project.join("file"), "original").unwrap();
         std::fs::write(tmp.path().join("outside/file"), "only copy").unwrap();
         for args in [
@@ -3558,6 +3613,11 @@ mod tests {
             "cat ~/.s[s]h/*",
             "cat $X/.ssh",
             "cat 'innocent alias'",
+            "cat 'innocent alias' # $(ignored)",
+            "git status # $(ignored)\ncat 'innocent alias'",
+            "cat 'innocent alias'; echo $OPAQUE",
+            "echo $OPAQUE; cat 'innocent alias'",
+            "git status # ~/.ssh/id_rsa",
             "cat \"innocent alias\"",
             "cat inno'cent alias'",
             "FILE='innocent alias' cat",

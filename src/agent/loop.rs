@@ -5856,12 +5856,20 @@ mod tests {
             "config-is-workspace",
             "config-through-link",
             "config-spaced-link",
+            "config-opaque-comment",
+            "config-after-comment",
+            "config-before-opaque",
+            "config-after-opaque",
             "config-glued-quotes",
             "config-assignment",
             "config-option",
             "scratch-spaced-link",
             "tilde-user",
+            "tilde-user-repeated-slash",
             "tilde-plus",
+            "tilde-plus-repeated-slash",
+            "tilde-home-repeated-slash",
+            "tilde-root-repeated-slash",
             "tilde-read",
             "tilde-grant",
             "scratch",
@@ -5884,6 +5892,10 @@ mod tests {
                     "printf x > cfg/models.json".to_owned()
                 }
                 "config-spaced-link"
+                | "config-opaque-comment"
+                | "config-after-comment"
+                | "config-before-opaque"
+                | "config-after-opaque"
                 | "config-glued-quotes"
                 | "config-assignment"
                 | "config-option" => {
@@ -5893,6 +5905,18 @@ mod tests {
                     std::os::unix::fs::symlink(&dir, workspace.join("config alias")).unwrap();
                     match case {
                         "config-spaced-link" => "printf x > 'config alias/models.json'".into(),
+                        "config-opaque-comment" => {
+                            "printf x > 'config alias/models.json' # $(ignored)".into()
+                        }
+                        "config-after-comment" => {
+                            "git status # $(ignored)\nprintf x > 'config alias/models.json'".into()
+                        }
+                        "config-before-opaque" => {
+                            "printf x > 'config alias/models.json'; echo $OPAQUE".into()
+                        }
+                        "config-after-opaque" => {
+                            "echo $OPAQUE; printf x > 'config alias/models.json'".into()
+                        }
                         "config-glued-quotes" => "printf x > con'fig alias'/models.json".into(),
                         "config-assignment" => "FILE='config alias/models.json' printf x".into(),
                         _ => "printf --file='config alias/models.json' x".into(),
@@ -5912,8 +5936,17 @@ mod tests {
                     let user = nix::unistd::User::from_uid(nix::unistd::getuid())
                         .unwrap()
                         .unwrap();
-                    let config = if case == "tilde-plus" {
+                    let config = if case.starts_with("tilde-plus") {
                         workspace.join(".config/withnav")
+                    } else if case == "tilde-home-repeated-slash" {
+                        std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                            .join(".config/withnav")
+                    } else if case == "tilde-root-repeated-slash" {
+                        nix::unistd::User::from_name("root")
+                            .unwrap()
+                            .unwrap()
+                            .dir
+                            .join(".config/withnav")
                     } else {
                         user.dir.join(".config/withnav")
                     };
@@ -5923,7 +5956,13 @@ mod tests {
                     let user = user.name;
                     match case {
                         "tilde-user" => format!("printf x > ~{user}/.config/withnav/x"),
+                        "tilde-user-repeated-slash" => {
+                            format!("printf x > ~{user}//.config/withnav/models.json")
+                        }
                         "tilde-plus" => "printf x > ~+/.config/withnav/x".into(),
+                        "tilde-plus-repeated-slash" => "printf x > ~+//.config/withnav/x".into(),
+                        "tilde-home-repeated-slash" => "printf x > ~//.config/withnav/x".into(),
+                        "tilde-root-repeated-slash" => "printf x > ~root//.config/withnav/x".into(),
                         "tilde-read" => format!("cat ~{user}/.config/withnav/auth.json"),
                         _ => {
                             actor

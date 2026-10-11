@@ -250,17 +250,81 @@ pub(super) fn operand_fragments(command: &str) -> impl Iterator<Item = &str> {
         .filter(|word| !word.is_empty())
 }
 
+/// Best-effort literal words for tightening path checks, never for routing.
+/// Comments cannot hide preceding operands or commands on the following line;
+/// an opaque word cannot discard other completed words either.
+fn literal_path_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut literal = true;
+    let mut quote = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else if q == '"' && c == '\\' {
+                let Some(next) = chars.next() else { break };
+                if !"$`\"\\\n".contains(next) {
+                    word.push('\\');
+                }
+                if next != '\n' {
+                    word.push(next);
+                }
+            } else {
+                if q == '"' && matches!(c, '$' | '`') {
+                    literal = false;
+                }
+                word.push(c);
+            }
+        } else if matches!(c, '\'' | '"') {
+            started = true;
+            quote = Some(c);
+        } else if c == '\\' {
+            let Some(next) = chars.next() else { break };
+            if next != '\n' {
+                started = true;
+                word.push(next);
+            }
+        } else if c == '#' && !started {
+            while chars.peek().is_some_and(|c| *c != '\n') {
+                chars.next();
+            }
+        } else if matches!(c, ' ' | '\t' | '\n') || ";|&()<>".contains(c) {
+            if literal && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            } else {
+                word.clear();
+            }
+            started = false;
+            literal = true;
+        } else {
+            started = true;
+            if matches!(c, '$' | '`' | '{' | '}') {
+                literal = false;
+            }
+            word.push(c);
+        }
+    }
+    if quote.is_none() && literal && !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
 /// Inspect whole literal paths, including assignment/option values, without
 /// weakening the existing fragment checks when parsing fails or succeeds.
 pub(super) fn path_operands(command: &str) -> Vec<String> {
     let mut operands: Vec<String> = operand_fragments(command).map(str::to_owned).collect();
-    if let Some(parts) = segments(command) {
-        for word in parts.into_iter().flatten() {
-            if let Some((_, value)) = word.split_once('=') {
-                operands.push(value.to_owned());
-            }
-            operands.push(word);
+    let words = literal_path_words(command)
+        .into_iter()
+        .chain(segments(command).into_iter().flatten().flatten());
+    for word in words {
+        if let Some((_, value)) = word.split_once('=') {
+            operands.push(value.to_owned());
         }
+        operands.push(word);
     }
     operands
 }
@@ -1166,6 +1230,54 @@ pub(super) fn removal_or_move(command: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn path_operands_preserve_literal_words_around_comments_and_opaque_parts() {
+        for command in [
+            "printf x > 'config alias/models.json' # $(ignored)",
+            "git status # $(ignored)\nprintf x > 'config alias/models.json'",
+            "printf x > 'config alias/models.json'; echo $OPAQUE",
+            "echo $OPAQUE; printf x > 'config alias/models.json'",
+            "printf x > 'config alias/models.json'; echo 'unterminated",
+            "printf x > 'config alias/models.json'; echo \"$OPAQUE\"",
+            "FILE='config alias/models.json' printf x # $(ignored)",
+            "printf --file='config alias/models.json' x # $(ignored)",
+        ] {
+            assert!(segments(command).is_none(), "{command}");
+            let operands = path_operands(command);
+            assert!(
+                operands.iter().any(|w| w == "config alias/models.json"),
+                "{command}"
+            );
+            for fragment in operand_fragments(command) {
+                assert!(
+                    operands.iter().any(|w| w == fragment),
+                    "{command}: {fragment}"
+                );
+            }
+        }
+        assert_eq!(
+            literal_path_words("git status # $(ignored)"),
+            ["git", "status"]
+        );
+        // Comment fragments remain conservative sensitive-target evidence.
+        assert!(path_operands("git status # ~/.ssh/id_rsa")
+            .iter()
+            .any(|w| w == "~/.ssh/id_rsa"));
+        for command in [
+            "echo a#b 'config alias/models.json'",
+            "echo ''#b 'config alias/models.json'",
+            "echo a\r# 'config alias/models.json'",
+            "echo \\# 'config alias/models.json'",
+        ] {
+            assert!(
+                path_operands(command)
+                    .iter()
+                    .any(|w| w == "config alias/models.json"),
+                "{command}"
+            );
+        }
+    }
 
     #[test]
     fn literal_regex_and_transparent_wrappers_preserve_effects() {

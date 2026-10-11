@@ -2851,7 +2851,7 @@ mod tests {
                 route(&input, &answers, &prefilter(&call, &needed, &cx)),
                 Ok(Route::Review)
             );
-            if row["captain_only"] == true {
+            if let Some(captain_only) = row["captain_only"].as_bool() {
                 let mut actor = review_actor();
                 actor.tool_context = cx.clone();
                 actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row.clone())));
@@ -2861,11 +2861,13 @@ mod tests {
                     timeout: false,
                 });
                 actor.permission_reviewer = Some(reviewer.clone());
+                let decision = consult(&actor, &call, &needed).await;
                 assert!(
-                    matches!(
-                        consult(&actor, &call, &needed).await,
-                        Judged::Ask(_) | Judged::AskWithEvidence(_, _)
-                    ),
+                    if captain_only {
+                        matches!(decision, Judged::Ask(_) | Judged::AskWithEvidence(_, _))
+                    } else {
+                        matches!(decision, Judged::Run(_))
+                    },
                     "{}",
                     row["command"]
                 );

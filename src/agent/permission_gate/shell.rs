@@ -665,26 +665,31 @@ pub(super) fn destructive(words: &[String]) -> bool {
 /// Unknown push options may be destructive clusters or Git's long abbreviations.
 /// Keep the Captain hold even when metacognition approves, including compound calls.
 pub(super) fn captain_only_push(command: &str) -> bool {
-    segments(command).is_none_or(|parts| {
-        parts.iter().any(|words| {
-            let Some(words) = inner_command(words) else {
-                return true;
-            };
-            let Some(i) = executable(words) else {
-                return true;
-            };
-            let words = &words[i..];
-            basename(&words[0]) == "git"
-                && git_subcommand(words).map_or_else(
-                    || words[1..].iter().any(|word| word == "push"),
-                    |i| {
-                        words[i] == "push"
-                            && words[i + 1..]
-                                .iter()
-                                .any(|word| super::git::captain_only_push_operand(word))
-                    },
-                )
-        })
+    let push_uncertainty = || {
+        super::bash_operands(command).any(|word| basename(word) == "git")
+            && super::bash_operands(command).any(|word| word == "push")
+    };
+    let Some(parts) = segments(command) else {
+        return push_uncertainty();
+    };
+    parts.iter().any(|words| {
+        let Some(words) = inner_command(words) else {
+            return push_uncertainty();
+        };
+        let Some(i) = executable(words) else {
+            return push_uncertainty();
+        };
+        let words = &words[i..];
+        basename(&words[0]) == "git"
+            && git_subcommand(words).map_or_else(
+                || words[1..].iter().any(|word| word == "push"),
+                |i| {
+                    words[i] == "push"
+                        && words[i + 1..]
+                            .iter()
+                            .any(|word| super::git::captain_only_push_operand(word))
+                },
+            )
     })
 }
 

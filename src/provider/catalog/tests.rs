@@ -161,46 +161,36 @@ async fn explicit_window_wins_and_exposes_the_discrepancy() {
     resolve(&dir, &server, "cc/claude-opus-5-5", ApiKind::Chat, None)
         .await
         .unwrap();
-    let r = resolve(
-        &dir,
-        &server,
-        "cc/claude-opus-5-5",
-        ApiKind::Chat,
-        Some(200_000),
-    )
-    .await
-    .unwrap();
-    assert_eq!(r.window, 200_000);
-    assert_eq!(r.window_source, "models.json");
-    assert_eq!(
-        r.discrepancy,
-        Some(Discrepancy {
-            configured: 200_000,
-            discovered: 1_000_000
-        })
-    );
-    assert_eq!(
-        r.discrepancy.unwrap().to_string(),
-        "models.json context_window 200000 differs from discovered context_length 1000000"
-    );
-}
-
-#[tokio::test]
-async fn explicit_window_equal_to_the_reported_one_is_no_discrepancy() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    resolve(&dir, &server, "cc/claude-opus-5-5", ApiKind::Chat, None)
+    for (window, discrepancy) in [
+        (
+            200_000,
+            Some(Discrepancy {
+                configured: 200_000,
+                discovered: 1_000_000,
+            }),
+        ),
+        (1_000_000, None),
+    ] {
+        let r = resolve(
+            &dir,
+            &server,
+            "cc/claude-opus-5-5",
+            ApiKind::Chat,
+            Some(window),
+        )
         .await
         .unwrap();
-    let r = resolve(
-        &dir,
-        &server,
-        "cc/claude-opus-5-5",
-        ApiKind::Chat,
-        Some(1_000_000),
-    )
-    .await
-    .unwrap();
-    assert_eq!(r.discrepancy, None);
+        assert_eq!(r.window, window, "configured_window={window}");
+        assert_eq!(r.window_source, "models.json", "configured_window={window}");
+        assert_eq!(r.discrepancy, discrepancy, "configured_window={window}");
+        if let Some(d) = r.discrepancy {
+            assert_eq!(
+                d.to_string(),
+                "models.json context_window 200000 differs from discovered context_length 1000000"
+            );
+        }
+    }
+    assert_eq!(requests(&server).await, 1);
 }
 
 #[tokio::test]

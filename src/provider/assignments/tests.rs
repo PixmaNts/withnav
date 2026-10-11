@@ -146,12 +146,18 @@ fn layers_disable_missing_unknown_and_wrong_api_assignments() {
             "omniroute/cc/chat"
         };
         let settings = layer_settings(layer, wrong);
-        let LayerAssignment::Disabled(reason @ LayerDisabled::WrongApi { .. }) =
-            AssignmentResolver::new(&catalog, &settings)
-                .layer_assignment(layer)
-                .unwrap()
-        else {
-            panic!("wrong api was accepted")
+        let assignment = AssignmentResolver::new(&catalog, &settings)
+            .layer_assignment(layer)
+            .unwrap();
+        assert!(
+            matches!(
+                assignment,
+                LayerAssignment::Disabled(LayerDisabled::WrongApi { .. })
+            ),
+            "layer={layer:?}, model={wrong}: expected WrongApi, got {assignment:?}"
+        );
+        let LayerAssignment::Disabled(reason) = assignment else {
+            unreachable!()
         };
         let message = reason.to_string();
         assert!(

@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- The hand-run Instinct setup probe now delegates to `nav doctor --layer instinct`, like the
+  Reflex probe. Permission-corpus calibration remains available through
+  `cargo run --example permission_corpus_probe -- [optional-alias] [--raw] [--fast-only]`.
+
 ## [0.7.6] - 2026-10-11
 
 WithNav 0.7.6 removes the theme row from the VS Code Settings page, where it had no effect: the

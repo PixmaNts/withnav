@@ -28,16 +28,39 @@ fn auth_path(config_dir: &Path) -> PathBuf {
 }
 
 pub fn load_store(config_dir: &Path) -> Result<AuthStore, ProviderError> {
+    let Some(text) = read_store(config_dir)? else {
+        return Ok(AuthStore::default());
+    };
+    parse_store(&text)
+}
+
+/// Read one permission-checked snapshot for typed credentials and diagnostics.
+pub(crate) fn load_store_with_document(
+    config_dir: &Path,
+) -> Result<(AuthStore, serde_json::Value), ProviderError> {
+    let Some(text) = read_store(config_dir)? else {
+        return Ok((AuthStore::default(), serde_json::json!({})));
+    };
+    let store = parse_store(&text)?;
+    let document = serde_json::from_str(&text)
+        .map_err(|e| ProviderError::Auth(format!("failed to parse auth.json: {e}")))?;
+    Ok((store, document))
+}
+
+fn read_store(config_dir: &Path) -> Result<Option<String>, ProviderError> {
     let path = auth_path(config_dir);
     if !path.exists() {
-        return Ok(AuthStore::default());
+        return Ok(None);
     }
     check_perms_or_fail(&path)?;
     let text = std::fs::read_to_string(&path)
         .map_err(|e| ProviderError::Auth(format!("failed to read auth.json: {e}")))?;
-    let store: AuthStore = serde_json::from_str(&text)
-        .map_err(|e| ProviderError::Auth(format!("failed to parse auth.json: {e}")))?;
-    Ok(store)
+    Ok(Some(text))
+}
+
+fn parse_store(text: &str) -> Result<AuthStore, ProviderError> {
+    serde_json::from_str(text)
+        .map_err(|e| ProviderError::Auth(format!("failed to parse auth.json: {e}")))
 }
 
 fn check_perms_or_fail(path: &Path) -> Result<(), ProviderError> {
@@ -61,6 +84,14 @@ pub fn resolve_key(
     api_key_env: Option<&str>,
 ) -> Result<String, ProviderError> {
     let store = load_store(config_dir)?;
+    resolve_key_from_store(&store, provider_name, api_key_env)
+}
+
+pub(crate) fn resolve_key_from_store(
+    store: &AuthStore,
+    provider_name: &str,
+    api_key_env: Option<&str>,
+) -> Result<String, ProviderError> {
     if let Some(entry) = store.providers.get(provider_name) {
         return Ok(entry.api_key.clone());
     }

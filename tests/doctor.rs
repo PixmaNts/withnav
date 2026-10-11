@@ -306,6 +306,14 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(report.exit_code(), 1);
     assert!(!report.human().contains(SECRET));
+    // The diagnostic document must not bypass the loader's duplicate-key checks.
+    std::fs::write(config.join("config.json"), "{}").unwrap();
+    std::fs::write(config.join("models.json"), r#"{"providers":{"fake":{"base_url":"http://unused"}},"models":{"fake/chat":{"provider":"fake","model":"chat"},"fake/chat":{"provider":"fake","model":"chat"}}}"#).unwrap();
+    let report = inspect(&args, &config, None, None).await;
+    assert_eq!(
+        check(&report, "config.catalogue").status,
+        withnav::app::doctor::Status::Failed
+    );
 }
 
 #[tokio::test]

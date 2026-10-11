@@ -1346,12 +1346,12 @@ fn finish_child_link_sync(
         return Ok(None);
     }
     let row = tx.query_row(
-                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text, delivery
                  FROM child_links WHERE child_id=?1",
                 [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
+                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?, row.get::<_, String>(10)?)),
             ).map_err(|e| e.to_string())?;
     let mut payload = serde_json::to_value(&crate::bus::event::SubagentDone {
         parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
@@ -1362,14 +1362,7 @@ fn finish_child_link_sync(
         notification_id: Ulid::new(),
     })
     .map_err(|e| e.to_string())?;
-    let delivery: String = tx
-        .query_row(
-            "SELECT delivery FROM child_links WHERE child_id=?1",
-            [child_id.to_string()],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    payload["delivery"] = serde_json::json!(delivery);
+    payload["delivery"] = serde_json::json!(row.10);
     let payload = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
                 params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;

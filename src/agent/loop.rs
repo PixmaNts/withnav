@@ -20,18 +20,38 @@ pub const DEFAULT_MAX_STEPS: usize = 50;
 pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
 pub fn max_steps() -> usize {
-    crate::paths::env_var("WITHNAV_MAX_STEPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_STEPS)
+    configured_max_steps(
+        crate::paths::env_var("WITHNAV_MAX_STEPS"),
+        DEFAULT_MAX_STEPS,
+        DEFAULT_MAX_STEPS,
+    )
 }
 
 /// Root turns have no step cap unless the Captain explicitly opts in.
 pub fn root_max_steps() -> usize {
-    crate::paths::env_var("WITHNAV_MAX_STEPS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(usize::MAX)
+    configured_max_steps(
+        crate::paths::env_var("WITHNAV_MAX_STEPS"),
+        usize::MAX,
+        WATCHDOG_FALLBACK_STEPS,
+    )
+}
+
+fn configured_max_steps(
+    value: Result<String, std::env::VarError>,
+    absent: usize,
+    invalid: usize,
+) -> usize {
+    if matches!(value, Err(std::env::VarError::NotPresent)) {
+        return absent;
+    }
+    if let Some(steps) = value.ok().and_then(|value| value.parse::<usize>().ok()) {
+        return steps;
+    }
+    tracing::warn!(
+        fallback = invalid,
+        "invalid WITHNAV_MAX_STEPS; expected a non-negative integer, using a bounded fallback"
+    );
+    invalid
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2031,6 +2051,32 @@ mod tests {
 
     #[tokio::test]
     async fn max_steps_exhaustion_yields_not_forced_continuation() {
+        for (absent, invalid) in [
+            (usize::MAX, WATCHDOG_FALLBACK_STEPS),
+            (DEFAULT_MAX_STEPS, DEFAULT_MAX_STEPS),
+        ] {
+            assert_eq!(
+                configured_max_steps(Err(std::env::VarError::NotPresent), absent, invalid),
+                absent
+            );
+            for value in ["0", "1", "50"] {
+                assert_eq!(
+                    configured_max_steps(Ok(value.into()), absent, invalid),
+                    value.parse::<usize>().unwrap()
+                );
+            }
+            for value in ["", "50steps", "-1", "999999999999999999999999999999"] {
+                assert_eq!(configured_max_steps(Ok(value.into()), absent, invalid), invalid);
+            }
+            assert_eq!(
+                configured_max_steps(
+                    Err(std::env::VarError::NotUnicode(std::ffi::OsString::new())),
+                    absent,
+                    invalid,
+                ),
+                invalid
+            );
+        }
         let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
         let server = spawn_mock(vec![
             http_sse(&sse_body(&[toolcall])),

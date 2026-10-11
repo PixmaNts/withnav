@@ -39,7 +39,7 @@ pub(super) fn push(words: &[&str], current: Option<&str>) -> Option<Value> {
     let remote = positional.first().copied();
     let refspec = positional.get(1).copied();
     force |= refspec.is_some_and(|spec| spec.starts_with('+'));
-    delete |= refspec.is_some_and(|spec| spec.starts_with(':'));
+    delete |= refspec.is_some_and(|spec| spec.trim_start_matches('+').starts_with(':'));
     // An omitted refspec depends on push.default / remote configuration: never guess.
     let target = refspec.map(|spec| {
         let spec = spec.trim_start_matches('+');
@@ -53,8 +53,8 @@ pub(super) fn push(words: &[&str], current: Option<&str>) -> Option<Value> {
     }) && target == current;
     Some(
         json!({"remote":remote,"branch":target,"force":force,"delete":delete,
-        "literal_target":understood && positional.len() == 2 && remote == Some("origin") && target.is_some_and(|branch| !branch.is_empty() && !branch.starts_with("refs/")),
-        "own_branch":own_branch}),
+        "literal_target":understood && !force && !delete && positional.len() == 2 && remote == Some("origin") && target.is_some_and(|branch| !branch.is_empty() && !branch.starts_with("refs/")),
+        "own_branch":own_branch && !force && !delete}),
     )
 }
 

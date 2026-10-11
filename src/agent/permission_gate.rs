@@ -2463,6 +2463,22 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/fixtures/permissions/calls.json"))
                 .unwrap();
         assert!(corpus.len() >= 40);
+        for command in [
+            "git push --repo origin feat/task",
+            "git push --repo=origin origin feat/task",
+            "git push origin :feat/task",
+            "git push origin +:feat/task",
+            "git push --delete origin feat/task",
+            "git push origin feat/task :other",
+        ] {
+            let words = git::literal(command).unwrap();
+            let push = git::push(&words, Some("feat/task")).unwrap();
+            assert_eq!(push["literal_target"], false, "{command}");
+            if command.contains(":feat/task") || command.contains("--delete") {
+                assert_eq!(push["delete"], true, "{command}");
+                assert_eq!(push["own_branch"], false, "{command}");
+            }
+        }
         let cx = ToolContext {
             binding: None,
             workspace: "/workspace".into(),

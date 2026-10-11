@@ -2815,6 +2815,14 @@ mod tests {
                 args: json!({"command":row["command"]}),
                 args_valid: true,
             };
+            if let Some(captain_only) = row["captain_only"].as_bool() {
+                assert_eq!(
+                    shell::captain_only_push(row["command"].as_str().unwrap()),
+                    captain_only,
+                    "{}",
+                    row["command"]
+                );
+            }
             let input = PermissionReviewInput { questions: permission_questions(), state: json!({"captain_request_complete":true,"host_facts":{"workspace":cx.workspace,"writable_roots":cx.writable_roots,"git":row["git"]},"untrusted_evidence":{"arguments":call.args}}).to_string() };
             let mut answers = LabelJudge(row.clone())
                 .judge(&input, &CancellationToken::new())

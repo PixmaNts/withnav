@@ -476,8 +476,44 @@ fn git_subcommand(words: &[String]) -> Option<usize> {
     let mut i = 1;
     while i < words.len() {
         match words[i].as_str() {
-            "-C" | "-c" | "--git-dir" | "--work-tree" => i += 2,
-            w if w.starts_with('-') => i += 1,
+            "-C" | "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
+            | "--super-prefix" => {
+                words.get(i + 1)?;
+                i += 2;
+            }
+            "-p"
+            | "--paginate"
+            | "-P"
+            | "--no-pager"
+            | "--bare"
+            | "--no-replace-objects"
+            | "--no-optional-locks"
+            | "--literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs"
+            | "--no-lazy-fetch"
+            | "--no-advice" => {
+                i += 1;
+            }
+            w if w.starts_with("-C")
+                || w.starts_with("-c") && !w.starts_with("--")
+                || [
+                    "--config-env=",
+                    "--git-dir=",
+                    "--work-tree=",
+                    "--namespace=",
+                    "--super-prefix=",
+                    "--exec-path=",
+                ]
+                .iter()
+                .any(|prefix| w.starts_with(prefix)) =>
+            {
+                i += 1;
+            }
+            // --exec-path without '=' and --list-cmds= print and exit. Unknown
+            // options may consume a value: never guess a following subcommand.
+            w if w.starts_with('-') => return None,
             _ => return Some(i),
         }
     }
@@ -639,12 +675,15 @@ pub(super) fn captain_only_push(command: &str) -> bool {
             };
             let words = &words[i..];
             basename(&words[0]) == "git"
-                && git_subcommand(words).is_some_and(|i| {
-                    words[i] == "push"
-                        && words[i + 1..]
-                            .iter()
-                            .any(|word| super::git::captain_only_push_operand(word))
-                })
+                && git_subcommand(words).map_or_else(
+                    || words[1..].iter().any(|word| word == "push"),
+                    |i| {
+                        words[i] == "push"
+                            && words[i + 1..]
+                                .iter()
+                                .any(|word| super::git::captain_only_push_operand(word))
+                    },
+                )
         })
     })
 }

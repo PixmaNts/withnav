@@ -658,7 +658,7 @@ impl HistoryStore {
             let parent_id = envelope.session_id;
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            let tx = immediate_tx(&mut conn)?;
             let inserted = tx.execute(
                 "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at, owner_instance, delivery)
                  SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6, ?8, ?9
@@ -882,7 +882,7 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            let tx = immediate_tx(&mut conn)?;
             for (request, (child, payload)) in open {
                 let terminal = tx.query_row("SELECT status FROM child_links WHERE child_id=?1", [&child], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
                 let resolution = tx.query_row("SELECT envelope FROM events WHERE session_id=?1 AND kind='permission.resolved' AND json_extract(envelope,'$.payload.request_id')=?2 ORDER BY seq DESC LIMIT 1", params![child, request], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
@@ -923,7 +923,7 @@ impl HistoryStore {
                 tokio::task::spawn_blocking(move || {
                     let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
                     conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-                    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+                    let tx = immediate_tx(&mut conn)?;
                     let changed = tx.execute("UPDATE permission_outbox SET delivered=1 WHERE parent_id=?1 AND request_id=?2 AND delivered=0",params![parent.to_string(),id]).map_err(|e| e.to_string())?;
                     if changed == 0 { return Err("permission mirror already delivered".into()); }
                     insert_committed_event(&tx,&event)?;
@@ -948,7 +948,7 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            let tx = immediate_tx(&mut conn)?;
             let changed = tx.execute("UPDATE completion_outbox SET delivered=1 WHERE child_id=?1 AND parent_id=?2 AND delivered=0", params![child.to_string(), envelope.session_id.to_string()]).map_err(|e| e.to_string())?;
             if changed == 0 { return Err("completion already delivered".into()); }
             insert_committed_event(&tx, &envelope)?;
@@ -1013,7 +1013,7 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            let tx = immediate_tx(&mut conn)?;
             for child in children {
                 let changed = tx.execute("UPDATE completion_outbox SET consumed=1 WHERE child_id=?1 AND parent_id=?2 AND consumed=0", params![child.to_string(), parent.to_string()]).map_err(|e| e.to_string())?;
                 if changed != 1 { return Err("completion already consumed or missing".into()); }
@@ -1371,9 +1371,7 @@ fn finish_child_link_sync(
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
     conn.busy_timeout(WRITER_BUSY_TIMEOUT)
         .map_err(|e| e.to_string())?;
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
+    let tx = immediate_tx(&mut conn)?;
     let terminal_at = now_rfc3339();
     let changed = tx
         .execute(
@@ -1459,6 +1457,11 @@ fn add_column_if_missing(
         )?;
     }
     Ok(())
+}
+
+fn immediate_tx(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>, String> {
+    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())
 }
 
 fn queue_permission_resolution(

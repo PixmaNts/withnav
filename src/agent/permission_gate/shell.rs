@@ -666,8 +666,9 @@ pub(super) fn destructive(words: &[String]) -> bool {
 /// Keep the Captain hold even when metacognition approves, including compound calls.
 pub(super) fn captain_only_push(command: &str) -> bool {
     let push_uncertainty = || {
-        super::bash_operands(command).any(|word| basename(word) == "git")
-            && super::bash_operands(command).any(|word| word == "push")
+        // Opaque shell spellings can hide push with escapes or quote fragments,
+        // including $'push'. Tighten only suspected pushes, not every opaque call.
+        command.replace(['\\', '\'', '"'], "").contains("push")
     };
     let Some(parts) = segments(command) else {
         return push_uncertainty();

@@ -37,6 +37,14 @@ export function readSetting<T>(key: string, fallback: T, notifyLegacy = true): T
   return current.get<T>(key, fallback);
 }
 
+/** True when the user set `key` under `withnav.` or the former `navai.` section, in any scope. */
+export function isSettingExplicit(key: string): boolean {
+  return (
+    isExplicit(vscode.workspace.getConfiguration(SECTION).inspect(key)) ||
+    isExplicit(vscode.workspace.getConfiguration(LEGACY_SECTION).inspect(key))
+  );
+}
+
 /** Old editor binaries shared their directory with nav; preserve that install location. */
 export function readServerPath(): string {
   const configured = readSetting<string>("serverPath", "nav", false);

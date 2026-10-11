@@ -4,6 +4,21 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **A tagged release now ships ready-to-install packages for Linux.** The GitHub Release holds a
+  VS Code package for x64 and one for arm64, each with a statically linked `nav` inside that the
+  extension uses on its own, plus a universal package without a binary (it needs `nav` on `PATH`
+  or `withnav.serverPath`), the bare `nav` binaries as tarballs, and `SHA256SUMS`. A path you set
+  in `withnav.serverPath` still wins over the bundled binary. `scripts/package-vsix.sh` builds the
+  same files locally.
+
+### Fixed
+
+- **`nav` builds for musl Linux.** Writing a flow file that must not replace an existing one now
+  calls `renameat2` through the raw system call, because `nix` only wraps it with glibc. The
+  behaviour is unchanged: one atomic rename that fails if the file exists.
+
 ## [0.7.7] - 2026-10-11
 
 WithNav 0.7.7 is a maintenance release with no new feature. A pass over the audit backlog fixes

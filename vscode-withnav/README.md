@@ -46,9 +46,17 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 
 ## Requirements
 
-- A `nav` binary on `PATH`, or set `withnav.serverPath` to its absolute path. The extension
-  appends `lsp`; do not put the subcommand in the setting. Old `withnav-lsp` and `navai-lsp`
-  paths use `nav` in the same directory, with a one-time notice to update the setting.
+- **Linux x64 and arm64:** install `withnav-linux-x64-<version>.vsix` or
+  `withnav-linux-arm64-<version>.vsix` from the GitHub Release. It bundles a static `nav`; nothing
+  else to install. A `withnav.serverPath` you set wins over the bundled binary.
+- **Universal package** (`withnav-<version>.vsix`, no binary; macOS, Nix, development): put a `nav`
+  binary on `PATH`, or set `withnav.serverPath` to its absolute path. The extension appends `lsp`;
+  do not put the subcommand in the setting. Old `withnav-lsp` and `navai-lsp` paths use `nav` in
+  the same directory, with a one-time notice to update the setting.
+- **Windows:** `nav` does not run natively; use WSL or a Remote window and install the Linux package
+  there.
+- The "WithNav" output channel starts with the line `Using nav binary (...)`: setting, bundled or
+  path.
 - Node.js 18+ to build.
 
 ## Build and package
@@ -65,6 +73,10 @@ code --install-extension withnav-*.vsix
 `out/extension.js`, so the `.vsix` ships one self-contained file (no `node_modules` inside the
 package; `.vscodeignore` excludes them). `vsce package` triggers `npm run compile` via the
 `vscode:prepublish` hook.
+
+`scripts/package-vsix.sh <linux-x64|linux-arm64|universal>` (from the repository root) writes the
+release packages into `dist/`. The platform variants build a static `nav` with `cargo-zigbuild` and
+`zig` (or reuse `NAV_BINARY`) and ship it as `bin/nav`.
 
 ## How it works
 
@@ -102,7 +114,7 @@ Keybindings are active only when a remark is visible (`withnav.remarkVisible` co
 | Setting | Default | Description |
 | --- | --- | --- |
 | `withnav.enabled` | `true` | Enable Nav |
-| `withnav.serverPath` | `nav` | Binary (PATH or absolute), launched with `lsp` |
+| `withnav.serverPath` | `nav` | Binary (PATH or absolute), launched with `lsp`; when unset, the bundled `bin/nav` is used if present |
 | `withnav.idleMs` | `3000` | Idle delay before Nav may speak |
 | `withnav.minChangedLines` | `3` | Minimum changed lines to consider speaking |
 | `withnav.cooldownMs` | `20000` | Cooldown between remarks on one file |

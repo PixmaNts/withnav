@@ -588,7 +588,10 @@ mod tests {
             );
             for (args, expected_message) in [
                 (serde_json::json!({}), "child_id must be a string"),
-                (serde_json::json!({"child_id": 42}), "child_id must be a string"),
+                (
+                    serde_json::json!({"child_id": 42}),
+                    "child_id must be a string",
+                ),
                 (serde_json::json!({"child_id": "bad"}), "invalid child_id"),
             ] {
                 assert!(matches!(

@@ -117,6 +117,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
     let mut segments = vec![];
     let mut words = vec![];
     let mut word = String::new();
+    let mut word_started = false;
     let mut quote = None;
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
@@ -143,14 +144,24 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             // Never invent a boundary that could turn an operand's # into a comment.
             return None;
         } else if c == '\'' || c == '"' {
+            word_started = true;
             quote = Some(c);
+        } else if c == '#' && !word_started {
+            // Only inert, single-line comments qualify for literal review. Keep
+            // substitutions and continuations opaque even in comment text.
+            while chars.peek().is_some_and(|c| *c != '\n') {
+                if matches!(chars.next()?, '$' | '`' | '\\' | '(' | ')' | '{' | '}') {
+                    return None;
+                }
+            }
         // Filename globs (`*`, `?`, `[...]`) only pick existing paths: the program and
         // its flags still decide the effect, and sensitive-target checks strip glob
         // characters before matching. Real session, 2026-10-10: `grep … tests/*` and
         // `--include=*.ts` reads were sent to review only because of the glob.
-        } else if matches!(c, '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '#') {
+        } else if matches!(c, '$' | '`' | '\\' | '(' | ')' | '{' | '}') {
             return None;
         } else if c == '>' || (c == '&' && chars.peek() == Some(&'>')) {
+            word_started = false;
             if c == '&' {
                 chars.next();
             }
@@ -205,6 +216,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 words.push(target);
             }
         } else if matches!(c, ' ' | '\t' | '\n') || ";|&<".contains(c) {
+            word_started = false;
             if !word.is_empty() {
                 words.push(std::mem::take(&mut word));
             }
@@ -214,6 +226,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 words.push(c.to_string());
             }
         } else {
+            word_started = true;
             word.push(c);
         }
     }
@@ -1167,18 +1180,15 @@ mod tests {
         ] {
             assert!(segments(command).is_none());
         }
-        // Bash comments and `#` inside unquoted words stay opaque (review).
-        for command in [
-            "git status # inspection",
-            "echo a#b",
-            "git status # inspection\nrm -r x",
-        ] {
-            assert!(segments(command).is_none(), "{command}");
-            assert!(read_floor(command), "{command}");
-        }
         for (command, expected) in [
+            ("git status # inspection", vec![vec!["git", "status"]]),
+            ("echo a#b", vec![vec!["echo", "a#b"]]),
+            ("echo ''#b", vec![vec!["echo", "#b"]]),
             ("echo '#'", vec![vec!["echo", "#"]]),
-            (r##"echo "a#b""##, vec![vec!["echo", "a#b"]]),
+            (
+                "git status # inspection\nrm -r x",
+                vec![vec!["git", "status"], vec!["rm", "-r", "x"]],
+            ),
         ] {
             assert_eq!(segments(command).unwrap(), expected, "{command}");
         }

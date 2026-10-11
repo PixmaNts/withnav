@@ -106,20 +106,17 @@ async fn an_unknown_page_path_falls_back_to_index() {
 #[tokio::test]
 async fn hashed_assets_are_cached_for_good() {
     let dist = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("webui/dist/assets");
-    let Some(file) = std::fs::read_dir(&dist)
-        .ok()
-        .and_then(|mut entries| entries.find_map(|e| e.ok()))
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x == "js" || x == "css")
-        })
-    else {
-        return;
-    };
-    let name = file.file_name().to_string_lossy().into_owned();
+    let mut assets: Vec<_> = std::fs::read_dir(&dist)
+        .expect("webui/dist/assets must exist")
+        .map(|entry| entry.expect("read asset entry").path())
+        .filter(|path| path.extension().is_some_and(|x| x == "js" || x == "css"))
+        .collect();
+    assets.sort();
+    assert!(!assets.is_empty(), "webui/dist/assets must contain JS/CSS files");
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = web_state(tmp.path(), vec![]);
+    for file in assets {
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
     let (status, headers, _) = get(&state, &format!("/assets/{name}"), false).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -131,7 +128,8 @@ async fn hashed_assets_are_cached_for_good() {
     } else {
         "text/css; charset=utf-8"
     };
-    assert_eq!(headers["content-type"], expected);
+    assert_eq!(headers["content-type"], expected, "asset {name}");
+    }
 }
 
 // Given a web server with a token

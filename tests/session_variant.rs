@@ -482,17 +482,21 @@ fn tiers_body(tiers: &[&str]) -> Value {
 }
 
 async fn serve_tiers(server: &wiremock::MockServer, tiers: &[&str]) {
-    server.reset().await;
-    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(tiers_body(tiers)))
-        .mount(server)
-        .await;
+    mount_models_response(
+        server,
+        wiremock::ResponseTemplate::new(200).set_body_json(tiers_body(tiers)),
+    )
+    .await;
 }
 
 async fn serve_down(server: &wiremock::MockServer) {
+    mount_models_response(server, wiremock::ResponseTemplate::new(503)).await;
+}
+
+async fn mount_models_response(server: &wiremock::MockServer, response: wiremock::ResponseTemplate) {
     server.reset().await;
     wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
-        .respond_with(wiremock::ResponseTemplate::new(503))
+        .respond_with(response)
         .mount(server)
         .await;
 }

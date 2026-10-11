@@ -316,9 +316,10 @@ async fn nothing_is_compacted_while_a_permission_request_waits() {
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "write it").await;
-    collect_until(sub, |e| e.kind == "permission.requested").await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    assert!(events.iter().any(|e| e.kind == "permission.requested"));
+    assert_eq!(events.last().unwrap().payload["outcome"], "yielded");
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(provider.bodies().len(), 3);
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     assert!(

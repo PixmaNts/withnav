@@ -500,6 +500,7 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         .and(wiremock::matchers::body_string_contains(
             "a wake while asking",
         ))
+        .and(wiremock::matchers::body_string_contains("\"role\":\"tool\""))
         .respond_with(sse_response(&[done]))
         .with_priority(2)
         .expect(1..)

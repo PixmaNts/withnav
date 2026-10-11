@@ -1052,9 +1052,8 @@ async fn a_wake_held_behind_a_request_does_not_cancel_a_revalidated_request() {
     std::fs::remove_file(&link).unwrap();
     std::os::unix::fs::symlink(&moved, &link).unwrap();
     allow(&state, id, first).await;
-    let second = nth_request(&state, id, 2).await;
+    let second = nth_suspended_request(&state, id, 2).await;
     assert_ne!(first, second, "a moved destination asks again");
-    tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(events(&state, id, "permission.resolved").await.len(), 1);
     assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
 

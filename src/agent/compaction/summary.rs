@@ -45,6 +45,15 @@ Be concrete: exact paths, commands, names, error messages. Keep what is needed t
 chit-chat and dead ends. Do not call tools. Do not address the user. Stay under 6000 characters. \
 Answer with the summary only.";
 
+fn summary_prompt(focus: Option<&str>) -> String {
+    match focus.map(str::trim).filter(|focus| !focus.is_empty()) {
+        Some(focus) => format!(
+            "{SUMMARY_PROMPT}\n\nThe user asked you to pay particular attention to: {focus}"
+        ),
+        None => SUMMARY_PROMPT.to_string(),
+    }
+}
+
 /// Everything [`prepare`] needs about the session.
 pub struct PrepareInput<'a> {
     pub provider: &'a ProviderConfig,
@@ -97,6 +106,12 @@ pub async fn prepare(
         input.destination_budget,
         input.aim,
     )?;
+    let generation = match input.current {
+        Some(c) => c.checkpoint.generation.checked_add(1).ok_or_else(|| {
+            CompactionError::Invalid("the checkpoint generation cannot be incremented".into())
+        })?,
+        None => 1,
+    };
     let estimated_before =
         estimate_effective(&input.components, input.transcript, input.current).total();
     let first = input
@@ -129,7 +144,7 @@ pub async fn prepare(
         checkpoint: Checkpoint {
             through_message: planned.through_message,
             summary,
-            generation: input.current.map_or(1, |c| c.checkpoint.generation + 1),
+            generation,
         },
         pruned_message_indices: planned.kept_pruned(),
     };
@@ -248,13 +263,22 @@ async fn rolling_summary(
         loop {
             let mut request = ChatRequest {
                 model: input.model.into(),
-                messages: vec![ChatMessage::System { content: match input.focus {
-                    Some(focus) => format!("{SUMMARY_PROMPT}\n\nThe user asked you to pay particular attention to: {focus}"),
-                    None => SUMMARY_PROMPT.into(),
-                }}], tools: vec![], stream: true,
-                stream_options: Some(StreamOptions { include_usage: true }),
-                max_tokens: Some(input.max_tokens.unwrap_or(SUMMARY_MAX_BYTES as u64).min(SUMMARY_MAX_BYTES as u64)),
-                temperature: None, extra: Default::default(),
+                messages: vec![ChatMessage::System {
+                    content: summary_prompt(input.focus),
+                }],
+                tools: vec![],
+                stream: true,
+                stream_options: Some(StreamOptions {
+                    include_usage: true,
+                }),
+                max_tokens: Some(
+                    input
+                        .max_tokens
+                        .unwrap_or(SUMMARY_MAX_BYTES as u64)
+                        .min(SUMMARY_MAX_BYTES as u64),
+                ),
+                temperature: None,
+                extra: Default::default(),
             };
             if let Some(earlier) = &summary {
                 request.messages.push(ChatMessage::User {
@@ -383,12 +407,7 @@ pub fn build_summary_request(
         .map(|c| c.pruned_message_indices.iter().copied().collect())
         .unwrap_or_default();
     let system = ChatMessage::System {
-        content: match input.focus.map(str::trim).filter(|f| !f.is_empty()) {
-            Some(focus) => format!(
-                "{SUMMARY_PROMPT}\n\nThe user asked you to pay particular attention to: {focus}"
-            ),
-            None => SUMMARY_PROMPT.to_string(),
-        },
+        content: summary_prompt(input.focus),
     };
     let mut cut = planned.prefix_elidable.iter();
     loop {

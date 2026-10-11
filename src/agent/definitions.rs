@@ -581,14 +581,15 @@ fn read_file(path: &Path, target: &Path, source: AgentSource) -> Result<AgentDef
         .ok_or("the file name is not valid text")?;
     let id = AgentId::parse(canonical_agent_id(stem))?;
     let file = std::fs::File::open(target).map_err(|e| format!("cannot be read: {e}"))?;
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES as u64 + 1)
-        .read_to_string(&mut text)
+        .read_to_end(&mut bytes)
         .map_err(|e| format!("cannot be read as text: {e}"))?;
-    if text.len() > MAX_FILE_BYTES {
+    if bytes.len() > MAX_FILE_BYTES {
         return Err(format!("larger than {} KiB", MAX_FILE_BYTES / 1024));
     }
-    parse(id, &text, source)
+    let text = std::str::from_utf8(&bytes).map_err(|e| format!("cannot be read as text: {e}"))?;
+    parse(id, text, source)
 }
 
 fn parse(id: AgentId, text: &str, source: AgentSource) -> Result<AgentDefinition, String> {

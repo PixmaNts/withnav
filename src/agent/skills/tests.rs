@@ -250,6 +250,29 @@ fn multiline_yaml_and_unknown_fields_are_tolerated() {
         ]
         .map(String::from)
     );
+    let manifest = root.join("formats/SKILL.md");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    let base = "---\nname: formats\ndescription: Valid.\n";
+    let at_limit = format!(
+        "{base}#{}\n---",
+        "x".repeat(frontmatter::MAX_HEADER_BYTES - base.len() - 5)
+    );
+    let long_body = "x".repeat(frontmatter::MAX_HEADER_BYTES + 1);
+    for (text, expected_body) in [
+        (
+            format!("{base}---\nBody\n").replace('\n', "\r\n"),
+            "Body\r\n",
+        ),
+        (format!("{base}---"), ""),
+        (at_limit, ""),
+        (format!("{base}---\n{long_body}"), long_body.as_str()),
+    ] {
+        fs::write(&manifest, &text).unwrap();
+        let (meta, body) = frontmatter::parse(&text).unwrap();
+        assert_eq!(meta.name, "formats");
+        assert_eq!(body, expected_body);
+        assert!(matches!(load(&fx).resolve("formats"), Resolution::Found(_)));
+    }
 }
 
 // Given malformed files next to a good one
@@ -260,6 +283,15 @@ fn a_malformed_file_never_hides_the_others() {
     let fx = fixture();
     let root = fx.home.join(".agents/skills");
     add(&root.join("good"), "good", "Fine.");
+    let oversized = format!(
+        "---\nname: x\ndescription: y\n#{}\n---\n",
+        "x".repeat(frontmatter::MAX_HEADER_BYTES)
+    );
+    let prefix = "---\nname: x\ndescription: y\n#";
+    let truncated_delimiter = format!(
+        "{prefix}{}\n---x\n---\n",
+        "x".repeat(frontmatter::MAX_HEADER_BYTES - prefix.len() - 4)
+    );
     for (dir, text) in [
         ("nohead", "no header here\n"),
         ("unclosed", "---\nname: x\ndescription: y\n"),
@@ -269,9 +301,12 @@ fn a_malformed_file_never_hides_the_others() {
         ("emptyname", "---\nname: ''\ndescription: y\n---\n"),
         ("spaced", "---\nname: has space\ndescription: y\n---\n"),
         ("wrongtype", "---\nname: [a, b]\ndescription: y\n---\n"),
+        ("oversized", oversized.as_str()),
+        ("truncated-delimiter", truncated_delimiter.as_str()),
     ] {
         fs::create_dir_all(root.join(dir)).unwrap();
         fs::write(root.join(dir).join("SKILL.md"), text).unwrap();
+        assert!(frontmatter::parse(text).is_err(), "{dir}");
     }
     let skills = load(&fx);
     assert_eq!(catalog_lines(&skills), ["good — Fine."]);
@@ -280,7 +315,7 @@ fn a_malformed_file_never_hides_the_others() {
         .iter()
         .filter(|d| matches!(d.kind, DiagnosticKind::Invalid(_)))
         .count();
-    assert_eq!(invalid, 8, "{:?}", skills.diagnostics());
+    assert_eq!(invalid, 10, "{:?}", skills.diagnostics());
     assert!(skills.diagnostics().iter().all(Diagnostic::is_problem));
 }
 
@@ -540,6 +575,29 @@ fn descriptions_are_flattened_and_capped() {
     assert!(cut.ends_with('…'));
     let exact = "x".repeat(MAX_DESCRIPTION_CHARS);
     assert_eq!(catalog::flatten(&exact), exact);
+    for description in [
+        String::new(),
+        " \t\r\n\u{a0}\u{2003}".into(),
+        "  one\u{a0}two\u{2003}三\r\nfour  ".into(),
+        "é 三\t".repeat(100),
+        format!("{} last", "x".repeat(MAX_DESCRIPTION_CHARS - 2)),
+        format!("{} last", "x".repeat(MAX_DESCRIPTION_CHARS - 1)),
+        "x".repeat(MAX_DESCRIPTION_CHARS + 1),
+    ] {
+        let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        let expected = if flat.chars().count() <= MAX_DESCRIPTION_CHARS {
+            flat
+        } else {
+            let mut cut: String = flat.chars().take(MAX_DESCRIPTION_CHARS - 1).collect();
+            cut.truncate(cut.trim_end().len());
+            cut.push('…');
+            cut
+        };
+        assert_eq!(
+            catalog::flatten(&description).as_bytes(),
+            expected.as_bytes()
+        );
+    }
 }
 
 #[test]

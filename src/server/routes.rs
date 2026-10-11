@@ -448,9 +448,9 @@ async fn create_session(
 }
 
 async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.session_summary(parsed).await {
         Ok(summary) => Json(summary).into_response(),
@@ -561,9 +561,9 @@ async fn list_sessions(
 /// `DELETE /v1/sessions/{id}`: 204 on success; 404 only when the id is
 /// neither in memory nor on disk.
 async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.delete(parsed).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -773,9 +773,9 @@ fn model_catalog_error(error: &ServerError) -> &'static str {
 
 /// `GET /v1/sessions/:id/context`: the session's context snapshot.
 async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.context(parsed).await {
         Ok(snapshot) => Json(snapshot).into_response(),
@@ -784,9 +784,9 @@ async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> R
 }
 
 async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(id) => id,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.skills(parsed).await {
         Ok(skills) => Json(skills).into_response(),
@@ -824,9 +824,9 @@ async fn post_bypass(
     if state.http.bearer_token.is_none() {
         return bypass_auth_required();
     }
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     let Json(request) = match body {
         Ok(parsed) => parsed,
@@ -862,9 +862,9 @@ async fn post_command(
     Path(id): Path<String>,
     body: Result<Json<PostCommandRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     let Json(request) = match body {
         Ok(parsed) => parsed,
@@ -895,6 +895,16 @@ async fn post_command(
 /// The server-assigned sender for HTTP-submitted messages: clients can never
 /// impersonate another actor by choosing it themselves.
 const HTTP_USER_ACTOR_ID: &str = "user:http";
+
+fn parse_session_id(id: String) -> Result<Ulid, ServerError> {
+    id.parse().map_err(|_| ServerError::SessionNotFound(id))
+}
+
+async fn routable_session_id(state: &AppState, id: String) -> Result<Ulid, ServerError> {
+    let id = parse_session_id(id)?;
+    state.routable_handle(id).await?;
+    Ok(id)
+}
 
 /// Builds the Command for a posted message with a server-assigned sender.
 /// Public so the WS route and integration tests share the exact POST core.
@@ -945,14 +955,11 @@ async fn post_message(
             return error_response(ServerError::MalformedBody(rejection.body_text()));
         }
     };
-    let session_id: Ulid = match id.parse() {
+    let session_id = match routable_session_id(&state, id).await {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     // Unknown or stopping sessions answer 404/409 before the body is judged.
-    if let Err(err) = state.routable_handle(session_id).await {
-        return error_response(err);
-    }
     let mode = match parse_mode(request.mode.as_deref()) {
         Ok(mode) => mode,
         Err(err) => return error_response(err),
@@ -1020,12 +1027,10 @@ async fn answer_permission(
     Path((id, request_id)): Path<(String, String)>,
     body: Result<Json<AnswerPermissionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Ok(session_id) = id.parse::<Ulid>() else {
-        return error_response(ServerError::SessionNotFound(id));
+    let session_id = match routable_session_id(&state, id).await {
+        Ok(id) => id,
+        Err(err) => return error_response(err),
     };
-    if let Err(err) = state.routable_handle(session_id).await {
-        return error_response(err);
-    }
     let Ok(request_id) = request_id.parse::<Ulid>() else {
         return error_response(ServerError::PermissionStale);
     };
@@ -1056,9 +1061,9 @@ async fn answer_permission(
 }
 
 async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.close_session(parsed).await {
         Ok(()) => Json(StopAccepted {

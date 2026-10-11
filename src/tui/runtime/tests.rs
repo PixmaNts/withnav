@@ -42,7 +42,21 @@ async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
             Action::ResumeSession("archive".into()),
         );
         let generation = runtime.state.generation.clone();
-        let metadata=serde_json::from_value(json!({"session_id":"archive","actor_state":"stopped","workspace":"/ws","model":"gateway/archive","agent":"build","variant":null,"source":"config","variant_source":"model_default","current_seq":0,"read_only":read_only,"promptable":promptable,"resume_disabled_reason":"unproven identity"})).unwrap();
+        let metadata = serde_json::from_value(json!({
+            "session_id": "archive",
+            "actor_state": "stopped",
+            "workspace": "/ws",
+            "model": "gateway/archive",
+            "agent": "build",
+            "variant": null,
+            "source": "config",
+            "variant_source": "model_default",
+            "current_seq": 0,
+            "read_only": read_only,
+            "promptable": promptable,
+            "resume_disabled_reason": "unproven identity"
+        }))
+        .unwrap();
         let effects = crate::tui::reducer::update(
             &mut runtime.state,
             ClientEvent::Metadata {

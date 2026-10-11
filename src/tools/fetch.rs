@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::tools::{bound_output, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use crate::tools::{Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
 
 pub const FETCH_DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const FETCH_MAX_TIMEOUT_SECS: u64 = 120;
@@ -371,19 +371,14 @@ async fn fetch(
         text
     };
 
-    let (out, elided) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(out).with_metadata(json!({
+    ToolResult::bounded_ok(&text, DEFAULT_MAX_OUTPUT_BYTES).with_metadata(json!({
         "url": shown(url.as_str()),
         "status": status.as_u16(),
         "content_type": mime,
         "format": match format { Format::Markdown => "markdown", Format::Text => "text", Format::Html => "html" },
         "body_bytes": original_len,
         "redirects": hops,
-    }));
-    if let Some(original) = elided {
-        result = result.with_truncation(original);
-    }
-    result
+    }))
 }
 
 fn net_error(e: reqwest::Error) -> ToolResult {
@@ -674,13 +669,13 @@ async fn convert_in_child(
         let _ = child.kill().await;
         return Err("no pipes".into());
     };
-    let input = html.as_bytes().to_vec();
+    let input = html.as_bytes();
     let deadline = tokio::time::Instant::now() + budget;
 
     let io = async {
         let write = async move {
             // A child that stops reading early is judged by its exit status.
-            let _ = stdin.write_all(&input).await;
+            let _ = stdin.write_all(input).await;
             let _ = stdin.shutdown().await;
         };
         let read = async {
@@ -719,8 +714,20 @@ async fn convert_in_child(
             }
         }
     }
+    Ok(decode_converter_output(&buf))
+}
+
+fn decode_converter_output(buf: &[u8]) -> String {
     let kept = &buf[..buf.len().min(CONVERT_MAX_OUTPUT_BYTES)];
-    Ok(String::from_utf8_lossy(kept).into_owned())
+    let kept = if buf.len() > CONVERT_MAX_OUTPUT_BYTES {
+        match std::str::from_utf8(kept) {
+            Err(error) if error.error_len().is_none() => &kept[..error.valid_up_to()],
+            _ => kept,
+        }
+    } else {
+        kept
+    };
+    String::from_utf8_lossy(kept).into_owned()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1437,6 +1444,12 @@ mod tests {
         let out = convert_html(page, Format::Markdown, None, Duration::from_secs(5)).await;
         assert!(out.starts_with("[note: the HTML was cut"), "{}", &out[..80]);
         assert!(out.contains(UNSAFE_NOTE));
+        for character in ["é", "€", "🦀"] {
+            let prefix = "x".repeat(CONVERT_MAX_OUTPUT_BYTES - 1);
+            let bytes = format!("{prefix}{character}");
+            assert_eq!(decode_converter_output(bytes.as_bytes()), prefix);
+        }
+        assert_eq!(decode_converter_output(b"ok\xff"), "ok\u{fffd}");
     }
 
     // Given a converter that cannot start

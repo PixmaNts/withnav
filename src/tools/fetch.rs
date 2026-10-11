@@ -674,13 +674,13 @@ async fn convert_in_child(
         let _ = child.kill().await;
         return Err("no pipes".into());
     };
-    let input = html.as_bytes().to_vec();
+    let input = html.as_bytes();
     let deadline = tokio::time::Instant::now() + budget;
 
     let io = async {
         let write = async move {
             // A child that stops reading early is judged by its exit status.
-            let _ = stdin.write_all(&input).await;
+            let _ = stdin.write_all(input).await;
             let _ = stdin.shutdown().await;
         };
         let read = async {

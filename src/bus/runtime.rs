@@ -944,6 +944,7 @@ async fn runtime_loop(
         let status = boundary_status.clone();
         Box::pin(async move {
             use crate::agent::boundary::BoundaryResult;
+            use std::borrow::Cow;
             if status.watchdog.root_hold().is_none() {
                 #[cfg(test)]
                 {
@@ -954,7 +955,7 @@ async fn runtime_loop(
                     }
                 }
                 if !status.watchdog.boundary(&cancel).await {
-                    return Ok(BoundaryResult::Watchdog(transcript));
+                    return Ok(BoundaryResult::Watchdog(None));
                 }
             }
             if cancel.is_cancelled() {
@@ -985,13 +986,17 @@ async fn runtime_loop(
                 }
                 // Eligibility and consumption otherwise read different outbox
                 // snapshots. A later completion must not overtake this captain.
-                let transcript = status.steering.apply(transcript);
+                let transcript = status.steering.apply_at_boundary(Cow::Borrowed(transcript));
+                let updated = match transcript {
+                    Cow::Borrowed(_) => None,
+                    Cow::Owned(transcript) => Some(transcript),
+                };
                 if !status.watchdog.boundary(&cancel).await {
-                    return Ok(BoundaryResult::Watchdog(transcript));
+                    return Ok(BoundaryResult::Watchdog(updated));
                 }
-                return Ok(BoundaryResult::Continue(transcript));
+                return Ok(updated.map_or(BoundaryResult::Unchanged, BoundaryResult::Continue));
             }
-            let mut transcript = status.steering.apply(transcript);
+            let mut transcript = status.steering.apply_at_boundary(Cow::Borrowed(transcript));
             let callback = status
                 .delivery
                 .lock()
@@ -999,14 +1004,18 @@ async fn runtime_loop(
                 .as_ref()
                 .map(|c| c.0.clone());
             if let Some(callback) = callback {
-                if let Some(updated) = callback(transcript.clone(), true).await? {
-                    transcript = updated;
+                if let Some(updated) = callback(&transcript, true).await? {
+                    transcript = Cow::Owned(updated);
                 }
             }
+            let updated = match transcript {
+                Cow::Borrowed(_) => None,
+                Cow::Owned(transcript) => Some(transcript),
+            };
             if !status.watchdog.boundary(&cancel).await {
-                return Ok(BoundaryResult::Watchdog(transcript));
+                return Ok(BoundaryResult::Watchdog(updated));
             }
-            Ok(BoundaryResult::Continue(transcript))
+            Ok(updated.map_or(BoundaryResult::Unchanged, BoundaryResult::Continue))
         })
     }));
 
@@ -2315,10 +2324,11 @@ mod tests {
         let persisted = Arc::new(tokio::sync::Notify::new());
         let done = persisted.clone();
         let history = store.clone();
-        status.install_delivery(Arc::new(move |mut transcript, _| {
+        status.install_delivery(Arc::new(move |transcript, _| {
             let history = history.clone();
             let done = done.clone();
             Box::pin(async move {
+                let mut transcript = transcript.to_vec();
                 transcript.push(ChatMessage::User {
                     content: "child completion".into(),
                     provenance: UserProvenance::Subagent,
@@ -2431,7 +2441,7 @@ mod tests {
                         entered.notify_one();
                         release.notified().await;
                     }
-                    Ok(Some(transcript))
+                    Ok(Some(transcript.to_vec()))
                 })
             }));
             let (tx, inbox) = ActorInbox::channel();
@@ -2496,7 +2506,7 @@ mod tests {
                     r.notify_one();
                     u.notified().await;
                 }
-                Ok(Some(transcript))
+                Ok(Some(transcript.to_vec()))
             })
         }));
         let (tx, inbox) = ActorInbox::channel();
@@ -2760,7 +2770,7 @@ mod tests {
                         r.notify_one();
                         u.notified().await;
                     }
-                    Ok(Some(transcript))
+                    Ok(Some(transcript.to_vec()))
                 })
             }));
             let id = Ulid::new();
@@ -2801,6 +2811,108 @@ mod tests {
     }
 
     // ---- mock provider (same technique as the loop.rs tests) ----
+
+    #[tokio::test]
+    async fn boundary_clones_only_for_steering_or_actual_delivery() {
+        use crate::agent::boundary::BoundaryResult;
+        use crate::provider::openai::{ChatMessage, UserProvenance};
+        for steer in [false, true] {
+            for delivery in ["absent", "empty", "inject", "error"] {
+                let status = Arc::new(RuntimeStatus::default());
+                let mut actor =
+                    make_actor("http://127.0.0.1:1/v1".into(), CancellationToken::new());
+                actor.push_user("original input".repeat(4096));
+                let ChatMessage::User { content, .. } = &actor.transcript[0] else {
+                    panic!("expected user message")
+                };
+                let original = content.as_ptr() as usize;
+                if delivery != "absent" {
+                    status.install_delivery(Arc::new(move |transcript, mid_turn| {
+                        Box::pin(async move {
+                            assert!(mid_turn);
+                            assert_eq!(transcript.len(), if steer { 2 } else { 1 });
+                            let ChatMessage::User { content, .. } = &transcript[0] else {
+                                panic!("expected user message")
+                            };
+                            if !steer {
+                                assert_eq!(content.as_ptr() as usize, original);
+                            }
+                            if steer {
+                                assert!(matches!(&transcript[1], ChatMessage::User { content, provenance: UserProvenance::Parent } if content == "guidance"));
+                            }
+                            match delivery {
+                                "empty" => Ok(None),
+                                "error" => Err("uncommitted delivery failure".to_string().into()),
+                                _ => {
+                                    let mut transcript = transcript.to_vec();
+                                    transcript.push(ChatMessage::User {
+                                        content: "delivered result".into(),
+                                        provenance: UserProvenance::Subagent,
+                                    });
+                                    Ok(Some(transcript))
+                                }
+                            }
+                        })
+                    }));
+                }
+                let (tx, inbox) = ActorInbox::channel();
+                drop(tx);
+                let id = Ulid::new();
+                let actor = spawn_with_status(
+                    id,
+                    actor,
+                    inbox,
+                    Sequencer::spawn(id, crate::bus::SessionBus::default(), 0),
+                    CancellationToken::new(),
+                    None,
+                    status.clone(),
+                )
+                .await
+                .unwrap();
+                if steer {
+                    assert!(status.steering.admit(steering::Operation {
+                        wake: false,
+                        id: Ulid::new(),
+                        content: "guidance".into(),
+                        provenance: UserProvenance::Parent,
+                        interrupt: false,
+                    }));
+                }
+                let result = actor.safe_boundary.as_ref().unwrap()(
+                    &actor.transcript,
+                    CancellationToken::new(),
+                )
+                .await;
+                match result {
+                    Err(error) => {
+                        assert_eq!(delivery, "error");
+                        assert!(error.committed.is_none());
+                    }
+                    Ok(BoundaryResult::Unchanged) => {
+                        assert!(!steer && matches!(delivery, "absent" | "empty"));
+                    }
+                    Ok(BoundaryResult::Continue(transcript)) => {
+                        assert!(steer || delivery == "inject");
+                        assert_eq!(
+                            transcript.len(),
+                            1 + usize::from(steer) + usize::from(delivery == "inject")
+                        );
+                        if delivery == "inject" {
+                            assert!(
+                                matches!(transcript.last(), Some(ChatMessage::User { content, provenance: UserProvenance::Subagent }) if content == "delivered result")
+                            );
+                        }
+                    }
+                    _ => panic!("unexpected boundary outcome"),
+                }
+                let ChatMessage::User { content, .. } = &actor.transcript[0] else {
+                    panic!("expected original input")
+                };
+                assert_eq!(content.as_ptr() as usize, original);
+                assert_eq!(actor.transcript.len(), 1);
+            }
+        }
+    }
 
     async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
         let mut buf = Vec::new();

@@ -3080,20 +3080,21 @@ impl Service {
             let delivery_sequencer = sequencer.clone();
             #[cfg(debug_assertions)]
             let failure_countdown = self.delivery_failure_countdown.clone();
-            status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
+            status.install_delivery(Arc::new(move |transcript, mid_turn| {
                 let history = history.clone();
                 let sequencer = delivery_sequencer.clone();
                 #[cfg(debug_assertions)]
                 let failure_countdown = failure_countdown.clone();
                 Box::pin(async move {
                     history.flush().await?;
-                    let notices = history.unconsumed_completions(session_id).await?;
+                    let mut notices = history.unconsumed_completions(session_id).await?;
+                    notices.retain(|(_, payload, _)| !mid_turn || payload["delivery"] == "steer");
                     if notices.is_empty() {
                         return Ok(None);
                     }
+                    let mut transcript = transcript.to_vec();
                     let mut consumed = false;
                     for (child, payload, result) in notices {
-                        if mid_turn && payload["delivery"] != "steer" { continue; }
                         let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
                         let mut text = serde_json::json!({
                             "untrusted_subagent_output": true,

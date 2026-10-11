@@ -103,11 +103,7 @@ pub struct DowngradeNotice {
 
 impl fmt::Display for DowngradeNotice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mode = match self.mode {
-            DeliveryMode::NextTurn => "next-turn",
-            DeliveryMode::Steer => "steer",
-            DeliveryMode::Interrupt => "interrupt",
-        };
+        let mode = self.mode.as_str();
         write!(
             f,
             "{mode} recorded; this build runs it at the next turn boundary"

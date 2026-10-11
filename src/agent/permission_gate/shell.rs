@@ -552,11 +552,9 @@ pub(super) fn destructive(words: &[String]) -> bool {
             let args = &words[i + 1..];
             let opt = |s: &str| args.iter().any(|w| w == s);
             match words[i].as_str() {
-                "push" => args.iter().any(|word| {
-                    super::git::force_push_operand(word)
-                        || super::git::delete_push_operand(word)
-                        || super::git::broad_push_operand(word)
-                }),
+                "push" => args
+                    .iter()
+                    .any(|word| super::git::captain_only_push_operand(word)),
                 "checkout" => opt("--") || opt("."),
                 "restore" => !opt("--staged") || opt("--worktree") || opt("-W"),
                 "stash" => args.iter().any(|w| matches!(w.as_str(), "drop" | "clear")),
@@ -597,6 +595,29 @@ pub(super) fn destructive(words: &[String]) -> bool {
         p if p.starts_with("mkfs.") => true,
         _ => false,
     }
+}
+
+/// Unknown push options may be destructive clusters or Git's long abbreviations.
+/// Keep the Captain hold even when metacognition approves, including compound calls.
+pub(super) fn captain_only_push(command: &str) -> bool {
+    segments(command).is_none_or(|parts| {
+        parts.iter().any(|words| {
+            let Some(words) = inner_command(words) else {
+                return true;
+            };
+            let Some(i) = executable(words) else {
+                return true;
+            };
+            let words = &words[i..];
+            basename(&words[0]) == "git"
+                && git_subcommand(words).is_some_and(|i| {
+                    words[i] == "push"
+                        && words[i + 1..]
+                            .iter()
+                            .any(|word| super::git::captain_only_push_operand(word))
+                })
+        })
+    })
 }
 
 pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {

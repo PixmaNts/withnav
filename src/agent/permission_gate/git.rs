@@ -30,7 +30,7 @@ pub(super) fn push(words: &[&str], current: Option<&str>) -> Option<Value> {
         match *word {
             option if option.starts_with('-') && force_push_operand(option) => force = true,
             option if option.starts_with('-') && delete_push_operand(option) => delete = true,
-            "-u" | "--set-upstream" | "--no-verify" | "--porcelain" | "--verbose" | "-v" => {}
+            option if safe_push_option(option) => {}
             option if option.starts_with('-') => understood = false,
             operand => positional.push(operand),
         }
@@ -55,6 +55,20 @@ pub(super) fn push(words: &[&str], current: Option<&str>) -> Option<Value> {
         "literal_target":understood && !force && !delete && positional.len() == 2 && remote == Some("origin") && target.is_some_and(|branch| !branch.is_empty() && !branch.starts_with("refs/")),
         "own_branch":own_branch && !force && !delete}),
     )
+}
+
+pub(super) fn safe_push_option(word: &str) -> bool {
+    matches!(
+        word,
+        "-u" | "--set-upstream" | "--no-verify" | "--porcelain" | "--verbose" | "-v"
+    )
+}
+
+pub(super) fn captain_only_push_operand(word: &str) -> bool {
+    (word.starts_with('-') && !safe_push_option(word))
+        || force_push_operand(word)
+        || delete_push_operand(word)
+        || broad_push_operand(word)
 }
 
 pub(super) fn force_push_operand(word: &str) -> bool {

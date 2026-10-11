@@ -1285,7 +1285,8 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
                         && !(choice(&answers, "call_effect") == Some("remote_change")
                             && choice(&answers, "reversibility") == Some("destructive"))
                         && !bash_command(call).is_some_and(|command| {
-                            command.contains("gh release create")
+                             command.contains("gh release create")
+                                 || shell::captain_only_push(command)
                                 || (command.contains("push") && bash_operands(command).any(|word| {
                                     git::force_push_operand(word) || git::delete_push_operand(word)
                                 }))
@@ -2842,6 +2843,26 @@ mod tests {
                 route(&input, &answers, &prefilter(&call, &needed, &cx)),
                 Ok(Route::Review)
             );
+            if row["captain_only"] == true {
+                let mut actor = review_actor();
+                actor.tool_context = cx.clone();
+                actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row.clone())));
+                let reviewer = std::sync::Arc::new(ReviewStub {
+                    decision: ReviewDecision::Approve,
+                    calls: Default::default(),
+                    timeout: false,
+                });
+                actor.permission_reviewer = Some(reviewer.clone());
+                assert!(
+                    matches!(
+                        consult(&actor, &call, &needed).await,
+                        Judged::Ask(_) | Judged::AskWithEvidence(_, _)
+                    ),
+                    "{}",
+                    row["command"]
+                );
+                assert_eq!(reviewer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            }
         }
         assert!(count >= 100);
     }

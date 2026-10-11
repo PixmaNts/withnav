@@ -904,9 +904,13 @@ fn count_usage(s: &mut State, key: StepKey, u: Usage) {
 }
 
 fn interrupt_block(b: &mut Block) {
+    set_tool_status_if_pending(b, ToolStatus::Interrupted);
+}
+
+fn set_tool_status_if_pending(b: &mut Block, value: ToolStatus) {
     if let BlockKind::ToolCall { status, .. } = &mut b.kind {
         if status.is_none() {
-            *status = Some(ToolStatus::Interrupted)
+            *status = Some(value);
         }
     }
 }
@@ -972,15 +976,14 @@ fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
     for id in ids {
         let bid = format!("tool:{id}");
         if let Some(b) = s.conversation.blocks.iter_mut().find(|b| b.id == bid) {
-            if let BlockKind::ToolCall { status, .. } = &mut b.kind {
-                if status.is_none() {
-                    *status = Some(if resolution == "deny" {
-                        ToolStatus::Denied
-                    } else {
-                        ToolStatus::Interrupted
-                    });
-                }
-            }
+            set_tool_status_if_pending(
+                b,
+                if resolution == "deny" {
+                    ToolStatus::Denied
+                } else {
+                    ToolStatus::Interrupted
+                },
+            );
         }
     }
 }

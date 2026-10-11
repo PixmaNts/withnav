@@ -78,13 +78,6 @@ const LAYERS = [
   { id: "metacognition", label: "Metacognition · Beacon", api: "chat", role: "Remarks, wakes, and approval of risky calls.", note: "A fast (flash) chat model works best here." },
 ] as const;
 
-const THEMES: SelectOption[] = [
-  { value: "ayu-dark", label: "ayu-dark" },
-  { value: "ayu-light", label: "ayu-light" },
-  { value: "nord-dark", label: "nord-dark" },
-  { value: "nord-light", label: "nord-light" },
-];
-
 const KEY_SOURCE: Record<GatewayInfo["key_source"], string> = {
   auth_store: "Key found in the auth store.",
   environment: "Key found in the environment.",
@@ -114,7 +107,7 @@ export function buildSections(s: SettingsSnapshot): Section[] {
     if (!agents.some((a) => a.id === id)) agents.push({ id, description: "", mode: "primary", effective: null, warning: null });
   }
   for (const a of agents) sections.push(agentSection(s, a));
-  sections.push(permissionsSection(s), subagentsSection(s), appearanceSection(s));
+  sections.push(permissionsSection(s), subagentsSection(s));
   for (const section of sections) {
     const notes: string[] = [];
     if (section.id.startsWith("layer:") || section.id.startsWith("agent:") || section.id === "layers") {
@@ -346,21 +339,6 @@ function subagentsSection(s: SettingsSnapshot): Section {
       numberRow(s, "subagents.watchdog_interval_secs", "Subagents:", "Watchdog Interval Secs", "Progress check for running children. 0 disables supervision.", 0, 31536000),
       numberRow(s, "agent.watchdog_interval_secs", "Agent:", "Watchdog Interval Secs", "The same check for the session's own agent. 0 disables it.", 0, 31536000),
     ],
-  };
-}
-
-function appearanceSection(s: SettingsSnapshot): Section {
-  const f = field(s, "tui.theme");
-  const current = String(effectiveValue(f) ?? "ayu-dark");
-  const options = THEMES.some((t) => t.value === current) ? THEMES : [{ value: current, label: `${current} (unknown)` }, ...THEMES];
-  return {
-    id: "appearance", label: "Appearance", level: 0, title: "Appearance", description: "config.json → tui.theme",
-    rows: [{
-      id: "tui.theme", key: "tui.theme", category: "Tui:", title: "Theme",
-      description: "Terminal client and WebUI theme. This page follows your VS Code theme.", applies: f ? appliesText(f.applies) : undefined,
-      control: { kind: "select", value: current, options }, modified: f?.set === true && current !== "ayu-dark", resettable: !!f?.set, error: f?.error,
-      terms: `tui.theme ${current}`, write: (input) => (input ? String(input) : null),
-    }],
   };
 }
 

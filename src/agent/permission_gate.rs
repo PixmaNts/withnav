@@ -431,6 +431,16 @@ fn read_only_run(
     sensitivity: f64,
 ) -> bool {
     let state: Value = serde_json::from_str(&input.state).unwrap_or(Value::Null);
+    read_only_run_with_state(input, answers, flags, sensitivity, &state)
+}
+
+fn read_only_run_with_state(
+    input: &PermissionReviewInput,
+    answers: &Answers,
+    flags: &Overrides,
+    sensitivity: f64,
+    state: &Value,
+) -> bool {
     matches!(answers.get("call_effect"), Some(Answer::Choice { choice, confidence, .. }) if choice == "read_only" && *confidence >= MIN_CONFIDENCE)
         && choice(answers, "reversibility") != Some("destructive")
         && choice(answers, "publication") != Some("shared")
@@ -576,7 +586,7 @@ pub fn route(
     {
         return Err("malformed");
     }
-    if read_only_run(input, answers, flags, MAX_READ_SENSITIVITY) {
+    if read_only_run_with_state(input, answers, flags, MAX_READ_SENSITIVITY, &state) {
         return Ok(Route::Run);
     }
     if flags.risky
@@ -594,13 +604,7 @@ pub fn route(
     if state["untrusted_evidence"]["arguments"]["command"]
         .as_str()
         .is_some_and(|command| {
-            let mut facts = state["host_facts"].clone();
-            if !state["untrusted_evidence"]["script"]["text"].is_string()
-                || state["untrusted_evidence"]["script"]["truncated"] != false
-            {
-                facts["script_binding"]["complete"] = json!(false);
-            }
-            shell::execution_floor(command, &facts)
+            shell::execution_floor(command, &state["host_facts"])
                 || shell::removal_or_move(command)
                 || shell::overwrite_paths(command).is_some_and(|paths| {
                     !paths.is_empty() && state["host_facts"]["overwrites_recoverable"] != true

@@ -28,7 +28,14 @@ use withnav::tools::native::ReadTool;
 use withnav::tools::{Registry, ToolContext};
 
 mod common;
-use common::sse::{http_sse, spawn_mock_provider, sse_body};
+use common::sse::{http_sse, spawn_mock_provider, sse_body, MockProvider};
+
+async fn scripted_actor(done: &str) -> (MockProvider, tempfile::TempDir, AgentActor) {
+    let server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
+    let workspace = tempfile::tempdir().unwrap();
+    let actor = make_actor(server.url.clone(), workspace.path().to_path_buf());
+    (server, workspace, actor)
+}
 
 /// A comparable snapshot of a rendered UiEvent (UiEvent is not PartialEq).
 #[derive(Debug, PartialEq, Eq)]
@@ -56,9 +63,8 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     let done = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"pondering","content":"hello world"},"finish_reason":"stop"}]}"#;
 
     // --- Path 1: DIRECT (Phase-1 on_delta closure), capturing UiEvents. ---
-    let direct_server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
+    let (_direct_server, _direct_workspace, mut actor) = scripted_actor(done).await;
     let mut direct_ui: Vec<Ui> = Vec::new();
-    let mut actor = make_actor(direct_server.url.clone());
     actor.push_user("go");
     let outcome = {
         let mut on_delta = |e: AgentEvent| {
@@ -81,12 +87,11 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     let direct_exit = phase1_exit(&outcome);
 
     // --- Path 2: THROUGH THE BUS (runtime task + event_to_ui). ---
-    let bus_server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
+    let (_bus_server, _bus_workspace, bus_actor) = scripted_actor(done).await;
     let session_id = Ulid::new();
     let sequencer = Sequencer::spawn(session_id, SessionBus::default(), 0);
     let (inbox_tx, inbox) = ActorInbox::channel();
     let session_cancel = CancellationToken::new();
-    let bus_actor = make_actor(bus_server.url.clone());
 
     let sub = sequencer.subscribe_since(None).await.expect("subscribe");
     let task = runtime::spawn(
@@ -320,10 +325,7 @@ fn user_command(session_id: Ulid, text: &str) -> withnav::bus::command::Command 
     }
 }
 
-fn make_actor(base_url: String) -> AgentActor {
-    let tmp = tempfile::tempdir().unwrap();
-    let ws = tmp.path().to_path_buf();
-    std::mem::forget(tmp);
+fn make_actor(base_url: String, ws: std::path::PathBuf) -> AgentActor {
     let mut registry = Registry::new();
     registry.register(Box::new(ReadTool));
     registry.register(Box::new(BashTool));

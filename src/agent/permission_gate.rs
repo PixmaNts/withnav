@@ -696,7 +696,7 @@ pub fn config_grant_eligible(
     };
     if path
         .file_name()
-        .is_some_and(|name| name == "skill-grants.json" || name == "grants.json")
+        .is_some_and(|name| name == super::skill_grants::FILE_NAME || name == "grants.json")
     {
         return false;
     }

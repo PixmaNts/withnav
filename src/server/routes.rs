@@ -981,31 +981,27 @@ pub enum DecisionKind {
 const DEFAULT_DENIAL: &str = "the user denied this tool call";
 
 async fn list_skill_grants(State(state): State<AppState>) -> Response {
-    let store = crate::agent::skill_grants::SkillGrants {
-        file: state.config.config_dir.join("skill-grants.json"),
-    };
+    let store = crate::agent::skill_grants::SkillGrants::in_dir(&state.config.config_dir);
     match store.read() {
         Ok(grants) => Json(json!({"grants": grants})).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
-        )
-            .into_response(),
+        Err(error) => grants_error(error),
     }
 }
 
 async fn revoke_skill_grant(State(state): State<AppState>, Path(skill): Path<String>) -> Response {
-    let store = crate::agent::skill_grants::SkillGrants {
-        file: state.config.config_dir.join("skill-grants.json"),
-    };
+    let store = crate::agent::skill_grants::SkillGrants::in_dir(&state.config.config_dir);
     match store.revoke(&skill) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": error})),
-        )
-            .into_response(),
+        Err(error) => grants_error(error),
     }
+}
+
+fn grants_error(error: String) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": error})),
+    )
+        .into_response()
 }
 
 async fn answer_permission(

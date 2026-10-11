@@ -25,7 +25,7 @@ fn triggers(client: &Nav) -> Vec<Value> {
 
 /// A save then an idle on the same text: one request, one delivery. The idle
 /// does not restart the request the save started.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(
@@ -37,9 +37,8 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     client.did_save(URI).await;
     client.expect_status("thinking").await;
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::sleep(Duration::from_millis(3001)).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    client.sync_notifications().await;
     assert_eq!(mock.calls(), 1, "the idle must not restart the request");
 
     gate.cancel();

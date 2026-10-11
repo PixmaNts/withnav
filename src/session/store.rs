@@ -241,6 +241,57 @@ pub struct ChildLink {
     pub result_text: Option<String>,
 }
 
+struct ChildLinkRow {
+    parent_id: String,
+    child_id: String,
+    agent: String,
+    goal: String,
+    policy_snapshot: String,
+    status: String,
+    created_at: String,
+    terminal_at: Option<String>,
+    terminal_reason: Option<String>,
+    result_text: Option<String>,
+}
+
+fn child_link_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChildLinkRow> {
+    Ok(ChildLinkRow {
+        parent_id: row.get(0)?,
+        child_id: row.get(1)?,
+        agent: row.get(2)?,
+        goal: row.get(3)?,
+        policy_snapshot: row.get(4)?,
+        status: row.get(5)?,
+        created_at: row.get(6)?,
+        terminal_at: row.get(7)?,
+        terminal_reason: row.get(8)?,
+        result_text: row.get(9)?,
+    })
+}
+
+impl ChildLinkRow {
+    fn decode(self) -> Result<ChildLink, String> {
+        Ok(ChildLink {
+            parent_id: self
+                .parent_id
+                .parse()
+                .map_err(|e| format!("parent id: {e}"))?,
+            child_id: self
+                .child_id
+                .parse()
+                .map_err(|e| format!("child id: {e}"))?,
+            agent: self.agent,
+            goal: self.goal,
+            policy_snapshot: self.policy_snapshot,
+            status: self.status,
+            created_at: self.created_at,
+            terminal_at: self.terminal_at,
+            terminal_reason: self.terminal_reason,
+            result_text: self.result_text,
+        })
+    }
+}
+
 /// The result channel of an acknowledged write.
 type Ack = oneshot::Sender<Result<(), String>>;
 
@@ -788,18 +839,8 @@ impl HistoryStore {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.query_row(
                 "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
-                 FROM child_links WHERE child_id=?1", [child_id.to_string()], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, row.get::<_, Option<String>>(8)?,
-                        row.get::<_, Option<String>>(9)?))
-                }
-            ).optional().map_err(|e| e.to_string())?.map(|row| Ok(ChildLink {
-                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
-                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
-                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
-                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
-            })).transpose()
+                 FROM child_links WHERE child_id=?1", [child_id.to_string()], child_link_from_row
+            ).optional().map_err(|e| e.to_string())?.map(ChildLinkRow::decode).transpose()
         }).await.map_err(|e| e.to_string())?
     }
 
@@ -1345,40 +1386,29 @@ fn finish_child_link_sync(
         tx.rollback().map_err(|e| e.to_string())?;
         return Ok(None);
     }
-    let row = tx.query_row(
+    let (row, delivery) = tx.query_row(
                 "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text, delivery
                  FROM child_links WHERE child_id=?1",
-                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?, row.get::<_, String>(10)?)),
+                [child_id.to_string()], |row| Ok((child_link_from_row(row)?, row.get::<_, String>(10)?)),
             ).map_err(|e| e.to_string())?;
     let mut payload = serde_json::to_value(&crate::bus::event::SubagentDone {
-        parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+        parent_session_id: row
+            .parent_id
+            .parse()
+            .map_err(|e| format!("parent id: {e}"))?,
         child_session_id: child_id,
-        agent: row.2.clone(),
+        agent: row.agent.clone(),
         outcome,
         reason: reason.clone(),
         notification_id: Ulid::new(),
     })
     .map_err(|e| e.to_string())?;
-    payload["delivery"] = serde_json::json!(row.10);
+    payload["delivery"] = serde_json::json!(delivery);
     let payload = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
-                params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;
+                params![child_id.to_string(), row.parent_id, status, payload, result]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(Some(ChildLink {
-        parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
-        child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
-        agent: row.2,
-        goal: row.3,
-        policy_snapshot: row.4,
-        status: row.5,
-        created_at: row.6,
-        terminal_at: row.7,
-        terminal_reason: row.8,
-        result_text: row.9,
-    }))
+    row.decode().map(Some)
 }
 
 fn insert_committed_event(

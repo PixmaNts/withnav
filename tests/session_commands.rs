@@ -10,16 +10,10 @@ use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{
-    collect_until, post_message_ok, request_json, spawn_server, TestServerConfig,
+    collect_until, post_message_ok, request_json, spawn_server, temp_workspace as tmp_ws,
+    TestServerConfig,
 };
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};
-
-fn tmp_ws() -> (tempfile::TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(&ws).expect("ws");
-    (tmp, ws)
-}
 
 fn state(tmp: &std::path::Path) -> AppState {
     TestServerConfig::unreachable(tmp)

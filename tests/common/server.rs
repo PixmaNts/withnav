@@ -38,6 +38,15 @@ pub const UNREACHABLE_PROVIDER_URL: &str = "http://127.0.0.1:1/v1";
 /// Name of the provider in the generated `models.json` and `auth.json`.
 pub const PROVIDER: &str = "mock";
 
+/// A temporary root and an empty workspace beneath it. Keep the root alive
+/// for as long as the workspace is in use.
+pub fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace dir");
+    (tmp, ws)
+}
+
 /// Writes `auth.json` under `config_dir` with `api_key` for `provider`,
 /// readable by the owner only.
 pub fn write_auth_file(config_dir: &Path, provider: &str, api_key: &str) -> PathBuf {

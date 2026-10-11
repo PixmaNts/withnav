@@ -12,7 +12,9 @@ use withnav::server::{app, AppState};
 use withnav::session::VariantChoice;
 
 mod common;
-use common::server::{collect_until, request_json, send_text, wait_for, TestServerConfig};
+use common::server::{
+    collect_until, request_json, send_text, temp_workspace as tmp_ws, wait_for, TestServerConfig,
+};
 use common::sse::{http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body};
 
 fn offer() -> Value {
@@ -20,13 +22,6 @@ fn offer() -> Value {
         "low": {"reasoning_effort": "low"},
         "high": {"reasoning_effort": "high"}
     })
-}
-
-fn tmp_ws() -> (tempfile::TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(&ws).expect("ws");
-    (tmp, ws)
 }
 
 fn config(tmp: &std::path::Path, url: &str, default: Option<&str>) -> TestServerConfig {

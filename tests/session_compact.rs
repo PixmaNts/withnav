@@ -11,7 +11,7 @@ use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
 mod common;
-use common::server::{collect_until, send_text, TestServerConfig};
+use common::server::{collect_until, send_text, temp_workspace as tmp_ws, TestServerConfig};
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body, text_chunk,
     tool_call_chunk, CapturingProvider,
@@ -20,13 +20,6 @@ use common::sse::{
 /// A window small enough that four long turns overrun its budget.
 const WINDOW: u64 = 20_000;
 const SUMMARY: &str = "Goal: finish the parser.\nNext: run the tests.";
-
-fn tmp_ws() -> (tempfile::TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(&ws).expect("ws");
-    (tmp, ws)
-}
 
 fn answer(text: &str) -> Vec<u8> {
     http_sse(&sse_body(&[&text_chunk(text)]))

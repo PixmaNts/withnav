@@ -776,11 +776,12 @@ impl Service {
                         .find(|e| e.kind == "model.changed")
                         .and_then(|e| e.payload["revision"].as_u64())
                         .unwrap_or(0);
+                    let agent = target.agent.as_ref().expect("resolved agent");
                     service
                         .history
                         .commit_agent_selection_cancellable(
                             id,
-                            target.agent.as_ref().expect("resolved agent").id.as_str(),
+                            agent.id.as_str(),
                             target.override_value.clone().map(|(model, variant)| {
                                 super::super::store::AgentOverride {
                                     model,
@@ -792,12 +793,7 @@ impl Service {
                                 model: target.alias.clone(),
                                 resolution: target.resolution.clone(),
                                 variant: target.variant.clone(),
-                                primary_agent: target
-                                    .agent
-                                    .as_ref()
-                                    .expect("resolved agent")
-                                    .id
-                                    .to_string(),
+                                primary_agent: agent.id.to_string(),
                                 reasoning_floor: floor,
                             },
                             staged.map(|staged| super::super::store::SelectionCheckpoint {
@@ -815,13 +811,8 @@ impl Service {
                     let mut guard = lock(&selected);
                     install();
                     guard.provenance = target.provenance.clone();
-                    guard.agent = target
-                        .agent
-                        .as_ref()
-                        .expect("resolved agent")
-                        .id
-                        .to_string();
-                    guard.role = target.agent.as_ref().expect("resolved agent").clone();
+                    guard.agent = agent.id.to_string();
+                    guard.role = agent.clone();
                     guard.alias = target.alias.clone();
                     if let Some(execution) = &guard.execution {
                         let mut resolved = execution.resolved.clone();

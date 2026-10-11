@@ -77,6 +77,11 @@ pub struct ChildPreparationBarrier {
     pub release: Arc<tokio::sync::Notify>,
 }
 
+#[cfg(debug_assertions)]
+fn take_barrier(slot: &Mutex<Option<ChildPreparationBarrier>>) -> Option<ChildPreparationBarrier> {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -955,11 +960,7 @@ impl Service {
         let prepared = prepared?;
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_preparation_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_preparation_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -994,11 +995,7 @@ impl Service {
         drop(_admission);
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_publication_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_publication_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -1064,11 +1061,7 @@ impl Service {
         reservation.committed = true;
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_registration_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_registration_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -1100,11 +1093,7 @@ impl Service {
             }
             #[cfg(debug_assertions)]
             {
-                let barrier = self
-                    .child_bypass_barrier
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
+                let barrier = take_barrier(&self.child_bypass_barrier);
                 if let Some(barrier) = barrier {
                     barrier.reached.notify_one();
                     barrier.release.notified().await;
@@ -1152,11 +1141,7 @@ impl Service {
             if let Some(handle) = self.mark_stopping(child) {
                 #[cfg(debug_assertions)]
                 {
-                    let barrier = self
-                        .child_cleanup_barrier
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take();
+                    let barrier = take_barrier(&self.child_cleanup_barrier);
                     if let Some(barrier) = barrier {
                         barrier.reached.notify_one();
                         barrier.release.notified().await;
@@ -1306,9 +1291,9 @@ impl Service {
         id: SessionId,
     ) -> Result<SessionHandle, ServerError> {
         self.ensure_not_archived(id).await?;
-        match self.lock_sessions().get(&id) {
+        match self.handle(id) {
             Some(handle) if handle.lifecycle == Lifecycle::Active => {
-                return Ok(handle.clone());
+                return Ok(handle);
             }
             Some(_) => return Err(ServerError::SessionStopping),
             None => {}
@@ -1605,25 +1590,30 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         // Claimed at admission: a second answer for the same request is
-        let owned = {
-            self.lock_sessions()
-                .values()
-                .find(|child| {
-                    child.parent_session_id == Some(session_id)
+        let (owned, foreign) = {
+            let sessions = self.lock_sessions();
+            let mut owned = None;
+            let mut foreign = false;
+            for child in sessions.values() {
+                if child.parent_session_id.is_some()
+                    && child.status.pending_permission() == Some(request_id)
+                {
+                    foreign = true;
+                    if child.parent_session_id == Some(session_id)
                         && child.lifecycle == Lifecycle::Active
-                        && child.status.pending_permission() == Some(request_id)
-                })
-                .cloned()
+                    {
+                        owned = Some(child.clone());
+                        break;
+                    }
+                }
+            }
+            (owned, foreign)
         };
         let handle = if handle.status.pending_permission() == Some(request_id) {
             handle
         } else if let Some(child) = owned {
             child
         } else {
-            let foreign = self.lock_sessions().values().any(|child| {
-                child.parent_session_id.is_some()
-                    && child.status.pending_permission() == Some(request_id)
-            });
             return Err(if foreign {
                 ServerError::ChildReadOnly
             } else {
@@ -1775,10 +1765,11 @@ impl Service {
                 });
             }
             // Live + active: the conversation never left.
-            if let Some(handle) = self.lock_sessions().get(&id) {
-                if handle.lifecycle == Lifecycle::Active {
-                    return Ok((id, true));
-                }
+            if self
+                .handle(id)
+                .is_some_and(|handle| handle.lifecycle == Lifecycle::Active)
+            {
+                return Ok((id, true));
             }
             // Stopped, or only on disk: rebuild under the same id from the
             // stored row.

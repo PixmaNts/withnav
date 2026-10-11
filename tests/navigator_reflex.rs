@@ -8,16 +8,44 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use withnav::navigator::ports::{FimAnswer, FimModel, FimRequest, ModelError};
 use withnav::navigator::protocol::Position;
 use withnav::navigator::reflex::{
-    build_fim_request, render_context_block, ReflexService, DEBOUNCE_MS, MAX_CONTEXT_BYTES,
-    MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
+    build_fim_request, render_context_block, ReflexService, SuggestOutcome, Suggestion,
+    DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
 
 mod common;
 use common::navigator::ScriptedFim;
 
 const URI: &str = "file:///ws/src/main.rs";
+
+struct ObservedFim {
+    inner: ScriptedFim,
+    started: tokio::sync::Notify,
+}
+
+impl FimModel for ObservedFim {
+    fn complete<'a>(
+        &'a self,
+        request: FimRequest,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<FimAnswer, ModelError>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.inner.complete(request, cancel).await
+        })
+    }
+}
+
+type SuggestResult = Result<Suggestion, SuggestOutcome>;
+
+async fn join_suggest(task: tokio::task::JoinHandle<SuggestResult>) -> SuggestResult {
+    tokio::time::timeout(Duration::from_secs(20), task)
+        .await
+        .expect("suggestion task completed in time")
+        .expect("suggestion task did not panic")
+}
 
 fn service(model: ScriptedFim) -> Arc<ReflexService> {
     Arc::new(ReflexService::new(Arc::new(model)))
@@ -31,9 +59,7 @@ fn spawn_suggest(
     version: i32,
     position: Position,
     context: &str,
-) -> tokio::task::JoinHandle<
-    Result<withnav::navigator::reflex::Suggestion, withnav::navigator::reflex::SuggestOutcome>,
-> {
+) -> tokio::task::JoinHandle<SuggestResult> {
     let svc = Arc::clone(svc);
     let uri = uri.to_string();
     let doc = doc.to_string();
@@ -52,7 +78,7 @@ async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
     let svc = service(model.clone());
     // "héllo\n😀x" — line 1, after the emoji (2 UTF-16 units).
     let doc = "héllo\n😀x";
-    let suggestion = spawn_suggest(
+    let suggestion = join_suggest(spawn_suggest(
         &svc,
         URI,
         doc,
@@ -62,9 +88,8 @@ async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
             character: 2,
         },
         "",
-    )
+    ))
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(suggestion.item.text, "world");
     // Insertion range starts exactly at the cursor...
@@ -87,7 +112,7 @@ async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
 async fn reflex_context_renders_as_comment_block() {
     let model = ScriptedFim::new(vec!["x".to_string()]);
     let svc = service(model.clone());
-    let _ = spawn_suggest(
+    let _ = join_suggest(spawn_suggest(
         &svc,
         URI,
         "fn a() {",
@@ -97,9 +122,8 @@ async fn reflex_context_renders_as_comment_block() {
             character: 8,
         },
         "intent: write tests\nsig: pub fn run()",
-    )
+    ))
     .await
-    .unwrap()
     .unwrap();
     let req = model.last_request();
     assert!(req.prompt.starts_with("// navigator context"));
@@ -143,8 +167,8 @@ async fn newer_request_cancels_the_older_one() {
     );
     tokio::time::advance(Duration::from_millis(DEBOUNCE_MS + 100)).await;
 
-    let outcome_older = older.await.unwrap();
-    let suggestion = newer.await.unwrap().unwrap();
+    let outcome_older = join_suggest(older).await;
+    let suggestion = join_suggest(newer).await.unwrap();
     // The superseded request never surfaced and never called the model.
     assert!(outcome_older.is_err());
     assert_eq!(suggestion.item.text, "first");
@@ -160,7 +184,11 @@ async fn newer_request_cancels_the_older_one() {
 #[tokio::test(start_paused = true)]
 async fn superseded_while_answering_never_surfaces() {
     let model = ScriptedFim::new(vec!["late".to_string(), "fresh".to_string()]).with_delay(100);
-    let svc = service(model.clone());
+    let observed = Arc::new(ObservedFim {
+        inner: model.clone(),
+        started: tokio::sync::Notify::new(),
+    });
+    let svc = Arc::new(ReflexService::new(observed.clone()));
 
     let older = spawn_suggest(
         &svc,
@@ -173,15 +201,9 @@ async fn superseded_while_answering_never_surfaces() {
         },
         "",
     );
-    // Past the debounce: drive the runtime (advance wakes the timer but
-    // never polls the task) until the older request is inside the model
-    // call, then supersede it.
-    for _ in 0..1000 {
-        tokio::time::advance(Duration::from_millis(10)).await;
-        if model.calls() == 1 {
-            break;
-        }
-    }
+    tokio::time::timeout(Duration::from_secs(20), observed.started.notified())
+        .await
+        .expect("older request entered the model");
     assert_eq!(model.calls(), 1, "the older request must reach the model");
     let newer = spawn_suggest(
         &svc,
@@ -196,8 +218,8 @@ async fn superseded_while_answering_never_surfaces() {
     );
     tokio::time::advance(Duration::from_millis(DEBOUNCE_MS + 300)).await;
 
-    let outcome_older = older.await.unwrap();
-    let outcome_newer = newer.await.unwrap();
+    let outcome_older = join_suggest(older).await;
+    let outcome_newer = join_suggest(newer).await;
     assert!(outcome_older.is_err(), "stale answer must not surface");
     assert_eq!(outcome_newer.unwrap().item.text, "fresh");
 }
@@ -206,7 +228,7 @@ async fn superseded_while_answering_never_surfaces() {
 #[tokio::test(start_paused = true)]
 async fn empty_model_answer_is_silent() {
     let svc = service(ScriptedFim::new(vec![String::new()]));
-    let outcome = spawn_suggest(
+    let outcome = join_suggest(spawn_suggest(
         &svc,
         URI,
         "fn a() {}",
@@ -216,9 +238,8 @@ async fn empty_model_answer_is_silent() {
             character: 4,
         },
         "",
-    )
-    .await
-    .unwrap();
+    ))
+    .await;
     assert_eq!(
         outcome.unwrap_err(),
         withnav::navigator::reflex::SuggestOutcome::ModelSilent
@@ -231,7 +252,7 @@ async fn empty_model_answer_is_silent() {
 async fn out_of_bounds_position_is_silent_without_a_model_call() {
     let model = ScriptedFim::new(vec!["x".to_string()]);
     let svc = service(model.clone());
-    let outcome = spawn_suggest(
+    let outcome = join_suggest(spawn_suggest(
         &svc,
         URI,
         "fn a() {}",
@@ -241,9 +262,8 @@ async fn out_of_bounds_position_is_silent_without_a_model_call() {
             character: 0,
         },
         "",
-    )
-    .await
-    .unwrap();
+    ))
+    .await;
     assert_eq!(
         outcome.unwrap_err(),
         withnav::navigator::reflex::SuggestOutcome::OutOfRange
@@ -270,7 +290,7 @@ async fn nothing_is_sent_before_the_debounce_elapses() {
     tokio::time::advance(Duration::from_millis(DEBOUNCE_MS - 1)).await;
     assert_eq!(model.calls(), 0, "the debounce must hold the request");
     tokio::time::advance(Duration::from_millis(2)).await;
-    task.await.unwrap().unwrap();
+    join_suggest(task).await.unwrap();
     assert_eq!(model.calls(), 1);
 }
 
@@ -303,11 +323,8 @@ async fn different_documents_do_not_cancel_each_other() {
         },
         "",
     );
-    let (ra, rb) = tokio::join!(a, b);
-    let mut texts = [
-        ra.unwrap().unwrap().item.text,
-        rb.unwrap().unwrap().item.text,
-    ];
+    let (ra, rb) = tokio::join!(join_suggest(a), join_suggest(b));
+    let mut texts = [ra.unwrap().item.text, rb.unwrap().item.text];
     texts.sort();
     assert_eq!(texts, ["one", "two"]);
 }

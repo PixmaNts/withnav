@@ -30,6 +30,19 @@ fn live_session() -> SessionMetadata {
     })).unwrap()
 }
 
+fn picker_state(models: ModelsBody) -> (State, UiState) {
+    (
+        State {
+            catalog: models.models,
+            ..State::default()
+        },
+        UiState {
+            overlay: Some(Overlay::Models),
+            ..UiState::default()
+        },
+    )
+}
+
 #[test]
 fn mixed_catalog_retains_layer_models_but_conversation_rows_only_offer_chat() {
     let mut s = State::default();
@@ -96,18 +109,11 @@ fn enter_and_ctrl_n_cannot_route_lower_layer_models() {
             (KeyCode::Char('n'), KeyModifiers::CONTROL),
         ] {
             for filter in ["fim", "systemone"] {
-                let mut s = State {
-                    catalog: mixed_models().models,
-                    ..State::default()
-                };
+                let (mut s, mut ui) = picker_state(mixed_models());
                 if occupied {
                     s.session = Some(live_session());
                 }
-                let mut ui = UiState {
-                    overlay: Some(Overlay::Models),
-                    filter: filter.into(),
-                    ..UiState::default()
-                };
+                ui.filter = filter.into();
                 let action = route_key(
                     KeyEvent::new(code, modifiers),
                     &s,
@@ -128,15 +134,8 @@ fn enter_and_ctrl_n_cannot_route_lower_layer_models() {
 #[test]
 fn mixed_catalog_picker_renders_and_routes_chat_only() {
     use ratatui::{backend::TestBackend, Terminal};
-    let mut s = State {
-        catalog: mixed_models().models,
-        ..State::default()
-    };
+    let (mut s, mut ui) = picker_state(mixed_models());
     s.session = Some(live_session());
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
     ui.selection.insert(format!("{:?}", Overlay::Models), 2);
     let mut editor = Editor::default();
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -240,14 +239,7 @@ fn agents() -> AgentsBody {
 
 #[test]
 fn gateway_groups_collapse_search_reopens_and_headers_never_pick_models() {
-    let state = State {
-        catalog: models().models,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, mut ui) = picker_state(models());
     let mut editor = Editor::default();
     assert_eq!(catalog::rows(&state.catalog, &ui).len(), 5);
     route_key(
@@ -267,14 +259,7 @@ fn gateway_groups_collapse_search_reopens_and_headers_never_pick_models() {
 
 #[test]
 fn alt_a_folds_every_group_then_unfolds_them_all() {
-    let state = State {
-        catalog: models().models,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, mut ui) = picker_state(models());
     let mut editor = Editor::default();
     let keys = |ui: &UiState| {
         catalog::rows(&state.catalog, ui)
@@ -526,14 +511,7 @@ fn column(lines: &[String], needle: &str) -> usize {
 
 #[test]
 fn picker_indents_gateway_provider_and_model_and_direct_models_one_level() {
-    let state = State {
-        catalog: hierarchy_models().models,
-        ..State::default()
-    };
-    let ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, ui) = picker_state(hierarchy_models());
     let lines = picker_lines(&state, &ui, (100, 30));
     let gateway = column(&lines, "▾ omniroute");
     assert_eq!(column(&lines, "▾ cc"), gateway + 2);
@@ -567,14 +545,7 @@ fn picker_indents_gateway_provider_and_model_and_direct_models_one_level() {
 
 #[test]
 fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
-    let state = State {
-        catalog: hierarchy_models().models,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, mut ui) = picker_state(hierarchy_models());
     ui.collapsed_models.insert("omniroute/kimi".into());
     let lines = picker_lines(&state, &ui, (100, 30));
     let gateway = column(&lines, "▾ omniroute");
@@ -609,17 +580,9 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
 
 #[test]
 fn narrow_terminal_with_long_canonical_names_keeps_indentation_without_panic() {
-    let mut catalog = hierarchy_models().models;
-    catalog[0].name = format!("omniroute/cc/{}", "very-long-model-name-".repeat(6));
-    catalog[0].upstream_id = format!("cc/{}", "very-long-model-name-".repeat(6));
-    let state = State {
-        catalog,
-        ..State::default()
-    };
-    let ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (mut state, ui) = picker_state(hierarchy_models());
+    state.catalog[0].name = format!("omniroute/cc/{}", "very-long-model-name-".repeat(6));
+    state.catalog[0].upstream_id = format!("cc/{}", "very-long-model-name-".repeat(6));
     // Below 24 columns the view asks for a larger terminal; from there the popup draws.
     for width in [8, 23, 24, 25, 30, 40, 60] {
         let lines = picker_lines(&state, &ui, (width, 20));
@@ -641,15 +604,7 @@ fn ctrl_f() -> KeyEvent {
 }
 
 fn favorites_picker() -> (State, UiState) {
-    let state = State {
-        catalog: hierarchy_models().models,
-        ..State::default()
-    };
-    let ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
-    (state, ui)
+    picker_state(hierarchy_models())
 }
 
 fn keys_of(state: &State, ui: &UiState) -> Vec<String> {
@@ -894,14 +849,7 @@ fn long_name_models() -> ModelsBody {
 
 /// The picker with the first model highlighted (row 0 is the gateway, 1 the provider, 2 the model).
 fn long_name_picker(size: (u16, u16)) -> Vec<String> {
-    let state = State {
-        catalog: long_name_models().models,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, mut ui) = picker_state(long_name_models());
     ui.selection.insert("Models".into(), 2);
     picker_lines(&state, &ui, size)
 }
@@ -950,14 +898,7 @@ fn long_model_name_shows_short_in_the_row_and_in_full_with_variants_in_the_detai
 
 #[test]
 fn detail_line_is_blank_on_a_header_and_has_no_variants_without_any() {
-    let state = State {
-        catalog: long_name_models().models,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, mut ui) = picker_state(long_name_models());
     for row in [0, 1] {
         ui.selection.insert("Models".into(), row);
         let lines = picker_lines(&state, &ui, (100, 16));
@@ -977,14 +918,7 @@ fn detail_line_is_blank_on_a_header_and_has_no_variants_without_any() {
 
 #[test]
 fn favorites_rows_show_the_full_name_and_the_detail_line_follows_them() {
-    let state = State {
-        catalog: long_name_models().models,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (state, mut ui) = picker_state(long_name_models());
     ui.favorite_models
         .insert("omniroute/agy/gemini-3-pro".into());
     ui.selection.insert("Models".into(), 1);
@@ -1030,16 +964,8 @@ fn keys_line_never_cuts_a_word_and_keeps_esc_close() {
 
 #[test]
 fn detail_line_shows_the_whole_name_and_variants_when_they_fit() {
-    let mut catalog = long_name_models().models;
-    catalog[0].name = "omniroute/agy/claude-opus-4-5".into();
-    let state = State {
-        catalog,
-        ..State::default()
-    };
-    let mut ui = UiState {
-        overlay: Some(Overlay::Models),
-        ..UiState::default()
-    };
+    let (mut state, mut ui) = picker_state(long_name_models());
+    state.catalog[0].name = "omniroute/agy/claude-opus-4-5".into();
     ui.selection.insert("Models".into(), 2);
     let lines = picker_lines(&state, &ui, (100, 16));
     assert!(

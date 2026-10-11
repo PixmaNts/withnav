@@ -530,6 +530,8 @@ fn frame(seq: u64, kind: EventKind) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn undecodable_frames_are_reported_and_the_stream_keeps_going() {
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let hold = shutdown.clone();
     let body = format!(
         "{}data: {{not json\n\n{}",
         frame(0, EventKind::SessionStart),
@@ -537,6 +539,7 @@ async fn undecodable_frames_are_reported_and_the_stream_keeps_going() {
     );
     let (base, heads) = raw_server(move |index, mut socket| {
         let body = body.clone();
+        let hold = hold.clone();
         async move {
             if index == 0 {
                 let _ = socket
@@ -545,7 +548,8 @@ async fn undecodable_frames_are_reported_and_the_stream_keeps_going() {
             } else {
                 // Second connection: hold it open so the test can end it.
                 let _ = socket.write_all(sse_head().as_bytes()).await;
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                hold.cancelled().await;
+                drop(socket);
             }
         }
     })
@@ -582,6 +586,7 @@ async fn undecodable_frames_are_reported_and_the_stream_keeps_going() {
         heads[1]
     );
     cancel.cancel();
+    shutdown.cancel();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -600,8 +605,14 @@ async fn a_send_the_server_may_have_received_is_uncertain() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_send_without_an_answer_in_time_is_uncertain() {
-    let (base, _) = raw_server(|_, _socket| async move {
-        tokio::time::sleep(Duration::from_secs(30)).await;
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let hold = shutdown.clone();
+    let (base, _) = raw_server(move |_, socket| {
+        let hold = hold.clone();
+        async move {
+            hold.cancelled().await;
+            drop(socket);
+        }
     })
     .await;
     let client = Client::new(base, None).with_request_timeout(Duration::from_millis(200));
@@ -609,6 +620,7 @@ async fn a_send_without_an_answer_in_time_is_uncertain() {
         .send("01ARZ3NDEKTSV4RRFFQ69G5FAV", submit("hi"))
         .await;
     assert!(matches!(result, Err(SendError::Uncertain(_))), "{result:?}");
+    shutdown.cancel();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -130,7 +130,16 @@ pub(super) async fn put(
         Ok(ws) => ws,
         Err(r) => return *r,
     };
-    let value = payload.map(|Json(v)| v).unwrap_or(Value::Null);
+    let value = match payload {
+        Ok(Json(value)) => value,
+        Err(rejection) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":rejection.body_text(),"reason":"invalid","key":null})),
+            )
+                .into_response();
+        }
+    };
     let _lock = state.settings_write.clone().lock_owned().await;
     tokio::task::spawn_blocking(move || {
         let _lock = _lock;

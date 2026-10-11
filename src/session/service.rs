@@ -77,6 +77,11 @@ pub struct ChildPreparationBarrier {
     pub release: Arc<tokio::sync::Notify>,
 }
 
+#[cfg(debug_assertions)]
+fn take_barrier(slot: &Mutex<Option<ChildPreparationBarrier>>) -> Option<ChildPreparationBarrier> {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -955,11 +960,7 @@ impl Service {
         let prepared = prepared?;
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_preparation_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_preparation_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -994,11 +995,7 @@ impl Service {
         drop(_admission);
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_publication_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_publication_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -1064,11 +1061,7 @@ impl Service {
         reservation.committed = true;
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_registration_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_registration_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -1100,11 +1093,7 @@ impl Service {
             }
             #[cfg(debug_assertions)]
             {
-                let barrier = self
-                    .child_bypass_barrier
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
+                let barrier = take_barrier(&self.child_bypass_barrier);
                 if let Some(barrier) = barrier {
                     barrier.reached.notify_one();
                     barrier.release.notified().await;
@@ -1152,11 +1141,7 @@ impl Service {
             if let Some(handle) = self.mark_stopping(child) {
                 #[cfg(debug_assertions)]
                 {
-                    let barrier = self
-                        .child_cleanup_barrier
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take();
+                    let barrier = take_barrier(&self.child_cleanup_barrier);
                     if let Some(barrier) = barrier {
                         barrier.reached.notify_one();
                         barrier.release.notified().await;

@@ -13,7 +13,7 @@ use withnav::bus::event::EventEnvelope;
 use withnav::server::{app, AppState};
 
 mod common;
-use common::server::{request_json, stored_events as events, TestServerConfig};
+use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
     text_chunk, tool_call_chunk, CapturingProvider,
@@ -63,17 +63,7 @@ async fn provider(responses: Vec<Vec<u8>>) -> CapturingProvider {
 
 async fn say(state: &AppState, id: ulid::Ulid, text: &str) {
     state
-        .send(Command {
-            command_id: ulid::Ulid::new(),
-            session_id: id,
-            source_actor_id: "user:test".to_string(),
-            target_actor_id: "agent:main".to_string(),
-            mode: DeliveryMode::NextTurn,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            created_at: std::time::SystemTime::now(),
-        })
+        .send(captain_command(id, text.to_string()))
         .await
         .expect("send");
 }

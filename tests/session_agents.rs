@@ -443,7 +443,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
         .await
         .is_err());
 }
-use common::server::{collect_until, request_json, stored_events as events, TestServerConfig};
+use common::server::{captain_command, collect_until, request_json, stored_events as events, TestServerConfig};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
 
 use common::TestEnv as Env;
@@ -476,17 +476,7 @@ fn write_agent(env: &Env, name: &str, text: &str) {
 async fn converse(state: &AppState, id: ulid::Ulid, text: &str) {
     let sub = state.subscribe(id, None).await.expect("subscribe");
     state
-        .send(Command {
-            command_id: ulid::Ulid::new(),
-            session_id: id,
-            source_actor_id: "user:test".to_string(),
-            target_actor_id: "agent:main".to_string(),
-            mode: DeliveryMode::NextTurn,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            created_at: std::time::SystemTime::now(),
-        })
+        .send(captain_command(id, text.to_string()))
         .await
         .expect("send");
     collect_until(sub, |e| {

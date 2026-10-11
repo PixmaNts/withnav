@@ -25,7 +25,7 @@ fn message_received_type_roundtrips_optional_captain_selection() {
     assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
     assert_eq!(serde_json::to_value(selected).unwrap(), payload);
 }
-use common::server::{collect_until, TestServerConfig};
+use common::server::{captain_command, collect_until, TestServerConfig};
 use common::sse::CapturingProvider;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_call_chunk};
 
@@ -91,17 +91,7 @@ fn skill_call(name: &str) -> Vec<u8> {
 async fn converse(state: &AppState, id: ulid::Ulid, text: &str) {
     let sub = state.subscribe(id, None).await.expect("subscribe");
     state
-        .send(Command {
-            command_id: ulid::Ulid::new(),
-            session_id: id,
-            source_actor_id: "user:test".to_string(),
-            target_actor_id: "agent:main".to_string(),
-            mode: DeliveryMode::NextTurn,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            created_at: std::time::SystemTime::now(),
-        })
+        .send(captain_command(id, text.to_string()))
         .await
         .expect("send");
     collect_until(sub, |e| {

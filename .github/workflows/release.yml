@@ -1,12 +1,18 @@
 # Pushing a tag vX.Y.Z builds the Linux binaries and the three VS Code packages and publishes them
-# as a GitHub Release. A manual run builds the same files as workflow artifacts and never
-# publishes, so the pipeline can be checked without cutting a release.
+# as a GitHub Release. A manual run, or a pull request touching the packaging, builds the same
+# files as workflow artifacts and never publishes, so the pipeline is checked before a release.
 name: release
 
 on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
+  # A change to the packaging itself is built (never published) before it can reach a tag.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/package-vsix.sh
+      - vscode-withnav/.vscodeignore
 
 permissions:
   contents: read

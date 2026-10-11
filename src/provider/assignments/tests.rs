@@ -283,10 +283,9 @@ fn malformed_assignment_settings_name_the_offending_key() {
             "layers.reflex.variant",
         ),
     ] {
-        assert!(settings(value)
-            .layer_assignment(Layer::Reflex)
-            .unwrap_err()
-            .contains(key));
+        assert_error_names_key(value, key, |settings| {
+            settings.layer_assignment(Layer::Reflex)
+        });
     }
     for (value, key) in [
         (json!({"agents":[]}), "agents"),
@@ -304,17 +303,27 @@ fn malformed_assignment_settings_name_the_offending_key() {
             "agents.build.variant",
         ),
     ] {
-        assert!(settings(value)
-            .agent_assignment("build")
-            .unwrap_err()
-            .contains(key));
+        assert_error_names_key(value, key, |settings| settings.agent_assignment("build"));
     }
     for value in [json!(null), json!(1), json!(""), json!("two words")] {
-        assert!(settings(json!({"default_agent":value}))
-            .default_agent()
-            .unwrap_err()
-            .contains("default_agent"));
+        assert_error_names_key(
+            json!({"default_agent":value}),
+            "default_agent",
+            |settings| settings.default_agent().map(str::to_owned),
+        );
     }
+}
+
+fn assert_error_names_key<T: std::fmt::Debug>(
+    value: Value,
+    key: &str,
+    validator: impl FnOnce(&Settings) -> Result<T, String>,
+) {
+    let error = validator(&settings(value)).expect_err("malformed assignment must be refused");
+    assert!(
+        error.contains(key),
+        "expected offending key {key:?}, got {error:?}"
+    );
 }
 
 #[test]

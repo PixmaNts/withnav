@@ -131,6 +131,26 @@ async fn run_steps(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
+    let state = RunState(actor);
+    run_steps_inner(&mut *state.0, observe, budget).await
+}
+
+/// An early error or dropped run cannot leave an inactive actor running.
+struct RunState<'a>(&'a mut AgentActor);
+
+impl Drop for RunState<'_> {
+    fn drop(&mut self) {
+        if self.0.state == AgentState::Running {
+            self.0.state = AgentState::Idle;
+        }
+    }
+}
+
+async fn run_steps_inner(
+    actor: &mut AgentActor,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    budget: usize,
+) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
 
     // One client (one connection pool) for every step of this run.
@@ -2024,6 +2044,36 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Interrupted));
+        assert_eq!(actor.state, AgentState::Idle);
+    }
+
+    #[tokio::test]
+    async fn failed_runs_restore_idle_and_keep_committed_boundary_input() {
+        for boundary_error in [false, true] {
+            let response = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec();
+            let server = spawn_mock(vec![response]).await;
+            let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+            actor.push_user("go");
+            if boundary_error {
+                actor.safe_boundary = Some(Arc::new(|mut transcript, _| {
+                    Box::pin(async move {
+                        transcript.push(ChatMessage::User {
+                            provenance: crate::provider::openai::UserProvenance::Parent,
+                            content: "committed steering".into(),
+                        });
+                        Err(crate::agent::boundary::BoundaryError {
+                            message: "delivery failed".into(),
+                            committed: Some(transcript),
+                        })
+                    })
+                }));
+            }
+            assert!(run_agent(&mut actor, &mut |_| {}).await.is_err());
+            assert_eq!(actor.state, AgentState::Idle);
+            if boundary_error {
+                assert!(matches!(actor.transcript.last(), Some(ChatMessage::User { content, .. }) if content == "committed steering"));
+            }
+        }
     }
 
     #[tokio::test]
@@ -2166,6 +2216,7 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(server.requests.lock().await.len(), 1, "nothing was sent");
+        assert_eq!(actor.state, AgentState::Idle, "compaction suspends the run");
         assert!(matches!(
             actor.transcript.last(),
             Some(ChatMessage::Tool { .. })

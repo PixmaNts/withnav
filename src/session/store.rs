@@ -1441,6 +1441,26 @@ fn insert_committed_event(
     Ok(())
 }
 
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    let exists = conn
+        .prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}'"
+        ))?
+        .exists([])?;
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn queue_permission_resolution(
     tx: &rusqlite::Transaction<'_>,
     parent: Ulid,
@@ -1874,36 +1894,17 @@ fn migrate(path: &Path) -> Result<(), String> {
     .map_err(|e| format!("migrate: {e}"))?;
     // Editor context is explicit since October 2026. Legacy profile values are
     // left untouched for manual migration, never interpreted on normal startup.
-    let has_editor = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='editor'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "editor", "INTEGER NOT NULL DEFAULT 0")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_editor {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN editor INTEGER NOT NULL DEFAULT 0",
-            [],
-        )
-        .map_err(|e| format!("migrate: {e}"))?;
-    }
-    let has_owner = conn
-        .prepare("SELECT 1 FROM pragma_table_info('child_links') WHERE name='owner_instance'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "child_links", "owner_instance", "TEXT")
         .map_err(|e| e.to_string())?;
-    if !has_owner {
-        conn.execute("ALTER TABLE child_links ADD COLUMN owner_instance TEXT", [])
-            .map_err(|e| e.to_string())?;
-    }
-    let has_delivery = conn
-        .prepare("SELECT 1 FROM pragma_table_info('child_links') WHERE name='delivery'")
-        .and_then(|mut s| s.exists([]))
-        .map_err(|e| e.to_string())?;
-    if !has_delivery {
-        conn.execute(
-            "ALTER TABLE child_links ADD COLUMN delivery TEXT NOT NULL DEFAULT 'next_turn'",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    add_column_if_missing(
+        &conn,
+        "child_links",
+        "delivery",
+        "TEXT NOT NULL DEFAULT 'next_turn'",
+    )
+    .map_err(|e| e.to_string())?;
     let has_consumption = conn
         .prepare("SELECT 1 FROM pragma_table_info('completion_outbox') WHERE name='consumed'")
         .and_then(|mut stmt| stmt.exists([]))
@@ -1923,92 +1924,29 @@ fn migrate(path: &Path) -> Result<(), String> {
             DROP TABLE completion_outbox_legacy; COMMIT;").map_err(|e| e.to_string())?;
     }
     // A database from before `model_resolution`: add the nullable column.
-    let has_column = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'model_resolution'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "model_resolution", "TEXT")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_column {
-        conn.execute("ALTER TABLE sessions ADD COLUMN model_resolution TEXT", [])
-            .map_err(|e| format!("migrate: {e}"))?;
-    }
     // A database from before `variant`: add the nullable column.
-    let has_variant = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "variant", "TEXT")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_variant {
-        conn.execute("ALTER TABLE sessions ADD COLUMN variant TEXT", [])
-            .map_err(|e| format!("migrate: {e}"))?;
-    }
     // A database from before `variant_override`: add the nullable column.
-    let has_variant_override = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant_override'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "variant_override", "TEXT")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_variant_override {
-        conn.execute("ALTER TABLE sessions ADD COLUMN variant_override TEXT", [])
-            .map_err(|e| format!("migrate: {e}"))?;
-    }
     // A database from before `checkpoint`: add the nullable column.
-    let has_checkpoint = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'checkpoint'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "checkpoint", "TEXT")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_checkpoint {
-        conn.execute("ALTER TABLE sessions ADD COLUMN checkpoint TEXT", [])
-            .map_err(|e| format!("migrate: {e}"))?;
-    }
     // A database from before `primary_agent`: add the nullable column.
-    let has_primary_agent = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'primary_agent'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "primary_agent", "TEXT")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_primary_agent {
-        conn.execute("ALTER TABLE sessions ADD COLUMN primary_agent TEXT", [])
-            .map_err(|e| format!("migrate: {e}"))?;
-    }
     // A database from before `reasoning_floor`: add the nullable column.
-    let has_floor = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'reasoning_floor'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "reasoning_floor", "INTEGER")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_floor {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN reasoning_floor INTEGER",
-            [],
-        )
-        .map_err(|e| format!("migrate: {e}"))?;
-    }
-    let has_overrides = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='agent_overrides'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "agent_overrides", "TEXT")
         .map_err(|e| e.to_string())?;
-    if !has_overrides {
-        conn.execute("ALTER TABLE sessions ADD COLUMN agent_overrides TEXT", [])
-            .map_err(|e| e.to_string())?;
-    }
-    let has_provenance = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='selection_provenance'")
-        .and_then(|mut s| s.exists([]))
+    add_column_if_missing(&conn, "sessions", "selection_provenance", "TEXT")
         .map_err(|e| e.to_string())?;
-    if !has_provenance {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN selection_provenance TEXT",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    let has_archive_reason = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='resume_disabled_reason'")
-        .and_then(|mut stmt| stmt.exists([]))
+    add_column_if_missing(&conn, "sessions", "resume_disabled_reason", "TEXT")
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_archive_reason {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN resume_disabled_reason TEXT",
-            [],
-        )
-        .map_err(|e| format!("migrate: {e}"))?;
-    }
     Ok(())
 }
 

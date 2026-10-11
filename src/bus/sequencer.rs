@@ -482,8 +482,9 @@ async fn run(
                 // Event-before-action, in this exact order: emit the
                 // sequenced envelope, THEN commit the command, THEN ack —
                 // so the ack is observable proof that commit followed emit.
-                let mut candidate = message_received_candidate(&command);
-                candidate.causation_id = Some(command.command_id);
+                let command_id = command.command_id;
+                let mut candidate = message_received_candidate(command);
+                candidate.causation_id = Some(command_id);
                 emitter.emit(stamp(session_id, seq, candidate));
                 commit();
                 let _ = reply.send(Ok(AcceptReceipt { seq }));
@@ -543,22 +544,22 @@ fn take_seq(next_seq: &mut u64) -> Option<u64> {
     Some(seq)
 }
 
-fn message_received_candidate(command: &PendingCommand) -> Candidate {
+fn message_received_candidate(command: PendingCommand) -> Candidate {
     Candidate::new(
         EventKind::MessageReceived,
         serde_json::to_value(crate::bus::event::MessageReceived {
-            answer: command.answer.clone(),
+            answer: command.answer,
             command_id: command.command_id,
-            source: command.source.clone(),
-            target: command.target.clone(),
-            mode: command.mode.clone(),
-            content: command.content.clone(),
-            selected_skill: command.selected_skill.as_ref().map(|name| {
-                crate::bus::event::SelectedSkill {
-                    name: name.clone(),
+            source: command.source,
+            target: command.target,
+            mode: command.mode,
+            content: command.content,
+            selected_skill: command
+                .selected_skill
+                .map(|name| crate::bus::event::SelectedSkill {
+                    name,
                     origin: "captain".into(),
-                }
-            }),
+                }),
         })
         .expect("message payload serializes"),
     )
@@ -790,8 +791,12 @@ mod tests {
         let receipt = seq
             .accept_command(
                 PendingCommand {
-                    answer: None,
-                    selected_skill: None,
+                    answer: Some(crate::tools::control::AskAnswer {
+                        question_call_id: "question-call".into(),
+                        selected: vec![1],
+                        custom: Some("custom answer".into()),
+                    }),
+                    selected_skill: Some("rust".into()),
                     command_id,
                     content: "hello there".into(),
                     source: "user:cli".into(),
@@ -818,6 +823,16 @@ mod tests {
         assert_eq!(envelope.payload["command_id"], command_id.to_string());
         assert_eq!(envelope.payload["content"], "hello there");
         assert_eq!(envelope.payload["mode"], "next-turn");
+        assert_eq!(envelope.payload["source"], "user:cli");
+        assert_eq!(envelope.payload["target"], "agent:main");
+        assert_eq!(
+            envelope.payload["selected_skill"],
+            serde_json::json!({"name": "rust", "origin": "captain"})
+        );
+        assert_eq!(
+            envelope.payload["answer"],
+            serde_json::json!({"question_call_id": "question-call", "selected": [1], "custom": "custom answer"})
+        );
 
         // THE assertion: real recorded order is Emit < Commit < Ack.
         let recorded = timeline.lock().unwrap().clone();

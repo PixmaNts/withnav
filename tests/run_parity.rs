@@ -111,7 +111,10 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     let (bus_ui, bus_exit) = collect_bus_render(sub).await;
 
     session_cancel.cancel();
-    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("runtime must stop after cancellation")
+        .expect("runtime must not panic during shutdown");
 
     // --- Parity: identical rendered UiEvent sequence + exit code. ---
     assert_eq!(

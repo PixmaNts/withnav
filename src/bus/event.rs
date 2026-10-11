@@ -116,120 +116,57 @@ impl EventKind {
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 24 emitted event kinds; the wire name is the dotted
-/// string (serialized verbatim, e.g. `"llm.delta"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EventKind {
-    #[serde(rename = "session.bypass")]
-    SessionBypass,
-    #[serde(rename = "session.start")]
-    SessionStart,
-    #[serde(rename = "session.end")]
-    SessionEnd,
-    #[serde(rename = "message.received")]
-    MessageReceived,
-    #[serde(rename = "turn.start")]
-    TurnStart,
-    #[serde(rename = "turn.end")]
-    TurnEnd,
-    #[serde(rename = "llm.delta")]
-    LlmDelta,
-    #[serde(rename = "llm.response")]
-    LlmResponse,
-    #[serde(rename = "tool.pre_call")]
-    ToolPreCall,
-    #[serde(rename = "tool.post_call")]
-    ToolPostCall,
-    #[serde(rename = "agent.state")]
-    AgentState,
-    #[serde(rename = "agent.yield")]
-    AgentYield,
-    #[serde(rename = "task.done")]
-    TaskDone,
-    #[serde(rename = "command.result")]
-    CommandResult,
-    #[serde(rename = "context.updated")]
-    ContextUpdated,
-    #[serde(rename = "context.compacting")]
-    ContextCompacting,
-    #[serde(rename = "session.agent_changed")]
-    SessionAgentChanged,
-    #[serde(rename = "context.compacted")]
-    ContextCompacted,
-    #[serde(rename = "permission.requested")]
-    PermissionRequested,
-    #[serde(rename = "permission.resolved")]
-    PermissionResolved,
-    #[serde(rename = "model.changed")]
-    ModelChanged,
-    #[serde(rename = "subagent.spawned")]
-    SubagentSpawned,
-    #[serde(rename = "subagent.done")]
-    SubagentDone,
-    #[serde(rename = "subagent.watchdog")]
-    SubagentWatchdog,
+macro_rules! event_kinds {
+    ($($variant:ident => $wire:literal),+ $(,)?) => {
+        /// Typed catalog of the 24 emitted event kinds; the wire name is the dotted
+        /// string (serialized verbatim, e.g. `"llm.delta"`).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum EventKind {
+            $(#[serde(rename = $wire)] $variant),+
+        }
+
+        impl EventKind {
+            /// Wire name for `EventEnvelope.kind` (a frozen dotted `String`).
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire),+
+                }
+            }
+        }
+    };
+}
+
+event_kinds! {
+    SessionBypass => "session.bypass",
+    SessionStart => "session.start",
+    SessionEnd => "session.end",
+    MessageReceived => "message.received",
+    TurnStart => "turn.start",
+    TurnEnd => "turn.end",
+    LlmDelta => "llm.delta",
+    LlmResponse => "llm.response",
+    ToolPreCall => "tool.pre_call",
+    ToolPostCall => "tool.post_call",
+    AgentState => "agent.state",
+    AgentYield => "agent.yield",
+    TaskDone => "task.done",
+    CommandResult => "command.result",
+    ContextUpdated => "context.updated",
+    ContextCompacting => "context.compacting",
+    SessionAgentChanged => "session.agent_changed",
+    ContextCompacted => "context.compacted",
+    PermissionRequested => "permission.requested",
+    PermissionResolved => "permission.resolved",
+    ModelChanged => "model.changed",
+    SubagentSpawned => "subagent.spawned",
+    SubagentDone => "subagent.done",
+    SubagentWatchdog => "subagent.watchdog",
 }
 
 impl EventKind {
-    /// Wire name for `EventEnvelope.kind` (a frozen dotted `String`).
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            EventKind::SessionBypass => "session.bypass",
-            EventKind::SessionStart => "session.start",
-            EventKind::SessionEnd => "session.end",
-            EventKind::MessageReceived => "message.received",
-            EventKind::TurnStart => "turn.start",
-            EventKind::TurnEnd => "turn.end",
-            EventKind::LlmDelta => "llm.delta",
-            EventKind::LlmResponse => "llm.response",
-            EventKind::ToolPreCall => "tool.pre_call",
-            EventKind::ToolPostCall => "tool.post_call",
-            EventKind::AgentState => "agent.state",
-            EventKind::AgentYield => "agent.yield",
-            EventKind::TaskDone => "task.done",
-            EventKind::CommandResult => "command.result",
-            EventKind::ContextUpdated => "context.updated",
-            EventKind::ContextCompacting => "context.compacting",
-            EventKind::SessionAgentChanged => "session.agent_changed",
-            EventKind::ContextCompacted => "context.compacted",
-            EventKind::PermissionRequested => "permission.requested",
-            EventKind::PermissionResolved => "permission.resolved",
-            EventKind::ModelChanged => "model.changed",
-            EventKind::SubagentSpawned => "subagent.spawned",
-            EventKind::SubagentDone => "subagent.done",
-            EventKind::SubagentWatchdog => "subagent.watchdog",
-        }
-    }
-
     /// Parses a wire `kind` string; `None` for unknown/deferred names.
     pub fn from_wire(kind: &str) -> Option<Self> {
-        match kind {
-            "session.bypass" => Some(EventKind::SessionBypass),
-            "session.start" => Some(EventKind::SessionStart),
-            "session.end" => Some(EventKind::SessionEnd),
-            "message.received" => Some(EventKind::MessageReceived),
-            "turn.start" => Some(EventKind::TurnStart),
-            "turn.end" => Some(EventKind::TurnEnd),
-            "llm.delta" => Some(EventKind::LlmDelta),
-            "llm.response" => Some(EventKind::LlmResponse),
-            "tool.pre_call" => Some(EventKind::ToolPreCall),
-            "tool.post_call" => Some(EventKind::ToolPostCall),
-            "agent.state" => Some(EventKind::AgentState),
-            "agent.yield" => Some(EventKind::AgentYield),
-            "task.done" => Some(EventKind::TaskDone),
-            "command.result" => Some(EventKind::CommandResult),
-            "context.updated" => Some(EventKind::ContextUpdated),
-            "context.compacting" => Some(EventKind::ContextCompacting),
-            "session.agent_changed" => Some(EventKind::SessionAgentChanged),
-            "context.compacted" => Some(EventKind::ContextCompacted),
-            "permission.requested" => Some(EventKind::PermissionRequested),
-            "permission.resolved" => Some(EventKind::PermissionResolved),
-            "model.changed" => Some(EventKind::ModelChanged),
-            "subagent.spawned" => Some(EventKind::SubagentSpawned),
-            "subagent.done" => Some(EventKind::SubagentDone),
-            "subagent.watchdog" => Some(EventKind::SubagentWatchdog),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|event| event.as_str() == kind)
     }
 
     /// Durable = retained in the reconnect ring and stored (all but

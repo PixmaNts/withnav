@@ -153,9 +153,9 @@ impl Tool for WriteTool {
                 let destination = &binding.destination;
                 if let Some(identity) = &binding.scratch {
                     nofollow::write_scratch(destination, content.as_bytes(), identity)?;
-                    return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
+                } else {
+                    nofollow::write_atomic(destination, content.as_bytes())?;
                 }
-                nofollow::write_atomic(destination, content.as_bytes())?;
                 return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
             }
 

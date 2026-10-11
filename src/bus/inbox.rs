@@ -269,9 +269,10 @@ impl ActorInbox {
                 } else {
                     context.captain(cmd.command_id.to_string(), text.clone());
                 }
+                let mut listed_skills = None;
                 for block in &cmd.content {
                     if let crate::bus::command::ContentBlock::LoadedSkill { name, .. } = block {
-                        let skill = actor.skills.listed().into_iter().find(|skill| &skill.name == name)
+                        let skill = listed_skills.get_or_insert_with(|| actor.skills.listed()).iter().find(|skill| &skill.name == name)
                             .map(|skill| serde_json::json!({"name":name,"description":skill.description,"base_dir":skill.base_dir}))
                             .unwrap_or_else(|| serde_json::json!({"name":name}));
                         context.selected_skill(skill);

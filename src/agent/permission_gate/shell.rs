@@ -666,9 +666,16 @@ pub(super) fn destructive(words: &[String]) -> bool {
 /// Keep the Captain hold even when metacognition approves, including compound calls.
 pub(super) fn captain_only_push(command: &str) -> bool {
     let push_uncertainty = || {
-        // Opaque shell spellings can hide push with escapes or quote fragments,
-        // including $'push'. Tighten only suspected pushes, not every opaque call.
-        command.replace(['\\', '\'', '"'], "").contains("push")
+        // Normalisation cannot decode expansions: an opaque Git subcommand may
+        // become push. Non-Git expansions retain ordinary metacognition review.
+        let normalised = command.replace(['\\', '\'', '"'], "");
+        normalised.contains("push")
+            || (normalised
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|word| word == "git")
+                && (command.contains(['$', '`'])
+                    || command.contains("<(")
+                    || command.contains(">(")))
     };
     let Some(parts) = segments(command) else {
         return push_uncertainty();

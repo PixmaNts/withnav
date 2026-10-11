@@ -1,6 +1,6 @@
 //! Wire-body lock for model variants: a variant's overrides are merged into
 //! the chat request body, and with none the body is byte-identical to the
-//! one sent before variants existed. Capture-if-absent, then byte equality.
+//! one sent before variants existed. Checked-in fixtures are required.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -21,15 +21,10 @@ const DONE: &str = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_re
 
 fn lock_fixture(name: &str, body: &str) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_DIR);
-    std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.json"));
-    match std::fs::read_to_string(&path) {
-        Ok(locked) => assert_eq!(locked, body, "wire body drifted from fixture {name}"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::write(&path, body).unwrap();
-        }
-        Err(e) => panic!("failed reading fixture {name}: {e}"),
-    }
+    let locked = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("required golden fixture {}: {e}", path.display()));
+    assert_eq!(locked, body, "wire body drifted from fixture {name}");
 }
 
 /// A models.json with three aliases on one OmniRoute provider at `base_url`.

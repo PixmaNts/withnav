@@ -119,17 +119,19 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             .and_then(Value::as_str)
             .unwrap_or("");
         // Only deterministic destructive/sensitive floors. Ordinary mutations are graded.
+        let segments = shell::segments(command);
         flags.risky = sensitive_call(call, needed, cx)
             || command.contains("AGENTS.md")
             || command.contains("CLAUDE.md")
             || command.contains("rules.md")
             || command.contains("hooks/");
-        flags.risky |= (shell::segments(command).is_none()
+        flags.risky |= (segments.is_none()
             && !shell::read_only_pipeline(
                 command,
                 &json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots}),
             ))
-            || shell::segments(command)
+            || segments
+                .as_ref()
                 .is_some_and(|segments| segments.iter().any(|words| shell::destructive(words)));
         flags.mutation |= shell::removal_or_move(command);
         if let Some(words) = git::literal(command) {

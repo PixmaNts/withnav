@@ -614,37 +614,37 @@ async fn startup_resume_fetches_workspace_layers_under_the_resumed_generation() 
     let generation = runtime.state.generation.clone();
     let mut got_layers = false;
     let mut got_models = false;
-    for _ in 0..6 {
-        let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        match event {
-            ClientEvent::Layers {
-                generation: owner,
-                workspace,
-                ..
-            } => {
-                assert_eq!(owner, generation);
-                assert_eq!(workspace, "/ws");
-                got_layers = true;
+    let mut observed = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !(got_layers && got_models) {
+            let event = runtime.recv().await.expect("resume event channel open");
+            observed.push(format!("{event:?}"));
+            match event {
+                ClientEvent::Layers {
+                    generation: owner,
+                    workspace,
+                    ..
+                } => {
+                    assert_eq!(owner, generation);
+                    assert_eq!(workspace, "/ws");
+                    got_layers = true;
+                }
+                ClientEvent::Models {
+                    generation: owner,
+                    workspace,
+                    ..
+                } => {
+                    assert_eq!(owner, generation);
+                    assert_eq!(workspace, "/ws");
+                    got_models = true;
+                }
+                _ => {}
             }
-            ClientEvent::Models {
-                generation: owner,
-                workspace,
-                ..
-            } => {
-                assert_eq!(owner, generation);
-                assert_eq!(workspace, "/ws");
-                got_models = true;
-            }
-            _ => {}
         }
-        if got_layers && got_models {
-            break;
-        }
-    }
-    assert!(got_layers && got_models);
+    })
+    .await
+    .unwrap_or_else(|_| panic!("missing resumed catalog or layers; observed: {observed:?}"));
+    assert!(got_layers && got_models, "observed: {observed:?}");
 }
 
 #[tokio::test]

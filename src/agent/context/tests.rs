@@ -109,6 +109,18 @@ fn absent_components_weigh_nothing_and_the_contract_always_counts() {
 
 #[test]
 fn the_estimate_matches_the_assembled_request() {
+    for parameters in [
+        json!({"type":"object"}),
+        json!({"description":"quotes \" slash \\ newline\n é ✓", "nested":[null, true, 42, {"x":"\u{0000}"}]}),
+    ] {
+        let tools = vec![ToolDef::function("read", "read a file", parameters)];
+        let bytes: usize = tools
+            .iter()
+            .map(|tool| serde_json::to_string(tool).unwrap().len())
+            .sum();
+        assert_eq!(tools_tokens(&tools), bytes_tokens(bytes));
+    }
+    assert_eq!(tools_tokens(&[]), 0);
     let history = vec![user("hello"), assistant_call()];
     let tools = tool_defs();
     let b = estimate(

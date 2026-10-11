@@ -96,7 +96,11 @@ async fn serve(body: &str) -> MockServer {
 }
 
 async fn requests(server: &MockServer) -> usize {
-    server.received_requests().await.unwrap_or_default().len()
+    server
+        .received_requests()
+        .await
+        .expect("inspect mock requests")
+        .len()
 }
 
 async fn resolve(

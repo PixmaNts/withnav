@@ -2,7 +2,7 @@
 //! gated tool call yields the turn, the Captain answers with a typed decision,
 //! and the decision (never chat text) resumes it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use axum::http::StatusCode;
@@ -13,30 +13,13 @@ use withnav::bus::event::EventEnvelope;
 use withnav::server::{app, AppState};
 
 mod common;
-use common::server::{request_json, TestServerConfig};
+use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
-    text_chunk, tool_call_chunk, CapturingProvider,
+    text_chunk, text_response as done, tool_call_chunk, tool_calls_chunk, CapturingProvider,
 };
 
-struct Env {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
-    ws: PathBuf,
-}
-
-fn env() -> Env {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical");
-    let ws = root.join("ws");
-    std::fs::create_dir_all(&ws).unwrap();
-    std::fs::create_dir_all(root.join("home")).unwrap();
-    Env {
-        _tmp: tmp,
-        root,
-        ws,
-    }
-}
+use common::TestEnv as Env;
 
 fn config(env: &Env, provider: &CapturingProvider) -> TestServerConfig {
     TestServerConfig::mock(&env.root, &provider.url).rules_home(&env.root.join("home"))
@@ -44,18 +27,7 @@ fn config(env: &Env, provider: &CapturingProvider) -> TestServerConfig {
 
 /// One assistant message calling each `(id, tool, arguments)`.
 fn calls(calls: &[(&str, &str, Value)]) -> Vec<u8> {
-    let calls: Vec<Value> = calls
-        .iter()
-        .enumerate()
-        .map(|(index, (id, name, args))| {
-            json!({"index": index, "id": id,
-                   "function": {"name": name, "arguments": args.to_string()}})
-        })
-        .collect();
-    let chunk = json!({"choices": [{"index": 0, "finish_reason": "tool_calls",
-                                    "delta": {"tool_calls": calls}}]})
-    .to_string();
-    http_sse(&sse_body(&[&chunk]))
+    http_sse(&sse_body(&[&tool_calls_chunk(calls)]))
 }
 
 fn write_call(id: &str, path: &Path) -> (String, Value) {
@@ -70,27 +42,13 @@ fn one_write(id: &str, path: &Path) -> Vec<u8> {
     calls(&[(&id, "write", args)])
 }
 
-fn done(text: &str) -> Vec<u8> {
-    http_sse(&sse_body(&[&text_chunk(text)]))
-}
-
 async fn provider(responses: Vec<Vec<u8>>) -> CapturingProvider {
     spawn_capturing_provider(responses).await
 }
 
 async fn say(state: &AppState, id: ulid::Ulid, text: &str) {
     state
-        .send(Command {
-            command_id: ulid::Ulid::new(),
-            session_id: id,
-            source_actor_id: "user:test".to_string(),
-            target_actor_id: "agent:main".to_string(),
-            mode: DeliveryMode::NextTurn,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            created_at: std::time::SystemTime::now(),
-        })
+        .send(captain_command(id, text.to_string()))
         .await
         .expect("send");
 }
@@ -111,18 +69,6 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
         })
         .await
         .expect("wake");
-}
-
-/// Every stored event of `kind`, in order.
-async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
-    let sub = state.subscribe(id, None).await.expect("subscribe");
-    match sub.replay {
-        withnav::bus::ResumeOutcome::Replay(all) => {
-            all.into_iter().filter(|e| e.kind == kind).collect()
-        }
-        other => panic!("expected replay, got {other:?}"),
-    }
 }
 
 /// Waits until at least `count` events of `kind` exist; returns them all.
@@ -211,7 +157,7 @@ fn body_of(provider: &CapturingProvider, n: usize) -> String {
 //      carries, and the request is stored with its resolution
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("written")]).await;
     let state = config(&env, &provider).state();
@@ -311,7 +257,7 @@ fn authenticated_router(state: withnav::server::AppState) -> axum::Router {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("bypass.txt");
     let provider = provider(vec![one_write("bypass-write", &target), done("written")]).await;
     let state = config(&env, &provider).bearer_token("test-token").state();
@@ -347,7 +293,7 @@ async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bypass_leaves_pending_sensitive_request_open() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("auth.json");
     let provider = provider(vec![one_write("protected-write", &target)]).await;
     let state = config(&env, &provider).bearer_token("test-token").state();
@@ -372,7 +318,7 @@ async fn bypass_leaves_pending_sensitive_request_open() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("captain.txt");
     let provider = provider(vec![one_write("captain-write", &target), done("written")]).await;
     let state = config(&env, &provider).bearer_token("test-token").state();
@@ -413,7 +359,7 @@ async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
 //      `permission_denied`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
-    let env = env();
+    let env = Env::new();
     let (first, nested, other) = (
         env.ws.join("src/a.txt"),
         env.ws.join("src/deep/b.txt"),
@@ -484,7 +430,7 @@ async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
 // Then the second is still processed (it asks on its own)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn siblings_after_a_denial_are_processed() {
-    let env = env();
+    let env = Env::new();
     let (a, b) = (env.ws.join("a.txt"), env.ws.join("b.txt"));
     let (id_a, args_a) = write_call("w1", &a);
     let (id_b, args_b) = write_call("w2", &b);
@@ -529,7 +475,7 @@ async fn siblings_after_a_denial_are_processed() {
 //      text is an ordinary message
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_text_never_approves() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("fine")]).await;
     let state = config(&env, &provider).state();
@@ -551,7 +497,7 @@ async fn chat_text_never_approves() {
 // Then the held call never runs and permission.resolved says cancelled
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_while_a_request_is_pending_cancels_it() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target)]).await;
     let state = config(&env, &provider).state();
@@ -591,7 +537,7 @@ async fn stop_while_a_request_is_pending_cancels_it() {
 //      replayed, and the next model request carries the settled result
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restart_expires_the_pending_request_without_replaying_it() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("after restart")]).await;
     let first = config(&env, &provider).state();
@@ -633,23 +579,23 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     assert!(next.contains("carry on"));
 }
 
-fn run_withnav(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
-    std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
+fn run_withnav(root: &Path, ws: &Path, models: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        env.root.join("config/withnav/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
-        .arg(&env.ws)
+        .arg(ws)
         .arg("--models")
         .arg(models)
         .args(extra)
         .env("WITHNAV_TEST_KEY", "test-key")
-        .env("HOME", env.root.join("home"))
-        .env("XDG_DATA_HOME", env.root.join("data"))
-        .env("XDG_CONFIG_HOME", env.root.join("config"))
+        .env("HOME", root.join("home"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
         .output()
         .expect("run the binary")
 }
@@ -659,7 +605,7 @@ fn run_withnav(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output
 //      approving; with --yes the session's bypass lets ordinary work finish
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn withnav_run_stops_on_a_permission_request_unless_yes() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![
         one_write("w1", &target),
@@ -674,12 +620,7 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     let (root_env, models_a) = (env.root.clone(), models.clone());
     let ws = env.ws.clone();
     let stopped = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models_a, &["--prompt", "write a.txt"])
+        run_withnav(&root_env, &ws, &models_a, &["--prompt", "write a.txt"])
     })
     .await
     .unwrap();
@@ -693,12 +634,12 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
 
     let (root_env, ws) = (env.root.clone(), env.ws.clone());
     let approved = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models, &["--yes", "--prompt", "write a.txt"])
+        run_withnav(
+            &root_env,
+            &ws,
+            &models,
+            &["--yes", "--prompt", "write a.txt"],
+        )
     })
     .await
     .unwrap();
@@ -711,7 +652,7 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
 //      and writes nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("auth.json");
     let provider = provider(vec![one_write("w1", &target), done("never")]).await;
     let cfg = config(&env, &provider);
@@ -719,12 +660,12 @@ async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
     let models = cfg.models_path();
     let (root_env, ws) = (env.root.clone(), env.ws.clone());
     let output = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models, &["--yes", "--prompt", "write auth.json"])
+        run_withnav(
+            &root_env,
+            &ws,
+            &models,
+            &["--yes", "--prompt", "write auth.json"],
+        )
     })
     .await
     .unwrap();
@@ -748,7 +689,7 @@ async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
 //      writes nothing
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
-    let env = env();
+    let env = Env::new();
     let agents = env.ws.join(".withnav/agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
@@ -784,12 +725,7 @@ async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     let started = std::time::Instant::now();
     let (root_env, ws) = (env.root.clone(), env.ws.clone());
     let output = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models, &["--yes", "--prompt", "delegate"])
+        run_withnav(&root_env, &ws, &models, &["--yes", "--prompt", "delegate"])
     })
     .await
     .unwrap();
@@ -803,7 +739,7 @@ async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
 // Then it is refused at once, not after the turn
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_answer_is_refused_at_once_while_the_resumed_turn_runs() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let mut provider = spawn_streaming_provider().await;
     let state = TestServerConfig::mock(&env.root, &provider.url)
@@ -850,7 +786,7 @@ async fn a_second_answer_is_refused_at_once_while_the_resumed_turn_runs() {
 // Then it is accepted, the request ends as cancelled and nothing runs
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_stop_command_is_accepted_while_a_request_is_pending() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target)]).await;
     let state = config(&env, &provider).state();
@@ -886,7 +822,7 @@ async fn the_stop_command_is_accepted_while_a_request_is_pending() {
 //      under the operation id it was accepted with
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_while_a_permission_request_is_open_is_refused() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("written")]).await;
     let state = config(&env, &provider).chat_tools(20_000).state();
@@ -913,7 +849,7 @@ async fn compact_while_a_permission_request_is_open_is_refused() {
 // Then the deferred run is refused under its own operation id
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_request() {
-    let env = env();
+    let env = Env::new();
     let target = env.ws.join("a.txt");
     let release = std::sync::Arc::new(tokio::sync::Notify::new());
     let provider = common::sse::spawn_gated_provider(
@@ -980,7 +916,7 @@ async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
 //      as its own turn only after the turn that held the requests has ended
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
-    let env = env();
+    let env = Env::new();
     let (a, b) = (env.ws.join("a.txt"), env.ws.join("b.txt"));
     let (id_a, args_a) = write_call("w1", &a);
     let (id_b, args_b) = write_call("w2", &b);
@@ -1037,7 +973,7 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wake_held_behind_a_request_does_not_cancel_a_revalidated_request() {
-    let env = env();
+    let env = Env::new();
     let reviewed = env.ws.join("reviewed");
     let moved = env.ws.join("moved");
     std::fs::create_dir_all(&reviewed).unwrap();

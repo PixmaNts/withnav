@@ -6,7 +6,6 @@
 //! posted).
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -22,18 +21,10 @@ use common::server::{request_json, text_command, TestServerConfig};
 /// is running. Both real-socket tests hold this lock.
 static REAL_SOCKET_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn test_config(tmp: &Path) -> ServerConfig {
-    TestServerConfig::unreachable(tmp).config()
-}
-
-fn test_state(tmp: &Path) -> AppState {
-    TestServerConfig::unreachable(tmp).state()
-}
-
 #[tokio::test]
 async fn editor_is_explicit_saved_context_and_resume_rejects_selection_fields() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = test_state(tmp.path());
+    let state = TestServerConfig::unreachable(tmp.path()).state();
     let router = app(state.clone());
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
@@ -123,8 +114,13 @@ async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) 
 #[tokio::test]
 async fn health_returns_200_ok_body() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, value) =
-        request_json(&app(test_state(tmp.path())), "GET", "/v1/health", None).await;
+    let (status, value) = request_json(
+        &app(TestServerConfig::unreachable(tmp.path()).state()),
+        "GET",
+        "/v1/health",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value, json!({ "status": "ok" }));
 }
@@ -136,7 +132,7 @@ async fn health_returns_200_ok_body() {
 #[tokio::test]
 async fn create_session_returns_frozen_body_without_calling_the_provider() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = test_state(tmp.path());
+    let state = TestServerConfig::unreachable(tmp.path()).state();
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
@@ -153,7 +149,7 @@ async fn create_session_returns_frozen_body_without_calling_the_provider() {
 #[tokio::test]
 async fn get_session_reports_current_seq_zero_right_after_create() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = test_state(tmp.path());
+    let state = TestServerConfig::unreachable(tmp.path()).state();
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
@@ -181,7 +177,7 @@ async fn get_session_reports_current_seq_zero_right_after_create() {
 #[tokio::test]
 async fn unknown_session_id_is_a_structured_404() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = test_state(tmp.path());
+    let state = TestServerConfig::unreachable(tmp.path()).state();
     let app = app(state);
 
     for id in ["01ARZ3NDEKTSV4RRFFQ69G5FAV", "not-a-ulid"] {
@@ -198,7 +194,7 @@ async fn unknown_session_id_is_a_structured_404() {
 #[tokio::test]
 async fn registry_does_not_grow_from_connect_then_drop_loop() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(test_state(tmp.path()));
+    let state = Arc::new(TestServerConfig::unreachable(tmp.path()).state());
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
@@ -239,7 +235,7 @@ async fn registry_does_not_grow_from_connect_then_drop_loop() {
 async fn real_socket_serve_answers_health_create_and_get() {
     let _socket_guard = REAL_SOCKET_LOCK.lock().await;
     let tmp = tempfile::tempdir().expect("tempdir");
-    let config = test_config(tmp.path());
+    let config = TestServerConfig::unreachable(tmp.path()).config();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("ephemeral bind");
@@ -301,7 +297,7 @@ async fn real_socket_serve_answers_health_create_and_get() {
 #[tokio::test]
 async fn close_session_removes_the_entry_and_get_answers_from_the_store() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = test_state(tmp.path());
+    let state = TestServerConfig::unreachable(tmp.path()).state();
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
@@ -373,7 +369,7 @@ async fn close_session_removes_the_entry_and_get_answers_from_the_store() {
 async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     let _socket_guard = REAL_SOCKET_LOCK.lock().await;
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = test_state(tmp.path());
+    let state = TestServerConfig::unreachable(tmp.path()).state();
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 

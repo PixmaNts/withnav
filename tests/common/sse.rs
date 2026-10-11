@@ -23,11 +23,21 @@ pub fn sse_body(events: &[&str]) -> String {
 
 /// A streamed assistant turn that calls tool `name` with the JSON `args`.
 pub fn tool_call_chunk(id: &str, name: &str, args: &Value) -> String {
-    serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {
-        "tool_calls": [{"index": 0, "id": id, "function": {
-            "name": name, "arguments": args.to_string(),
-        }}],
-    }}]})
+    tool_calls_chunk(&[(id, name, args.clone())])
+}
+
+/// One assistant message calling each `(id, tool, arguments)` in order.
+pub fn tool_calls_chunk(calls: &[(&str, &str, Value)]) -> String {
+    let calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (id, name, args))| {
+            serde_json::json!({"index": index, "id": id,
+                "function": {"name": name, "arguments": args.to_string()}})
+        })
+        .collect();
+    serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls",
+        "delta": {"tool_calls": calls}}]})
     .to_string()
 }
 
@@ -47,9 +57,28 @@ pub fn http_sse(body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A complete scripted TCP response for a text-only assistant turn.
+pub fn text_response(text: &str) -> Vec<u8> {
+    http_sse(&sse_body(&[&text_chunk(text)]))
+}
+
 /// The wiremock answer carrying [`sse_body`] for `events`.
 pub fn sse_response(events: &[&str]) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(sse_body(events), "text/event-stream")
+}
+
+/// Awaits a scoped wiremock's request expectation without polling its recorder.
+/// The mock must declare an expectation requiring at least one request.
+pub async fn wait_for_request(
+    guard: &wiremock::MockGuard,
+    timeout: Duration,
+) -> Vec<wiremock::Request> {
+    tokio::time::timeout(timeout, async {
+        guard.wait_until_satisfied().await;
+        guard.received_requests().await
+    })
+    .await
+    .expect("a matching provider request must arrive")
 }
 
 /// A scripted TCP provider; `url` is the `base_url` to put in `models.json`.

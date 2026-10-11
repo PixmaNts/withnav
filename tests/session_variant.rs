@@ -12,7 +12,9 @@ use withnav::server::{app, AppState};
 use withnav::session::VariantChoice;
 
 mod common;
-use common::server::{collect_until, request_json, send_text, wait_for, TestServerConfig};
+use common::server::{
+    collect_until, request_json, send_text, temp_workspace as tmp_ws, wait_for, TestServerConfig,
+};
 use common::sse::{http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body};
 
 fn offer() -> Value {
@@ -20,13 +22,6 @@ fn offer() -> Value {
         "low": {"reasoning_effort": "low"},
         "high": {"reasoning_effort": "high"}
     })
-}
-
-fn tmp_ws() -> (tempfile::TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(&ws).expect("ws");
-    (tmp, ws)
 }
 
 fn config(tmp: &std::path::Path, url: &str, default: Option<&str>) -> TestServerConfig {
@@ -487,17 +482,24 @@ fn tiers_body(tiers: &[&str]) -> Value {
 }
 
 async fn serve_tiers(server: &wiremock::MockServer, tiers: &[&str]) {
-    server.reset().await;
-    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(tiers_body(tiers)))
-        .mount(server)
-        .await;
+    mount_models_response(
+        server,
+        wiremock::ResponseTemplate::new(200).set_body_json(tiers_body(tiers)),
+    )
+    .await;
 }
 
 async fn serve_down(server: &wiremock::MockServer) {
+    mount_models_response(server, wiremock::ResponseTemplate::new(503)).await;
+}
+
+async fn mount_models_response(
+    server: &wiremock::MockServer,
+    response: wiremock::ResponseTemplate,
+) {
     server.reset().await;
     wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
-        .respond_with(wiremock::ResponseTemplate::new(503))
+        .respond_with(response)
         .mount(server)
         .await;
 }

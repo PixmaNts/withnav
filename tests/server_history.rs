@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::navigator::COGNITION_PROMPT;
@@ -18,9 +17,10 @@ use withnav::server::AppState;
 
 mod common;
 use common::server::{
-    collect_until, post_create_session, post_message_ok, spawn_server, TestServerConfig,
+    collect_until, list_sessions, post_create_session, post_message_ok, spawn_server,
+    TestServerConfig,
 };
-use common::sse::{http_sse, sse_body};
+use common::sse::{spawn_capturing_provider, text_response as done_response, CapturingProvider};
 
 /// A state over a `cognition`-aliased mock provider at `base_url`, with
 /// history persisted to `history_db`.
@@ -31,79 +31,20 @@ fn make_state(tmp: &Path, base_url: &str, history_db: PathBuf) -> AppState {
         .assigned_navigator_state()
 }
 
-/// A scripted provider that answers EVERY connection with the given SSE
-/// response (and records the request bodies).
-struct MockProvider {
-    url: String,
-    requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-async fn spawn_mock_provider(response: Vec<u8>) -> MockProvider {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock bind");
-    let addr = listener.local_addr().expect("mock addr");
-    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let seen = requests.clone();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
-            let mut buf = vec![0u8; 65536];
-            let n = sock.read(&mut buf).await.unwrap_or(0);
-            seen.lock()
-                .unwrap()
-                .push(String::from_utf8_lossy(&buf[..n]).into_owned());
-            let _ = sock.write_all(&response).await;
-            let _ = sock.flush().await;
-            let _ = sock.shutdown().await;
-        }
-    });
-    MockProvider {
-        url: format!("http://{addr}/v1"),
-        requests,
-    }
-}
-
-async fn list_sessions(base: &str, workspace: &Path) -> Value {
-    reqwest::Client::new()
-        .get(format!(
-            "{base}/v1/sessions?workspace={}",
-            workspace.display()
-        ))
-        .send()
-        .await
-        .expect("list")
-        .json()
-        .await
-        .expect("list json")
-}
-
-/// Waits until the writer thread has drained (observed via the store's own
-/// read path through a fresh HTTP list).
-async fn wait_for_list(base: &str, workspace: &Path, min: usize) -> Vec<Value> {
-    let mut last = Vec::new();
-    for _ in 0..200 {
-        let body = list_sessions(base, workspace).await;
-        let sessions = body["sessions"].as_array().cloned().unwrap_or_default();
-        if sessions.len() >= min {
-            return sessions;
-        }
-        last = sessions;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!(
-        "history writer never caught up (min {min}, saw {})",
-        last.len()
-    );
-}
-
-fn done_response(text: &str) -> Vec<u8> {
-    let chunk = format!(
-        r#"{{"choices":[{{"index":0,"delta":{{"content":"{text}"}},"finish_reason":"stop"}}]}}"#
-    );
-    http_sse(&sse_body(&[&chunk]))
+/// Waits for the writer's acknowledged barrier, then verifies the HTTP list.
+async fn wait_for_list(state: &AppState, base: &str, workspace: &Path, min: usize) -> Vec<Value> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        state.history().flush().await.expect("flush");
+        let body = list_sessions(&reqwest::Client::new(), base, workspace).await;
+        let sessions = body["sessions"].as_array().expect("sessions").clone();
+        assert!(
+            sessions.len() >= min,
+            "expected {min} sessions: {sessions:?}"
+        );
+        sessions
+    })
+    .await
+    .expect("history writer and HTTP list must finish")
 }
 
 // ---- the acceptance tests ----
@@ -112,7 +53,7 @@ struct ServerA {
     base: String,
     state: AppState,
     ws: PathBuf,
-    _mock: MockProvider,
+    _mock: CapturingProvider,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -125,7 +66,7 @@ impl Drop for ServerA {
 /// The tempdir is returned SEPARATELY: a resume test drops the first server
 /// (and its state) while keeping the database file on disk.
 async fn spawn_history_server() -> (ServerA, PathBuf, tempfile::TempDir) {
-    let mock = spawn_mock_provider(done_response("OK")).await;
+    let mock = spawn_capturing_provider(vec![done_response("OK"); 2]).await;
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let db = root.join("sessions.db");
@@ -178,7 +119,7 @@ async fn converse_persists_events_title_and_transcript() {
         "turn completed"
     );
 
-    let listed = wait_for_list(&server.base, &server.ws, 1).await;
+    let listed = wait_for_list(&server.state, &server.base, &server.ws, 1).await;
     assert_eq!(listed[0]["id"], id.as_str());
     assert_eq!(listed[0]["title"], "Remember the word: pineapple");
     assert_eq!(listed[0]["message_count"], 1);
@@ -238,14 +179,14 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
     let original_seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
     let original_max = *original_seqs.iter().max().expect("seqs");
-    wait_for_list(&server.base, &server.ws, 1).await;
+    wait_for_list(&server.state, &server.base, &server.ws, 1).await;
     // Kill the first server (drop state: its runtime tasks go with it).
     // The tempdir stays alive through `_keep`: the db file must survive.
     server.task.abort();
     drop(server);
 
     // Turn 2 in a FRESH AppState over the same file.
-    let mock2 = spawn_mock_provider(done_response("OK, the word was pineapple")).await;
+    let mock2 = spawn_capturing_provider(vec![done_response("OK, the word was pineapple")]).await;
     let tmp2 = tempfile::tempdir().expect("tempdir 2");
     let root2 = tmp2.path().to_path_buf();
     // Same workspace path content-wise: reuse a copy of the same ws string.
@@ -327,17 +268,9 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
 
     // The provider saw the earlier conversation (it records each request
     // before answering, and the turn has ended).
-    let requests = mock2.requests.lock().unwrap().clone();
+    let requests = mock2.bodies();
     assert!(!requests.is_empty(), "provider called");
-    let body: Value = serde_json::from_str(
-        requests
-            .last()
-            .unwrap()
-            .split("\r\n\r\n")
-            .nth(1)
-            .unwrap_or_default(),
-    )
-    .expect("request json");
+    let body: Value = serde_json::from_str(requests.last().unwrap()).expect("request json");
     let contents: Vec<String> = body["messages"]
         .as_array()
         .expect("messages")
@@ -425,17 +358,10 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
 }
 
 /// The messages of the last request the mock provider saw.
-fn last_request_messages(mock: &MockProvider) -> Vec<Value> {
-    let requests = mock.requests.lock().unwrap().clone();
-    let body: Value = serde_json::from_str(
-        requests
-            .last()
-            .expect("provider called")
-            .split("\r\n\r\n")
-            .nth(1)
-            .unwrap_or_default(),
-    )
-    .expect("request json");
+fn last_request_messages(mock: &CapturingProvider) -> Vec<Value> {
+    let requests = mock.bodies();
+    let body: Value =
+        serde_json::from_str(requests.last().expect("provider called")).expect("request json");
     body["messages"].as_array().expect("messages").clone()
 }
 
@@ -481,7 +407,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     );
     store.flush().await.expect("flush");
 
-    let mock = spawn_mock_provider(done_response("fine")).await;
+    let mock = spawn_capturing_provider(vec![done_response("fine")]).await;
     let state = make_state(&root, &mock.url, db.clone());
     let (resumed_id, resumed) = state
         .create_or_resume_session(&ws, None, false, Some(id))
@@ -538,7 +464,7 @@ async fn delete_removes_from_memory_and_store() {
         .expect("sub");
     post_message_ok(&server.base, &id, "hello").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
-    wait_for_list(&server.base, &server.ws, 1).await;
+    wait_for_list(&server.state, &server.base, &server.ws, 1).await;
 
     let resp = reqwest::Client::new()
         .delete(format!("{}/v1/sessions/{id}", server.base))
@@ -551,19 +477,19 @@ async fn delete_removes_from_memory_and_store() {
         Err(withnav::error::ServerError::SessionNotFound(_))
     ));
 
-    // Store is empty for the workspace.
-    for _ in 0..50 {
-        let body = list_sessions(&server.base, &server.ws).await;
-        if body["sessions"]
-            .as_array()
-            .map(|a| a.is_empty())
-            .unwrap_or(false)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
-    let body = list_sessions(&server.base, &server.ws).await;
+    // Store is empty for the workspace after the writer acknowledges deletion.
+    let client = reqwest::Client::new();
+    let body = tokio::time::timeout(Duration::from_secs(10), async {
+        server
+            .state
+            .history()
+            .flush()
+            .await
+            .expect("flush deletion");
+        list_sessions(&client, &server.base, &server.ws).await
+    })
+    .await
+    .expect("deleted history list must finish");
     assert_eq!(body["sessions"].as_array().map(|a| a.len()), Some(0));
 
     // A disk-only id that never existed 404s.
@@ -590,7 +516,7 @@ async fn delete_removes_from_memory_and_store() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_is_per_workspace() {
     let (server, _db, _keep) = spawn_history_server().await;
-    let other = server.ws.parent().unwrap().join("other-ws");
+    let other = server.ws.parent().unwrap().join("other ws & # + %");
     std::fs::create_dir_all(&other).expect("other ws");
 
     for (ws, text) in [
@@ -613,10 +539,10 @@ async fn list_is_per_workspace() {
         let _ = collect_until(sub, |e| e.kind == "turn.end").await;
     }
 
-    let first = wait_for_list(&server.base, &server.ws, 1).await;
+    let first = wait_for_list(&server.state, &server.base, &server.ws, 1).await;
     assert_eq!(first.len(), 1, "only the first workspace's session");
     assert_eq!(first[0]["title"], "in the first workspace");
-    let second = wait_for_list(&server.base, &other, 1).await;
+    let second = wait_for_list(&server.state, &server.base, &other, 1).await;
     assert_eq!(second.len(), 1, "only the second workspace's session");
     assert_eq!(second[0]["title"], "in the second");
 }
@@ -627,7 +553,7 @@ async fn list_is_per_workspace() {
 //      data dir is never named, so no test can write there
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_server_config_never_resolves_to_the_users_data_dir() {
-    let mock = spawn_mock_provider(done_response("OK")).await;
+    let mock = spawn_capturing_provider(vec![done_response("OK")]).await;
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let config = TestServerConfig::mock(&root, &mock.url);
@@ -658,7 +584,7 @@ async fn test_server_config_never_resolves_to_the_users_data_dir() {
     post_message_ok(&base, &id, "persisted in the temp root").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 
-    let body = wait_for_list(&base, &ws, 1).await;
+    let body = wait_for_list(&state, &base, &ws, 1).await;
     assert_eq!(body.len(), 1, "the conversation is listed from the temp db");
     assert!(db.exists(), "the database is the one in the temp root");
     task.abort();
@@ -689,17 +615,7 @@ async fn list_skips_a_session_with_unreadable_metadata() {
         )
         .expect("corrupt");
 
-    let response = reqwest::Client::new()
-        .get(format!(
-            "{}/v1/sessions?workspace={}",
-            server.base,
-            server.ws.display()
-        ))
-        .send()
-        .await
-        .expect("list");
-    assert_eq!(response.status(), 200);
-    let body: Value = response.json().await.expect("json");
+    let body = list_sessions(&reqwest::Client::new(), &server.base, &server.ws).await;
     let ids: Vec<&str> = body["sessions"]
         .as_array()
         .expect("sessions")

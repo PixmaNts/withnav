@@ -1,5 +1,8 @@
 # WithNav
 
+[![CI](https://github.com/PixmaNts/withnav/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/PixmaNts/withnav/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 **You set the course. Nav lights the way.** <https://withnav.dev>
 
 A pair-programming system in Rust. The human keeps the keyboard and stays the author of the code.
@@ -11,8 +14,7 @@ Risky permission calls use one metacognition review. Set `permissions.review_tim
 inherited by their children. Ordinary confident reads and recoverable workspace changes are decided
 by Instinct alone. On review timeout, eligible reads retain their safe fallback; changes ask you.
 
-> **Status:** this checkout includes the changes prepared for v0.5.0: a terminal client, agents,
-> permissions, skills, rules, model assignments, a context budget and compaction. See
+> **Status:** pre-1.0 and moving fast; each release is listed with its changes in
 > [`CHANGELOG.md`](CHANGELOG.md). [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the code and
 > [`CONTEXT.md`](CONTEXT.md) defines the vocabulary.
 
@@ -117,6 +119,12 @@ install -m755 target/release/nav ~/.local/bin/
 (cd vscode-withnav && npm ci && npm run package)
 code --install-extension vscode-withnav/withnav-*.vsix
 ```
+
+Releases also publish prebuilt files on the
+[GitHub Releases page](https://github.com/PixmaNts/withnav/releases): a VSIX for linux-x64 and
+one for linux-arm64, each bundling a static `nav` binary; a universal VSIX without the binary
+(it uses `nav` on your `PATH` or the `withnav.serverPath` setting); and bare `nav` binaries.
+Native Windows is not supported yet; WSL or VS Code Remote works with the linux VSIX.
 
 On NixOS, the flake at the root builds both: `nix build .#withnav .#vscode-withnav`. In a
 system flake, add this repository as an input and apply `overlays.default`; it provides
@@ -252,8 +260,16 @@ they are not part of 0.5.
 
 The repository is on GitHub: <https://github.com/PixmaNts/withnav>. `main` holds releases only.
 Work branches off `develop` as `feat/<name>` or `fix/<name>` and comes back through a pull request
-into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. Details in
-[`AGENTS.md`](AGENTS.md).
+into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow and [`AGENTS.md`](AGENTS.md) for the branch rules.
+
+## Community
+
+- Ask questions → [GitHub Discussions (Q&A)](https://github.com/PixmaNts/withnav/discussions/new?category=q-a)
+- Report a bug → the [bug issue form](https://github.com/PixmaNts/withnav/issues/new?template=bug_report.yml)
+- Contribute → [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code of Conduct → [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Report a security issue → [SECURITY.md](SECURITY.md)
 
 ## License
 

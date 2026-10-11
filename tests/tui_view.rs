@@ -258,14 +258,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
     terminal
         .draw(|frame| view::draw(frame, &s, &ui, &editor, &mut RenderCache::default()))
         .unwrap();
-    let buffer = terminal.backend().buffer();
-    let line = |y| {
-        (0..60)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    };
+    let line = |y| row_text(&terminal, y, 60).trim_end().to_string();
     insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌◉ vigie · —");
     insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
@@ -461,13 +454,8 @@ fn render(name: &str, size: (u16, u16), state: &State, ui: &UiState, editor: &Ed
     terminal
         .draw(|frame| view::draw(frame, state, ui, editor, &mut cache))
         .unwrap();
-    let buffer = terminal.backend().buffer();
     let snapshot = (0..size.1)
-        .map(|y| {
-            (0..size.0)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
+        .map(|y| row_text(&terminal, y, size.0))
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(name, snapshot);
@@ -1007,9 +995,8 @@ fn buffer_text(s: &State) -> String {
     terminal
         .draw(|f| view::draw(f, s, &ui, &Editor::new(), &mut RenderCache::default()))
         .unwrap();
-    let buffer = terminal.backend().buffer();
     (0..20)
-        .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .map(|y| row_text(&terminal, y, 60))
         .collect::<Vec<_>>()
         .join("\n")
 }

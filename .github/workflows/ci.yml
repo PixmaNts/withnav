@@ -17,11 +17,22 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The test suite links about 70 integration-test binaries. With full debug info they filled
+  # the runner disk ("No space left on device", first CI run on 2026-10-11); CI never runs a
+  # debugger, so dropping debug info keeps every binary small.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
+      # The runner image preinstalls SDKs this repo never uses; removing them frees roughly
+      # 20 GB so the test build has room even as the test count grows.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

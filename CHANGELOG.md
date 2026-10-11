@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-10-11
+
+WithNav 0.7.6 removes the theme row from the VS Code Settings page, where it had no effect: the
+panel follows the editor's theme.
+
 ### Fixed
 
 - **The VS Code Settings page no longer shows a theme setting.** The panel follows the editor's

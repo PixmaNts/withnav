@@ -43,6 +43,13 @@ async fn get_json(state: &AppState, uri: &str) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
+fn intent_uri(workspace: &std::path::Path) -> String {
+    let mut url = reqwest::Url::parse("http://localhost/v1/intent").expect("intent URL");
+    url.query_pairs_mut()
+        .append_pair("workspace", workspace.to_str().expect("utf8 workspace"));
+    format!("{}?{}", url.path(), url.query().expect("workspace query"))
+}
+
 fn web_state(tmp: &std::path::Path, launch: Vec<std::path::PathBuf>) -> AppState {
     TestServerConfig::unreachable(tmp)
         .bearer_token(TOKEN)
@@ -250,8 +257,8 @@ async fn workspaces_without_launch_list_history_only() {
 #[tokio::test]
 async fn intent_reports_present_absent_and_missing_query() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let with = tmp.path().join("with");
-    let without = tmp.path().join("without");
+    let with = tmp.path().join("with space & # + %");
+    let without = tmp.path().join("without space & # + %");
     std::fs::create_dir_all(with.join(".withnav")).expect("dir");
     std::fs::create_dir_all(&without).expect("dir");
     std::fs::write(
@@ -261,7 +268,7 @@ async fn intent_reports_present_absent_and_missing_query() {
     .expect("intent");
     let state = web_state(tmp.path(), vec![]);
 
-    let uri = format!("/v1/intent?workspace={}", with.to_str().unwrap());
+    let uri = intent_uri(&with);
     let (status, body) = get_json(&state, &uri).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["exists"], true);
@@ -271,7 +278,7 @@ async fn intent_reports_present_absent_and_missing_query() {
     assert_eq!(body["active_spec"], Value::Null);
     assert!(body["raw"].as_str().unwrap().contains("## Plan"));
 
-    let uri = format!("/v1/intent?workspace={}", without.to_str().unwrap());
+    let uri = intent_uri(&without);
     let (status, body) = get_json(&state, &uri).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["exists"], false);

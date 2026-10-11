@@ -553,7 +553,10 @@ mod tests {
             "the block and its padding disappear"
         );
         assert_eq!(strip_editor_context("no block here"), "no block here");
-        assert_eq!(strip_editor_context("no block\n\n\nhere"), "no block\n\n\nhere");
+        assert_eq!(
+            strip_editor_context("no block\n\n\nhere"),
+            "no block\n\n\nhere"
+        );
         for before in 0..8 {
             for after in 0..8 {
                 let prefix = "\n".repeat(before);

@@ -280,11 +280,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         Overlay::Themes => ThemeId::ALL
             .iter()
             .filter(|entry| {
-                entry.id().contains(&filter)
-                    || entry
-                        .name()
-                        .to_lowercase()
-                        .contains(&filter)
+                entry.id().contains(&filter) || entry.name().to_lowercase().contains(&filter)
             })
             .map(|entry| theme_row(*entry, ui.theme_on_open.unwrap_or(ui.theme), theme))
             .collect(),

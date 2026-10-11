@@ -706,12 +706,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                     super::refresh_start_variant(s, &catalog);
                     vec![]
                 }
-                Some(VariantPick::Current) => run_command(
-                    s,
-                    "variant".into(),
-                    name,
-                    None,
-                ),
+                Some(VariantPick::Current) => run_command(s, "variant".into(), name, None),
                 None => vec![],
             }
         }

@@ -15,6 +15,8 @@
 //! the runtime (a separate task) can never consume a command whose
 //! `message.received` is not already sequenced.
 
+use std::sync::Arc;
+
 use tokio::sync::{mpsc, oneshot, watch};
 use ulid::Ulid;
 
@@ -50,14 +52,14 @@ pub type CommandCommit = Box<dyn FnOnce() + Send>;
 /// the bus never imports the store.
 pub type AckedCommit = Box<
     dyn FnOnce(
-            EventEnvelope,
+            Arc<EventEnvelope>,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
         + Send,
 >;
 pub type AckedBatchCommit = Box<
     dyn FnOnce(
-            Vec<EventEnvelope>,
+            Arc<Vec<EventEnvelope>>,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
         + Send,
@@ -432,9 +434,10 @@ async fn run(
                     let _ = reply.send(Err(BusError::SeqSpaceExhausted.to_string()));
                     continue;
                 }
-                match commit(envelopes.clone()).await {
+                let envelopes = Arc::new(envelopes);
+                match commit(Arc::clone(&envelopes)).await {
                     Ok(()) => {
-                        for envelope in envelopes {
+                        for envelope in Arc::unwrap_or_clone(envelopes) {
                             emitter.emit(envelope);
                         }
                         let _ = reply.send(Ok(first));
@@ -454,10 +457,10 @@ async fn run(
                     let _ = reply.send(Err(BusError::SeqSpaceExhausted.to_string()));
                     break;
                 };
-                let envelope = stamp(session_id, seq, candidate);
-                match commit(envelope.clone()).await {
+                let envelope = Arc::new(stamp(session_id, seq, candidate));
+                match commit(Arc::clone(&envelope)).await {
                     Ok(()) => {
-                        emitter.emit(envelope);
+                        emitter.emit(Arc::unwrap_or_clone(envelope));
                         let _ = reply.send(Ok(seq));
                     }
                     Err(why) => {
@@ -479,8 +482,9 @@ async fn run(
                 // Event-before-action, in this exact order: emit the
                 // sequenced envelope, THEN commit the command, THEN ack —
                 // so the ack is observable proof that commit followed emit.
-                let mut candidate = message_received_candidate(&command);
-                candidate.causation_id = Some(command.command_id);
+                let command_id = command.command_id;
+                let mut candidate = message_received_candidate(command);
+                candidate.causation_id = Some(command_id);
                 emitter.emit(stamp(session_id, seq, candidate));
                 commit();
                 let _ = reply.send(Ok(AcceptReceipt { seq }));
@@ -540,22 +544,22 @@ fn take_seq(next_seq: &mut u64) -> Option<u64> {
     Some(seq)
 }
 
-fn message_received_candidate(command: &PendingCommand) -> Candidate {
+fn message_received_candidate(command: PendingCommand) -> Candidate {
     Candidate::new(
         EventKind::MessageReceived,
         serde_json::to_value(crate::bus::event::MessageReceived {
-            answer: command.answer.clone(),
+            answer: command.answer,
             command_id: command.command_id,
-            source: command.source.clone(),
-            target: command.target.clone(),
-            mode: command.mode.clone(),
-            content: command.content.clone(),
-            selected_skill: command.selected_skill.as_ref().map(|name| {
-                crate::bus::event::SelectedSkill {
-                    name: name.clone(),
+            source: command.source,
+            target: command.target,
+            mode: command.mode,
+            content: command.content,
+            selected_skill: command
+                .selected_skill
+                .map(|name| crate::bus::event::SelectedSkill {
+                    name,
                     origin: "captain".into(),
-                }
-            }),
+                }),
         })
         .expect("message payload serializes"),
     )
@@ -787,8 +791,12 @@ mod tests {
         let receipt = seq
             .accept_command(
                 PendingCommand {
-                    answer: None,
-                    selected_skill: None,
+                    answer: Some(crate::tools::control::AskAnswer {
+                        question_call_id: "question-call".into(),
+                        selected: vec![1],
+                        custom: Some("custom answer".into()),
+                    }),
+                    selected_skill: Some("rust".into()),
                     command_id,
                     content: "hello there".into(),
                     source: "user:cli".into(),
@@ -815,6 +823,16 @@ mod tests {
         assert_eq!(envelope.payload["command_id"], command_id.to_string());
         assert_eq!(envelope.payload["content"], "hello there");
         assert_eq!(envelope.payload["mode"], "next-turn");
+        assert_eq!(envelope.payload["source"], "user:cli");
+        assert_eq!(envelope.payload["target"], "agent:main");
+        assert_eq!(
+            envelope.payload["selected_skill"],
+            serde_json::json!({"name": "rust", "origin": "captain"})
+        );
+        assert_eq!(
+            envelope.payload["answer"],
+            serde_json::json!({"question_call_id": "question-call", "selected": [1], "custom": "custom answer"})
+        );
 
         // THE assertion: real recorded order is Emit < Commit < Ack.
         let recorded = timeline.lock().unwrap().clone();
@@ -942,15 +960,64 @@ mod tests {
                 turn_candidate("switch"),
                 Box::new(move |envelope| {
                     Box::pin(async move {
-                        let _ = ran_tx.send(envelope.seq);
+                        assert_eq!(Arc::strong_count(&envelope), 2);
+                        let tag = envelope.payload["tag"].as_str().unwrap();
+                        let _ =
+                            ran_tx.send((envelope.seq, envelope.event_id, tag.as_ptr() as usize));
                         Ok(())
                     })
                 }),
             )
             .await
             .unwrap();
-        assert_eq!(ran_rx.await.unwrap(), assigned);
-        assert_eq!(rx.recv().await.unwrap().seq, assigned);
+        let (committed_seq, event_id, payload_pointer) = ran_rx.await.unwrap();
+        assert_eq!(committed_seq, assigned);
+        let emitted = rx.recv().await.unwrap();
+        assert_eq!((emitted.seq, emitted.event_id), (assigned, event_id));
+        assert_eq!(
+            emitted.payload["tag"].as_str().unwrap().as_ptr() as usize,
+            payload_pointer
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_commit_shares_payload_then_emits_in_order_without_gaps_on_failure() {
+        let (seq, mut rx) = spawn_with_collector();
+        let (committed, seen) = oneshot::channel();
+        let first = seq
+            .commit_batch_acked(
+                vec![turn_candidate("first"), turn_candidate("second")],
+                Box::new(move |envelopes| {
+                    Box::pin(async move {
+                        assert_eq!(Arc::strong_count(&envelopes), 2);
+                        let tag = envelopes[0].payload["tag"].as_str().unwrap();
+                        let _ = committed.send((envelopes[0].event_id, tag.as_ptr() as usize));
+                        Ok(())
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        let (event_id, payload_pointer) = seen.await.unwrap();
+        let emitted = rx.recv().await.unwrap();
+        assert_eq!((emitted.seq, emitted.event_id), (first, event_id));
+        assert_eq!(
+            emitted.payload["tag"].as_str().unwrap().as_ptr() as usize,
+            payload_pointer
+        );
+        assert_eq!(rx.recv().await.unwrap().seq, first + 1);
+        assert!(seq
+            .commit_batch_acked(
+                vec![turn_candidate("lost"), turn_candidate("also lost")],
+                Box::new(|_| Box::pin(async { Err("disk full".into()) })),
+            )
+            .await
+            .is_err());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            seq.publish_acked(turn_candidate("next")).await.unwrap(),
+            first + 2
+        );
     }
 
     #[tokio::test]

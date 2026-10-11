@@ -3038,7 +3038,7 @@ impl Service {
                         "data":{"captain_committed":true,"message":"Fresh captain instruction checkpointed"}
                     }));
                     sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
-                        history.consume_completions_committed(session_id,vec![],transcript,Some(envelope)).await
+                        history.consume_completions_shared(session_id,vec![],transcript,Some(envelope)).await
                     }))).await.map(|_| ()).map_err(|error| error.to_string())
                 })
             }));
@@ -3132,7 +3132,7 @@ impl Service {
                                     return Err("injected delivery commit failure".into());
                                 }
                             }
-                            committed_history.consume_completions_committed(session_id, vec![child], committed_transcript, Some(envelope)).await
+                            committed_history.consume_completions_shared(session_id, vec![child], committed_transcript, Some(envelope)).await
                         }))).await;
                         if let Err(message) = result {
                             transcript.pop();

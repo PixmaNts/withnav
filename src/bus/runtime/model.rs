@@ -74,7 +74,7 @@ pub type CommitFn = dyn Fn(
         ModelTarget,
         usize,
         Option<StagedCheckpoint>,
-        Vec<EventEnvelope>,
+        Arc<Vec<EventEnvelope>>,
         Install,
         CancellationToken,
     ) -> BoxFuture<Result<(), String>>
@@ -352,7 +352,7 @@ pub(super) async fn run(
             staged.clone(),
             cancel.clone(),
         );
-        Box::new(move |envelopes: Vec<EventEnvelope>| {
+        Box::new(move |envelopes: Arc<Vec<EventEnvelope>>| {
             (switcher.commit)(target, floor, checkpoint, envelopes, install, token)
         })
     };

@@ -1,13 +1,14 @@
 //! Descriptor-held no-follow filesystem access; paths are never reopened after validation.
 use nix::{
-    fcntl::{open, openat, renameat, AtFlags, Flock, FlockArg, OFlag},
+    fcntl::{open, openat, renameat, Flock, FlockArg, OFlag},
     sys::stat::{fstat, mkdirat, Mode, SFlag},
-    unistd::{getuid, linkat, unlinkat, UnlinkatFlags},
+    unistd::{getuid, unlinkat, UnlinkatFlags},
 };
 use std::{
+    ffi::CString,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::fd::{AsFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
@@ -245,11 +246,24 @@ impl Directory {
             file.write_all(bytes)?;
             file.sync_all()?;
             if no_replace {
-                // linkat fails with EEXIST instead of replacing, like renameat2(RENAME_NOREPLACE),
-                // but exists on musl where nix does not expose renameat2; the static release
-                // binary would not build otherwise. The temporary name is unlinked after the link.
-                linkat(&self.0, temporary.as_str(), &self.0, name, AtFlags::empty()).map_err(io)?;
-                unlinkat(&self.0, temporary.as_str(), UnlinkatFlags::NoRemoveDir).map_err(io)
+                // nix wraps renameat2 on glibc only, and the static musl release binary needs it:
+                // measured 2026-10-12, Rust's musl libc.a and zig 0.16's musl export no renameat2
+                // symbol. The raw syscall keeps the single atomic rename that fails with EEXIST
+                // instead of replacing, so behaviour is the same on every libc.
+                let old = CString::new(temporary.as_str())?;
+                let new = CString::new(name)?;
+                // SAFETY: both C strings and the owned directory fd remain live for the call.
+                let result = unsafe {
+                    nix::libc::syscall(
+                        nix::libc::SYS_renameat2,
+                        self.0.as_raw_fd(),
+                        old.as_ptr(),
+                        self.0.as_raw_fd(),
+                        new.as_ptr(),
+                        nix::libc::RENAME_NOREPLACE,
+                    )
+                };
+                nix::errno::Errno::result(result).map(|_| ()).map_err(io)
             } else {
                 renameat(&self.0, temporary.as_str(), &self.0, name).map_err(io)
             }

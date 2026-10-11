@@ -128,8 +128,9 @@ jobs:
   publish:
     name: publish release
     needs: [verify, binary, universal]
-    # A manual run stops after the build jobs: its artifacts are the result.
-    if: github.ref_type == 'tag'
+    # Only a pushed tag publishes. A manual run, even one started on a tag, stops after the build
+    # jobs: its artifacts are the result.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write

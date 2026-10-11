@@ -15,8 +15,9 @@ requests land in `develop`.
 
 ### Fixed
 
-- **`nav` builds for musl Linux.** Writing a flow file that must not replace an existing one no
-  longer depends on `renameat2`, which `nix` only offers with glibc.
+- **`nav` builds for musl Linux.** Writing a flow file that must not replace an existing one now
+  calls `renameat2` through the raw system call, because `nix` only wraps it with glibc. The
+  behaviour is unchanged: one atomic rename that fails if the file exists.
 
 ## [0.7.7] - 2026-10-11
 

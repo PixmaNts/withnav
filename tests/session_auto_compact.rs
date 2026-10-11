@@ -773,17 +773,17 @@ async fn stop_a_switch_held_at(
         let state = state.clone();
         tokio::spawn(async move { state.run_command(id, "model", "b/model-b").await })
     };
-    reached.notified().await;
-    let stopping = {
-        let state = state.clone();
-        tokio::spawn(async move { state.close_session(id).await })
-    };
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+        .await
+        .expect("switch reaches the held provider");
+    tokio::time::timeout(std::time::Duration::from_secs(15), state.close_session(id))
+        .await
+        .expect("stop does not wait for the held provider response")
+        .expect("the stop completes");
     release.notify_one();
     if let Ok(out) = switching.await.unwrap() {
         assert!(!out.ok, "{out:?}");
     }
-    stopping.await.unwrap().expect("the stop completes");
 }
 
 // Given a switch whose current model fails, held at that failure

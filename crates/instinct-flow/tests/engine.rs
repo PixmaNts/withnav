@@ -1,9 +1,10 @@
 use instinct_flow::{protocol::*, *};
 use std::{
     collections::BTreeMap,
+    future::Future,
     sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -402,6 +403,8 @@ struct Controlled {
     entered: tokio::sync::Notify,
     joined: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    fast_calls: AtomicUsize,
+    slow_calls: AtomicUsize,
     join_calls: AtomicUsize,
 }
 impl Controlled {
@@ -410,6 +413,8 @@ impl Controlled {
             entered: tokio::sync::Notify::new(),
             joined: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
+            fast_calls: AtomicUsize::new(0),
+            slow_calls: AtomicUsize::new(0),
             join_calls: AtomicUsize::new(0),
         }
     }
@@ -428,7 +433,11 @@ impl DecisionClient for Controlled {
         _: Instant,
     ) -> BoxFuture<'a, Result<DecisionResponse, DecisionError>> {
         Box::pin(async move {
+            if request.questions.contains_key("fast") {
+                self.fast_calls.fetch_add(1, Ordering::SeqCst);
+            }
             if request.questions.contains_key("slow") {
+                self.slow_calls.fetch_add(1, Ordering::SeqCst);
                 self.entered.notify_one();
                 self.release.notified().await;
             }
@@ -445,6 +454,16 @@ impl DecisionClient for Controlled {
                 usage: None,
             })
         })
+    }
+}
+// Drain self-woken scheduler work until only external input can make progress.
+struct PollWake(AtomicBool);
+impl std::task::Wake for PollWake {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
     }
 }
 #[tokio::test]
@@ -483,24 +502,27 @@ async fn join_waits_only_for_declared_answers_and_never_runs_twice() {
             },
             &cancel,
         );
-        let observe = async {
-            client.entered.notified().await;
-            if declared {
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(20), client.joined.notified())
-                        .await
-                        .is_err()
-                );
-                client.release.notify_one();
-                client.joined.notified().await;
-            } else {
-                tokio::time::timeout(Duration::from_millis(200), client.joined.notified())
-                    .await
-                    .unwrap();
-                client.release.notify_one();
-            }
-        };
-        let (outcome, ()) = tokio::join!(work, observe);
+        tokio::pin!(work);
+        let wake = Arc::new(PollWake(AtomicBool::new(true)));
+        let waker = std::task::Waker::from(wake.clone());
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut polls = 0;
+        while wake.0.swap(false, Ordering::SeqCst) {
+            polls += 1;
+            assert!(polls <= 100, "scheduler must suspend at the slow decision");
+            assert!(work.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(client.fast_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.slow_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            client.join_calls.load(Ordering::SeqCst),
+            usize::from(!declared),
+            "declared={declared}: join must wait exactly when it reads the slow answer"
+        );
+        client.release.notify_one();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), work)
+            .await
+            .expect("join must complete after the slow decision is released");
         assert!(matches!(outcome.result, RunResult::Success { .. }));
         assert_eq!(client.join_calls.load(Ordering::SeqCst), 1);
     }

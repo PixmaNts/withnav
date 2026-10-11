@@ -383,11 +383,9 @@ async fn create_session(
     State(state): State<AppState>,
     body: Result<Json<CreateSessionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
     let resume: Option<Ulid> = match request.resume.as_deref().map(str::parse) {
         None => None,
@@ -828,11 +826,9 @@ async fn post_bypass(
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
     match state
         .set_bypass(
@@ -866,11 +862,9 @@ async fn post_command(
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
     if state.http.bearer_token.is_none()
         && request
@@ -904,6 +898,13 @@ async fn routable_session_id(state: &AppState, id: String) -> Result<Ulid, Serve
     let id = parse_session_id(id)?;
     state.routable_handle(id).await?;
     Ok(id)
+}
+
+fn json_body<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ServerError> {
+    body.map(|Json(value)| value)
+        .map_err(|rejection| ServerError::MalformedBody(rejection.body_text()))
 }
 
 /// Builds the Command for a posted message with a server-assigned sender.
@@ -949,11 +950,9 @@ async fn post_message(
     Path(id): Path<String>,
     body: Result<Json<PostMessageRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
     let session_id = match routable_session_id(&state, id).await {
         Ok(parsed) => parsed,
@@ -1034,9 +1033,9 @@ async fn answer_permission(
     let Ok(request_id) = request_id.parse::<Ulid>() else {
         return error_response(ServerError::PermissionStale);
     };
-    let Json(body) = match body {
+    let body = match json_body(body) {
         Ok(body) => body,
-        Err(rejection) => return error_response(ServerError::MalformedBody(rejection.body_text())),
+        Err(err) => return error_response(err),
     };
     use crate::agent::permissions::PermissionDecision;
     let decision = match body.decision {

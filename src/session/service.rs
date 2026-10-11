@@ -1306,9 +1306,9 @@ impl Service {
         id: SessionId,
     ) -> Result<SessionHandle, ServerError> {
         self.ensure_not_archived(id).await?;
-        match self.lock_sessions().get(&id) {
+        match self.handle(id) {
             Some(handle) if handle.lifecycle == Lifecycle::Active => {
-                return Ok(handle.clone());
+                return Ok(handle);
             }
             Some(_) => return Err(ServerError::SessionStopping),
             None => {}
@@ -1775,10 +1775,11 @@ impl Service {
                 });
             }
             // Live + active: the conversation never left.
-            if let Some(handle) = self.lock_sessions().get(&id) {
-                if handle.lifecycle == Lifecycle::Active {
-                    return Ok((id, true));
-                }
+            if self
+                .handle(id)
+                .is_some_and(|handle| handle.lifecycle == Lifecycle::Active)
+            {
+                return Ok((id, true));
             }
             // Stopped, or only on disk: rebuild under the same id from the
             // stored row.

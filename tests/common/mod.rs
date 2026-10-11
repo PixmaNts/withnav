@@ -16,6 +16,12 @@ pub struct TestEnv {
     pub home: std::path::PathBuf,
 }
 
+impl Default for TestEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestEnv {
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");

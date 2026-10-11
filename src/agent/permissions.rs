@@ -312,12 +312,32 @@ fn folder_covers(grant: &Path, target: &Path, cx: &ToolContext) -> bool {
     if !target.starts_with(grant) {
         return false;
     }
-    let workspace = canonical(&cx.workspace);
-    cx.writable_roots
-        .iter()
-        .map(|root| canonical(root))
-        .filter(|root| *root != workspace)
-        .all(|root| !target.starts_with(&root) || grant.starts_with(&root))
+    let Ok(resolved_grant) = grant.canonicalize() else {
+        return false;
+    };
+    if resolved_grant != grant {
+        return false;
+    }
+    let Ok(resolved_target) = validate_path(&[resolved_grant], target) else {
+        return false;
+    };
+    let Ok(workspace) = cx.workspace.canonicalize() else {
+        return false;
+    };
+    cx.writable_roots.iter().all(|root| {
+        // Canonical resolution adds checks; it must not discard the original
+        // protected-root boundary when a spelling traverses out of that root.
+        let previous_root = canonical(root);
+        if previous_root != workspace
+            && target.starts_with(&previous_root)
+            && !grant.starts_with(&previous_root)
+        {
+            return false;
+        }
+        validate_path(&[PathBuf::from("/")], root).is_ok_and(|root| {
+            root == workspace || !resolved_target.starts_with(&root) || grant.starts_with(&root)
+        })
+    })
 }
 
 /// What a gated call needs, as decided before it runs.
@@ -865,6 +885,20 @@ mod tests {
         assert!(grants.covers("build", "write", &nested, &f.cx));
         assert!(grants.covers("build", "edit", &nested, &f.cx));
         assert!(grants.covers("build", "write", &Scope::Folder(f.ws.clone()), &f.cx));
+        std::os::unix::fs::symlink(&f.config, f.ws.join("outside-link")).unwrap();
+        for (path, covered) in [
+            (f.ws.join("missing/deep"), true),
+            (f.ws.join("outside-link/missing"), false),
+            (f.ws.join("../outside/missing"), false),
+            (f.ws.join("missing/../../outside"), false),
+        ] {
+            assert_eq!(
+                grants.covers("build", "write", &Scope::Folder(path.clone()), &f.cx),
+                covered,
+                "{}",
+                path.display()
+            );
+        }
     }
 
     #[test]
@@ -930,6 +964,9 @@ mod tests {
             readable_roots: Vec::new(),
         };
         assert!(!grants.covers("build", "write", &Scope::Folder(inner.join("agents")), &cx));
+        for path in [inner.join("../src"), inner.join("missing/../../src")] {
+            assert!(!grants.covers("build", "write", &Scope::Folder(path), &cx));
+        }
         assert!(grants.covers("build", "write", &Scope::Folder(f.ws.join("src")), &cx));
 
         // A grant on the config directory itself covers it.

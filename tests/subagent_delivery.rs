@@ -7,6 +7,17 @@ use withnav::server::AppState;
 mod common;
 use common::deadline::Deadline;
 
+async fn spawn_linked_child(
+    state: &AppState,
+    ws: &std::path::Path,
+    agent: &str,
+    prompt: &str,
+) -> (ulid::Ulid, ulid::Ulid) {
+    let parent = state.create_session(ws, None, false).bounded(file!(), line!()).await.unwrap();
+    let child = state.create_child_session(parent, agent, prompt).bounded(file!(), line!()).await.unwrap();
+    (parent, child)
+}
+
 #[tokio::test]
 async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     use tower::ServiceExt;
@@ -245,16 +256,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
         .state();
-    let parent = state
-        .create_session(&ws, None, false)
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
-    let child = state
-        .create_child_session(parent, "writer", "write")
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
+    let (parent, child) = spawn_linked_child(&state, &ws, "writer", "write").await;
     let (_, stream) = provider
         .requests
         .recv()
@@ -540,16 +542,7 @@ async fn finished_child_wakes_idle_parent_and_consumes_once() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
         .state();
-    let parent = state
-        .create_session(&ws, None, false)
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
-    let child = state
-        .create_child_session(parent, "vigie", "inspect")
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
     let (_, stream) = provider
         .requests
         .recv()
@@ -740,16 +733,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
         .chat_tools(128_000)
         .config();
     let state = AppState::new(config.clone()).unwrap();
-    let parent = state
-        .create_session(&ws, None, false)
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
-    let child = state
-        .create_child_session(parent, "vigie", "inspect")
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
     let (_, stream) = provider
         .requests
         .recv()
@@ -794,16 +778,7 @@ async fn parent_delete_removes_child_tree_and_notices() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
         .state();
-    let parent = state
-        .create_session(&ws, None, false)
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
-    let child = state
-        .create_child_session(parent, "vigie", "inspect")
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
     let (_, stream) = provider
         .requests
         .recv()

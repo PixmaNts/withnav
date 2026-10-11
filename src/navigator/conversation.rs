@@ -471,11 +471,21 @@ fn strip_editor_context(text: &str) -> String {
         // Unterminated block: everything after the opening tag is block.
         None => text.len(),
     };
-    let mut out = format!("{}{}", &text[..open], &text[cut..]);
-    while out.contains("\n\n\n") {
-        out = out.replace("\n\n\n", "\n\n");
+    let mut out = String::with_capacity(open + text.len() - cut);
+    let mut newlines = 0;
+    for c in text[..open].chars().chain(text[cut..].chars()) {
+        if c == '\n' {
+            if newlines == 2 {
+                continue;
+            }
+            newlines += 1;
+        } else {
+            newlines = 0;
+        }
+        out.push(c);
     }
-    out.trim_end().to_string()
+    out.truncate(out.trim_end().len());
+    out
 }
 
 #[cfg(test)]
@@ -543,6 +553,19 @@ mod tests {
             "the block and its padding disappear"
         );
         assert_eq!(strip_editor_context("no block here"), "no block here");
+        assert_eq!(strip_editor_context("no block\n\n\nhere"), "no block\n\n\nhere");
+        for before in 0..8 {
+            for after in 0..8 {
+                let prefix = "\n".repeat(before);
+                let suffix = "\n".repeat(after);
+                let raw = format!("hé{prefix}<editor-context>x</editor-context>{suffix}世界  ");
+                let mut expected = format!("hé{prefix}{suffix}世界  ");
+                while expected.contains("\n\n\n") {
+                    expected = expected.replace("\n\n\n", "\n\n");
+                }
+                assert_eq!(strip_editor_context(&raw), expected.trim_end());
+            }
+        }
         assert_eq!(
             strip_editor_context("cut <editor-context> unterminated"),
             "cut"

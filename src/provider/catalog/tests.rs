@@ -729,9 +729,17 @@ async fn the_cache_file_holds_no_key_or_header() {
     catalog
         .lookup(&r, "sk-secret-key-123", &ClientCache::new())
         .await;
-    let sent = &server.received_requests().await.unwrap()[0];
+    let requests = server
+        .received_requests()
+        .await
+        .expect("inspect mock requests");
+    let sent = requests.first().expect("catalogue request was received");
     assert_eq!(
-        sent.headers.get("authorization").unwrap().to_str().unwrap(),
+        sent.headers
+            .get("authorization")
+            .expect("catalogue request has Authorization header")
+            .to_str()
+            .expect("Authorization header is valid text"),
         "Bearer sk-secret-key-123",
         "the key is sent..."
     );

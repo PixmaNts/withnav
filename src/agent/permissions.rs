@@ -476,6 +476,8 @@ pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, Too
 }
 
 pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
+    // Native tools do not perform shell expansion: only a bare `~` component
+    // names HOME; `~name` remains a literal workspace-relative filename.
     let path = if path.starts_with("~") {
         let home =
             std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
@@ -715,6 +717,40 @@ mod tests {
     #[test]
     fn paths_the_tool_would_refuse_are_rejected_and_unusable_urls_need_nothing() {
         let f = fixture();
+        if let Some(home) = std::env::var_os("HOME") {
+            for (path, expected) in [
+                ("~", PathBuf::from(&home)),
+                ("~/x", PathBuf::from(&home).join("x")),
+            ] {
+                assert_eq!(requested_path(Path::new(path), &f.cx).unwrap(), expected);
+            }
+        }
+        for path in [
+            "~root/x",
+            "~pixma/.config/withnav/x",
+            "~other",
+            "~+/x",
+            "~-/x",
+            "~name.txt",
+        ] {
+            let literal = f.ws.join(path);
+            std::fs::create_dir_all(literal.parent().unwrap()).unwrap();
+            std::fs::write(&literal, "ordinary workspace file").unwrap();
+            assert_eq!(requested_path(Path::new(path), &f.cx).unwrap(), literal);
+            for tool in ["read", "grep", "glob"] {
+                assert_eq!(
+                    gate(&f, tool, json!({"path": path})),
+                    Gate::Bound(literal.clone()),
+                    "{tool} {path}"
+                );
+            }
+            for tool in ["write", "edit"] {
+                assert!(
+                    matches!(gate(&f, tool, json!({"path": path})), Gate::Needs(needed) if needed.destination == Some(literal.clone())),
+                    "{tool} {path}"
+                );
+            }
+        }
         for args in [json!({}), json!({"path": 3})] {
             assert!(matches!(gate(&f, "write", args.clone()), Gate::Rejected(_)));
             assert!(matches!(gate(&f, "edit", args), Gate::Rejected(_)));

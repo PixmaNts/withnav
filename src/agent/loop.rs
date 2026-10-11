@@ -5852,7 +5852,28 @@ mod tests {
 
     #[tokio::test]
     async fn bash_operands_reach_protected_config_and_changed_scratch_floor() {
-        for case in ["config-is-workspace", "config-through-link", "scratch"] {
+        for case in [
+            "config-is-workspace",
+            "config-through-link",
+            "config-spaced-link",
+            "config-opaque-comment",
+            "config-after-comment",
+            "config-before-opaque",
+            "config-after-opaque",
+            "config-glued-quotes",
+            "config-assignment",
+            "config-option",
+            "scratch-spaced-link",
+            "tilde-user",
+            "tilde-user-repeated-slash",
+            "tilde-plus",
+            "tilde-plus-repeated-slash",
+            "tilde-home-repeated-slash",
+            "tilde-root-repeated-slash",
+            "tilde-read",
+            "tilde-grant",
+            "scratch",
+        ] {
             let mut actor = plan_actor(None, "http://unused");
             actor.automatic_permission_review = false;
             actor.bypass.lock().unwrap().enabled = true;
@@ -5861,14 +5882,95 @@ mod tests {
                 "config-is-workspace" => {
                     actor.protected_config_root = Some(workspace.clone());
                     actor.protected_config_spelling = Some(workspace.clone());
-                    "printf x > models.json"
+                    "printf x > models.json".to_owned()
                 }
                 "config-through-link" => {
                     let dir = workspace.join("real-config");
                     std::fs::create_dir(&dir).unwrap();
                     actor.protected_config_root = Some(dir.clone());
                     std::os::unix::fs::symlink(&dir, workspace.join("cfg")).unwrap();
-                    "printf x > cfg/models.json"
+                    "printf x > cfg/models.json".to_owned()
+                }
+                "config-spaced-link"
+                | "config-opaque-comment"
+                | "config-after-comment"
+                | "config-before-opaque"
+                | "config-after-opaque"
+                | "config-glued-quotes"
+                | "config-assignment"
+                | "config-option" => {
+                    let dir = workspace.join("real-config");
+                    std::fs::create_dir(&dir).unwrap();
+                    actor.protected_config_root = Some(dir.clone());
+                    std::os::unix::fs::symlink(&dir, workspace.join("config alias")).unwrap();
+                    match case {
+                        "config-spaced-link" => "printf x > 'config alias/models.json'".into(),
+                        "config-opaque-comment" => {
+                            "printf x > 'config alias/models.json' # $(ignored)".into()
+                        }
+                        "config-after-comment" => {
+                            "git status # $(ignored)\nprintf x > 'config alias/models.json'".into()
+                        }
+                        "config-before-opaque" => {
+                            "printf x > 'config alias/models.json'; echo $OPAQUE".into()
+                        }
+                        "config-after-opaque" => {
+                            "echo $OPAQUE; printf x > 'config alias/models.json'".into()
+                        }
+                        "config-glued-quotes" => "printf x > con'fig alias'/models.json".into(),
+                        "config-assignment" => "FILE='config alias/models.json' printf x".into(),
+                        _ => "printf --file='config alias/models.json' x".into(),
+                    }
+                }
+                "scratch-spaced-link" => {
+                    let root = workspace.join("scratch");
+                    actor
+                        .scratch_roots
+                        .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+                    std::os::unix::fs::symlink(&root, workspace.join("scratch alias")).unwrap();
+                    std::fs::remove_dir(&root).unwrap();
+                    std::fs::create_dir(&root).unwrap();
+                    "printf x > 'scratch alias/file'".into()
+                }
+                case if case.starts_with("tilde-") => {
+                    let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+                        .unwrap()
+                        .unwrap();
+                    let config = if case.starts_with("tilde-plus") {
+                        workspace.join(".config/withnav")
+                    } else if case == "tilde-home-repeated-slash" {
+                        std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                            .join(".config/withnav")
+                    } else if case == "tilde-root-repeated-slash" {
+                        nix::unistd::User::from_name("root")
+                            .unwrap()
+                            .unwrap()
+                            .dir
+                            .join(".config/withnav")
+                    } else {
+                        user.dir.join(".config/withnav")
+                    };
+                    actor.protected_config_root =
+                        Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+                    actor.protected_config_spelling = Some(config);
+                    let user = user.name;
+                    match case {
+                        "tilde-user" => format!("printf x > ~{user}/.config/withnav/x"),
+                        "tilde-user-repeated-slash" => {
+                            format!("printf x > ~{user}//.config/withnav/models.json")
+                        }
+                        "tilde-plus" => "printf x > ~+/.config/withnav/x".into(),
+                        "tilde-plus-repeated-slash" => "printf x > ~+//.config/withnav/x".into(),
+                        "tilde-home-repeated-slash" => "printf x > ~//.config/withnav/x".into(),
+                        "tilde-root-repeated-slash" => "printf x > ~root//.config/withnav/x".into(),
+                        "tilde-read" => format!("cat ~{user}/.config/withnav/auth.json"),
+                        _ => {
+                            actor
+                                .config_session_grant
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            format!("printf x > ~{user}/.config/withnav/config.json")
+                        }
+                    }
                 }
                 _ => {
                     let root = workspace.join("scratch");
@@ -5877,7 +5979,7 @@ mod tests {
                         .push(crate::agent::scratch::Identity::capture(&root).unwrap());
                     std::fs::remove_dir(&root).unwrap();
                     std::fs::create_dir(&root).unwrap();
-                    "printf x > scratch/file"
+                    "printf x > scratch/file".to_owned()
                 }
             };
             let call = ToolCall {

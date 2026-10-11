@@ -231,6 +231,9 @@ pub(super) async fn facts(command: &str, cx: &crate::tools::ToolContext) -> Opti
 /// must match HEAD. Do not use diff here: even --no-textconv/--no-ext-diff
 /// can invoke repository-controlled clean filters when reading the working tree.
 pub(super) async fn recoverable_file(workspace: &Path, path: &str) -> bool {
+    let Ok(workspace) = workspace.canonicalize() else {
+        return false;
+    };
     let target = workspace.join(path);
     let Ok(metadata) = std::fs::symlink_metadata(&target) else {
         return false;
@@ -238,7 +241,7 @@ pub(super) async fn recoverable_file(workspace: &Path, path: &str) -> bool {
     if !metadata.is_file() || target.canonicalize().ok().as_ref() != Some(&target) {
         return false;
     }
-    let Ok(relative) = target.strip_prefix(workspace) else {
+    let Ok(relative) = target.strip_prefix(&workspace) else {
         return false;
     };
     let Some(relative) = relative.to_str() else {
@@ -247,17 +250,18 @@ pub(super) async fn recoverable_file(workspace: &Path, path: &str) -> bool {
     let head_ref = format!("HEAD:{relative}");
     tokio::time::timeout(Duration::from_millis(300), async {
         let Some(index) = read(
-            workspace,
+            &workspace,
             &["ls-files", "--stage", "--error-unmatch", "--", relative],
         )
         .await
         else {
             return false;
         };
-        let Some(head) = read(workspace, &["rev-parse", "--verify", &head_ref]).await else {
+        let Some(head) = read(&workspace, &["rev-parse", "--verify", &head_ref]).await else {
             return false;
         };
-        let Some(working) = read(workspace, &["hash-object", "--no-filters", "--", relative]).await
+        let Some(working) =
+            read(&workspace, &["hash-object", "--no-filters", "--", relative]).await
         else {
             return false;
         };

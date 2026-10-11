@@ -1280,7 +1280,7 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
                         && !bash_command(call).is_some_and(|command| {
                              command.contains("gh release create")
                                  || shell::captain_only_push(command)
-                                || (command.contains("push") && bash_operands(command).any(|word| {
+                                 || (command.contains("push") && shell::operand_fragments(command).any(|word| {
                                     git::force_push_operand(word) || git::delete_push_operand(word)
                                 }))
                                 || git::literal(command).and_then(|words| git::push(&words, None))
@@ -1336,7 +1336,7 @@ fn sensitive_call(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> bool {
         }))
         || (call.name == "bash"
             && bash_command(call).is_some_and(|command| {
-                bash_operands(command).any(|word| {
+                shell::path_operands(command).iter().any(|word| {
                     let simplified: String =
                         word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
                     sensitive_read(std::path::Path::new(&simplified))
@@ -1425,12 +1425,25 @@ fn bash_command(call: &ToolCall) -> Option<&str> {
     call.args.get("command").and_then(Value::as_str)
 }
 
-/// The literal operands of a bash command: its words, split at the shell's
-/// separators, quotes, redirections and `=`.
-fn bash_operands(command: &str) -> impl Iterator<Item = &str> {
-    command
-        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
-        .filter(|word| !word.is_empty())
+/// Resolve shell homes through the account database, as Bash does for `~login`.
+/// Unknown users and unresolved directory-stack forms keep ordinary review.
+fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBuf> {
+    let Some(tilde) = word.strip_prefix('~') else {
+        return super::permissions::requested_path(std::path::Path::new(word), cx).ok();
+    };
+    let (login, rest) = tilde.split_once('/').unwrap_or((tilde, ""));
+    // Repeated shell separators are still relative to the expanded home/PWD.
+    // Path::join would otherwise replace that base with an absolute suffix.
+    let rest = rest.trim_start_matches('/');
+    if login == "+" {
+        return Some(cx.workspace.join(rest));
+    }
+    let home = if login.is_empty() {
+        std::path::PathBuf::from(std::env::var_os("HOME")?)
+    } else {
+        nix::unistd::User::from_name(login).ok()??.dir
+    };
+    Some(home.join(rest))
 }
 
 /// Whether a literal operand of the bash command names `root`, by the spelling
@@ -1438,12 +1451,12 @@ fn bash_operands(command: &str) -> impl Iterator<Item = &str> {
 /// resolves.
 fn bash_names_root(call: &ToolCall, root: &std::path::Path, cx: &ToolContext) -> bool {
     bash_command(call).is_some_and(|command| {
-        bash_operands(command).any(|word| {
-            let word = std::path::Path::new(word);
-            super::permissions::requested_path(word, cx)
-                .is_ok_and(|requested| requested.starts_with(root))
-                || super::permissions::resolve_read_target(word, cx)
-                    .is_ok_and(|resolved| resolved.starts_with(root))
+        shell::path_operands(command).iter().any(|word| {
+            bash_requested_path(word, cx).is_some_and(|requested| {
+                requested.starts_with(root)
+                    || super::permissions::resolve_read_target(&requested, cx)
+                        .is_ok_and(|resolved| resolved.starts_with(root))
+            })
         })
     })
 }
@@ -1559,6 +1572,145 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tilde_operands_keep_normal_review_without_spurious_config_holds() {
+        const CHILD: &str = "WITHNAV_TEST_TILDE_ACCOUNT_LOOKUP";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::permission_gate::tests::tilde_operands_keep_normal_review_without_spurious_config_holds", "--nocapture"])
+                .env(CHILD, "1")
+                .env_remove("USER")
+                .env_remove("LOGNAME")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(std::env::var_os("USER").is_none());
+        assert!(std::env::var_os("LOGNAME").is_none());
+        let mut actor = review_actor();
+        let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap();
+        let home = user.dir;
+        let user = user.name;
+        let config = home.join(".config/withnav");
+        actor.protected_config_root =
+            Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+        actor.protected_config_spelling = Some(config);
+        actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(
+            json!({"labels":{"call_effect":"read_only","call_scope":"outside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":0.9},"confidence":1.0}),
+        )));
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let mut other = "nonexistent_user_xyz".to_owned();
+        while bash_requested_path(&format!("~{other}/file"), &actor.tool_context).is_some() {
+            other.push('_');
+        }
+        for command in [
+            "grep '~foo' README".to_owned(),
+            "printf '%s\\n' '~literal'".to_owned(),
+            "ls ~+/src".to_owned(),
+            format!("cat ~{user}/project/file"),
+            format!("cat ~{other}/file"),
+        ] {
+            let call = ToolCall {
+                id: "tilde".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(!protected_config_call(&actor, &call, &needed), "{command}");
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{command}");
+            assert!(
+                matches!(consult(&actor, &call, &needed).await, Judged::Run(_)),
+                "{command}"
+            );
+        }
+        for command in [
+            "printf x > ~-/.config/withnav/x",
+            "printf x > ~$USER/.config/withnav/x",
+        ] {
+            let call = ToolCall {
+                id: "unresolved".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{command}");
+            assert!(
+                matches!(
+                    consult(&actor, &call, &needed).await,
+                    Judged::AskWithEvidence(_, _)
+                ),
+                "{command}"
+            );
+        }
+        for command in [
+            format!("cat ~{user}/.config/withnav/auth.json"),
+            format!("printf x > ~{user}/.config/withnav/x"),
+            format!("printf x > ~{user}//.config/withnav/models.json"),
+        ] {
+            let call = ToolCall {
+                id: "protected-tilde".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(protected_config_call(&actor, &call, &needed), "{command}");
+            assert_eq!(
+                hard_floor(&actor, &call, &needed),
+                Some(HardFloorReason::ProtectedConfig),
+                "{command}"
+            );
+            assert!(
+                matches!(consult(&actor, &call, &needed).await, Judged::Ask(_)),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            bash_requested_path(&format!("~{user}/.config/withnav/x"), &actor.tool_context),
+            Some(home.join(".config/withnav/x"))
+        );
+        assert_eq!(
+            bash_requested_path(&format!("~{other}/file"), &actor.tool_context),
+            None
+        );
+        assert_eq!(
+            bash_requested_path("~+/src", &actor.tool_context),
+            Some(actor.tool_context.workspace.join("src"))
+        );
+        for (word, base) in [
+            (format!("~{user}//.config/withnav/x"), home),
+            (
+                "~root//.config/withnav/x".into(),
+                nix::unistd::User::from_name("root").unwrap().unwrap().dir,
+            ),
+            (
+                "~+//.config/withnav/x".into(),
+                actor.tool_context.workspace.clone(),
+            ),
+            (
+                "~//.config/withnav/x".into(),
+                std::env::var_os("HOME").unwrap().into(),
+            ),
+        ] {
+            assert_eq!(
+                bash_requested_path(&word, &actor.tool_context),
+                Some(base.join(".config/withnav/x")),
+                "{word}"
+            );
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn timed_out_review_preserves_only_floor_free_instinct_reads() {
         let mut actor = review_actor();
@@ -2885,16 +3037,20 @@ mod tests {
             };
             let facts = json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots});
             assert!(shell::identity_floor(&["helper".into()], &facts));
+            let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+                .unwrap()
+                .unwrap();
             let mut count = 0;
             for row in corpus.into_iter().filter(|row| row["fixture"].is_string()) {
                 assert!(matches!(
                     row["fixture"].as_str(),
-                    Some("relative_path" | "overwrite_recovery")
+                    Some("relative_path" | "overwrite_recovery" | "protected_config")
                 ));
                 count += 1;
                 let command = row["command"]
                     .as_str()
                     .unwrap()
+                    .replace("~pixma/", &format!("~{}/", user.name))
                     .replace("/tmp/daemon", base.join("daemon").to_str().unwrap())
                     .replace("/tmp/outside", base.join("outside").to_str().unwrap());
                 let call = ToolCall {
@@ -2924,6 +3080,29 @@ mod tests {
                 }
                 let mut actor = review_actor();
                 actor.tool_context = cx.clone();
+                if row["protected_hold"] == true {
+                    let config = match row["protected_base"].as_str().unwrap() {
+                        "alias" => base.join("project/real-config"),
+                        "login" => user.dir.join(".config/withnav"),
+                        "workspace" => cx.workspace.join(".config/withnav"),
+                        "home" => std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                            .join(".config/withnav"),
+                        "root" => nix::unistd::User::from_name("root")
+                            .unwrap()
+                            .unwrap()
+                            .dir
+                            .join(".config/withnav"),
+                        other => panic!("unknown protected base: {other}"),
+                    };
+                    actor.protected_config_root =
+                        Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+                    actor.protected_config_spelling = Some(config);
+                    assert_eq!(
+                        hard_floor(&actor, &call, &needed),
+                        Some(HardFloorReason::ProtectedConfig),
+                        "{command}"
+                    );
+                }
                 actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row)));
                 assert!(
                     matches!(
@@ -2933,7 +3112,7 @@ mod tests {
                     "{command}"
                 );
             }
-            assert_eq!(count, 17);
+            assert_eq!(count, 25);
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -2948,6 +3127,9 @@ mod tests {
         }
         let project = tmp.path().join("project");
         std::os::unix::fs::symlink(&project, tmp.path().join("project-link")).unwrap();
+        std::fs::create_dir(project.join("real-config")).unwrap();
+        std::os::unix::fs::symlink(project.join("real-config"), project.join("config alias"))
+            .unwrap();
         std::fs::write(project.join("file"), "original").unwrap();
         std::fs::write(tmp.path().join("outside/file"), "only copy").unwrap();
         for args in [
@@ -3148,16 +3330,13 @@ mod tests {
         let alias = tmp.path().join("workspace-link");
         std::os::unix::fs::symlink(tmp.path(), &alias).unwrap();
         std::os::unix::fs::symlink("file", tmp.path().join("file-link")).unwrap();
-        // Only an already-canonical workspace can establish recovery. Relative and
-        // symlink-alias spellings must stay in review (`.` components are ignored by
-        // Path comparison, so that spelling is the canonical path, as before).
-        for (root, canonical) in [
-            (tmp.path().to_path_buf(), true),
-            (tmp.path().join("."), true),
-            (tmp.path().strip_prefix(cwd).unwrap().to_path_buf(), false),
-            (alias, false),
+        for root in [
+            tmp.path().to_path_buf(),
+            tmp.path().join("."),
+            tmp.path().strip_prefix(cwd).unwrap().to_path_buf(),
+            alias,
         ] {
-            for (path, recoverable) in [
+            for (path, expected) in [
                 ("file", true),
                 ("file-link", false),
                 ("missing", false),
@@ -3165,7 +3344,7 @@ mod tests {
             ] {
                 assert_eq!(
                     git::recoverable_file(&root, path).await,
-                    canonical && recoverable,
+                    expected,
                     "{}: {path}",
                     root.display()
                 );
@@ -3413,6 +3592,11 @@ mod tests {
         let key = tmp.path().join(".ssh/id_ed25519");
         std::fs::write(&key, "secret").unwrap();
         std::os::unix::fs::symlink(key, tmp.path().join("innocent")).unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join(".ssh/id_ed25519"),
+            tmp.path().join("innocent alias"),
+        )
+        .unwrap();
         let cx = ToolContext {
             binding: None,
             workspace: tmp.path().to_path_buf(),
@@ -3428,6 +3612,20 @@ mod tests {
             "cat .ssh/id_ed25519",
             "cat ~/.s[s]h/*",
             "cat $X/.ssh",
+            "cat 'innocent alias'",
+            "cat 'innocent alias' # $(ignored)",
+            "git status # $(ignored)\ncat 'innocent alias'",
+            "cat 'innocent alias'; echo $OPAQUE",
+            "echo $OPAQUE; cat 'innocent alias'",
+            "git status # ~/.ssh/id_rsa",
+            "cat \"innocent alias\"",
+            "cat inno'cent alias'",
+            "FILE='innocent alias' cat",
+            "cat --file='innocent alias'",
+            "cat --file=\"innocent alias\"",
+            "cat < 'innocent alias'",
+            "printf x > 'innocent alias'",
+            "cat $X/.ssh # opaque",
         ] {
             let call = ToolCall {
                 id: "c".into(),

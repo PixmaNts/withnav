@@ -71,7 +71,7 @@ impl Tool for GlobTool {
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
-                .map(|l| (l as usize).clamp(1, GLOB_MAX_LIMIT))
+                .map(|l| l.clamp(1, GLOB_MAX_LIMIT as u64) as usize)
                 .unwrap_or(GLOB_DEFAULT_LIMIT);
 
             let matcher = Matcher::new(&pattern)?;
@@ -645,10 +645,12 @@ mod tests {
 
         let default = run(&cx, json!({"pattern": "*.txt"})).await.unwrap();
         assert_eq!(default.metadata["returned"], GLOB_DEFAULT_LIMIT);
-        let huge = run(&cx, json!({"pattern": "*.txt", "limit": 50_000}))
-            .await
-            .unwrap();
-        assert_eq!(huge.metadata["returned"], GLOB_MAX_LIMIT);
+        for limit in [50_000, u32::MAX as u64 + 2, u64::MAX] {
+            let huge = run(&cx, json!({"pattern": "*.txt", "limit": limit}))
+                .await
+                .unwrap();
+            assert_eq!(huge.metadata["returned"], GLOB_MAX_LIMIT);
+        }
     }
 
     // Given a tree larger than the visit bound, and one past an expired deadline

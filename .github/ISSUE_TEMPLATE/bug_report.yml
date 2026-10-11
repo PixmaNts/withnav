@@ -1,0 +1,92 @@
+name: Bug report
+description: Something in WithNav does not work as expected.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more precise the report, the faster it can be fixed.
+
+        Questions or "how do I...?" belong in [Discussions](https://github.com/PixmaNts/withnav/discussions), not here.
+        For a security problem, do **not** open an issue: use a [private advisory](https://github.com/PixmaNts/withnav/security/advisories/new).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you saw.
+      placeholder: When I run `nav ...`, I get ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of WithNav is affected?
+      options:
+        - Core (nav CLI/server)
+        - Extension (VS Code)
+        - WebUI (InstinctFlow Studio)
+        - Documentation
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: WithNav version
+      description: Output of `nav --version`, the extension version, or a git commit if you built from source.
+      placeholder: 0.7.0 or git sha
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Windows native is not supported yet. On Windows, please use WSL or VS Code Remote and pick Linux.
+      options:
+        - Linux
+        - macOS
+        - Windows via WSL or VS Code Remote
+        - Windows (native, not supported yet)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - VS Code extension, platform-specific VSIX (bundled nav binary)
+        - VS Code extension, universal VSIX + nav on PATH
+        - Nix flake
+        - built from source (cargo)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: |
+        For the CLI or server, rerun with `RUST_LOG=debug nav ...` and paste the output.
+        For the VS Code extension, open View > Output, pick the `WithNav` channel and paste its content.
+        Remove any secrets such as API keys before pasting.
+      render: shell
+    validations:
+      required: false

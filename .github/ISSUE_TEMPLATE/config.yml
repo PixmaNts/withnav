@@ -1,0 +1,10 @@
+# Blank issues are off: an empty issue gives the maintainer nothing to act on.
+# Questions go to Discussions, security bugs go to a private advisory.
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question (Q&A)
+    url: https://github.com/PixmaNts/withnav/discussions/new?category=q-a
+    about: Questions and help - please use Discussions, not issues.
+  - name: Report a security vulnerability
+    url: https://github.com/PixmaNts/withnav/security/advisories/new
+    about: Report a vulnerability privately. Never open a public issue for a security bug.

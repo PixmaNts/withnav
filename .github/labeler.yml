@@ -1,0 +1,32 @@
+# Path to label mapping for actions/labeler. A pull request gets every label
+# whose patterns match at least one changed file.
+"area: core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/**"
+          - "crates/**"
+          - "tests/**"
+          - "Cargo.*"
+          - "build.rs"
+          - "tools/**"
+
+"area: webui":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "webui/**"
+
+"area: extension":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "vscode-withnav/**"
+
+"ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+"documentation":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "docs/**"

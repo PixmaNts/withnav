@@ -1605,25 +1605,30 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         // Claimed at admission: a second answer for the same request is
-        let owned = {
-            self.lock_sessions()
-                .values()
-                .find(|child| {
-                    child.parent_session_id == Some(session_id)
+        let (owned, foreign) = {
+            let sessions = self.lock_sessions();
+            let mut owned = None;
+            let mut foreign = false;
+            for child in sessions.values() {
+                if child.parent_session_id.is_some()
+                    && child.status.pending_permission() == Some(request_id)
+                {
+                    foreign = true;
+                    if child.parent_session_id == Some(session_id)
                         && child.lifecycle == Lifecycle::Active
-                        && child.status.pending_permission() == Some(request_id)
-                })
-                .cloned()
+                    {
+                        owned = Some(child.clone());
+                        break;
+                    }
+                }
+            }
+            (owned, foreign)
         };
         let handle = if handle.status.pending_permission() == Some(request_id) {
             handle
         } else if let Some(child) = owned {
             child
         } else {
-            let foreign = self.lock_sessions().values().any(|child| {
-                child.parent_session_id.is_some()
-                    && child.status.pending_permission() == Some(request_id)
-            });
             return Err(if foreign {
                 ServerError::ChildReadOnly
             } else {

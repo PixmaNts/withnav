@@ -21,7 +21,8 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
         &'a self,
         request: &'a crate::navigator::ports::ReflexContextRequest,
     ) -> BoxFuture<'a, Result<String, ModelError>> {
-        use crate::provider::openai::{build_request, ChatMessage, ChatRequest, StreamOptions};
+        use crate::provider::client::ModelClient;
+        use crate::provider::openai::{ChatMessage, ChatRequest, StreamOptions};
         use crate::provider::{start_and_consume, StreamDelta};
 
         Box::pin(async move {
@@ -59,12 +60,15 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
                 temperature: Some(0.2),
                 extra: self.variant.clone().unwrap_or_default(),
             };
-            let client = self
-                .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)?;
+            let client = ModelClient::new(
+                &self.resolved.provider_name,
+                &self.resolved.provider,
+                self.api_key.clone(),
+                &self.clients,
+            )?;
             let cancel = CancellationToken::new();
             let call = async {
-                let http = build_request(&client, &self.resolved.provider, &self.api_key, &chat);
+                let http = client.prepare_request(client.post("chat/completions").json(&chat));
                 let response = http
                     .send()
                     .await

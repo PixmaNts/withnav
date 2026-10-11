@@ -10,6 +10,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// A hang guard for reads from the child process, not a performance assertion (the 2 s
+/// `elapsed` check below is the real one: discovery is delayed 20 s). `nav` starts in about
+/// 45 ms alone and 0.1 to 1.4 s on a CPU-limited, oversubscribed container; on the
+/// 2026-10-12 GitHub runner a 5 s guard in the sibling startup test fired in 2 of 3 runs.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 /// Reads one `Content-Length`-framed JSON-RPC message.
 async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R) -> serde_json::Value {
     let mut len = 0usize;
@@ -114,7 +120,7 @@ async fn startup_does_not_wait_for_model_discovery() {
     .await
     .expect("initialize");
     // A client sends `initialized` only once it has the initialize answer.
-    let first = tokio::time::timeout(Duration::from_secs(5), read_message(&mut stdout))
+    let first = tokio::time::timeout(HANG_GUARD, read_message(&mut stdout))
         .await
         .expect("the initialize answer arrives while discovery is still pending");
     assert!(first["id"] == 1 && first.get("result").is_some(), "{first}");
@@ -126,7 +132,7 @@ async fn startup_does_not_wait_for_model_discovery() {
     .expect("initialized");
 
     let announced = loop {
-        let msg = tokio::time::timeout(Duration::from_secs(5), read_message(&mut stdout))
+        let msg = tokio::time::timeout(HANG_GUARD, read_message(&mut stdout))
             .await
             .expect("the announcement arrives while discovery is still pending");
         if msg["method"] == "withnav/serverInfo" {

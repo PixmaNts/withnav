@@ -18,7 +18,8 @@ fn locked_golden_fixtures_are_unchanged() {
             continue;
         };
         let mut fields = rest.split_whitespace();
-        let (Some(name), Some(expected), None) = (fields.next(), fields.next(), fields.next()) else {
+        let (Some(name), Some(expected), None) = (fields.next(), fields.next(), fields.next())
+        else {
             panic!("malformed MANIFEST line: {line}");
         };
         assert!(
@@ -42,7 +43,8 @@ fn locked_golden_fixtures_are_unchanged() {
         })
         .count();
     assert_eq!(
-        listed.len(), fixtures,
+        listed.len(),
+        fixtures,
         "every fixture must be listed in MANIFEST.txt"
     );
 }

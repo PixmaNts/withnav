@@ -280,12 +280,12 @@ async fn fim_and_systemone_never_look_the_catalog_up() {
     for api in [ApiKind::Fim, ApiKind::SystemOne] {
         let r = resolve(&dir, &server, "mercury-edit-2", api, None)
             .await
-            .unwrap();
-        assert_eq!(r.window_source, "non-chat");
+            .unwrap_or_else(|e| panic!("api={api:?}: {e:?}"));
+        assert_eq!(r.window_source, "non-chat", "api={api:?}");
         let r = resolve(&dir, &server, "cc/claude-opus-5-5", api, Some(64_000))
             .await
-            .unwrap();
-        assert_eq!(r.window, 64_000);
+            .unwrap_or_else(|e| panic!("api={api:?}: {e:?}"));
+        assert_eq!(r.window, 64_000, "api={api:?}");
     }
     assert_eq!(requests(&server).await, 0);
 }

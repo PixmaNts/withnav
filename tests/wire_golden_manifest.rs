@@ -6,27 +6,32 @@
 //! never pushed, so it failed on every fresh clone and in CI.
 
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 #[test]
 fn locked_golden_fixtures_are_unchanged() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/phase1_wire");
     let manifest = std::fs::read_to_string(format!("{dir}/MANIFEST.txt")).expect("read MANIFEST");
-    let mut listed = 0;
+    let mut listed = HashSet::new();
     for line in manifest.lines() {
         let Some(rest) = line.strip_prefix("SHA-256") else {
             continue;
         };
         let mut fields = rest.split_whitespace();
-        let (Some(name), Some(expected)) = (fields.next(), fields.next()) else {
+        let (Some(name), Some(expected), None) = (fields.next(), fields.next(), fields.next()) else {
             panic!("malformed MANIFEST line: {line}");
         };
+        assert!(
+            !name.contains(['/', '\\']) && name.ends_with(".json"),
+            "fixture must be a bare JSON filename: {name}"
+        );
+        assert!(listed.insert(name), "duplicate MANIFEST fixture: {name}");
         let bytes = std::fs::read(format!("{dir}/{name}")).expect("read fixture");
         let actual = format!("{:x}", Sha256::digest(&bytes));
         assert_eq!(
             actual, expected,
             "{name} changed: update its SHA-256 in MANIFEST.txt only if the wire change is intended"
         );
-        listed += 1;
     }
     let fixtures = std::fs::read_dir(dir)
         .unwrap()
@@ -37,7 +42,7 @@ fn locked_golden_fixtures_are_unchanged() {
         })
         .count();
     assert_eq!(
-        listed, fixtures,
+        listed.len(), fixtures,
         "every fixture must be listed in MANIFEST.txt"
     );
 }

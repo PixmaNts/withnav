@@ -8,7 +8,7 @@ use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use super::{bound_output, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use super::{ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
 use crate::agent::permission_gate::{sensitive_read, SENSITIVE_NAMES};
 use crate::error::ToolError;
 
@@ -56,14 +56,9 @@ fn result(
     if let Some(reason) = partial {
         text.push_str(&format!("\n[partial results: {reason}]"));
     }
-    let (text, truncated) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(text).with_metadata(
+    ToolResult::bounded_ok(&text, DEFAULT_MAX_OUTPUT_BYTES).with_metadata(
         json!({"engine":engine,"sensitive_skipped":skipped,"partial":partial,"visited":visited}),
-    );
-    if let Some(bytes) = truncated {
-        result = result.with_truncation(bytes);
-    }
-    result
+    )
 }
 
 pub(super) fn rg_command(pattern: &str, root: &Path) -> tokio::process::Command {

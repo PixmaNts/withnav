@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::tools::{bound_output, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use crate::tools::{Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
 
 pub const FETCH_DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const FETCH_MAX_TIMEOUT_SECS: u64 = 120;
@@ -371,19 +371,14 @@ async fn fetch(
         text
     };
 
-    let (out, elided) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(out).with_metadata(json!({
+    ToolResult::bounded_ok(&text, DEFAULT_MAX_OUTPUT_BYTES).with_metadata(json!({
         "url": shown(url.as_str()),
         "status": status.as_u16(),
         "content_type": mime,
         "format": match format { Format::Markdown => "markdown", Format::Text => "text", Format::Html => "html" },
         "body_bytes": original_len,
         "redirects": hops,
-    }));
-    if let Some(original) = elided {
-        result = result.with_truncation(original);
-    }
-    result
+    }))
 }
 
 fn net_error(e: reqwest::Error) -> ToolResult {

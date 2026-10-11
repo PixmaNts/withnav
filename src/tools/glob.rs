@@ -14,9 +14,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::tools::{
-    bound_output, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
-};
+use crate::tools::{validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
 
 pub const GLOB_DEFAULT_LIMIT: usize = 200;
 pub const GLOB_MAX_LIMIT: usize = 1_000;
@@ -370,18 +368,13 @@ fn render(mut walked: Walked, limit: usize) -> ToolResult {
         text.push_str(&note);
     }
 
-    let (bounded, elided) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(bounded).with_metadata(json!({
+    ToolResult::bounded_ok(&text, DEFAULT_MAX_OUTPUT_BYTES).with_metadata(json!({
         "total_matches": total,
         "returned": limit.min(total),
         "truncated": cut || stopped.is_some(),
         "stopped": stopped,
         "visited": walked.visited,
-    }));
-    if let Some(original) = elided {
-        result = result.with_truncation(original);
-    }
-    result
+    }))
 }
 
 #[cfg(test)]

@@ -98,6 +98,15 @@ impl ToolResult {
         }
     }
 
+    pub fn bounded_ok(text: &str, max_bytes: usize) -> Self {
+        let (output, original_bytes) = bound_output(text, max_bytes);
+        let result = Self::ok(output);
+        match original_bytes {
+            Some(bytes) => result.with_truncation(bytes),
+            None => result,
+        }
+    }
+
     pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
         let message = message.into();
         let message = if message.trim().is_empty() {

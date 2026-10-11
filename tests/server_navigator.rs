@@ -21,7 +21,7 @@ use withnav::server::AppState;
 
 mod common;
 use common::server::{collect_until, send_text, wait_for, TestServerConfig};
-use common::sse::sse_response;
+use common::sse::{sse_response, wait_for_request};
 
 fn test_state(tmp: &Path, base_url: &str) -> AppState {
     test_state_with_feed(tmp, base_url, None)
@@ -322,19 +322,23 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     // the earlier markers: the later mounts need HIGHER priority to win
     // over the earlier ones (same priority would fall back to insertion
     // order and the ask script would answer every turn).
+    let mut wake_guard = None;
     for (body, marker, priority) in [
         (ask, "add an auth remove command", 5u8),
         (done, "the local scope", 4),
         (done2, "latest wake", 3),
     ] {
-        Mock::given(method("POST"))
+        let mock = Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(header("authorization", "Bearer test-key"))
             .and(wiremock::matchers::body_string_contains(marker.to_string()))
             .respond_with(sse_response(&[body]))
-            .with_priority(priority)
-            .mount(&server)
-            .await;
+            .with_priority(priority);
+        if marker == "latest wake" {
+            wake_guard = Some(mock.expect(1..).mount_as_scoped(&server).await);
+        } else {
+            mock.mount(&server).await;
+        }
     }
 
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -424,20 +428,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     // of its own; both keep the guard. Wait for the request that carries the
     // wake rather than for a request count (observed 2026-10-01 under load:
     // only two provider requests arrived, so waiting for a third timed out).
-    let requests = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let requests = server.received_requests().await.expect("wiremock retains");
-            if requests
-                .iter()
-                .any(|r| String::from_utf8_lossy(&r.body).contains("latest wake"))
-            {
-                break requests;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("a provider request carrying the queued wake should arrive");
+    let requests = wait_for_request(wake_guard.as_ref().unwrap(), Duration::from_secs(20)).await;
     let wake_request = requests
         .iter()
         .find(|r| String::from_utf8_lossy(&r.body).contains("latest wake"))
@@ -504,6 +495,14 @@ async fn a_wake_never_cancels_an_open_permission_request() {
             .mount(&server)
             .await;
     }
+    let wake_guard = Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("a wake while asking"))
+        .respond_with(sse_response(&[done]))
+        .with_priority(2)
+        .expect(1..)
+        .mount_as_scoped(&server)
+        .await;
     let feed = withnav::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let id = state.create_session(&ws, None, true).await.expect("create");
@@ -551,20 +550,7 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         )
         .await
         .expect("answer");
-    let requests = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let requests = server.received_requests().await.expect("wiremock retains");
-            if requests
-                .iter()
-                .any(|r| String::from_utf8_lossy(&r.body).contains("a wake while asking"))
-            {
-                break requests;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the held wake arrives once the request is resolved");
+    let requests = wait_for_request(&wake_guard, Duration::from_secs(20)).await;
     assert!(!requests.is_empty());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
 }

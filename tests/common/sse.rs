@@ -67,6 +67,20 @@ pub fn sse_response(events: &[&str]) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(sse_body(events), "text/event-stream")
 }
 
+/// Awaits a scoped wiremock's request expectation without polling its recorder.
+/// The mock must declare an expectation requiring at least one request.
+pub async fn wait_for_request(
+    guard: &wiremock::MockGuard,
+    timeout: Duration,
+) -> Vec<wiremock::Request> {
+    tokio::time::timeout(timeout, async {
+        guard.wait_until_satisfied().await;
+        guard.received_requests().await
+    })
+    .await
+    .expect("a matching provider request must arrive")
+}
+
 /// A scripted TCP provider; `url` is the `base_url` to put in `models.json`.
 pub struct MockProvider {
     pub url: String,

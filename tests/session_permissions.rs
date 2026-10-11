@@ -174,6 +174,21 @@ async fn answer(
     .await
 }
 
+async fn await_persisted_transcript(state: &AppState, id: ulid::Ulid) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            state.history().flush().await.expect("flush transcript writer");
+            let stored = state.history().load(id).await.expect("load transcript").expect("session");
+            if !stored.transcript.is_empty() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("session {id}: yielded transcript was not persisted"));
+}
+
 fn request_id(event: &EventEnvelope) -> String {
     event.payload["request_id"].as_str().unwrap().to_string()
 }
@@ -576,13 +591,7 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     let requested = wait_events(&first, id, "permission.requested", 1).await;
     wait_events(&first, id, "turn.end", 1).await;
     // The transcript snapshot of the yielded turn is stored.
-    for _ in 0..100 {
-        let stored = first.history().load(id).await.unwrap().unwrap();
-        if !stored.transcript.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    await_persisted_transcript(&first, id).await;
     // The process "dies": no stop, no resolution.
     let second = config(&env, &provider).state();
     let (resumed, _) = second

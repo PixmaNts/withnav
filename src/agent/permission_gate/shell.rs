@@ -183,6 +183,9 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             while let Some(&next) = chars.peek() {
                 if let Some(q) = target_quote {
                     chars.next();
+                    if q == '"' && matches!(next, '$' | '`' | '\\') {
+                        return None;
+                    }
                     if next == q {
                         target_quote = None;
                     } else {
@@ -193,6 +196,8 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                     chars.next();
                 } else if next.is_whitespace() || ";|&<>".contains(next) {
                     break;
+                } else if matches!(next, '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '#') {
+                    return None;
                 } else {
                     target.push(next);
                     chars.next();
@@ -1052,6 +1057,22 @@ mod tests {
         for command in ["ls | tee out.txt", "chmod +x run.sh", "ln -s a b"] {
             assert!(read_floor(command), "{command}");
         }
+        for command in [
+            r#"echo x > "$HOME/out""#,
+            r#"echo x > "$(evil)""#,
+            r#"echo x > "`evil`""#,
+            r#"echo x > "\"; evil; echo \"""#,
+            "echo x > $HOME/out",
+            "echo x > $(evil)",
+            "echo x > out\\ file",
+        ] {
+            assert!(segments(command).is_none(), "{command}");
+            assert!(read_floor(command), "{command}");
+        }
+        assert_eq!(
+            overwrite_paths("echo x > '$HOME/out'"),
+            Some(vec!["$HOME/out".into()])
+        );
     }
 
     #[test]

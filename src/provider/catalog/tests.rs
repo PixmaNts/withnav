@@ -337,43 +337,101 @@ async fn lookup(catalog: &ModelCatalog, base: &str, model: &str) -> CatalogData 
     catalog.lookup(&r, "key", &ClientCache::new()).await
 }
 
+async fn concurrent_lookup_response(
+    status: u16,
+    body: &'static str,
+    callers: usize,
+) -> Vec<CatalogData> {
+    let dir = tempfile::tempdir().unwrap();
+    let received = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let count = Arc::new(AtomicUsize::new(0));
+    let router = axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get({
+            let received = received.clone();
+            let release = release.clone();
+            let count = count.clone();
+            move || {
+                let received = received.clone();
+                let release = release.clone();
+                let count = count.clone();
+                async move {
+                    if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        received.notify_one();
+                        tokio::time::timeout(Duration::from_secs(15), release.notified())
+                            .await
+                            .expect("release catalogue response");
+                    }
+                    (axum::http::StatusCode::from_u16(status).unwrap(), body)
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let stop = CancellationToken::new();
+    let shutdown = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .expect("serve gated catalogue response");
+    });
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let all = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut first = Box::pin(lookup(&catalog, &base, OPUS));
+        tokio::select! {
+            _ = received.notified() => {},
+            _ = &mut first => panic!("first lookup completed before response release"),
+        }
+        let endpoint = catalog.endpoint(&endpoint_key(&base));
+        assert!(
+            endpoint.flight.try_lock().is_err(),
+            "first lookup holds the flight"
+        );
+        let mut waiting: Vec<_> = (1..callers)
+            .map(|_| Box::pin(lookup(&catalog, &base, OPUS)))
+            .collect();
+        // Poll each caller while the response is held: all must queue on the flight lock.
+        std::future::poll_fn(|cx| {
+            for call in &mut waiting {
+                assert!(
+                    std::future::Future::poll(call.as_mut(), cx).is_pending(),
+                    "caller bypassed the in-flight request"
+                );
+            }
+            std::task::Poll::Ready(())
+        })
+        .await;
+        release.notify_one();
+        let mut all = vec![first.await];
+        all.extend(futures_util::future::join_all(waiting).await);
+        all
+    })
+    .await
+    .expect("concurrent catalogue lookups must complete");
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    stop.cancel();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("catalogue server must stop")
+        .expect("catalogue server must not panic");
+    all
+}
+
 #[tokio::test]
 async fn concurrent_resolutions_make_one_request() {
-    let dir = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(FIXTURE.to_string(), "application/json")
-                .set_delay(Duration::from_millis(300)),
-        )
-        .mount(&server)
-        .await;
-    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
-    let base = format!("{}/v1", server.uri());
-    let calls = (0..8).map(|_| lookup(&catalog, &base, OPUS));
-    let all = futures_util::future::join_all(calls).await;
+    let all = concurrent_lookup_response(200, FIXTURE, 8).await;
     assert!(all
         .iter()
         .all(|d| d.limits.as_ref().and_then(|l| l.context_length) == Some(1_000_000)));
-    assert_eq!(requests(&server).await, 1);
 }
 
 #[tokio::test]
 async fn concurrent_resolutions_share_one_failed_request() {
-    let dir = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_millis(200)))
-        .mount(&server)
-        .await;
-    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
-    let base = format!("{}/v1", server.uri());
-    let calls = (0..5).map(|_| lookup(&catalog, &base, OPUS));
-    let all = futures_util::future::join_all(calls).await;
+    let all = concurrent_lookup_response(500, "", 5).await;
     assert!(all.iter().all(|d| d.limits.is_none() && d.error.is_some()));
-    assert_eq!(requests(&server).await, 1);
 }
 
 #[tokio::test]

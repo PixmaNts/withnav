@@ -1,4 +1,9 @@
 [
+  {"command":"git status # inspection","labels":{"call_effect":"read_only","call_scope":"inside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":1.0},"route":"instinct_run","git":null,"confidence":1.0},
+  {"command":"echo a#b","labels":{"call_effect":"read_only","call_scope":"inside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":1.0},"route":"instinct_run","git":null,"confidence":1.0},
+  {"command":"git status # $(evil)","labels":{"call_effect":"read_only","call_scope":"inside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":1.0},"route":"review","git":null,"confidence":1.0,"adversarial":true},
+  {"command":"echo a#$(evil)","labels":{"call_effect":"read_only","call_scope":"inside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":1.0},"route":"review","git":null,"confidence":1.0,"adversarial":true},
+  {"command":"git status # inspection\nrm -r x","labels":{"call_effect":"read_only","call_scope":"inside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":1.0},"route":"review","git":null,"confidence":1.0,"adversarial":true},
   {
     "command": "git add src/lib.rs",
     "labels": {

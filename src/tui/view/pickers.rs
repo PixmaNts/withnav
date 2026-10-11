@@ -44,13 +44,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         .min(76);
     // The popup's inner width, less its margins: what a row can take.
     let row_width = usize::from(width.saturating_sub(6));
+    let filter = ui.filter.to_lowercase();
     let rows: Vec<Line<'static>> = match overlay {
         Overlay::Agents => state
             .agents
             .iter()
             .filter(|a| {
                 matches!(a.mode.as_str(), "primary" | "all")
-                    && a.id.to_lowercase().contains(&ui.filter.to_lowercase())
+                    && a.id.to_lowercase().contains(&filter)
             })
             .map(|a| {
                 Line::styled(
@@ -171,13 +172,13 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .sessions
             .iter()
             .filter(|entry| {
-                entry.id.to_lowercase().contains(&ui.filter.to_lowercase())
+                entry.id.to_lowercase().contains(&filter)
                     || entry
                         .title
                         .as_deref()
                         .unwrap_or("")
                         .to_lowercase()
-                        .contains(&ui.filter.to_lowercase())
+                        .contains(&filter)
             })
             .map(|entry| {
                 if ui.delete_confirm.as_deref() == Some(&entry.id) {
@@ -254,7 +255,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             };
             names
                 .into_iter()
-                .filter(|v| v.to_lowercase().contains(&ui.filter.to_lowercase()))
+                .filter(|v| v.to_lowercase().contains(&filter))
                 .map(|name| {
                     let mark = if current.as_deref() == Some(name.as_str()) {
                         "● "
@@ -279,11 +280,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         Overlay::Themes => ThemeId::ALL
             .iter()
             .filter(|entry| {
-                entry.id().contains(&ui.filter.to_lowercase())
+                entry.id().contains(&filter)
                     || entry
                         .name()
                         .to_lowercase()
-                        .contains(&ui.filter.to_lowercase())
+                        .contains(&filter)
             })
             .map(|entry| theme_row(*entry, ui.theme_on_open.unwrap_or(ui.theme), theme))
             .collect(),

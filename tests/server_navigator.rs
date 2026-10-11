@@ -318,15 +318,13 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"remove which scope?\"}"}}]},"finish_reason":"tool_calls"}]}"#;
     let done = r#"{"choices":[{"index":0,"delta":{"content":"done after the answer"},"finish_reason":"stop"}]}"#;
     let done2 = r#"{"choices":[{"index":0,"delta":{"content":"done after the wake"},"finish_reason":"stop"}]}"#;
-    // Transcripts accumulate, so the turn-2 and turn-3 bodies also contain
-    // the earlier markers: the later mounts need HIGHER priority to win
-    // over the earlier ones (same priority would fall back to insertion
-    // order and the ask script would answer every turn).
+    // Transcripts accumulate, so more specific markers need higher priority.
+    // Mount in priority order so wiremock's sorting keeps scoped guard indices stable.
     let mut wake_guard = None;
     for (body, marker, priority) in [
-        (ask, "add an auth remove command", 5u8),
+        (done2, "latest wake", 3u8),
         (done, "the local scope", 4),
-        (done2, "latest wake", 3),
+        (ask, "add an auth remove command", 5),
     ] {
         let mock = Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -483,9 +481,22 @@ async fn a_wake_never_cancels_an_open_permission_request() {
     }}]}}]})
     .to_string();
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+    let wake_guard = Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains(
+            "a wake while asking",
+        ))
+        .and(wiremock::matchers::body_string_contains(
+            "\"role\":\"tool\"",
+        ))
+        .respond_with(sse_response(&[done]))
+        .with_priority(2)
+        .expect(1..)
+        .mount_as_scoped(&server)
+        .await;
     for (body, marker, priority) in [
-        (write.as_str(), "write the note", 5u8),
-        (done, "\"role\":\"tool\"", 3),
+        (done, "\"role\":\"tool\"", 3u8),
+        (write.as_str(), "write the note", 5),
     ] {
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -495,17 +506,6 @@ async fn a_wake_never_cancels_an_open_permission_request() {
             .mount(&server)
             .await;
     }
-    let wake_guard = Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .and(wiremock::matchers::body_string_contains(
-            "a wake while asking",
-        ))
-        .and(wiremock::matchers::body_string_contains("\"role\":\"tool\""))
-        .respond_with(sse_response(&[done]))
-        .with_priority(2)
-        .expect(1..)
-        .mount_as_scoped(&server)
-        .await;
     let feed = withnav::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let id = state.create_session(&ws, None, true).await.expect("create");

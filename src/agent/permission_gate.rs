@@ -463,13 +463,7 @@ fn read_only_run_with_state(
             .is_some_and(shell::read_floor)
         && !state["untrusted_evidence"]["arguments"]["command"]
             .as_str()
-            .is_some_and(|command| {
-                shell::segments(command).is_some_and(|parts| {
-                    parts
-                        .iter()
-                        .any(|words| shell::identity_floor(words, &state["host_facts"]))
-                })
-            })
+            .is_some_and(|command| shell::command_identity_floor(command, &state["host_facts"]))
 }
 
 /// The same typed classifiers are used by the gate and the labelled live probe.
@@ -2654,7 +2648,7 @@ mod tests {
             scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
             destination: None,
         };
-        for row in corpus {
+        for row in corpus.into_iter().filter(|row| row["fixture"].is_null()) {
             let call = ToolCall {
                 id: "fixture".into(),
                 name: "bash".into(),
@@ -2801,7 +2795,10 @@ mod tests {
             destination: None,
         };
         let mut count = 0;
-        for row in corpus.into_iter().filter(|row| row["adversarial"] == true) {
+        for row in corpus
+            .into_iter()
+            .filter(|row| row["adversarial"] == true && row["fixture"].is_null())
+        {
             count += 1;
             let call = ToolCall {
                 id: "fake".into(),
@@ -2839,6 +2836,90 @@ mod tests {
             );
         }
         assert!(count >= 100);
+    }
+
+    #[tokio::test]
+    async fn environment_security_corpus_preserves_review_floors() {
+        const CHILD: &str = "WITHNAV_TEST_SECURITY_CORPUS";
+        if let Some(base) = std::env::var_os(CHILD) {
+            let base = std::path::PathBuf::from(base);
+            let corpus: Vec<Value> =
+                serde_json::from_str(include_str!("../../tests/fixtures/permissions/calls.json"))
+                    .unwrap();
+            let cx = test_context(&base.join("project"));
+            let needed = Needed {
+                scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
+                destination: None,
+            };
+            let facts = json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots});
+            assert!(shell::identity_floor(&["helper".into()], &facts));
+            let mut count = 0;
+            for row in corpus.into_iter().filter(|row| row["fixture"].is_string()) {
+                assert_eq!(row["fixture"], "relative_path");
+                count += 1;
+                let command = row["command"]
+                    .as_str()
+                    .unwrap()
+                    .replace("/tmp/daemon", base.join("daemon").to_str().unwrap())
+                    .replace("/tmp/outside", base.join("outside").to_str().unwrap());
+                let call = ToolCall {
+                    id: "environment-corpus".into(),
+                    name: "bash".into(),
+                    args: json!({"command":command}),
+                    args_valid: true,
+                };
+                let input = PermissionReviewInput {
+                    questions: permission_questions(),
+                    state: json!({"captain_request_complete":true,"host_facts":facts,
+                        "untrusted_evidence":{"arguments":call.args}})
+                    .to_string(),
+                };
+                let answers = LabelJudge(row.clone())
+                    .judge(&input, &CancellationToken::new())
+                    .await
+                    .unwrap();
+                for flags in [Overrides::default(), prefilter(&call, &needed, &cx)] {
+                    assert_eq!(
+                        route(&input, &answers, &flags),
+                        Ok(Route::Review),
+                        "{command}"
+                    );
+                }
+                let mut actor = review_actor();
+                actor.tool_context = cx.clone();
+                actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row)));
+                assert!(
+                    matches!(
+                        consult(&actor, &call, &needed).await,
+                        Judged::Ask(_) | Judged::AskWithEvidence(_, _)
+                    ),
+                    "{command}"
+                );
+            }
+            assert_eq!(count, 5);
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for directory in ["project", "daemon/bin", "outside/bin"] {
+            std::fs::create_dir_all(tmp.path().join(directory)).unwrap();
+        }
+        for executable in ["daemon/bin/helper", "outside/bin/unseen-helper"] {
+            let path = tmp.path().join(executable);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::permission_gate::tests::environment_security_corpus_preserves_review_floors", "--nocapture"])
+            .current_dir(tmp.path().join("daemon"))
+            .env(CHILD, tmp.path()).env("PATH", "bin:/usr/bin:/bin")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]

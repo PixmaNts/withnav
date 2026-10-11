@@ -341,16 +341,59 @@ pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
             }
             let exists = word.contains('/')
                 || std::env::var_os("PATH").is_some_and(|path| {
-                    std::env::split_paths(&path)
-                        .filter_map(|dir| path_directory(dir, facts))
-                        .any(|dir| dir.join(word).metadata().is_ok_and(|m| m.is_file()))
+                    std::env::split_paths(&path).any(|dir| {
+                        // Preserve the daemon-cwd check as well as the workspace
+                        // check: an additional location must never remove a floor.
+                        dir.join(word).metadata().is_ok_and(|m| m.is_file())
+                            || path_directory(dir, facts).is_some_and(|dir| {
+                                dir.join(word).metadata().is_ok_and(|m| m.is_file())
+                            })
+                    })
                 });
             exists && trusted_program(word, facts).is_none()
         })
 }
 
-pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
+pub(super) fn command_identity_floor(command: &str, facts: &Value) -> bool {
     segments(command).is_none_or(|parts| {
+        let relative_path = std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| !dir.is_absolute()));
+        let mut changed_directory = false;
+        parts.iter().any(|words| {
+            // Later PATH lookup is no longer relative to the reviewed workspace.
+            // Only literal shell builtins and absolute programs avoid that ambiguity.
+            if changed_directory
+                && relative_path
+                && inner_command(words).is_none_or(|inner| {
+                    !Path::new(&inner[0]).is_absolute()
+                        && (inner.len() != words.len()
+                            || !matches!(
+                                inner[0].as_str(),
+                                "echo"
+                                    | "printf"
+                                    | "pwd"
+                                    | "true"
+                                    | "false"
+                                    | ":"
+                                    | "cd"
+                                    | "pushd"
+                                    | "popd"
+                                    | "command"
+                                    | "type"
+                            ))
+                })
+            {
+                return true;
+            }
+            changed_directory |= inner_command(words)
+                .is_some_and(|inner| matches!(inner[0].as_str(), "cd" | "pushd" | "popd"));
+            identity_floor(words, facts)
+        })
+    })
+}
+
+pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
+    command_identity_floor(command, facts) || segments(command).is_none_or(|parts| {
         parts.iter().any(|words| {
             inner_command(words).is_none_or(|inner| {
                 let program = basename(&inner[0]);

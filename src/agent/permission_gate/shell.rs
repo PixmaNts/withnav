@@ -327,6 +327,14 @@ fn lookup(words: &[String]) -> bool {
 }
 
 pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
+    // env wrappers expose their program but must not erase execution-affecting
+    // Git assignments from the command being reviewed.
+    if words
+        .iter()
+        .any(|word| word.starts_with("GIT_") && word.contains('='))
+    {
+        return true;
+    }
     let Some(inner) = inner_command(words) else {
         return true;
     };
@@ -449,8 +457,13 @@ fn git_subcommand(words: &[String]) -> Option<usize> {
 
 fn git_read_side_effect(words: &[String]) -> bool {
     basename(&words[0]) == "git"
-        && git_subcommand(words).is_some_and(|i| {
-            (words[i] == "diff" && !safe_diff_options(&words[i + 1..]))
+        && git_subcommand(words).is_none_or(|i| {
+            // Configuration, cwd, repository and executable overrides can run
+            // helpers. Only explicitly inert global options preserve read safety.
+            words[1..i]
+                .iter()
+                .any(|word| !matches!(word.as_str(), "--no-pager" | "--no-optional-locks"))
+                || (words[i] == "diff" && !safe_diff_options(&words[i + 1..]))
                 || matches!(words[i].as_str(), "status" | "diff" | "log" | "show")
                     && words[i + 1..].iter().any(|word| {
                         matches!(

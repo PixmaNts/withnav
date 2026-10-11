@@ -14,8 +14,7 @@ Risky permission calls use one metacognition review. Set `permissions.review_tim
 inherited by their children. Ordinary confident reads and recoverable workspace changes are decided
 by Instinct alone. On review timeout, eligible reads retain their safe fallback; changes ask you.
 
-> **Status:** this checkout includes the changes prepared for v0.5.0: a terminal client, agents,
-> permissions, skills, rules, model assignments, a context budget and compaction. See
+> **Status:** pre-1.0 and moving fast; each release is listed with its changes in
 > [`CHANGELOG.md`](CHANGELOG.md). [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the code and
 > [`CONTEXT.md`](CONTEXT.md) defines the vocabulary.
 

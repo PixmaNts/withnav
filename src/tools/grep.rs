@@ -129,16 +129,20 @@ pub(super) async fn search_with(
     }
 }
 
+fn compile_pattern(pattern: &str) -> Result<regex::Regex, ToolError> {
+    regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
+        code: "invalid_regex".into(),
+        message: error.to_string(),
+    })
+}
+
 async fn rg_search(
     pattern: &str,
     root: &Path,
     cancel: &CancellationToken,
 ) -> Result<ToolResult, ToolError> {
     let mut command = rg_command(pattern, root);
-    regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
-        code: "invalid_regex".into(),
-        message: error.to_string(),
-    })?;
+    compile_pattern(pattern)?;
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -361,10 +365,7 @@ fn walk_with(
     if cancel.is_cancelled() {
         return Ok(ToolResult::interrupted());
     }
-    let regex = regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
-        code: "invalid_regex".into(),
-        message: error.to_string(),
-    })?;
+    let regex = compile_pattern(pattern)?;
     let started = Instant::now();
     // A visitor can Quit the walker itself; a filter cannot stop a next() that
     // keeps consuming rejected sensitive entries. One worker keeps budgets exact.

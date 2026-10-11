@@ -132,14 +132,31 @@ async fn wait_events(
     kind: &str,
     count: usize,
 ) -> Vec<EventEnvelope> {
-    for _ in 0..1000 {
-        let found = events(state, id, kind).await;
-        if found.len() >= count {
-            return found;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let sub = state.subscribe(id, None).await.expect("subscribe");
+        let mut found = match sub.replay {
+            withnav::bus::ResumeOutcome::Replay(all) => all
+                .into_iter()
+                .filter(|e| e.kind == kind)
+                .collect::<Vec<_>>(),
+            other => panic!("session {id}: expected replay for `{kind}`, got {other:?}"),
+        };
+        let mut live = sub.live;
+        while found.len() < count {
+            let event = live
+                .as_mut()
+                .unwrap_or_else(|| panic!("session {id}: ended before {count} `{kind}` events"))
+                .recv()
+                .await
+                .unwrap_or_else(|| panic!("session {id}: stream closed waiting for `{kind}`"));
+            if event.kind == kind {
+                found.push(event);
+            }
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("timed out waiting for {count} `{kind}` event(s)");
+        found
+    })
+    .await
+    .unwrap_or_else(|_| panic!("session {id}: timed out waiting for {count} `{kind}` events"))
 }
 
 async fn answer(

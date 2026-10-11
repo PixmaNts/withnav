@@ -207,9 +207,22 @@ async fn run_steps_inner(
         // The safe boundary before a request: every tool result of the last
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
+        let role_message = actor.role_message();
+        let history = actor.effective_history();
+        let tools = actor.effective_tool_schemas();
         if actor
             .input_budget
-            .is_some_and(|budget| actor.context_breakdown().total() > budget)
+            .is_some_and(|budget| {
+                crate::agent::context::estimate(
+                    role_message.as_deref(),
+                    actor.rules.message(),
+                    actor.effective_skills_catalog(),
+                    &history,
+                    &tools,
+                )
+                .total()
+                    > budget
+            })
         {
             return Ok(RunOutcome::NeedsCompaction {
                 steps_left: budget - step,
@@ -218,14 +231,13 @@ async fn run_steps_inner(
 
         observe(AgentEvent::StepStarted);
 
-        let role_message = actor.role_message();
         let request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
             actor.effective_skills_catalog(),
-            actor.effective_history(),
-            actor.effective_tool_schemas(),
+            history,
+            tools,
             actor.max_tokens,
         );
 
@@ -1932,6 +1944,16 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
         actor.push_user("run echo hi");
+        actor.input_budget = Some(u64::MAX);
+        let first_request = build_request(
+            &actor.model,
+            actor.role_message().as_deref(),
+            actor.rules.message(),
+            actor.effective_skills_catalog(),
+            actor.effective_history(),
+            actor.effective_tool_schemas(),
+            actor.max_tokens,
+        );
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "all done"));
@@ -1943,6 +1965,20 @@ mod tests {
         assert!(second.contains("\"tool_call_id\":\"call_1\""));
         assert!(second.contains("\"reasoning_content\":\"let me look\""));
         assert!(second.contains("\"tool_calls\""));
+        let second_request = build_request(
+            &actor.model,
+            actor.role_message().as_deref(),
+            actor.rules.message(),
+            actor.effective_skills_catalog(),
+            actor.transcript[..actor.transcript.len() - 1].to_vec(),
+            actor.effective_tool_schemas(),
+            actor.max_tokens,
+        );
+        for (actual, expected) in reqs.iter().zip([first_request, second_request]) {
+            let actual: serde_json::Value =
+                serde_json::from_str(actual.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(actual, serde_json::to_value(expected).unwrap());
+        }
     }
 
     /// Serves keep-alive connections and counts how many were opened.

@@ -945,6 +945,13 @@ async fn nth_request(state: &AppState, id: ulid::Ulid, n: usize) -> ulid::Ulid {
     request_id(&found[n - 1]).parse().unwrap()
 }
 
+async fn nth_suspended_request(state: &AppState, id: ulid::Ulid, n: usize) -> ulid::Ulid {
+    let request = nth_request(state, id, n).await;
+    let ended = wait_events(state, id, "turn.end", n).await;
+    assert_eq!(ended[n - 1].payload["outcome"], "yielded");
+    request
+}
+
 async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
     state
         .answer_permission(
@@ -985,9 +992,8 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
     assert!(events(&state, id, "permission.resolved").await.is_empty());
 
     allow(&state, id, first).await;
-    let second = nth_request(&state, id, 2).await;
+    let second = nth_suspended_request(&state, id, 2).await;
     assert_ne!(first, second);
-    tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         events(&state, id, "permission.resolved").await.len(),
         1,

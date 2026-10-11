@@ -306,7 +306,7 @@ async fn a_second_summary_carries_the_first_and_counts_generations() {
     let (url, seen) = serve(vec![text_answer("second")]).await;
     let provider = provider(url);
     let t = five_turns(200);
-    let first = Compaction {
+    let mut first = Compaction {
         checkpoint: Checkpoint {
             through_message: 3,
             summary: "first summary".into(),
@@ -319,9 +319,19 @@ async fn a_second_summary_carries_the_first_and_counts_generations() {
     let prepared = prepare(i, &CancellationToken::new()).await.unwrap();
     assert_eq!(prepared.compaction.checkpoint.generation, 2);
     assert!(prepared.compaction.checkpoint.through_message > 3);
-    let seen = seen.lock().await;
-    assert!(seen[0].contains("first summary"));
-    assert!(!seen[0].contains("request 0"));
+    {
+        let seen = seen.lock().await;
+        assert!(seen[0].contains("first summary"));
+        assert!(!seen[0].contains("request 0"));
+    }
+    first.checkpoint.generation = u64::MAX;
+    let mut i = input(&provider, &t, None);
+    i.current = Some(&first);
+    assert!(matches!(
+        prepare(i, &CancellationToken::new()).await,
+        Err(CompactionError::Invalid(why)) if why.contains("generation")
+    ));
+    assert_eq!(seen.lock().await.len(), 1, "no request for an invalid generation");
 }
 
 #[tokio::test]

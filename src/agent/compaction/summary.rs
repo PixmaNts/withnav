@@ -97,6 +97,12 @@ pub async fn prepare(
         input.destination_budget,
         input.aim,
     )?;
+    let generation = match input.current {
+        Some(c) => c.checkpoint.generation.checked_add(1).ok_or_else(|| {
+            CompactionError::Invalid("the checkpoint generation cannot be incremented".into())
+        })?,
+        None => 1,
+    };
     let estimated_before =
         estimate_effective(&input.components, input.transcript, input.current).total();
     let first = input
@@ -129,7 +135,7 @@ pub async fn prepare(
         checkpoint: Checkpoint {
             through_message: planned.through_message,
             summary,
-            generation: input.current.map_or(1, |c| c.checkpoint.generation + 1),
+            generation,
         },
         pruned_message_indices: planned.kept_pruned(),
     };

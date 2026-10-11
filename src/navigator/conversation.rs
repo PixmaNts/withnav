@@ -28,6 +28,7 @@
 //! the turns it already lived.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Write;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -403,12 +404,16 @@ impl ConversationFeed {
     pub fn digest(&self) -> String {
         let state = self.lock();
         match state.active.and_then(|id| state.sessions.get(&id)) {
-            Some(entry) => entry
-                .exchanges
-                .iter()
-                .map(|e| format!("{}: {}", e.author.as_str(), e.text))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            Some(entry) => {
+                let mut out = String::new();
+                for (index, exchange) in entry.exchanges.iter().enumerate() {
+                    if index > 0 {
+                        out.push('\n');
+                    }
+                    let _ = write!(out, "{}: {}", exchange.author.as_str(), exchange.text);
+                }
+                out
+            }
             None => String::new(),
         }
     }

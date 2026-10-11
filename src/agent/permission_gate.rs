@@ -1425,8 +1425,8 @@ fn bash_command(call: &ToolCall) -> Option<&str> {
     call.args.get("command").and_then(Value::as_str)
 }
 
-/// Resolve only shell tilde forms that can name our roots. Other users' homes
-/// and unresolved directory-stack forms are left to ordinary permission review.
+/// Resolve shell homes through the account database, as Bash does for `~login`.
+/// Unknown users and unresolved directory-stack forms keep ordinary review.
 fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBuf> {
     let Some(tilde) = word.strip_prefix('~') else {
         return super::permissions::requested_path(std::path::Path::new(word), cx).ok();
@@ -1435,16 +1435,12 @@ fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBu
     if login == "+" {
         return Some(cx.workspace.join(rest));
     }
-    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
-    if login.is_empty()
-        || ["USER", "LOGNAME"]
-            .iter()
-            .any(|key| std::env::var(key).is_ok_and(|user| user == login))
-        || home.file_name().is_some_and(|name| name == login)
-    {
-        return Some(home.join(rest));
-    }
-    None
+    let home = if login.is_empty() {
+        std::path::PathBuf::from(std::env::var_os("HOME")?)
+    } else {
+        nix::unistd::User::from_name(login).ok()??.dir
+    };
+    Some(home.join(rest))
 }
 
 /// Whether a literal operand of the bash command names `root`, by the spelling
@@ -1576,10 +1572,35 @@ mod tests {
 
     #[tokio::test]
     async fn tilde_operands_keep_normal_review_without_spurious_config_holds() {
+        const CHILD: &str = "WITHNAV_TEST_TILDE_ACCOUNT_LOOKUP";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::permission_gate::tests::tilde_operands_keep_normal_review_without_spurious_config_holds", "--nocapture"])
+                .env(CHILD, "1")
+                .env_remove("USER")
+                .env_remove("LOGNAME")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(std::env::var_os("USER").is_none());
+        assert!(std::env::var_os("LOGNAME").is_none());
         let mut actor = review_actor();
-        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
-        actor.protected_config_root = Some(home.join(".config/withnav"));
-        actor.protected_config_spelling = actor.protected_config_root.clone();
+        let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap();
+        let home = user.dir;
+        let user = user.name;
+        let config = home.join(".config/withnav");
+        actor.protected_config_root =
+            Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+        actor.protected_config_spelling = Some(config);
         actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(
             json!({"labels":{"call_effect":"read_only","call_scope":"outside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":0.9},"confidence":1.0}),
         )));
@@ -1587,10 +1608,7 @@ mod tests {
             scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
             destination: None,
         };
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .unwrap_or_else(|_| home.file_name().unwrap().to_string_lossy().into_owned());
-        let mut other = "otheruser".to_owned();
+        let mut other = "nonexistent_user_xyz".to_owned();
         while bash_requested_path(&format!("~{other}/file"), &actor.tool_context).is_some() {
             other.push('_');
         }
@@ -1633,15 +1651,35 @@ mod tests {
                 "{command}"
             );
         }
-        for login in [
-            user,
-            home.file_name().unwrap().to_string_lossy().into_owned(),
+        for command in [
+            format!("cat ~{user}/.config/withnav/auth.json"),
+            format!("printf x > ~{user}/.config/withnav/x"),
         ] {
+            let call = ToolCall {
+                id: "protected-tilde".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(protected_config_call(&actor, &call, &needed), "{command}");
             assert_eq!(
-                bash_requested_path(&format!("~{login}/.config/withnav/x"), &actor.tool_context),
-                Some(home.join(".config/withnav/x"))
+                hard_floor(&actor, &call, &needed),
+                Some(HardFloorReason::ProtectedConfig),
+                "{command}"
+            );
+            assert!(
+                matches!(consult(&actor, &call, &needed).await, Judged::Ask(_)),
+                "{command}"
             );
         }
+        assert_eq!(
+            bash_requested_path(&format!("~{user}/.config/withnav/x"), &actor.tool_context),
+            Some(home.join(".config/withnav/x"))
+        );
+        assert_eq!(
+            bash_requested_path(&format!("~{other}/file"), &actor.tool_context),
+            None
+        );
         assert_eq!(
             bash_requested_path("~+/src", &actor.tool_context),
             Some(actor.tool_context.workspace.join("src"))

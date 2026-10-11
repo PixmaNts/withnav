@@ -5909,19 +5909,18 @@ mod tests {
                     "printf x > 'scratch alias/file'".into()
                 }
                 case if case.starts_with("tilde-") => {
-                    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+                    let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+                        .unwrap()
+                        .unwrap();
                     let config = if case == "tilde-plus" {
                         workspace.join(".config/withnav")
                     } else {
-                        home.join(".config/withnav")
+                        user.dir.join(".config/withnav")
                     };
-                    actor.protected_config_root = Some(config.clone());
+                    actor.protected_config_root =
+                        Some(super::super::permissions::resolve_protected_root(&config).unwrap());
                     actor.protected_config_spelling = Some(config);
-                    let user = std::env::var("USER")
-                        .or_else(|_| std::env::var("LOGNAME"))
-                        .unwrap_or_else(|_| {
-                            home.file_name().unwrap().to_string_lossy().into_owned()
-                        });
+                    let user = user.name;
                     match case {
                         "tilde-user" => format!("printf x > ~{user}/.config/withnav/x"),
                         "tilde-plus" => "printf x > ~+/.config/withnav/x".into(),

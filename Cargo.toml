@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "withnav"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2021"
 rust-version = "1.89"
 homepage = "https://withnav.dev"
@@ -95,6 +95,10 @@ lto = "thin"
 [[example]]
 name = "instinct_probe"
 path = "tools/instinct_probe.rs"
+
+[[example]]
+name = "permission_corpus_probe"
+path = "tools/permission_corpus_probe.rs"
 
 [[example]]
 name = "reflex_latency_probe"

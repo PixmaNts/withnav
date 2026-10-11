@@ -72,7 +72,14 @@ pub(crate) fn json_prefix(
     ))
 }
 pub fn placeholders(text: &str, state: bool) -> Result<BTreeSet<String>, Diagnostic> {
-    render(text, &BTreeMap::new(), state, true, 65536).map(|(_, names)| names)
+    render(
+        text,
+        &BTreeMap::new(),
+        state,
+        true,
+        crate::MAX_TEMPLATE_BYTES,
+    )
+    .map(|(_, names)| names)
 }
 fn render(
     text: &str,
@@ -151,7 +158,7 @@ pub fn state(
     values: &BTreeMap<String, InputValue>,
     template: Option<&str>,
 ) -> Result<String, Diagnostic> {
-    state_bounded(values, template, 65536)
+    state_bounded(values, template, crate::MAX_STATE_BYTES)
 }
 pub(crate) fn state_bounded(
     values: &BTreeMap<String, InputValue>,

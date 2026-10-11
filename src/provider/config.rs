@@ -431,6 +431,24 @@ pub fn load_models(
     Ok((config, path))
 }
 
+/// Diagnostic views share the same bytes. Keep the typed raw-text parse: parsing
+/// through Value first would discard duplicate keys before catalogue validation.
+pub(crate) fn load_models_with_document(
+    workspace: &Path,
+    config_dir: &Path,
+) -> Result<(ModelsConfig, PathBuf, Value), ConfigError> {
+    let path = resolve_models_path(None, workspace, config_dir).ok_or_else(|| {
+        ConfigError::Read(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no models.json found (explicit, workspace, or config dir)",
+        ))
+    })?;
+    let text = std::fs::read_to_string(&path)?;
+    let config = ModelsConfig::parse(&text)?;
+    let document = serde_json::from_str(&text)?;
+    Ok((config, path, document))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

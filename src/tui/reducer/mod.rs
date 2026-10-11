@@ -162,8 +162,13 @@ fn reset_projection(s: &mut State) {
     s.conversation = Default::default();
     s.children.clear();
     s.last_applied_seq = None;
-    s.latest_envelope = None;
     s.activity = Activity::Idle;
+}
+
+fn clear_pending_session(s: &mut State) {
+    s.resuming = None;
+    s.pending_submit_text = None;
+    s.pending_submit = None;
 }
 
 /// Switches the active tab to a different conversation: resets the projection, drops the session
@@ -761,9 +766,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     entry.child_status = entry.child_status.as_deref().map(strip_controls);
                 }
                 s.sessions = b.sessions;
-                let snapshots = s.sessions.clone();
-                for tab in &mut s.tabs {
-                    if let Some(entry) = snapshots.iter().find(|entry| {
+                let State { sessions, tabs, .. } = s;
+                for tab in tabs {
+                    if let Some(entry) = sessions.iter().find(|entry| {
                         tab.session
                             .as_ref()
                             .is_some_and(|m| m.session_id == entry.id)
@@ -822,9 +827,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             Err(x) => {
-                s.resuming = None;
-                s.pending_submit_text = None;
-                s.pending_submit = None;
+                clear_pending_session(s);
                 s.notice = Some(x)
             }
         },
@@ -848,9 +851,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         s.child_status = super::state::ChildStatus::from_wire(
                             m.child_status.as_deref().unwrap_or(""),
                         );
-                        s.resuming = None;
-                        s.pending_submit_text = None;
-                        s.pending_submit = None;
+                        clear_pending_session(s);
                         effects.push(Effect::Subscribe {
                             session_id: m.session_id.clone(),
                             cursor: None,
@@ -899,9 +900,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 effects.extend(child_watches(s));
             } else {
                 s.inspecting = false;
-                s.resuming = None;
-                s.pending_submit_text = None;
-                s.pending_submit = None;
+                clear_pending_session(s);
                 if let Err(error) = result {
                     push_local(s, BlockKind::Error(error));
                 }

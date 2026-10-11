@@ -1,9 +1,10 @@
 use instinct_flow::{protocol::*, *};
 use std::{
     collections::BTreeMap,
+    future::Future,
     sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -96,6 +97,7 @@ struct Fake {
     calls: AtomicUsize,
     requests: Mutex<Vec<Questions>>,
     delay: Duration,
+    barrier: Option<tokio::sync::Barrier>,
     fail: bool,
 }
 impl Fake {
@@ -104,6 +106,7 @@ impl Fake {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
             delay: Duration::ZERO,
+            barrier: None,
             fail: false,
         }
     }
@@ -130,6 +133,9 @@ impl DecisionClient for Fake {
                 .lock()
                 .unwrap()
                 .push(request.questions.clone());
+            if let Some(barrier) = &self.barrier {
+                barrier.wait().await;
+            }
             tokio::time::sleep(self.delay).await;
             if self.fail {
                 return Err(DecisionError::InvalidAnswer("test failure".into()));
@@ -193,11 +199,28 @@ fn normative_fixture_round_trips_through_json_and_toml() {
     );
 }
 #[test]
-fn forbidden_fields_and_unknown_fields_are_rejected() {
+fn forbidden_fields_unknown_fields_and_duplicate_ids_are_rejected() {
     let text = header("['a']") + &decision("a", "condition='true'");
     assert!(Definition::parse(&text).is_err());
     let text = header("['a']") + &decision("a", "surprise=true");
     assert!(Definition::parse(&text).is_err());
+    let text = header("['shared']")
+        + "[flow.inputs]\nanswer='answer.shared'\nresult='result.shared'\n"
+        + "[fallback.inputs]\nanswer='answer.shared'\nresult='result.shared'\n"
+        + &decision("shared", "")
+        + "\n[[node]]\nid='shared'\ntype='expression'\ncondition='true'\n";
+    let errors = Definition::parse(&text)
+        .unwrap()
+        .validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|e| e.message == "invalid or duplicate node id"));
+    assert!(!errors.iter().any(|e| e.code == "unknown_input"));
 }
 #[tokio::test]
 async fn ready_decisions_batch_and_replay_without_client() {
@@ -221,11 +244,55 @@ async fn or_fan_in_reads_unvisited_answer_as_absent() {
     let outcome = evaluate(&c, &Fake::new()).await;
     assert!(matches!(outcome.result, RunResult::Success { .. }));
     assert_eq!(outcome.trace.nodes[2].result, Some(true));
-    let text=header("['a']")+&decision("a","[node.next]\nyes=['unused']\nno=['b']")+&decision("unused","[node.next]\nyes=['join']")+&decision("b","[node.next]\nyes=['join']")+
-        "\n[[node]]\nid='join'\ntype='expression'\ncondition='!is_set(x)'\n[node.inputs]\nx='answer.unused'\n";
-    let outcome = evaluate(&compile(&text), &Fake::new()).await;
-    assert_eq!(outcome.trace.nodes[3].result, Some(true));
+    let text = header("['a']")
+        + &decision("a", "[node.next]\nyes=['z_unused']\nno=['m_taken']")
+        + &decision("z_unused", "[node.next]\nyes=['y_unused_calc']")
+        + r#"
+[[node]]
+id='y_unused_calc'
+type='expression'
+condition='true'
+assign={threshold='9'}
+[node.next]
+true=['c_join']
+[[node]]
+id='m_taken'
+type='expression'
+condition='true'
+assign={threshold='7'}
+[node.next]
+true=['b']
+"# + &decision("b", "[node.next]\nyes=['c_join']")
+        + r#"
+[[node]]
+id='c_join'
+type='expression'
+condition='!is_set(missing_answer) && !is_set(missing_result) && !is_set(missing_variable) && visited_answer == 1 && visited_result && visited_variable == 7'
+[node.inputs]
+missing_answer='answer.z_unused'
+missing_result='result.y_unused_calc'
+missing_variable='variable.y_unused_calc.threshold'
+visited_answer='answer.b'
+visited_result='result.m_taken'
+visited_variable='variable.m_taken.threshold'
+"#;
+    let c = compile(&text);
+    let client = Fake::new();
+    let outcome = evaluate(&c, &client).await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert_eq!(outcome.trace.nodes[5].result, Some(true));
     assert_eq!(outcome.trace.nodes[1].status, "not_reached");
+    assert_eq!(outcome.trace.nodes[2].status, "not_reached");
+    assert_eq!(
+        outcome
+            .trace
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "z_unused", "y_unused_calc", "m_taken", "b", "c_join"]
+    );
+    assert!(replay(&c, &outcome.trace, &client.identity()).comparable);
 }
 #[tokio::test]
 async fn independent_branches_run_in_parallel() {
@@ -235,12 +302,12 @@ async fn independent_branches_run_in_parallel() {
         + "\n[constants]\nA='one'\nB='two'\n";
     let c = compile(&text);
     let mut client = Fake::new();
-    client.delay = Duration::from_millis(80);
-    let start = Instant::now();
-    let outcome = evaluate(&c, &client).await;
+    client.barrier = Some(tokio::sync::Barrier::new(2));
+    let outcome = tokio::time::timeout(Duration::from_secs(2), evaluate(&c, &client))
+        .await
+        .expect("both independent decisions must enter before either can complete");
     assert!(matches!(outcome.result, RunResult::Success { .. }));
     assert_eq!(client.calls.load(Ordering::SeqCst), 2);
-    assert!(start.elapsed() < Duration::from_millis(145));
 }
 #[tokio::test]
 async fn failure_discards_already_proposed_deny() {
@@ -397,6 +464,8 @@ struct Controlled {
     entered: tokio::sync::Notify,
     joined: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    fast_calls: AtomicUsize,
+    slow_calls: AtomicUsize,
     join_calls: AtomicUsize,
 }
 impl Controlled {
@@ -405,6 +474,8 @@ impl Controlled {
             entered: tokio::sync::Notify::new(),
             joined: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
+            fast_calls: AtomicUsize::new(0),
+            slow_calls: AtomicUsize::new(0),
             join_calls: AtomicUsize::new(0),
         }
     }
@@ -423,7 +494,11 @@ impl DecisionClient for Controlled {
         _: Instant,
     ) -> BoxFuture<'a, Result<DecisionResponse, DecisionError>> {
         Box::pin(async move {
+            if request.questions.contains_key("fast") {
+                self.fast_calls.fetch_add(1, Ordering::SeqCst);
+            }
             if request.questions.contains_key("slow") {
+                self.slow_calls.fetch_add(1, Ordering::SeqCst);
                 self.entered.notify_one();
                 self.release.notified().await;
             }
@@ -440,6 +515,16 @@ impl DecisionClient for Controlled {
                 usage: None,
             })
         })
+    }
+}
+// Drain self-woken scheduler work until only external input can make progress.
+struct PollWake(AtomicBool);
+impl std::task::Wake for PollWake {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
     }
 }
 #[tokio::test]
@@ -478,24 +563,27 @@ async fn join_waits_only_for_declared_answers_and_never_runs_twice() {
             },
             &cancel,
         );
-        let observe = async {
-            client.entered.notified().await;
-            if declared {
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(20), client.joined.notified())
-                        .await
-                        .is_err()
-                );
-                client.release.notify_one();
-                client.joined.notified().await;
-            } else {
-                tokio::time::timeout(Duration::from_millis(200), client.joined.notified())
-                    .await
-                    .unwrap();
-                client.release.notify_one();
-            }
-        };
-        let (outcome, ()) = tokio::join!(work, observe);
+        tokio::pin!(work);
+        let wake = Arc::new(PollWake(AtomicBool::new(true)));
+        let waker = std::task::Waker::from(wake.clone());
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut polls = 0;
+        while wake.0.swap(false, Ordering::SeqCst) {
+            polls += 1;
+            assert!(polls <= 100, "scheduler must suspend at the slow decision");
+            assert!(work.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(client.fast_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.slow_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            client.join_calls.load(Ordering::SeqCst),
+            usize::from(!declared),
+            "declared={declared}: join must wait exactly when it reads the slow answer"
+        );
+        client.release.notify_one();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), work)
+            .await
+            .expect("join must complete after the slow decision is released");
         assert!(matches!(outcome.result, RunResult::Success { .. }));
         assert_eq!(client.join_calls.load(Ordering::SeqCst), 1);
     }

@@ -134,7 +134,7 @@ async fn read_command(
     workspace: &Path,
     deadline: Duration,
 ) -> Option<GitStatus> {
-    let child = command
+    let child = git_command(command)
         .arg("-C")
         .arg(workspace)
         .args([
@@ -145,14 +145,22 @@ async fn read_command(
             "-z",
             "--untracked-files=normal",
         ])
+        .spawn()
+        .ok()?;
+    read_child(child, deadline).await
+}
+
+/// Common git process defaults; callers retain their executable and configuration policy.
+pub(crate) fn git_command(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
-        .ok()?;
-    read_child(child, deadline).await
 }
 
 async fn read_child(mut child: tokio::process::Child, deadline: Duration) -> Option<GitStatus> {
@@ -344,8 +352,13 @@ mod tests {
         let mut git = fake_git(
             dir.path(),
             "printf '## main\\0'; i=0; while [ $i -lt 50000 ]; do printf ' M file_%d\\0' $i; i=$((i+1)); done; \
-             head -c 1000000 /dev/zero >&2",
+             head -c 1000000 /dev/zero >&2; \
+             test \"${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_INDEX_FILE+x}\" = ''",
         );
+        // Inject hook/worktree overrides on the child, without racing process-wide env changes.
+        git.env("GIT_DIR", "/wrong/repo/.git")
+            .env("GIT_WORK_TREE", "/wrong/repo")
+            .env("GIT_INDEX_FILE", "/wrong/index");
         let inherited_writer = std::fs::OpenOptions::new()
             .write(true)
             .open(dir.path().join("git"))

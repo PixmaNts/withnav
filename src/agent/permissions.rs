@@ -312,12 +312,32 @@ fn folder_covers(grant: &Path, target: &Path, cx: &ToolContext) -> bool {
     if !target.starts_with(grant) {
         return false;
     }
-    let workspace = canonical(&cx.workspace);
-    cx.writable_roots
-        .iter()
-        .map(|root| canonical(root))
-        .filter(|root| *root != workspace)
-        .all(|root| !target.starts_with(&root) || grant.starts_with(&root))
+    let Ok(resolved_grant) = grant.canonicalize() else {
+        return false;
+    };
+    if resolved_grant != grant {
+        return false;
+    }
+    let Ok(resolved_target) = validate_path(&[resolved_grant], target) else {
+        return false;
+    };
+    let Ok(workspace) = cx.workspace.canonicalize() else {
+        return false;
+    };
+    cx.writable_roots.iter().all(|root| {
+        // Canonical resolution adds checks; it must not discard the original
+        // protected-root boundary when a spelling traverses out of that root.
+        let previous_root = canonical(root);
+        if previous_root != workspace
+            && target.starts_with(&previous_root)
+            && !grant.starts_with(&previous_root)
+        {
+            return false;
+        }
+        validate_path(&[PathBuf::from("/")], root).is_ok_and(|root| {
+            root == workspace || !resolved_target.starts_with(&root) || grant.starts_with(&root)
+        })
+    })
 }
 
 /// What a gated call needs, as decided before it runs.
@@ -456,6 +476,8 @@ pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, Too
 }
 
 pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
+    // Native tools do not perform shell expansion: only a bare `~` component
+    // names HOME; `~name` remains a literal workspace-relative filename.
     let path = if path.starts_with("~") {
         let home =
             std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
@@ -695,6 +717,40 @@ mod tests {
     #[test]
     fn paths_the_tool_would_refuse_are_rejected_and_unusable_urls_need_nothing() {
         let f = fixture();
+        if let Some(home) = std::env::var_os("HOME") {
+            for (path, expected) in [
+                ("~", PathBuf::from(&home)),
+                ("~/x", PathBuf::from(&home).join("x")),
+            ] {
+                assert_eq!(requested_path(Path::new(path), &f.cx).unwrap(), expected);
+            }
+        }
+        for path in [
+            "~root/x",
+            "~pixma/.config/withnav/x",
+            "~other",
+            "~+/x",
+            "~-/x",
+            "~name.txt",
+        ] {
+            let literal = f.ws.join(path);
+            std::fs::create_dir_all(literal.parent().unwrap()).unwrap();
+            std::fs::write(&literal, "ordinary workspace file").unwrap();
+            assert_eq!(requested_path(Path::new(path), &f.cx).unwrap(), literal);
+            for tool in ["read", "grep", "glob"] {
+                assert_eq!(
+                    gate(&f, tool, json!({"path": path})),
+                    Gate::Bound(literal.clone()),
+                    "{tool} {path}"
+                );
+            }
+            for tool in ["write", "edit"] {
+                assert!(
+                    matches!(gate(&f, tool, json!({"path": path})), Gate::Needs(needed) if needed.destination == Some(literal.clone())),
+                    "{tool} {path}"
+                );
+            }
+        }
         for args in [json!({}), json!({"path": 3})] {
             assert!(matches!(gate(&f, "write", args.clone()), Gate::Rejected(_)));
             assert!(matches!(gate(&f, "edit", args), Gate::Rejected(_)));
@@ -865,6 +921,20 @@ mod tests {
         assert!(grants.covers("build", "write", &nested, &f.cx));
         assert!(grants.covers("build", "edit", &nested, &f.cx));
         assert!(grants.covers("build", "write", &Scope::Folder(f.ws.clone()), &f.cx));
+        std::os::unix::fs::symlink(&f.config, f.ws.join("outside-link")).unwrap();
+        for (path, covered) in [
+            (f.ws.join("missing/deep"), true),
+            (f.ws.join("outside-link/missing"), false),
+            (f.ws.join("../outside/missing"), false),
+            (f.ws.join("missing/../../outside"), false),
+        ] {
+            assert_eq!(
+                grants.covers("build", "write", &Scope::Folder(path.clone()), &f.cx),
+                covered,
+                "{}",
+                path.display()
+            );
+        }
     }
 
     #[test]
@@ -930,6 +1000,9 @@ mod tests {
             readable_roots: Vec::new(),
         };
         assert!(!grants.covers("build", "write", &Scope::Folder(inner.join("agents")), &cx));
+        for path in [inner.join("../src"), inner.join("missing/../../src")] {
+            assert!(!grants.covers("build", "write", &Scope::Folder(path), &cx));
+        }
         assert!(grants.covers("build", "write", &Scope::Folder(f.ws.join("src")), &cx));
 
         // A grant on the config directory itself covers it.

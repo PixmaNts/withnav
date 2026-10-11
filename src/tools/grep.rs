@@ -8,7 +8,7 @@ use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use super::{bound_output, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use super::{ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
 use crate::agent::permission_gate::{sensitive_read, SENSITIVE_NAMES};
 use crate::error::ToolError;
 
@@ -56,14 +56,9 @@ fn result(
     if let Some(reason) = partial {
         text.push_str(&format!("\n[partial results: {reason}]"));
     }
-    let (text, truncated) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(text).with_metadata(
+    ToolResult::bounded_ok(&text, DEFAULT_MAX_OUTPUT_BYTES).with_metadata(
         json!({"engine":engine,"sensitive_skipped":skipped,"partial":partial,"visited":visited}),
-    );
-    if let Some(bytes) = truncated {
-        result = result.with_truncation(bytes);
-    }
-    result
+    )
 }
 
 pub(super) fn rg_command(pattern: &str, root: &Path) -> tokio::process::Command {
@@ -134,20 +129,25 @@ pub(super) async fn search_with(
     }
 }
 
+fn compile_pattern(pattern: &str) -> Result<regex::Regex, ToolError> {
+    regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
+        code: "invalid_regex".into(),
+        message: error.to_string(),
+    })
+}
+
 async fn rg_search(
     pattern: &str,
     root: &Path,
     cancel: &CancellationToken,
 ) -> Result<ToolResult, ToolError> {
     let mut command = rg_command(pattern, root);
-    regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
-        code: "invalid_regex".into(),
-        message: error.to_string(),
-    })?;
+    compile_pattern(pattern)?;
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn()?;
+    let deadline = tokio::time::Instant::now() + DEADLINE;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let errors = tokio::spawn(async move {
@@ -163,7 +163,7 @@ async fn rg_search(
     let read = tokio::select! {
         biased;
         _ = cancel.cancelled() => None,
-        read = tokio::time::timeout(DEADLINE, bounded_stdout.read_to_end(&mut bytes)) => Some(read),
+        read = tokio::time::timeout_at(deadline, bounded_stdout.read_to_end(&mut bytes)) => Some(read),
     };
     let mut partial = if read.is_none() {
         Some("cancelled")
@@ -180,7 +180,7 @@ async fn rg_search(
     let status = tokio::select! {
         biased;
         _ = cancel.cancelled() => { child.kill().await?; errors.abort(); return Ok(ToolResult::interrupted()); },
-        status = tokio::time::timeout(DEADLINE, child.wait()) => match status {
+        status = tokio::time::timeout_at(deadline, child.wait()) => match status {
             Ok(status) => status?,
             Err(_) => { child.kill().await?; errors.abort(); return Ok(result(String::from_utf8_lossy(&bytes).into_owned(), "rg", 0, Some("timeout"), 0)); },
         }
@@ -202,7 +202,7 @@ async fn rg_search(
     }
     // Defense in depth only: rg exclusions above prevented sensitive opens.
     let decoded = String::from_utf8_lossy(&bytes);
-    let matches: Vec<_> = decoded
+    let mut matches: Vec<_> = decoded
         .lines()
         .filter(|line| {
             line.split_once(':')
@@ -213,11 +213,8 @@ async fn rg_search(
     if matches.len() > MAX_MATCHES {
         partial = Some("match limit");
     }
-    let text = matches
-        .into_iter()
-        .take(MAX_MATCHES)
-        .collect::<Vec<_>>()
-        .join("\n");
+    matches.truncate(MAX_MATCHES);
+    let text = matches.join("\n");
     count_after_rg(text, partial, root.to_path_buf(), cancel, Limits::default()).await
 }
 
@@ -365,10 +362,7 @@ fn walk_with(
     if cancel.is_cancelled() {
         return Ok(ToolResult::interrupted());
     }
-    let regex = regex::Regex::new(pattern).map_err(|error| ToolError::Denied {
-        code: "invalid_regex".into(),
-        message: error.to_string(),
-    })?;
+    let regex = compile_pattern(pattern)?;
     let started = Instant::now();
     // A visitor can Quit the walker itself; a filter cannot stop a next() that
     // keeps consuming rejected sensitive entries. One worker keeps budgets exact.

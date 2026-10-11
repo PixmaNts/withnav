@@ -271,10 +271,9 @@ async fn nothing_is_compacted_while_an_ask_waits() {
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "go").await;
-    collect_until(sub, |e| {
-        e.kind == "agent.state" && e.payload["to"] == "yielded"
-    })
-    .await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    let end = events.iter().find(|e| e.kind == "turn.end").unwrap();
+    assert_eq!(end.payload["outcome"], "yielded");
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     let bodies = provider.bodies();
     assert_eq!(
@@ -285,7 +284,6 @@ async fn nothing_is_compacted_while_an_ask_waits() {
     assert!(is_summary(&bodies[0]));
     assert!(bodies[2].contains("\"ask\""));
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(
         provider.bodies().len(),
         3,
@@ -319,9 +317,11 @@ async fn nothing_is_compacted_while_a_permission_request_waits() {
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "write it").await;
-    collect_until(sub, |e| e.kind == "permission.requested").await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    assert!(events.iter().any(|e| e.kind == "permission.requested"));
+    let end = events.iter().find(|e| e.kind == "turn.end").unwrap();
+    assert_eq!(end.payload["outcome"], "yielded");
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(provider.bodies().len(), 3);
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     assert!(
@@ -775,17 +775,17 @@ async fn stop_a_switch_held_at(
         let state = state.clone();
         tokio::spawn(async move { state.run_command(id, "model", "b/model-b").await })
     };
-    reached.notified().await;
-    let stopping = {
-        let state = state.clone();
-        tokio::spawn(async move { state.close_session(id).await })
-    };
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+        .await
+        .expect("switch reaches the held provider");
+    tokio::time::timeout(std::time::Duration::from_secs(15), state.close_session(id))
+        .await
+        .expect("stop does not wait for the held provider response")
+        .expect("the stop completes");
     release.notify_one();
     if let Ok(out) = switching.await.unwrap() {
         assert!(!out.ok, "{out:?}");
     }
-    stopping.await.unwrap().expect("the stop completes");
 }
 
 // Given a switch whose current model fails, held at that failure
@@ -956,7 +956,9 @@ async fn parked_summary() -> (
     let state = state(&env, &provider, WINDOW);
     let id = seeded(&state, &env.ws, 7).await;
     send_text(&state, id, "go").await;
-    reached.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+        .await
+        .expect("automatic summary reaches the held provider");
     assert!(is_summary(&provider.bodies()[0]), "parked in the summary");
     (env, state, id, provider, release)
 }
@@ -973,14 +975,12 @@ async fn a_stop_during_an_automatic_summary_commits_nothing_and_clears_the_mark(
     assert!(!marked.ok);
     assert!(marked.error.unwrap().contains("a compaction is running"));
 
-    let stopping = {
-        let state = state.clone();
-        tokio::spawn(async move { state.close_session(id).await })
-    };
-    // The summary answer arrives after the stop was asked.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Cancellation must finish without needing the held summary response.
+    tokio::time::timeout(std::time::Duration::from_secs(15), state.close_session(id))
+        .await
+        .expect("stop does not wait for the summary response")
+        .expect("the stop completes");
     release.notify_one();
-    stopping.await.unwrap().expect("the stop completes");
 
     assert!(stored(&state, id, "context.compacted").await.is_empty());
     assert!(stored(&state, id, "model.changed").await.is_empty());
@@ -1091,6 +1091,12 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
         serde_json::to_value(state.context(id).await.unwrap()).unwrap(),
         before_gauge
     );
+    // Remove the injected collision before the runtime legitimately reuses the reserved seq.
+    conn.execute(
+        "DELETE FROM events WHERE session_id=?1 AND seq=?2 AND kind='x'",
+        rusqlite::params![id.to_string(), (head + 1) as i64],
+    )
+    .unwrap();
 
     // The same actor must still send the original history after the refusal.
     assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
@@ -1343,6 +1349,11 @@ async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runt
     );
     assert!(stored(&state, id, "model.changed").await.is_empty());
     // No close/resume here: exercise the actor whose staged switch failed.
+    conn.execute(
+        "DELETE FROM events WHERE session_id=?1 AND seq=?2 AND kind='x'",
+        rusqlite::params![id.to_string(), (head + 1) as i64],
+    )
+    .unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "same runtime continues").await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;

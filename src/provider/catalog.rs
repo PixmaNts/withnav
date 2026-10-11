@@ -190,6 +190,16 @@ impl ModelCatalog {
             ..Self::new(data_dir)
         }
     }
+    /// Allow failed endpoints to retry without discarding cached metadata.
+    #[cfg(debug_assertions)]
+    pub(crate) fn expire_failures(&self) {
+        let endpoints = self.endpoints.lock().expect("catalog endpoints poisoned");
+        for endpoint in endpoints.values() {
+            let mut mem = endpoint.mem.lock().expect("catalog state poisoned");
+            mem.failed_at = None;
+            mem.error = None;
+        }
+    }
     /// Learned per-message bounds survive new sessions and catalog refreshes.
     pub fn message_limit(&self, base_url: &str, model: &str) -> Option<u64> {
         let key = endpoint_key(base_url);

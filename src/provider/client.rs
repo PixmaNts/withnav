@@ -55,11 +55,16 @@ impl ModelClient {
         })
     }
 
-    fn post(&self, endpoint: &str) -> reqwest::RequestBuilder {
-        let mut req = self
-            .http
+    pub(crate) fn post(&self, endpoint: &str) -> reqwest::RequestBuilder {
+        self.http
             .post(format!("{}/{}", self.base_url, endpoint))
-            .bearer_auth(&self.api_key);
+            .bearer_auth(&self.api_key)
+    }
+
+    pub(crate) fn prepare_request(
+        &self,
+        mut req: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
         for (k, v) in &self.headers {
             req = req.header(k, v);
         }
@@ -89,10 +94,7 @@ impl ModelClient {
         cancel: &CancellationToken,
     ) -> Result<bytes::Bytes, ProviderError> {
         let url = format!("{}/{}", self.base_url, endpoint);
-        let mut req = self.http.get(url).bearer_auth(&self.api_key);
-        for (k, v) in &self.headers {
-            req = req.header(k, v);
-        }
+        let req = self.prepare_request(self.http.get(url).bearer_auth(&self.api_key));
         let call = async {
             let mut response = cancellable(cancel, req.send()).await??;
             let status = response.status();
@@ -146,7 +148,7 @@ impl ModelClient {
         budget: Duration,
         cancel: &CancellationToken,
     ) -> Result<bytes::Bytes, ProviderError> {
-        let req = self.post(endpoint).json(body);
+        let req = self.prepare_request(self.post(endpoint)).json(body);
         let call = async {
             let response = cancellable(cancel, req.send()).await??;
             let status = response.status();
@@ -184,8 +186,13 @@ impl ModelClient {
         if let Some(variant) = variant {
             request.apply_variant(variant);
         }
-        let response =
-            cancellable(cancel, self.post("chat/completions").json(&request).send()).await??;
+        let response = cancellable(
+            cancel,
+            self.prepare_request(self.post("chat/completions"))
+                .json(&request)
+                .send(),
+        )
+        .await??;
         start_and_consume(response, cancel, on_delta).await
     }
 }

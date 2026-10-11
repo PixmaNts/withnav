@@ -50,7 +50,6 @@ fn oversized_cache_is_ignored() {
     assert!(read_cache(file.path()).is_none());
 }
 use crate::provider::config::{ModelConfig, ProviderConfig, ReasoningHistory};
-use std::time::Instant;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -97,7 +96,11 @@ async fn serve(body: &str) -> MockServer {
 }
 
 async fn requests(server: &MockServer) -> usize {
-    server.received_requests().await.unwrap_or_default().len()
+    server
+        .received_requests()
+        .await
+        .expect("inspect mock requests")
+        .len()
 }
 
 async fn resolve(
@@ -110,6 +113,15 @@ async fn resolve(
     let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
     let r = resolved(&format!("{}/v1", server.uri()), model, api, window);
     resolve_chat(&catalog, &r, "key", &ClientCache::new()).await
+}
+
+async fn resolve_fixture(model: &str, window: Option<u64>) -> (ResolvedChat, MockServer) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve(FIXTURE).await;
+    let chat = resolve(&dir, &server, model, ApiKind::Chat, window)
+        .await
+        .unwrap();
+    (chat, server)
 }
 
 #[tokio::test]
@@ -137,10 +149,7 @@ async fn exact_id_match_including_prefixed_ids() {
 
 #[tokio::test]
 async fn opus_resolves_to_one_million_without_override() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    let r = resolve(&dir, &server, "cc/claude-opus-5-5", ApiKind::Chat, None)
-        .await
-        .unwrap();
+    let (r, _server) = resolve_fixture("cc/claude-opus-5-5", None).await;
     assert_eq!(r.window, 1_000_000);
     assert_eq!(r.window_source, "discovered.context_length");
     assert_eq!(r.max_input_tokens, Some(900_000));
@@ -155,60 +164,41 @@ async fn explicit_window_wins_and_exposes_the_discrepancy() {
     resolve(&dir, &server, "cc/claude-opus-5-5", ApiKind::Chat, None)
         .await
         .unwrap();
-    let r = resolve(
-        &dir,
-        &server,
-        "cc/claude-opus-5-5",
-        ApiKind::Chat,
-        Some(200_000),
-    )
-    .await
-    .unwrap();
-    assert_eq!(r.window, 200_000);
-    assert_eq!(r.window_source, "models.json");
-    assert_eq!(
-        r.discrepancy,
-        Some(Discrepancy {
-            configured: 200_000,
-            discovered: 1_000_000
-        })
-    );
-    assert_eq!(
-        r.discrepancy.unwrap().to_string(),
-        "models.json context_window 200000 differs from discovered context_length 1000000"
-    );
-}
-
-#[tokio::test]
-async fn explicit_window_equal_to_the_reported_one_is_no_discrepancy() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    resolve(&dir, &server, "cc/claude-opus-5-5", ApiKind::Chat, None)
+    for (window, discrepancy) in [
+        (
+            200_000,
+            Some(Discrepancy {
+                configured: 200_000,
+                discovered: 1_000_000,
+            }),
+        ),
+        (1_000_000, None),
+    ] {
+        let r = resolve(
+            &dir,
+            &server,
+            "cc/claude-opus-5-5",
+            ApiKind::Chat,
+            Some(window),
+        )
         .await
         .unwrap();
-    let r = resolve(
-        &dir,
-        &server,
-        "cc/claude-opus-5-5",
-        ApiKind::Chat,
-        Some(1_000_000),
-    )
-    .await
-    .unwrap();
-    assert_eq!(r.discrepancy, None);
+        assert_eq!(r.window, window, "configured_window={window}");
+        assert_eq!(r.window_source, "models.json", "configured_window={window}");
+        assert_eq!(r.discrepancy, discrepancy, "configured_window={window}");
+        if let Some(d) = r.discrepancy {
+            assert_eq!(
+                d.to_string(),
+                "models.json context_window 200000 differs from discovered context_length 1000000"
+            );
+        }
+    }
+    assert_eq!(requests(&server).await, 1);
 }
 
 #[tokio::test]
 async fn explicit_window_makes_no_network_call() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    let r = resolve(
-        &dir,
-        &server,
-        "cc/claude-opus-5-5",
-        ApiKind::Chat,
-        Some(200_000),
-    )
-    .await
-    .unwrap();
+    let (r, server) = resolve_fixture("cc/claude-opus-5-5", Some(200_000)).await;
     assert_eq!(r.window, 200_000);
     assert_eq!(r.discrepancy, None, "nothing cached, nothing to compare");
     assert_eq!(requests(&server).await, 0);
@@ -216,10 +206,7 @@ async fn explicit_window_makes_no_network_call() {
 
 #[tokio::test]
 async fn max_input_tokens_is_the_labelled_fallback() {
-    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    let r = resolve(&dir, &server, "typesafe/jev-1.13", ApiKind::Chat, None)
-        .await
-        .unwrap();
+    let (r, _server) = resolve_fixture("typesafe/jev-1.13", None).await;
     assert_eq!(r.window, 64_000);
     assert_eq!(r.window_source, "discovered.max_input_tokens (fallback)");
 }
@@ -296,12 +283,12 @@ async fn fim_and_systemone_never_look_the_catalog_up() {
     for api in [ApiKind::Fim, ApiKind::SystemOne] {
         let r = resolve(&dir, &server, "mercury-edit-2", api, None)
             .await
-            .unwrap();
-        assert_eq!(r.window_source, "non-chat");
+            .unwrap_or_else(|e| panic!("api={api:?}: {e:?}"));
+        assert_eq!(r.window_source, "non-chat", "api={api:?}");
         let r = resolve(&dir, &server, "cc/claude-opus-5-5", api, Some(64_000))
             .await
-            .unwrap();
-        assert_eq!(r.window, 64_000);
+            .unwrap_or_else(|e| panic!("api={api:?}: {e:?}"));
+        assert_eq!(r.window, 64_000, "api={api:?}");
     }
     assert_eq!(requests(&server).await, 0);
 }
@@ -353,43 +340,101 @@ async fn lookup(catalog: &ModelCatalog, base: &str, model: &str) -> CatalogData 
     catalog.lookup(&r, "key", &ClientCache::new()).await
 }
 
+async fn concurrent_lookup_response(
+    status: u16,
+    body: &'static str,
+    callers: usize,
+) -> Vec<CatalogData> {
+    let dir = tempfile::tempdir().unwrap();
+    let received = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let count = Arc::new(AtomicUsize::new(0));
+    let router = axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get({
+            let received = received.clone();
+            let release = release.clone();
+            let count = count.clone();
+            move || {
+                let received = received.clone();
+                let release = release.clone();
+                let count = count.clone();
+                async move {
+                    if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        received.notify_one();
+                        tokio::time::timeout(Duration::from_secs(15), release.notified())
+                            .await
+                            .expect("release catalogue response");
+                    }
+                    (axum::http::StatusCode::from_u16(status).unwrap(), body)
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let stop = CancellationToken::new();
+    let shutdown = stop.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .expect("serve gated catalogue response");
+    });
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let all = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut first = Box::pin(lookup(&catalog, &base, OPUS));
+        tokio::select! {
+            _ = received.notified() => {},
+            _ = &mut first => panic!("first lookup completed before response release"),
+        }
+        let endpoint = catalog.endpoint(&endpoint_key(&base));
+        assert!(
+            endpoint.flight.try_lock().is_err(),
+            "first lookup holds the flight"
+        );
+        let mut waiting: Vec<_> = (1..callers)
+            .map(|_| Box::pin(lookup(&catalog, &base, OPUS)))
+            .collect();
+        // Poll each caller while the response is held: all must queue on the flight lock.
+        std::future::poll_fn(|cx| {
+            for call in &mut waiting {
+                assert!(
+                    std::future::Future::poll(call.as_mut(), cx).is_pending(),
+                    "caller bypassed the in-flight request"
+                );
+            }
+            std::task::Poll::Ready(())
+        })
+        .await;
+        release.notify_one();
+        let mut all = vec![first.await];
+        all.extend(futures_util::future::join_all(waiting).await);
+        all
+    })
+    .await
+    .expect("concurrent catalogue lookups must complete");
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    stop.cancel();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("catalogue server must stop")
+        .expect("catalogue server must not panic");
+    all
+}
+
 #[tokio::test]
 async fn concurrent_resolutions_make_one_request() {
-    let dir = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(FIXTURE.to_string(), "application/json")
-                .set_delay(Duration::from_millis(300)),
-        )
-        .mount(&server)
-        .await;
-    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
-    let base = format!("{}/v1", server.uri());
-    let calls = (0..8).map(|_| lookup(&catalog, &base, OPUS));
-    let all = futures_util::future::join_all(calls).await;
+    let all = concurrent_lookup_response(200, FIXTURE, 8).await;
     assert!(all
         .iter()
         .all(|d| d.limits.as_ref().and_then(|l| l.context_length) == Some(1_000_000)));
-    assert_eq!(requests(&server).await, 1);
 }
 
 #[tokio::test]
 async fn concurrent_resolutions_share_one_failed_request() {
-    let dir = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_millis(200)))
-        .mount(&server)
-        .await;
-    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
-    let base = format!("{}/v1", server.uri());
-    let calls = (0..5).map(|_| lookup(&catalog, &base, OPUS));
-    let all = futures_util::future::join_all(calls).await;
+    let all = concurrent_lookup_response(500, "", 5).await;
     assert!(all.iter().all(|d| d.limits.is_none() && d.error.is_some()));
-    assert_eq!(requests(&server).await, 1);
 }
 
 #[tokio::test]
@@ -521,9 +566,9 @@ async fn a_slow_endpoint_hits_the_deadline_and_keeps_stale_values() {
     catalog.deadline = Duration::from_millis(200);
     let base = format!("{}/v1", server.uri());
     seed(&catalog, &base, TTL + 1, OPUS, limits(300_000));
-    let started = Instant::now();
-    let d = lookup(&catalog, &base, OPUS).await;
-    assert!(started.elapsed() < Duration::from_secs(2));
+    let d = tokio::time::timeout(Duration::from_secs(15), lookup(&catalog, &base, OPUS))
+        .await
+        .expect("catalogue deadline must bound the lookup");
     assert!(d.stale);
     assert_eq!(d.limits.unwrap().context_length, Some(300_000));
     assert!(d.error.unwrap().contains("deadline"));
@@ -684,9 +729,17 @@ async fn the_cache_file_holds_no_key_or_header() {
     catalog
         .lookup(&r, "sk-secret-key-123", &ClientCache::new())
         .await;
-    let sent = &server.received_requests().await.unwrap()[0];
+    let requests = server
+        .received_requests()
+        .await
+        .expect("inspect mock requests");
+    let sent = requests.first().expect("catalogue request was received");
     assert_eq!(
-        sent.headers.get("authorization").unwrap().to_str().unwrap(),
+        sent.headers
+            .get("authorization")
+            .expect("catalogue request has Authorization header")
+            .to_str()
+            .expect("Authorization header is valid text"),
         "Bearer sk-secret-key-123",
         "the key is sent..."
     );

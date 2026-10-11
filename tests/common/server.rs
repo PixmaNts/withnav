@@ -38,6 +38,15 @@ pub const UNREACHABLE_PROVIDER_URL: &str = "http://127.0.0.1:1/v1";
 /// Name of the provider in the generated `models.json` and `auth.json`.
 pub const PROVIDER: &str = "mock";
 
+/// A temporary root and an empty workspace beneath it. Keep the root alive
+/// for as long as the workspace is in use.
+pub fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace dir");
+    (tmp, ws)
+}
+
 /// Writes `auth.json` under `config_dir` with `api_key` for `provider`,
 /// readable by the owner only.
 pub fn write_auth_file(config_dir: &Path, provider: &str, api_key: &str) -> PathBuf {
@@ -453,6 +462,18 @@ pub async fn create_session(base: &str, ws: &Path) -> String {
         .to_string()
 }
 
+/// Lists a workspace's sessions over HTTP with an encoded workspace query.
+pub async fn list_sessions(client: &reqwest::Client, base: &str, workspace: &Path) -> Value {
+    let response = client
+        .get(format!("{base}/v1/sessions"))
+        .query(&[("workspace", workspace.to_str().expect("utf8 workspace"))])
+        .send()
+        .await
+        .expect("list");
+    assert_eq!(response.status(), StatusCode::OK, "session list status");
+    response.json().await.expect("list json")
+}
+
 /// The request body for a plain-text message to the main agent.
 pub fn text_message(text: &str) -> Value {
     json!({
@@ -488,7 +509,7 @@ pub async fn post_message_ok(base: &str, id: &str, text: &str) {
 pub fn text_command(id: ulid::Ulid, text: &str) -> Command {
     withnav::server::routes::build_command(
         id,
-        &withnav::server::routes::PostMessageRequest {
+        withnav::server::routes::PostMessageRequest {
             answer: None,
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
@@ -507,6 +528,18 @@ pub async fn send_text(
     text: &str,
 ) -> withnav::session::MessageAccepted {
     state.send(text_command(id, text)).await.expect("routed")
+}
+
+/// Every persisted event of `kind`, in order, after the writer has drained.
+pub async fn stored_events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
+    state.history().flush().await.expect("flush");
+    let sub = state.subscribe(id, None).await.expect("subscribe");
+    match sub.replay {
+        withnav::bus::ResumeOutcome::Replay(all) => {
+            all.into_iter().filter(|e| e.kind == kind).collect()
+        }
+        other => panic!("expected replay, got {other:?}"),
+    }
 }
 
 /// One in-process request through the router. Returns the status and the

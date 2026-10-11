@@ -209,14 +209,9 @@ impl<'a> Evaluation<'a> {
                 .values()
                 .filter_map(|r| crate::validation::upstream(r))
                 .all(|id| {
-                    self.compiled
-                        .definition
-                        .node
-                        .iter()
-                        .position(|n| n.id == id)
-                        .is_some_and(|j| {
-                            matches!(self.status[j], Status::Completed | Status::Unreachable)
-                        })
+                    self.compiled.node_index.get(id).is_some_and(|&j| {
+                        matches!(self.status[j], Status::Completed | Status::Unreachable)
+                    })
                 });
             if active && data_settled {
                 ready.push(i);
@@ -254,13 +249,7 @@ impl<'a> Evaluation<'a> {
             };
         }
         if let Some(id) = crate::validation::upstream(reference) {
-            let Some(index) = self
-                .compiled
-                .definition
-                .node
-                .iter()
-                .position(|n| n.id == id)
-            else {
+            let Some(&index) = self.compiled.node_index.get(id) else {
                 return absent();
             };
             let record = &self.trace.nodes[index];
@@ -468,7 +457,14 @@ impl<'a> Evaluation<'a> {
             value.cut = true;
         }
         self.collected_bytes = self.collected_bytes.saturating_add(bytes);
-        if self.collected_bytes > self.compiled.catalogue.limits.run_input_bytes.min(65536) {
+        if self.collected_bytes
+            > self
+                .compiled
+                .catalogue
+                .limits
+                .run_input_bytes
+                .min(MAX_RUN_INPUT_BYTES)
+        {
             return Err((
                 FailureKind::Limit,
                 "collected inputs exceed run byte limit".into(),
@@ -487,10 +483,21 @@ impl<'a> Evaluation<'a> {
         let state = crate::rendering::state_bounded(
             &values,
             template,
-            self.compiled.catalogue.limits.state_bytes.min(65536),
+            self.compiled
+                .catalogue
+                .limits
+                .state_bytes
+                .min(MAX_STATE_BYTES),
         )
         .map_err(render_failure)?;
-        if state.len() > self.compiled.catalogue.limits.state_bytes.min(65536) {
+        if state.len()
+            > self
+                .compiled
+                .catalogue
+                .limits
+                .state_bytes
+                .min(MAX_STATE_BYTES)
+        {
             return Err((
                 FailureKind::Limit,
                 "rendered state exceeds byte limit".into(),
@@ -634,7 +641,11 @@ impl<'a> Evaluation<'a> {
                 .template()
                 .and_then(|n| self.compiled.templates.get(n))
                 .map(String::as_str),
-            self.compiled.catalogue.limits.state_bytes.min(65536),
+            self.compiled
+                .catalogue
+                .limits
+                .state_bytes
+                .min(MAX_STATE_BYTES),
         )
         .map_err(render_failure)
     }
@@ -1144,7 +1155,12 @@ async fn execute(
             decision_failure(error)
         })?;
         if serde_json::to_vec(&response).map_or(true, |bytes| {
-            bytes.len() > e.compiled.catalogue.limits.response_bytes.min(262144)
+            bytes.len()
+                > e.compiled
+                    .catalogue
+                    .limits
+                    .response_bytes
+                    .min(MAX_RESPONSE_BYTES)
         }) {
             return Err((
                 FailureKind::Limit,

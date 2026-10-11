@@ -60,20 +60,34 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
     // Captures are persisted by a background writer, off the blocking admission path: wait for
     // the record instead of expecting it synchronously.
     let records = crate::flows::records::Records::new(&service.config.data_dir, dir.path());
-    let mut applied = false;
-    for _ in 0..50 {
-        applied =
-            records.read().unwrap().iter().any(|record| {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let applied = records.read().unwrap().iter().any(|record| {
                 record.flow_name == "route" && record.application.status == "applied"
             });
-        if applied {
-            break;
+            if applied {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(applied, "the routing flow's applied run was never captured");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    service.close_all().await;
+        // turn.start proves the admitted input (including the flow note) was
+        // consumed. Join that actor rather than waiting for the dead provider's retries.
+        let sub = service.subscribe(id, None).await.unwrap();
+        let crate::bus::ResumeOutcome::Replay(events) = sub.replay else {
+            panic!("expected routing turn replay");
+        };
+        if !events.iter().any(|event| event.kind == "turn.start") {
+            let mut live = sub.live.unwrap();
+            loop {
+                if live.recv().await.unwrap().kind == "turn.start" {
+                    break;
+                }
+            }
+        }
+        service.close_all().await;
+    })
+    .await
+    .expect("applied routing flow must be consumed and its runtime joined");
     let transcript = service.history.load(id).await.unwrap().unwrap().transcript;
     assert!(transcript.iter().any(|message| matches!(message, ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Flow { .. }, content } if content.contains("routing evidence"))));
 }

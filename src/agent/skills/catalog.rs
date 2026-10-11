@@ -17,7 +17,13 @@ returns its instructions and does not run any script.";
 
 /// The description on one line, cut at [`MAX_DESCRIPTION_CHARS`].
 pub(super) fn flatten(description: &str) -> String {
-    let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut flat = String::with_capacity(description.len());
+    for word in description.split_whitespace() {
+        if !flat.is_empty() {
+            flat.push(' ');
+        }
+        flat.push_str(word);
+    }
     if flat.chars().count() <= MAX_DESCRIPTION_CHARS {
         return flat;
     }

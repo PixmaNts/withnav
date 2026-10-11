@@ -1,34 +1,13 @@
 use super::*;
+use crate::agent::tests::WorkspaceFixture as Fixture;
 use crate::tools::{Registry, ToolContext, ToolStatus};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-struct Fixture {
-    _tmp: tempfile::TempDir,
-    home: PathBuf,
-    /// A Git worktree root.
-    repo: PathBuf,
-    /// A directory two levels below the root.
-    ws: PathBuf,
-}
-
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
-    let home = base.join("home");
-    let repo = base.join("repo");
-    let ws = repo.join("packages/app");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(repo.join(".git")).unwrap();
-    fs::create_dir_all(&ws).unwrap();
-    Fixture {
-        _tmp: tmp,
-        home,
-        repo,
-        ws,
-    }
+    Fixture::new("packages/app")
 }
 
 fn skill_text(name: &str, description: &str) -> String {
@@ -250,6 +229,29 @@ fn multiline_yaml_and_unknown_fields_are_tolerated() {
         ]
         .map(String::from)
     );
+    let manifest = root.join("formats/SKILL.md");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    let base = "---\nname: formats\ndescription: Valid.\n";
+    let at_limit = format!(
+        "{base}#{}\n---",
+        "x".repeat(frontmatter::MAX_HEADER_BYTES - base.len() - 5)
+    );
+    let long_body = "x".repeat(frontmatter::MAX_HEADER_BYTES + 1);
+    for (text, expected_body) in [
+        (
+            format!("{base}---\nBody\n").replace('\n', "\r\n"),
+            "Body\r\n",
+        ),
+        (format!("{base}---"), ""),
+        (at_limit, ""),
+        (format!("{base}---\n{long_body}"), long_body.as_str()),
+    ] {
+        fs::write(&manifest, &text).unwrap();
+        let (meta, body) = frontmatter::parse(&text).unwrap();
+        assert_eq!(meta.name, "formats");
+        assert_eq!(body, expected_body);
+        assert!(matches!(load(&fx).resolve("formats"), Resolution::Found(_)));
+    }
 }
 
 // Given malformed files next to a good one
@@ -260,6 +262,15 @@ fn a_malformed_file_never_hides_the_others() {
     let fx = fixture();
     let root = fx.home.join(".agents/skills");
     add(&root.join("good"), "good", "Fine.");
+    let oversized = format!(
+        "---\nname: x\ndescription: y\n#{}\n---\n",
+        "x".repeat(frontmatter::MAX_HEADER_BYTES)
+    );
+    let prefix = "---\nname: x\ndescription: y\n#";
+    let truncated_delimiter = format!(
+        "{prefix}{}\n---x\n---\n",
+        "x".repeat(frontmatter::MAX_HEADER_BYTES - prefix.len() - 4)
+    );
     for (dir, text) in [
         ("nohead", "no header here\n"),
         ("unclosed", "---\nname: x\ndescription: y\n"),
@@ -269,9 +280,12 @@ fn a_malformed_file_never_hides_the_others() {
         ("emptyname", "---\nname: ''\ndescription: y\n---\n"),
         ("spaced", "---\nname: has space\ndescription: y\n---\n"),
         ("wrongtype", "---\nname: [a, b]\ndescription: y\n---\n"),
+        ("oversized", oversized.as_str()),
+        ("truncated-delimiter", truncated_delimiter.as_str()),
     ] {
         fs::create_dir_all(root.join(dir)).unwrap();
         fs::write(root.join(dir).join("SKILL.md"), text).unwrap();
+        assert!(frontmatter::parse(text).is_err(), "{dir}");
     }
     let skills = load(&fx);
     assert_eq!(catalog_lines(&skills), ["good — Fine."]);
@@ -280,7 +294,7 @@ fn a_malformed_file_never_hides_the_others() {
         .iter()
         .filter(|d| matches!(d.kind, DiagnosticKind::Invalid(_)))
         .count();
-    assert_eq!(invalid, 8, "{:?}", skills.diagnostics());
+    assert_eq!(invalid, 10, "{:?}", skills.diagnostics());
     assert!(skills.diagnostics().iter().all(Diagnostic::is_problem));
 }
 
@@ -540,6 +554,29 @@ fn descriptions_are_flattened_and_capped() {
     assert!(cut.ends_with('…'));
     let exact = "x".repeat(MAX_DESCRIPTION_CHARS);
     assert_eq!(catalog::flatten(&exact), exact);
+    for description in [
+        String::new(),
+        " \t\r\n\u{a0}\u{2003}".into(),
+        "  one\u{a0}two\u{2003}三\r\nfour  ".into(),
+        "é 三\t".repeat(100),
+        format!("{} last", "x".repeat(MAX_DESCRIPTION_CHARS - 2)),
+        format!("{} last", "x".repeat(MAX_DESCRIPTION_CHARS - 1)),
+        "x".repeat(MAX_DESCRIPTION_CHARS + 1),
+    ] {
+        let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        let expected = if flat.chars().count() <= MAX_DESCRIPTION_CHARS {
+            flat
+        } else {
+            let mut cut: String = flat.chars().take(MAX_DESCRIPTION_CHARS - 1).collect();
+            cut.truncate(cut.trim_end().len());
+            cut.push('…');
+            cut
+        };
+        assert_eq!(
+            catalog::flatten(&description).as_bytes(),
+            expected.as_bytes()
+        );
+    }
 }
 
 #[test]
@@ -575,15 +612,15 @@ fn the_catalog_is_bounded_and_counts_what_it_omits() {
         assert!(catalog.contains(&format!("{} —", skill.name)));
     }
     // Nothing is cut when everything fits.
-    assert!(!load_small().catalog().unwrap().contains("omitted"));
+    let (_small_fixture, small) = load_small();
+    assert!(!small.catalog().unwrap().contains("omitted"));
 }
 
-fn load_small() -> Skills {
+fn load_small() -> (Fixture, Skills) {
     let fx = fixture();
     add(&fx.home.join(".agents/skills/a"), "a", "A.");
     let skills = load(&fx);
-    std::mem::forget(fx);
-    skills
+    (fx, skills)
 }
 
 // ---- the tool ----
@@ -839,32 +876,14 @@ fn the_resource_listing_enumerates_no_more_than_its_budget() {
 
 // ---- readable roots ----
 
-// Given an actor with a skill in the user's library
-// Then read and grep open it, while write, edit and bash roots stay as they were
-#[tokio::test]
-async fn skill_roots_are_readable_but_never_writable() {
+fn actor(fx: &Fixture, registry: Registry) -> crate::agent::actor::AgentActor {
     use crate::agent::actor::AgentActor;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
-    use crate::tools::{bash::BashTool, native::*};
 
-    let fx = fixture();
-    let dir = fx.home.join(".agents/skills/matt/ask-matt");
-    let manifest = add(&dir, "ask-matt", "Ask Matt.");
-    fs::write(dir.join("ref.txt"), "needle in a skill").unwrap();
-    let mut registry = Registry::new();
-    registry.register(Box::new(ReadTool));
-    registry.register(Box::new(WriteTool));
-    registry.register(Box::new(EditTool));
-    registry.register(Box::new(GrepTool));
-    registry.register(Box::new(BashTool));
-    let mut actor = AgentActor::new(
+    let (_, cx) = context(fx);
+    AgentActor::new(
         registry,
-        ToolContext {
-            binding: None,
-            workspace: fx.ws.clone(),
-            writable_roots: vec![fx.ws.clone()],
-            readable_roots: Vec::new(),
-        },
+        cx,
         ProviderConfig {
             base_url: "http://127.0.0.1:1".into(),
             api_key_env: None,
@@ -878,7 +897,26 @@ async fn skill_roots_are_readable_but_never_writable() {
         ReasoningHistory::Preserve,
         None,
         CancellationToken::new(),
-    );
+    )
+}
+
+// Given an actor with a skill in the user's library
+// Then read and grep open it, while write, edit and bash roots stay as they were
+#[tokio::test]
+async fn skill_roots_are_readable_but_never_writable() {
+    use crate::tools::{bash::BashTool, native::*};
+
+    let fx = fixture();
+    let dir = fx.home.join(".agents/skills/matt/ask-matt");
+    let manifest = add(&dir, "ask-matt", "Ask Matt.");
+    fs::write(dir.join("ref.txt"), "needle in a skill").unwrap();
+    let mut registry = Registry::new();
+    registry.register(Box::new(ReadTool));
+    registry.register(Box::new(WriteTool));
+    registry.register(Box::new(EditTool));
+    registry.register(Box::new(GrepTool));
+    registry.register(Box::new(BashTool));
+    let mut actor = actor(&fx, registry);
     let denied_before = actor
         .registry
         .dispatch(
@@ -970,31 +1008,8 @@ async fn skill_roots_are_readable_but_never_writable() {
 // Then the `skill` tool is not registered and the roots stay empty
 #[test]
 fn without_skills_nothing_is_registered() {
-    use crate::agent::actor::AgentActor;
-    use crate::provider::config::{ProviderConfig, ReasoningHistory};
     let fx = fixture();
-    let mut actor = AgentActor::new(
-        Registry::new(),
-        ToolContext {
-            binding: None,
-            workspace: fx.ws.clone(),
-            writable_roots: vec![fx.ws.clone()],
-            readable_roots: Vec::new(),
-        },
-        ProviderConfig {
-            base_url: "http://127.0.0.1:1".into(),
-            api_key_env: None,
-            headers: Default::default(),
-            connect_timeout_ms: 100,
-            request_timeout_ms: 100,
-            catalog_format: None,
-        },
-        "k".into(),
-        "m".into(),
-        ReasoningHistory::Preserve,
-        None,
-        CancellationToken::new(),
-    );
+    let mut actor = actor(&fx, Registry::new());
     actor.set_skills(load(&fx));
     assert!(actor.registry.get("skill").is_none());
     assert!(actor.tool_context.readable_roots.is_empty());

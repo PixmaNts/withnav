@@ -75,6 +75,17 @@ impl SystemOneClient {
             provider_name,
             provider.api_key_env.as_deref(),
         )?;
+        Self::with_key(provider_name, provider, model, api_key, cache)
+    }
+
+    /// Construct from credentials already resolved from a configuration snapshot.
+    pub(crate) fn with_key(
+        provider_name: &str,
+        provider: &ProviderConfig,
+        model: &ModelConfig,
+        api_key: String,
+        cache: std::sync::Arc<ClientCache>,
+    ) -> Result<Self, ProviderError> {
         let base_url = provider.base_url.trim_end_matches('/').to_string();
         // The per-layer deadline overrides the configured request timeout, so
         // a slow-configured provider still answers within ~2 s.

@@ -258,14 +258,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
     terminal
         .draw(|frame| view::draw(frame, &s, &ui, &editor, &mut RenderCache::default()))
         .unwrap();
-    let buffer = terminal.backend().buffer();
-    let line = |y| {
-        (0..60)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    };
+    let line = |y| row_text(&terminal, y, 60).trim_end().to_string();
     insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌◉ vigie · —");
     insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
@@ -461,13 +454,8 @@ fn render(name: &str, size: (u16, u16), state: &State, ui: &UiState, editor: &Ed
     terminal
         .draw(|frame| view::draw(frame, state, ui, editor, &mut cache))
         .unwrap();
-    let buffer = terminal.backend().buffer();
     let snapshot = (0..size.1)
-        .map(|y| {
-            (0..size.0)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
+        .map(|y| row_text(&terminal, y, size.0))
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(name, snapshot);
@@ -971,8 +959,14 @@ fn pickers_filter_and_keep_draft() {
 #[test]
 fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     let mut s = done();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
     // Before any snapshot: the provider's last prompt count over the window.
-    assert!(buffer_text(&s).contains("· 12.4k / 200k"));
+    let terminal = cells(&s, &ui, (60, 20));
+    let header = row_text(&terminal, 0, 60);
+    assert!(header.contains("· 12.4k / 200k"), "{header}");
     s.conversation.context = Some(withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),
@@ -993,8 +987,10 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         incarnation: ulid::Ulid::new(),
         revision: 1,
     });
+    let terminal = cells(&s, &ui, (60, 20));
+    let header = row_text(&terminal, 0, 60);
+    assert!(header.contains("· ~42k / 1M · 4%"), "{header}");
     let text = buffer_text(&s);
-    assert!(text.contains("· ~42k / 1M · 4%"), "{text}");
     assert!(!text.contains("12.4k"), "{text}");
 }
 
@@ -1007,9 +1003,8 @@ fn buffer_text(s: &State) -> String {
     terminal
         .draw(|f| view::draw(f, s, &ui, &Editor::new(), &mut RenderCache::default()))
         .unwrap();
-    let buffer = terminal.backend().buffer();
     (0..20)
-        .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .map(|y| row_text(&terminal, y, 60))
         .collect::<Vec<_>>()
         .join("\n")
 }

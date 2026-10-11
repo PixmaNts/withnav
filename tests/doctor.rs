@@ -9,15 +9,16 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::{
+    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use withnav::app::{
-    doctor::{inspect, Report},
+    doctor::{inspect, DoctorLayer, Report, Status},
     DoctorArgs,
 };
 
@@ -30,15 +31,22 @@ struct Fake {
     invalid: bool,
     delay: Duration,
 }
+impl Fake {
+    async fn response_error(&self) -> Option<axum::response::Response> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        (self.status != 200).then(|| {
+            (
+                StatusCode::from_u16(self.status).unwrap(),
+                format!("{SECRET} https://user:password@host/key"),
+            )
+                .into_response()
+        })
+    }
+}
 async fn systemone(State(fake): State<Fake>, Json(body): Json<Value>) -> axum::response::Response {
-    fake.calls.fetch_add(1, Ordering::SeqCst);
-    tokio::time::sleep(fake.delay).await;
-    if fake.status != 200 {
-        return (
-            StatusCode::from_u16(fake.status).unwrap(),
-            format!("{SECRET} https://user:password@host/key"),
-        )
-            .into_response();
+    if let Some(error) = fake.response_error().await {
+        return error;
     }
     let mut answers = serde_json::Map::new();
     if !fake.invalid {
@@ -50,11 +58,15 @@ async fn systemone(State(fake): State<Fake>, Json(body): Json<Value>) -> axum::r
     Json(json!({"answers":answers})).into_response()
 }
 async fn fim(State(fake): State<Fake>) -> axum::response::Response {
-    fake.calls.fetch_add(1, Ordering::SeqCst);
+    if let Some(error) = fake.response_error().await {
+        return error;
+    }
     Json(json!({"choices":[{"text":if fake.invalid {""} else {"println!(\"hello\");"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}})).into_response()
 }
 async fn chat(State(fake): State<Fake>, Json(body): Json<Value>) -> axum::response::Response {
-    fake.calls.fetch_add(1, Ordering::SeqCst);
+    if let Some(error) = fake.response_error().await {
+        return error;
+    }
     assert!(body.get("tools").is_none());
     assert_eq!(body["reasoning_effort"], "low");
     let content = if fake.invalid { "" } else { "OK" };
@@ -130,14 +142,36 @@ fn check<'a>(report: &'a Report, id: &str) -> &'a withnav::app::doctor::Check {
         .find(|c| c.id == id)
         .unwrap_or_else(|| panic!("missing {id}: {}", report.human()))
 }
-fn snapshot(root: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SnapshotEntry {
+    path: std::path::PathBuf,
+    contents: Vec<u8>,
+    mode: u32,
+    modified: SystemTime,
+}
+fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     let mut entries = vec![];
-    for entry in std::fs::read_dir(root).unwrap().flatten() {
-        if entry.path().is_dir() {
+    for entry in std::fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let metadata = std::fs::symlink_metadata(entry.path()).unwrap();
+        let contents = if metadata.is_dir() {
             entries.extend(snapshot(&entry.path()));
+            vec![]
+        } else if metadata.is_symlink() {
+            std::fs::read_link(entry.path())
+                .unwrap()
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec()
         } else {
-            entries.push((entry.path(), std::fs::read(entry.path()).unwrap()));
-        }
+            std::fs::read(entry.path()).unwrap()
+        };
+        entries.push(SnapshotEntry {
+            path: entry.path(),
+            contents,
+            mode: metadata.permissions().mode(),
+            modified: metadata.modified().unwrap(),
+        });
     }
     entries.sort();
     entries
@@ -184,58 +218,147 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
         (200, true, "invalid_answer"),
         (401, false, "http_rejected"),
         (503, false, "http_server"),
+        (200, false, "unreachable"),
     ] {
         let (base, _, task) = server(status, invalid, Duration::ZERO).await;
+        if category == "unreachable" {
+            task.abort();
+            tokio::task::yield_now().await;
+        }
         let root = tempfile::tempdir().unwrap();
         let (config, mut args) = fixture(root.path(), &base);
-        args.layer = Some(withnav::app::doctor::DoctorLayer::Instinct);
-        let report = inspect(&args, &config, None, None).await;
-        assert_eq!(report.exit_code(), 1);
-        for id in [
-            "live.instinct.editor",
-            "live.instinct.role_guard",
-            "live.instinct.permission",
+        for (layer, ids) in [
+            (
+                DoctorLayer::Reflex,
+                &["live.reflex.plain", "live.reflex.context"][..],
+            ),
+            (
+                DoctorLayer::Instinct,
+                &[
+                    "live.instinct.editor",
+                    "live.instinct.role_guard",
+                    "live.instinct.permission",
+                ][..],
+            ),
+            (DoctorLayer::Metacognition, &["live.metacognition.chat"][..]),
         ] {
-            assert_eq!(check(&report, id).category.as_deref(), Some(category));
-        }
-        let json = serde_json::to_string(&report).unwrap();
-        for output in [report.human(), json] {
-            assert!(!output.contains(SECRET));
-            assert!(!output.contains("password@"));
-            assert!(!output.contains(&base));
+            args.layer = Some(layer);
+            let report = inspect(&args, &config, None, None).await;
+            assert_eq!(
+                report.exit_code(),
+                1,
+                "{layer:?}/{category}: {}",
+                report.human()
+            );
+            for id in ids {
+                let result = check(&report, id);
+                assert_eq!(result.status, Status::Failed, "{id}/{category}");
+                assert_eq!(
+                    result.category.as_deref(),
+                    Some(category),
+                    "{id}: {}",
+                    report.human()
+                );
+                if status != 200 {
+                    assert!(result.value.contains(&status.to_string()));
+                }
+            }
+            let json = serde_json::to_string(&report).unwrap();
+            for output in [report.human(), json] {
+                assert!(!output.contains(SECRET));
+                assert!(!output.contains("password@"));
+                assert!(!output.contains(&base));
+            }
         }
         task.abort();
     }
 }
 
 #[tokio::test]
-async fn unreachable_and_systemone_two_second_deadline() {
-    for slow in [false, true] {
-        let (base, _, task) = server(200, false, Duration::from_secs(3)).await;
-        if !slow {
-            task.abort();
-            tokio::task::yield_now().await;
-        }
+async fn systemone_two_second_deadline() {
+    let (base, _, task) = server(200, false, Duration::from_secs(3)).await;
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), &base);
+    args.layer = Some(withnav::app::doctor::DoctorLayer::Instinct);
+    let report = inspect(&args, &config, None, None).await;
+    assert_eq!(report.exit_code(), 1);
+    for id in [
+        "live.instinct.editor",
+        "live.instinct.role_guard",
+        "live.instinct.permission",
+    ] {
+        assert_eq!(check(&report, id).status, Status::Failed);
+        assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
+        assert!((1900..2900).contains(&check(&report, id).elapsed_ms.unwrap()));
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn fim_and_chat_deadlines_use_virtual_time() {
+    for (layer, ids, deadline) in [
+        (
+            DoctorLayer::Reflex,
+            &["live.reflex.plain", "live.reflex.context"][..],
+            // The provider's stricter reflex cap fires before doctor's 10 s outer bound.
+            Duration::from_millis(withnav::provider::fim::REFLEX_DEADLINE_MS),
+        ),
+        (
+            DoctorLayer::Metacognition,
+            &["live.metacognition.chat"][..],
+            Duration::from_secs(20),
+        ),
+    ] {
+        let (base, calls, task) = server(200, false, Duration::from_secs(60)).await;
         let root = tempfile::tempdir().unwrap();
         let (config, mut args) = fixture(root.path(), &base);
-        args.layer = Some(withnav::app::doctor::DoctorLayer::Instinct);
-        let report = inspect(&args, &config, None, None).await;
-        assert_eq!(
-            check(&report, "live.instinct.editor").category.as_deref(),
-            Some(if slow { "timeout" } else { "unreachable" })
-        );
-        if slow {
-            assert!(
-                (1900..2900).contains(&check(&report, "live.instinct.editor").elapsed_ms.unwrap())
-            );
+        args.layer = Some(layer);
+        tokio::time::pause();
+        let inspection = tokio::spawn(async move { inspect(&args, &config, None, None).await });
+        for (index, _) in ids.iter().enumerate() {
+            let start = std::time::Instant::now();
+            while calls.load(Ordering::SeqCst) < index + 1 {
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "{layer:?}: fake request not received"
+                );
+                assert!(
+                    !inspection.is_finished(),
+                    "{layer:?}: finished before deadline"
+                );
+                tokio::task::yield_now().await;
+            }
+            // Wait for real HTTP I/O before fast-forwarding the clock.
+            tokio::time::advance(deadline - Duration::from_millis(1)).await;
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+            assert!(!inspection.is_finished(), "{layer:?}: deadline fired early");
+            assert_eq!(calls.load(Ordering::SeqCst), index + 1);
+            tokio::time::advance(Duration::from_millis(2)).await;
         }
+        let start = std::time::Instant::now();
+        while !inspection.is_finished() {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{layer:?}: deadline did not cancel request"
+            );
+            tokio::task::yield_now().await;
+        }
+        let report = inspection.await.unwrap();
+        tokio::time::resume();
+        assert_eq!(report.exit_code(), 1, "{}", report.human());
+        for id in ids {
+            assert_eq!(check(&report, id).status, Status::Failed);
+            assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), ids.len());
         task.abort();
     }
 }
 
 #[tokio::test]
 async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants() {
-    use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1/v1");
     args.offline = true;
@@ -282,12 +405,99 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     assert!(!serde_json::to_string(&report).unwrap().contains(SECRET));
     assert_eq!(snapshot(root.path()), before);
     let canonical = args.workspace.canonicalize().unwrap();
-    std::fs::write(config.join("flows-trust.json"), json!({"version":1,"workspaces":{canonical.display().to_string():{"trusted":true,"granted_at":"2026-01-01T00:00:00Z"}}}).to_string()).unwrap();
+    let trust = config.join("flows-trust.json");
+    let trusted = json!({"version":1,"workspaces":{canonical.display().to_string():{"trusted":true,"granted_at":"2026-01-01T00:00:00Z"}}}).to_string();
+    for kind in ["malformed", "wrong_mode", "symlink"] {
+        if kind == "symlink" {
+            let target = config.join("trust-target.json");
+            std::fs::write(&target, &trusted).unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::os::unix::fs::symlink(target, &trust).unwrap();
+        } else {
+            std::fs::write(
+                &trust,
+                if kind == "malformed" {
+                    "{invalid"
+                } else {
+                    &trusted
+                },
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                &trust,
+                std::fs::Permissions::from_mode(if kind == "wrong_mode" { 0o666 } else { 0o600 }),
+            )
+            .unwrap();
+        }
+        let before = snapshot(root.path());
+        let report = inspect(&args, &config, None, None).await;
+        assert_eq!(
+            check(&report, "flows.trust_file").status,
+            Status::Failed,
+            "{kind}"
+        );
+        assert_eq!(
+            check(&report, "flows.workspace_trust").status,
+            Status::Warning,
+            "{kind}"
+        );
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|c| c.id == "flows.workspace.broken.toml"),
+            "{kind}: workspace flows must remain unread"
+        );
+        assert_eq!(snapshot(root.path()), before, "{kind}");
+        std::fs::remove_file(&trust).unwrap();
+    }
+    std::fs::write(&trust, trusted).unwrap();
+    std::fs::set_permissions(&trust, std::fs::Permissions::from_mode(0o600)).unwrap();
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(
         check(&report, "flows.workspace.broken.toml").status,
         withnav::app::doctor::Status::Failed
     );
+    assert_eq!(check(&report, "flows.trust_file").status, Status::Ok);
+    assert_eq!(check(&report, "flows.workspace_trust").status, Status::Ok);
+    // The editor server is nav lsp, including after migration of a legacy path.
+    let home = root.path().join("home");
+    let settings = home.join(".config/Code/User/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let nav = home.join("nav");
+    std::fs::write(&nav, "synthetic existing binary").unwrap();
+    for (server_path, expected) in [
+        (nav.clone(), Status::Ok),
+        (home.join("missing-nav"), Status::Warning),
+        (home.join("withnav-lsp"), Status::Ok),
+    ] {
+        std::fs::write(
+            &settings,
+            json!({"withnav.serverPath":server_path}).to_string(),
+        )
+        .unwrap();
+        let before = snapshot(root.path());
+        let report = inspect(&args, &config, Some(&home), None).await;
+        let result = check(
+            &report,
+            &format!("extension.server_path.{}", settings.display()),
+        );
+        assert_eq!(result.status, expected, "{}", server_path.display());
+        assert_eq!(result.value, server_path.display().to_string());
+        assert_eq!(
+            check(&report, "binary.nav").value,
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(!home.join("withnav-lsp").exists());
+        assert_eq!(snapshot(root.path()), before);
+    }
+    std::fs::remove_file(settings).unwrap();
+    let before = snapshot(root.path());
+    let report = inspect(&args, &config, Some(&home), None).await;
+    let result = check(&report, "extension.server_path");
+    assert_eq!(result.status, Status::Warning);
+    assert!(result.value.contains("not detectable"));
+    assert_eq!(snapshot(root.path()), before);
     std::fs::set_permissions(
         config.join("auth.json"),
         std::fs::Permissions::from_mode(0o644),
@@ -306,6 +516,14 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(report.exit_code(), 1);
     assert!(!report.human().contains(SECRET));
+    // The diagnostic document must not bypass the loader's duplicate-key checks.
+    std::fs::write(config.join("config.json"), "{}").unwrap();
+    std::fs::write(config.join("models.json"), r#"{"providers":{"fake":{"base_url":"http://unused"}},"models":{"fake/chat":{"provider":"fake","model":"chat"},"fake/chat":{"provider":"fake","model":"chat"}}}"#).unwrap();
+    let report = inspect(&args, &config, None, None).await;
+    assert_eq!(
+        check(&report, "config.catalogue").status,
+        withnav::app::doctor::Status::Failed
+    );
 }
 
 #[tokio::test]
@@ -341,34 +559,101 @@ async fn live_catalogue_refresh_is_memory_only_and_offline_offer_warns() {
 
 #[tokio::test]
 async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
-    let (base, _, task) = server(401, false, Duration::ZERO).await;
+    const ENV_SECRET: &str = "private-legacy-env-sentinel";
+    let (base, calls, task) = server(401, false, Duration::ZERO).await;
     let root = tempfile::tempdir().unwrap();
-    let (_, args) = fixture(root.path(), &base);
+    let home = root.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let (config, args) = fixture(&home.join(".config"), &base);
+    let legacy = home.join(".config/navai");
+    let navigator = args.workspace.join(".navigator");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::create_dir_all(&navigator).unwrap();
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_nav"), bin.join("nav")).unwrap();
     let before = snapshot(root.path());
-    for json in [false, true] {
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
-        command
-            .args(["doctor", "--layer", "instinct", "--workspace"])
-            .arg(&args.workspace)
-            .env("XDG_CONFIG_HOME", root.path())
-            .env("RUST_LOG", "trace");
-        if json {
-            command.arg("--json");
-        }
-        let output = command.output().await.unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        for text in [&stdout, &stderr] {
-            assert!(!text.contains(SECRET));
-            assert!(!text.contains("password@"));
-            assert!(!text.contains(&base));
-        }
-        assert!(stderr.is_empty(), "{stderr}");
-        if json {
-            let report: Value = serde_json::from_str(&stdout).unwrap();
-            assert_eq!(report["schema_version"], 1);
-            assert!(report["summary"]["failures"].as_u64().unwrap() > 0);
+    for layer in ["reflex", "instinct", "metacognition"] {
+        for (json, offline) in [(false, false), (true, false), (false, true), (true, true)] {
+            let before_calls = calls.load(Ordering::SeqCst);
+            let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+            command
+                .env_clear()
+                .args(["doctor", "--layer", layer, "--workspace"])
+                .arg(&args.workspace)
+                .env("PATH", &bin)
+                .env("HOME", &home)
+                .env("XDG_CONFIG_HOME", config.parent().unwrap())
+                .env("XDG_DATA_HOME", home.join(".local/share"))
+                .env("NAVAI_FOO", ENV_SECRET)
+                .env("RUST_LOG", "trace");
+            if json {
+                command.arg("--json");
+            }
+            if offline {
+                command.arg("--offline");
+            }
+            let output = command.output().await.unwrap();
+            assert_eq!(output.status.code(), Some(if offline { 0 } else { 1 }));
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            for text in [&stdout, &stderr] {
+                assert!(!text.contains(SECRET));
+                assert!(!text.contains(ENV_SECRET));
+                assert!(!text.contains("password@"));
+                assert!(!text.contains(&base));
+            }
+            assert!(stderr.is_empty(), "{stderr}");
+            if offline {
+                assert_eq!(calls.load(Ordering::SeqCst), before_calls);
+            }
+            assert!(stdout.contains("NAVAI_FOO"));
+            assert!(stdout.contains("WITHNAV_FOO"));
+            for path in [&legacy, &navigator] {
+                assert!(stdout.contains(&format!("legacy.path.{}", path.display())));
+            }
+            if json {
+                let report: Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(report["schema_version"], 1);
+                let lsp = report["checks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["id"] == "binary.lsp")
+                    .unwrap();
+                assert_eq!(lsp["status"], "ok");
+                assert!(lsp["value"].as_str().unwrap().contains("matches nav"));
+                assert_eq!(
+                    report["summary"]["failures"].as_u64().unwrap() > 0,
+                    !offline
+                );
+                let env_check = report["checks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|c| c["id"] == "legacy.env.NAVAI_FOO")
+                    .unwrap();
+                assert_eq!(env_check["status"], "warning");
+                assert_eq!(env_check["value"], "NAVAI_FOO");
+                for path in [&legacy, &navigator] {
+                    let id = format!("legacy.path.{}", path.display());
+                    let result = report["checks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|c| c["id"] == id)
+                        .unwrap();
+                    assert_eq!(result["status"], "warning");
+                    assert!(result["hint"]
+                        .as_str()
+                        .unwrap()
+                        .contains(if path == &legacy {
+                            "withnav"
+                        } else {
+                            ".withnav"
+                        }));
+                }
+            }
         }
     }
     assert_eq!(snapshot(root.path()), before);

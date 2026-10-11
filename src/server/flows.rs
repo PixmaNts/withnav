@@ -300,39 +300,25 @@ async fn handle(
         _ => {
             let parts: Vec<_> = tail.split('/').collect();
             if parts.len() >= 2 && parts[1] == "runs" && method == Method::GET {
-                let mut runs: Vec<_> = records
-                    .read()?
-                    .into_iter()
-                    .filter(|r| r.flow_name == parts[0])
-                    .collect();
-                runs.reverse();
                 if parts.len() == 3 {
-                    return ok(json!(runs
+                    return ok(json!(records
+                        .read()?
                         .into_iter()
+                        .rev()
+                        .filter(|r| r.flow_name == parts[0])
                         .find(|r| r.run_id == parts[2])
                         .ok_or_else(|| StoreError::reason("not_found"))?));
-                }
-                if let Some(before) = query.get("before") {
-                    runs = runs
-                        .into_iter()
-                        .skip_while(|r| &r.run_id != before)
-                        .skip(1)
-                        .collect();
                 }
                 let limit = query
                     .get("limit")
                     .and_then(|s| s.parse::<usize>().ok())
                     .unwrap_or(20)
                     .clamp(1, 100);
-                let next = if runs.len() > limit {
-                    runs.get(limit - 1).map(|r| r.run_id.clone())
-                } else {
-                    None
-                };
-                runs.truncate(limit);
-                return ok(
-                    json!({"runs":runs.iter().map(|r|json!({"run_id":r.run_id,"flow_name":r.flow_name,"started_at":r.started_at,"status":r.status,"duration_ms":r.duration_ms,"cost_usd":r.cost_usd,"mode":r.mode})).collect::<Vec<_>>(),"next_cursor":next}),
-                );
+                return ok(json!(records.summaries(
+                    parts[0],
+                    query.get("before").map(String::as_str),
+                    limit,
+                )?));
             }
             if parts.len() != 1 {
                 return Err(StoreError::reason("not_found"));
@@ -490,6 +476,77 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(record["mode"], "sample");
         assert_eq!(record["application"]["status"], "not_applied");
+        let captures = state.flows.records(&workspace);
+        let mut captured: RunRecord = serde_json::from_value(record.clone()).unwrap();
+        for i in 0..105 {
+            captured.run_id = i.to_string();
+            captures.append(&captured).unwrap();
+        }
+        captured.flow_name = "other".into();
+        captured.run_id = "other".into();
+        captures.append(&captured).unwrap();
+        captured.flow_name = "sample-test".into();
+        captured.started_at = "2020-01-01T00:00:00Z".into();
+        captures.append(&captured).unwrap();
+        let mut query =
+            HashMap::from([("workspace".into(), workspace.to_string_lossy().into_owned())]);
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:8080".parse().unwrap());
+        let peer = ConnectInfo("127.0.0.1:1234".parse().unwrap());
+        for (limit, expected) in [
+            (None, 20),
+            (Some("0"), 1),
+            (Some("101"), 100),
+            (Some("-1"), 20),
+            (Some("invalid"), 20),
+        ] {
+            query.remove("limit");
+            if let Some(limit) = limit {
+                query.insert("limit".into(), limit.into());
+            }
+            let (_, page) = handle(
+                &state,
+                &query,
+                &headers,
+                peer,
+                Method::GET,
+                "sample-test/runs",
+                b"",
+            )
+            .await
+            .unwrap();
+            assert_eq!(page["runs"].as_array().unwrap().len(), expected);
+            assert_eq!(page["runs"][0]["run_id"], "104");
+            assert_eq!(page["runs"][0].as_object().unwrap().len(), 7);
+            assert_eq!(page["next_cursor"], page["runs"][expected - 1]["run_id"]);
+        }
+        query.insert("before".into(), "0".into());
+        let (_, last) = handle(
+            &state,
+            &query,
+            &headers,
+            peer,
+            Method::GET,
+            "sample-test/runs",
+            b"",
+        )
+        .await
+        .unwrap();
+        assert_eq!(last["runs"][0]["run_id"], record["run_id"]);
+        assert_eq!(last["next_cursor"], Value::Null);
+        query.insert("before".into(), "absent".into());
+        let (_, absent) = handle(
+            &state,
+            &query,
+            &headers,
+            peer,
+            Method::GET,
+            "sample-test/runs",
+            b"",
+        )
+        .await
+        .unwrap();
+        assert_eq!(absent, json!({"runs":[],"next_cursor":null}));
         let (status, replay) = post(
             app,
             &workspace,

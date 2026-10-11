@@ -45,7 +45,7 @@ pub(crate) fn split(text: &str) -> Result<(&str, &str), String> {
 
 /// Parses the header of a whole file.
 pub(super) fn parse(text: &str) -> Result<(Meta, &str), String> {
-    let (yaml, body) = split(text)?;
+    let (yaml, body) = split_bounded(text)?;
     let raw: Raw = serde_saphyr::from_str(yaml).map_err(|e| format!("invalid YAML header: {e}"))?;
     let name = raw.name.map(|n| n.trim().to_string()).unwrap_or_default();
     if name.is_empty() {
@@ -73,4 +73,15 @@ pub(super) fn parse(text: &str) -> Result<(Meta, &str), String> {
         },
         body,
     ))
+}
+
+/// Skills use a bounded header during discovery and when loading the full body.
+pub(super) fn split_bounded(text: &str) -> Result<(&str, &str), String> {
+    let (yaml, body) = split(text)?;
+    if text.strip_prefix('\u{feff}').unwrap_or(text).len() - body.len() > MAX_HEADER_BYTES {
+        return Err(format!(
+            "the YAML header is over the {MAX_HEADER_BYTES} byte cap"
+        ));
+    }
+    Ok((yaml, body))
 }

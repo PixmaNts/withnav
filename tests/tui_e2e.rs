@@ -49,6 +49,22 @@ fn workspace_of(root: &tempfile::TempDir) -> PathBuf {
     root.path().join("ws")
 }
 
+fn write_test_config(path: &Path, default_agent: &str, model: &str) {
+    std::fs::write(
+        path,
+        json!({
+            "default_agent": default_agent,
+            "agents": {
+                "build": {"model": model},
+                "plan": {"model": model}
+            },
+            "permissions": {"scratch_dirs": []}
+        })
+        .to_string(),
+    )
+    .expect("config.json");
+}
+
 /// A server over a two-alias `models.json` (`alpha` and `beta`) and a workspace holding
 /// `notes.txt`. Dropping it stops the server.
 struct Env {
@@ -75,7 +91,11 @@ impl Env {
             .extra_alias("mock/mock-beta", "mock-beta")
             .chat_tools(100_000);
         let state = adjust(config).state();
-        std::fs::write(root.path().join("cfg/config.json"), json!({"default_agent":"build","agents":{"build":{"model":"mock/mock-alpha"},"plan":{"model":"mock/mock-alpha"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
+        write_test_config(
+            &root.path().join("cfg/config.json"),
+            "build",
+            "mock/mock-alpha",
+        );
         let (addr, task) = spawn_server(state).await;
         let ws = workspace_of(&root);
         std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -1087,7 +1107,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
         json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
     )
     .expect("auth.json");
-    std::fs::write(config.config_dir.join("config.json"), json!({"default_agent":"build","agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
+    write_test_config(&config.config_dir.join("config.json"), "build", "a/model-a");
     let state = withnav::server::session::AppState::new(config).expect("state");
     let (addr, task) = spawn_server(state).await;
     let ws = workspace_of(&root);

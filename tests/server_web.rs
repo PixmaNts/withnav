@@ -43,6 +43,13 @@ async fn get_json(state: &AppState, uri: &str) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
+fn intent_uri(workspace: &std::path::Path) -> String {
+    let mut url = reqwest::Url::parse("http://localhost/v1/intent").expect("intent URL");
+    url.query_pairs_mut()
+        .append_pair("workspace", workspace.to_str().expect("utf8 workspace"));
+    format!("{}?{}", url.path(), url.query().expect("workspace query"))
+}
+
 fn web_state(tmp: &std::path::Path, launch: Vec<std::path::PathBuf>) -> AppState {
     TestServerConfig::unreachable(tmp)
         .bearer_token(TOKEN)
@@ -106,32 +113,33 @@ async fn an_unknown_page_path_falls_back_to_index() {
 #[tokio::test]
 async fn hashed_assets_are_cached_for_good() {
     let dist = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("webui/dist/assets");
-    let Some(file) = std::fs::read_dir(&dist)
-        .ok()
-        .and_then(|mut entries| entries.find_map(|e| e.ok()))
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x == "js" || x == "css")
-        })
-    else {
-        return;
-    };
-    let name = file.file_name().to_string_lossy().into_owned();
+    let mut assets: Vec<_> = std::fs::read_dir(&dist)
+        .expect("webui/dist/assets must exist")
+        .map(|entry| entry.expect("read asset entry").path())
+        .filter(|path| path.extension().is_some_and(|x| x == "js" || x == "css"))
+        .collect();
+    assets.sort();
+    assert!(
+        !assets.is_empty(),
+        "webui/dist/assets must contain JS/CSS files"
+    );
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = web_state(tmp.path(), vec![]);
-    let (status, headers, _) = get(&state, &format!("/assets/{name}"), false).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        headers["cache-control"],
-        "public, max-age=31536000, immutable"
-    );
-    let expected = if name.ends_with(".js") {
-        "text/javascript; charset=utf-8"
-    } else {
-        "text/css; charset=utf-8"
-    };
-    assert_eq!(headers["content-type"], expected);
+    for file in assets {
+        let name = file.file_name().unwrap().to_string_lossy().into_owned();
+        let (status, headers, _) = get(&state, &format!("/assets/{name}"), false).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        let expected = if name.ends_with(".js") {
+            "text/javascript; charset=utf-8"
+        } else {
+            "text/css; charset=utf-8"
+        };
+        assert_eq!(headers["content-type"], expected, "asset {name}");
+    }
 }
 
 // Given a web server with a token
@@ -252,8 +260,8 @@ async fn workspaces_without_launch_list_history_only() {
 #[tokio::test]
 async fn intent_reports_present_absent_and_missing_query() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let with = tmp.path().join("with");
-    let without = tmp.path().join("without");
+    let with = tmp.path().join("with space & # + %");
+    let without = tmp.path().join("without space & # + %");
     std::fs::create_dir_all(with.join(".withnav")).expect("dir");
     std::fs::create_dir_all(&without).expect("dir");
     std::fs::write(
@@ -263,7 +271,7 @@ async fn intent_reports_present_absent_and_missing_query() {
     .expect("intent");
     let state = web_state(tmp.path(), vec![]);
 
-    let uri = format!("/v1/intent?workspace={}", with.to_str().unwrap());
+    let uri = intent_uri(&with);
     let (status, body) = get_json(&state, &uri).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["exists"], true);
@@ -273,7 +281,7 @@ async fn intent_reports_present_absent_and_missing_query() {
     assert_eq!(body["active_spec"], Value::Null);
     assert!(body["raw"].as_str().unwrap().contains("## Plan"));
 
-    let uri = format!("/v1/intent?workspace={}", without.to_str().unwrap());
+    let uri = intent_uri(&without);
     let (status, body) = get_json(&state, &uri).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["exists"], false);

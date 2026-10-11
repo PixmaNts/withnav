@@ -21,6 +21,28 @@ pub mod nofollow;
 pub mod steer_subagent;
 pub mod task;
 
+fn subagent_denied(code: &str, message: String) -> ToolError {
+    ToolError::Denied {
+        code: code.into(),
+        message,
+    }
+}
+
+fn parse_child_id(
+    args: &Value,
+    cancel: &CancellationToken,
+    code: &str,
+) -> Result<crate::session::SessionId, ToolError> {
+    if cancel.is_cancelled() {
+        return Err(ToolError::Canceled);
+    }
+    args["child_id"]
+        .as_str()
+        .ok_or_else(|| subagent_denied(code, "child_id must be a string".into()))?
+        .parse()
+        .map_err(|_| subagent_denied(code, "invalid child_id".into()))
+}
+
 /// Legacy reserved argument name. Every model ingress rejects it; approved
 /// destinations travel only in the host's dispatch context.
 pub const BOUND_ARG: &str = "withnav_bound_destination";
@@ -95,6 +117,15 @@ impl ToolResult {
             truncated: None,
             error: None,
             metadata: Value::Null,
+        }
+    }
+
+    pub fn bounded_ok(text: &str, max_bytes: usize) -> Self {
+        let (output, original_bytes) = bound_output(text, max_bytes);
+        let result = Self::ok(output);
+        match original_bytes {
+            Some(bytes) => result.with_truncation(bytes),
+            None => result,
         }
     }
 
@@ -547,5 +578,33 @@ mod tests {
         assert_eq!(json["error"]["code"], "plugin_denied");
         assert_eq!(json["error"]["plugin_id"], "destructive-command-gate");
         assert_eq!(json["error"]["message"], "blocked");
+
+        let cancel = CancellationToken::new();
+        let child = ulid::Ulid::new();
+        for code in ["subagent_error", "subagent_decision"] {
+            assert_eq!(
+                parse_child_id(&serde_json::json!({"child_id": child}), &cancel, code).unwrap(),
+                child
+            );
+            for (args, expected_message) in [
+                (serde_json::json!({}), "child_id must be a string"),
+                (
+                    serde_json::json!({"child_id": 42}),
+                    "child_id must be a string",
+                ),
+                (serde_json::json!({"child_id": "bad"}), "invalid child_id"),
+            ] {
+                assert!(matches!(
+                    parse_child_id(&args, &cancel, code),
+                    Err(ToolError::Denied { code: actual, message })
+                        if actual == code && message == expected_message
+                ));
+            }
+        }
+        cancel.cancel();
+        assert!(matches!(
+            parse_child_id(&Value::Null, &cancel, "subagent_error"),
+            Err(ToolError::Canceled)
+        ));
     }
 }

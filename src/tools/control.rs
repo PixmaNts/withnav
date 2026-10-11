@@ -35,7 +35,7 @@ pub fn validated_choices(args: &Value) -> Option<AskChoices> {
             return None;
         }
     }
-    let options: Vec<AskOption> = serde_json::from_value(args.get("options")?.clone()).ok()?;
+    let options = Vec::<AskOption>::deserialize(args.get("options")?).ok()?;
     if !(2..=8).contains(&options.len()) {
         return None;
     }

@@ -77,6 +77,11 @@ pub struct ChildPreparationBarrier {
     pub release: Arc<tokio::sync::Notify>,
 }
 
+#[cfg(debug_assertions)]
+fn take_barrier(slot: &Mutex<Option<ChildPreparationBarrier>>) -> Option<ChildPreparationBarrier> {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -504,6 +509,11 @@ impl Service {
             operations: self.child_operations.clone(),
             done,
         }
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn expire_catalog_backoff(&self) {
+        self.catalog.expire_failures();
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -955,11 +965,7 @@ impl Service {
         let prepared = prepared?;
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_preparation_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_preparation_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -994,11 +1000,7 @@ impl Service {
         drop(_admission);
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_publication_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_publication_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -1064,11 +1066,7 @@ impl Service {
         reservation.committed = true;
         #[cfg(debug_assertions)]
         {
-            let barrier = self
-                .child_registration_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
+            let barrier = take_barrier(&self.child_registration_barrier);
             if let Some(barrier) = barrier {
                 barrier.reached.notify_one();
                 barrier.release.notified().await;
@@ -1100,11 +1098,7 @@ impl Service {
             }
             #[cfg(debug_assertions)]
             {
-                let barrier = self
-                    .child_bypass_barrier
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
+                let barrier = take_barrier(&self.child_bypass_barrier);
                 if let Some(barrier) = barrier {
                     barrier.reached.notify_one();
                     barrier.release.notified().await;
@@ -1152,11 +1146,7 @@ impl Service {
             if let Some(handle) = self.mark_stopping(child) {
                 #[cfg(debug_assertions)]
                 {
-                    let barrier = self
-                        .child_cleanup_barrier
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take();
+                    let barrier = take_barrier(&self.child_cleanup_barrier);
                     if let Some(barrier) = barrier {
                         barrier.reached.notify_one();
                         barrier.release.notified().await;
@@ -1306,9 +1296,9 @@ impl Service {
         id: SessionId,
     ) -> Result<SessionHandle, ServerError> {
         self.ensure_not_archived(id).await?;
-        match self.lock_sessions().get(&id) {
+        match self.handle(id) {
             Some(handle) if handle.lifecycle == Lifecycle::Active => {
-                return Ok(handle.clone());
+                return Ok(handle);
             }
             Some(_) => return Err(ServerError::SessionStopping),
             None => {}
@@ -1605,25 +1595,30 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         // Claimed at admission: a second answer for the same request is
-        let owned = {
-            self.lock_sessions()
-                .values()
-                .find(|child| {
-                    child.parent_session_id == Some(session_id)
+        let (owned, foreign) = {
+            let sessions = self.lock_sessions();
+            let mut owned = None;
+            let mut foreign = false;
+            for child in sessions.values() {
+                if child.parent_session_id.is_some()
+                    && child.status.pending_permission() == Some(request_id)
+                {
+                    foreign = true;
+                    if child.parent_session_id == Some(session_id)
                         && child.lifecycle == Lifecycle::Active
-                        && child.status.pending_permission() == Some(request_id)
-                })
-                .cloned()
+                    {
+                        owned = Some(child.clone());
+                        break;
+                    }
+                }
+            }
+            (owned, foreign)
         };
         let handle = if handle.status.pending_permission() == Some(request_id) {
             handle
         } else if let Some(child) = owned {
             child
         } else {
-            let foreign = self.lock_sessions().values().any(|child| {
-                child.parent_session_id.is_some()
-                    && child.status.pending_permission() == Some(request_id)
-            });
             return Err(if foreign {
                 ServerError::ChildReadOnly
             } else {
@@ -1775,10 +1770,11 @@ impl Service {
                 });
             }
             // Live + active: the conversation never left.
-            if let Some(handle) = self.lock_sessions().get(&id) {
-                if handle.lifecycle == Lifecycle::Active {
-                    return Ok((id, true));
-                }
+            if self
+                .handle(id)
+                .is_some_and(|handle| handle.lifecycle == Lifecycle::Active)
+            {
+                return Ok((id, true));
             }
             // Stopped, or only on disk: rebuild under the same id from the
             // stored row.
@@ -1839,18 +1835,7 @@ impl Service {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
-            let mut summary = self.stored_summary(id).await?;
-            if let Some(link) = self
-                .history
-                .child_link(id)
-                .await
-                .map_err(ServerError::History)?
-            {
-                summary.parent_session_id = Some(link.parent_id.to_string());
-                summary.child_status = Some(link.status);
-                summary.promptable = false;
-            }
-            return Ok(summary);
+            return self.stored_summary(id).await;
         };
         let current_seq = handle
             .sequencer
@@ -1860,7 +1845,12 @@ impl Service {
             .unwrap_or(0);
         let selected = handle.selected();
         let identity = selected.identity();
-        let metadata = self.history.meta(id).await.map_err(ServerError::History)?;
+        let (metadata, child_link) = self
+            .history
+            .meta_with_child_link(id)
+            .await
+            .map_err(ServerError::History)?
+            .map_or((None, None), |(meta, link)| (Some(meta), link));
         let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
         let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
         let bypass = *handle
@@ -1887,11 +1877,7 @@ impl Service {
             current_seq,
             parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
             child_status: if handle.parent_session_id.is_some() {
-                self.history
-                    .child_link(id)
-                    .await
-                    .map_err(ServerError::History)?
-                    .map(|link| link.status)
+                child_link.map(|link| link.status)
             } else {
                 None
             },
@@ -1903,9 +1889,9 @@ impl Service {
     /// The summary of a conversation that only the store holds (stopped, or
     /// from before a restart): stopped at its stored `last_seq`.
     async fn stored_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
-        let meta = self
+        let (meta, child_link) = self
             .history
-            .meta(id)
+            .meta_with_child_link(id)
             .await
             .map_err(ServerError::History)?
             .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
@@ -1945,9 +1931,9 @@ impl Service {
                 .unwrap_or_else(|| AgentId::build().to_string()),
             variant: meta.variant,
             current_seq: meta.last_seq,
-            parent_session_id: None,
-            child_status: None,
-            promptable: meta.resume_disabled_reason.is_none(),
+            parent_session_id: child_link.as_ref().map(|link| link.parent_id.to_string()),
+            promptable: child_link.is_none() && meta.resume_disabled_reason.is_none(),
+            child_status: child_link.map(|link| link.status),
             resume_disabled_reason: meta.resume_disabled_reason,
         })
     }
@@ -2554,9 +2540,9 @@ impl Service {
             ),
         };
         // "Allow folder" answers are kept per workspace, across sessions. A
-        actor.skill_grants = Some(crate::agent::skill_grants::SkillGrants {
-            file: self.config.config_dir.join("skill-grants.json"),
-        });
+        actor.skill_grants = Some(crate::agent::skill_grants::SkillGrants::in_dir(
+            &self.config.config_dir,
+        ));
         // subagent keeps its own in memory, as its parent's policy decides.
         if child_policy.is_none() {
             actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);
@@ -3047,7 +3033,7 @@ impl Service {
                         "data":{"captain_committed":true,"message":"Fresh captain instruction checkpointed"}
                     }));
                     sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
-                        history.consume_completions_committed(session_id,vec![],transcript,Some(envelope)).await
+                        history.consume_completions_shared(session_id,vec![],transcript,Some(envelope)).await
                     }))).await.map(|_| ()).map_err(|error| error.to_string())
                 })
             }));
@@ -3089,20 +3075,21 @@ impl Service {
             let delivery_sequencer = sequencer.clone();
             #[cfg(debug_assertions)]
             let failure_countdown = self.delivery_failure_countdown.clone();
-            status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
+            status.install_delivery(Arc::new(move |transcript, mid_turn| {
                 let history = history.clone();
                 let sequencer = delivery_sequencer.clone();
                 #[cfg(debug_assertions)]
                 let failure_countdown = failure_countdown.clone();
                 Box::pin(async move {
                     history.flush().await?;
-                    let notices = history.unconsumed_completions(session_id).await?;
+                    let mut notices = history.unconsumed_completions(session_id).await?;
+                    notices.retain(|(_, payload, _)| !mid_turn || payload["delivery"] == "steer");
                     if notices.is_empty() {
                         return Ok(None);
                     }
+                    let mut transcript = transcript.to_vec();
                     let mut consumed = false;
                     for (child, payload, result) in notices {
-                        if mid_turn && payload["delivery"] != "steer" { continue; }
                         let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
                         let mut text = serde_json::json!({
                             "untrusted_subagent_output": true,
@@ -3141,7 +3128,7 @@ impl Service {
                                     return Err("injected delivery commit failure".into());
                                 }
                             }
-                            committed_history.consume_completions_committed(session_id, vec![child], committed_transcript, Some(envelope)).await
+                            committed_history.consume_completions_shared(session_id, vec![child], committed_transcript, Some(envelope)).await
                         }))).await;
                         if let Err(message) = result {
                             transcript.pop();

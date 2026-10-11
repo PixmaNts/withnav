@@ -61,7 +61,7 @@ async fn structured_ask_answer_validates_preserves_captain_authority_and_replays
         serde_json::from_value(body.clone()).unwrap();
     let command = withnav::server::routes::build_command(
         session_id,
-        &request,
+        request,
         withnav::bus::command::DeliveryMode::NextTurn,
     );
     assert!(command.from_captain());

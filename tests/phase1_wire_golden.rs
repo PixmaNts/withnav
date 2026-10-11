@@ -2,7 +2,7 @@
 //!
 //! Drives `run_agent` against a scripted mock provider (same technique as the
 //! Phase-1 loop tests) and locks the raw outgoing provider request bodies.
-//! Capture-if-absent on first run; every later run asserts byte-equality, so a
+//! Requires checked-in fixtures and asserts byte-equality, so a
 //! Phase-2 seam that changes Phase-1 request building FAILS here. Test-only:
 //! no Phase-1 logic is touched.
 
@@ -64,7 +64,7 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
     TestActor { actor, _tmp: tmp }
 }
 
-/// Capture-if-absent, else assert byte-equality of the raw wire bodies.
+/// Assert byte-equality against required checked-in raw wire bodies.
 ///
 /// `bodies` are the exact request-body strings the provider received; the
 /// fixture file stores them as a pretty-printed JSON array of raw strings so
@@ -77,23 +77,15 @@ fn lock_fixture(name: &str, bodies: &[String]) {
         assert!(parsed.is_object(), "captured body must be a JSON object");
     }
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_DIR);
-    std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.json"));
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let locked: Vec<String> = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(
-                locked.as_slice(),
-                bodies,
-                "wire bodies drifted from locked fixture {name}"
-            );
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let pretty = serde_json::to_string_pretty(bodies).unwrap();
-            std::fs::write(&path, pretty.as_bytes()).unwrap();
-        }
-        Err(e) => panic!("failed reading fixture {name}: {e}"),
-    }
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("required golden fixture {}: {e}", path.display()));
+    let locked: Vec<String> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        locked.as_slice(),
+        bodies,
+        "wire bodies drifted from locked fixture {name}"
+    );
 }
 
 async fn run_once(actor: &mut AgentActor) -> RunOutcome {

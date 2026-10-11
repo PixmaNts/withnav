@@ -191,7 +191,6 @@ pub struct Tab {
     pub generation: Generation,
     pub pending_submit: Option<u64>,
     pub delivery_uncertain: bool,
-    pub latest_envelope: Option<EventEnvelope>,
     pub pending_submit_text: Option<String>,
     pub pending_model_pick: bool,
     pub editor_revision: u64,

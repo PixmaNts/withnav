@@ -9,6 +9,24 @@ use withnav::tools::Tool;
 
 mod common;
 use common::deadline::Deadline;
+
+async fn assert_child_state(fx: &Fx, child: ulid::Ulid, has_runtime: bool, exists: bool) {
+    assert_eq!(
+        fx.state.session_has_runtime(child),
+        has_runtime,
+        "child {child} runtime"
+    );
+    assert_eq!(
+        fx.state
+            .history()
+            .exists(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap(),
+        exists,
+        "child {child} history"
+    );
+}
 #[tokio::test]
 async fn child_delete_waits_for_registration_before_removing_owner() {
     child_lifecycle_during_publication(true, false)
@@ -73,14 +91,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .unwrap()
         .parse()
         .unwrap();
-    assert!(fx
-        .state
-        .history()
-        .exists(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
-    assert_eq!(fx.state.session_has_runtime(child), cleanup);
+    assert_child_state(&fx, child, cleanup, true).await;
     let service = fx.state.service();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let lifecycle = tokio::spawn(async move {
@@ -103,13 +114,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .is_err(),
         "child lifecycle must wait for its owned operation"
     );
-    assert!(fx
-        .state
-        .history()
-        .exists(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
+    assert_child_state(&fx, child, cleanup, true).await;
     barrier.release.notify_one();
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), spawn)
         .bounded(file!(), line!())
@@ -123,16 +128,9 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(!fx.state.session_has_runtime(child));
+    assert_child_state(&fx, child, false, !delete).await;
     assert_eq!(fx.state.reserved_child_count(parent), 0);
     if delete {
-        assert!(!fx
-            .state
-            .history()
-            .exists(child)
-            .bounded(file!(), line!())
-            .await
-            .unwrap());
         assert!(fx
             .state
             .child_metadata(child)
@@ -1011,6 +1009,23 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         Some(parent.to_string().as_str())
     );
     assert!(!summary.promptable);
+    assert_eq!(summary.child_status.as_deref(), Some("running"));
+    let root = fx
+        .state
+        .session_summary(parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(root.parent_session_id.is_none());
+    assert!(root.child_status.is_none());
+    assert!(root.promptable);
+    assert!(matches!(
+        fx.state
+            .session_summary(ulid::Ulid::new())
+            .bounded(file!(), line!())
+            .await,
+        Err(withnav::error::ServerError::SessionNotFound(_))
+    ));
     let child_events = events(&fx, child).bounded(file!(), line!()).await;
     assert!(child_events
         .iter()
@@ -1071,6 +1086,8 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         Some(parent.to_string().as_str())
     );
     assert!(!stored.promptable);
+    assert_eq!(stored.child_status.as_deref(), Some("stopped"));
+    assert_eq!(stored.actor_state, "stopped");
     let parent_events = events(&fx, parent).bounded(file!(), line!()).await;
     assert!(parent_events
         .iter()

@@ -14,7 +14,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use withnav::navigator::log::NavLog;
 use withnav::navigator::metacognition::{LlmCommenter, RemarkContext};
-use withnav::navigator::ports::Metacognition;
+use withnav::navigator::ports::{Metacognition, ReflexContextModel, ReflexContextRequest};
 use withnav::provider::config::{
     ApiKind, ModelConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
@@ -22,6 +22,7 @@ use withnav::provider::openai::ClientCache;
 
 mod common;
 use common::navigator::{delta_text, delta_tool_call, sse_data, sse_stream};
+use common::sse::{http_sse, spawn_capturing_provider};
 
 fn resolved(base_url: String) -> ResolvedModel {
     ResolvedModel {
@@ -107,34 +108,77 @@ async fn isolated_server() -> MockServer {
 #[tokio::test]
 async fn streamed_usage_is_recorded_in_the_round_log() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = isolated_server().await;
     let stream = sse_stream(vec![
         sse_data(&delta_text(r#"{"silent":true}"#)),
         sse_data(&json!({"choices": [], "usage": {
             "prompt_tokens": 123, "completion_tokens": 17, "total_tokens": 140
         }})),
     ]);
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream"))
-        .mount(&server)
-        .await;
-    let log_path = tmp.path().join("nav.jsonl");
-    let c = commenter(server.uri(), Some(log_path.clone()));
-    let mut ctx = remark_ctx(tmp.path(), vec![]);
-    ctx.tool_rounds = 0;
-    c.remark(&ctx, &tokio_util::sync::CancellationToken::new())
-        .await
-        .unwrap();
-    let bodies = received_bodies(&server).await;
-    assert_eq!(bodies[0]["stream_options"]["include_usage"], true);
-    let records = NavLog::new(&log_path).read_all();
-    let call = records
-        .iter()
-        .find(|r| r["layer"] == "metacognition_round")
-        .unwrap();
-    assert_eq!(call["input_tokens"], 123);
-    assert_eq!(call["output_tokens"], 17);
+    // Lock the raw navigator requests, including header insertion order and
+    // variant bytes, before sharing provider request preparation.
+    for (variant, extra) in [
+        (None, ""),
+        (
+            Some(json!({"reasoning_effort":"low","thinking":{"budget_tokens":8000,"type":"enabled"}})
+                .as_object().unwrap().clone()),
+            r#","reasoning_effort":"low","thinking":{"budget_tokens":8000,"type":"enabled"}"#,
+        ),
+    ] {
+        for reflex in [false, true] {
+            let server = spawn_capturing_provider(vec![http_sse(&stream)]).await;
+            let mut model = resolved(format!("{}///", server.url));
+            model.provider.headers = BTreeMap::from([
+                ("X-A-First".into(), "first".into()),
+                ("X-Z-Last".into(), "last".into()),
+            ]);
+            let log_path = tmp.path().join(format!("nav-{reflex}-{}.jsonl", variant.is_some()));
+            let c = LlmCommenter::new(model, "test-key".into(), Arc::new(ClientCache::new()))
+                .with_variant(variant.clone())
+                .with_log(NavLog::new(&log_path));
+            let (system, user, max_tokens) = if reflex {
+                let request = ReflexContextRequest {
+                    file: "src/main.rs".into(),
+                    language_id: "rust".into(),
+                    intent: "keep the parser".into(),
+                    conversation: "captain: inspect".into(),
+                    excerpt: "fn main() {}".into(),
+                };
+                c.refresh(&request).await.unwrap();
+                (
+                    include_str!("../src/navigator/metacognition/reflex_context_prompt.md").to_string(),
+                    "File: src/main.rs\nLanguage: rust\n\nIntent on record:\nkeep the parser\n\nRecent conversation:\ncaptain: inspect\n\nExcerpt around the cursor:\nfn main() {}\n".to_string(),
+                    300,
+                )
+            } else {
+                let mut ctx = remark_ctx(tmp.path(), vec![]);
+                ctx.workspace = None;
+                ctx.prompt = Some("captured branch".into());
+                c.remark(&ctx, &tokio_util::sync::CancellationToken::new())
+                    .await.unwrap();
+                let records = NavLog::new(&log_path).read_all();
+                let call = records.iter().find(|r| r["layer"] == "metacognition_round").unwrap();
+                assert_eq!(call["input_tokens"], 123);
+                assert_eq!(call["output_tokens"], 17);
+                assert_eq!(call["cancelled"], false);
+                (
+                    format!("{}\n\ncaptured branch", withnav::navigator::metacognition::NAVIGATOR_SYSTEM_PROMPT),
+                    "Decide: stay silent, or give one short remark. JSON only.".to_string(),
+                    1024,
+                )
+            };
+            let body = format!(
+                "{{\"model\":\"mock-fast\",\"messages\":[{{\"role\":\"system\",\"content\":{}}},{{\"role\":\"user\",\"content\":{}}}],\"stream\":true,\"stream_options\":{{\"include_usage\":true}},\"max_tokens\":{max_tokens},\"temperature\":0.2{extra}}}",
+                serde_json::to_string(&system).unwrap(),
+                serde_json::to_string(&user).unwrap(),
+            );
+            let host = server.url.strip_prefix("http://").unwrap().strip_suffix("/v1").unwrap();
+            let expected = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nauthorization: Bearer test-key\r\ncontent-type: application/json\r\nx-a-first: first\r\nx-z-last: last\r\naccept: */*\r\naccept-encoding: gzip,deflate,br\r\nhost: {host}\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len(),
+            );
+            assert_eq!(server.requests(), vec![expected], "reflex={reflex}, variant={variant:?}");
+        }
+    }
 }
 
 // Given a wiremock chat provider where the first round asks to `read` a

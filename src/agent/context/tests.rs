@@ -109,6 +109,18 @@ fn absent_components_weigh_nothing_and_the_contract_always_counts() {
 
 #[test]
 fn the_estimate_matches_the_assembled_request() {
+    for parameters in [
+        json!({"type":"object"}),
+        json!({"description":"quotes \" slash \\ newline\n é ✓", "nested":[null, true, 42, {"x":"\u{0000}"}]}),
+    ] {
+        let tools = vec![ToolDef::function("read", "read a file", parameters)];
+        let bytes: usize = tools
+            .iter()
+            .map(|tool| serde_json::to_string(tool).unwrap().len())
+            .sum();
+        assert_eq!(tools_tokens(&tools), bytes_tokens(bytes));
+    }
+    assert_eq!(tools_tokens(&[]), 0);
     let history = vec![user("hello"), assistant_call()];
     let tools = tool_defs();
     let b = estimate(
@@ -143,24 +155,44 @@ fn budget_follows_the_formula() {
 
 #[test]
 fn the_input_limit_caps_the_budget() {
-    let b = Budget::compute(1_000_000, Some(200_000), None, None).unwrap();
-    assert_eq!(b.input_budget, 200_000 - 50_000);
-    // A limit above W - R changes nothing.
-    let b = Budget::compute(100_000, Some(500_000), None, None).unwrap();
-    assert_eq!(b.input_budget, 100_000 - 8192 - 5000);
-    // A zero limit means "not set".
-    let b = Budget::compute(100_000, Some(0), None, None).unwrap();
-    assert_eq!(b.input_budget, 100_000 - 8192 - 5000);
+    for (case, window, input_limit, expected) in [
+        ("input cap", 1_000_000, 200_000, 200_000 - 50_000),
+        (
+            "above window minus reserve",
+            100_000,
+            500_000,
+            100_000 - 8192 - 5000,
+        ),
+        ("zero means unset", 100_000, 0, 100_000 - 8192 - 5000),
+    ] {
+        let b = Budget::compute(window, Some(input_limit), None, None)
+            .unwrap_or_else(|err| panic!("{case}: {err}"));
+        assert_eq!(b.input_budget, expected, "{case}");
+    }
 }
 
 #[test]
 fn the_output_reserve_prefers_models_json_then_the_smaller_bound() {
-    assert_eq!(output_reserve(200_000, Some(16_000), Some(4_000)), 16_000);
-    assert_eq!(output_reserve(200_000, None, Some(4_000)), 4_000);
-    assert_eq!(output_reserve(200_000, None, Some(64_000)), 8192);
-    assert_eq!(output_reserve(20_000, None, None), 5_000);
-    assert_eq!(output_reserve(20_000, Some(0), None), 5_000);
-    assert_eq!(output_reserve(200_000, None, Some(0)), 8192);
+    for (case, window, configured, provider, expected) in [
+        (
+            "configured wins",
+            200_000,
+            Some(16_000),
+            Some(4_000),
+            16_000,
+        ),
+        ("provider below default", 200_000, None, Some(4_000), 4_000),
+        ("provider above default", 200_000, None, Some(64_000), 8192),
+        ("quarter-window bound", 20_000, None, None, 5_000),
+        ("zero configured means unset", 20_000, Some(0), None, 5_000),
+        ("zero provider means unset", 200_000, None, Some(0), 8192),
+    ] {
+        assert_eq!(
+            output_reserve(window, configured, provider),
+            expected,
+            "{case}"
+        );
+    }
 }
 
 #[test]
@@ -185,23 +217,48 @@ fn a_small_window_keeps_a_proportional_margin() {
 
 #[test]
 fn an_impossible_budget_is_a_clear_error() {
-    // W = 4096 with an output limit as large as the window leaves nothing.
-    let err = Budget::compute(4096, None, Some(4096), None).unwrap_err();
-    assert_eq!(err.window, 4096);
-    let text = err.to_string();
+    for (case, window, input_limit, model_limit, diagnostics) in [
+        (
+            "small window exhausted",
+            4096,
+            None,
+            Some(4096),
+            &["4096", "models.json"][..],
+        ),
+        (
+            "output equals window",
+            100_000,
+            None,
+            Some(100_000),
+            &[][..],
+        ),
+        (
+            "output exceeds window",
+            100_000,
+            None,
+            Some(500_000),
+            &[][..],
+        ),
+        (
+            "input leaves no room",
+            100_000,
+            Some(5000),
+            None,
+            &["input limit of 5000"][..],
+        ),
+        ("input equals margin", 100_000, Some(5000), None, &[][..]),
+    ] {
+        let err = Budget::compute(window, input_limit, model_limit, None).expect_err(case);
+        assert_eq!(err.window, window, "{case}");
+        let text = err.to_string();
+        for diagnostic in diagnostics {
+            assert!(text.contains(diagnostic), "{case}: {text}");
+        }
+    }
     assert!(
-        text.contains("4096") && text.contains("models.json"),
-        "{text}"
+        Budget::compute(100_000, Some(5001), None, None).is_ok(),
+        "input one token above margin"
     );
-    // An output limit as large as the window.
-    assert!(Budget::compute(100_000, None, Some(100_000), None).is_err());
-    assert!(Budget::compute(100_000, None, Some(500_000), None).is_err());
-    // An input limit inside the margin.
-    let err = Budget::compute(100_000, Some(5000), None, None).unwrap_err();
-    assert!(err.to_string().contains("input limit of 5000"));
-    // Exactly the margin is still zero room.
-    assert!(Budget::compute(100_000, Some(5000), None, None).is_err());
-    assert!(Budget::compute(100_000, Some(5001), None, None).is_ok());
 }
 
 #[test]

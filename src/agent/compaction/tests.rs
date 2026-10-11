@@ -232,23 +232,16 @@ fn effective_history_is_the_summary_then_the_tail_with_markers() {
 #[test]
 fn validate_rejects_bad_indices() {
     let t = five_turns(10);
-    let ok = |through: usize, pruned: Vec<usize>| Compaction {
-        checkpoint: Checkpoint {
-            through_message: through,
-            summary: "s".into(),
-            generation: 1,
-        },
-        pruned_message_indices: pruned,
-    };
-    assert!(validate(&ok(3, vec![6]), &t).is_ok());
-    assert!(validate(&ok(99, vec![]), &t).is_err());
-    assert!(
-        validate(&ok(3, vec![2]), &t).is_err(),
-        "before the boundary"
-    );
-    assert!(validate(&ok(3, vec![99]), &t).is_err());
-    assert!(validate(&ok(3, vec![5]), &t).is_err(), "not a tool output");
-    assert!(validate(&ok(3, vec![10, 6]), &t).is_err(), "unordered");
+    assert!(validate(&k(3, "s", vec![6]), &t).is_ok());
+    for (through, pruned, reason) in [
+        (99, vec![], "boundary outside transcript"),
+        (3, vec![2], "before the boundary"),
+        (3, vec![99], "pruned index outside transcript"),
+        (3, vec![5], "not a tool output"),
+        (3, vec![10, 6], "unordered"),
+    ] {
+        assert!(validate(&k(through, "s", pruned), &t).is_err(), "{reason}");
+    }
 }
 
 #[test]
@@ -383,7 +376,19 @@ fn invalid(c: &Compaction, t: &[ChatMessage]) -> String {
 #[test]
 fn a_boundary_that_would_overflow_is_refused_not_wrapped() {
     let t = five_turns(10);
-    assert!(invalid(&k(usize::MAX, "s", vec![]), &t).contains("leaves nothing"));
+    for through in [t.len() - 1, t.len(), usize::MAX] {
+        let checkpoint = k(through, "s", vec![]);
+        assert!(invalid(&checkpoint, &t).contains("leaves nothing"));
+        assert!(matches!(
+            plan(&t, Some(&checkpoint), &components(), 100_000, Aim::Fit),
+            Err(CompactionError::Invalid(_))
+        ));
+        assert_eq!(
+            serde_json::to_value(effective_history(&t, Some(&checkpoint))).unwrap(),
+            serde_json::to_value(&t).unwrap(),
+        );
+    }
+    assert!(effective_history(&[], Some(&k(usize::MAX, "s", vec![]))).is_empty());
 }
 
 #[test]

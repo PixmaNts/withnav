@@ -552,10 +552,11 @@ pub(super) async fn run_automatic(
     // budget, then take the whole budget; only then give up the recent turns
     // and keep just the latest exchange, again below 70%, then the whole
     // budget. A plan that cannot fit costs no provider call.
+    let reduced_budget = budget / 10 * 7;
     let attempts = [
-        (Aim::Fit, budget / 10 * 7),
+        (Aim::Fit, reduced_budget),
         (Aim::Fit, budget),
-        (Aim::FitMidTurn, budget / 10 * 7),
+        (Aim::FitMidTurn, reduced_budget),
         (Aim::FitMidTurn, budget),
     ];
     let mut last = None;

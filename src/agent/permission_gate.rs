@@ -119,17 +119,19 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             .and_then(Value::as_str)
             .unwrap_or("");
         // Only deterministic destructive/sensitive floors. Ordinary mutations are graded.
+        let segments = shell::segments(command);
         flags.risky = sensitive_call(call, needed, cx)
             || command.contains("AGENTS.md")
             || command.contains("CLAUDE.md")
             || command.contains("rules.md")
             || command.contains("hooks/");
-        flags.risky |= (shell::segments(command).is_none()
+        flags.risky |= (segments.is_none()
             && !shell::read_only_pipeline(
                 command,
                 &json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots}),
             ))
-            || shell::segments(command)
+            || segments
+                .as_ref()
                 .is_some_and(|segments| segments.iter().any(|words| shell::destructive(words)));
         flags.mutation |= shell::removal_or_move(command);
         if let Some(words) = git::literal(command) {
@@ -360,37 +362,43 @@ fn fit_conversation(state: &mut Value, instruction_bytes: usize, limit: usize) {
     let mut dropped = state["budget_fit"]["dropped_turns"].as_u64().unwrap_or(0);
     let mut cut = state["budget_fit"]["cut_turns"].as_u64().unwrap_or(0);
     state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
-    while state.to_string().len() + instruction_bytes > limit {
+    let mut bytes = state.to_string().len() + instruction_bytes;
+    while bytes > limit {
+        let previous_budget_bytes = state["budget_fit"].to_string().len();
         let turns = state["conversation"]
             .as_array_mut()
             .expect("host conversation");
         let latest = turns.iter().rposition(|t| t["author"] == "captain");
         // Drop oldest turns before shortening the remaining older pasted text.
         if turns.len() > 2 && latest != Some(0) {
-            turns.remove(0);
+            bytes -= turns.remove(0).to_string().len() + 1;
             dropped += 1;
         } else if let Some(turn) = turns.iter_mut().enumerate().find_map(|(i, turn)| {
             (Some(i) != latest && turn["text"].as_str().is_some_and(|t| t.len() > 512))
                 .then_some(turn)
         }) {
             let text = turn["text"].as_str().unwrap();
+            let previous_text_bytes = turn["text"].to_string().len();
             let (short, _) = crate::tools::bound_output(text, 256);
             turn["text"] = json!(format!(
                 "{short} [… {} bytes cut]",
                 text.len().saturating_sub(256)
             ));
+            bytes = bytes - previous_text_bytes + turn["text"].to_string().len();
             cut += 1;
         } else if let Some(i) = turns
             .iter()
             .enumerate()
             .find_map(|(i, _)| (Some(i) != latest).then_some(i))
         {
-            turns.remove(i);
+            let comma_bytes = usize::from(turns.len() > 1);
+            bytes -= turns.remove(i).to_string().len() + comma_bytes;
             dropped += 1;
         } else {
             break;
         }
         state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
+        bytes = bytes - previous_budget_bytes + state["budget_fit"].to_string().len();
     }
     script::fit(state, instruction_bytes, limit);
     if state.to_string().len() + instruction_bytes > limit {
@@ -429,6 +437,16 @@ fn read_only_run(
     sensitivity: f64,
 ) -> bool {
     let state: Value = serde_json::from_str(&input.state).unwrap_or(Value::Null);
+    read_only_run_with_state(input, answers, flags, sensitivity, &state)
+}
+
+fn read_only_run_with_state(
+    input: &PermissionReviewInput,
+    answers: &Answers,
+    flags: &Overrides,
+    sensitivity: f64,
+    state: &Value,
+) -> bool {
     matches!(answers.get("call_effect"), Some(Answer::Choice { choice, confidence, .. }) if choice == "read_only" && *confidence >= MIN_CONFIDENCE)
         && choice(answers, "reversibility") != Some("destructive")
         && choice(answers, "publication") != Some("shared")
@@ -445,13 +463,7 @@ fn read_only_run(
             .is_some_and(shell::read_floor)
         && !state["untrusted_evidence"]["arguments"]["command"]
             .as_str()
-            .is_some_and(|command| {
-                shell::segments(command).is_some_and(|parts| {
-                    parts
-                        .iter()
-                        .any(|words| shell::identity_floor(words, &state["host_facts"]))
-                })
-            })
+            .is_some_and(|command| shell::command_identity_floor(command, &state["host_facts"]))
 }
 
 /// The same typed classifiers are used by the gate and the labelled live probe.
@@ -574,7 +586,7 @@ pub fn route(
     {
         return Err("malformed");
     }
-    if read_only_run(input, answers, flags, MAX_READ_SENSITIVITY) {
+    if read_only_run_with_state(input, answers, flags, MAX_READ_SENSITIVITY, &state) {
         return Ok(Route::Run);
     }
     if flags.risky
@@ -592,16 +604,12 @@ pub fn route(
     if state["untrusted_evidence"]["arguments"]["command"]
         .as_str()
         .is_some_and(|command| {
-            let mut facts = state["host_facts"].clone();
-            if !state["untrusted_evidence"]["script"]["text"].is_string()
-                || state["untrusted_evidence"]["script"]["truncated"] != false
-            {
-                facts["script_binding"]["complete"] = json!(false);
-            }
-            shell::execution_floor(command, &facts)
+            shell::execution_floor(command, &state["host_facts"])
                 || shell::removal_or_move(command)
                 || shell::overwrite_paths(command).is_some_and(|paths| {
-                    !paths.is_empty() && state["host_facts"]["overwrites_recoverable"] != true
+                    !paths.is_empty()
+                        && (state["host_facts"]["overwrites_recoverable"] != true
+                            || shell::segments(command).is_none_or(|parts| parts.len() != 1))
                 })
         })
     {
@@ -688,7 +696,7 @@ pub fn config_grant_eligible(
     };
     if path
         .file_name()
-        .is_some_and(|name| name == "skill-grants.json" || name == "grants.json")
+        .is_some_and(|name| name == super::skill_grants::FILE_NAME || name == "grants.json")
     {
         return false;
     }
@@ -713,21 +721,14 @@ pub fn config_grant_eligible(
             let Some(new) = call.args.get("new_string").and_then(Value::as_str) else {
                 return false;
             };
-            if old.is_empty() || !before.contains(old) {
-                return false;
-            }
-            if call
+            let replace_all = call
                 .args
                 .get("replace_all")
                 .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                Some(before.replace(old, new))
-            } else if before.matches(old).count() == 1 {
-                Some(before.replacen(old, new, 1))
-            } else {
-                None
-            }
+                .unwrap_or(false);
+            crate::tools::native::apply_edit(&before, old, new, replace_all)
+                .ok()
+                .map(|(after, _)| after)
         }
         _ => None,
     };
@@ -957,9 +958,15 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
         }
         if let Some(paths) = shell::overwrite_paths(command) {
             if !paths.is_empty() {
-                let mut recoverable = paths.len() <= 16;
-                for path in paths.iter().take(16) {
-                    recoverable &= git::recoverable_file(&actor.tool_context.workspace, path).await;
+                // A compound command may have changed cwd before an overwrite.
+                // Workspace recovery is evidence only for one literal segment.
+                let mut recoverable = paths.len() <= 16
+                    && shell::segments(command).is_some_and(|parts| parts.len() == 1);
+                if recoverable {
+                    for path in paths.iter().take(16) {
+                        recoverable &=
+                            git::recoverable_file(&actor.tool_context.workspace, path).await;
+                    }
                 }
                 let mut state: Value = serde_json::from_str(&input.state).expect("host-built JSON");
                 state["host_facts"]["overwrites_recoverable"] = json!(recoverable);
@@ -1271,10 +1278,10 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
                         && !(choice(&answers, "call_effect") == Some("remote_change")
                             && choice(&answers, "reversibility") == Some("destructive"))
                         && !bash_command(call).is_some_and(|command| {
-                            command.contains("gh release create")
-                                || (command.contains("push") && bash_operands(command).any(|word| {
-                                    matches!(word, "-f" | "--force" | "--force-with-lease" | "-d" | "--delete")
-                                        || word.starts_with("--force-with-lease=") || word.starts_with('+') || word.starts_with(':')
+                             command.contains("gh release create")
+                                 || shell::captain_only_push(command)
+                                 || (command.contains("push") && shell::operand_fragments(command).any(|word| {
+                                    git::force_push_operand(word) || git::delete_push_operand(word)
                                 }))
                                 || git::literal(command).and_then(|words| git::push(&words, None))
                                     .is_some_and(|push| push["force"] == true || push["delete"] == true)
@@ -1329,7 +1336,7 @@ fn sensitive_call(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> bool {
         }))
         || (call.name == "bash"
             && bash_command(call).is_some_and(|command| {
-                bash_operands(command).any(|word| {
+                shell::path_operands(command).iter().any(|word| {
                     let simplified: String =
                         word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
                     sensitive_read(std::path::Path::new(&simplified))
@@ -1418,12 +1425,25 @@ fn bash_command(call: &ToolCall) -> Option<&str> {
     call.args.get("command").and_then(Value::as_str)
 }
 
-/// The literal operands of a bash command: its words, split at the shell's
-/// separators, quotes, redirections and `=`.
-fn bash_operands(command: &str) -> impl Iterator<Item = &str> {
-    command
-        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
-        .filter(|word| !word.is_empty())
+/// Resolve shell homes through the account database, as Bash does for `~login`.
+/// Unknown users and unresolved directory-stack forms keep ordinary review.
+fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBuf> {
+    let Some(tilde) = word.strip_prefix('~') else {
+        return super::permissions::requested_path(std::path::Path::new(word), cx).ok();
+    };
+    let (login, rest) = tilde.split_once('/').unwrap_or((tilde, ""));
+    // Repeated shell separators are still relative to the expanded home/PWD.
+    // Path::join would otherwise replace that base with an absolute suffix.
+    let rest = rest.trim_start_matches('/');
+    if login == "+" {
+        return Some(cx.workspace.join(rest));
+    }
+    let home = if login.is_empty() {
+        std::path::PathBuf::from(std::env::var_os("HOME")?)
+    } else {
+        nix::unistd::User::from_name(login).ok()??.dir
+    };
+    Some(home.join(rest))
 }
 
 /// Whether a literal operand of the bash command names `root`, by the spelling
@@ -1431,12 +1451,12 @@ fn bash_operands(command: &str) -> impl Iterator<Item = &str> {
 /// resolves.
 fn bash_names_root(call: &ToolCall, root: &std::path::Path, cx: &ToolContext) -> bool {
     bash_command(call).is_some_and(|command| {
-        bash_operands(command).any(|word| {
-            let word = std::path::Path::new(word);
-            super::permissions::requested_path(word, cx)
-                .is_ok_and(|requested| requested.starts_with(root))
-                || super::permissions::resolve_read_target(word, cx)
-                    .is_ok_and(|resolved| resolved.starts_with(root))
+        shell::path_operands(command).iter().any(|word| {
+            bash_requested_path(word, cx).is_some_and(|requested| {
+                requested.starts_with(root)
+                    || super::permissions::resolve_read_target(&requested, cx)
+                        .is_ok_and(|resolved| resolved.starts_with(root))
+            })
         })
     })
 }
@@ -1552,6 +1572,145 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tilde_operands_keep_normal_review_without_spurious_config_holds() {
+        const CHILD: &str = "WITHNAV_TEST_TILDE_ACCOUNT_LOOKUP";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::permission_gate::tests::tilde_operands_keep_normal_review_without_spurious_config_holds", "--nocapture"])
+                .env(CHILD, "1")
+                .env_remove("USER")
+                .env_remove("LOGNAME")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(std::env::var_os("USER").is_none());
+        assert!(std::env::var_os("LOGNAME").is_none());
+        let mut actor = review_actor();
+        let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap();
+        let home = user.dir;
+        let user = user.name;
+        let config = home.join(".config/withnav");
+        actor.protected_config_root =
+            Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+        actor.protected_config_spelling = Some(config);
+        actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(
+            json!({"labels":{"call_effect":"read_only","call_scope":"outside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":0.9},"confidence":1.0}),
+        )));
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let mut other = "nonexistent_user_xyz".to_owned();
+        while bash_requested_path(&format!("~{other}/file"), &actor.tool_context).is_some() {
+            other.push('_');
+        }
+        for command in [
+            "grep '~foo' README".to_owned(),
+            "printf '%s\\n' '~literal'".to_owned(),
+            "ls ~+/src".to_owned(),
+            format!("cat ~{user}/project/file"),
+            format!("cat ~{other}/file"),
+        ] {
+            let call = ToolCall {
+                id: "tilde".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(!protected_config_call(&actor, &call, &needed), "{command}");
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{command}");
+            assert!(
+                matches!(consult(&actor, &call, &needed).await, Judged::Run(_)),
+                "{command}"
+            );
+        }
+        for command in [
+            "printf x > ~-/.config/withnav/x",
+            "printf x > ~$USER/.config/withnav/x",
+        ] {
+            let call = ToolCall {
+                id: "unresolved".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{command}");
+            assert!(
+                matches!(
+                    consult(&actor, &call, &needed).await,
+                    Judged::AskWithEvidence(_, _)
+                ),
+                "{command}"
+            );
+        }
+        for command in [
+            format!("cat ~{user}/.config/withnav/auth.json"),
+            format!("printf x > ~{user}/.config/withnav/x"),
+            format!("printf x > ~{user}//.config/withnav/models.json"),
+        ] {
+            let call = ToolCall {
+                id: "protected-tilde".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(protected_config_call(&actor, &call, &needed), "{command}");
+            assert_eq!(
+                hard_floor(&actor, &call, &needed),
+                Some(HardFloorReason::ProtectedConfig),
+                "{command}"
+            );
+            assert!(
+                matches!(consult(&actor, &call, &needed).await, Judged::Ask(_)),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            bash_requested_path(&format!("~{user}/.config/withnav/x"), &actor.tool_context),
+            Some(home.join(".config/withnav/x"))
+        );
+        assert_eq!(
+            bash_requested_path(&format!("~{other}/file"), &actor.tool_context),
+            None
+        );
+        assert_eq!(
+            bash_requested_path("~+/src", &actor.tool_context),
+            Some(actor.tool_context.workspace.join("src"))
+        );
+        for (word, base) in [
+            (format!("~{user}//.config/withnav/x"), home),
+            (
+                "~root//.config/withnav/x".into(),
+                nix::unistd::User::from_name("root").unwrap().unwrap().dir,
+            ),
+            (
+                "~+//.config/withnav/x".into(),
+                actor.tool_context.workspace.clone(),
+            ),
+            (
+                "~//.config/withnav/x".into(),
+                std::env::var_os("HOME").unwrap().into(),
+            ),
+        ] {
+            assert_eq!(
+                bash_requested_path(&word, &actor.tool_context),
+                Some(base.join(".config/withnav/x")),
+                "{word}"
+            );
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn timed_out_review_preserves_only_floor_free_instinct_reads() {
         let mut actor = review_actor();
@@ -1715,6 +1874,151 @@ mod tests {
 
     #[tokio::test]
     async fn budget_drops_oldest_turns_keeps_latest_and_reports_argument_overflow() {
+        // Frozen reference for byte-for-byte compatibility of budget optimizations.
+        fn reference_script_fit(state: &mut Value, instructions: usize, limit: usize) {
+            if state.to_string().len() + instructions <= limit {
+                return;
+            }
+            state["untrusted_evidence"]["assistant_text"] = Value::Null;
+            state["untrusted_evidence"]["parent_agent_evidence"] = Value::Null;
+            while state.to_string().len() + instructions > limit {
+                let Some(text) = state["untrusted_evidence"]["script"]["text"].as_str() else {
+                    break;
+                };
+                if text.is_empty() {
+                    break;
+                }
+                let mut end = text.len().saturating_sub(1024);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                state["untrusted_evidence"]["script"]["text"] = json!(&text[..end]);
+                state["untrusted_evidence"]["script"]["truncated"] = json!(true);
+                state["host_facts"]["script_binding"]["complete"] = json!(false);
+            }
+        }
+        fn reference_fit(state: &mut Value, instructions: usize, limit: usize) {
+            let mut dropped = state["budget_fit"]["dropped_turns"].as_u64().unwrap_or(0);
+            let mut cut = state["budget_fit"]["cut_turns"].as_u64().unwrap_or(0);
+            state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
+            while state.to_string().len() + instructions > limit {
+                let turns = state["conversation"].as_array_mut().unwrap();
+                let latest = turns.iter().rposition(|turn| turn["author"] == "captain");
+                if turns.len() > 2 && latest != Some(0) {
+                    turns.remove(0);
+                    dropped += 1;
+                } else if let Some(turn) = turns.iter_mut().enumerate().find_map(|(i, turn)| {
+                    (Some(i) != latest
+                        && turn["text"].as_str().is_some_and(|text| text.len() > 512))
+                    .then_some(turn)
+                }) {
+                    let text = turn["text"].as_str().unwrap();
+                    let (short, _) = crate::tools::bound_output(text, 256);
+                    turn["text"] = json!(format!(
+                        "{short} [… {} bytes cut]",
+                        text.len().saturating_sub(256)
+                    ));
+                    cut += 1;
+                } else if let Some(i) = turns
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, _)| (Some(i) != latest).then_some(i))
+                {
+                    turns.remove(i);
+                    dropped += 1;
+                } else {
+                    break;
+                }
+                state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
+            }
+            reference_script_fit(state, instructions, limit);
+            if state.to_string().len() + instructions > limit {
+                state["captain_request_complete"] = json!(false);
+                state["captain_request"] = Value::Null;
+                state["conversation"] = json!([]);
+            }
+        }
+        for text in ["pasted log ".repeat(120), "\"\\\n\t\0é🧭".repeat(120)] {
+            for (count, latest) in [
+                (0, None),
+                (1, Some(0)),
+                (2, Some(0)),
+                (2, Some(1)),
+                (12, Some(11)),
+                (12, Some(0)),
+                (12, None),
+            ] {
+                let original = json!({
+                    "conversation": (0..count).map(|i| json!({"author":if Some(i) == latest {"captain"} else {"assistant"}, "text":text})).collect::<Vec<_>>(),
+                    "captain_request": text, "captain_request_complete":true,
+                    "budget_fit":{"dropped_turns":9,"cut_turns":99},
+                    "untrusted_evidence":{"assistant_text":"excerpt","arguments":{"command":"ls"}}
+                });
+                for instructions in [0, 57] {
+                    let mut measured = original.clone();
+                    measured["budget_fit"] = json!({"dropped_turns":9,"cut_turns":99});
+                    let boundary = measured.to_string().len() + instructions;
+                    for limit in [
+                        0,
+                        256,
+                        512,
+                        1024,
+                        4096,
+                        boundary - 1,
+                        boundary,
+                        boundary + 1,
+                    ] {
+                        let mut expected = original.clone();
+                        let mut actual = original.clone();
+                        reference_fit(&mut expected, instructions, limit);
+                        fit_conversation(&mut actual, instructions, limit);
+                        assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "count={count}, latest={latest:?}, instructions={instructions}, limit={limit}");
+                    }
+                }
+            }
+        }
+        for text in [
+            Value::Null,
+            json!(""),
+            json!("x".repeat(1023)),
+            json!("x".repeat(1024)),
+            json!("x".repeat(1025)),
+            json!("🧭".repeat(513)),
+            json!("\"\\\n\t\0é🧭".repeat(500)),
+            json!("x".repeat(200 * 1024)),
+        ] {
+            for complete in [Value::Null, json!(false), json!(true)] {
+                let original = json!({
+                    "conversation":[{"author":"captain","text":"keep me"},{"author":"assistant","text":"older ".repeat(100)}],
+                    "captain_request":"keep me", "captain_request_complete":true,
+                    "host_facts":{"script_binding":{"complete":complete}},
+                    "untrusted_evidence":{"assistant_text":"excerpt ".repeat(130),"parent_agent_evidence":"parent","script":{"text":text,"truncated":complete}}
+                });
+                for instructions in [0, 57] {
+                    let boundary = original.to_string().len() + instructions;
+                    for limit in [
+                        0,
+                        512,
+                        2048,
+                        16 * 1024,
+                        boundary - 1,
+                        boundary,
+                        boundary + 1,
+                    ] {
+                        let mut expected = original.clone();
+                        let mut actual = original.clone();
+                        reference_script_fit(&mut expected, instructions, limit);
+                        script::fit(&mut actual, instructions, limit);
+                        assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "script bytes={}, complete={complete}, instructions={instructions}, limit={limit}", text.as_str().map_or(0, str::len));
+                        let mut expected = original.clone();
+                        let mut actual = original.clone();
+                        reference_fit(&mut expected, instructions, limit);
+                        fit_conversation(&mut actual, instructions, limit);
+                        assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "combined fit: complete={complete}, instructions={instructions}, limit={limit}");
+                    }
+                }
+            }
+        }
         let mut actor = review_actor();
         actor.permission_judge = Some(std::sync::Arc::new(ReplayJudge {
             budget: 16 * 1024,
@@ -2463,6 +2767,31 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/fixtures/permissions/calls.json"))
                 .unwrap();
         assert!(corpus.len() >= 40);
+        for command in [
+            "git push --repo origin feat/task",
+            "git push --repo=origin origin feat/task",
+            "git push origin :feat/task",
+            "git push origin +:feat/task",
+            "git push --delete origin feat/task",
+            "git push origin feat/task :other",
+        ] {
+            let words = git::literal(command).unwrap();
+            let push = git::push(&words, Some("feat/task")).unwrap();
+            assert_eq!(push["literal_target"], false, "{command}");
+            if command.contains(":feat/task") || command.contains("--delete") {
+                assert_eq!(push["delete"], true, "{command}");
+                assert_eq!(push["own_branch"], false, "{command}");
+            }
+        }
+        for command in [
+            "git push origin feat/task :other",
+            "git push origin feat/task +other:other",
+        ] {
+            let push = git::push(&git::literal(command).unwrap(), Some("feat/task")).unwrap();
+            assert_eq!(push["literal_target"], false, "{command}");
+            assert!(push["force"] == true || push["delete"] == true, "{command}");
+            assert!(shell::destructive(&shell::segments(command).unwrap()[0]));
+        }
         let cx = ToolContext {
             binding: None,
             workspace: "/workspace".into(),
@@ -2473,7 +2802,7 @@ mod tests {
             scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
             destination: None,
         };
-        for row in corpus {
+        for row in corpus.into_iter().filter(|row| row["fixture"].is_null()) {
             let call = ToolCall {
                 id: "fixture".into(),
                 name: "bash".into(),
@@ -2620,7 +2949,10 @@ mod tests {
             destination: None,
         };
         let mut count = 0;
-        for row in corpus.into_iter().filter(|row| row["adversarial"] == true) {
+        for row in corpus
+            .into_iter()
+            .filter(|row| row["adversarial"] == true && row["fixture"].is_null())
+        {
             count += 1;
             let call = ToolCall {
                 id: "fake".into(),
@@ -2628,6 +2960,14 @@ mod tests {
                 args: json!({"command":row["command"]}),
                 args_valid: true,
             };
+            if let Some(captain_only) = row["captain_only"].as_bool() {
+                assert_eq!(
+                    shell::captain_only_push(row["command"].as_str().unwrap()),
+                    captain_only,
+                    "{}",
+                    row["command"]
+                );
+            }
             let input = PermissionReviewInput { questions: permission_questions(), state: json!({"captain_request_complete":true,"host_facts":{"workspace":cx.workspace,"writable_roots":cx.writable_roots,"git":row["git"]},"untrusted_evidence":{"arguments":call.args}}).to_string() };
             let mut answers = LabelJudge(row.clone())
                 .judge(&input, &CancellationToken::new())
@@ -2656,8 +2996,176 @@ mod tests {
                 route(&input, &answers, &prefilter(&call, &needed, &cx)),
                 Ok(Route::Review)
             );
+            if let Some(captain_only) = row["captain_only"].as_bool() {
+                let mut actor = review_actor();
+                actor.tool_context = cx.clone();
+                actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row.clone())));
+                let reviewer = std::sync::Arc::new(ReviewStub {
+                    decision: ReviewDecision::Approve,
+                    calls: Default::default(),
+                    timeout: false,
+                });
+                actor.permission_reviewer = Some(reviewer.clone());
+                let decision = consult(&actor, &call, &needed).await;
+                assert!(
+                    if captain_only {
+                        matches!(decision, Judged::Ask(_) | Judged::AskWithEvidence(_, _))
+                    } else {
+                        matches!(decision, Judged::Run(_))
+                    },
+                    "{}",
+                    row["command"]
+                );
+                assert_eq!(reviewer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            }
         }
         assert!(count >= 100);
+    }
+
+    #[tokio::test]
+    async fn environment_security_corpus_preserves_review_floors() {
+        const CHILD: &str = "WITHNAV_TEST_SECURITY_CORPUS";
+        if let Some(base) = std::env::var_os(CHILD) {
+            let base = std::path::PathBuf::from(base);
+            let corpus: Vec<Value> =
+                serde_json::from_str(include_str!("../../tests/fixtures/permissions/calls.json"))
+                    .unwrap();
+            let cx = test_context(&base.join("project-link"));
+            let needed = Needed {
+                scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
+                destination: None,
+            };
+            let facts = json!({"workspace":cx.workspace,"writable_roots":cx.writable_roots});
+            assert!(shell::identity_floor(&["helper".into()], &facts));
+            let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+                .unwrap()
+                .unwrap();
+            let mut count = 0;
+            for row in corpus.into_iter().filter(|row| row["fixture"].is_string()) {
+                assert!(matches!(
+                    row["fixture"].as_str(),
+                    Some("relative_path" | "overwrite_recovery" | "protected_config")
+                ));
+                count += 1;
+                let command = row["command"]
+                    .as_str()
+                    .unwrap()
+                    .replace("~pixma/", &format!("~{}/", user.name))
+                    .replace("/tmp/daemon", base.join("daemon").to_str().unwrap())
+                    .replace("/tmp/outside", base.join("outside").to_str().unwrap());
+                let call = ToolCall {
+                    id: "environment-corpus".into(),
+                    name: "bash".into(),
+                    args: json!({"command":command}),
+                    args_valid: true,
+                };
+                let input = PermissionReviewInput {
+                    questions: permission_questions(),
+                    state: json!({"captain_request_complete":true,"host_facts":{
+                        "workspace":cx.workspace,"writable_roots":cx.writable_roots,
+                        "overwrites_recoverable":row["fixture"] == "overwrite_recovery"},
+                        "untrusted_evidence":{"arguments":call.args}})
+                    .to_string(),
+                };
+                let answers = LabelJudge(row.clone())
+                    .judge(&input, &CancellationToken::new())
+                    .await
+                    .unwrap();
+                for flags in [Overrides::default(), prefilter(&call, &needed, &cx)] {
+                    assert_eq!(
+                        route(&input, &answers, &flags),
+                        Ok(Route::Review),
+                        "{command}"
+                    );
+                }
+                let mut actor = review_actor();
+                actor.tool_context = cx.clone();
+                if row["protected_hold"] == true {
+                    let config = match row["protected_base"].as_str().unwrap() {
+                        "alias" => base.join("project/real-config"),
+                        "login" => user.dir.join(".config/withnav"),
+                        "workspace" => cx.workspace.join(".config/withnav"),
+                        "home" => std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                            .join(".config/withnav"),
+                        "root" => nix::unistd::User::from_name("root")
+                            .unwrap()
+                            .unwrap()
+                            .dir
+                            .join(".config/withnav"),
+                        other => panic!("unknown protected base: {other}"),
+                    };
+                    actor.protected_config_root =
+                        Some(super::super::permissions::resolve_protected_root(&config).unwrap());
+                    actor.protected_config_spelling = Some(config);
+                    assert_eq!(
+                        hard_floor(&actor, &call, &needed),
+                        Some(HardFloorReason::ProtectedConfig),
+                        "{command}"
+                    );
+                }
+                actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(row)));
+                assert!(
+                    matches!(
+                        consult(&actor, &call, &needed).await,
+                        Judged::Ask(_) | Judged::AskWithEvidence(_, _)
+                    ),
+                    "{command}"
+                );
+            }
+            assert_eq!(count, 25);
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for directory in ["project", "daemon/bin", "outside/bin"] {
+            std::fs::create_dir_all(tmp.path().join(directory)).unwrap();
+        }
+        for executable in ["daemon/bin/helper", "outside/bin/unseen-helper"] {
+            let path = tmp.path().join(executable);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let project = tmp.path().join("project");
+        std::os::unix::fs::symlink(&project, tmp.path().join("project-link")).unwrap();
+        std::fs::create_dir(project.join("real-config")).unwrap();
+        std::os::unix::fs::symlink(project.join("real-config"), project.join("config alias"))
+            .unwrap();
+        std::fs::write(project.join("file"), "original").unwrap();
+        std::fs::write(tmp.path().join("outside/file"), "only copy").unwrap();
+        for args in [
+            vec!["init", "-b", "feat/task"],
+            vec!["add", "file"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(&project)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::permission_gate::tests::environment_security_corpus_preserves_review_floors", "--nocapture"])
+            .current_dir(tmp.path().join("daemon"))
+            .env(CHILD, tmp.path()).env("PATH", "bin:/usr/bin:/bin")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]
@@ -2794,7 +3302,8 @@ mod tests {
 
     #[tokio::test]
     async fn overwrite_recovery_requires_tracked_and_unmodified_file() {
-        let tmp = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::tempdir_in(&cwd).unwrap();
         let run = |args: &[&str]| {
             assert!(std::process::Command::new("/usr/bin/git")
                 .args(args)
@@ -2818,7 +3327,29 @@ mod tests {
             "-m",
             "initial",
         ]);
-        assert!(git::recoverable_file(tmp.path(), "file").await);
+        let alias = tmp.path().join("workspace-link");
+        std::os::unix::fs::symlink(tmp.path(), &alias).unwrap();
+        std::os::unix::fs::symlink("file", tmp.path().join("file-link")).unwrap();
+        for root in [
+            tmp.path().to_path_buf(),
+            tmp.path().join("."),
+            tmp.path().strip_prefix(cwd).unwrap().to_path_buf(),
+            alias,
+        ] {
+            for (path, expected) in [
+                ("file", true),
+                ("file-link", false),
+                ("missing", false),
+                ("../file", false),
+            ] {
+                assert_eq!(
+                    git::recoverable_file(&root, path).await,
+                    expected,
+                    "{}: {path}",
+                    root.display()
+                );
+            }
+        }
         std::fs::write(tmp.path().join("file"), "uncommitted").unwrap();
         assert!(!git::recoverable_file(tmp.path(), "file").await);
         run(&["add", "file"]);
@@ -3061,6 +3592,11 @@ mod tests {
         let key = tmp.path().join(".ssh/id_ed25519");
         std::fs::write(&key, "secret").unwrap();
         std::os::unix::fs::symlink(key, tmp.path().join("innocent")).unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join(".ssh/id_ed25519"),
+            tmp.path().join("innocent alias"),
+        )
+        .unwrap();
         let cx = ToolContext {
             binding: None,
             workspace: tmp.path().to_path_buf(),
@@ -3076,6 +3612,20 @@ mod tests {
             "cat .ssh/id_ed25519",
             "cat ~/.s[s]h/*",
             "cat $X/.ssh",
+            "cat 'innocent alias'",
+            "cat 'innocent alias' # $(ignored)",
+            "git status # $(ignored)\ncat 'innocent alias'",
+            "cat 'innocent alias'; echo $OPAQUE",
+            "echo $OPAQUE; cat 'innocent alias'",
+            "git status # ~/.ssh/id_rsa",
+            "cat \"innocent alias\"",
+            "cat inno'cent alias'",
+            "FILE='innocent alias' cat",
+            "cat --file='innocent alias'",
+            "cat --file=\"innocent alias\"",
+            "cat < 'innocent alias'",
+            "printf x > 'innocent alias'",
+            "cat $X/.ssh # opaque",
         ] {
             let call = ToolCall {
                 id: "c".into(),

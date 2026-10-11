@@ -3,8 +3,6 @@
 //! result's survival across a resume are all checked end to end. The home
 //! directory is a temporary one in every test.
 
-use std::path::PathBuf;
-
 use serde_json::{json, Value};
 
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
@@ -27,47 +25,41 @@ fn message_received_type_roundtrips_optional_captain_selection() {
     assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
     assert_eq!(serde_json::to_value(selected).unwrap(), payload);
 }
-use common::server::{collect_until, TestServerConfig};
+use common::server::{captain_command, collect_until, TestServerConfig};
 use common::sse::CapturingProvider;
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_call_chunk};
+use common::sse::{
+    http_sse, spawn_capturing_provider, sse_body, text_response as answer, tool_call_chunk,
+};
 
-struct Env {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
-    home: PathBuf,
-    ws: PathBuf,
-}
+use common::TestEnv as Env;
 
 /// A temp home with a nested skill library and a rules file, and a Git
 /// workspace with one project skill.
 fn env() -> Env {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical");
-    let home = root.join("home");
-    let ws = root.join("ws");
+    let env = Env::new();
+    let home = &env.home;
+    let ws = &env.ws;
     let skills = home.join(".agents/skills");
-    std::fs::create_dir_all(skills.join("matt/ask-matt")).unwrap();
-    std::fs::create_dir_all(ws.join(".git")).unwrap();
-    std::fs::create_dir_all(ws.join(".agents/skills/local")).unwrap();
-    std::fs::write(home.join(".agents/AGENTS.md"), "global rule").unwrap();
-    std::fs::write(skills.join("AGENTS.md"), "not a skill").unwrap();
+    std::fs::create_dir_all(skills.join("matt/ask-matt"))
+        .expect("create nested home skill directory");
+    std::fs::create_dir_all(ws.join(".git")).expect("create workspace Git directory");
+    std::fs::create_dir_all(ws.join(".agents/skills/local"))
+        .expect("create project skill directory");
+    std::fs::write(home.join(".agents/AGENTS.md"), "global rule").expect("write global rules");
+    std::fs::write(skills.join("AGENTS.md"), "not a skill").expect("write non-skill fixture");
     std::fs::write(
         skills.join("matt/ask-matt/SKILL.md"),
         "---\nname: ask-matt\ndescription: >\n  Ask Matt\n  about it.\nversion: 3\n---\n\nSTEP ONE: ask Matt.\n",
     )
-    .unwrap();
-    std::fs::write(skills.join("matt/ask-matt/checklist.md"), "- item").unwrap();
+    .expect("write nested home skill manifest");
+    std::fs::write(skills.join("matt/ask-matt/checklist.md"), "- item")
+        .expect("write skill checklist");
     std::fs::write(
         ws.join(".agents/skills/local/SKILL.md"),
         "---\nname: local-flow\ndescription: The project's own flow.\n---\nLocal body.\n",
     )
-    .unwrap();
-    Env {
-        _tmp: tmp,
-        root,
-        home,
-        ws,
-    }
+    .expect("write project skill manifest");
+    env
 }
 
 fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) -> AppState {
@@ -79,14 +71,6 @@ fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) 
     } else {
         config.state()
     }
-}
-
-fn finish() -> String {
-    r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string()
-}
-
-fn answer(text: &str) -> Vec<u8> {
-    http_sse(&sse_body(&[&text_chunk(text), &finish()]))
 }
 
 fn skill_call(name: &str) -> Vec<u8> {
@@ -101,17 +85,7 @@ fn skill_call(name: &str) -> Vec<u8> {
 async fn converse(state: &AppState, id: ulid::Ulid, text: &str) {
     let sub = state.subscribe(id, None).await.expect("subscribe");
     state
-        .send(Command {
-            command_id: ulid::Ulid::new(),
-            session_id: id,
-            source_actor_id: "user:test".to_string(),
-            target_actor_id: "agent:main".to_string(),
-            mode: DeliveryMode::NextTurn,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            created_at: std::time::SystemTime::now(),
-        })
+        .send(captain_command(id, text.to_string()))
         .await
         .expect("send");
     collect_until(sub, |e| {

@@ -9,6 +9,38 @@ fn body(request: &str) -> Value {
     serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
 }
 
+async fn await_outbox_entry(state: &AppState, parent: ulid::Ulid, child: ulid::Ulid) {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let sub = state.subscribe(parent, None).await.unwrap();
+        let matches = |e: &withnav::bus::event::EventEnvelope| {
+            e.kind == "subagent.done" && e.payload["child_session_id"] == child.to_string()
+        };
+        let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
+            panic!("parent {parent}: expected completion replay");
+        };
+        if !events.iter().any(matches) {
+            let mut live = sub.live.expect("live parent");
+            loop {
+                let event = live.recv().await.expect("parent completion stream");
+                if matches(&event) {
+                    break;
+                }
+            }
+        }
+        let entries = state
+            .history()
+            .unconsumed_completions(parent)
+            .await
+            .unwrap();
+        assert!(
+            entries.iter().any(|entry| entry.0 == child),
+            "child {child} outbox entry"
+        );
+    })
+    .await
+    .expect("child completion reaches the durable outbox");
+}
+
 #[tokio::test]
 async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
     let mut provider = spawn_streaming_provider().await;
@@ -100,7 +132,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_captain() 
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let _child = state
+    let child = state
         .create_child_with_delivery(parent, "vigie", "inspect", "steer")
         .bounded(file!(), line!())
         .await
@@ -130,21 +162,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_captain() 
     barrier.reached.notified().bounded(file!(), line!()).await;
     child_stream.send(text_chunk("late child result")).unwrap();
     drop(child_stream);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while state
-            .history()
-            .unconsumed_completions(parent)
-            .bounded(file!(), line!())
-            .await
-            .unwrap()
-            .is_empty()
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .bounded(file!(), line!())
-    .await
-    .unwrap();
+    await_outbox_entry(&state, parent, child).await;
     barrier.release.notify_one();
     let (request, stream) = provider
         .requests
@@ -512,22 +530,7 @@ async fn queued_captain_precedes_mid_turn_result_steer() {
         .unwrap();
     child_stream.send(text_chunk("child result")).unwrap();
     drop(child_stream);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while state
-            .child_metadata(child)
-            .bounded(file!(), line!())
-            .await
-            .unwrap()
-            .unwrap()
-            .status
-            == "running"
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .bounded(file!(), line!())
-    .await
-    .unwrap();
+    await_outbox_entry(&state, parent, child).await;
     parent_stream
         .send(tool_call_chunk("glob", "glob", &json!({"pattern":"*"})))
         .unwrap();
@@ -941,22 +944,7 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
         drop(child_stream);
         let mut parent_stream = Some(parent_stream);
         if mode == "steer" {
-            tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                while state
-                    .child_metadata(child)
-                    .bounded(file!(), line!())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .status
-                    == "running"
-                {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .bounded(file!(), line!())
-            .await
-            .unwrap();
+            await_outbox_entry(&state, parent, child).await;
             parent_stream
                 .as_ref()
                 .unwrap()
@@ -1048,22 +1036,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_captain_goes_fi
         .unwrap();
     stream.send(text_chunk("result")).unwrap();
     drop(stream);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while state
-            .child_metadata(child)
-            .bounded(file!(), line!())
-            .await
-            .unwrap()
-            .unwrap()
-            .status
-            == "running"
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .bounded(file!(), line!())
-    .await
-    .unwrap();
+    await_outbox_entry(&state, parent, child).await;
     assert!(tokio::time::timeout(
         std::time::Duration::from_millis(50),
         provider.requests.recv()

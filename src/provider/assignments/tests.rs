@@ -23,6 +23,12 @@ fn settings(value: Value) -> Settings {
     crate::settings::load(dir.path()).unwrap()
 }
 
+fn layer_settings(layer: Layer, model: &str) -> Settings {
+    let mut settings = Settings::default();
+    settings.set_dotted("layers", json!({layer.config_key(): model}));
+    settings
+}
+
 #[test]
 fn model_name_preserves_nested_ids_and_groups_providers() {
     let catalog = catalog();
@@ -126,7 +132,7 @@ fn layers_disable_missing_unknown_and_wrong_api_assignments() {
             matches!(resolver.layer_assignment(layer).unwrap(), LayerAssignment::Disabled(LayerDisabled::Missing { layer: found }) if found == layer)
         );
         for model in ["omniroute/missing", "missing/model", "not-a-name"] {
-            let settings = settings(json!({"layers":{layer.config_key(): model}}));
+            let settings = layer_settings(layer, model);
             assert!(matches!(
                 AssignmentResolver::new(&catalog, &settings)
                     .layer_assignment(layer)
@@ -139,13 +145,19 @@ fn layers_disable_missing_unknown_and_wrong_api_assignments() {
         } else {
             "omniroute/cc/chat"
         };
-        let settings = settings(json!({"layers":{layer.config_key():wrong}}));
-        let LayerAssignment::Disabled(reason @ LayerDisabled::WrongApi { .. }) =
-            AssignmentResolver::new(&catalog, &settings)
-                .layer_assignment(layer)
-                .unwrap()
-        else {
-            panic!("wrong api was accepted")
+        let settings = layer_settings(layer, wrong);
+        let assignment = AssignmentResolver::new(&catalog, &settings)
+            .layer_assignment(layer)
+            .unwrap();
+        assert!(
+            matches!(
+                assignment,
+                LayerAssignment::Disabled(LayerDisabled::WrongApi { .. })
+            ),
+            "layer={layer:?}, model={wrong}: expected WrongApi, got {assignment:?}"
+        );
+        let LayerAssignment::Disabled(reason) = assignment else {
+            unreachable!()
         };
         let message = reason.to_string();
         assert!(
@@ -283,10 +295,9 @@ fn malformed_assignment_settings_name_the_offending_key() {
             "layers.reflex.variant",
         ),
     ] {
-        assert!(settings(value)
-            .layer_assignment(Layer::Reflex)
-            .unwrap_err()
-            .contains(key));
+        assert_error_names_key(value, key, |settings| {
+            settings.layer_assignment(Layer::Reflex)
+        });
     }
     for (value, key) in [
         (json!({"agents":[]}), "agents"),
@@ -304,17 +315,27 @@ fn malformed_assignment_settings_name_the_offending_key() {
             "agents.build.variant",
         ),
     ] {
-        assert!(settings(value)
-            .agent_assignment("build")
-            .unwrap_err()
-            .contains(key));
+        assert_error_names_key(value, key, |settings| settings.agent_assignment("build"));
     }
     for value in [json!(null), json!(1), json!(""), json!("two words")] {
-        assert!(settings(json!({"default_agent":value}))
-            .default_agent()
-            .unwrap_err()
-            .contains("default_agent"));
+        assert_error_names_key(
+            json!({"default_agent":value}),
+            "default_agent",
+            |settings| settings.default_agent().map(str::to_owned),
+        );
     }
+}
+
+fn assert_error_names_key<T: std::fmt::Debug>(
+    value: Value,
+    key: &str,
+    validator: impl FnOnce(&Settings) -> Result<T, String>,
+) {
+    let error = validator(&settings(value)).expect_err("malformed assignment must be refused");
+    assert!(
+        error.contains(key),
+        "expected offending key {key:?}, got {error:?}"
+    );
 }
 
 #[test]

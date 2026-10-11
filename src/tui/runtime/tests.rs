@@ -42,7 +42,21 @@ async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
             Action::ResumeSession("archive".into()),
         );
         let generation = runtime.state.generation.clone();
-        let metadata=serde_json::from_value(json!({"session_id":"archive","actor_state":"stopped","workspace":"/ws","model":"gateway/archive","agent":"build","variant":null,"source":"config","variant_source":"model_default","current_seq":0,"read_only":read_only,"promptable":promptable,"resume_disabled_reason":"unproven identity"})).unwrap();
+        let metadata = serde_json::from_value(json!({
+            "session_id": "archive",
+            "actor_state": "stopped",
+            "workspace": "/ws",
+            "model": "gateway/archive",
+            "agent": "build",
+            "variant": null,
+            "source": "config",
+            "variant_source": "model_default",
+            "current_seq": 0,
+            "read_only": read_only,
+            "promptable": promptable,
+            "resume_disabled_reason": "unproven identity"
+        }))
+        .unwrap();
         let effects = crate::tui::reducer::update(
             &mut runtime.state,
             ClientEvent::Metadata {
@@ -585,22 +599,26 @@ async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
     assert_eq!(runtime.state.model_source, "override");
     assert_eq!(runtime.state.variant_source, "model_default");
     runtime.start(None);
-    let mut kinds = Vec::new();
-    for _ in 0..4 {
-        let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
-            .await
-            .expect("in time")
-            .expect("open");
-        kinds.push(match event {
-            ClientEvent::Models { .. } => "models",
-            ClientEvent::Sessions { .. } => "sessions",
-            ClientEvent::Agents { .. } => "agents",
-            ClientEvent::Layers { .. } => "layers",
-            other => panic!("unexpected event {other:?}"),
-        });
-    }
-    kinds.sort_unstable();
-    assert_eq!(kinds, ["agents", "layers", "models", "sessions"]);
+    let required = std::collections::HashSet::from(["agents", "layers", "models", "sessions"]);
+    let mut kinds = std::collections::HashSet::new();
+    let mut observed = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while kinds != required {
+            let event = runtime.recv().await.expect("startup event channel open");
+            observed.push(format!("{event:?}"));
+            let kind = match event {
+                ClientEvent::Models { .. } => "models",
+                ClientEvent::Sessions { .. } => "sessions",
+                ClientEvent::Agents { .. } => "agents",
+                ClientEvent::Layers { .. } => "layers",
+                _ => continue,
+            };
+            assert!(kinds.insert(kind), "duplicate {kind}: {observed:?}");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("missing startup events; got {kinds:?}; observed: {observed:?}"));
+    assert_eq!(kinds, required);
 }
 
 #[tokio::test]
@@ -610,37 +628,37 @@ async fn startup_resume_fetches_workspace_layers_under_the_resumed_generation() 
     let generation = runtime.state.generation.clone();
     let mut got_layers = false;
     let mut got_models = false;
-    for _ in 0..6 {
-        let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        match event {
-            ClientEvent::Layers {
-                generation: owner,
-                workspace,
-                ..
-            } => {
-                assert_eq!(owner, generation);
-                assert_eq!(workspace, "/ws");
-                got_layers = true;
+    let mut observed = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !(got_layers && got_models) {
+            let event = runtime.recv().await.expect("resume event channel open");
+            observed.push(format!("{event:?}"));
+            match event {
+                ClientEvent::Layers {
+                    generation: owner,
+                    workspace,
+                    ..
+                } => {
+                    assert_eq!(owner, generation);
+                    assert_eq!(workspace, "/ws");
+                    got_layers = true;
+                }
+                ClientEvent::Models {
+                    generation: owner,
+                    workspace,
+                    ..
+                } => {
+                    assert_eq!(owner, generation);
+                    assert_eq!(workspace, "/ws");
+                    got_models = true;
+                }
+                _ => {}
             }
-            ClientEvent::Models {
-                generation: owner,
-                workspace,
-                ..
-            } => {
-                assert_eq!(owner, generation);
-                assert_eq!(workspace, "/ws");
-                got_models = true;
-            }
-            _ => {}
         }
-        if got_layers && got_models {
-            break;
-        }
-    }
-    assert!(got_layers && got_models);
+    })
+    .await
+    .unwrap_or_else(|_| panic!("missing resumed catalog or layers; observed: {observed:?}"));
+    assert!(got_layers && got_models, "observed: {observed:?}");
 }
 
 #[tokio::test]

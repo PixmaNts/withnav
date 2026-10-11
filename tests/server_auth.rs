@@ -32,6 +32,30 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("json")
 }
 
+async fn request_with_auth(
+    state: &AppState,
+    auth_header: Option<&str>,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> axum::response::Response {
+    let mut builder = Request::builder().method(method).uri(path);
+    if let Some(header) = auth_header {
+        builder = builder.header("authorization", header);
+    }
+    let request = match body {
+        Some(body) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string())),
+        None => builder.body(Body::empty()),
+    }
+    .expect("request");
+    app(state.clone())
+        .oneshot(request)
+        .await
+        .expect("infallible")
+}
+
 // Given a server configured with a bearer token
 // When POST /v1/sessions arrives WITHOUT an Authorization header
 // Then 401 before any session work happens (no session is minted)
@@ -40,20 +64,14 @@ async fn with_a_token_missing_header_is_401() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = test_state(tmp.path(), Some("secret-token".to_string()));
 
-    let response = app(state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/sessions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({ "workspace": tmp.path().join("ws").to_str().expect("utf8") })
-                        .to_string(),
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
+    let response = request_with_auth(
+        &state,
+        None,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": tmp.path().join("ws").to_str().expect("utf8") })),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(state.session_count(), 0, "401 happens before the handler");
 }
@@ -68,20 +86,14 @@ async fn with_a_token_the_bearer_header_is_accepted() {
     std::fs::create_dir_all(&ws).expect("ws dir");
     let state = test_state(tmp.path(), Some("secret-token".to_string()));
 
-    let response = app(state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/sessions")
-                .header("content-type", "application/json")
-                .header("authorization", "Bearer secret-token")
-                .body(Body::from(
-                    json!({ "workspace": ws.to_str().expect("utf8") }).to_string(),
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
+    let response = request_with_auth(
+        &state,
+        Some("Bearer secret-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().expect("utf8") })),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["root_actor_id"], "agent:main");
@@ -102,17 +114,14 @@ async fn with_a_token_a_wrong_or_malformed_header_is_401() {
         "bearer secret-token",
         "Bearer ",
     ] {
-        let response = app(state.clone())
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/sessions")
-                    .header("authorization", header)
-                    .body(Body::from(json!({}).to_string()))
-                    .expect("request"),
-            )
-            .await
-            .expect("infallible");
+        let response = request_with_auth(
+            &state,
+            Some(header),
+            "POST",
+            "/v1/sessions",
+            Some(json!({})),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{header:?}");
     }
 }
@@ -125,15 +134,7 @@ async fn with_a_token_health_answers_without_the_header() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = test_state(tmp.path(), Some("secret-token".to_string()));
 
-    let response = app(state)
-        .oneshot(
-            Request::builder()
-                .uri("/v1/health")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
+    let response = request_with_auth(&state, None, "GET", "/v1/health", None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body, json!({ "status": "ok" }));
@@ -149,19 +150,14 @@ async fn without_a_token_behaviour_is_unchanged() {
     std::fs::create_dir_all(&ws).expect("ws dir");
     let state = test_state(tmp.path(), None);
 
-    let response = app(state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/sessions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({ "workspace": ws.to_str().expect("utf8") }).to_string(),
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
+    let response = request_with_auth(
+        &state,
+        None,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().expect("utf8") })),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(state.session_count(), 1);
 }

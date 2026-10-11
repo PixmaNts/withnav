@@ -11,11 +11,10 @@ use crate::tools::{
     bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
 };
 
-fn arg_str(args: &Value, key: &str) -> Result<String, ToolError> {
+fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     crate::tools::reject_reserved_args(args)?;
     args.get(key)
         .and_then(|v| v.as_str())
-        .map(String::from)
         .ok_or_else(|| ToolError::Denied {
             code: "invalid_args".into(),
             message: format!("missing string argument: {key}"),
@@ -65,11 +64,11 @@ impl Tool for ReadTool {
                 Some(path) => path.clone(),
                 None => {
                     let target =
-                        crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?;
+                        crate::agent::permissions::resolve_read_target(Path::new(path), cx)?;
                     let target = validate_path(&cx.read_roots(), &target)?;
                     if crate::agent::permission_gate::sensitive_read(&target)
                         || crate::agent::permission_gate::sensitive_read(
-                            &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+                            &crate::agent::permissions::requested_path(Path::new(path), cx)?,
                         )
                     {
                         return Err(ToolError::Denied {
@@ -110,16 +109,13 @@ fn slice_lines(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
     if offset.is_none() && limit.is_none() {
         return text.to_string();
     }
-    let start = offset.unwrap_or(1).max(1) as usize - 1;
-    let lines: Vec<&str> = text.lines().collect();
-    let end = match limit {
-        Some(l) => (start + l as usize).min(lines.len()),
-        None => lines.len(),
-    };
-    if start >= lines.len() {
-        return String::new();
-    }
-    lines[start..end].join("\n")
+    let start = usize::try_from(offset.unwrap_or(1).saturating_sub(1)).unwrap_or(usize::MAX);
+    let count = usize::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(usize::MAX);
+    text.lines()
+        .skip(start)
+        .take(count)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub struct WriteTool;
@@ -156,9 +152,9 @@ impl Tool for WriteTool {
                 let destination = &binding.destination;
                 if let Some(identity) = &binding.scratch {
                     nofollow::write_scratch(destination, content.as_bytes(), identity)?;
-                    return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
+                } else {
+                    nofollow::write_atomic(destination, content.as_bytes())?;
                 }
-                nofollow::write_atomic(destination, content.as_bytes())?;
                 return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
             }
 
@@ -166,7 +162,7 @@ impl Tool for WriteTool {
             // even the folders leading to it.
             let resolved = validate_path(
                 &cx.writable_roots,
-                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+                &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
             )?;
             if let Some(parent) = resolved.parent() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -194,6 +190,36 @@ fn atomic_write(target: &Path, content: &[u8]) -> Result<(), ToolError> {
 }
 
 pub struct EditTool;
+
+pub(crate) fn apply_edit(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, String), ToolError> {
+    // An empty needle matches at every character boundary: it would
+    // either report a bogus ambiguity or interleave `new_string`
+    // through the whole file under `replace_all`.
+    if old.is_empty() {
+        return Err(ToolError::Denied {
+            code: "invalid_args".into(),
+            message: "old_string cannot be empty".into(),
+        });
+    }
+    let count = content.matches(old).count();
+    if count == 0 {
+        return Err(ToolError::NoMatch);
+    }
+    if count > 1 && !replace_all {
+        return Err(ToolError::AmbiguousMatch { count });
+    }
+    let updated = if replace_all {
+        content.replace(old, new)
+    } else {
+        content.replacen(old, new, 1)
+    };
+    Ok((updated, format!("replaced {count} occurrence(s)")))
+}
 
 impl Tool for EditTool {
     fn name(&self) -> &str {
@@ -224,35 +250,15 @@ impl Tool for EditTool {
             let path = arg_str(&args, "path")?;
             let old = arg_str(&args, "old_string")?;
             let new = arg_str(&args, "new_string")?;
-            // An empty needle matches at every character boundary: it would
-            // either report a bogus ambiguity or interleave `new_string`
-            // through the whole file under `replace_all`.
             if old.is_empty() {
-                return Err(ToolError::Denied {
-                    code: "invalid_args".into(),
-                    message: "old_string cannot be empty".into(),
-                });
+                apply_edit("", old, new, false)?;
             }
             let replace_all = args
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let change = |content: String| {
-                let count = content.matches(&old).count();
-                if count == 0 {
-                    return Err(ToolError::NoMatch);
-                }
-                if count > 1 && !replace_all {
-                    return Err(ToolError::AmbiguousMatch { count });
-                }
-                let updated = if replace_all {
-                    content.replace(&old, &new)
-                } else {
-                    content.replacen(&old, &new, 1)
-                };
-                Ok((updated, format!("replaced {count} occurrence(s)")))
-            };
+            let change = |content: String| apply_edit(&content, old, new, replace_all);
             // A reviewed destination is read and written back without
             // following any link.
             if let Some(binding) = &cx.binding {
@@ -267,7 +273,7 @@ impl Tool for EditTool {
 
             let resolved = validate_path(
                 &cx.writable_roots,
-                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+                &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
             )?;
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
@@ -335,7 +341,7 @@ impl Tool for GrepTool {
                             .into(),
                 });
             }
-            super::grep::search(pattern, search_root, _cancel).await
+            super::grep::search(pattern.to_owned(), search_root, _cancel).await
         })
     }
 }
@@ -576,6 +582,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.truncated.unwrap().original_bytes, content.len());
+        for (offset, limit, expected) in [
+            (0, 1, line.as_str()),
+            (2, u64::MAX, &content[100..]),
+            (u64::MAX, u64::MAX, ""),
+            (1, 0, ""),
+        ] {
+            assert_eq!(slice_lines(&content, Some(offset), Some(limit)), expected);
+        }
     }
 
     #[tokio::test]
@@ -584,7 +598,7 @@ mod tests {
         let cx = ctx(tmp.path());
         let f = tmp.path().join("edit.txt");
         std::fs::write(&f, "foo bar baz").unwrap();
-        EditTool
+        let res = EditTool
             .call(
                 json!({"path": f.to_str().unwrap(), "old_string": "bar", "new_string": "QUX"}),
                 CancellationToken::new(),
@@ -593,77 +607,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "foo QUX baz");
+        assert_eq!(res.output, "replaced 1 occurrence(s)");
     }
 
-    #[tokio::test]
-    async fn edit_no_match_leaves_file_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "original").unwrap();
-        let err = EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "absent", "new_string": "X"}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::NoMatch));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "original");
-    }
-
-    #[tokio::test]
-    async fn edit_rejects_empty_old_string_and_leaves_file_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "abc").unwrap();
-        let err = EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "", "new_string": "#", "replace_all": true}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::Denied { ref code, .. } if code == "invalid_args"));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "abc");
-    }
-
-    #[tokio::test]
-    async fn edit_ambiguous_match_without_replace_all_leaves_file_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "x x x").unwrap();
-        let err = EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "x", "new_string": "Y"}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::AmbiguousMatch { count: 3 }));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "x x x");
-    }
-
-    #[tokio::test]
-    async fn edit_replace_all_replaces_every_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "x x x").unwrap();
-        EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "x", "new_string": "Y", "replace_all": true}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "Y Y Y");
+    #[test]
+    fn apply_edit_cases() {
+        for (content, old, new, replace_all, expected) in [
+            (
+                "foo bar baz",
+                "bar",
+                "QUX",
+                false,
+                Ok(("foo QUX baz".into(), "replaced 1 occurrence(s)".into())),
+            ),
+            ("original", "absent", "X", false, Err(ToolError::NoMatch)),
+            (
+                "abc",
+                "",
+                "#",
+                false,
+                Err(ToolError::Denied {
+                    code: "invalid_args".into(),
+                    message: "old_string cannot be empty".into(),
+                }),
+            ),
+            (
+                "abc",
+                "",
+                "#",
+                true,
+                Err(ToolError::Denied {
+                    code: "invalid_args".into(),
+                    message: "old_string cannot be empty".into(),
+                }),
+            ),
+            (
+                "x x x",
+                "x",
+                "Y",
+                false,
+                Err(ToolError::AmbiguousMatch { count: 3 }),
+            ),
+            (
+                "x x x",
+                "x",
+                "Y",
+                true,
+                Ok(("Y Y Y".into(), "replaced 3 occurrence(s)".into())),
+            ),
+            (
+                "aaa",
+                "aa",
+                "b",
+                false,
+                Ok(("ba".into(), "replaced 1 occurrence(s)".into())),
+            ),
+            (
+                "é é",
+                "é",
+                "",
+                true,
+                Ok((" ".into(), "replaced 2 occurrence(s)".into())),
+            ),
+        ] {
+            assert_eq!(
+                apply_edit(content, old, new, replace_all).map_err(|error| error.to_string()),
+                expected.map_err(|error| error.to_string()),
+                "{content:?}, {old:?}, {new:?}, replace_all={replace_all}",
+            );
+        }
     }
 
     #[tokio::test]

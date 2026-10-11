@@ -549,7 +549,8 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
 #[test]
 fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
     let mut s = subagent_parent();
-    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"vigie","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let mut entry = child_entry("running", Some("vigie"), None);
+    entry.message_count = 0;
     let list = ClientEvent::Sessions {
         generation: Generation(0),
         result: Ok(SessionListBody {
@@ -667,7 +668,11 @@ fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
 #[test]
 fn session_list_and_metadata_strip_terminal_controls_before_display() {
     let mut s = subagent_parent();
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mvigie\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let entry = child_entry(
+        "running",
+        Some("\u{1b}[31mvigie\u{1b}[0m"),
+        Some("\u{1b}[31mGoal\u{1b}[0m"),
+    );
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -744,7 +749,7 @@ fn a_terminal_list_status_updates_a_child_without_an_open_parent() {
     s.session.as_mut().unwrap().session_id = Ulid(2).to_string();
     s.parent_session_id = Some(Ulid(1).to_string());
     s.child_status = ChildStatus::Running;
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":1,"live":false,"parent_session_id":Ulid(1),"child_status":"done","promptable":false})).unwrap();
+    let entry = child_entry("done", None, None);
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -773,7 +778,8 @@ async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completio
         ..Default::default()
     });
     s.active = 1;
-    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"vigie","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let mut entry = child_entry("running", Some("vigie"), None);
+    entry.message_count = 0;
     let effects = update(
         &mut s,
         ClientEvent::Sessions {
@@ -907,6 +913,26 @@ async fn child_controls_and_permission_answers_use_the_owner_routes() {
         )
         .await
         .unwrap();
+}
+
+fn child_entry(status: &str, agent: Option<&str>, title: Option<&str>) -> SessionListEntry {
+    SessionListEntry {
+        bypass: false,
+        bypass_seq: 0,
+        incarnation: None,
+        read_only: false,
+        resume_disabled_reason: None,
+        id: Ulid(2).to_string(),
+        title: title.map(str::to_owned),
+        created_at: "now".into(),
+        updated_at: "now".into(),
+        message_count: 1,
+        agent: agent.map(str::to_owned),
+        live: status == "running",
+        parent_session_id: Some(Ulid(1).to_string()),
+        child_status: Some(status.into()),
+        promptable: false,
+    }
 }
 
 fn subagent_parent() -> State {
@@ -1206,7 +1232,7 @@ fn child_budget_events_update_the_sidebar_without_opening_a_transcript() {
 #[test]
 fn session_list_seeds_real_children_without_inventing_goals() {
     let mut s = subagent_parent();
-    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"title":"Not a delegated goal","created_at":"now","updated_at":"now","message_count":1,"agent":"lux","live":false,"parent_session_id":Ulid(1),"child_status":"stopped","promptable":false})).unwrap();
+    let entry = child_entry("stopped", Some("lux"), Some("Not a delegated goal"));
     update(
         &mut s,
         ClientEvent::Sessions {
@@ -1719,8 +1745,7 @@ fn regenerate_fixtures() {
 #[test]
 fn committed_fixtures_match_the_generator() {
     for (name, envs) in scenarios() {
-        let on_disk = std::fs::read_to_string(format!("{DIR}/{name}.jsonl")).unwrap();
-        assert_eq!(on_disk, jsonl(&envs), "{name}.jsonl is stale; regenerate");
+        assert_eq!(load(name), envs, "{name}.jsonl is stale; regenerate");
     }
 }
 

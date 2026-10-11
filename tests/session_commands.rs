@@ -10,16 +10,10 @@ use withnav::server::{app, AppState};
 
 mod common;
 use common::server::{
-    collect_until, post_message_ok, request_json, spawn_server, TestServerConfig,
+    collect_until, post_message_ok, request_json, spawn_server, temp_workspace as tmp_ws,
+    TestServerConfig,
 };
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};
-
-fn tmp_ws() -> (tempfile::TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let ws = tmp.path().join("ws");
-    std::fs::create_dir_all(&ws).expect("ws");
-    (tmp, ws)
-}
 
 fn state(tmp: &std::path::Path) -> AppState {
     TestServerConfig::unreachable(tmp)
@@ -135,7 +129,7 @@ async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
             .into_iter()
             .filter(|e| e.kind == "command.result")
             .collect(),
-        other => panic!("expected replay, got {other:?}"),
+        other => panic!("session {id}: expected command.result replay, got {other:?}"),
     }
 }
 
@@ -680,19 +674,10 @@ async fn a_resumed_pending_ask_refuses_an_immediate_command() {
         e.kind == "agent.state" && e.payload["to"] == "yielded"
     })
     .await;
-    // The turn-end transcript snapshot is saved asynchronously.
-    let mut saved = false;
-    for _ in 0..100 {
-        first.history().flush().await.expect("flush");
-        let loaded = first.history().load(id).await.expect("load").expect("row");
-        if !loaded.transcript.is_empty() {
-            saved = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(saved, "transcript snapshot stored");
+    // Closing joins the runtime and flushes its final transcript snapshot.
     first.close_session(id).await.expect("close");
+    let loaded = first.history().load(id).await.expect("load").expect("row");
+    assert!(!loaded.transcript.is_empty(), "transcript snapshot stored");
     task.abort();
 
     let second = config.state();

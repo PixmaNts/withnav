@@ -300,11 +300,9 @@ impl Service {
             .iter()
             .map(|a| (a.id.as_str(), a.model.as_deref(), a.mode.is_primary()))
             .collect();
-        crate::agent::definitions::AgentId::parse(
-            snapshot.settings.default_agent().map_err(diagnostic)?,
-        )
-        .map_err(|_| diagnostic("default_agent is not a valid agent id"))?;
         let wanted = snapshot.settings.default_agent().map_err(diagnostic)?;
+        crate::agent::definitions::AgentId::parse(wanted)
+            .map_err(|_| diagnostic("default_agent is not a valid agent id"))?;
         if saved.is_none() {
             if let Some(definition) = snapshot.agents.get(wanted) {
                 let configured = snapshot

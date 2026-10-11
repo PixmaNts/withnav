@@ -96,6 +96,7 @@ struct Fake {
     calls: AtomicUsize,
     requests: Mutex<Vec<Questions>>,
     delay: Duration,
+    barrier: Option<tokio::sync::Barrier>,
     fail: bool,
 }
 impl Fake {
@@ -104,6 +105,7 @@ impl Fake {
             calls: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
             delay: Duration::ZERO,
+            barrier: None,
             fail: false,
         }
     }
@@ -130,6 +132,9 @@ impl DecisionClient for Fake {
                 .lock()
                 .unwrap()
                 .push(request.questions.clone());
+            if let Some(barrier) = &self.barrier {
+                barrier.wait().await;
+            }
             tokio::time::sleep(self.delay).await;
             if self.fail {
                 return Err(DecisionError::InvalidAnswer("test failure".into()));
@@ -235,12 +240,12 @@ async fn independent_branches_run_in_parallel() {
         + "\n[constants]\nA='one'\nB='two'\n";
     let c = compile(&text);
     let mut client = Fake::new();
-    client.delay = Duration::from_millis(80);
-    let start = Instant::now();
-    let outcome = evaluate(&c, &client).await;
+    client.barrier = Some(tokio::sync::Barrier::new(2));
+    let outcome = tokio::time::timeout(Duration::from_secs(2), evaluate(&c, &client))
+        .await
+        .expect("both independent decisions must enter before either can complete");
     assert!(matches!(outcome.result, RunResult::Success { .. }));
     assert_eq!(client.calls.load(Ordering::SeqCst), 2);
-    assert!(start.elapsed() < Duration::from_millis(145));
 }
 #[tokio::test]
 async fn failure_discards_already_proposed_deny() {

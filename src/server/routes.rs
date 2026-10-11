@@ -900,21 +900,19 @@ const HTTP_USER_ACTOR_ID: &str = "user:http";
 /// Public so the WS route and integration tests share the exact POST core.
 pub fn build_command(
     session_id: Ulid,
-    request: &PostMessageRequest,
+    request: PostMessageRequest,
     mode: DeliveryMode,
 ) -> Command {
     Command {
         command_id: Ulid::new(),
         session_id,
         source_actor_id: HTTP_USER_ACTOR_ID.to_string(),
-        target_actor_id: request.target_actor_id.clone(),
+        target_actor_id: request.target_actor_id,
         mode,
         content: {
-            let mut content = request.content.clone();
-            if let Some(answer) = &request.answer {
-                content.push(ContentBlock::AskAnswer {
-                    answer: answer.clone(),
-                });
+            let mut content = request.content;
+            if let Some(answer) = request.answer {
+                content.push(ContentBlock::AskAnswer { answer });
             }
             content
         },
@@ -959,7 +957,7 @@ async fn post_message(
         Ok(mode) => mode,
         Err(err) => return error_response(err),
     };
-    let command = build_command(session_id, &request, mode);
+    let command = build_command(session_id, request, mode);
     match state.send(command).await {
         Ok(accepted) => Json(accepted).into_response(),
         Err(err) => error_response(err),

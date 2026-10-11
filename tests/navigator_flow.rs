@@ -56,7 +56,10 @@ async fn expect_finished_without_remark(client: &mut Nav) {
     .await
     .expect("trigger finished without a remark");
     let rest = client.sync_notifications().await;
-    assert!(rest.iter().all(|msg| msg["method"] != "withnav/remark"), "{rest:?}");
+    assert!(
+        rest.iter().all(|msg| msg["method"] != "withnav/remark"),
+        "{rest:?}"
+    );
 }
 
 /// The trigger records of the log, in order.
@@ -96,7 +99,11 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     let records = triggers(&client);
     let delivered: Vec<&str> = records
         .iter()
-        .map(|r| r["delivered"].as_str().unwrap())
+        .map(|r| {
+            r["delivered"]
+                .as_str()
+                .expect("trigger missing string delivered")
+        })
         .collect();
     assert_eq!(delivered.iter().filter(|d| **d == "remark").count(), 1);
     assert!(!delivered.contains(&"cancelled"), "{delivered:?}");

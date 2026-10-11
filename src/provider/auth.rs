@@ -101,7 +101,7 @@ pub fn remove_key(config_dir: &Path, provider_name: &str) -> Result<(), Provider
 
 pub fn set_key(config_dir: &Path, provider_name: &str, api_key: &str) -> Result<(), ProviderError> {
     std::fs::create_dir_all(config_dir).map_err(io_api)?;
-    let mut store = load_store(config_dir).unwrap_or_default();
+    let mut store = load_store(config_dir)?;
     store.providers.insert(
         provider_name.to_string(),
         AuthEntry {
@@ -161,6 +161,17 @@ mod tests {
         assert_eq!(mode, 0o600, "auth.json must be created 0600");
         let key = resolve_key(tmp.path(), "omniroute", None).unwrap();
         assert_eq!(key, "secret-abc");
+        set_key(tmp.path(), "other", "second-key").unwrap();
+        assert_eq!(resolve_key(tmp.path(), "omniroute", None).unwrap(), key);
+
+        let corrupt = "{\"omniroute\":{\"api_key\":\"secret-abc\"},";
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(matches!(
+            set_key(tmp.path(), "other", "replacement"),
+            Err(ProviderError::Auth(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        assert!(!path.with_extension("json.tmp").exists());
     }
 
     #[test]
@@ -212,6 +223,14 @@ mod tests {
         let e = load_store(tmp.path()).unwrap_err();
         let s = e.to_string();
         assert!(s.contains("insecure permissions"), "got: {s}");
+        assert!(matches!(
+            set_key(tmp.path(), "other", "new-key"),
+            Err(ProviderError::Auth(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"omniroute\":{\"api_key\":\"x\"}}"
+        );
     }
 
     #[test]

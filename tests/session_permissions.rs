@@ -16,7 +16,7 @@ mod common;
 use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
-    text_chunk, tool_call_chunk, tool_calls_chunk, CapturingProvider,
+    text_chunk, text_response as done, tool_call_chunk, tool_calls_chunk, CapturingProvider,
 };
 
 use common::TestEnv as Env;
@@ -40,10 +40,6 @@ fn write_call(id: &str, path: &Path) -> (String, Value) {
 fn one_write(id: &str, path: &Path) -> Vec<u8> {
     let (id, args) = write_call(id, path);
     calls(&[(&id, "write", args)])
-}
-
-fn done(text: &str) -> Vec<u8> {
-    http_sse(&sse_body(&[&text_chunk(text)]))
 }
 
 async fn provider(responses: Vec<Vec<u8>>) -> CapturingProvider {

@@ -13,17 +13,13 @@ use withnav::server::AppState;
 mod common;
 use common::server::{collect_until, send_text, temp_workspace as tmp_ws, TestServerConfig};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body, text_chunk,
+    http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body, text_response as answer,
     tool_call_chunk, CapturingProvider,
 };
 
 /// A window small enough that four long turns overrun its budget.
 const WINDOW: u64 = 20_000;
 const SUMMARY: &str = "Goal: finish the parser.\nNext: run the tests.";
-
-fn answer(text: &str) -> Vec<u8> {
-    http_sse(&sse_body(&[&text_chunk(text)]))
-}
 
 fn history(turns: usize) -> Vec<ChatMessage> {
     (0..turns)

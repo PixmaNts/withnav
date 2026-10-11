@@ -57,6 +57,11 @@ pub fn http_sse(body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A complete scripted TCP response for a text-only assistant turn.
+pub fn text_response(text: &str) -> Vec<u8> {
+    http_sse(&sse_body(&[&text_chunk(text)]))
+}
+
 /// The wiremock answer carrying [`sse_body`] for `events`.
 pub fn sse_response(events: &[&str]) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(sse_body(events), "text/event-stream")

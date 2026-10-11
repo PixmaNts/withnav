@@ -27,7 +27,7 @@ fn message_received_type_roundtrips_optional_captain_selection() {
 }
 use common::server::{captain_command, collect_until, TestServerConfig};
 use common::sse::CapturingProvider;
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_call_chunk};
+use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_response as answer, tool_call_chunk};
 
 use common::TestEnv as Env;
 
@@ -69,14 +69,6 @@ fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) 
     } else {
         config.state()
     }
-}
-
-fn finish() -> String {
-    r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string()
-}
-
-fn answer(text: &str) -> Vec<u8> {
-    http_sse(&sse_body(&[&text_chunk(text), &finish()]))
 }
 
 fn skill_call(name: &str) -> Vec<u8> {

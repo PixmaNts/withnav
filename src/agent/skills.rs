@@ -519,7 +519,7 @@ impl Walk {
 fn read_header(path: &Path) -> std::io::Result<String> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
-        .take(frontmatter::MAX_HEADER_BYTES as u64)
+        .take(frontmatter::MAX_HEADER_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }

@@ -202,7 +202,7 @@ pub(super) fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
         return unreadable(e.to_string());
     }
     let text = String::from_utf8_lossy(&bytes);
-    let body = match frontmatter::split(&text) {
+    let body = match frontmatter::split_bounded(&text) {
         Ok((_, body)) => body.trim_matches('\n'),
         Err(why) => return unreadable(why),
     };

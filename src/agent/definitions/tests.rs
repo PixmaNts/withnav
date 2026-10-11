@@ -368,6 +368,22 @@ fn the_file_count_and_size_are_bounded() {
         .collect();
     assert!(messages.iter().any(|m| m.contains("more than 200")));
     assert!(messages.iter().any(|m| m.contains("larger than 64 KiB")));
+    let path = f.ws.join(".withnav/agents/big.md");
+    let header = "---\ndescription: d\n---\n";
+    for (bytes, expected) in [
+        (
+            format!("{header}{}é", "x".repeat(MAX_FILE_BYTES - header.len())).into_bytes(),
+            "larger than 64 KiB",
+        ),
+        (
+            [header.as_bytes(), &[0xff]].concat(),
+            "cannot be read as text",
+        ),
+    ] {
+        fs::write(&path, bytes).unwrap();
+        let error = read_file(&path, &path, AgentSource::Project(path.clone())).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]

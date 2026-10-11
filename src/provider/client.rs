@@ -56,10 +56,11 @@ impl ModelClient {
     }
 
     fn post(&self, endpoint: &str) -> reqwest::RequestBuilder {
-        let mut req = self
-            .http
-            .post(format!("{}/{}", self.base_url, endpoint))
-            .bearer_auth(&self.api_key);
+        self.prepare_request(self.http.post(format!("{}/{}", self.base_url, endpoint)))
+    }
+
+    fn prepare_request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut req = builder.bearer_auth(&self.api_key);
         for (k, v) in &self.headers {
             req = req.header(k, v);
         }
@@ -89,10 +90,7 @@ impl ModelClient {
         cancel: &CancellationToken,
     ) -> Result<bytes::Bytes, ProviderError> {
         let url = format!("{}/{}", self.base_url, endpoint);
-        let mut req = self.http.get(url).bearer_auth(&self.api_key);
-        for (k, v) in &self.headers {
-            req = req.header(k, v);
-        }
+        let req = self.prepare_request(self.http.get(url));
         let call = async {
             let mut response = cancellable(cancel, req.send()).await??;
             let status = response.status();

@@ -58,6 +58,14 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
     }
 }
 
+fn clear_start_selection(s: &mut State) {
+    s.start_model = None;
+    s.start_variant = None;
+    s.selected_model_id = None;
+    s.selected_model_name = None;
+    s.variant = None;
+}
+
 /// Keeps the transcript position of the active tab before another one comes forward.
 fn save_view(s: &mut State, ui: &UiState) {
     s.view = TabView {
@@ -526,11 +534,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             }
             let mut effects = blank_tab(s, ui).unwrap_or_default();
             s.agent = None;
-            s.start_model = None;
-            s.start_variant = None;
-            s.selected_model_id = None;
-            s.selected_model_name = None;
-            s.variant = None;
+            clear_start_selection(s);
             s.model_source.clear();
             s.variant_source.clear();
             ui.overlay = Some(Overlay::Agents);
@@ -558,11 +562,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 return vec![];
             };
             s.agent = Some(agent);
-            s.start_model = None;
-            s.start_variant = None;
-            s.selected_model_id = None;
-            s.selected_model_name = None;
-            s.variant = None;
+            clear_start_selection(s);
             effects.push(Effect::FetchAgents(None));
             effects
         }

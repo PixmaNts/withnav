@@ -5,33 +5,13 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::subagents::watchdog::{Evidence, Judge, JudgeError, Verdict};
 use withnav::session::SessionId;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
-
-struct FakeClock {
-    now: Mutex<Instant>,
-    sleeps: mpsc::UnboundedSender<oneshot::Sender<()>>,
-}
-impl Clock for FakeClock {
-    fn now(&self) -> Instant {
-        *self.now.lock().unwrap()
-    }
-    fn sleep(&self, _: Duration) -> BoxFuture<'static, ()> {
-        let (tx, rx) = oneshot::channel();
-        self.sleeps.send(tx).unwrap();
-        Box::pin(async move {
-            let _ = rx.await;
-        })
-    }
-}
-struct FakeJudge {
-    answers: Mutex<std::collections::VecDeque<Result<Verdict, JudgeError>>>,
-    checked: mpsc::UnboundedSender<Evidence>,
-}
+use common::watchdog::{FakeClock, ScriptedJudge};
 
 struct HeldJudge {
     entered: tokio::sync::Notify,
@@ -176,22 +156,6 @@ async fn concurrent_continue_decisions_inject_only_the_winning_note() {
     drop(child_stream);
     drop(parent_stream);
     f.service.close_all().bounded(file!(), line!()).await;
-}
-impl Judge for FakeJudge {
-    fn judge<'a>(
-        &'a self,
-        evidence: &'a Evidence,
-        _: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
-        Box::pin(async move {
-            self.checked.send(evidence.clone()).unwrap();
-            self.answers
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("scripted verdict")
-        })
-    }
 }
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -995,7 +959,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let (checked, _rx) = mpsc::unbounded_channel();
     service.install_watchdog_test(
         clock.clone(),
-        Arc::new(FakeJudge {
+        Arc::new(ScriptedJudge {
             answers: Mutex::new(vec![Ok(Verdict::Stuck)].into()),
             checked,
         }),
@@ -1095,7 +1059,7 @@ impl Fixture {
         let (tx, checked) = mpsc::unbounded_channel();
         service.install_watchdog_test(
             clock.clone(),
-            Arc::new(FakeJudge {
+            Arc::new(ScriptedJudge {
                 answers: Mutex::new(answers.into()),
                 checked: tx,
             }),
@@ -1477,7 +1441,7 @@ async fn interval_zero_starts_no_supervisor_and_children_have_no_decision_tool()
             now: Mutex::new(Instant::now()),
             sleeps: tx,
         }),
-        Arc::new(FakeJudge {
+        Arc::new(ScriptedJudge {
             answers: Mutex::new(Default::default()),
             checked,
         }),
@@ -1583,7 +1547,7 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
     let (tx, mut checked) = mpsc::unbounded_channel();
     service.install_watchdog_test(
         clock.clone(),
-        Arc::new(FakeJudge {
+        Arc::new(ScriptedJudge {
             answers: Mutex::new(Default::default()),
             checked: tx,
         }),

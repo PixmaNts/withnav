@@ -1,41 +1,13 @@
-use futures::future::BoxFuture;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::subagents::watchdog::Verdict;
 mod common;
 use common::deadline::Deadline;
 use common::server::{collect_until, send_text, TestServerConfig};
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
-
-struct FakeClock {
-    now: Mutex<Instant>,
-    sleeps: mpsc::UnboundedSender<oneshot::Sender<()>>,
-}
-impl Clock for FakeClock {
-    fn now(&self) -> Instant {
-        *self.now.lock().unwrap()
-    }
-    fn sleep(&self, _: Duration) -> BoxFuture<'static, ()> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.sleeps.send(tx);
-        Box::pin(async move {
-            let _ = rx.await;
-        })
-    }
-}
-struct FakeJudge(Verdict);
-impl Judge for FakeJudge {
-    fn judge<'a>(
-        &'a self,
-        _: &'a Evidence,
-        _: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
-        Box::pin(async { Ok(self.0) })
-    }
-}
+use common::watchdog::{ConstantJudge, FakeClock};
 
 #[tokio::test]
 async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_turn() {
@@ -79,7 +51,11 @@ async fn pause_lifecycle(mode: u8) {
         now: Mutex::new(Instant::now()),
         sleeps: tx,
     });
-    service.install_root_watchdog_test(clock.clone(), Arc::new(FakeJudge(Verdict::Doubt)), None);
+    service.install_root_watchdog_test(
+        clock.clone(),
+        Arc::new(ConstantJudge(Verdict::Doubt)),
+        None,
+    );
     let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "find files").await;
     let (_, stream) = provider
@@ -358,7 +334,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
             now: Mutex::new(Instant::now()),
             sleeps: tx,
         }),
-        Arc::new(FakeJudge(Verdict::Active)),
+        Arc::new(ConstantJudge(Verdict::Active)),
         None,
     );
     let id = service.create_session(&ws, None, false).await.unwrap();
@@ -465,7 +441,11 @@ async fn stuck_root_settles_tool_results_without_requesting_another_step() {
         now: Mutex::new(Instant::now()),
         sleeps: tx,
     });
-    service.install_root_watchdog_test(clock.clone(), Arc::new(FakeJudge(Verdict::Stuck)), None);
+    service.install_root_watchdog_test(
+        clock.clone(),
+        Arc::new(ConstantJudge(Verdict::Stuck)),
+        None,
+    );
     let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "find files").await;
     let (_, stream) = provider

@@ -7,6 +7,7 @@ pub mod deadline;
 pub mod navigator;
 pub mod server;
 pub mod sse;
+pub mod watchdog;
 
 /// An isolated canonical root with empty workspace and home directories.
 pub struct TestEnv {

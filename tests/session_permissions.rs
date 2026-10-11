@@ -16,7 +16,7 @@ mod common;
 use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
-    text_chunk, tool_call_chunk, CapturingProvider,
+    text_chunk, tool_call_chunk, tool_calls_chunk, CapturingProvider,
 };
 
 use common::TestEnv as Env;
@@ -27,18 +27,7 @@ fn config(env: &Env, provider: &CapturingProvider) -> TestServerConfig {
 
 /// One assistant message calling each `(id, tool, arguments)`.
 fn calls(calls: &[(&str, &str, Value)]) -> Vec<u8> {
-    let calls: Vec<Value> = calls
-        .iter()
-        .enumerate()
-        .map(|(index, (id, name, args))| {
-            json!({"index": index, "id": id,
-                   "function": {"name": name, "arguments": args.to_string()}})
-        })
-        .collect();
-    let chunk = json!({"choices": [{"index": 0, "finish_reason": "tool_calls",
-                                    "delta": {"tool_calls": calls}}]})
-    .to_string();
-    http_sse(&sse_body(&[&chunk]))
+    http_sse(&sse_body(&[&tool_calls_chunk(calls)]))
 }
 
 fn write_call(id: &str, path: &Path) -> (String, Value) {

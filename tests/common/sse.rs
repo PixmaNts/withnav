@@ -23,11 +23,21 @@ pub fn sse_body(events: &[&str]) -> String {
 
 /// A streamed assistant turn that calls tool `name` with the JSON `args`.
 pub fn tool_call_chunk(id: &str, name: &str, args: &Value) -> String {
-    serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {
-        "tool_calls": [{"index": 0, "id": id, "function": {
-            "name": name, "arguments": args.to_string(),
-        }}],
-    }}]})
+    tool_calls_chunk(&[(id, name, args.clone())])
+}
+
+/// One assistant message calling each `(id, tool, arguments)` in order.
+pub fn tool_calls_chunk(calls: &[(&str, &str, Value)]) -> String {
+    let calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (id, name, args))| {
+            serde_json::json!({"index": index, "id": id,
+                "function": {"name": name, "arguments": args.to_string()}})
+        })
+        .collect();
+    serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls",
+        "delta": {"tool_calls": calls}}]})
     .to_string()
 }
 

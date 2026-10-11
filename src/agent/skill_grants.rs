@@ -2,9 +2,11 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+pub const FILE_NAME: &str = "skill-grants.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillScript {
@@ -22,9 +24,7 @@ mod tests {
     fn concurrent_grants_persist_digests_and_revoke_without_lost_updates() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let store = SkillGrants {
-            file: dir.path().join("skill-grants.json"),
-        };
+        let store = SkillGrants::in_dir(dir.path());
         let workers: Vec<_> = (0..12)
             .map(|n| {
                 let store = store.clone();
@@ -80,6 +80,12 @@ pub struct SkillGrants {
 }
 
 impl SkillGrants {
+    pub fn in_dir(config_dir: &Path) -> Self {
+        Self {
+            file: config_dir.join(FILE_NAME),
+        }
+    }
+
     pub fn read(&self) -> Result<Vec<SkillGrant>, String> {
         use std::io::Read;
         match std::fs::OpenOptions::new()

@@ -255,17 +255,24 @@ struct ChildLinkRow {
 }
 
 fn child_link_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChildLinkRow> {
+    child_link_from_row_at(row, 0)
+}
+
+fn child_link_from_row_at(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<ChildLinkRow> {
     Ok(ChildLinkRow {
-        parent_id: row.get(0)?,
-        child_id: row.get(1)?,
-        agent: row.get(2)?,
-        goal: row.get(3)?,
-        policy_snapshot: row.get(4)?,
-        status: row.get(5)?,
-        created_at: row.get(6)?,
-        terminal_at: row.get(7)?,
-        terminal_reason: row.get(8)?,
-        result_text: row.get(9)?,
+        parent_id: row.get(offset)?,
+        child_id: row.get(offset + 1)?,
+        agent: row.get(offset + 2)?,
+        goal: row.get(offset + 3)?,
+        policy_snapshot: row.get(offset + 4)?,
+        status: row.get(offset + 5)?,
+        created_at: row.get(offset + 6)?,
+        terminal_at: row.get(offset + 7)?,
+        terminal_reason: row.get(offset + 8)?,
+        result_text: row.get(offset + 9)?,
     })
 }
 
@@ -290,6 +297,14 @@ impl ChildLinkRow {
             result_text: self.result_text,
         })
     }
+}
+
+fn read_json_pair(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String)> {
+    Ok((row.get(0)?, row.get(1)?))
+}
+
+fn parse_json_payload(payload: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str(payload).map_err(|e| e.to_string())
 }
 
 /// The result channel of an acknowledged write.
@@ -854,10 +869,10 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare("SELECT child_id, payload FROM completion_outbox WHERE parent_id=?1 AND delivered=0 ORDER BY rowid").map_err(|e| e.to_string())?;
-            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], read_json_pair).map_err(|e| e.to_string())?;
             rows.map(|row| {
                 let (child, payload) = row.map_err(|e| e.to_string())?;
-                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, serde_json::from_str(&payload).map_err(|e| e.to_string())?))
+                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, parse_json_payload(&payload)?))
             }).collect()
         }).await.map_err(|e| e.to_string())?
     }
@@ -908,8 +923,8 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare("SELECT request_id,payload FROM permission_outbox WHERE parent_id=?1 AND delivered=0 ORDER BY rowid").map_err(|e| e.to_string())?;
-            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
-            rows.map(|row| { let (id,payload) = row.map_err(|e| e.to_string())?; Ok((id,serde_json::from_str(&payload).map_err(|e| e.to_string())?)) }).collect()
+            let rows = stmt.query_map([parent.to_string()], read_json_pair).map_err(|e| e.to_string())?;
+            rows.map(|row| { let (id,payload) = row.map_err(|e| e.to_string())?; Ok((id,parse_json_payload(&payload)?)) }).collect()
         }).await.map_err(|e| e.to_string())?
     }
 
@@ -985,10 +1000,10 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare("SELECT child_id, payload, result_text FROM completion_outbox WHERE parent_id=?1 AND consumed=0 ORDER BY rowid").map_err(|e| e.to_string())?;
-            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| Ok((read_json_pair(row)?, row.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
             rows.map(|row| {
-                let (child, payload, result) = row.map_err(|e| e.to_string())?;
-                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, serde_json::from_str(&payload).map_err(|e| e.to_string())?, result))
+                let ((child, payload), result) = row.map_err(|e| e.to_string())?;
+                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, parse_json_payload(&payload)?, result))
             }).collect()
         }).await.map_err(|e| e.to_string())?
     }
@@ -2922,6 +2937,19 @@ mod tests {
         let meta = store.meta(id).await.expect("meta").expect("present");
         assert!(meta.editor);
         assert_eq!(meta.last_seq, 0);
+        let (joined, link) = store
+            .meta_with_child_link(id)
+            .await
+            .expect("meta with link")
+            .expect("root present");
+        assert_eq!(joined.id, id);
+        assert!(joined.editor);
+        assert!(link.is_none());
+        assert!(store
+            .meta_with_child_link(Ulid::new())
+            .await
+            .expect("unknown meta with link")
+            .is_none());
         let (resumed, transcript, compaction) = store
             .load_for_resume(id)
             .await
@@ -2971,6 +2999,12 @@ mod tests {
             );
             assert!(store.pending_completions(parent).await.unwrap().is_empty());
             assert!(store.load_for_resume(child).await.unwrap().is_some());
+            let (meta, link) = store.meta_with_child_link(child).await.unwrap().unwrap();
+            assert_eq!(meta.id, child);
+            let link = link.unwrap();
+            assert_eq!(link.parent_id, parent);
+            assert_eq!(link.child_id, child);
+            assert_eq!(link.status, "running");
         }
         let first = store
             .finish_child_link(child, "done".into(), None, "answer".into())

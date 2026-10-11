@@ -1727,6 +1727,28 @@ mod tests {
     #[tokio::test]
     async fn budget_drops_oldest_turns_keeps_latest_and_reports_argument_overflow() {
         // Frozen reference for byte-for-byte compatibility of budget optimizations.
+        fn reference_script_fit(state: &mut Value, instructions: usize, limit: usize) {
+            if state.to_string().len() + instructions <= limit {
+                return;
+            }
+            state["untrusted_evidence"]["assistant_text"] = Value::Null;
+            state["untrusted_evidence"]["parent_agent_evidence"] = Value::Null;
+            while state.to_string().len() + instructions > limit {
+                let Some(text) = state["untrusted_evidence"]["script"]["text"].as_str() else {
+                    break;
+                };
+                if text.is_empty() {
+                    break;
+                }
+                let mut end = text.len().saturating_sub(1024);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                state["untrusted_evidence"]["script"]["text"] = json!(&text[..end]);
+                state["untrusted_evidence"]["script"]["truncated"] = json!(true);
+                state["host_facts"]["script_binding"]["complete"] = json!(false);
+            }
+        }
         fn reference_fit(state: &mut Value, instructions: usize, limit: usize) {
             let mut dropped = state["budget_fit"]["dropped_turns"].as_u64().unwrap_or(0);
             let mut cut = state["budget_fit"]["cut_turns"].as_u64().unwrap_or(0);
@@ -1761,7 +1783,7 @@ mod tests {
                 }
                 state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
             }
-            script::fit(state, instructions, limit);
+            reference_script_fit(state, instructions, limit);
             if state.to_string().len() + instructions > limit {
                 state["captain_request_complete"] = json!(false);
                 state["captain_request"] = Value::Null;
@@ -1803,6 +1825,48 @@ mod tests {
                         reference_fit(&mut expected, instructions, limit);
                         fit_conversation(&mut actual, instructions, limit);
                         assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "count={count}, latest={latest:?}, instructions={instructions}, limit={limit}");
+                    }
+                }
+            }
+        }
+        for text in [
+            Value::Null,
+            json!(""),
+            json!("x".repeat(1023)),
+            json!("x".repeat(1024)),
+            json!("x".repeat(1025)),
+            json!("🧭".repeat(513)),
+            json!("\"\\\n\t\0é🧭".repeat(500)),
+            json!("x".repeat(200 * 1024)),
+        ] {
+            for complete in [Value::Null, json!(false), json!(true)] {
+                let original = json!({
+                    "conversation":[{"author":"captain","text":"keep me"},{"author":"assistant","text":"older ".repeat(100)}],
+                    "captain_request":"keep me", "captain_request_complete":true,
+                    "host_facts":{"script_binding":{"complete":complete}},
+                    "untrusted_evidence":{"assistant_text":"excerpt ".repeat(130),"parent_agent_evidence":"parent","script":{"text":text,"truncated":complete}}
+                });
+                for instructions in [0, 57] {
+                    let boundary = original.to_string().len() + instructions;
+                    for limit in [
+                        0,
+                        512,
+                        2048,
+                        16 * 1024,
+                        boundary - 1,
+                        boundary,
+                        boundary + 1,
+                    ] {
+                        let mut expected = original.clone();
+                        let mut actual = original.clone();
+                        reference_script_fit(&mut expected, instructions, limit);
+                        script::fit(&mut actual, instructions, limit);
+                        assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "script bytes={}, complete={complete}, instructions={instructions}, limit={limit}", text.as_str().map_or(0, str::len));
+                        let mut expected = original.clone();
+                        let mut actual = original.clone();
+                        reference_fit(&mut expected, instructions, limit);
+                        fit_conversation(&mut actual, instructions, limit);
+                        assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "combined fit: complete={complete}, instructions={instructions}, limit={limit}");
                     }
                 }
             }

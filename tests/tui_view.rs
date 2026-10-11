@@ -959,8 +959,14 @@ fn pickers_filter_and_keep_draft() {
 #[test]
 fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     let mut s = done();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
     // Before any snapshot: the provider's last prompt count over the window.
-    assert!(buffer_text(&s).contains("· 12.4k / 200k"));
+    let terminal = cells(&s, &ui, (60, 20));
+    let header = row_text(&terminal, 0, 60);
+    assert!(header.contains("· 12.4k / 200k"), "{header}");
     s.conversation.context = Some(withnav::tui::protocol::ContextSnapshot {
         gateway: "gateway".into(),
         upstream_id: "upstream".into(),
@@ -981,8 +987,10 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         incarnation: ulid::Ulid::new(),
         revision: 1,
     });
+    let terminal = cells(&s, &ui, (60, 20));
+    let header = row_text(&terminal, 0, 60);
+    assert!(header.contains("· ~42k / 1M · 4%"), "{header}");
     let text = buffer_text(&s);
-    assert!(text.contains("· ~42k / 1M · 4%"), "{text}");
     assert!(!text.contains("12.4k"), "{text}");
 }
 

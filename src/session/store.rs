@@ -1108,10 +1108,7 @@ impl HistoryStore {
     ) -> Result<(), String> {
         validate_agent_overrides(overrides)?;
         let (variant, variant_override) = split_variant(variant)?;
-        let resolution = resolution
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        let resolution = resolution.map(serialize_resolution).transpose()?;
         self.acked(Write::RecordSession {
             provenance: provenance
                 .map(serde_json::to_string)
@@ -1161,8 +1158,7 @@ impl HistoryStore {
         envelope: EventEnvelope,
     ) -> Result<(), String> {
         let (variant, variant_override) = split_variant(variant)?;
-        let resolution = serde_json::to_string(resolution)
-            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        let resolution = serialize_resolution(resolution)?;
         self.acked(Write::SwitchModel {
             id,
             model: alias.to_string(),
@@ -1183,8 +1179,7 @@ impl HistoryStore {
         id: Ulid,
         resolution: &crate::provider::catalog::ModelResolution,
     ) -> Result<(), String> {
-        let resolution = serde_json::to_string(resolution)
-            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        let resolution = serialize_resolution(resolution)?;
         self.acked(Write::SetResolution { id, resolution }).await
     }
 
@@ -1197,8 +1192,7 @@ impl HistoryStore {
         expected: &str,
         resolution: &crate::provider::catalog::ModelResolution,
     ) -> Result<(), String> {
-        let resolution = serde_json::to_string(resolution)
-            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        let resolution = serialize_resolution(resolution)?;
         self.acked(Write::FillEndpoint {
             id,
             expected: expected.to_string(),
@@ -1462,6 +1456,12 @@ fn add_column_if_missing(
 fn immediate_tx(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>, String> {
     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())
+}
+
+fn serialize_resolution(
+    resolution: &crate::provider::catalog::ModelResolution,
+) -> Result<String, String> {
+    serde_json::to_string(resolution).map_err(|e| format!("serialize model resolution: {e}"))
 }
 
 fn queue_permission_resolution(

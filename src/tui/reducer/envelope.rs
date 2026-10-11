@@ -126,7 +126,6 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         return Ok(());
     }
     s.last_applied_seq = Some(e.seq);
-    s.latest_envelope = Some(e.clone());
     let kind = EventKind::from_wire(&e.kind);
     let bad = || ProtocolError(format!("malformed {} payload", e.kind));
     let actor = e.actor_id.clone();
@@ -501,10 +500,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 child.status = ChildStatus::Permission;
                 child.event_seq = Some(e.seq);
             }
-            let text = |key: &str| -> Result<String, ProtocolError> {
-                Ok(strip_controls(v[key].as_str().ok_or_else(bad)?))
+            let text = |value: &Value| -> Result<String, ProtocolError> {
+                Ok(strip_controls(value.as_str().ok_or_else(bad)?))
             };
-            let request_id = text("request_id")?;
+            let request_id = text(&v["request_id"])?;
             let id = format!("permission:{request_id}");
             if s.conversation.blocks.iter().any(|b| b.id == id) {
                 return Ok(());
@@ -514,11 +513,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 skill_script: serde_json::from_value(v["skill_script"].clone()).ok(),
                 child_session_id: child.map(str::to_string),
                 request_id,
-                tool_call_id: text("tool_call_id")?,
-                tool: text("tool")?,
-                arguments: text("arguments")?,
-                scope_kind: strip_controls(v["scope"]["kind"].as_str().ok_or_else(bad)?),
-                scope: strip_controls(v["scope"]["value"].as_str().ok_or_else(bad)?),
+                tool_call_id: text(&v["tool_call_id"])?,
+                tool: text(&v["tool"])?,
+                arguments: text(&v["arguments"])?,
+                scope_kind: text(&v["scope"]["kind"])?,
+                scope: text(&v["scope"]["value"])?,
                 agent: strip_controls(v["agent"].as_str().unwrap_or_default()),
                 reason: strip_controls(&match child {
                     Some(child) => format!(
@@ -905,9 +904,13 @@ fn count_usage(s: &mut State, key: StepKey, u: Usage) {
 }
 
 fn interrupt_block(b: &mut Block) {
+    set_tool_status_if_pending(b, ToolStatus::Interrupted);
+}
+
+fn set_tool_status_if_pending(b: &mut Block, value: ToolStatus) {
     if let BlockKind::ToolCall { status, .. } = &mut b.kind {
         if status.is_none() {
-            *status = Some(ToolStatus::Interrupted)
+            *status = Some(value);
         }
     }
 }
@@ -973,15 +976,14 @@ fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
     for id in ids {
         let bid = format!("tool:{id}");
         if let Some(b) = s.conversation.blocks.iter_mut().find(|b| b.id == bid) {
-            if let BlockKind::ToolCall { status, .. } = &mut b.kind {
-                if status.is_none() {
-                    *status = Some(if resolution == "deny" {
-                        ToolStatus::Denied
-                    } else {
-                        ToolStatus::Interrupted
-                    });
-                }
-            }
+            set_tool_status_if_pending(
+                b,
+                if resolution == "deny" {
+                    ToolStatus::Denied
+                } else {
+                    ToolStatus::Interrupted
+                },
+            );
         }
     }
 }

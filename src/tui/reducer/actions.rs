@@ -58,6 +58,14 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
     }
 }
 
+fn clear_start_selection(s: &mut State) {
+    s.start_model = None;
+    s.start_variant = None;
+    s.selected_model_id = None;
+    s.selected_model_name = None;
+    s.variant = None;
+}
+
 /// Keeps the transcript position of the active tab before another one comes forward.
 fn save_view(s: &mut State, ui: &UiState) {
     s.view = TabView {
@@ -75,6 +83,10 @@ fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
     // A deny message belongs to the request on screen.
     ui.deny_message = None;
     s.active = index;
+    vec![restore_active_tab(s, ui)]
+}
+
+fn restore_active_tab(s: &mut State, ui: &mut UiState) -> Effect {
     ui.focus = if s.read_only() {
         crate::tui::state::Focus::Transcript
     } else {
@@ -86,10 +98,10 @@ fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
     ui.follow_bottom = view.follow_bottom;
     ui.selected_block = view.selected_block;
     ui.expanded = view.expanded;
-    vec![Effect::SetEditor {
+    Effect::SetEditor {
         text: s.draft.clone(),
         revision: s.draft_revision,
-    }]
+    }
 }
 
 /// Opens a blank tab after the others and brings it forward, keeping the model of the tab it was
@@ -185,21 +197,7 @@ fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
             .and_then(|id| s.tab_of_session(id))
             .unwrap_or_else(|| s.active.min(s.tabs.len() - 1));
         s.active = next;
-        ui.focus = if s.read_only() {
-            crate::tui::state::Focus::Transcript
-        } else {
-            crate::tui::state::Focus::Editor
-        };
-        s.unread = false;
-        let view = s.view.clone();
-        ui.scroll = view.scroll;
-        ui.follow_bottom = view.follow_bottom;
-        ui.selected_block = view.selected_block;
-        ui.expanded = view.expanded;
-        vec![Effect::SetEditor {
-            text: s.draft.clone(),
-            revision: s.draft_revision,
-        }]
+        vec![restore_active_tab(s, ui)]
     };
     if let Some(notice) = notice {
         push_local(s, BlockKind::Notice(notice));
@@ -536,11 +534,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             }
             let mut effects = blank_tab(s, ui).unwrap_or_default();
             s.agent = None;
-            s.start_model = None;
-            s.start_variant = None;
-            s.selected_model_id = None;
-            s.selected_model_name = None;
-            s.variant = None;
+            clear_start_selection(s);
             s.model_source.clear();
             s.variant_source.clear();
             ui.overlay = Some(Overlay::Agents);
@@ -568,11 +562,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 return vec![];
             };
             s.agent = Some(agent);
-            s.start_model = None;
-            s.start_variant = None;
-            s.selected_model_id = None;
-            s.selected_model_name = None;
-            s.variant = None;
+            clear_start_selection(s);
             effects.push(Effect::FetchAgents(None));
             effects
         }
@@ -694,19 +684,17 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;
-            let inherit = name == "inherit";
-            let chosen = (name != NO_VARIANT).then_some(name);
+            let chosen = match name.as_str() {
+                "inherit" => None,
+                NO_VARIANT => Some(None),
+                _ => Some(Some(name.clone())),
+            };
             match pick {
                 Some(VariantPick::NewConversation(model_id)) => {
-                    pick_model(s, ui, model_id, if inherit { None } else { Some(chosen) })
-                        .unwrap_or_default()
+                    pick_model(s, ui, model_id, chosen).unwrap_or_default()
                 }
                 Some(VariantPick::Current) if !occupied(s) => {
-                    s.start_variant = if chosen.as_deref() == Some("inherit") {
-                        None
-                    } else {
-                        Some(chosen.clone())
-                    };
+                    s.start_variant = chosen;
                     s.variant = s.start_variant.clone().flatten();
                     s.variant_source = if s.start_variant.is_some() {
                         "override"
@@ -718,12 +706,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                     super::refresh_start_variant(s, &catalog);
                     vec![]
                 }
-                Some(VariantPick::Current) => run_command(
-                    s,
-                    "variant".into(),
-                    chosen.unwrap_or_else(|| NO_VARIANT.into()),
-                    None,
-                ),
+                Some(VariantPick::Current) => run_command(s, "variant".into(), name, None),
                 None => vec![],
             }
         }

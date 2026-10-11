@@ -207,7 +207,15 @@ pub fn effective_history(
     let Some(compaction) = compaction else {
         return drop_empty_assistants(transcript.to_vec());
     };
-    let first = compaction.checkpoint.through_message + 1;
+    let Some(first) = compaction
+        .checkpoint
+        .through_message
+        .checked_add(1)
+        .filter(|&first| first < transcript.len())
+    else {
+        // An unusable boundary must not discard conversation history.
+        return drop_empty_assistants(transcript.to_vec());
+    };
     let pruned: HashSet<usize> = compaction.pruned_message_indices.iter().copied().collect();
     let mut out = Vec::with_capacity(transcript.len().saturating_sub(first) + 2);
     out.extend(summary_messages(&compaction.checkpoint.summary));

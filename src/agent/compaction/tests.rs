@@ -383,7 +383,15 @@ fn invalid(c: &Compaction, t: &[ChatMessage]) -> String {
 #[test]
 fn a_boundary_that_would_overflow_is_refused_not_wrapped() {
     let t = five_turns(10);
-    assert!(invalid(&k(usize::MAX, "s", vec![]), &t).contains("leaves nothing"));
+    for through in [t.len() - 1, t.len(), usize::MAX] {
+        let checkpoint = k(through, "s", vec![]);
+        assert!(invalid(&checkpoint, &t).contains("leaves nothing"));
+        assert_eq!(
+            serde_json::to_value(effective_history(&t, Some(&checkpoint))).unwrap(),
+            serde_json::to_value(&t).unwrap(),
+        );
+    }
+    assert!(effective_history(&[], Some(&k(usize::MAX, "s", vec![]))).is_empty());
 }
 
 #[test]

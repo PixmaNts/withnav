@@ -2810,7 +2810,8 @@ mod tests {
 
     #[tokio::test]
     async fn overwrite_recovery_requires_tracked_and_unmodified_file() {
-        let tmp = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::tempdir_in(&cwd).unwrap();
         let run = |args: &[&str]| {
             assert!(std::process::Command::new("/usr/bin/git")
                 .args(args)
@@ -2834,7 +2835,29 @@ mod tests {
             "-m",
             "initial",
         ]);
-        assert!(git::recoverable_file(tmp.path(), "file").await);
+        let alias = tmp.path().join("workspace-link");
+        std::os::unix::fs::symlink(tmp.path(), &alias).unwrap();
+        std::os::unix::fs::symlink("file", tmp.path().join("file-link")).unwrap();
+        for root in [
+            tmp.path().to_path_buf(),
+            tmp.path().join("."),
+            tmp.path().strip_prefix(cwd).unwrap().to_path_buf(),
+            alias,
+        ] {
+            for (path, expected) in [
+                ("file", true),
+                ("file-link", false),
+                ("missing", false),
+                ("../file", false),
+            ] {
+                assert_eq!(
+                    git::recoverable_file(&root, path).await,
+                    expected,
+                    "{}: {path}",
+                    root.display()
+                );
+            }
+        }
         std::fs::write(tmp.path().join("file"), "uncommitted").unwrap();
         assert!(!git::recoverable_file(tmp.path(), "file").await);
         run(&["add", "file"]);

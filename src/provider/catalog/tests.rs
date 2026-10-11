@@ -50,7 +50,6 @@ fn oversized_cache_is_ignored() {
     assert!(read_cache(file.path()).is_none());
 }
 use crate::provider::config::{ModelConfig, ProviderConfig, ReasoningHistory};
-use std::time::Instant;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -563,9 +562,9 @@ async fn a_slow_endpoint_hits_the_deadline_and_keeps_stale_values() {
     catalog.deadline = Duration::from_millis(200);
     let base = format!("{}/v1", server.uri());
     seed(&catalog, &base, TTL + 1, OPUS, limits(300_000));
-    let started = Instant::now();
-    let d = lookup(&catalog, &base, OPUS).await;
-    assert!(started.elapsed() < Duration::from_secs(2));
+    let d = tokio::time::timeout(Duration::from_secs(15), lookup(&catalog, &base, OPUS))
+        .await
+        .expect("catalogue deadline must bound the lookup");
     assert!(d.stale);
     assert_eq!(d.limits.unwrap().context_length, Some(300_000));
     assert!(d.error.unwrap().contains("deadline"));

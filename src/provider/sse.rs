@@ -38,22 +38,27 @@ impl SseDecoder {
         self.byte_buf.extend_from_slice(chunk);
         let mut events = Vec::new();
 
-        while let Some((line_end, next_start)) = find_line_terminator(&self.byte_buf) {
-            let raw_line = self.byte_buf[..line_end].to_vec();
-            self.byte_buf.drain(..next_start);
+        let mut byte_buf = std::mem::take(&mut self.byte_buf);
+        let mut consumed = 0;
+        let result = (|| {
+            while let Some((line_end, next_start)) = find_line_terminator(&byte_buf[consumed..]) {
+                let raw_line = &byte_buf[consumed..consumed + line_end];
+                consumed += next_start;
+                let line = std::str::from_utf8(raw_line).map_err(|_| SseError::Utf8)?;
 
-            let line = std::str::from_utf8(&raw_line)
-                .map_err(|_| SseError::Utf8)?
-                .to_string();
-
-            if line.is_empty() {
-                if let Some(event) = self.take_event() {
-                    events.push(event);
+                if line.is_empty() {
+                    if let Some(event) = self.take_event() {
+                        events.push(event);
+                    }
+                } else {
+                    self.consume_field_line(line)?;
                 }
-            } else {
-                self.consume_field_line(&line)?;
             }
-        }
+            Ok(())
+        })();
+        byte_buf.drain(..consumed);
+        self.byte_buf = byte_buf;
+        result?;
 
         if self.byte_buf.len() > self.max_frame {
             return Err(SseError::MalformedFrame(format!(

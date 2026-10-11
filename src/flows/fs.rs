@@ -1,8 +1,8 @@
 //! Descriptor-held no-follow filesystem access; paths are never reopened after validation.
 use nix::{
-    fcntl::{open, openat, renameat, Flock, FlockArg, OFlag},
+    fcntl::{open, openat, renameat, AtFlags, Flock, FlockArg, OFlag},
     sys::stat::{fstat, mkdirat, Mode, SFlag},
-    unistd::{getuid, unlinkat, UnlinkatFlags},
+    unistd::{getuid, linkat, unlinkat, UnlinkatFlags},
 };
 use std::{
     fs::File,
@@ -245,14 +245,11 @@ impl Directory {
             file.write_all(bytes)?;
             file.sync_all()?;
             if no_replace {
-                nix::fcntl::renameat2(
-                    &self.0,
-                    temporary.as_str(),
-                    &self.0,
-                    name,
-                    nix::fcntl::RenameFlags::RENAME_NOREPLACE,
-                )
-                .map_err(io)
+                // linkat fails with EEXIST instead of replacing, like renameat2(RENAME_NOREPLACE),
+                // but exists on musl where nix does not expose renameat2; the static release
+                // binary would not build otherwise. The temporary name is unlinked after the link.
+                linkat(&self.0, temporary.as_str(), &self.0, name, AtFlags::empty()).map_err(io)?;
+                unlinkat(&self.0, temporary.as_str(), UnlinkatFlags::NoRemoveDir).map_err(io)
             } else {
                 renameat(&self.0, temporary.as_str(), &self.0, name).map_err(io)
             }

@@ -950,40 +950,36 @@ fn run_withnav(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::pr
 }
 
 // Given `nav run --agent plan`
-// Then the request carries the plan role; an unknown agent exits 1 with the
-//      choices
+// Then the request carries the plan role
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn withnav_run_agent_selects_the_role() {
+    let (provider, ok) = run_agent_case("plan", 1).await;
+    assert_eq!(ok.status.code(), Some(0), "{ok:?}");
+    let request = sent(&provider, 0);
+    assert!(request[1].1.contains("plan mode"), "{request:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withnav_run_agent_rejects_an_unknown_role() {
+    let (_provider, bad) = run_agent_case("wizard", 0).await;
+    assert_eq!(bad.status.code(), Some(1), "{bad:?}");
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(stderr.contains("unknown agent 'wizard'"), "{stderr}");
+}
+
+async fn run_agent_case(agent: &'static str, responses: usize) -> (CapturingProvider, std::process::Output) {
     let env = env();
-    let provider = provider(1).await;
+    let provider = provider(responses).await;
     let cfg = config(&env, &provider);
     cfg.config();
     let models = cfg.models_path();
     let (root, ws) = (env.root.clone(), env.ws.clone());
-    let (ok, bad) = tokio::task::spawn_blocking(move || {
-        (
-            run_withnav(
-                &root,
-                &models,
-                &ws,
-                &["--agent", "plan", "--prompt", "hello"],
-            ),
-            run_withnav(
-                &root,
-                &models,
-                &ws,
-                &["--agent", "wizard", "--prompt", "hello"],
-            ),
-        )
+    let output = tokio::task::spawn_blocking(move || {
+        run_withnav(&root, &models, &ws, &["--agent", agent, "--prompt", "hello"])
     })
     .await
     .unwrap();
-    assert_eq!(ok.status.code(), Some(0), "{ok:?}");
-    let request = sent(&provider, 0);
-    assert!(request[1].1.contains("plan mode"), "{request:?}");
-    assert_eq!(bad.status.code(), Some(1), "{bad:?}");
-    let stderr = String::from_utf8_lossy(&bad.stderr);
-    assert!(stderr.contains("unknown agent 'wizard'"), "{stderr}");
+    (provider, output)
 }
 
 // Given a session created as plan, with no message sent

@@ -579,23 +579,23 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     assert!(next.contains("carry on"));
 }
 
-fn run_withnav(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
-    std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
+fn run_withnav(root: &Path, ws: &Path, models: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/withnav")).unwrap();
     std::fs::write(
-        env.root.join("config/withnav/config.json"),
+        root.join("config/withnav/config.json"),
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
         .args(["run", "--workspace"])
-        .arg(&env.ws)
+        .arg(ws)
         .arg("--models")
         .arg(models)
         .args(extra)
         .env("WITHNAV_TEST_KEY", "test-key")
-        .env("HOME", env.root.join("home"))
-        .env("XDG_DATA_HOME", env.root.join("data"))
-        .env("XDG_CONFIG_HOME", env.root.join("config"))
+        .env("HOME", root.join("home"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
         .output()
         .expect("run the binary")
 }
@@ -620,12 +620,7 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     let (root_env, models_a) = (env.root.clone(), models.clone());
     let ws = env.ws.clone();
     let stopped = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models_a, &["--prompt", "write a.txt"])
+        run_withnav(&root_env, &ws, &models_a, &["--prompt", "write a.txt"])
     })
     .await
     .unwrap();
@@ -639,12 +634,12 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
 
     let (root_env, ws) = (env.root.clone(), env.ws.clone());
     let approved = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models, &["--yes", "--prompt", "write a.txt"])
+        run_withnav(
+            &root_env,
+            &ws,
+            &models,
+            &["--yes", "--prompt", "write a.txt"],
+        )
     })
     .await
     .unwrap();
@@ -665,12 +660,12 @@ async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
     let models = cfg.models_path();
     let (root_env, ws) = (env.root.clone(), env.ws.clone());
     let output = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models, &["--yes", "--prompt", "write auth.json"])
+        run_withnav(
+            &root_env,
+            &ws,
+            &models,
+            &["--yes", "--prompt", "write auth.json"],
+        )
     })
     .await
     .unwrap();
@@ -730,12 +725,7 @@ async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     let started = std::time::Instant::now();
     let (root_env, ws) = (env.root.clone(), env.ws.clone());
     let output = tokio::task::spawn_blocking(move || {
-        let env = Env {
-            _tmp: tempfile::tempdir().unwrap(),
-            root: root_env,
-            ws,
-        };
-        run_withnav(&env, &models, &["--yes", "--prompt", "delegate"])
+        run_withnav(&root_env, &ws, &models, &["--yes", "--prompt", "delegate"])
     })
     .await
     .unwrap();

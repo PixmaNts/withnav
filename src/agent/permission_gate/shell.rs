@@ -348,8 +348,9 @@ pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
         parts.iter().any(|words| {
             inner_command(words).is_none_or(|inner| {
                 let program = basename(&inner[0]);
-            identity_floor(words, facts)
-                || destructive(inner)
+             identity_floor(words, facts)
+                 || destructive(inner)
+                 || git_read_side_effect(inner)
                 // Shell identity, 2026-10-10: aliases can hide shell bodies;
                 // keep that floor while leaving ordinary programs to Instinct.
                 || (program == "git" && git_subcommand(inner).is_none_or(|i| !matches!(inner[i].as_str(), "add" | "commit" | "status" | "diff" | "log" | "show" | "push" | "restore" | "reset" | "checkout" | "switch" | "branch" | "remote" | "ls-files" | "rev-parse" | "fetch" | "merge" | "rebase" | "stash" | "tag" | "clean" | "config")))
@@ -395,6 +396,77 @@ fn git_subcommand(words: &[String]) -> Option<usize> {
         }
     }
     None
+}
+
+fn git_read_side_effect(words: &[String]) -> bool {
+    basename(&words[0]) == "git"
+        && git_subcommand(words).is_some_and(|i| {
+            (words[i] == "diff" && !safe_diff_options(&words[i + 1..]))
+                || matches!(words[i].as_str(), "status" | "diff" | "log" | "show")
+                    && words[i + 1..].iter().any(|word| {
+                        matches!(
+                            word.split('=').next(),
+                            Some("--exec" | "--ext-diff" | "--textconv")
+                        ) || word.starts_with("--output")
+                    })
+        })
+}
+
+fn safe_diff_options(args: &[String]) -> bool {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            continue;
+        }
+        if matches!(
+            arg.as_str(),
+            "-p" | "--patch"
+                | "-s"
+                | "--no-patch"
+                | "-u"
+                | "--stat"
+                | "--numstat"
+                | "--shortstat"
+                | "--summary"
+                | "--name-only"
+                | "--name-status"
+                | "--check"
+                | "--exit-code"
+                | "--quiet"
+                | "--cached"
+                | "--staged"
+                | "--no-ext-diff"
+                | "--no-textconv"
+                | "--no-color"
+                | "--color=never"
+                | "--color=always"
+                | "--color=auto"
+                | "-w"
+                | "--ignore-all-space"
+                | "-b"
+                | "--ignore-space-change"
+                | "--ignore-space-at-eol"
+                | "--ignore-cr-at-eol"
+                | "--ignore-blank-lines"
+                | "--binary"
+                | "--full-index"
+                | "--no-renames"
+                | "--no-index"
+        ) {
+            continue;
+        }
+        let context = arg
+            .strip_prefix("-U")
+            .or_else(|| arg.strip_prefix("--unified="));
+        if !context
+            .is_some_and(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) fn destructive(words: &[String]) -> bool {
@@ -535,10 +607,7 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
                     }
                     safe && message
                 }
-                "status" | "diff" | "log" | "show" => !args.iter().any(|w| {
-                    matches!(w.as_str(), "--exec" | "--ext-diff" | "--textconv")
-                        || w.starts_with("--output")
-                }),
+                "status" | "diff" | "log" | "show" => !git_read_side_effect(words),
                 _ => false,
             }
         }
@@ -624,6 +693,7 @@ pub(super) fn read_floor(command: &str) -> bool {
             }
             let program = basename(&words[0]);
             destructive(words)
+                || git_read_side_effect(words)
                 || words[0].starts_with("./")
                 // These write or change files through their operands rather than
                 // a `>` redirection, so the redirection parser cannot see them.

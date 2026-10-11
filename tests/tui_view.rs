@@ -344,7 +344,11 @@ fn state() -> State {
             resume_disabled_reason: None,
             session_id: "01JABCDEFGH".into(),
             actor_state: "idle".into(),
-            workspace: "/home/pixma/dev/project".into(),
+            // The status line shows the home folder as `~`, and the snapshots expect
+            // `~/dev/project`. A fixed `/home/pixma/...` only matched on a machine whose home
+            // is `/home/pixma` (observed 2026-10-12: ten snapshots failed on a runner whose
+            // home is `/home/runner`), so build the path from the actual home.
+            workspace: format!("{}/dev/project", std::env::var("HOME").unwrap()),
             model: "cognition".into(),
             agent: None,
             variant: None,

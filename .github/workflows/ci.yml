@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+# The workflow only reads the repository; no job needs a write token.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The test suite links about 70 integration-test binaries. With full debug info they filled
+  # the runner disk ("No space left on device", first CI run on 2026-10-11); CI never runs a
+  # debugger, so dropping debug info keeps every binary small.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      # The runner image preinstalls SDKs this repo never uses; removing them frees roughly
+      # 20 GB so the test build has room even as the test count grows.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Pinned by commit, so the toolchain name is an input instead of the ref.
+      # It matches `channel` in rust-toolchain.toml, which rustup also reads.
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      # Some tests model a developer machine whose tools are root-owned system binaries,
+      # which the permission gate trusts (a user-owned ~/.cargo/bin tool is deliberately not
+      # trusted). A fresh runner has none of these, so 13 tests failed on 2026-10-12:
+      # - ripgrep: the grep tool tests exercise the real `rg` engine next to the built-in one.
+      # - a root-owned /usr/bin/cargo: the real cargo binary (not the rustup proxy, which
+      #   would resolve into the user-owned ~/.cargo) copied out of the toolchain; tests that
+      #   pin PATH=/usr/bin:/bin resolve it. It is never executed.
+      # - a root-owned /usr/bin/mise: a stand-in executable; one test only needs a root-owned
+      #   file with that name as the target of a user shim link. It is never executed.
+      - name: Provide system tool identities for the permission gate tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
+          sudo install -m 0755 "$(rustup which cargo)" /usr/bin/cargo
+          sudo install -m 0755 /usr/bin/true /usr/bin/mise
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --bins
+      - run: cargo test
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --check
+
+  webui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-withnav
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: vscode-withnav/package-lock.json
+      - run: npm ci
+      - run: npm run compile
+      - run: npm test

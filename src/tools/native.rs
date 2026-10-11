@@ -111,17 +111,12 @@ fn slice_lines(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
         return text.to_string();
     }
     let start = usize::try_from(offset.unwrap_or(1).saturating_sub(1)).unwrap_or(usize::MAX);
-    let lines: Vec<&str> = text.lines().collect();
-    let end = match limit {
-        Some(l) => start
-            .saturating_add(usize::try_from(l).unwrap_or(usize::MAX))
-            .min(lines.len()),
-        None => lines.len(),
-    };
-    if start >= lines.len() {
-        return String::new();
-    }
-    lines[start..end].join("\n")
+    let count = usize::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(usize::MAX);
+    text.lines()
+        .skip(start)
+        .take(count)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub struct WriteTool;

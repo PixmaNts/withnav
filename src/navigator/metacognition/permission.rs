@@ -87,12 +87,8 @@ impl PermissionReviewer for super::LlmCommenter {
                 &messages,
                 &tools,
             )?;
-            let client = self
-                .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)
-                .map_err(|_| ReviewError("unavailable (provider error)"))?;
             let message = self
-                .chat_round_capped(&client, &messages, tools, cancel, output)
+                .chat_round_capped(&messages, tools, cancel, output)
                 .await
                 .map_err(|_| ReviewError("unavailable (provider error)"))?;
             let result = answer(&message);

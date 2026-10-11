@@ -268,24 +268,23 @@ impl LlmCommenter {
     /// logs the round.
     async fn chat_round(
         &self,
-        client: &reqwest::Client,
         messages: &[crate::provider::openai::ChatMessage],
         tools: Vec<crate::provider::openai::ToolDef>,
         cancel: &CancellationToken,
     ) -> Result<crate::provider::AssistantMessage, ModelError> {
-        self.chat_round_capped(client, messages, tools, cancel, REMARK_MAX_TOKENS)
+        self.chat_round_capped(messages, tools, cancel, REMARK_MAX_TOKENS)
             .await
     }
 
     async fn chat_round_capped(
         &self,
-        client: &reqwest::Client,
         messages: &[crate::provider::openai::ChatMessage],
         tools: Vec<crate::provider::openai::ToolDef>,
         cancel: &CancellationToken,
         output_cap: u64,
     ) -> Result<crate::provider::AssistantMessage, ModelError> {
-        use crate::provider::openai::{build_request, ChatRequest};
+        use crate::provider::client::ModelClient;
+        use crate::provider::openai::ChatRequest;
         use crate::provider::{start_and_consume, StreamDelta};
 
         let request = ChatRequest {
@@ -307,7 +306,15 @@ impl LlmCommenter {
             temperature: Some(0.2),
             extra: self.variant.clone().unwrap_or_default(),
         };
-        let http = build_request(client, &self.resolved.provider, &self.api_key, &request);
+        let client = ModelClient::new(
+            &self.resolved.provider_name,
+            &self.resolved.provider,
+            self.api_key.clone(),
+            &self.clients,
+        )?;
+        // Keep the navigator's verbatim variant and JSON-before-custom-headers
+        // order, rather than applying chat's variant and send cancellation.
+        let http = client.prepare_request(client.post("chat/completions").json(&request));
         let started = Instant::now();
         let response = match http.send().await {
             Ok(r) => r,
@@ -375,10 +382,6 @@ impl LlmCommenter {
                 },
             ];
 
-            let client = self
-                .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)?;
-
             let mut message = None;
             for round in 0..=ctx.tool_rounds {
                 let last = round == ctx.tool_rounds;
@@ -393,7 +396,7 @@ impl LlmCommenter {
                     tools.clone().unwrap_or_default()
                 };
                 let msg = self
-                    .chat_round(&client, &messages, round_tools, cancel)
+                    .chat_round(&messages, round_tools, cancel)
                     .await?;
 
                 if last || msg.tool_calls.is_empty() {
@@ -440,7 +443,7 @@ impl LlmCommenter {
                         "Your last reply tried to call a tool. {NO_MORE_TOOLS_NOTICE}"
                     ),
                 });
-                message = self.chat_round(&client, &messages, Vec::new(), cancel).await?;
+                message = self.chat_round(&messages, Vec::new(), cancel).await?;
             }
             Ok::<_, ModelError>(message)
         })

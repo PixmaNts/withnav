@@ -283,23 +283,6 @@ fn build_client_with(
         .map_err(ProviderError::Http)
 }
 
-pub fn build_request(
-    client: &reqwest::Client,
-    provider: &ProviderConfig,
-    api_key: &str,
-    body: &ChatRequest,
-) -> reqwest::RequestBuilder {
-    let url = format!(
-        "{}/chat/completions",
-        provider.base_url.trim_end_matches('/')
-    );
-    let mut req = client.post(url).bearer_auth(api_key).json(body);
-    for (k, v) in &provider.headers {
-        req = req.header(k, v);
-    }
-    req
-}
-
 /// A per-provider HTTP client cache: one `reqwest::Client` built once per
 /// provider and reused, instead of rebuilding a client (and its connection
 /// pool) on every call.

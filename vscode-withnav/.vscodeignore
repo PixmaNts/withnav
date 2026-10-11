@@ -7,6 +7,7 @@ out/**/*.ts
 !out/chat.js
 !out/chat.css
 !media/**
+!bin/**
 .gitignore
 .vscodeignore
 esbuild.mjs

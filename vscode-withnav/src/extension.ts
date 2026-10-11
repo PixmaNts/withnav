@@ -22,7 +22,10 @@ import {
   Verdict,
 } from "./protocol";
 import { registerReflex } from "./reflex";
-import { affectsSettings, readServerPath, readSetting } from "./settings";
+import * as fs from "fs";
+import * as path from "path";
+import { affectsSettings, isSettingExplicit, readServerPath, readSetting } from "./settings";
+import { pickServerCommand, ServerChoice } from "./serverPath";
 import { CognitionBackend } from "./cognition";
 import { registerChatView } from "./chatView";
 import { registerSettingsView } from "./settingsView";
@@ -135,11 +138,37 @@ function readConfig(): WithNavConfig {
   };
 }
 
+/**
+ * Resolves the server command. A bundled binary may lose its exec bit when the package is
+ * unpacked; without it the spawn fails with EACCES, so restore it (best effort).
+ */
+function resolveServer(): ServerChoice {
+  const bundled = reflexContext ? path.join(reflexContext.extensionPath, "bin", "nav") : "";
+  const bundledExists = bundled !== "" && fs.existsSync(bundled);
+  const choice = pickServerCommand({
+    configured: readServerPath(),
+    explicit: isSettingExplicit("serverPath"),
+    bundled,
+    bundledExists,
+  });
+  if (choice.source === "bundled") {
+    try {
+      if ((fs.statSync(bundled).mode & 0o111) === 0) {
+        fs.chmodSync(bundled, 0o755);
+      }
+    } catch {
+      // Read-only install: the start error below names the path.
+    }
+  }
+  return choice;
+}
+
 async function startClient(): Promise<void> {
   if (client) {
     return;
   }
-  const serverPath = readServerPath();
+  const server = resolveServer();
+  const serverPath = server.command;
   const serverOptions: ServerOptions = {
     command: serverPath,
     args: ["lsp"],
@@ -151,6 +180,7 @@ async function startClient(): Promise<void> {
     outputChannelName: "WithNav",
   };
   const newClient = new LanguageClient(CLIENT_NAME, "WithNav", serverOptions, clientOptions);
+  newClient.outputChannel.appendLine(`Using nav binary (${server.source}): ${serverPath}`);
   newClient.onNotification(RemarkNotification.type, handleRemark);
   newClient.onNotification(ClearNotification.type, (params) => removeRemark(params.uri));
   newClient.onNotification(StatusNotification.type, (params) => {
@@ -204,7 +234,7 @@ async function handleConfigurationChange(): Promise<void> {
     return;
   }
   if (client) {
-    if (readServerPath() !== clientServerPath) {
+    if (resolveServer().command !== clientServerPath) {
       await stopClient();
       await startClient();
       return;

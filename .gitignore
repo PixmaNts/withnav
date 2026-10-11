@@ -49,3 +49,6 @@ __pycache__/
 /.withnav/
 /.navai/
 /.navigator/
+
+# Release packages built by scripts/package-vsix.sh
+/dist/

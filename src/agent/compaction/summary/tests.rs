@@ -331,7 +331,11 @@ async fn a_second_summary_carries_the_first_and_counts_generations() {
         prepare(i, &CancellationToken::new()).await,
         Err(CompactionError::Invalid(why)) if why.contains("generation")
     ));
-    assert_eq!(seen.lock().await.len(), 1, "no request for an invalid generation");
+    assert_eq!(
+        seen.lock().await.len(),
+        1,
+        "no request for an invalid generation"
+    );
 }
 
 #[tokio::test]
@@ -400,10 +404,11 @@ async fn rolling_pass_retries_smaller_and_carries_running_summary() {
     assert!(requests[2].contains("first memory"));
 }
 
-#[test]
-fn a_focus_is_added_to_the_summary_prompt() {
+#[tokio::test]
+async fn a_focus_is_added_to_the_summary_prompt() {
     let t = five_turns(100);
-    let provider = provider("http://127.0.0.1:1/v1".into());
+    let (url, seen) = serve(vec![text_answer("summary"); 4]).await;
+    let provider = provider(url);
     let mut i = input(&provider, &t, None);
     let planned = plan(&t, None, &i.components, i.destination_budget, Aim::Fit).unwrap();
     let text = |i: &PrepareInput<'_>| match &build_summary_request(i, &planned).unwrap().messages[0]
@@ -414,6 +419,22 @@ fn a_focus_is_added_to_the_summary_prompt() {
     assert_eq!(text(&i), SUMMARY_PROMPT);
     i.focus = Some("  the migration  ");
     assert!(text(&i).ends_with("pay particular attention to: the migration"));
+    for (index, focus) in [None, Some(""), Some(" \r\n\t "), Some("  the migration  ")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut i = input(&provider, &t, None);
+        i.focus = focus;
+        let expected = text(&i);
+        if index < 3 {
+            assert_eq!(expected, SUMMARY_PROMPT);
+        }
+        prepare(i, &CancellationToken::new()).await.unwrap();
+        let seen = seen.lock().await;
+        let request: serde_json::Value =
+            serde_json::from_str(seen[index].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(request["messages"][0]["content"], expected);
+    }
 }
 
 #[test]

@@ -476,11 +476,8 @@ pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, Too
 }
 
 pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
-    // Only the bare home component is resolved here, never another user's home
-    // or the shell's directory-stack expansions.
-    if path.to_string_lossy().starts_with('~') && !path.starts_with("~") {
-        return Err(ToolError::PathTraversal(path.to_path_buf()));
-    }
+    // Native tools do not perform shell expansion: only a bare `~` component
+    // names HOME; `~name` remains a literal workspace-relative filename.
     let path = if path.starts_with("~") {
         let home =
             std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
@@ -734,17 +731,22 @@ mod tests {
             "~other",
             "~+/x",
             "~-/x",
+            "~name.txt",
         ] {
-            assert!(
-                matches!(
-                    requested_path(Path::new(path), &f.cx),
-                    Err(ToolError::PathTraversal(_))
-                ),
-                "{path}"
-            );
-            for tool in ["read", "write", "edit", "grep", "glob"] {
+            let literal = f.ws.join(path);
+            std::fs::create_dir_all(literal.parent().unwrap()).unwrap();
+            std::fs::write(&literal, "ordinary workspace file").unwrap();
+            assert_eq!(requested_path(Path::new(path), &f.cx).unwrap(), literal);
+            for tool in ["read", "grep", "glob"] {
+                assert_eq!(
+                    gate(&f, tool, json!({"path": path})),
+                    Gate::Bound(literal.clone()),
+                    "{tool} {path}"
+                );
+            }
+            for tool in ["write", "edit"] {
                 assert!(
-                    matches!(gate(&f, tool, json!({"path": path})), Gate::Rejected(_)),
+                    matches!(gate(&f, tool, json!({"path": path})), Gate::Needs(needed) if needed.destination == Some(literal.clone())),
                     "{tool} {path}"
                 );
             }

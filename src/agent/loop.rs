@@ -5861,10 +5861,7 @@ mod tests {
             "config-option",
             "scratch-spaced-link",
             "tilde-user",
-            "tilde-other",
             "tilde-plus",
-            "tilde-minus",
-            "tilde-variable",
             "tilde-read",
             "tilde-grant",
             "scratch",
@@ -5912,21 +5909,28 @@ mod tests {
                     "printf x > 'scratch alias/file'".into()
                 }
                 case if case.starts_with("tilde-") => {
-                    actor.protected_config_root = Some(workspace.clone());
-                    actor.protected_config_spelling = Some(workspace.clone());
-                    let user = std::env::var("USER").unwrap_or_else(|_| "captain".into());
+                    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+                    let config = if case == "tilde-plus" {
+                        workspace.join(".config/withnav")
+                    } else {
+                        home.join(".config/withnav")
+                    };
+                    actor.protected_config_root = Some(config.clone());
+                    actor.protected_config_spelling = Some(config);
+                    let user = std::env::var("USER")
+                        .or_else(|_| std::env::var("LOGNAME"))
+                        .unwrap_or_else(|_| {
+                            home.file_name().unwrap().to_string_lossy().into_owned()
+                        });
                     match case {
                         "tilde-user" => format!("printf x > ~{user}/.config/withnav/x"),
-                        "tilde-other" => "printf x > ~root/.config/withnav/x".into(),
                         "tilde-plus" => "printf x > ~+/.config/withnav/x".into(),
-                        "tilde-minus" => "printf x > ~-/.config/withnav/x".into(),
-                        "tilde-variable" => "printf x > ~$USER/.config/withnav/x".into(),
-                        "tilde-read" => format!("cat ~{user}/.config/withnav/x"),
+                        "tilde-read" => format!("cat ~{user}/.config/withnav/auth.json"),
                         _ => {
                             actor
                                 .config_session_grant
                                 .store(true, std::sync::atomic::Ordering::Release);
-                            format!("printf x > ~{user}/.config/withnav/x")
+                            format!("printf x > ~{user}/.config/withnav/config.json")
                         }
                     }
                 }

@@ -678,13 +678,6 @@ pub fn config_grant_eligible(
         return bash_command(call).is_some_and(|command| {
             !command.contains("config.json")
                 && !command.contains("grants.json")
-                && shell::path_operands(command).iter().all(|word| {
-                    super::permissions::requested_path(
-                        std::path::Path::new(word),
-                        &actor.tool_context,
-                    )
-                    .is_ok()
-                })
                 && !shell::removal_or_move(command)
                 && !shell::requires_review(
                     command,
@@ -1432,17 +1425,39 @@ fn bash_command(call: &ToolCall) -> Option<&str> {
     call.args.get("command").and_then(Value::as_str)
 }
 
+/// Resolve only shell tilde forms that can name our roots. Other users' homes
+/// and unresolved directory-stack forms are left to ordinary permission review.
+fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBuf> {
+    let Some(tilde) = word.strip_prefix('~') else {
+        return super::permissions::requested_path(std::path::Path::new(word), cx).ok();
+    };
+    let (login, rest) = tilde.split_once('/').unwrap_or((tilde, ""));
+    if login == "+" {
+        return Some(cx.workspace.join(rest));
+    }
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    if login.is_empty()
+        || ["USER", "LOGNAME"]
+            .iter()
+            .any(|key| std::env::var(key).is_ok_and(|user| user == login))
+        || home.file_name().is_some_and(|name| name == login)
+    {
+        return Some(home.join(rest));
+    }
+    None
+}
+
 /// Whether a literal operand of the bash command names `root`, by the spelling
 /// it was written with (resolved against the workspace) or by where it
 /// resolves.
 fn bash_names_root(call: &ToolCall, root: &std::path::Path, cx: &ToolContext) -> bool {
     bash_command(call).is_some_and(|command| {
         shell::path_operands(command).iter().any(|word| {
-            let word = std::path::Path::new(word);
-            super::permissions::requested_path(word, cx)
-                .map_or(true, |requested| requested.starts_with(root))
-                || super::permissions::resolve_read_target(word, cx)
-                    .is_ok_and(|resolved| resolved.starts_with(root))
+            bash_requested_path(word, cx).is_some_and(|requested| {
+                requested.starts_with(root)
+                    || super::permissions::resolve_read_target(&requested, cx)
+                        .is_ok_and(|resolved| resolved.starts_with(root))
+            })
         })
     })
 }
@@ -1472,10 +1487,7 @@ fn supported_read_only_bash(call: &ToolCall, cx: &ToolContext) -> bool {
     ) {
         return false;
     }
-    words.all(|word| {
-        !word.starts_with(['-', '+'])
-            && super::permissions::requested_path(std::path::Path::new(word), cx).is_ok()
-    })
+    words.all(|word| !word.starts_with(['-', '+']))
 }
 
 fn choice<'a>(answers: &'a Answers, name: &str) -> Option<&'a str> {
@@ -1561,6 +1573,81 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tilde_operands_keep_normal_review_without_spurious_config_holds() {
+        let mut actor = review_actor();
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        actor.protected_config_root = Some(home.join(".config/withnav"));
+        actor.protected_config_spelling = actor.protected_config_root.clone();
+        actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(
+            json!({"labels":{"call_effect":"read_only","call_scope":"outside","reversibility":"none_needed","publication":"none","sensitivity":0.0,"task_fit":0.9},"confidence":1.0}),
+        )));
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| home.file_name().unwrap().to_string_lossy().into_owned());
+        let mut other = "otheruser".to_owned();
+        while bash_requested_path(&format!("~{other}/file"), &actor.tool_context).is_some() {
+            other.push('_');
+        }
+        for command in [
+            "grep '~foo' README".to_owned(),
+            "printf '%s\\n' '~literal'".to_owned(),
+            "ls ~+/src".to_owned(),
+            format!("cat ~{user}/project/file"),
+            format!("cat ~{other}/file"),
+        ] {
+            let call = ToolCall {
+                id: "tilde".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(!protected_config_call(&actor, &call, &needed), "{command}");
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{command}");
+            assert!(
+                matches!(consult(&actor, &call, &needed).await, Judged::Run(_)),
+                "{command}"
+            );
+        }
+        for command in [
+            "printf x > ~-/.config/withnav/x",
+            "printf x > ~$USER/.config/withnav/x",
+        ] {
+            let call = ToolCall {
+                id: "unresolved".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{command}");
+            assert!(
+                matches!(
+                    consult(&actor, &call, &needed).await,
+                    Judged::AskWithEvidence(_, _)
+                ),
+                "{command}"
+            );
+        }
+        for login in [
+            user,
+            home.file_name().unwrap().to_string_lossy().into_owned(),
+        ] {
+            assert_eq!(
+                bash_requested_path(&format!("~{login}/.config/withnav/x"), &actor.tool_context),
+                Some(home.join(".config/withnav/x"))
+            );
+        }
+        assert_eq!(
+            bash_requested_path("~+/src", &actor.tool_context),
+            Some(actor.tool_context.workspace.join("src"))
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn timed_out_review_preserves_only_floor_free_instinct_reads() {
         let mut actor = review_actor();

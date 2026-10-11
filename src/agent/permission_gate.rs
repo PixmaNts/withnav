@@ -3155,13 +3155,16 @@ mod tests {
         let alias = tmp.path().join("workspace-link");
         std::os::unix::fs::symlink(tmp.path(), &alias).unwrap();
         std::os::unix::fs::symlink("file", tmp.path().join("file-link")).unwrap();
-        for root in [
-            tmp.path().to_path_buf(),
-            tmp.path().join("."),
-            tmp.path().strip_prefix(cwd).unwrap().to_path_buf(),
-            alias,
+        // Only an already-canonical workspace can establish recovery. Relative and
+        // symlink-alias spellings must stay in review (`.` components are ignored by
+        // Path comparison, so that spelling is the canonical path, as before).
+        for (root, canonical) in [
+            (tmp.path().to_path_buf(), true),
+            (tmp.path().join("."), true),
+            (tmp.path().strip_prefix(cwd).unwrap().to_path_buf(), false),
+            (alias, false),
         ] {
-            for (path, expected) in [
+            for (path, recoverable) in [
                 ("file", true),
                 ("file-link", false),
                 ("missing", false),
@@ -3169,7 +3172,7 @@ mod tests {
             ] {
                 assert_eq!(
                     git::recoverable_file(&root, path).await,
-                    expected,
+                    canonical && recoverable,
                     "{}: {path}",
                     root.display()
                 );

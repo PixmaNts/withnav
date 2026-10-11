@@ -23,6 +23,9 @@ use crate::{
     },
 };
 
+pub(crate) const FIM_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CHAT_TIMEOUT: Duration = Duration::from_secs(20);
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum DoctorLayer {
     Reflex,
@@ -1338,7 +1341,7 @@ async fn live_layer(
             for (label, request) in ["plain", "context"].into_iter().zip(reflex_requests()) {
                 measured(report, &format!("live.reflex.{label}"), async {
                     let result = tokio::time::timeout(
-                        Duration::from_secs(10),
+                        FIM_TIMEOUT,
                         engine.complete(
                             &request.prompt,
                             &request.suffix,
@@ -1430,7 +1433,7 @@ async fn live_layer(
                     extra: Default::default(),
                 };
                 let answer = tokio::time::timeout(
-                    Duration::from_secs(20),
+                    CHAT_TIMEOUT,
                     client.chat(
                         request,
                         variant.as_ref(),

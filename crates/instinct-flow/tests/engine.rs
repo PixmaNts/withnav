@@ -199,11 +199,28 @@ fn normative_fixture_round_trips_through_json_and_toml() {
     );
 }
 #[test]
-fn forbidden_fields_and_unknown_fields_are_rejected() {
+fn forbidden_fields_unknown_fields_and_duplicate_ids_are_rejected() {
     let text = header("['a']") + &decision("a", "condition='true'");
     assert!(Definition::parse(&text).is_err());
     let text = header("['a']") + &decision("a", "surprise=true");
     assert!(Definition::parse(&text).is_err());
+    let text = header("['shared']")
+        + "[flow.inputs]\nanswer='answer.shared'\nresult='result.shared'\n"
+        + "[fallback.inputs]\nanswer='answer.shared'\nresult='result.shared'\n"
+        + &decision("shared", "")
+        + "\n[[node]]\nid='shared'\ntype='expression'\ncondition='true'\n";
+    let errors = Definition::parse(&text)
+        .unwrap()
+        .validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|e| e.message == "invalid or duplicate node id"));
+    assert!(!errors.iter().any(|e| e.code == "unknown_input"));
 }
 #[tokio::test]
 async fn ready_decisions_batch_and_replay_without_client() {
@@ -227,11 +244,55 @@ async fn or_fan_in_reads_unvisited_answer_as_absent() {
     let outcome = evaluate(&c, &Fake::new()).await;
     assert!(matches!(outcome.result, RunResult::Success { .. }));
     assert_eq!(outcome.trace.nodes[2].result, Some(true));
-    let text=header("['a']")+&decision("a","[node.next]\nyes=['unused']\nno=['b']")+&decision("unused","[node.next]\nyes=['join']")+&decision("b","[node.next]\nyes=['join']")+
-        "\n[[node]]\nid='join'\ntype='expression'\ncondition='!is_set(x)'\n[node.inputs]\nx='answer.unused'\n";
-    let outcome = evaluate(&compile(&text), &Fake::new()).await;
-    assert_eq!(outcome.trace.nodes[3].result, Some(true));
+    let text = header("['a']")
+        + &decision("a", "[node.next]\nyes=['z_unused']\nno=['m_taken']")
+        + &decision("z_unused", "[node.next]\nyes=['y_unused_calc']")
+        + r#"
+[[node]]
+id='y_unused_calc'
+type='expression'
+condition='true'
+assign={threshold='9'}
+[node.next]
+true=['c_join']
+[[node]]
+id='m_taken'
+type='expression'
+condition='true'
+assign={threshold='7'}
+[node.next]
+true=['b']
+"# + &decision("b", "[node.next]\nyes=['c_join']")
+        + r#"
+[[node]]
+id='c_join'
+type='expression'
+condition='!is_set(missing_answer) && !is_set(missing_result) && !is_set(missing_variable) && visited_answer == 1 && visited_result && visited_variable == 7'
+[node.inputs]
+missing_answer='answer.z_unused'
+missing_result='result.y_unused_calc'
+missing_variable='variable.y_unused_calc.threshold'
+visited_answer='answer.b'
+visited_result='result.m_taken'
+visited_variable='variable.m_taken.threshold'
+"#;
+    let c = compile(&text);
+    let client = Fake::new();
+    let outcome = evaluate(&c, &client).await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert_eq!(outcome.trace.nodes[5].result, Some(true));
     assert_eq!(outcome.trace.nodes[1].status, "not_reached");
+    assert_eq!(outcome.trace.nodes[2].status, "not_reached");
+    assert_eq!(
+        outcome
+            .trace
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "z_unused", "y_unused_calc", "m_taken", "b", "c_join"]
+    );
+    assert!(replay(&c, &outcome.trace, &client.identity()).comparable);
 }
 #[tokio::test]
 async fn independent_branches_run_in_parallel() {

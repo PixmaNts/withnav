@@ -192,6 +192,7 @@ pub struct CompiledDefinition {
     pub(crate) definition: Definition,
     pub(crate) catalogue: Catalogue,
     pub(crate) templates: BTreeMap<String, String>,
+    pub(crate) node_index: BTreeMap<String, usize>,
     pub(crate) order: Vec<usize>,
     pub(crate) predecessors: Vec<Vec<(usize, String)>>,
     pub(crate) expressions: BTreeMap<String, crate::expression::Expression>,

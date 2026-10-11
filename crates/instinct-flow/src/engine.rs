@@ -209,14 +209,9 @@ impl<'a> Evaluation<'a> {
                 .values()
                 .filter_map(|r| crate::validation::upstream(r))
                 .all(|id| {
-                    self.compiled
-                        .definition
-                        .node
-                        .iter()
-                        .position(|n| n.id == id)
-                        .is_some_and(|j| {
-                            matches!(self.status[j], Status::Completed | Status::Unreachable)
-                        })
+                    self.compiled.node_index.get(id).is_some_and(|&j| {
+                        matches!(self.status[j], Status::Completed | Status::Unreachable)
+                    })
                 });
             if active && data_settled {
                 ready.push(i);
@@ -254,13 +249,7 @@ impl<'a> Evaluation<'a> {
             };
         }
         if let Some(id) = crate::validation::upstream(reference) {
-            let Some(index) = self
-                .compiled
-                .definition
-                .node
-                .iter()
-                .position(|n| n.id == id)
-            else {
+            let Some(&index) = self.compiled.node_index.get(id) else {
                 return absent();
             };
             let record = &self.trace.nodes[index];

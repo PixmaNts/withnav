@@ -944,14 +944,42 @@ fn flatten(html: &str) -> String {
         }
         true
     });
-    let out = out
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    const ENTITIES: &[(&str, char)] = &[
+        ("&nbsp;", ' '),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&#39;", '\''),
+        ("&amp;", '&'),
+    ];
+    let mut normalized = String::with_capacity(out.len());
+    let mut remaining = out.as_str();
+    let mut space = false;
+    while let Some(ch) = remaining.chars().next() {
+        let (ch, len) = if ch == '&' {
+            ENTITIES
+                .iter()
+                .find_map(|(entity, decoded)| {
+                    remaining
+                        .starts_with(entity)
+                        .then_some((*decoded, entity.len()))
+                })
+                .unwrap_or((ch, ch.len_utf8()))
+        } else {
+            (ch, ch.len_utf8())
+        };
+        remaining = &remaining[len..];
+        if ch.is_whitespace() {
+            space = !normalized.is_empty();
+        } else {
+            if space {
+                normalized.push(' ');
+                space = false;
+            }
+            normalized.push(ch);
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -988,6 +1016,31 @@ mod tests {
     const PAGE: &str = "<html><head><title>T</title><style>p{color:red}</style></head>\
         <body><h1>Heading</h1><p>Some <b>bold</b> text and a <a href=\"https://e.test/x\">link</a>.</p>\
         <script>alert('SCRIPTBODY')</script></body></html>";
+
+    #[test]
+    fn flatten_decodes_entities_and_normalizes_visible_text() {
+        for (html, expected) in [
+            ("a&nbsp;b", "a b"),
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&quot;", "\""),
+            ("&#39;", "'"),
+            ("&amp;", "&"),
+            ("&unknown; &#160;", "&unknown; &#160;"),
+            ("&amp;lt;", "&lt;"),
+            ("\u{a0}\talpha\u{2003}\u{202f}beta\n\u{3000}", "alpha beta"),
+            (
+                "a<!-- ignored -->b &am<!-- split entity -->p;lt;",
+                "ab &lt;",
+            ),
+            ("a<b>b</b>c", "a b c"),
+            ("a<script>&lt;hidden</script><style>hidden</style>b", "a b"),
+            ("", ""),
+            (" \t\n&nbsp;\u{2003}", ""),
+        ] {
+            assert_eq!(flatten(html), expected, "{html:?}");
+        }
+    }
 
     async fn html_server() -> MockServer {
         let server = MockServer::start().await;

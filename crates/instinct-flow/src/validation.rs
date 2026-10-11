@@ -15,6 +15,7 @@ pub(crate) fn upstream(reference: &str) -> Option<&str> {
 pub(crate) fn reference_type(
     reference: &str,
     definition: &Definition,
+    index: Option<&BTreeMap<String, usize>>,
     catalogue: &Catalogue,
     variables: &BTreeMap<String, ValueType>,
 ) -> Option<ValueType> {
@@ -30,10 +31,15 @@ pub(crate) fn reference_type(
         return scalar_type(definition.constants.get(name)?);
     }
     if let Some(name) = reference.strip_prefix("result.") {
-        return definition
-            .node
-            .iter()
-            .find(|n| n.id == name && matches!(n.kind, NodeKind::Expression { .. }))
+        let node = match index {
+            Some(index) => definition.node.get(*index.get(name)?),
+            None => definition
+                .node
+                .iter()
+                .find(|n| n.id == name && matches!(n.kind, NodeKind::Expression { .. })),
+        };
+        return node
+            .filter(|n| matches!(n.kind, NodeKind::Expression { .. }))
             .map(|_| ValueType::Boolean);
     }
     if reference.starts_with("variable.") {
@@ -42,7 +48,10 @@ pub(crate) fn reference_type(
     if let Some(tail) = reference.strip_prefix("answer.") {
         let mut parts = tail.split('.');
         let id = parts.next()?;
-        let node = definition.node.iter().find(|n| n.id == id)?;
+        let node = match index {
+            Some(index) => definition.node.get(*index.get(id)?)?,
+            None => definition.node.iter().find(|n| n.id == id)?,
+        };
         match (parts.next(), &node.kind) {
             (None, NodeKind::Choice { .. }) => return Some(ValueType::String),
             (None, NodeKind::Noul { .. } | NodeKind::Score { .. }) => {
@@ -97,9 +106,11 @@ pub(crate) fn threshold(value: &Threshold, definition: &Definition) -> Option<f6
     }
     .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
 }
+#[allow(clippy::too_many_arguments)]
 fn aliases(
     inputs: &BTreeMap<String, String>,
     definition: &Definition,
+    index: Option<&BTreeMap<String, usize>>,
     catalogue: &Catalogue,
     variables: &BTreeMap<String, ValueType>,
     ancestors: Option<&BTreeSet<String>>,
@@ -128,7 +139,7 @@ fn aliases(
                 ));
             }
         }
-        if let Some(ty) = reference_type(reference, definition, catalogue, variables) {
+        if let Some(ty) = reference_type(reference, definition, index, catalogue, variables) {
             types.insert(alias.clone(), ty);
         } else {
             errors.push(Diagnostic::new(
@@ -363,11 +374,13 @@ pub(crate) fn validate(
         }
     }
     let mut index = BTreeMap::new();
+    let mut valid_node_ids = true;
     for (i, node) in definition.node.iter().enumerate() {
         if !identifier(&node.id)
             || node.id == "trigger"
             || index.insert(node.id.clone(), i).is_some()
         {
+            valid_node_ids = false;
             errors.push(
                 Diagnostic::new(
                     "schema",
@@ -385,6 +398,8 @@ pub(crate) fn validate(
             ));
         }
     }
+    // Rejected ids retain first-match reference diagnostics; graph wires still use the last id.
+    let reference_index = valid_node_ids.then_some(&index);
     let mut predecessors = vec![Vec::new(); definition.node.len()];
     let mut successors = vec![Vec::new(); definition.node.len()];
     let mut indegree = vec![0; definition.node.len()];
@@ -491,6 +506,7 @@ pub(crate) fn validate(
     let flow_types = aliases(
         &f.inputs,
         definition,
+        reference_index,
         catalogue,
         &variables,
         None,
@@ -514,6 +530,7 @@ pub(crate) fn validate(
         let mut types = aliases(
             &node.inputs,
             definition,
+            reference_index,
             catalogue,
             &variables,
             Some(&ancestors[i]),
@@ -687,6 +704,7 @@ pub(crate) fn validate(
         fallback_types.extend(aliases(
             &fallback.inputs,
             definition,
+            reference_index,
             catalogue,
             &variables,
             None,
@@ -764,6 +782,7 @@ pub(crate) fn validate(
         definition: definition.clone(),
         catalogue: catalogue.clone(),
         templates: templates.clone(),
+        node_index: index,
         order,
         predecessors,
         expressions,

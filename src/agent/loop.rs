@@ -210,20 +210,17 @@ async fn run_steps_inner(
         let role_message = actor.role_message();
         let history = actor.effective_history();
         let tools = actor.effective_tool_schemas();
-        if actor
-            .input_budget
-            .is_some_and(|budget| {
-                crate::agent::context::estimate(
-                    role_message.as_deref(),
-                    actor.rules.message(),
-                    actor.effective_skills_catalog(),
-                    &history,
-                    &tools,
-                )
-                .total()
-                    > budget
-            })
-        {
+        if actor.input_budget.is_some_and(|budget| {
+            crate::agent::context::estimate(
+                role_message.as_deref(),
+                actor.rules.message(),
+                actor.effective_skills_catalog(),
+                &history,
+                &tools,
+            )
+            .total()
+                > budget
+        }) {
             return Ok(RunOutcome::NeedsCompaction {
                 steps_left: budget - step,
             });
@@ -675,7 +672,11 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
             call.name
         ));
     }
-    let schema = actor.registry.get(&call.name).expect("allowed tool").schema();
+    let schema = actor
+        .registry
+        .get(&call.name)
+        .expect("allowed tool")
+        .schema();
     let parameters = &schema["parameters"];
     if let Some(required) = parameters["required"].as_array() {
         for name in required.iter().filter_map(serde_json::Value::as_str) {
@@ -691,7 +692,10 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
                 _ => true,
             });
             if !valid {
-                return Err(format!("missing {} argument: {name}", kind.unwrap_or("required")));
+                return Err(format!(
+                    "missing {} argument: {name}",
+                    kind.unwrap_or("required")
+                ));
             }
         }
     }
@@ -904,15 +908,10 @@ async fn resolve_flow_call(
         };
         let approval =
             serde_json::json!({"approved_by":"captain","flow":{"name":flow,"run_id":run_id}});
-        match execute_call(actor, call, destination, Some(approval), observe).await {
-            DispatchOutcome::Settled(result) => {
-                append_tool_result(actor, &call.id, &result);
-                return One::Settled;
-            }
-            DispatchOutcome::ScriptChanged => {
-                return script_changed_request(actor, call, destination.map(Path::to_path_buf))
-            }
-            DispatchOutcome::DestinationChanged => {}
+        if let Some(outcome) =
+            execute_and_settle(actor, call, destination, Some(approval), observe).await
+        {
+            return outcome;
         }
     }
     if request.flow_regates >= REGATE_LIMIT {
@@ -1112,15 +1111,10 @@ async fn run_gated(
                     serde_json::json!("config_session_grant");
             }
         }
-        match execute_call(actor, call, destination.as_deref(), note, observe).await {
-            DispatchOutcome::Settled(result) => {
-                append_tool_result(actor, &call.id, &result);
-                return One::Settled;
-            }
-            DispatchOutcome::ScriptChanged => {
-                return script_changed_request(actor, call, destination)
-            }
-            DispatchOutcome::DestinationChanged => {}
+        if let Some(outcome) =
+            execute_and_settle(actor, call, destination.as_deref(), note, observe).await
+        {
+            return outcome;
         }
     }
     reject_call(
@@ -1141,17 +1135,35 @@ async fn run_reviewed(
     approval_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
+    if let Some(outcome) =
+        execute_and_settle(actor, call, destination, approval_note, observe).await
+    {
+        return outcome;
+    }
+    run_gated(actor, call, observe).await
+}
+
+/// A changed destination remains the caller's responsibility: retry the gate
+/// or ask for a fresh flow binding, without reusing the old approval.
+async fn execute_and_settle(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    destination: Option<&Path>,
+    approval_note: Option<serde_json::Value>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Option<One> {
     match execute_call(actor, call, destination, approval_note, observe).await {
         DispatchOutcome::Settled(result) => {
             append_tool_result(actor, &call.id, &result);
-            return One::Settled;
+            Some(One::Settled)
         }
-        DispatchOutcome::ScriptChanged => {
-            return script_changed_request(actor, call, destination.map(Path::to_path_buf))
-        }
-        DispatchOutcome::DestinationChanged => {}
+        DispatchOutcome::ScriptChanged => Some(script_changed_request(
+            actor,
+            call,
+            destination.map(Path::to_path_buf),
+        )),
+        DispatchOutcome::DestinationChanged => None,
     }
-    run_gated(actor, call, observe).await
 }
 
 fn script_changed_request(
@@ -1646,7 +1658,10 @@ mod tests {
                 assert!(tool_result_of(&actor, &invalid.id).is_some());
             }
             invalid.args = serde_json::json!({"path":path,"offset":null,"limit":"default"});
-            assert!(preflight(&actor, &invalid).is_ok(), "optional arguments keep tool defaults");
+            assert!(
+                preflight(&actor, &invalid).is_ok(),
+                "optional arguments keep tool defaults"
+            );
             assert_eq!(flows.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
         let actor = make_actor(String::new(), registry_gated(), CancellationToken::new());
@@ -2158,7 +2173,9 @@ mod tests {
             assert!(run_agent(&mut actor, &mut |_| {}).await.is_err());
             assert_eq!(actor.state, AgentState::Idle);
             if boundary_error {
-                assert!(matches!(actor.transcript.last(), Some(ChatMessage::User { content, .. }) if content == "committed steering"));
+                assert!(
+                    matches!(actor.transcript.last(), Some(ChatMessage::User { content, .. }) if content == "committed steering")
+                );
             }
         }
     }
@@ -2203,7 +2220,10 @@ mod tests {
                 );
             }
             for value in ["", "50steps", "-1", "999999999999999999999999999999"] {
-                assert_eq!(configured_max_steps(Ok(value.into()), absent, invalid), invalid);
+                assert_eq!(
+                    configured_max_steps(Ok(value.into()), absent, invalid),
+                    invalid
+                );
             }
             assert_eq!(
                 configured_max_steps(

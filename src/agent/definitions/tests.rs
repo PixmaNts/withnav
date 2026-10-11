@@ -1,32 +1,26 @@
 use super::*;
+use crate::agent::tests::WorkspaceFixture;
 use std::fs;
 
 struct Fixture {
-    _tmp: tempfile::TempDir,
+    _workspace: WorkspaceFixture,
     roots: AgentRoots,
     repo: PathBuf,
     ws: PathBuf,
 }
 
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
-    let home = base.join("home");
-    let config = base.join("config");
-    let repo = base.join("repo");
-    let ws = repo.join("pkg");
-    fs::create_dir_all(&home).unwrap();
+    let workspace = WorkspaceFixture::new("pkg");
+    let config = workspace.home.parent().unwrap().join("config");
     fs::create_dir_all(&config).unwrap();
-    fs::create_dir_all(repo.join(".git")).unwrap();
-    fs::create_dir_all(&ws).unwrap();
     Fixture {
-        _tmp: tmp,
         roots: AgentRoots {
-            home: Some(home),
+            home: Some(workspace.home.clone()),
             config_dir: Some(config),
         },
-        repo,
-        ws,
+        repo: workspace.repo.clone(),
+        ws: workspace.ws.clone(),
+        _workspace: workspace,
     }
 }
 
@@ -138,26 +132,55 @@ fn cartographe_write_scope_rejects_other_files_and_escapes() {
 #[test]
 fn every_alias_resolves_and_canonical_files_win() {
     for (old, new) in AGENT_ALIASES {
-        assert_eq!(Agents::builtin().get(old).unwrap().id.as_str(), *new);
+        assert_eq!(
+            Agents::builtin()
+                .get(old)
+                .unwrap_or_else(|| panic!("missing alias {old}"))
+                .id
+                .as_str(),
+            *new,
+            "builtin alias {old} -> {new}"
+        );
         let f = fixture();
         write(
             &user_dir(&f),
             &format!("{old}.md"),
             "---\ndescription: legacy\n---\nold",
         );
-        assert_eq!(load(&f).get(new).unwrap().description, "legacy");
+        assert_eq!(
+            load(&f)
+                .get(new)
+                .unwrap_or_else(|| panic!("missing canonical {new} for alias {old}"))
+                .description,
+            "legacy",
+            "legacy file {old} -> {new}"
+        );
         write(
             &user_dir(&f),
             &format!("{new}.md"),
             "---\ndescription: canonical\n---\nnew",
         );
-        assert_eq!(load(&f).get(old).unwrap().description, "canonical");
+        assert_eq!(
+            load(&f)
+                .get(old)
+                .unwrap_or_else(|| panic!("missing alias {old}"))
+                .description,
+            "canonical",
+            "canonical file {new} overrides {old}"
+        );
         write(
             &f.ws.join(".withnav/agents"),
             &format!("{old}.md"),
             "---\ndescription: nearer legacy\n---\nold",
         );
-        assert_eq!(load(&f).get(old).unwrap().description, "canonical");
+        assert_eq!(
+            load(&f)
+                .get(old)
+                .unwrap_or_else(|| panic!("missing alias {old}"))
+                .description,
+            "canonical",
+            "nearer legacy file {old} cannot override {new}"
+        );
     }
 }
 
@@ -170,16 +193,33 @@ fn legacy_project_agent_directories_are_read_only_without_withnav() {
             "scout.md",
             "---\ndescription: legacy project agent\n---\nlegacy",
         );
-        assert_eq!(load(&f).get("scout").unwrap().prompt, "legacy");
+        assert_eq!(
+            load(&f)
+                .get("scout")
+                .unwrap_or_else(|| panic!("missing scout in {legacy}"))
+                .prompt,
+            "legacy",
+            "legacy directory {legacy}"
+        );
 
         fs::create_dir_all(f.ws.join(".withnav")).unwrap();
-        assert!(load(&f).get("scout").is_none());
+        assert!(
+            load(&f).get("scout").is_none(),
+            "{legacy} is ignored when .withnav exists"
+        );
         write(
             &f.ws.join(".withnav/agents"),
             "scout.md",
             "---\ndescription: current project agent\n---\ncurrent",
         );
-        assert_eq!(load(&f).get("scout").unwrap().prompt, "current");
+        assert_eq!(
+            load(&f)
+                .get("scout")
+                .unwrap_or_else(|| panic!("missing current scout after {legacy}"))
+                .prompt,
+            "current",
+            ".withnav replaces {legacy}"
+        );
     }
 }
 

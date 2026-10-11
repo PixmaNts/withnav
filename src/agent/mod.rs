@@ -16,3 +16,6 @@ pub mod scratch;
 pub mod selection;
 pub mod skill_grants;
 pub mod skills;
+
+#[cfg(test)]
+pub(crate) mod tests;

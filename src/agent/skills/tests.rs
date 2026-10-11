@@ -1,34 +1,13 @@
 use super::*;
+use crate::agent::tests::WorkspaceFixture as Fixture;
 use crate::tools::{Registry, ToolContext, ToolStatus};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-struct Fixture {
-    _tmp: tempfile::TempDir,
-    home: PathBuf,
-    /// A Git worktree root.
-    repo: PathBuf,
-    /// A directory two levels below the root.
-    ws: PathBuf,
-}
-
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
-    let home = base.join("home");
-    let repo = base.join("repo");
-    let ws = repo.join("packages/app");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(repo.join(".git")).unwrap();
-    fs::create_dir_all(&ws).unwrap();
-    Fixture {
-        _tmp: tmp,
-        home,
-        repo,
-        ws,
-    }
+    Fixture::new("packages/app")
 }
 
 fn skill_text(name: &str, description: &str) -> String {
@@ -633,15 +612,15 @@ fn the_catalog_is_bounded_and_counts_what_it_omits() {
         assert!(catalog.contains(&format!("{} —", skill.name)));
     }
     // Nothing is cut when everything fits.
-    assert!(!load_small().catalog().unwrap().contains("omitted"));
+    let (_small_fixture, small) = load_small();
+    assert!(!small.catalog().unwrap().contains("omitted"));
 }
 
-fn load_small() -> Skills {
+fn load_small() -> (Fixture, Skills) {
     let fx = fixture();
     add(&fx.home.join(".agents/skills/a"), "a", "A.");
     let skills = load(&fx);
-    std::mem::forget(fx);
-    skills
+    (fx, skills)
 }
 
 // ---- the tool ----
@@ -897,32 +876,14 @@ fn the_resource_listing_enumerates_no_more_than_its_budget() {
 
 // ---- readable roots ----
 
-// Given an actor with a skill in the user's library
-// Then read and grep open it, while write, edit and bash roots stay as they were
-#[tokio::test]
-async fn skill_roots_are_readable_but_never_writable() {
+fn actor(fx: &Fixture, registry: Registry) -> crate::agent::actor::AgentActor {
     use crate::agent::actor::AgentActor;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
-    use crate::tools::{bash::BashTool, native::*};
 
-    let fx = fixture();
-    let dir = fx.home.join(".agents/skills/matt/ask-matt");
-    let manifest = add(&dir, "ask-matt", "Ask Matt.");
-    fs::write(dir.join("ref.txt"), "needle in a skill").unwrap();
-    let mut registry = Registry::new();
-    registry.register(Box::new(ReadTool));
-    registry.register(Box::new(WriteTool));
-    registry.register(Box::new(EditTool));
-    registry.register(Box::new(GrepTool));
-    registry.register(Box::new(BashTool));
-    let mut actor = AgentActor::new(
+    let (_, cx) = context(fx);
+    AgentActor::new(
         registry,
-        ToolContext {
-            binding: None,
-            workspace: fx.ws.clone(),
-            writable_roots: vec![fx.ws.clone()],
-            readable_roots: Vec::new(),
-        },
+        cx,
         ProviderConfig {
             base_url: "http://127.0.0.1:1".into(),
             api_key_env: None,
@@ -936,7 +897,26 @@ async fn skill_roots_are_readable_but_never_writable() {
         ReasoningHistory::Preserve,
         None,
         CancellationToken::new(),
-    );
+    )
+}
+
+// Given an actor with a skill in the user's library
+// Then read and grep open it, while write, edit and bash roots stay as they were
+#[tokio::test]
+async fn skill_roots_are_readable_but_never_writable() {
+    use crate::tools::{bash::BashTool, native::*};
+
+    let fx = fixture();
+    let dir = fx.home.join(".agents/skills/matt/ask-matt");
+    let manifest = add(&dir, "ask-matt", "Ask Matt.");
+    fs::write(dir.join("ref.txt"), "needle in a skill").unwrap();
+    let mut registry = Registry::new();
+    registry.register(Box::new(ReadTool));
+    registry.register(Box::new(WriteTool));
+    registry.register(Box::new(EditTool));
+    registry.register(Box::new(GrepTool));
+    registry.register(Box::new(BashTool));
+    let mut actor = actor(&fx, registry);
     let denied_before = actor
         .registry
         .dispatch(
@@ -1028,31 +1008,8 @@ async fn skill_roots_are_readable_but_never_writable() {
 // Then the `skill` tool is not registered and the roots stay empty
 #[test]
 fn without_skills_nothing_is_registered() {
-    use crate::agent::actor::AgentActor;
-    use crate::provider::config::{ProviderConfig, ReasoningHistory};
     let fx = fixture();
-    let mut actor = AgentActor::new(
-        Registry::new(),
-        ToolContext {
-            binding: None,
-            workspace: fx.ws.clone(),
-            writable_roots: vec![fx.ws.clone()],
-            readable_roots: Vec::new(),
-        },
-        ProviderConfig {
-            base_url: "http://127.0.0.1:1".into(),
-            api_key_env: None,
-            headers: Default::default(),
-            connect_timeout_ms: 100,
-            request_timeout_ms: 100,
-            catalog_format: None,
-        },
-        "k".into(),
-        "m".into(),
-        ReasoningHistory::Preserve,
-        None,
-        CancellationToken::new(),
-    );
+    let mut actor = actor(&fx, Registry::new());
     actor.set_skills(load(&fx));
     assert!(actor.registry.get("skill").is_none());
     assert!(actor.tool_context.readable_roots.is_empty());

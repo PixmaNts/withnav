@@ -271,10 +271,8 @@ async fn nothing_is_compacted_while_an_ask_waits() {
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "go").await;
-    collect_until(sub, |e| {
-        e.kind == "agent.state" && e.payload["to"] == "yielded"
-    })
-    .await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    assert_eq!(events.last().unwrap().payload["outcome"], "yielded");
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
     let bodies = provider.bodies();
     assert_eq!(
@@ -285,7 +283,6 @@ async fn nothing_is_compacted_while_an_ask_waits() {
     assert!(is_summary(&bodies[0]));
     assert!(bodies[2].contains("\"ask\""));
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(
         provider.bodies().len(),
         3,

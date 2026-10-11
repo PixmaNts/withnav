@@ -808,13 +808,14 @@ fn close_palette(ui: &mut UiState) {
 
 /// The keys of the rows an overlay lists under the current filter, in display order.
 pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
+    let filter = ui.filter.to_lowercase();
     match overlay {
         Overlay::Agents => state
             .agents
             .iter()
             .filter(|a| {
                 matches!(a.mode.as_str(), "primary" | "all")
-                    && a.id.to_lowercase().contains(&ui.filter.to_lowercase())
+                    && a.id.to_lowercase().contains(&filter)
             })
             .map(|a| a.id.clone())
             .collect(),
@@ -830,12 +831,12 @@ pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Ve
             .sessions
             .iter()
             .filter(|x| {
-                x.id.to_lowercase().contains(&ui.filter.to_lowercase())
+                x.id.to_lowercase().contains(&filter)
                     || x.title
                         .as_deref()
                         .unwrap_or("")
                         .to_lowercase()
-                        .contains(&ui.filter.to_lowercase())
+                        .contains(&filter)
             })
             .map(|x| x.id.clone())
             .collect(),
@@ -845,10 +846,7 @@ pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Ve
             .collect(),
         Overlay::Themes => ThemeId::ALL
             .iter()
-            .filter(|x| {
-                x.id().contains(&ui.filter.to_lowercase())
-                    || x.name().to_lowercase().contains(&ui.filter.to_lowercase())
-            })
+            .filter(|x| x.id().contains(&filter) || x.name().to_lowercase().contains(&filter))
             .map(|x| x.id().to_string())
             .collect(),
         Overlay::Help => Vec::new(),
@@ -863,7 +861,7 @@ pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Ve
             .map(|pick| commands::variant_choices(state, pick).0)
             .unwrap_or_default()
             .into_iter()
-            .filter(|v| v.to_lowercase().contains(&ui.filter.to_lowercase()))
+            .filter(|v| v.to_lowercase().contains(&filter))
             .collect(),
     }
 }

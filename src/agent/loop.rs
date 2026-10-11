@@ -5852,7 +5852,23 @@ mod tests {
 
     #[tokio::test]
     async fn bash_operands_reach_protected_config_and_changed_scratch_floor() {
-        for case in ["config-is-workspace", "config-through-link", "scratch"] {
+        for case in [
+            "config-is-workspace",
+            "config-through-link",
+            "config-spaced-link",
+            "config-glued-quotes",
+            "config-assignment",
+            "config-option",
+            "scratch-spaced-link",
+            "tilde-user",
+            "tilde-other",
+            "tilde-plus",
+            "tilde-minus",
+            "tilde-variable",
+            "tilde-read",
+            "tilde-grant",
+            "scratch",
+        ] {
             let mut actor = plan_actor(None, "http://unused");
             actor.automatic_permission_review = false;
             actor.bypass.lock().unwrap().enabled = true;
@@ -5861,14 +5877,58 @@ mod tests {
                 "config-is-workspace" => {
                     actor.protected_config_root = Some(workspace.clone());
                     actor.protected_config_spelling = Some(workspace.clone());
-                    "printf x > models.json"
+                    "printf x > models.json".to_owned()
                 }
                 "config-through-link" => {
                     let dir = workspace.join("real-config");
                     std::fs::create_dir(&dir).unwrap();
                     actor.protected_config_root = Some(dir.clone());
                     std::os::unix::fs::symlink(&dir, workspace.join("cfg")).unwrap();
-                    "printf x > cfg/models.json"
+                    "printf x > cfg/models.json".to_owned()
+                }
+                "config-spaced-link"
+                | "config-glued-quotes"
+                | "config-assignment"
+                | "config-option" => {
+                    let dir = workspace.join("real-config");
+                    std::fs::create_dir(&dir).unwrap();
+                    actor.protected_config_root = Some(dir.clone());
+                    std::os::unix::fs::symlink(&dir, workspace.join("config alias")).unwrap();
+                    match case {
+                        "config-spaced-link" => "printf x > 'config alias/models.json'".into(),
+                        "config-glued-quotes" => "printf x > con'fig alias'/models.json".into(),
+                        "config-assignment" => "FILE='config alias/models.json' printf x".into(),
+                        _ => "printf --file='config alias/models.json' x".into(),
+                    }
+                }
+                "scratch-spaced-link" => {
+                    let root = workspace.join("scratch");
+                    actor
+                        .scratch_roots
+                        .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+                    std::os::unix::fs::symlink(&root, workspace.join("scratch alias")).unwrap();
+                    std::fs::remove_dir(&root).unwrap();
+                    std::fs::create_dir(&root).unwrap();
+                    "printf x > 'scratch alias/file'".into()
+                }
+                case if case.starts_with("tilde-") => {
+                    actor.protected_config_root = Some(workspace.clone());
+                    actor.protected_config_spelling = Some(workspace.clone());
+                    let user = std::env::var("USER").unwrap_or_else(|_| "captain".into());
+                    match case {
+                        "tilde-user" => format!("printf x > ~{user}/.config/withnav/x"),
+                        "tilde-other" => "printf x > ~root/.config/withnav/x".into(),
+                        "tilde-plus" => "printf x > ~+/.config/withnav/x".into(),
+                        "tilde-minus" => "printf x > ~-/.config/withnav/x".into(),
+                        "tilde-variable" => "printf x > ~$USER/.config/withnav/x".into(),
+                        "tilde-read" => format!("cat ~{user}/.config/withnav/x"),
+                        _ => {
+                            actor
+                                .config_session_grant
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            format!("printf x > ~{user}/.config/withnav/x")
+                        }
+                    }
                 }
                 _ => {
                     let root = workspace.join("scratch");
@@ -5877,7 +5937,7 @@ mod tests {
                         .push(crate::agent::scratch::Identity::capture(&root).unwrap());
                     std::fs::remove_dir(&root).unwrap();
                     std::fs::create_dir(&root).unwrap();
-                    "printf x > scratch/file"
+                    "printf x > scratch/file".to_owned()
                 }
             };
             let call = ToolCall {

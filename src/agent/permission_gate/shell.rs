@@ -229,6 +229,29 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
     (!segments.is_empty()).then_some(segments)
 }
 
+/// Conservative fragments remain evidence even for unsupported shell syntax.
+/// They only tighten checks; they are not parsed shell words or git options.
+pub(super) fn operand_fragments(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
+        .filter(|word| !word.is_empty())
+}
+
+/// Inspect whole literal paths, including assignment/option values, without
+/// weakening the existing fragment checks when parsing fails or succeeds.
+pub(super) fn path_operands(command: &str) -> Vec<String> {
+    let mut operands: Vec<String> = operand_fragments(command).map(str::to_owned).collect();
+    if let Some(parts) = segments(command) {
+        for word in parts.into_iter().flatten() {
+            if let Some((_, value)) = word.split_once('=') {
+                operands.push(value.to_owned());
+            }
+            operands.push(word);
+        }
+    }
+    operands
+}
+
 fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }

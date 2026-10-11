@@ -135,7 +135,7 @@ async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
             .into_iter()
             .filter(|e| e.kind == "command.result")
             .collect(),
-        other => panic!("expected replay, got {other:?}"),
+        other => panic!("session {id}: expected command.result replay, got {other:?}"),
     }
 }
 

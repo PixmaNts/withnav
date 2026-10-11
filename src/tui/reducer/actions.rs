@@ -303,6 +303,12 @@ fn open_child(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     effects
 }
 
+fn apply_start_variant(s: &mut State, chosen: Option<Option<String>>) {
+    s.start_variant = chosen;
+    let catalog = s.catalog.clone();
+    super::refresh_start_variant(s, &catalog);
+}
+
 /// Points the active tab at `model_id` (a new tab when the active one holds a conversation: a
 /// conversation keeps its model). `variant` is the start variant chosen in the picker; `None`
 /// leaves the model_id's default. `None` when the tab limit refused a new tab.
@@ -321,22 +327,8 @@ fn pick_model(
     s.selected_model_id = Some(model_id);
     s.start_model = s.selected_model_id.clone();
     s.model_source = "override".into();
-    s.variant_source = if variant.is_some() {
-        "override"
-    } else {
-        "model_default"
-    }
-    .into();
     refresh_model(s);
-    let default = s
-        .catalog
-        .iter()
-        .find(|m| Some(&m.name) == s.selected_model_id.as_ref())
-        .and_then(|m| m.default_variant.clone());
-    s.variant = variant.clone().unwrap_or(default);
-    s.start_variant = variant;
-    let catalog = s.catalog.clone();
-    super::refresh_start_variant(s, &catalog);
+    apply_start_variant(s, variant);
     Some(effects)
 }
 
@@ -694,16 +686,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                     pick_model(s, ui, model_id, chosen).unwrap_or_default()
                 }
                 Some(VariantPick::Current) if !occupied(s) => {
-                    s.start_variant = chosen;
-                    s.variant = s.start_variant.clone().flatten();
-                    s.variant_source = if s.start_variant.is_some() {
-                        "override"
-                    } else {
-                        "model_default"
-                    }
-                    .into();
-                    let catalog = s.catalog.clone();
-                    super::refresh_start_variant(s, &catalog);
+                    apply_start_variant(s, chosen);
                     vec![]
                 }
                 Some(VariantPick::Current) => run_command(s, "variant".into(), name, None),

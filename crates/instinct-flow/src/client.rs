@@ -153,7 +153,7 @@ impl DecisionClient for SystemOneClient {
                     .await
                     .map_err(|_| DecisionError::ProviderError)?
                 {
-                    if bytes.len() + chunk.len() > crate::MAX_RESPONSE_BYTES {
+                    if chunk.len() > crate::MAX_RESPONSE_BYTES.saturating_sub(bytes.len()) {
                         return Err(DecisionError::Limit);
                     }
                     bytes.extend_from_slice(&chunk);

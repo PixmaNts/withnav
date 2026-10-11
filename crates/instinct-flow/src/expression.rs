@@ -288,11 +288,12 @@ impl Expression {
     pub(crate) fn check_limits(&self, limits: &Limits) -> Result<(), Diagnostic> {
         scan(&self.source, limits)?;
         fn measure(node: &Node) -> (usize, usize) {
-            let children: Vec<_> = node.children().iter().map(measure).collect();
-            (
-                1 + children.iter().map(|(n, _)| n).sum::<usize>(),
-                1 + children.iter().map(|(_, d)| *d).max().unwrap_or(0),
-            )
+            node.children()
+                .iter()
+                .fold((1, 1), |(count, depth), child| {
+                    let (child_count, child_depth) = measure(child);
+                    (count + child_count, depth.max(child_depth + 1))
+                })
         }
         let (nodes, depth) = measure(&self.tree);
         if nodes > limits.expression_ast_nodes.min(128)

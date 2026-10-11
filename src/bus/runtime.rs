@@ -2366,6 +2366,10 @@ mod tests {
             .unwrap();
         let actor = handle.await.unwrap();
         assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::User { content, .. } if content == "child completion")));
+        // `save_transcript` is fire-and-forget: without this barrier the reopened store can
+        // read the session before the writer thread applied the write (observed 2026-10-12:
+        // an empty transcript on a loaded CI runner, and once locally).
+        store.flush().await.unwrap();
         drop(store);
         let reopened = crate::session::store::HistoryStore::open(&path).unwrap();
         let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();

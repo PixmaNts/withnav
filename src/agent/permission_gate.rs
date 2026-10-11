@@ -2141,9 +2141,15 @@ mod tests {
         ));
     }
     fn review_actor() -> super::super::actor::AgentActor {
+        // The gate canonicalises the workspace for its host facts and refuses a path that
+        // does not exist. This directory only exists on machines that already used it
+        // (observed 2026-10-12: a clean CI runner lacks it and eight gate tests failed with
+        // `workspace: null`), so the fixture creates it.
+        let workspace = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(workspace).unwrap();
         let mut actor = super::super::actor::AgentActor::new(
             crate::tools::Registry::new(),
-            test_context(std::path::Path::new("/tmp/opencode")),
+            test_context(workspace),
             serde_json::from_value(json!({"base_url":"http://unused"})).unwrap(),
             String::new(),
             String::new(),
@@ -2166,6 +2172,26 @@ mod tests {
 
     #[tokio::test]
     async fn recorded_ordinary_calls_run_without_metacognition() {
+        // The recorded calls were made with the system toolchain (`/usr/bin/cargo`). A
+        // rustup install puts a user-owned `~/.cargo/bin/cargo` first in PATH, which the gate
+        // rightly does not trust (observed 2026-10-12 on a GitHub runner), so the call would
+        // be reviewed instead. PATH is process-global: pin it in an isolated test process,
+        // like `cargo_test_allow_once_then_unsure_uses_captain_precedent` does.
+        if std::env::var_os("WITHNAV_RECORDED_SYSTEM_PATH_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::permission_gate::tests::recorded_ordinary_calls_run_without_metacognition", "--nocapture"])
+                .env("PATH", "/usr/bin:/bin")
+                .env("WITHNAV_RECORDED_SYSTEM_PATH_TEST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let rows = [
             (
                 "bash",

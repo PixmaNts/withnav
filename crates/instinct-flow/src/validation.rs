@@ -467,11 +467,12 @@ pub(crate) fn validate(
                 format!("node[{}]", definition.node[i].id),
             ));
         }
+        let mut inherited = BTreeSet::new();
         for (p, _) in &predecessors[i] {
-            let inherited = ancestors[*p].clone();
-            ancestors[i].extend(inherited);
-            ancestors[i].insert(definition.node[*p].id.clone());
+            inherited.extend(ancestors[*p].iter().cloned());
+            inherited.insert(definition.node[*p].id.clone());
         }
+        ancestors[i] = inherited;
     }
     for (name, position) in &definition.layout {
         if (name != "trigger" && !index.contains_key(name))

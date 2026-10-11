@@ -133,7 +133,7 @@ impl Directory {
         }
         let mut text = String::new();
         File::from(fd)
-            .take((max + 1) as u64)
+            .take((max as u64).saturating_add(1))
             .read_to_string(&mut text)?;
         if text.len() > max {
             return Err(std::io::Error::other("file exceeds byte limit"));
@@ -235,6 +235,12 @@ mod tests {
         let dir = Directory::open(temp.path(), false).unwrap();
         dir.write("marker", b"1").unwrap();
         assert_eq!(dir.read_private("marker", 10).unwrap(), "1");
+        assert_eq!(dir.read_private("marker", usize::MAX).unwrap(), "1");
+        assert_eq!(dir.read_private("marker", 1).unwrap(), "1");
+        assert_eq!(
+            dir.read_private("marker", 0).unwrap_err().to_string(),
+            "file exceeds byte limit"
+        );
         std::fs::set_permissions(
             temp.path().join("marker"),
             std::fs::Permissions::from_mode(0o644),

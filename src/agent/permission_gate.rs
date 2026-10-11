@@ -1279,8 +1279,7 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
                         && !bash_command(call).is_some_and(|command| {
                             command.contains("gh release create")
                                 || (command.contains("push") && bash_operands(command).any(|word| {
-                                    matches!(word, "-f" | "--force" | "--force-with-lease" | "-d" | "--delete")
-                                        || word.starts_with("--force-with-lease=") || word.starts_with('+') || word.starts_with(':')
+                                    git::force_push_operand(word) || git::delete_push_operand(word)
                                 }))
                                 || git::literal(command).and_then(|words| git::push(&words, None))
                                     .is_some_and(|push| push["force"] == true || push["delete"] == true)
@@ -2484,6 +2483,15 @@ mod tests {
                 assert_eq!(push["delete"], true, "{command}");
                 assert_eq!(push["own_branch"], false, "{command}");
             }
+        }
+        for command in [
+            "git push origin feat/task :other",
+            "git push origin feat/task +other:other",
+        ] {
+            let push = git::push(&git::literal(command).unwrap(), Some("feat/task")).unwrap();
+            assert_eq!(push["literal_target"], false, "{command}");
+            assert!(push["force"] == true || push["delete"] == true, "{command}");
+            assert!(shell::destructive(&shell::segments(command).unwrap()[0]));
         }
         let cx = ToolContext {
             binding: None,

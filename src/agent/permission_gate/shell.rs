@@ -493,20 +493,10 @@ pub(super) fn destructive(words: &[String]) -> bool {
             let args = &words[i + 1..];
             let opt = |s: &str| args.iter().any(|w| w == s);
             match words[i].as_str() {
-                "push" => args.iter().any(|w| {
-                    matches!(
-                        w.as_str(),
-                        "-f" | "--force"
-                            | "--force-with-lease"
-                            | "-d"
-                            | "--delete"
-                            | "--all"
-                            | "--mirror"
-                            | "--tags"
-                            | "--follow-tags"
-                    ) || w.starts_with("--force-with-lease=")
-                        || w.starts_with('+')
-                        || w.starts_with(':')
+                "push" => args.iter().any(|word| {
+                    super::git::force_push_operand(word)
+                        || super::git::delete_push_operand(word)
+                        || super::git::broad_push_operand(word)
                 }),
                 "checkout" => opt("--") || opt("."),
                 "restore" => !opt("--staged") || opt("--worktree") || opt("-W"),

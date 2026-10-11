@@ -168,7 +168,7 @@ function snapshot() {
 
 test("sections follow the TOC of the design and filter models by API, grouped gateway › provider", () => {
   const sections = buildSections(snapshot());
-  assert.deepEqual(sections.map((s) => s.label), ["Gateways", "omniroute", "inception", "Layers", "reflex", "instinct", "metacognition", "cognition", "build", "vigie", "Permissions", "Subagents", "Appearance"]);
+  assert.deepEqual(sections.map((s) => s.label), ["Gateways", "omniroute", "inception", "Layers", "reflex", "instinct", "metacognition", "cognition", "build", "vigie", "Permissions", "Subagents"]);
   const reflex = sections.find((s) => s.id === "layer:reflex").rows[0];
   assert.deepEqual(reflex.control.groups.map((g) => g.label), ["inception"]);
   const build = sections.find((s) => s.id === "agent:build").rows[0];
@@ -199,7 +199,8 @@ test("webview renders the TOC, rows as Category › sub: Title, Modified, and th
   const { dom, d, posts, receive, rows, title, toc } = page();
   assert.deepEqual(posts[0], { type: "ready" });
   receive({ type: "snapshot", data: snapshot() });
-  assert.equal(d.querySelectorAll(".toc-item").length, 13);
+  assert.equal(d.querySelectorAll(".toc-item").length, 12);
+  assert.ok(![...d.querySelectorAll(".toc-item")].some((a) => a.textContent === "Appearance"), "VS Code follows the editor theme");
   assert.ok(toc("omniroute").classList.contains("selected"), "Gateways opens its first gateway");
   assert.equal(title(rows()[0]), "Gateways › omniroute:Base URL");
   assert.ok(rows()[0].querySelector("input").disabled);
@@ -230,6 +231,9 @@ test("webview search filters rows across sections and the TOC; Escape clears", (
   assert.deepEqual(rows().map(title), ["Subagents:Watchdog Interval Secs", "Agent:Watchdog Interval Secs"]);
   assert.equal(d.querySelector("#count").textContent, "2 Settings Found");
   assert.deepEqual([...d.querySelectorAll(".toc-item")].map((a) => a.textContent), ["Subagents"]);
+  search.value = "theme";
+  search.dispatchEvent(new dom.window.Event("input"));
+  assert.match(d.querySelector("#rows").textContent, /No settings found/);
   search.value = "nothing-matches-this";
   search.dispatchEvent(new dom.window.Event("input"));
   assert.match(d.querySelector("#rows").textContent, /No settings found/);
@@ -260,10 +264,10 @@ test("webview controls post one key per change; refusals show under their row; s
   assert.equal(rows()[1].querySelector(".row-error").textContent, "scratch dir must be absolute");
   assert.equal(rows()[0].querySelector(".row-error"), null);
 
-  toc("Appearance").click();
+  toc("Subagents").click();
   const reset = rows()[0].querySelector(".row-reset");
   reset.click();
-  assert.deepEqual(posts.at(-1), { type: "save", key: "tui.theme", value: null });
+  assert.deepEqual(posts.at(-1), { type: "save", key: "subagents.max_concurrent", value: null });
 
   d.querySelector("#open-json").click();
   assert.deepEqual(posts.at(-1), { type: "open", target: "config" });

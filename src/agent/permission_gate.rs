@@ -362,37 +362,43 @@ fn fit_conversation(state: &mut Value, instruction_bytes: usize, limit: usize) {
     let mut dropped = state["budget_fit"]["dropped_turns"].as_u64().unwrap_or(0);
     let mut cut = state["budget_fit"]["cut_turns"].as_u64().unwrap_or(0);
     state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
-    while state.to_string().len() + instruction_bytes > limit {
+    let mut bytes = state.to_string().len() + instruction_bytes;
+    while bytes > limit {
+        let previous_budget_bytes = state["budget_fit"].to_string().len();
         let turns = state["conversation"]
             .as_array_mut()
             .expect("host conversation");
         let latest = turns.iter().rposition(|t| t["author"] == "captain");
         // Drop oldest turns before shortening the remaining older pasted text.
         if turns.len() > 2 && latest != Some(0) {
-            turns.remove(0);
+            bytes -= turns.remove(0).to_string().len() + 1;
             dropped += 1;
         } else if let Some(turn) = turns.iter_mut().enumerate().find_map(|(i, turn)| {
             (Some(i) != latest && turn["text"].as_str().is_some_and(|t| t.len() > 512))
                 .then_some(turn)
         }) {
             let text = turn["text"].as_str().unwrap();
+            let previous_text_bytes = turn["text"].to_string().len();
             let (short, _) = crate::tools::bound_output(text, 256);
             turn["text"] = json!(format!(
                 "{short} [… {} bytes cut]",
                 text.len().saturating_sub(256)
             ));
+            bytes = bytes - previous_text_bytes + turn["text"].to_string().len();
             cut += 1;
         } else if let Some(i) = turns
             .iter()
             .enumerate()
             .find_map(|(i, _)| (Some(i) != latest).then_some(i))
         {
-            turns.remove(i);
+            let comma_bytes = usize::from(turns.len() > 1);
+            bytes -= turns.remove(i).to_string().len() + comma_bytes;
             dropped += 1;
         } else {
             break;
         }
         state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
+        bytes = bytes - previous_budget_bytes + state["budget_fit"].to_string().len();
     }
     script::fit(state, instruction_bytes, limit);
     if state.to_string().len() + instruction_bytes > limit {
@@ -1720,6 +1726,87 @@ mod tests {
 
     #[tokio::test]
     async fn budget_drops_oldest_turns_keeps_latest_and_reports_argument_overflow() {
+        // Frozen reference for byte-for-byte compatibility of budget optimizations.
+        fn reference_fit(state: &mut Value, instructions: usize, limit: usize) {
+            let mut dropped = state["budget_fit"]["dropped_turns"].as_u64().unwrap_or(0);
+            let mut cut = state["budget_fit"]["cut_turns"].as_u64().unwrap_or(0);
+            state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
+            while state.to_string().len() + instructions > limit {
+                let turns = state["conversation"].as_array_mut().unwrap();
+                let latest = turns.iter().rposition(|turn| turn["author"] == "captain");
+                if turns.len() > 2 && latest != Some(0) {
+                    turns.remove(0);
+                    dropped += 1;
+                } else if let Some(turn) = turns.iter_mut().enumerate().find_map(|(i, turn)| {
+                    (Some(i) != latest
+                        && turn["text"].as_str().is_some_and(|text| text.len() > 512))
+                    .then_some(turn)
+                }) {
+                    let text = turn["text"].as_str().unwrap();
+                    let (short, _) = crate::tools::bound_output(text, 256);
+                    turn["text"] = json!(format!(
+                        "{short} [… {} bytes cut]",
+                        text.len().saturating_sub(256)
+                    ));
+                    cut += 1;
+                } else if let Some(i) = turns
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, _)| (Some(i) != latest).then_some(i))
+                {
+                    turns.remove(i);
+                    dropped += 1;
+                } else {
+                    break;
+                }
+                state["budget_fit"] = json!({"dropped_turns":dropped,"cut_turns":cut});
+            }
+            script::fit(state, instructions, limit);
+            if state.to_string().len() + instructions > limit {
+                state["captain_request_complete"] = json!(false);
+                state["captain_request"] = Value::Null;
+                state["conversation"] = json!([]);
+            }
+        }
+        for text in ["pasted log ".repeat(120), "\"\\\n\t\0é🧭".repeat(120)] {
+            for (count, latest) in [
+                (0, None),
+                (1, Some(0)),
+                (2, Some(0)),
+                (2, Some(1)),
+                (12, Some(11)),
+                (12, Some(0)),
+                (12, None),
+            ] {
+                let original = json!({
+                    "conversation": (0..count).map(|i| json!({"author":if Some(i) == latest {"captain"} else {"assistant"}, "text":text})).collect::<Vec<_>>(),
+                    "captain_request": text, "captain_request_complete":true,
+                    "budget_fit":{"dropped_turns":9,"cut_turns":99},
+                    "untrusted_evidence":{"assistant_text":"excerpt","arguments":{"command":"ls"}}
+                });
+                for instructions in [0, 57] {
+                    let mut measured = original.clone();
+                    measured["budget_fit"] = json!({"dropped_turns":9,"cut_turns":99});
+                    let boundary = measured.to_string().len() + instructions;
+                    for limit in [
+                        0,
+                        256,
+                        512,
+                        1024,
+                        4096,
+                        boundary - 1,
+                        boundary,
+                        boundary + 1,
+                    ] {
+                        let mut expected = original.clone();
+                        let mut actual = original.clone();
+                        reference_fit(&mut expected, instructions, limit);
+                        fit_conversation(&mut actual, instructions, limit);
+                        assert_eq!(actual.to_string().as_bytes(), expected.to_string().as_bytes(), "count={count}, latest={latest:?}, instructions={instructions}, limit={limit}");
+                    }
+                }
+            }
+        }
         let mut actor = review_actor();
         actor.permission_judge = Some(std::sync::Arc::new(ReplayJudge {
             budget: 16 * 1024,

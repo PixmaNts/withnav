@@ -165,6 +165,12 @@ fn reset_projection(s: &mut State) {
     s.activity = Activity::Idle;
 }
 
+fn clear_pending_session(s: &mut State) {
+    s.resuming = None;
+    s.pending_submit_text = None;
+    s.pending_submit = None;
+}
+
 /// Switches the active tab to a different conversation: resets the projection, drops the session
 /// and any unsent submit of the old one, and gives the tab a new generation so in-flight results
 /// are dropped.
@@ -821,9 +827,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             Err(x) => {
-                s.resuming = None;
-                s.pending_submit_text = None;
-                s.pending_submit = None;
+                clear_pending_session(s);
                 s.notice = Some(x)
             }
         },
@@ -847,9 +851,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         s.child_status = super::state::ChildStatus::from_wire(
                             m.child_status.as_deref().unwrap_or(""),
                         );
-                        s.resuming = None;
-                        s.pending_submit_text = None;
-                        s.pending_submit = None;
+                        clear_pending_session(s);
                         effects.push(Effect::Subscribe {
                             session_id: m.session_id.clone(),
                             cursor: None,
@@ -898,9 +900,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 effects.extend(child_watches(s));
             } else {
                 s.inspecting = false;
-                s.resuming = None;
-                s.pending_submit_text = None;
-                s.pending_submit = None;
+                clear_pending_session(s);
                 if let Err(error) = result {
                     push_local(s, BlockKind::Error(error));
                 }

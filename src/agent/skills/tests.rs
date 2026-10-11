@@ -259,7 +259,10 @@ fn multiline_yaml_and_unknown_fields_are_tolerated() {
     );
     let long_body = "x".repeat(frontmatter::MAX_HEADER_BYTES + 1);
     for (text, expected_body) in [
-        (format!("{base}---\nBody\n").replace('\n', "\r\n"), "Body\r\n"),
+        (
+            format!("{base}---\nBody\n").replace('\n', "\r\n"),
+            "Body\r\n",
+        ),
         (format!("{base}---"), ""),
         (at_limit, ""),
         (format!("{base}---\n{long_body}"), long_body.as_str()),
@@ -572,6 +575,29 @@ fn descriptions_are_flattened_and_capped() {
     assert!(cut.ends_with('…'));
     let exact = "x".repeat(MAX_DESCRIPTION_CHARS);
     assert_eq!(catalog::flatten(&exact), exact);
+    for description in [
+        String::new(),
+        " \t\r\n\u{a0}\u{2003}".into(),
+        "  one\u{a0}two\u{2003}三\r\nfour  ".into(),
+        "é 三\t".repeat(100),
+        format!("{} last", "x".repeat(MAX_DESCRIPTION_CHARS - 2)),
+        format!("{} last", "x".repeat(MAX_DESCRIPTION_CHARS - 1)),
+        "x".repeat(MAX_DESCRIPTION_CHARS + 1),
+    ] {
+        let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        let expected = if flat.chars().count() <= MAX_DESCRIPTION_CHARS {
+            flat
+        } else {
+            let mut cut: String = flat.chars().take(MAX_DESCRIPTION_CHARS - 1).collect();
+            cut.truncate(cut.trim_end().len());
+            cut.push('…');
+            cut
+        };
+        assert_eq!(
+            catalog::flatten(&description).as_bytes(),
+            expected.as_bytes()
+        );
+    }
 }
 
 #[test]

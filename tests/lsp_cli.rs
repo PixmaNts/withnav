@@ -12,7 +12,12 @@ fn replay_json_preserves_the_report() {
         .args(["lsp", "replay", "--log", fixture, "--json"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{:?}", output);
+    assert!(
+        output.status.success(),
+        "status={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
     let report =
         withnav::navigator::replay::flows::report(&std::fs::read_to_string(fixture).unwrap());
     assert_eq!(
@@ -27,7 +32,12 @@ fn stdio_flag_is_accepted() {
         .args(["lsp", "--stdio", "--help"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{:?}", output);
+    assert!(
+        output.status.success(),
+        "status={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(!String::from_utf8(output.stdout)
         .unwrap()
         .contains("--stdio"));

@@ -954,7 +954,9 @@ async fn parked_summary() -> (
     let state = state(&env, &provider, WINDOW);
     let id = seeded(&state, &env.ws, 7).await;
     send_text(&state, id, "go").await;
-    reached.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified())
+        .await
+        .expect("automatic summary reaches the held provider");
     assert!(is_summary(&provider.bodies()[0]), "parked in the summary");
     (env, state, id, provider, release)
 }
@@ -971,14 +973,12 @@ async fn a_stop_during_an_automatic_summary_commits_nothing_and_clears_the_mark(
     assert!(!marked.ok);
     assert!(marked.error.unwrap().contains("a compaction is running"));
 
-    let stopping = {
-        let state = state.clone();
-        tokio::spawn(async move { state.close_session(id).await })
-    };
-    // The summary answer arrives after the stop was asked.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Cancellation must finish without needing the held summary response.
+    tokio::time::timeout(std::time::Duration::from_secs(15), state.close_session(id))
+        .await
+        .expect("stop does not wait for the summary response")
+        .expect("the stop completes");
     release.notify_one();
-    stopping.await.unwrap().expect("the stop completes");
 
     assert!(stored(&state, id, "context.compacted").await.is_empty());
     assert!(stored(&state, id, "model.changed").await.is_empty());

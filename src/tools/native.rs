@@ -191,6 +191,36 @@ fn atomic_write(target: &Path, content: &[u8]) -> Result<(), ToolError> {
 
 pub struct EditTool;
 
+pub(crate) fn apply_edit(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, String), ToolError> {
+    // An empty needle matches at every character boundary: it would
+    // either report a bogus ambiguity or interleave `new_string`
+    // through the whole file under `replace_all`.
+    if old.is_empty() {
+        return Err(ToolError::Denied {
+            code: "invalid_args".into(),
+            message: "old_string cannot be empty".into(),
+        });
+    }
+    let count = content.matches(old).count();
+    if count == 0 {
+        return Err(ToolError::NoMatch);
+    }
+    if count > 1 && !replace_all {
+        return Err(ToolError::AmbiguousMatch { count });
+    }
+    let updated = if replace_all {
+        content.replace(old, new)
+    } else {
+        content.replacen(old, new, 1)
+    };
+    Ok((updated, format!("replaced {count} occurrence(s)")))
+}
+
 impl Tool for EditTool {
     fn name(&self) -> &str {
         "edit"
@@ -220,35 +250,15 @@ impl Tool for EditTool {
             let path = arg_str(&args, "path")?;
             let old = arg_str(&args, "old_string")?;
             let new = arg_str(&args, "new_string")?;
-            // An empty needle matches at every character boundary: it would
-            // either report a bogus ambiguity or interleave `new_string`
-            // through the whole file under `replace_all`.
             if old.is_empty() {
-                return Err(ToolError::Denied {
-                    code: "invalid_args".into(),
-                    message: "old_string cannot be empty".into(),
-                });
+                apply_edit("", old, new, false)?;
             }
             let replace_all = args
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let change = |content: String| {
-                let count = content.matches(old).count();
-                if count == 0 {
-                    return Err(ToolError::NoMatch);
-                }
-                if count > 1 && !replace_all {
-                    return Err(ToolError::AmbiguousMatch { count });
-                }
-                let updated = if replace_all {
-                    content.replace(old, new)
-                } else {
-                    content.replacen(old, new, 1)
-                };
-                Ok((updated, format!("replaced {count} occurrence(s)")))
-            };
+            let change = |content: String| apply_edit(&content, old, new, replace_all);
             // A reviewed destination is read and written back without
             // following any link.
             if let Some(binding) = &cx.binding {
@@ -588,7 +598,7 @@ mod tests {
         let cx = ctx(tmp.path());
         let f = tmp.path().join("edit.txt");
         std::fs::write(&f, "foo bar baz").unwrap();
-        EditTool
+        let res = EditTool
             .call(
                 json!({"path": f.to_str().unwrap(), "old_string": "bar", "new_string": "QUX"}),
                 CancellationToken::new(),
@@ -597,77 +607,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "foo QUX baz");
+        assert_eq!(res.output, "replaced 1 occurrence(s)");
     }
 
-    #[tokio::test]
-    async fn edit_no_match_leaves_file_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "original").unwrap();
-        let err = EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "absent", "new_string": "X"}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::NoMatch));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "original");
-    }
-
-    #[tokio::test]
-    async fn edit_rejects_empty_old_string_and_leaves_file_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "abc").unwrap();
-        let err = EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "", "new_string": "#", "replace_all": true}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::Denied { ref code, .. } if code == "invalid_args"));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "abc");
-    }
-
-    #[tokio::test]
-    async fn edit_ambiguous_match_without_replace_all_leaves_file_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "x x x").unwrap();
-        let err = EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "x", "new_string": "Y"}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::AmbiguousMatch { count: 3 }));
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "x x x");
-    }
-
-    #[tokio::test]
-    async fn edit_replace_all_replaces_every_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
-        let f = tmp.path().join("edit.txt");
-        std::fs::write(&f, "x x x").unwrap();
-        EditTool
-            .call(
-                json!({"path": f.to_str().unwrap(), "old_string": "x", "new_string": "Y", "replace_all": true}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "Y Y Y");
+    #[test]
+    fn apply_edit_cases() {
+        for (content, old, new, replace_all, expected) in [
+            (
+                "foo bar baz",
+                "bar",
+                "QUX",
+                false,
+                Ok(("foo QUX baz".into(), "replaced 1 occurrence(s)".into())),
+            ),
+            ("original", "absent", "X", false, Err(ToolError::NoMatch)),
+            (
+                "abc",
+                "",
+                "#",
+                false,
+                Err(ToolError::Denied {
+                    code: "invalid_args".into(),
+                    message: "old_string cannot be empty".into(),
+                }),
+            ),
+            (
+                "abc",
+                "",
+                "#",
+                true,
+                Err(ToolError::Denied {
+                    code: "invalid_args".into(),
+                    message: "old_string cannot be empty".into(),
+                }),
+            ),
+            (
+                "x x x",
+                "x",
+                "Y",
+                false,
+                Err(ToolError::AmbiguousMatch { count: 3 }),
+            ),
+            (
+                "x x x",
+                "x",
+                "Y",
+                true,
+                Ok(("Y Y Y".into(), "replaced 3 occurrence(s)".into())),
+            ),
+            (
+                "aaa",
+                "aa",
+                "b",
+                false,
+                Ok(("ba".into(), "replaced 1 occurrence(s)".into())),
+            ),
+            (
+                "é é",
+                "é",
+                "",
+                true,
+                Ok((" ".into(), "replaced 2 occurrence(s)".into())),
+            ),
+        ] {
+            assert_eq!(
+                apply_edit(content, old, new, replace_all).map_err(|error| error.to_string()),
+                expected.map_err(|error| error.to_string()),
+                "{content:?}, {old:?}, {new:?}, replace_all={replace_all}",
+            );
+        }
     }
 
     #[tokio::test]

@@ -721,21 +721,14 @@ pub fn config_grant_eligible(
             let Some(new) = call.args.get("new_string").and_then(Value::as_str) else {
                 return false;
             };
-            if old.is_empty() || !before.contains(old) {
-                return false;
-            }
-            if call
+            let replace_all = call
                 .args
                 .get("replace_all")
                 .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                Some(before.replace(old, new))
-            } else if before.matches(old).count() == 1 {
-                Some(before.replacen(old, new, 1))
-            } else {
-                None
-            }
+                .unwrap_or(false);
+            crate::tools::native::apply_edit(&before, old, new, replace_all)
+                .ok()
+                .map(|(after, _)| after)
         }
         _ => None,
     };

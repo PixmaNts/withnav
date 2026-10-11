@@ -75,6 +75,10 @@ fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
     // A deny message belongs to the request on screen.
     ui.deny_message = None;
     s.active = index;
+    vec![restore_active_tab(s, ui)]
+}
+
+fn restore_active_tab(s: &mut State, ui: &mut UiState) -> Effect {
     ui.focus = if s.read_only() {
         crate::tui::state::Focus::Transcript
     } else {
@@ -86,10 +90,10 @@ fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
     ui.follow_bottom = view.follow_bottom;
     ui.selected_block = view.selected_block;
     ui.expanded = view.expanded;
-    vec![Effect::SetEditor {
+    Effect::SetEditor {
         text: s.draft.clone(),
         revision: s.draft_revision,
-    }]
+    }
 }
 
 /// Opens a blank tab after the others and brings it forward, keeping the model of the tab it was
@@ -185,21 +189,7 @@ fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
             .and_then(|id| s.tab_of_session(id))
             .unwrap_or_else(|| s.active.min(s.tabs.len() - 1));
         s.active = next;
-        ui.focus = if s.read_only() {
-            crate::tui::state::Focus::Transcript
-        } else {
-            crate::tui::state::Focus::Editor
-        };
-        s.unread = false;
-        let view = s.view.clone();
-        ui.scroll = view.scroll;
-        ui.follow_bottom = view.follow_bottom;
-        ui.selected_block = view.selected_block;
-        ui.expanded = view.expanded;
-        vec![Effect::SetEditor {
-            text: s.draft.clone(),
-            revision: s.draft_revision,
-        }]
+        vec![restore_active_tab(s, ui)]
     };
     if let Some(notice) = notice {
         push_local(s, BlockKind::Notice(notice));

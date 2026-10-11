@@ -967,7 +967,10 @@ async fn withnav_run_agent_rejects_an_unknown_role() {
     assert!(stderr.contains("unknown agent 'wizard'"), "{stderr}");
 }
 
-async fn run_agent_case(agent: &'static str, responses: usize) -> (CapturingProvider, std::process::Output) {
+async fn run_agent_case(
+    agent: &'static str,
+    responses: usize,
+) -> (CapturingProvider, std::process::Output) {
     let env = env();
     let provider = provider(responses).await;
     let cfg = config(&env, &provider);
@@ -975,7 +978,12 @@ async fn run_agent_case(agent: &'static str, responses: usize) -> (CapturingProv
     let models = cfg.models_path();
     let (root, ws) = (env.root.clone(), env.ws.clone());
     let output = tokio::task::spawn_blocking(move || {
-        run_withnav(&root, &models, &ws, &["--agent", agent, "--prompt", "hello"])
+        run_withnav(
+            &root,
+            &models,
+            &ws,
+            &["--agent", agent, "--prompt", "hello"],
+        )
     })
     .await
     .unwrap();

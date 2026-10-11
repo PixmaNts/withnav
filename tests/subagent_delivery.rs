@@ -13,8 +13,16 @@ async fn spawn_linked_child(
     agent: &str,
     prompt: &str,
 ) -> (ulid::Ulid, ulid::Ulid) {
-    let parent = state.create_session(ws, None, false).bounded(file!(), line!()).await.unwrap();
-    let child = state.create_child_session(parent, agent, prompt).bounded(file!(), line!()).await.unwrap();
+    let parent = state
+        .create_session(ws, None, false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = state
+        .create_child_session(parent, agent, prompt)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
     (parent, child)
 }
 

@@ -11,9 +11,18 @@ mod common;
 use common::deadline::Deadline;
 
 async fn assert_child_state(fx: &Fx, child: ulid::Ulid, has_runtime: bool, exists: bool) {
-    assert_eq!(fx.state.session_has_runtime(child), has_runtime, "child {child} runtime");
     assert_eq!(
-        fx.state.history().exists(child).bounded(file!(), line!()).await.unwrap(),
+        fx.state.session_has_runtime(child),
+        has_runtime,
+        "child {child} runtime"
+    );
+    assert_eq!(
+        fx.state
+            .history()
+            .exists(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap(),
         exists,
         "child {child} history"
     );

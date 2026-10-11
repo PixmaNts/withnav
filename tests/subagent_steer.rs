@@ -27,8 +27,15 @@ async fn await_outbox_entry(state: &AppState, parent: ulid::Ulid, child: ulid::U
                 }
             }
         }
-        let entries = state.history().unconsumed_completions(parent).await.unwrap();
-        assert!(entries.iter().any(|entry| entry.0 == child), "child {child} outbox entry");
+        let entries = state
+            .history()
+            .unconsumed_completions(parent)
+            .await
+            .unwrap();
+        assert!(
+            entries.iter().any(|entry| entry.0 == child),
+            "child {child} outbox entry"
+        );
     })
     .await
     .expect("child completion reaches the durable outbox");

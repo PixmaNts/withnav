@@ -24,6 +24,21 @@ struct CaptureState {
     lines: usize,
     checked: Option<std::time::Instant>,
 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub flow_name: String,
+    pub started_at: String,
+    pub status: String,
+    pub duration_ms: u64,
+    pub cost_usd: Option<f64>,
+    pub mode: String,
+}
+#[derive(Debug, Serialize)]
+pub struct RunPage {
+    pub runs: Vec<RunSummary>,
+    pub next_cursor: Option<String>,
+}
 pub struct Records {
     path: PathBuf,
     write: Arc<Mutex<()>>,
@@ -234,6 +249,70 @@ impl Records {
             Err(e) => return Err(e),
         };
         self.read_from(&dir)
+    }
+    pub fn summaries(
+        &self,
+        flow_name: &str,
+        before: Option<&str>,
+        limit: usize,
+    ) -> std::io::Result<RunPage> {
+        let mut page = RunPage {
+            runs: vec![],
+            next_cursor: None,
+        };
+        let directory = match Directory::private(&self.path, false) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(page),
+            Err(e) => return Err(e),
+        };
+        let file = match directory.open_read("runs.jsonl", MAX_STORAGE_BYTES, true, false) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(page),
+            Err(e) => return Err(e),
+        };
+        let limit = limit.clamp(1, 100);
+        let mut cursor_found = before.is_none();
+        let mut count = 0;
+        let mut bytes = 0;
+        reverse_lines(file, |line| {
+            let Ok(mut summary) = serde_json::from_slice::<RunSummary>(line) else {
+                return true;
+            };
+            if !retained_at(&summary.started_at) {
+                return true;
+            }
+            bytes += line.len() + 1;
+            count += 1;
+            if bytes > MAX_BYTES || count > MAX_RECORDS {
+                return false;
+            }
+            // Match read()'s redaction without materializing the capture's payload or trace.
+            for text in [
+                &mut summary.run_id,
+                &mut summary.flow_name,
+                &mut summary.started_at,
+                &mut summary.status,
+                &mut summary.mode,
+            ] {
+                if super::redaction::contains_secret(&serde_json::Value::String(text.clone())) {
+                    *text = "<redacted>".into();
+                }
+            }
+            if summary.flow_name != flow_name {
+                return true;
+            }
+            if !cursor_found {
+                cursor_found = before == Some(summary.run_id.as_str());
+                return true;
+            }
+            page.runs.push(summary);
+            page.runs.len() <= limit
+        })?;
+        if page.runs.len() > limit {
+            page.runs.truncate(limit);
+            page.next_cursor = page.runs.last().map(|r| r.run_id.clone());
+        }
+        Ok(page)
     }
     fn read_from(&self, dir: &Directory) -> std::io::Result<Vec<RunRecord>> {
         match dir.open_read("runs.jsonl", MAX_STORAGE_BYTES, true, false) {
@@ -546,6 +625,67 @@ mod tests {
             )
             .unwrap();
         assert!(records.read().unwrap().is_empty());
+        assert!(records.summaries("test", None, 20).unwrap().runs.is_empty());
+        record.started_at = super::super::store::timestamp();
+        record.event.payload = serde_json::json!({"text":"x".repeat(20_000)});
+        for i in 0..6 {
+            record.run_id = i.to_string();
+            record.flow_name = if i % 2 == 0 { "test" } else { "other" }.into();
+            records.append(&record).unwrap();
+        }
+        let first = records.summaries("test", None, 2).unwrap();
+        assert_eq!(
+            first
+                .runs
+                .iter()
+                .map(|r| r.run_id.as_str())
+                .collect::<Vec<_>>(),
+            ["4", "2"]
+        );
+        assert_eq!(first.next_cursor.as_deref(), Some("2"));
+        let last = records.summaries("test", Some("2"), 2).unwrap();
+        assert_eq!(last.runs[0].run_id, "0");
+        assert!(last.next_cursor.is_none());
+        assert!(records
+            .summaries("test", Some("missing"), 2)
+            .unwrap()
+            .runs
+            .is_empty());
+        assert!(records
+            .summaries("test", Some("5"), 2)
+            .unwrap()
+            .runs
+            .is_empty());
+        assert_eq!(records.summaries("test", None, 0).unwrap().runs.len(), 1);
+        assert_eq!(
+            records
+                .summaries("test", None, usize::MAX)
+                .unwrap()
+                .runs
+                .len(),
+            3
+        );
+        record.flow_name = "test".into();
+        record.run_id = "ghp_123456789012345678901234".into();
+        records.append(&record).unwrap();
+        assert_eq!(
+            records.summaries("test", None, 1).unwrap().runs[0].run_id,
+            "<redacted>"
+        );
+        let file = Directory::private(&records.path, false)
+            .unwrap()
+            .open_read("runs.jsonl", MAX_STORAGE_BYTES, true, false)
+            .unwrap();
+        let mut visited = 0;
+        reverse_lines(file, |_| {
+            visited += 1;
+            visited < 3
+        })
+        .unwrap();
+        assert_eq!(
+            visited, 3,
+            "tail scan stops without traversing older captures"
+        );
     }
     #[test]
     fn health_is_independent_of_retained_captures_and_expires() {

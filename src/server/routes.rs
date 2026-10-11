@@ -450,10 +450,7 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    match state.session_summary(parsed).await {
-        Ok(summary) => Json(summary).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(state.session_summary(parsed).await)
 }
 
 /// One row of `GET /v1/sessions?workspace=`: the stored summary plus the
@@ -775,10 +772,7 @@ async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> R
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    match state.context(parsed).await {
-        Ok(snapshot) => Json(snapshot).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(state.context(parsed).await)
 }
 
 async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -786,10 +780,7 @@ async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Re
         Ok(id) => id,
         Err(err) => return error_response(err),
     };
-    match state.skills(parsed).await {
-        Ok(skills) => Json(skills).into_response(),
-        Err(error) => error_response(error),
-    }
+    json_result(state.skills(parsed).await)
 }
 
 /// `GET /v1/commands`: the registered session commands.
@@ -830,17 +821,15 @@ async fn post_bypass(
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    match state
-        .set_bypass(
-            parsed,
-            request.enabled,
-            crate::bus::runtime::bypass::BypassOrigin::Http,
-        )
-        .await
-    {
-        Ok(reply) => Json(reply).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(
+        state
+            .set_bypass(
+                parsed,
+                request.enabled,
+                crate::bus::runtime::bypass::BypassOrigin::Http,
+            )
+            .await,
+    )
 }
 
 /// `POST /v1/sessions/:id/commands` request.
@@ -877,13 +866,11 @@ async fn post_command(
     {
         return bypass_auth_required();
     }
-    match state
-        .run_command(parsed, &request.name, &request.arguments)
-        .await
-    {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(
+        state
+            .run_command(parsed, &request.name, &request.arguments)
+            .await,
+    )
 }
 
 /// The server-assigned sender for HTTP-submitted messages: clients can never
@@ -907,13 +894,16 @@ fn json_body<T>(
         .map_err(|rejection| ServerError::MalformedBody(rejection.body_text()))
 }
 
+fn json_result<T: Serialize>(result: Result<T, ServerError>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 /// Builds the Command for a posted message with a server-assigned sender.
 /// Public so the WS route and integration tests share the exact POST core.
-pub fn build_command(
-    session_id: Ulid,
-    request: PostMessageRequest,
-    mode: DeliveryMode,
-) -> Command {
+pub fn build_command(session_id: Ulid, request: PostMessageRequest, mode: DeliveryMode) -> Command {
     Command {
         command_id: Ulid::new(),
         session_id,
@@ -964,10 +954,7 @@ async fn post_message(
         Err(err) => return error_response(err),
     };
     let command = build_command(session_id, request, mode);
-    match state.send(command).await {
-        Ok(accepted) => Json(accepted).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(state.send(command).await)
 }
 
 /// `POST /v1/sessions/:id/permissions/:request_id` body.

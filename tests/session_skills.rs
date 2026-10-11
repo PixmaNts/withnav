@@ -3,8 +3,6 @@
 //! result's survival across a resume are all checked end to end. The home
 //! directory is a temporary one in every test.
 
-use std::path::PathBuf;
-
 use serde_json::{json, Value};
 
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
@@ -31,20 +29,14 @@ use common::server::{collect_until, TestServerConfig};
 use common::sse::CapturingProvider;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_call_chunk};
 
-struct Env {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
-    home: PathBuf,
-    ws: PathBuf,
-}
+use common::TestEnv as Env;
 
 /// A temp home with a nested skill library and a rules file, and a Git
 /// workspace with one project skill.
 fn env() -> Env {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical");
-    let home = root.join("home");
-    let ws = root.join("ws");
+    let env = Env::new();
+    let home = &env.home;
+    let ws = &env.ws;
     let skills = home.join(".agents/skills");
     std::fs::create_dir_all(skills.join("matt/ask-matt"))
         .expect("create nested home skill directory");
@@ -65,12 +57,7 @@ fn env() -> Env {
         "---\nname: local-flow\ndescription: The project's own flow.\n---\nLocal body.\n",
     )
     .expect("write project skill manifest");
-    Env {
-        _tmp: tmp,
-        root,
-        home,
-        ws,
-    }
+    env
 }
 
 fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) -> AppState {

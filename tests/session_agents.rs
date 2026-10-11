@@ -1,7 +1,7 @@
 //! Primary agents through the session service and the HTTP surface: the role
 //! prompt on the wire, `/agent`, persistence, resume and `nav run --agent`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
@@ -15,7 +15,7 @@ mod common;
 #[tokio::test]
 async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
     use withnav::tools::{Tool, ToolContext};
-    let env = env();
+    let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root).config();
     let state = AppState::new(config.clone()).unwrap();
     for old in ["review", "oracle"] {
@@ -74,7 +74,7 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
 
 #[tokio::test]
 async fn successful_switch_fallback_warning_is_durable_and_replayed() {
-    let env = env();
+    let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root).config();
     std::fs::write(
         env.root.join("cfg/config.json"),
@@ -104,7 +104,7 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
 
 #[tokio::test]
 async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable() {
-    let env = env();
+    let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root)
         .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
         .config();
@@ -184,7 +184,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
 
 #[tokio::test]
 async fn live_agent_switch_restores_model_and_off_override_after_restart() {
-    let env = env();
+    let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root)
         .extra_alias("plan-key", "plan-model")
         .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
@@ -260,7 +260,7 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
 
 #[tokio::test]
 async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
-    let env = env();
+    let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root)
         .extra_alias("second", "second-model")
         .config();
@@ -347,7 +347,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
         store::{AgentVariantOverride, HistoryStore},
         VariantChoice,
     };
-    let env = env();
+    let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root)
         .extra_alias("plan-key", "plan-model")
         .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
@@ -447,27 +447,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
 use common::server::{collect_until, request_json, TestServerConfig};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
 
-struct Env {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
-    home: PathBuf,
-    ws: PathBuf,
-}
-
-fn env() -> Env {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical");
-    let home = root.join("home");
-    let ws = root.join("ws");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&ws).unwrap();
-    Env {
-        _tmp: tmp,
-        root,
-        home,
-        ws,
-    }
-}
+use common::TestEnv as Env;
 
 fn config(env: &Env, provider: &CapturingProvider) -> TestServerConfig {
     TestServerConfig::mock(&env.root, &provider.url).rules_home(&env.home)
@@ -559,7 +539,7 @@ async fn stored_agent(state: &AppState, id: ulid::Ulid) -> Option<String> {
 //      the summary and the list
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_runs_as_build_by_default() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
@@ -582,7 +562,7 @@ async fn a_session_runs_as_build_by_default() {
 //      resume in a fresh service keeps it
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plan_session_sends_its_role_and_keeps_it_across_a_resume() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(2).await;
     let first = state(&env, &provider);
     let id = first
@@ -614,7 +594,7 @@ async fn a_plan_session_sends_its_role_and_keeps_it_across_a_resume() {
 // Then only the primary-capable ones are accepted, and no row is left behind
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_primary_agents_can_start_a_session() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     write_agent(
         &env,
@@ -656,7 +636,7 @@ async fn only_primary_agents_can_start_a_session() {
 // Then the resume fails with an explicit error and the row is untouched
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_saved_agent_that_vanished_is_an_error_not_build() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     write_agent(&env, "scribe.md", "---\ndescription: d\n---\nRole.\n");
     let first = state(&env, &provider);
@@ -701,7 +681,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
 // Then it runs as build
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_legacy_row_resumes_as_build() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let id = ulid::Ulid::new();
@@ -724,7 +704,7 @@ async fn a_legacy_row_resumes_as_build() {
 //      holds no role text
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(3).await;
     let state = state(&env, &provider);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
@@ -776,7 +756,7 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
 // Then it lists the choices or refuses, and publishes no change
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_lists_and_refuses_bad_choices() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
@@ -825,7 +805,7 @@ async fn agent_lists_and_refuses_bad_choices() {
 async fn a_switch_during_a_pending_ask_is_refused() {
     let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"which scope?\"}"}}]},"finish_reason":"tool_calls"}]}"#;
     let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[ask]))]).await;
-    let env = env();
+    let env = Env::new();
     let state = state(&env, &provider);
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
@@ -859,7 +839,7 @@ async fn a_switch_during_a_pending_ask_is_refused() {
 //      ignores the agent field
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_creates_with_an_agent_and_shows_it() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let router = app(state.clone());
@@ -971,7 +951,7 @@ async fn run_agent_case(
     agent: &'static str,
     responses: usize,
 ) -> (CapturingProvider, std::process::Output) {
-    let env = env();
+    let env = Env::new();
     let provider = provider(responses).await;
     let cfg = config(&env, &provider);
     cfg.config();
@@ -994,7 +974,7 @@ async fn run_agent_case(
 // Then the gauge already counts plan's role and its row is already durable
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_plan_session_counts_its_role_before_any_turn() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let as_build = state.create_session(&env.ws, None, false).await.unwrap();
@@ -1015,7 +995,7 @@ async fn a_fresh_plan_session_counts_its_role_before_any_turn() {
 // Then the gauge grows with plan's role, publishes it live, and shrinks back
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn switching_agents_moves_the_gauge_without_a_turn() {
-    let env = env();
+    let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let id = state.create_session(&env.ws, None, false).await.unwrap();

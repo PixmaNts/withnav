@@ -336,17 +336,20 @@ struct AssignmentQuery {
     session_id: Option<String>,
 }
 
+fn require_workspace(value: Option<&str>) -> Result<&str, ServerError> {
+    value.ok_or_else(|| ServerError::MalformedBody("missing query parameter: workspace".into()))
+}
+
 async fn list_layers(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AssignmentQuery>,
 ) -> Response {
-    let Some(workspace) = query.workspace else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".into(),
-        ));
+    let workspace = match require_workspace(query.workspace.as_deref()) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     match state
-        .assignment_layers(std::path::Path::new(&workspace))
+        .assignment_layers(std::path::Path::new(workspace))
         .await
     {
         Ok(body) => Json(body).into_response(),
@@ -358,10 +361,9 @@ async fn list_agents(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AssignmentQuery>,
 ) -> Response {
-    let Some(workspace) = query.workspace else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".into(),
-        ));
+    let workspace = match require_workspace(query.workspace.as_deref()) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     let session = match query.session_id {
         Some(id) => match id.parse() {
@@ -371,7 +373,7 @@ async fn list_agents(
         None => None,
     };
     match state
-        .assignment_agents(std::path::Path::new(&workspace), session)
+        .assignment_agents(std::path::Path::new(workspace), session)
         .await
     {
         Ok(body) => Json(body).into_response(),
@@ -503,10 +505,9 @@ async fn list_sessions(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(workspace) = params.get("workspace") else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".to_string(),
-        ));
+    let workspace = match require_workspace(params.get("workspace").map(String::as_str)) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     match state.list(workspace).await {
         Ok(rows) => {
@@ -629,10 +630,9 @@ async fn list_models(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(workspace) = params.get("workspace") else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".to_string(),
-        ));
+    let workspace = match require_workspace(params.get("workspace").map(String::as_str)) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     let workspace = std::path::Path::new(workspace);
     let catalog = crate::provider::config::load_models(

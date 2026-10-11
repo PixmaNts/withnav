@@ -3,6 +3,14 @@ use serde_json::Value;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+fn path_directory(directory: PathBuf, facts: &Value) -> Option<PathBuf> {
+    if directory.is_absolute() {
+        Some(directory)
+    } else {
+        Some(Path::new(facts["workspace"].as_str()?).join(directory))
+    }
+}
+
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
 /// Both its spelling and symlink target must be outside every writable root,
 /// with non-writable directory chains (secure current-user shim links are allowed).
@@ -35,13 +43,7 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
         })
     };
     let resolved = std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| {
-            if dir.is_absolute() {
-                dir
-            } else {
-                Path::new(facts["workspace"].as_str().unwrap()).join(dir)
-            }
-        })
+        .filter_map(|dir| path_directory(dir, facts))
         .map(|dir| dir.join(name))
         .find(|candidate| {
             candidate
@@ -337,6 +339,7 @@ pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
             let exists = word.contains('/')
                 || std::env::var_os("PATH").is_some_and(|path| {
                     std::env::split_paths(&path)
+                        .filter_map(|dir| path_directory(dir, facts))
                         .any(|dir| dir.join(word).metadata().is_ok_and(|m| m.is_file()))
                 });
             exists && trusted_program(word, facts).is_none()
@@ -1155,6 +1158,7 @@ mod tests {
             assert!(trusted_program("python3", &facts).is_none());
             assert!(script_operand(&["python3".into(), "local.py".into()], &facts).is_none());
             assert!(trusted_program("git", &facts).is_none());
+            assert!(identity_floor(&["workspace-only".into()], &facts));
             let call = crate::provider::ToolCall {
                 id: "command".into(),
                 name: "bash".into(),
@@ -1170,6 +1174,9 @@ mod tests {
         let bin = tmp.path().join("unregistered-bin");
         std::fs::create_dir(&workspace).unwrap();
         std::fs::create_dir(&bin).unwrap();
+        let relative_bin = workspace.join("bin");
+        std::fs::create_dir(&relative_bin).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/true", relative_bin.join("workspace-only")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o777)).unwrap();
         for name in ["python3", "git"] {
             std::os::unix::fs::symlink(format!("/usr/bin/{name}"), bin.join(name)).unwrap();
@@ -1182,7 +1189,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, &workspace)
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("PATH", format!("bin:{}:/usr/bin:/bin", bin.display()))
             .output()
             .unwrap();
         assert!(

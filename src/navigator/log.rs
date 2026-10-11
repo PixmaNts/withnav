@@ -325,11 +325,11 @@ pub fn new_ulid_string() -> String {
 /// Truncates a string for a log field, cutting on a char boundary and
 /// marking the cut with an ellipsis.
 pub fn excerpt(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
+    let mut chars = text.chars();
+    let mut s: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        s.push('…');
     }
-    let mut s: String = text.chars().take(max_chars).collect();
-    s.push('…');
     s
 }
 
@@ -432,6 +432,9 @@ mod tests {
 
     #[test]
     fn excerpt_cuts_on_char_boundary_with_marker() {
+        assert_eq!(excerpt("", 0), "");
+        assert_eq!(excerpt("é", 0), "…");
+        assert_eq!(excerpt("hé", 2), "hé");
         assert_eq!(excerpt("abc", 5), "abc");
         assert_eq!(excerpt("abcde", 3), "abc…");
         assert_eq!(excerpt("héllo", 2), "hé…");

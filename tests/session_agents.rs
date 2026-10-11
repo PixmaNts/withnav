@@ -950,44 +950,48 @@ fn run_withnav(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::pr
 }
 
 // Given `nav run --agent plan`
-// Then the request carries the plan role; an unknown agent exits 1 with the
-//      choices
+// Then the request carries the plan role
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn withnav_run_agent_selects_the_role() {
-    let env = env();
-    let provider = provider(1).await;
-    let cfg = config(&env, &provider);
-    cfg.config();
-    let models = cfg.models_path();
-    let (root, ws) = (env.root.clone(), env.ws.clone());
-    let (ok, bad) = tokio::task::spawn_blocking(move || {
-        (
-            run_withnav(
-                &root,
-                &models,
-                &ws,
-                &["--agent", "plan", "--prompt", "hello"],
-            ),
-            run_withnav(
-                &root,
-                &models,
-                &ws,
-                &["--agent", "wizard", "--prompt", "hello"],
-            ),
-        )
-    })
-    .await
-    .unwrap();
+    let (provider, ok) = run_agent_case("plan", 1).await;
     assert_eq!(ok.status.code(), Some(0), "{ok:?}");
     let request = sent(&provider, 0);
     assert!(request[1].1.contains("plan mode"), "{request:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withnav_run_agent_rejects_an_unknown_role() {
+    let (_provider, bad) = run_agent_case("wizard", 0).await;
     assert_eq!(bad.status.code(), Some(1), "{bad:?}");
     let stderr = String::from_utf8_lossy(&bad.stderr);
     assert!(stderr.contains("unknown agent 'wizard'"), "{stderr}");
 }
 
+async fn run_agent_case(
+    agent: &'static str,
+    responses: usize,
+) -> (CapturingProvider, std::process::Output) {
+    let env = env();
+    let provider = provider(responses).await;
+    let cfg = config(&env, &provider);
+    cfg.config();
+    let models = cfg.models_path();
+    let (root, ws) = (env.root.clone(), env.ws.clone());
+    let output = tokio::task::spawn_blocking(move || {
+        run_withnav(
+            &root,
+            &models,
+            &ws,
+            &["--agent", agent, "--prompt", "hello"],
+        )
+    })
+    .await
+    .unwrap();
+    (provider, output)
+}
+
 // Given a session created as plan, with no message sent
-// Then the gauge already counts plan's role
+// Then the gauge already counts plan's role and its row is already durable
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fresh_plan_session_counts_its_role_before_any_turn() {
     let env = env();
@@ -998,6 +1002,9 @@ async fn a_fresh_plan_session_counts_its_role_before_any_turn() {
         .create_session_as(&env.ws, None, false, Some("plan"))
         .await
         .unwrap();
+    // No flush or turn is needed for the initial role to be durable.
+    let row = state.history().meta(as_plan).await.unwrap().expect("row");
+    assert_eq!(row.primary_agent.as_deref(), Some("plan"));
     let build = state.context(as_build).await.unwrap().breakdown.system;
     let plan = state.context(as_plan).await.unwrap().breakdown.system;
     assert!(plan > build, "plan's role is estimated: {build} vs {plan}");
@@ -1034,19 +1041,4 @@ async fn switching_agents_moves_the_gauge_without_a_turn() {
             && e.payload["breakdown"]["system"] == as_plan.breakdown.system),
         "context.updated carries the plan estimate"
     );
-}
-
-// Given a session created as plan
-// Then its row holds plan as soon as creation returns: no flush, no turn
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_row_holds_the_agent_as_soon_as_creation_returns() {
-    let env = env();
-    let provider = provider(1).await;
-    let state = state(&env, &provider);
-    let id = state
-        .create_session_as(&env.ws, None, false, Some("plan"))
-        .await
-        .unwrap();
-    let row = state.history().meta(id).await.unwrap().expect("row");
-    assert_eq!(row.primary_agent.as_deref(), Some("plan"));
 }

@@ -132,14 +132,31 @@ async fn wait_events(
     kind: &str,
     count: usize,
 ) -> Vec<EventEnvelope> {
-    for _ in 0..1000 {
-        let found = events(state, id, kind).await;
-        if found.len() >= count {
-            return found;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let sub = state.subscribe(id, None).await.expect("subscribe");
+        let mut found = match sub.replay {
+            withnav::bus::ResumeOutcome::Replay(all) => all
+                .into_iter()
+                .filter(|e| e.kind == kind)
+                .collect::<Vec<_>>(),
+            other => panic!("session {id}: expected replay for `{kind}`, got {other:?}"),
+        };
+        let mut live = sub.live;
+        while found.len() < count {
+            let event = live
+                .as_mut()
+                .unwrap_or_else(|| panic!("session {id}: ended before {count} `{kind}` events"))
+                .recv()
+                .await
+                .unwrap_or_else(|| panic!("session {id}: stream closed waiting for `{kind}`"));
+            if event.kind == kind {
+                found.push(event);
+            }
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("timed out waiting for {count} `{kind}` event(s)");
+        found
+    })
+    .await
+    .unwrap_or_else(|_| panic!("session {id}: timed out waiting for {count} `{kind}` events"))
 }
 
 async fn answer(
@@ -155,6 +172,30 @@ async fn answer(
         Some(&body),
     )
     .await
+}
+
+async fn await_persisted_transcript(state: &AppState, id: ulid::Ulid) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            state
+                .history()
+                .flush()
+                .await
+                .expect("flush transcript writer");
+            let stored = state
+                .history()
+                .load(id)
+                .await
+                .expect("load transcript")
+                .expect("session");
+            if !stored.transcript.is_empty() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("session {id}: yielded transcript was not persisted"));
 }
 
 fn request_id(event: &EventEnvelope) -> String {
@@ -559,13 +600,7 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     let requested = wait_events(&first, id, "permission.requested", 1).await;
     wait_events(&first, id, "turn.end", 1).await;
     // The transcript snapshot of the yielded turn is stored.
-    for _ in 0..100 {
-        let stored = first.history().load(id).await.unwrap().unwrap();
-        if !stored.transcript.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    await_persisted_transcript(&first, id).await;
     // The process "dies": no stop, no resolution.
     let second = config(&env, &provider).state();
     let (resumed, _) = second
@@ -919,6 +954,13 @@ async fn nth_request(state: &AppState, id: ulid::Ulid, n: usize) -> ulid::Ulid {
     request_id(&found[n - 1]).parse().unwrap()
 }
 
+async fn nth_suspended_request(state: &AppState, id: ulid::Ulid, n: usize) -> ulid::Ulid {
+    let request = nth_request(state, id, n).await;
+    let ended = wait_events(state, id, "turn.end", n).await;
+    assert_eq!(ended[n - 1].payload["outcome"], "yielded");
+    request
+}
+
 async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
     state
         .answer_permission(
@@ -959,9 +1001,8 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
     assert!(events(&state, id, "permission.resolved").await.is_empty());
 
     allow(&state, id, first).await;
-    let second = nth_request(&state, id, 2).await;
+    let second = nth_suspended_request(&state, id, 2).await;
     assert_ne!(first, second);
-    tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         events(&state, id, "permission.resolved").await.len(),
         1,
@@ -1020,9 +1061,8 @@ async fn a_wake_held_behind_a_request_does_not_cancel_a_revalidated_request() {
     std::fs::remove_file(&link).unwrap();
     std::os::unix::fs::symlink(&moved, &link).unwrap();
     allow(&state, id, first).await;
-    let second = nth_request(&state, id, 2).await;
+    let second = nth_suspended_request(&state, id, 2).await;
     assert_ne!(first, second, "a moved destination asks again");
-    tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(events(&state, id, "permission.resolved").await.len(), 1);
     assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
 

@@ -9,6 +9,24 @@ use withnav::tools::Tool;
 
 mod common;
 use common::deadline::Deadline;
+
+async fn assert_child_state(fx: &Fx, child: ulid::Ulid, has_runtime: bool, exists: bool) {
+    assert_eq!(
+        fx.state.session_has_runtime(child),
+        has_runtime,
+        "child {child} runtime"
+    );
+    assert_eq!(
+        fx.state
+            .history()
+            .exists(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap(),
+        exists,
+        "child {child} history"
+    );
+}
 #[tokio::test]
 async fn child_delete_waits_for_registration_before_removing_owner() {
     child_lifecycle_during_publication(true, false)
@@ -73,14 +91,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .unwrap()
         .parse()
         .unwrap();
-    assert!(fx
-        .state
-        .history()
-        .exists(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
-    assert_eq!(fx.state.session_has_runtime(child), cleanup);
+    assert_child_state(&fx, child, cleanup, true).await;
     let service = fx.state.service();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let lifecycle = tokio::spawn(async move {
@@ -103,13 +114,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .is_err(),
         "child lifecycle must wait for its owned operation"
     );
-    assert!(fx
-        .state
-        .history()
-        .exists(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
+    assert_child_state(&fx, child, cleanup, true).await;
     barrier.release.notify_one();
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), spawn)
         .bounded(file!(), line!())
@@ -123,16 +128,9 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(!fx.state.session_has_runtime(child));
+    assert_child_state(&fx, child, false, !delete).await;
     assert_eq!(fx.state.reserved_child_count(parent), 0);
     if delete {
-        assert!(!fx
-            .state
-            .history()
-            .exists(child)
-            .bounded(file!(), line!())
-            .await
-            .unwrap());
         assert!(fx
             .state
             .child_metadata(child)

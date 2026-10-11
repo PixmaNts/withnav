@@ -799,8 +799,8 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
     );
     let id = state.create_session(&env.ws, None, false).await.unwrap();
 
-    // The provider comes back: the model list is slow, and so is the turn,
-    // but less. A failed lookup is not repeated for a few seconds.
+    // The provider comes back, but a busy-session variant command must be
+    // refused before refreshing its offer, regardless of the lookup cache TTL.
     server.reset().await;
     let delayed = |ms: u64| std::time::Duration::from_millis(ms);
     wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
@@ -815,30 +815,26 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
         )
         .mount(&server)
         .await;
+    let requested = Arc::new(tokio::sync::Notify::new());
+    let received = requested.clone();
     wiremock::Mock::given(wiremock::matchers::path("/v1/chat/completions"))
-        .respond_with(
+        .respond_with(move |_: &wiremock::Request| {
+            received.notify_one();
             wiremock::ResponseTemplate::new(200)
                 .set_delay(delayed(400))
                 .set_body_raw(
                     sse_body(&[&text_chunk("turn answer")]).into_bytes(),
                     "text/event-stream",
-                ),
-        )
+                )
+        })
         .mount(&server)
         .await;
-    tokio::time::sleep(delayed(5300)).await;
 
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go").await;
-    wait_for_async("the turn's request", || async {
-        server
-            .received_requests()
-            .await
-            .unwrap_or_default()
-            .iter()
-            .any(|r| r.url.path() == "/v1/chat/completions")
-    })
-    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), requested.notified())
+        .await
+        .expect("the provider receives the turn request");
     let accepted = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert_eq!(accepted.data.as_ref().unwrap()["applies"], "after_turn");
     let refused = state.run_command(id, "variant", "high").await.unwrap();
@@ -860,18 +856,4 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
     );
     let shown = state.run_command(id, "variant", "").await.unwrap();
     assert_eq!(shown.data.unwrap()["offered"], json!(["high", "low"]));
-}
-
-async fn wait_for_async<F, Fut>(what: &str, cond: F)
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    for _ in 0..500 {
-        if cond().await {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("timed out waiting for {what}");
 }

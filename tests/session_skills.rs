@@ -46,22 +46,25 @@ fn env() -> Env {
     let home = root.join("home");
     let ws = root.join("ws");
     let skills = home.join(".agents/skills");
-    std::fs::create_dir_all(skills.join("matt/ask-matt")).unwrap();
-    std::fs::create_dir_all(ws.join(".git")).unwrap();
-    std::fs::create_dir_all(ws.join(".agents/skills/local")).unwrap();
-    std::fs::write(home.join(".agents/AGENTS.md"), "global rule").unwrap();
-    std::fs::write(skills.join("AGENTS.md"), "not a skill").unwrap();
+    std::fs::create_dir_all(skills.join("matt/ask-matt"))
+        .expect("create nested home skill directory");
+    std::fs::create_dir_all(ws.join(".git")).expect("create workspace Git directory");
+    std::fs::create_dir_all(ws.join(".agents/skills/local"))
+        .expect("create project skill directory");
+    std::fs::write(home.join(".agents/AGENTS.md"), "global rule").expect("write global rules");
+    std::fs::write(skills.join("AGENTS.md"), "not a skill").expect("write non-skill fixture");
     std::fs::write(
         skills.join("matt/ask-matt/SKILL.md"),
         "---\nname: ask-matt\ndescription: >\n  Ask Matt\n  about it.\nversion: 3\n---\n\nSTEP ONE: ask Matt.\n",
     )
-    .unwrap();
-    std::fs::write(skills.join("matt/ask-matt/checklist.md"), "- item").unwrap();
+    .expect("write nested home skill manifest");
+    std::fs::write(skills.join("matt/ask-matt/checklist.md"), "- item")
+        .expect("write skill checklist");
     std::fs::write(
         ws.join(".agents/skills/local/SKILL.md"),
         "---\nname: local-flow\ndescription: The project's own flow.\n---\nLocal body.\n",
     )
-    .unwrap();
+    .expect("write project skill manifest");
     Env {
         _tmp: tmp,
         root,

@@ -575,15 +575,15 @@ fn the_catalog_is_bounded_and_counts_what_it_omits() {
         assert!(catalog.contains(&format!("{} —", skill.name)));
     }
     // Nothing is cut when everything fits.
-    assert!(!load_small().catalog().unwrap().contains("omitted"));
+    let (_small_fixture, small) = load_small();
+    assert!(!small.catalog().unwrap().contains("omitted"));
 }
 
-fn load_small() -> Skills {
+fn load_small() -> (Fixture, Skills) {
     let fx = fixture();
     add(&fx.home.join(".agents/skills/a"), "a", "A.");
     let skills = load(&fx);
-    std::mem::forget(fx);
-    skills
+    (fx, skills)
 }
 
 // ---- the tool ----

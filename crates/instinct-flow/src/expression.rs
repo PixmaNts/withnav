@@ -288,11 +288,12 @@ impl Expression {
     pub(crate) fn check_limits(&self, limits: &Limits) -> Result<(), Diagnostic> {
         scan(&self.source, limits)?;
         fn measure(node: &Node) -> (usize, usize) {
-            let children: Vec<_> = node.children().iter().map(measure).collect();
-            (
-                1 + children.iter().map(|(n, _)| n).sum::<usize>(),
-                1 + children.iter().map(|(_, d)| *d).max().unwrap_or(0),
-            )
+            node.children()
+                .iter()
+                .fold((1, 1), |(count, depth), child| {
+                    let (child_count, child_depth) = measure(child);
+                    (count + child_count, depth.max(child_depth + 1))
+                })
         }
         let (nodes, depth) = measure(&self.tree);
         if nodes > limits.expression_ast_nodes.min(128)
@@ -351,11 +352,18 @@ impl Expression {
                     if *op == Operator::Not {
                         return Ok(Value::Boolean(!boolean(a)?));
                     }
-                    let b = if c.len() > 1 {
-                        ev(&c[1], values)?
-                    } else {
-                        Value::Int(0)
-                    };
+                    if *op == Operator::Neg {
+                        return match a {
+                            Value::Int(n) => n
+                                .checked_neg()
+                                .map(Value::Int)
+                                .ok_or_else(|| error("integer overflow")),
+                            Value::Float(n) if n.is_finite() => Ok(Value::Float(-n)),
+                            Value::Float(_) => Err(error("nonfinite arithmetic result")),
+                            _ => Err(error("numeric operand required")),
+                        };
+                    }
+                    let b = ev(&c[1], values)?;
                     if b == Value::Empty {
                         return Err(error("absent operand"));
                     }
@@ -367,10 +375,30 @@ impl Expression {
                         }
                     }
                     let order = || -> Result<std::cmp::Ordering, Diagnostic> {
+                        fn mixed_order(n: i64, f: f64) -> Result<std::cmp::Ordering, Diagnostic> {
+                            use std::cmp::Ordering;
+                            if f.is_nan() {
+                                return Err(error("nonfinite comparison"));
+                            }
+                            if f >= -(i64::MIN as f64) {
+                                return Ok(Ordering::Less);
+                            }
+                            if f < i64::MIN as f64 {
+                                return Ok(Ordering::Greater);
+                            }
+                            // The bounded truncation is exact; compare the fractional part only
+                            // when the integer parts match, without rounding the integer to f64.
+                            Ok(n.cmp(&(f as i64))
+                                .then_with(|| 0.0.partial_cmp(&f.fract()).unwrap()))
+                        }
                         match (&a, &b) {
                             (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
                             (Value::Boolean(a), Value::Boolean(b)) => Ok(a.cmp(b)),
                             (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
+                            (Value::Int(a), Value::Float(b)) => mixed_order(*a, *b),
+                            (Value::Float(a), Value::Int(b)) => {
+                                mixed_order(*b, *a).map(|o| o.reverse())
+                            }
                             _ => num(&a)?
                                 .partial_cmp(&num(&b)?)
                                 .ok_or_else(|| error("nonfinite comparison")),
@@ -395,7 +423,6 @@ impl Expression {
                                     Operator::Mul => x.checked_mul(*y),
                                     Operator::Div => x.checked_div(*y),
                                     Operator::Mod => x.checked_rem(*y),
-                                    Operator::Neg => x.checked_neg(),
                                     _ => None,
                                 }
                                 .ok_or_else(|| error("integer overflow"))?;
@@ -407,7 +434,6 @@ impl Expression {
                                 Operator::Mul => x * y,
                                 Operator::Div => x / y,
                                 Operator::Mod => x % y,
-                                Operator::Neg => -x,
                                 _ => return Err(error("unsupported operator")),
                             };
                             if !n.is_finite() {
@@ -475,6 +501,67 @@ mod tests {
     }
     #[test]
     fn unsafe_operators_and_complexity_are_rejected() {
+        let comparison_symbols = BTreeMap::from([
+            ("i".into(), ValueType::Integer),
+            ("f".into(), ValueType::Number),
+        ]);
+        for (integer, float, order) in [
+            (9_007_199_254_740_993, 9_007_199_254_740_992.0, 1),
+            (-9_007_199_254_740_993, -9_007_199_254_740_992.0, -1),
+            (i64::MAX, -(i64::MIN as f64), -1),
+            (i64::MIN, i64::MIN as f64, 0),
+            (1, 1.5, -1),
+            (-1, -1.5, 1),
+            (0, 0.0, 0),
+            (0, f64::INFINITY, -1),
+            (0, f64::NEG_INFINITY, 1),
+        ] {
+            let values = Values::from([
+                ("i".into(), Value::Int(integer)),
+                ("f".into(), Value::Float(float)),
+            ]);
+            for (source, expected) in [
+                ("i == f", order == 0),
+                ("f == i", order == 0),
+                ("i != f", order != 0),
+                ("i < f", order < 0),
+                ("f < i", order > 0),
+                ("i <= f", order <= 0),
+                ("f <= i", order >= 0),
+                ("i > f", order > 0),
+                ("f > i", order < 0),
+                ("i >= f", order >= 0),
+                ("f >= i", order <= 0),
+            ] {
+                assert_eq!(
+                    Expression::compile(source, &comparison_symbols)
+                        .unwrap()
+                        .boolean(&values)
+                        .unwrap(),
+                    expected,
+                    "{integer} {source} {float}"
+                );
+            }
+        }
+        let symbols = BTreeMap::from([("x".into(), ValueType::Number)]);
+        let neg = Expression::compile("-x", &symbols).unwrap();
+        for (operand, expected) in [
+            (Value::Int(5), Ok(Value::Int(-5))),
+            (Value::Float(1.5), Ok(Value::Float(-1.5))),
+            (Value::Int(i64::MIN), Err("integer overflow")),
+            (
+                Value::Float(f64::INFINITY),
+                Err("nonfinite arithmetic result"),
+            ),
+            (Value::Float(f64::NAN), Err("nonfinite arithmetic result")),
+            (Value::Empty, Err("absent operand")),
+            (Value::Boolean(true), Err("numeric operand required")),
+        ] {
+            assert_eq!(
+                neg.evaluate(&Values::from([("x".into(), operand)])),
+                expected.map_err(error)
+            );
+        }
         for source in [
             "1 ^ 2",
             "x = 2",

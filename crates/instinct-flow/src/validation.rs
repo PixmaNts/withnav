@@ -348,9 +348,9 @@ pub(crate) fn validate(
             "node",
         ));
     }
-    if serde_json::to_vec(definition)
-        .map_or(true, |v| v.len() > catalogue.limits.flow_bytes.min(262144))
-    {
+    if serde_json::to_vec(definition).map_or(true, |v| {
+        v.len() > catalogue.limits.flow_bytes.min(MAX_FLOW_BYTES)
+    }) {
         errors.push(Diagnostic::new("limit", "flow exceeds byte limit", "flow"));
     }
     for (name, value) in &definition.constants {
@@ -386,6 +386,7 @@ pub(crate) fn validate(
         }
     }
     let mut predecessors = vec![Vec::new(); definition.node.len()];
+    let mut successors = vec![Vec::new(); definition.node.len()];
     let mut indegree = vec![0; definition.node.len()];
     for (i, node) in definition.node.iter().enumerate() {
         for (port, destinations) in &node.next {
@@ -399,6 +400,7 @@ pub(crate) fn validate(
             for dest in destinations {
                 if let Some(&j) = index.get(dest) {
                     predecessors[j].push((i, port.clone()));
+                    successors[i].push(j);
                     indegree[j] += 1;
                     if matches!(node.kind, NodeKind::Action { .. })
                         && !matches!(definition.node[j].kind, NodeKind::Action { .. })
@@ -443,14 +445,10 @@ pub(crate) fn validate(
         .collect();
     while let Some(i) = ready.pop_first() {
         order.push(i);
-        for (j, preds) in predecessors.iter().enumerate() {
-            for (pred, _) in preds {
-                if *pred == i {
-                    indegree[j] -= 1;
-                    if indegree[j] == 0 {
-                        ready.insert(j);
-                    }
-                }
+        for &j in &successors[i] {
+            indegree[j] -= 1;
+            if indegree[j] == 0 {
+                ready.insert(j);
             }
         }
     }
@@ -469,11 +467,12 @@ pub(crate) fn validate(
                 format!("node[{}]", definition.node[i].id),
             ));
         }
+        let mut inherited = BTreeSet::new();
         for (p, _) in &predecessors[i] {
-            let inherited = ancestors[*p].clone();
-            ancestors[i].extend(inherited);
-            ancestors[i].insert(definition.node[*p].id.clone());
+            inherited.extend(ancestors[*p].iter().cloned());
+            inherited.insert(definition.node[*p].id.clone());
         }
+        ancestors[i] = inherited;
     }
     for (name, position) in &definition.layout {
         if (name != "trigger" && !index.contains_key(name))
@@ -642,12 +641,15 @@ pub(crate) fn validate(
                     "template content missing",
                     &path,
                 )),
-                Some(text) if text.len() > catalogue.limits.template_bytes.min(65536) => errors
-                    .push(Diagnostic::new(
+                Some(text)
+                    if text.len() > catalogue.limits.template_bytes.min(MAX_TEMPLATE_BYTES) =>
+                {
+                    errors.push(Diagnostic::new(
                         "limit",
                         "template exceeds byte limit",
                         &path,
-                    )),
+                    ))
+                }
                 Some(text) => match crate::rendering::placeholders(text, true) {
                     Ok(names) => {
                         for name in names {

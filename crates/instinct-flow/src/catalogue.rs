@@ -115,6 +115,16 @@ pub struct Limits {
     pub concurrent_calls: usize,
 }
 pub const MAX_INPUT_BYTES: usize = 32 * 1024;
+/// Hard ceiling for serialized flow definitions and their stored source.
+pub const MAX_FLOW_BYTES: usize = 256 * 1024;
+/// Hard ceiling for a provider response body.
+pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// Hard ceiling for all collected inputs in one run.
+pub const MAX_RUN_INPUT_BYTES: usize = 64 * 1024;
+/// Hard ceiling for rendered decision state.
+pub const MAX_STATE_BYTES: usize = 64 * 1024;
+/// Hard ceiling for template source and placeholder admission.
+pub const MAX_TEMPLATE_BYTES: usize = 64 * 1024;
 
 impl Default for Limits {
     fn default() -> Self {
@@ -124,18 +134,18 @@ impl Default for Limits {
             blocking_budget_ms: 2000,
             async_deadline_ms: 5000,
             call_deadline_ms: 2000,
-            flow_bytes: 262144,
+            flow_bytes: MAX_FLOW_BYTES,
             input_bytes: MAX_INPUT_BYTES,
-            run_input_bytes: 65536,
-            state_bytes: 65536,
-            template_bytes: 65536,
+            run_input_bytes: MAX_RUN_INPUT_BYTES,
+            state_bytes: MAX_STATE_BYTES,
+            template_bytes: MAX_TEMPLATE_BYTES,
             expression_bytes: 4096,
             expression_tokens: 128,
             expression_operators: 32,
             expression_nesting: 16,
             expression_ast_depth: 32,
             expression_ast_nodes: 128,
-            response_bytes: 262144,
+            response_bytes: MAX_RESPONSE_BYTES,
             concurrent_calls: 4,
         }
     }

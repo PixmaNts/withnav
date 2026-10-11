@@ -1319,6 +1319,12 @@ fn finish_child_link_sync(
     reason: Option<String>,
     result: String,
 ) -> Result<Option<ChildLink>, String> {
+    let outcome = match status.as_str() {
+        "done" => crate::bus::event::SubagentOutcome::Done,
+        "failed" => crate::bus::event::SubagentOutcome::Failed,
+        "stopped" => crate::bus::event::SubagentOutcome::Stopped,
+        _ => return Err(format!("invalid terminal child status: {status}")),
+    };
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
     conn.busy_timeout(WRITER_BUSY_TIMEOUT)
         .map_err(|e| e.to_string())?;
@@ -1345,11 +1351,6 @@ fn finish_child_link_sync(
                     row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
             ).map_err(|e| e.to_string())?;
-    let outcome = match status.as_str() {
-        "done" => crate::bus::event::SubagentOutcome::Done,
-        "failed" => crate::bus::event::SubagentOutcome::Failed,
-        _ => crate::bus::event::SubagentOutcome::Stopped,
-    };
     let mut payload = serde_json::to_value(&crate::bus::event::SubagentDone {
         parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
         child_session_id: child_id,
@@ -2954,6 +2955,19 @@ mod tests {
             )
             .await
             .unwrap();
+        for status in ["running", "starting", "typo"] {
+            let error = store
+                .finish_child_link(child, status.into(), None, "wrong".into())
+                .await
+                .unwrap_err();
+            assert!(error.contains("invalid terminal child status"));
+            assert_eq!(
+                store.child_link(child).await.unwrap().unwrap().status,
+                "running"
+            );
+            assert!(store.pending_completions(parent).await.unwrap().is_empty());
+            assert!(store.load_for_resume(child).await.unwrap().is_some());
+        }
         let first = store
             .finish_child_link(child, "done".into(), None, "answer".into())
             .await

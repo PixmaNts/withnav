@@ -126,7 +126,6 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         return Ok(());
     }
     s.last_applied_seq = Some(e.seq);
-    s.latest_envelope = Some(e.clone());
     let kind = EventKind::from_wire(&e.kind);
     let bad = || ProtocolError(format!("malformed {} payload", e.kind));
     let actor = e.actor_id.clone();

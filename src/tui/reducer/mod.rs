@@ -162,7 +162,6 @@ fn reset_projection(s: &mut State) {
     s.conversation = Default::default();
     s.children.clear();
     s.last_applied_seq = None;
-    s.latest_envelope = None;
     s.activity = Activity::Idle;
 }
 

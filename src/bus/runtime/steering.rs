@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use ulid::Ulid;
@@ -116,6 +117,13 @@ mod tests {
             });
             let mut transcript = vec![];
             if boundary_first {
+                let original = vec![ChatMessage::User {
+                    content: "original".into(),
+                    provenance: UserProvenance::Captain,
+                }];
+                let untouched = steering.apply_at_boundary(Cow::Borrowed(&original));
+                assert!(matches!(untouched, Cow::Borrowed(_)));
+                assert_eq!(untouched.as_ptr(), original.as_ptr());
                 transcript = steering.apply(transcript);
                 assert!(transcript.is_empty());
             }
@@ -260,7 +268,14 @@ impl Steering {
             .store(true, std::sync::atomic::Ordering::Release);
         true
     }
-    pub fn apply(&self, mut transcript: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    pub fn apply(&self, transcript: Vec<ChatMessage>) -> Vec<ChatMessage> {
+        self.apply_at_boundary(Cow::Owned(transcript)).into_owned()
+    }
+
+    pub fn apply_at_boundary<'a>(
+        &self,
+        mut transcript: Cow<'a, [ChatMessage]>,
+    ) -> Cow<'a, [ChatMessage]> {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         let mut kept = VecDeque::new();
         while let Some(operation) = queue.pop_front() {
@@ -268,7 +283,7 @@ impl Steering {
                 kept.push_back(operation);
                 continue;
             }
-            transcript.push(ChatMessage::User {
+            transcript.to_mut().push(ChatMessage::User {
                 content: operation.content,
                 provenance: operation.provenance,
             });

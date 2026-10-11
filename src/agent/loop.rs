@@ -169,7 +169,7 @@ async fn run_steps_inner(
 
         if !actor.has_pending() {
             if let Some(boundary) = actor.safe_boundary.clone() {
-                let updated = match boundary(actor.transcript.clone(), actor.cancel.clone()).await {
+                let updated = match boundary(&actor.transcript, actor.cancel.clone()).await {
                     Ok(updated) => updated,
                     Err(error) => {
                         if let Some(committed) = error.committed {
@@ -182,6 +182,7 @@ async fn run_steps_inner(
                     }
                 };
                 match updated {
+                    crate::agent::boundary::BoundaryResult::Unchanged => {}
                     crate::agent::boundary::BoundaryResult::Continue(updated) => {
                         actor.transcript = updated
                     }
@@ -190,7 +191,9 @@ async fn run_steps_inner(
                         return Ok(RunOutcome::Interrupted);
                     }
                     crate::agent::boundary::BoundaryResult::Watchdog(updated) => {
-                        actor.transcript = updated;
+                        if let Some(updated) = updated {
+                            actor.transcript = updated;
+                        }
                         actor.watchdog_steps_left = Some(budget - step);
                         actor.state = AgentState::Idle;
                         return Ok(RunOutcome::WatchdogBoundary);
@@ -1422,17 +1425,20 @@ mod tests {
             let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
             actor.max_steps = 7;
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            actor.safe_boundary = Some(Arc::new(move |mut transcript, _| {
+            actor.safe_boundary = Some(Arc::new(move |transcript, _| {
                 let step = calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 Box::pin(async move {
                     if !before_first && step == 0 {
-                        return Ok(crate::agent::boundary::BoundaryResult::Continue(transcript));
+                        return Ok(crate::agent::boundary::BoundaryResult::Unchanged);
                     }
+                    let mut transcript = transcript.to_vec();
                     transcript.push(ChatMessage::User {
                         provenance: crate::provider::openai::UserProvenance::Parent,
                         content: "committed steering".into(),
                     });
-                    Ok(crate::agent::boundary::BoundaryResult::Watchdog(transcript))
+                    Ok(crate::agent::boundary::BoundaryResult::Watchdog(Some(
+                        transcript,
+                    )))
                 })
             }));
             assert_eq!(
@@ -1446,6 +1452,64 @@ mod tests {
             assert!(
                 matches!(actor.transcript.last(),Some(ChatMessage::User {content,..}) if content == "committed steering")
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn borrowed_boundaries_keep_original_content_on_no_change_interrupt_error_and_drop() {
+        use crate::agent::boundary::BoundaryResult;
+        for mode in ["unchanged", "interrupt", "watchdog", "error", "drop"] {
+            let server = spawn_mock(vec![http_sse(&sse_body(&[&text_chunk("done")]))]).await;
+            let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+            actor.push_user("large original input".repeat(4096));
+            let messages = actor.transcript.as_ptr() as usize;
+            let ChatMessage::User { content, .. } = &actor.transcript[0] else {
+                panic!("expected user message")
+            };
+            let contents = content.as_ptr() as usize;
+            actor.safe_boundary = Some(Arc::new(move |transcript, _| {
+                assert_eq!(transcript.as_ptr() as usize, messages);
+                Box::pin(async move {
+                    let ChatMessage::User { content, .. } = &transcript[0] else {
+                        panic!("expected user message")
+                    };
+                    assert_eq!(content.as_ptr() as usize, contents);
+                    tokio::task::yield_now().await;
+                    match mode {
+                        "unchanged" => Ok(BoundaryResult::Unchanged),
+                        "interrupt" => Ok(BoundaryResult::Interrupted),
+                        "watchdog" => Ok(BoundaryResult::Watchdog(None)),
+                        "error" => Err("uncommitted failure".to_string().into()),
+                        _ => std::future::pending().await,
+                    }
+                })
+            }));
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                run_agent(&mut actor, &mut |_| {}),
+            )
+            .await;
+            match mode {
+                "unchanged" => assert!(matches!(result, Ok(Ok(RunOutcome::Done(_))))),
+                "interrupt" => assert_eq!(result.unwrap().unwrap(), RunOutcome::Interrupted),
+                "watchdog" => {
+                    assert_eq!(result.unwrap().unwrap(), RunOutcome::WatchdogBoundary);
+                    assert_eq!(actor.watchdog_steps_left, Some(actor.max_steps));
+                }
+                "error" => assert!(result.unwrap().is_err()),
+                _ => assert!(result.is_err()),
+            }
+            assert_eq!(actor.state, AgentState::Idle);
+            let ChatMessage::User { content, .. } = &actor.transcript[0] else {
+                panic!("expected original input")
+            };
+            assert_eq!(content.as_ptr() as usize, contents);
+            assert_eq!(content, &"large original input".repeat(4096));
+            if mode != "unchanged" {
+                assert_eq!(actor.transcript.len(), 1);
+                assert_eq!(actor.transcript.as_ptr() as usize, messages);
+                assert!(server.requests.lock().await.is_empty());
+            }
         }
     }
     use crate::tools::bash::BashTool;
@@ -2157,8 +2221,9 @@ mod tests {
             let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
             actor.push_user("go");
             if boundary_error {
-                actor.safe_boundary = Some(Arc::new(|mut transcript, _| {
+                actor.safe_boundary = Some(Arc::new(|transcript, _| {
                     Box::pin(async move {
+                        let mut transcript = transcript.to_vec();
                         transcript.push(ChatMessage::User {
                             provenance: crate::provider::openai::UserProvenance::Parent,
                             content: "committed steering".into(),

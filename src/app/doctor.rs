@@ -88,9 +88,11 @@ impl Report {
             status,
             value: value.into(),
             category: None,
-            hint: (status != Status::Ok)
-                .then(|| hint.map(str::to_owned))
-                .flatten(),
+            hint: if status == Status::Ok {
+                None
+            } else {
+                hint.map(str::to_owned)
+            },
             elapsed_ms: None,
         });
     }

@@ -11,11 +11,10 @@ use crate::tools::{
     bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
 };
 
-fn arg_str(args: &Value, key: &str) -> Result<String, ToolError> {
+fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     crate::tools::reject_reserved_args(args)?;
     args.get(key)
         .and_then(|v| v.as_str())
-        .map(String::from)
         .ok_or_else(|| ToolError::Denied {
             code: "invalid_args".into(),
             message: format!("missing string argument: {key}"),
@@ -65,11 +64,11 @@ impl Tool for ReadTool {
                 Some(path) => path.clone(),
                 None => {
                     let target =
-                        crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?;
+                        crate::agent::permissions::resolve_read_target(Path::new(path), cx)?;
                     let target = validate_path(&cx.read_roots(), &target)?;
                     if crate::agent::permission_gate::sensitive_read(&target)
                         || crate::agent::permission_gate::sensitive_read(
-                            &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+                            &crate::agent::permissions::requested_path(Path::new(path), cx)?,
                         )
                     {
                         return Err(ToolError::Denied {
@@ -163,7 +162,7 @@ impl Tool for WriteTool {
             // even the folders leading to it.
             let resolved = validate_path(
                 &cx.writable_roots,
-                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+                &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
             )?;
             if let Some(parent) = resolved.parent() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -236,7 +235,7 @@ impl Tool for EditTool {
                 .unwrap_or(false);
 
             let change = |content: String| {
-                let count = content.matches(&old).count();
+                let count = content.matches(old).count();
                 if count == 0 {
                     return Err(ToolError::NoMatch);
                 }
@@ -244,9 +243,9 @@ impl Tool for EditTool {
                     return Err(ToolError::AmbiguousMatch { count });
                 }
                 let updated = if replace_all {
-                    content.replace(&old, &new)
+                    content.replace(old, new)
                 } else {
-                    content.replacen(&old, &new, 1)
+                    content.replacen(old, new, 1)
                 };
                 Ok((updated, format!("replaced {count} occurrence(s)")))
             };
@@ -264,7 +263,7 @@ impl Tool for EditTool {
 
             let resolved = validate_path(
                 &cx.writable_roots,
-                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+                &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
             )?;
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
@@ -332,7 +331,7 @@ impl Tool for GrepTool {
                             .into(),
                 });
             }
-            super::grep::search(pattern, search_root, _cancel).await
+            super::grep::search(pattern.to_owned(), search_root, _cancel).await
         })
     }
 }

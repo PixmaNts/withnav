@@ -44,6 +44,11 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// The parsed settings snapshot, including unknown keys.
+    pub(crate) fn as_object(&self) -> &Map<String, Value> {
+        &self.root
+    }
+
     pub fn permissions_review_timeout_secs(&self) -> Result<u64, String> {
         match self.get_dotted("permissions.review_timeout_secs") {
             None => Ok(40),

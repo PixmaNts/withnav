@@ -186,9 +186,13 @@ pub async fn inspect(
         },
         Some("Edit config.json; unknown keys are retained."),
     );
+    let settings_document = settings
+        .as_ref()
+        .ok()
+        .map(|settings| Value::Object(settings.as_object().clone()));
     unknown_keys(
         &mut report,
-        &config.join("config.json"),
+        settings_document.as_ref(),
         "config",
         &[
             (
@@ -215,16 +219,15 @@ pub async fn inspect(
             ("tui", &["theme", "favorite_models"]),
         ],
     );
-    let auth_ok = auth::load_store(config).is_ok();
-    if auth_ok {
-        if let Ok(store) = auth::load_store(config) {
-            let names: Vec<_> = store.providers.keys().cloned().collect();
-            let sections: Vec<_> = names
-                .iter()
-                .map(|name| (name.as_str(), &["api_key"][..]))
-                .collect();
-            unknown_keys(&mut report, &config.join("auth.json"), "auth", &sections);
-        }
+    let credentials = auth::load_store_with_document(config);
+    let auth_ok = credentials.is_ok();
+    if let Ok((store, document)) = &credentials {
+        let names: Vec<_> = store.providers.keys().cloned().collect();
+        let sections: Vec<_> = names
+            .iter()
+            .map(|name| (name.as_str(), &["api_key"][..]))
+            .collect();
+        unknown_keys(&mut report, Some(document), "auth", &sections);
     }
     let auth_path = config.join("auth.json");
     use std::os::unix::fs::PermissionsExt;
@@ -251,8 +254,8 @@ pub async fn inspect(
         },
         Some("Use nav auth set <provider> and chmod 600 auth.json."),
     );
-    let models = crate::provider::config::load_models(None, &workspace, config);
-    if let Ok((_, path)) = &models {
+    let models = crate::provider::config::load_models_with_document(&workspace, config);
+    if let Ok((_, path, document)) = &models {
         report.add(
             "config.catalogue",
             Status::Ok,
@@ -261,11 +264,11 @@ pub async fn inspect(
         );
         unknown_keys(
             &mut report,
-            path,
+            Some(document),
             "models",
             &[("", &["providers", "models"])],
         );
-        catalogue_unknown_keys(&mut report, path);
+        catalogue_unknown_keys(&mut report, document);
     } else {
         report.add(
             "config.catalogue",
@@ -274,15 +277,32 @@ pub async fn inspect(
             Some("Check the workspace/user models.json catalogue and provider references."),
         );
     }
-    legacy(&mut report, config, home, &workspace);
+    legacy(
+        &mut report,
+        config,
+        home,
+        &workspace,
+        settings_document.as_ref(),
+    );
     workspace_checks(&mut report, config, &workspace);
     binary_checks(&mut report, home, &workspace).await;
-    if let (Ok(settings), Ok((models, _))) = (&settings, &models) {
+    let mut keys = BTreeMap::new();
+    if let Ok((models, _, _)) = &models {
+        for (name, provider) in &models.providers {
+            let key = credentials.as_ref().ok().and_then(|(store, _)| {
+                auth::resolve_key_from_store(store, name, provider.api_key_env.as_deref()).ok()
+            });
+            keys.insert(name.clone(), key);
+        }
+    }
+    if let (Ok(settings), Ok((models, _, _))) = (&settings, &models) {
         let cache = Arc::new(ClientCache::new());
         let catalog = ModelCatalog::read_only(data);
-        for (name, provider) in &models.providers {
-            let usable = auth::resolve_key(config, name, provider.api_key_env.as_deref())
-                .is_ok_and(|k| !k.trim().is_empty());
+        for name in models.providers.keys() {
+            let usable = keys
+                .get(name)
+                .and_then(Option::as_deref)
+                .is_some_and(|k| !k.trim().is_empty());
             report.add(
                 format!("auth.provider.{name}"),
                 if usable { Status::Ok } else { Status::Failed },
@@ -377,7 +397,8 @@ pub async fn inspect(
                         is_default,
                         args.offline,
                         &catalog,
-                        config,
+                        keys.get(&assigned.resolved.provider_name)
+                            .and_then(Option::as_deref),
                         &cache,
                     )
                     .await;
@@ -469,7 +490,8 @@ pub async fn inspect(
                             false,
                             args.offline,
                             &catalog,
-                            config,
+                            keys.get(&assigned.resolved.provider_name)
+                                .and_then(Option::as_deref),
                             &cache,
                         )
                         .await
@@ -489,7 +511,8 @@ pub async fn inspect(
                             layer,
                             &assigned,
                             variant,
-                            config,
+                            keys.get(&assigned.resolved.provider_name)
+                                .and_then(Option::as_deref),
                             cache.clone(),
                         )
                         .await;
@@ -566,14 +589,12 @@ pub async fn inspect(
     }
     // Never echo credential values, including when a malicious name/path repeats one.
     let mut secrets = vec![];
-    if let Ok(store) = auth::load_store(config) {
-        secrets.extend(store.providers.into_values().map(|e| e.api_key));
+    if let Ok((store, _)) = &credentials {
+        secrets.extend(store.providers.values().map(|e| e.api_key.clone()));
     }
-    if let Ok((models, _)) = &models {
-        for (name, provider) in &models.providers {
-            if let Ok(key) = auth::resolve_key(config, name, provider.api_key_env.as_deref()) {
-                secrets.push(key);
-            }
+    secrets.extend(keys.values().flatten().cloned());
+    if let Ok((models, _, _)) = &models {
+        for provider in models.providers.values() {
             secrets.extend(provider.headers.values().cloned());
         }
     }
@@ -602,21 +623,15 @@ async fn verify_chat(
     required: bool,
     offline: bool,
     catalog: &ModelCatalog,
-    config: &Path,
+    key: Option<&str>,
     cache: &ClientCache,
 ) -> Option<Option<Variant>> {
     let resolved = &assigned.resolved;
-    let key = auth::resolve_key(
-        config,
-        &resolved.provider_name,
-        resolved.provider.api_key_env.as_deref(),
-    )
-    .ok();
     let needs_metadata = resolved.model.context_window.is_none()
         || (resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some());
     let data = if offline || !needs_metadata {
         catalog.cached(resolved)
-    } else if let Some(key) = &key {
+    } else if let Some(key) = key {
         catalog.lookup(resolved, key, cache).await
     } else {
         catalog.cached(resolved)
@@ -719,11 +734,13 @@ async fn verify_chat(
     Some(name.and_then(|name| variants.get(name).cloned()))
 }
 
-fn unknown_keys(report: &mut Report, path: &Path, prefix: &str, sections: &[(&str, &[&str])]) {
-    let Some(value) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-    else {
+fn unknown_keys(
+    report: &mut Report,
+    value: Option<&Value>,
+    prefix: &str,
+    sections: &[(&str, &[&str])],
+) {
+    let Some(value) = value else {
         return;
     };
     for (section, known) in sections {
@@ -744,13 +761,7 @@ fn unknown_keys(report: &mut Report, path: &Path, prefix: &str, sections: &[(&st
         }
     }
 }
-fn catalogue_unknown_keys(report: &mut Report, path: &Path) {
-    let Some(value) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-    else {
-        return;
-    };
+fn catalogue_unknown_keys(report: &mut Report, value: &Value) {
     for (section, known) in [
         (
             "providers",
@@ -799,7 +810,13 @@ fn catalogue_unknown_keys(report: &mut Report, path: &Path) {
     }
 }
 
-fn legacy(report: &mut Report, config: &Path, home: Option<&Path>, workspace: &Path) {
+fn legacy(
+    report: &mut Report,
+    config: &Path,
+    home: Option<&Path>,
+    workspace: &Path,
+    config_value: Option<&Value>,
+) {
     let mut paths = vec![(config.with_file_name("navai"), config.to_path_buf())];
     for ancestor in workspace.ancestors() {
         for name in [".navai", ".navigator"] {
@@ -830,9 +847,6 @@ fn legacy(report: &mut Report, config: &Path, home: Option<&Path>, workspace: &P
             );
         }
     }
-    let config_value = std::fs::read_to_string(config.join("config.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     for (old, canonical) in AGENT_ALIASES {
         let used = config_value.as_ref().is_some_and(|v| {
             v.get("default_agent").and_then(Value::as_str) == Some(old)
@@ -1300,17 +1314,12 @@ async fn live_layer(
     layer: Layer,
     assigned: &AssignedModel,
     variant: Option<Variant>,
-    config: &Path,
+    key: Option<&str>,
     cache: Arc<ClientCache>,
 ) {
     let resolved = &assigned.resolved;
-    let key = auth::resolve_key(
-        config,
-        &resolved.provider_name,
-        resolved.provider.api_key_env.as_deref(),
-    );
     let key = match key {
-        Ok(key) if !key.trim().is_empty() => key,
+        Some(key) if !key.trim().is_empty() => key.to_owned(),
         _ => {
             report.add(
                 format!("live.{layer}"),
@@ -1347,11 +1356,11 @@ async fn live_layer(
             }
         }
         Layer::Instinct => {
-            let client = SystemOneClient::new(
+            let client = SystemOneClient::with_key(
                 &resolved.provider_name,
                 &resolved.provider,
                 &resolved.model,
-                config,
+                key,
                 cache,
             );
             let client = match client {

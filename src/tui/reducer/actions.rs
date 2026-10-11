@@ -684,19 +684,17 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;
-            let inherit = name == "inherit";
-            let chosen = (name != NO_VARIANT).then_some(name);
+            let chosen = match name.as_str() {
+                "inherit" => None,
+                NO_VARIANT => Some(None),
+                _ => Some(Some(name.clone())),
+            };
             match pick {
                 Some(VariantPick::NewConversation(model_id)) => {
-                    pick_model(s, ui, model_id, if inherit { None } else { Some(chosen) })
-                        .unwrap_or_default()
+                    pick_model(s, ui, model_id, chosen).unwrap_or_default()
                 }
                 Some(VariantPick::Current) if !occupied(s) => {
-                    s.start_variant = if chosen.as_deref() == Some("inherit") {
-                        None
-                    } else {
-                        Some(chosen.clone())
-                    };
+                    s.start_variant = chosen;
                     s.variant = s.start_variant.clone().flatten();
                     s.variant_source = if s.start_variant.is_some() {
                         "override"
@@ -711,7 +709,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 Some(VariantPick::Current) => run_command(
                     s,
                     "variant".into(),
-                    chosen.unwrap_or_else(|| NO_VARIANT.into()),
+                    name,
                     None,
                 ),
                 None => vec![],

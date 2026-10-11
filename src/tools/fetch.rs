@@ -714,8 +714,20 @@ async fn convert_in_child(
             }
         }
     }
+    Ok(decode_converter_output(&buf))
+}
+
+fn decode_converter_output(buf: &[u8]) -> String {
     let kept = &buf[..buf.len().min(CONVERT_MAX_OUTPUT_BYTES)];
-    Ok(String::from_utf8_lossy(kept).into_owned())
+    let kept = if buf.len() > CONVERT_MAX_OUTPUT_BYTES {
+        match std::str::from_utf8(kept) {
+            Err(error) if error.error_len().is_none() => &kept[..error.valid_up_to()],
+            _ => kept,
+        }
+    } else {
+        kept
+    };
+    String::from_utf8_lossy(kept).into_owned()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1432,6 +1444,12 @@ mod tests {
         let out = convert_html(page, Format::Markdown, None, Duration::from_secs(5)).await;
         assert!(out.starts_with("[note: the HTML was cut"), "{}", &out[..80]);
         assert!(out.contains(UNSAFE_NOTE));
+        for character in ["é", "€", "🦀"] {
+            let prefix = "x".repeat(CONVERT_MAX_OUTPUT_BYTES - 1);
+            let bytes = format!("{prefix}{character}");
+            assert_eq!(decode_converter_output(bytes.as_bytes()), prefix);
+        }
+        assert_eq!(decode_converter_output(b"ok\xff"), "ok\u{fffd}");
     }
 
     // Given a converter that cannot start

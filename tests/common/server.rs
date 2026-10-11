@@ -462,6 +462,18 @@ pub async fn create_session(base: &str, ws: &Path) -> String {
         .to_string()
 }
 
+/// Lists a workspace's sessions over HTTP with an encoded workspace query.
+pub async fn list_sessions(client: &reqwest::Client, base: &str, workspace: &Path) -> Value {
+    let response = client
+        .get(format!("{base}/v1/sessions"))
+        .query(&[("workspace", workspace.to_str().expect("utf8 workspace"))])
+        .send()
+        .await
+        .expect("list");
+    assert_eq!(response.status(), StatusCode::OK, "session list status");
+    response.json().await.expect("list json")
+}
+
 /// The request body for a plain-text message to the main agent.
 pub fn text_message(text: &str) -> Value {
     json!({

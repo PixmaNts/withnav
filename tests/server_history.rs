@@ -17,7 +17,7 @@ use withnav::server::AppState;
 
 mod common;
 use common::server::{
-    collect_until, post_create_session, post_message_ok, spawn_server, TestServerConfig,
+    collect_until, list_sessions, post_create_session, post_message_ok, spawn_server, TestServerConfig,
 };
 use common::sse::{spawn_capturing_provider, text_response as done_response, CapturingProvider};
 
@@ -30,26 +30,13 @@ fn make_state(tmp: &Path, base_url: &str, history_db: PathBuf) -> AppState {
         .assigned_navigator_state()
 }
 
-async fn list_sessions(base: &str, workspace: &Path) -> Value {
-    reqwest::Client::new()
-        .get(format!(
-            "{base}/v1/sessions?workspace={}",
-            workspace.display()
-        ))
-        .send()
-        .await
-        .expect("list")
-        .json()
-        .await
-        .expect("list json")
-}
-
 /// Waits until the writer thread has drained (observed via the store's own
 /// read path through a fresh HTTP list).
 async fn wait_for_list(base: &str, workspace: &Path, min: usize) -> Vec<Value> {
+    let client = reqwest::Client::new();
     let mut last = Vec::new();
     for _ in 0..200 {
-        let body = list_sessions(base, workspace).await;
+        let body = list_sessions(&client, base, workspace).await;
         let sessions = body["sessions"].as_array().cloned().unwrap_or_default();
         if sessions.len() >= min {
             return sessions;
@@ -494,8 +481,9 @@ async fn delete_removes_from_memory_and_store() {
     ));
 
     // Store is empty for the workspace.
+    let client = reqwest::Client::new();
     for _ in 0..50 {
-        let body = list_sessions(&server.base, &server.ws).await;
+        let body = list_sessions(&client, &server.base, &server.ws).await;
         if body["sessions"]
             .as_array()
             .map(|a| a.is_empty())
@@ -505,7 +493,7 @@ async fn delete_removes_from_memory_and_store() {
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
-    let body = list_sessions(&server.base, &server.ws).await;
+    let body = list_sessions(&client, &server.base, &server.ws).await;
     assert_eq!(body["sessions"].as_array().map(|a| a.len()), Some(0));
 
     // A disk-only id that never existed 404s.
@@ -532,7 +520,7 @@ async fn delete_removes_from_memory_and_store() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_is_per_workspace() {
     let (server, _db, _keep) = spawn_history_server().await;
-    let other = server.ws.parent().unwrap().join("other-ws");
+    let other = server.ws.parent().unwrap().join("other ws & # + %");
     std::fs::create_dir_all(&other).expect("other ws");
 
     for (ws, text) in [
@@ -631,17 +619,7 @@ async fn list_skips_a_session_with_unreadable_metadata() {
         )
         .expect("corrupt");
 
-    let response = reqwest::Client::new()
-        .get(format!(
-            "{}/v1/sessions?workspace={}",
-            server.base,
-            server.ws.display()
-        ))
-        .send()
-        .await
-        .expect("list");
-    assert_eq!(response.status(), 200);
-    let body: Value = response.json().await.expect("json");
+    let body = list_sessions(&reqwest::Client::new(), &server.base, &server.ws).await;
     let ids: Vec<&str> = body["sessions"]
         .as_array()
         .expect("sessions")

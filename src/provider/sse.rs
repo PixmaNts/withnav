@@ -10,6 +10,7 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub struct SseDecoder {
     byte_buf: Vec<u8>,
     data_lines: Vec<String>,
+    data_bytes: usize,
     saw_data: bool,
     max_frame: usize,
 }
@@ -29,6 +30,7 @@ impl SseDecoder {
         Self {
             byte_buf: Vec::new(),
             data_lines: Vec::new(),
+            data_bytes: 0,
             saw_data: false,
             max_frame,
         }
@@ -97,13 +99,26 @@ impl SseDecoder {
                     self.max_frame
                 )));
             }
+            let separator_bytes = usize::from(self.saw_data);
+            let data_bytes = self
+                .data_bytes
+                .saturating_add(separator_bytes)
+                .saturating_add(value.len());
+            if data_bytes > self.max_frame {
+                return Err(SseError::MalformedFrame(format!(
+                    "event data exceeds max size {} bytes",
+                    self.max_frame
+                )));
+            }
             self.data_lines.push(value.to_string());
+            self.data_bytes = data_bytes;
             self.saw_data = true;
         }
         Ok(())
     }
 
     fn take_event(&mut self) -> Option<String> {
+        self.data_bytes = 0;
         if !self.saw_data {
             self.data_lines.clear();
             return None;
@@ -312,6 +327,23 @@ mod tests {
         input.extend_from_slice(&big);
         let err = dec.push(&input).unwrap_err();
         assert!(matches!(err, SseError::MalformedFrame(_)));
+
+        for chunks in [
+            vec![b"data: ab\ndata: cd\n".as_slice()],
+            vec![b"data: ab\n".as_slice(), b"data: cd\n".as_slice()],
+            vec![b"data:\ndata:\ndata:\ndata:\ndata:\ndata:\n".as_slice()],
+        ] {
+            let mut dec = SseDecoder::with_max_frame(4);
+            let err = chunks
+                .into_iter()
+                .find_map(|chunk| dec.push(chunk).err())
+                .expect("combined data including separators must be bounded");
+            assert!(matches!(err, SseError::MalformedFrame(_)));
+        }
+
+        let mut dec = SseDecoder::with_max_frame(5);
+        assert_eq!(dec.push(b"data: ab\ndata: cd\n\n").unwrap(), ["ab\ncd"]);
+        assert_eq!(dec.push(b"data: ef\ndata: gh\n\n").unwrap(), ["ef\ngh"]);
     }
 
     proptest::proptest! {

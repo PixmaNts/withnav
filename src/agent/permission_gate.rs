@@ -2930,7 +2930,7 @@ mod tests {
                     "{command}"
                 );
             }
-            assert_eq!(count, 8);
+            assert_eq!(count, 17);
             return;
         }
         use std::os::unix::fs::PermissionsExt;

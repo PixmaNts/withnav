@@ -362,6 +362,36 @@ pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
         })
 }
 
+/// Only classified directory-neutral commands may preserve relative PATH lookup.
+/// Shell prefixes run builtins in this shell; execution strings remain opaque.
+fn changes_directory(words: &[String], facts: &Value) -> Option<bool> {
+    let mut words = inner_command(words)?;
+    loop {
+        match words.first()?.as_str() {
+            "builtin" | "command" => {
+                let command = words[0] == "command";
+                let mut i = 1;
+                while let Some(option) = words.get(i).filter(|word| word.starts_with('-')) {
+                    match option.as_str() {
+                        "--" => {
+                            i += 1;
+                            break;
+                        }
+                        "-v" | "-V" if command => return Some(false),
+                        "-p" if command => i += 1,
+                        _ => return None,
+                    }
+                }
+                words = words.get(i..)?;
+            }
+            "cd" | "pushd" | "popd" => return Some(true),
+            "echo" | "printf" | "pwd" | "true" | "false" | ":" | "type" => return Some(false),
+            "exec" | "eval" | "source" | "." => return None,
+            program => return trusted_program(program, facts).map(|_| false),
+        }
+    }
+}
+
 pub(super) fn command_identity_floor(command: &str, facts: &Value) -> bool {
     segments(command).is_none_or(|parts| {
         let relative_path = std::env::var_os("PATH")
@@ -393,8 +423,7 @@ pub(super) fn command_identity_floor(command: &str, facts: &Value) -> bool {
             {
                 return true;
             }
-            changed_directory |= inner_command(words)
-                .is_some_and(|inner| matches!(inner[0].as_str(), "cd" | "pushd" | "popd"));
+            changed_directory |= changes_directory(words, facts).unwrap_or(true);
             identity_floor(words, facts)
         })
     })
@@ -420,7 +449,7 @@ pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
                         program,
                         "sh" | "bash" | "zsh" | "eval" | "source" | "." | "sudo" | "xargs" | "exec"
                     )
-                    || (program == "command" && !lookup(inner))
+                    || (matches!(program, "command" | "builtin") && !lookup(inner))
                     || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
                         && (inner.get(1).is_some_and(|w| !w.starts_with('-'))
                             || inner.iter().any(|w| matches!(w.as_str(), "-c" | "-e"))))
@@ -812,7 +841,8 @@ pub(super) fn read_floor(command: &str) -> bool {
                         | "xargs"
                         | "sudo"
                         | "exec"
-                        | "command"
+                         | "command"
+                         | "builtin"
                 )
                 || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
                     && words.iter().any(|w| matches!(w.as_str(), "-c" | "-e")))

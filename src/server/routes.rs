@@ -336,17 +336,20 @@ struct AssignmentQuery {
     session_id: Option<String>,
 }
 
+fn require_workspace(value: Option<&str>) -> Result<&str, ServerError> {
+    value.ok_or_else(|| ServerError::MalformedBody("missing query parameter: workspace".into()))
+}
+
 async fn list_layers(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AssignmentQuery>,
 ) -> Response {
-    let Some(workspace) = query.workspace else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".into(),
-        ));
+    let workspace = match require_workspace(query.workspace.as_deref()) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     match state
-        .assignment_layers(std::path::Path::new(&workspace))
+        .assignment_layers(std::path::Path::new(workspace))
         .await
     {
         Ok(body) => Json(body).into_response(),
@@ -358,10 +361,9 @@ async fn list_agents(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AssignmentQuery>,
 ) -> Response {
-    let Some(workspace) = query.workspace else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".into(),
-        ));
+    let workspace = match require_workspace(query.workspace.as_deref()) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     let session = match query.session_id {
         Some(id) => match id.parse() {
@@ -371,7 +373,7 @@ async fn list_agents(
         None => None,
     };
     match state
-        .assignment_agents(std::path::Path::new(&workspace), session)
+        .assignment_agents(std::path::Path::new(workspace), session)
         .await
     {
         Ok(body) => Json(body).into_response(),
@@ -383,11 +385,9 @@ async fn create_session(
     State(state): State<AppState>,
     body: Result<Json<CreateSessionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
     let resume: Option<Ulid> = match request.resume.as_deref().map(str::parse) {
         None => None,
@@ -448,14 +448,11 @@ async fn create_session(
 }
 
 async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
-    match state.session_summary(parsed).await {
-        Ok(summary) => Json(summary).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(state.session_summary(parsed).await)
 }
 
 /// One row of `GET /v1/sessions?workspace=`: the stored summary plus the
@@ -508,10 +505,9 @@ async fn list_sessions(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(workspace) = params.get("workspace") else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".to_string(),
-        ));
+    let workspace = match require_workspace(params.get("workspace").map(String::as_str)) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     match state.list(workspace).await {
         Ok(rows) => {
@@ -561,9 +557,9 @@ async fn list_sessions(
 /// `DELETE /v1/sessions/{id}`: 204 on success; 404 only when the id is
 /// neither in memory nor on disk.
 async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.delete(parsed).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -634,10 +630,9 @@ async fn list_models(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(workspace) = params.get("workspace") else {
-        return error_response(ServerError::MalformedBody(
-            "missing query parameter: workspace".to_string(),
-        ));
+    let workspace = match require_workspace(params.get("workspace").map(String::as_str)) {
+        Ok(workspace) => workspace,
+        Err(err) => return error_response(err),
     };
     let workspace = std::path::Path::new(workspace);
     let catalog = crate::provider::config::load_models(
@@ -773,25 +768,19 @@ fn model_catalog_error(error: &ServerError) -> &'static str {
 
 /// `GET /v1/sessions/:id/context`: the session's context snapshot.
 async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
-    match state.context(parsed).await {
-        Ok(snapshot) => Json(snapshot).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(state.context(parsed).await)
 }
 
 async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(id) => id,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
-    match state.skills(parsed).await {
-        Ok(skills) => Json(skills).into_response(),
-        Err(error) => error_response(error),
-    }
+    json_result(state.skills(parsed).await)
 }
 
 /// `GET /v1/commands`: the registered session commands.
@@ -824,27 +813,23 @@ async fn post_bypass(
     if state.http.bearer_token.is_none() {
         return bypass_auth_required();
     }
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
-    match state
-        .set_bypass(
-            parsed,
-            request.enabled,
-            crate::bus::runtime::bypass::BypassOrigin::Http,
-        )
-        .await
-    {
-        Ok(reply) => Json(reply).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(
+        state
+            .set_bypass(
+                parsed,
+                request.enabled,
+                crate::bus::runtime::bypass::BypassOrigin::Http,
+            )
+            .await,
+    )
 }
 
 /// `POST /v1/sessions/:id/commands` request.
@@ -862,15 +847,13 @@ async fn post_command(
     Path(id): Path<String>,
     body: Result<Json<PostCommandRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
     if state.http.bearer_token.is_none()
         && request
@@ -883,38 +866,54 @@ async fn post_command(
     {
         return bypass_auth_required();
     }
-    match state
-        .run_command(parsed, &request.name, &request.arguments)
-        .await
-    {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(err) => error_response(err),
-    }
+    json_result(
+        state
+            .run_command(parsed, &request.name, &request.arguments)
+            .await,
+    )
 }
 
 /// The server-assigned sender for HTTP-submitted messages: clients can never
 /// impersonate another actor by choosing it themselves.
 const HTTP_USER_ACTOR_ID: &str = "user:http";
 
+fn parse_session_id(id: String) -> Result<Ulid, ServerError> {
+    id.parse().map_err(|_| ServerError::SessionNotFound(id))
+}
+
+async fn routable_session_id(state: &AppState, id: String) -> Result<Ulid, ServerError> {
+    let id = parse_session_id(id)?;
+    state.routable_handle(id).await?;
+    Ok(id)
+}
+
+fn json_body<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ServerError> {
+    body.map(|Json(value)| value)
+        .map_err(|rejection| ServerError::MalformedBody(rejection.body_text()))
+}
+
+fn json_result<T: Serialize>(result: Result<T, ServerError>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 /// Builds the Command for a posted message with a server-assigned sender.
 /// Public so the WS route and integration tests share the exact POST core.
-pub fn build_command(
-    session_id: Ulid,
-    request: &PostMessageRequest,
-    mode: DeliveryMode,
-) -> Command {
+pub fn build_command(session_id: Ulid, request: PostMessageRequest, mode: DeliveryMode) -> Command {
     Command {
         command_id: Ulid::new(),
         session_id,
         source_actor_id: HTTP_USER_ACTOR_ID.to_string(),
-        target_actor_id: request.target_actor_id.clone(),
+        target_actor_id: request.target_actor_id,
         mode,
         content: {
-            let mut content = request.content.clone();
-            if let Some(answer) = &request.answer {
-                content.push(ContentBlock::AskAnswer {
-                    answer: answer.clone(),
-                });
+            let mut content = request.content;
+            if let Some(answer) = request.answer {
+                content.push(ContentBlock::AskAnswer { answer });
             }
             content
         },
@@ -941,29 +940,21 @@ async fn post_message(
     Path(id): Path<String>,
     body: Result<Json<PostMessageRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Json(request) = match body {
+    let request = match json_body(body) {
         Ok(parsed) => parsed,
-        Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
-        }
+        Err(err) => return error_response(err),
     };
-    let session_id: Ulid = match id.parse() {
+    let session_id = match routable_session_id(&state, id).await {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     // Unknown or stopping sessions answer 404/409 before the body is judged.
-    if let Err(err) = state.routable_handle(session_id).await {
-        return error_response(err);
-    }
     let mode = match parse_mode(request.mode.as_deref()) {
         Ok(mode) => mode,
         Err(err) => return error_response(err),
     };
-    let command = build_command(session_id, &request, mode);
-    match state.send(command).await {
-        Ok(accepted) => Json(accepted).into_response(),
-        Err(err) => error_response(err),
-    }
+    let command = build_command(session_id, request, mode);
+    json_result(state.send(command).await)
 }
 
 /// `POST /v1/sessions/:id/permissions/:request_id` body.
@@ -1022,18 +1013,16 @@ async fn answer_permission(
     Path((id, request_id)): Path<(String, String)>,
     body: Result<Json<AnswerPermissionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Ok(session_id) = id.parse::<Ulid>() else {
-        return error_response(ServerError::SessionNotFound(id));
+    let session_id = match routable_session_id(&state, id).await {
+        Ok(id) => id,
+        Err(err) => return error_response(err),
     };
-    if let Err(err) = state.routable_handle(session_id).await {
-        return error_response(err);
-    }
     let Ok(request_id) = request_id.parse::<Ulid>() else {
         return error_response(ServerError::PermissionStale);
     };
-    let Json(body) = match body {
+    let body = match json_body(body) {
         Ok(body) => body,
-        Err(rejection) => return error_response(ServerError::MalformedBody(rejection.body_text())),
+        Err(err) => return error_response(err),
     };
     use crate::agent::permissions::PermissionDecision;
     let decision = match body.decision {
@@ -1058,9 +1047,9 @@ async fn answer_permission(
 }
 
 async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let parsed: Ulid = match id.parse() {
+    let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
-        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        Err(err) => return error_response(err),
     };
     match state.close_session(parsed).await {
         Ok(()) => Json(StopAccepted {
@@ -1144,80 +1133,24 @@ pub(crate) fn error_response(err: ServerError) -> Response {
             Json(json!({ "error": err.to_string(), "reason": "session_archived", "resume_disabled_reason": reason })),
         ).into_response();
     }
-    if matches!(err, ServerError::ResumeRequired) {
+    let reason = match &err {
+        ServerError::ResumeRequired => Some("resume_required"),
+        ServerError::ChildReadOnly => Some("child_read_only"),
+        ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
+        ServerError::PermissionStale => Some("permission_stale"),
+        ServerError::NoContextWindow { .. } => Some("no_context_window"),
+        ServerError::SavedAgentUnavailable { .. } => Some("saved_agent_unavailable"),
+        ServerError::ImpossibleBudget { .. } => Some("impossible_context_budget"),
+        ServerError::ModelIdentityChanged { .. } => Some("model_identity_changed"),
+        ServerError::VariantUnavailable { .. } => Some("variant_unavailable"),
+        ServerError::VariantOfferUnknown { .. } => Some("variant_offer_unknown"),
+        ServerError::UnknownVariant { .. } => Some("unknown_variant"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
         return (
             status,
-            Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::ChildReadOnly) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "child_read_only" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::SubagentCapacity { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "subagent_capacity" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::PermissionStale) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "permission_stale" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::NoContextWindow { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::SavedAgentUnavailable { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "saved_agent_unavailable" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::ImpossibleBudget { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "impossible_context_budget" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::ModelIdentityChanged { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "model_identity_changed" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::VariantUnavailable { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "variant_unavailable" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::VariantOfferUnknown { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "variant_offer_unknown" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::UnknownVariant { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "unknown_variant" })),
+            Json(json!({ "error": err.to_string(), "reason": reason })),
         )
             .into_response();
     }

@@ -63,6 +63,16 @@ async fn request(
     body: Value,
     auth: bool,
 ) -> (u16, Value) {
+    request_raw(app, method, uri, body.to_string(), auth).await
+}
+
+async fn request_raw(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: String,
+    auth: bool,
+) -> (u16, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
@@ -72,7 +82,7 @@ async fn request(
     }
     let response = app
         .clone()
-        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .oneshot(request.body(Body::from(body)).unwrap())
         .await
         .unwrap();
     let status = response.status().as_u16();
@@ -97,6 +107,14 @@ async fn settings_edit_validation_removal_and_stale_revision() {
     std::fs::remove_file(&path).unwrap();
     let (_, mut current) = request(&app, "GET", &uri, Value::Null, true).await;
     assert_eq!(current["revision"], "absent");
+    let (status, error) = request_raw(&app, "PUT", &uri, "{\"key\":".into(), true).await;
+    assert_eq!(status, 400);
+    assert_eq!(error["reason"], "invalid");
+    assert_eq!(error["key"], Value::Null);
+    let detail = error["error"].as_str().unwrap();
+    assert!(detail.contains("line 1 column"), "{detail}");
+    assert!(!detail.contains("expected {revision, key, value}"));
+    assert!(!path.exists(), "malformed JSON must not write settings");
     for (key, value) in [
         ("subagents.max_concurrent", json!(12)),
         ("permissions.automatic_review", json!(false)),

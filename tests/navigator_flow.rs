@@ -42,6 +42,23 @@ impl Metacognition for ObservedCommenter {
     }
 }
 
+/// A flow's idle status follows its completed delivery record, including cancellation.
+async fn expect_finished_without_remark(client: &mut Nav) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let msg = client.recv().await;
+            assert_ne!(msg["method"], "withnav/remark", "unexpected remark: {msg}");
+            if msg["method"] == "withnav/status" && msg["params"]["state"] == "idle" {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("trigger finished without a remark");
+    let rest = client.sync_notifications().await;
+    assert!(rest.iter().all(|msg| msg["method"] != "withnav/remark"), "{rest:?}");
+}
+
 /// The trigger records of the log, in order.
 fn triggers(client: &Nav) -> Vec<Value> {
     client
@@ -74,8 +91,7 @@ async fn a_save_then_an_idle_on_the_same_text_make_one_request() {
     let mut seen = Vec::new();
     let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "first");
-    let rest = client.collect_for(Duration::from_millis(100)).await;
-    assert!(rest.iter().all(|m| m["method"] != "withnav/remark"));
+    expect_finished_without_remark(&mut client).await;
 
     let records = triggers(&client);
     let delivered: Vec<&str> = records
@@ -143,8 +159,7 @@ async fn closing_cancels_the_deduplicated_remark() {
     let mut seen = Vec::new();
     client.expect("withnav/clear", &mut seen).await;
     gate.cancel();
-    let msgs = client.collect_for(Duration::from_millis(100)).await;
-    assert!(msgs.iter().all(|m| m["method"] != "withnav/remark"));
+    expect_finished_without_remark(&mut client).await;
     assert!(triggers(&client)
         .iter()
         .any(|r| r["delivered"] == "cancelled"));

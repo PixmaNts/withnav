@@ -148,6 +148,7 @@ async fn rg_search(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn()?;
+    let deadline = tokio::time::Instant::now() + DEADLINE;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let errors = tokio::spawn(async move {
@@ -163,7 +164,7 @@ async fn rg_search(
     let read = tokio::select! {
         biased;
         _ = cancel.cancelled() => None,
-        read = tokio::time::timeout(DEADLINE, bounded_stdout.read_to_end(&mut bytes)) => Some(read),
+        read = tokio::time::timeout_at(deadline, bounded_stdout.read_to_end(&mut bytes)) => Some(read),
     };
     let mut partial = if read.is_none() {
         Some("cancelled")
@@ -180,7 +181,7 @@ async fn rg_search(
     let status = tokio::select! {
         biased;
         _ = cancel.cancelled() => { child.kill().await?; errors.abort(); return Ok(ToolResult::interrupted()); },
-        status = tokio::time::timeout(DEADLINE, child.wait()) => match status {
+        status = tokio::time::timeout_at(deadline, child.wait()) => match status {
             Ok(status) => status?,
             Err(_) => { child.kill().await?; errors.abort(); return Ok(result(String::from_utf8_lossy(&bytes).into_owned(), "rg", 0, Some("timeout"), 0)); },
         }

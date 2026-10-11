@@ -64,7 +64,7 @@ fn triggers(client: &Nav) -> Vec<Value> {
     client
         .log_text()
         .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|l| serde_json::from_str::<Value>(l).expect("invalid log JSON"))
         .filter(|r| r["kind"] == "trigger")
         .collect()
 }

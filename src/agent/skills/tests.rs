@@ -1,34 +1,13 @@
 use super::*;
+use crate::agent::tests::WorkspaceFixture as Fixture;
 use crate::tools::{Registry, ToolContext, ToolStatus};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-struct Fixture {
-    _tmp: tempfile::TempDir,
-    home: PathBuf,
-    /// A Git worktree root.
-    repo: PathBuf,
-    /// A directory two levels below the root.
-    ws: PathBuf,
-}
-
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
-    let home = base.join("home");
-    let repo = base.join("repo");
-    let ws = repo.join("packages/app");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(repo.join(".git")).unwrap();
-    fs::create_dir_all(&ws).unwrap();
-    Fixture {
-        _tmp: tmp,
-        home,
-        repo,
-        ws,
-    }
+    Fixture::new("packages/app")
 }
 
 fn skill_text(name: &str, description: &str) -> String {

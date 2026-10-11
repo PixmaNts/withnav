@@ -1,32 +1,26 @@
 use super::*;
+use crate::agent::tests::WorkspaceFixture;
 use std::fs;
 
 struct Fixture {
-    _tmp: tempfile::TempDir,
+    _workspace: WorkspaceFixture,
     roots: AgentRoots,
     repo: PathBuf,
     ws: PathBuf,
 }
 
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
-    let home = base.join("home");
-    let config = base.join("config");
-    let repo = base.join("repo");
-    let ws = repo.join("pkg");
-    fs::create_dir_all(&home).unwrap();
+    let workspace = WorkspaceFixture::new("pkg");
+    let config = workspace.home.parent().unwrap().join("config");
     fs::create_dir_all(&config).unwrap();
-    fs::create_dir_all(repo.join(".git")).unwrap();
-    fs::create_dir_all(&ws).unwrap();
     Fixture {
-        _tmp: tmp,
         roots: AgentRoots {
-            home: Some(home),
+            home: Some(workspace.home.clone()),
             config_dir: Some(config),
         },
-        repo,
-        ws,
+        repo: workspace.repo.clone(),
+        ws: workspace.ws.clone(),
+        _workspace: workspace,
     }
 }
 

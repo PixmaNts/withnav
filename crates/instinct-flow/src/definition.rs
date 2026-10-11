@@ -207,7 +207,7 @@ impl CompiledDefinition {
 }
 impl Definition {
     pub fn parse(text: &str) -> Result<Self, Vec<Diagnostic>> {
-        if text.len() > 262144 {
+        if text.len() > crate::MAX_FLOW_BYTES {
             return Err(vec![Diagnostic::new(
                 "limit",
                 "flow exceeds byte limit",

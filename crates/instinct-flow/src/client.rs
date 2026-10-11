@@ -141,7 +141,10 @@ impl DecisionClient for SystemOneClient {
                         DecisionError::ProviderStatus(status.as_u16())
                     });
                 }
-                if response.content_length().is_some_and(|n| n > 262144) {
+                if response
+                    .content_length()
+                    .is_some_and(|n| n > crate::MAX_RESPONSE_BYTES as u64)
+                {
                     return Err(DecisionError::Limit);
                 }
                 let mut bytes = Vec::new();
@@ -150,7 +153,7 @@ impl DecisionClient for SystemOneClient {
                     .await
                     .map_err(|_| DecisionError::ProviderError)?
                 {
-                    if bytes.len() + chunk.len() > 262144 {
+                    if bytes.len() + chunk.len() > crate::MAX_RESPONSE_BYTES {
                         return Err(DecisionError::Limit);
                     }
                     bytes.extend_from_slice(&chunk);

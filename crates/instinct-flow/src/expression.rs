@@ -395,7 +395,9 @@ impl Expression {
                             (Value::Boolean(a), Value::Boolean(b)) => Ok(a.cmp(b)),
                             (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
                             (Value::Int(a), Value::Float(b)) => mixed_order(*a, *b),
-                            (Value::Float(a), Value::Int(b)) => mixed_order(*b, *a).map(|o| o.reverse()),
+                            (Value::Float(a), Value::Int(b)) => {
+                                mixed_order(*b, *a).map(|o| o.reverse())
+                            }
                             _ => num(&a)?
                                 .partial_cmp(&num(&b)?)
                                 .ok_or_else(|| error("nonfinite comparison")),
@@ -546,7 +548,10 @@ mod tests {
             (Value::Int(5), Ok(Value::Int(-5))),
             (Value::Float(1.5), Ok(Value::Float(-1.5))),
             (Value::Int(i64::MIN), Err("integer overflow")),
-            (Value::Float(f64::INFINITY), Err("nonfinite arithmetic result")),
+            (
+                Value::Float(f64::INFINITY),
+                Err("nonfinite arithmetic result"),
+            ),
             (Value::Float(f64::NAN), Err("nonfinite arithmetic result")),
             (Value::Empty, Err("absent operand")),
             (Value::Boolean(true), Err("numeric operand required")),

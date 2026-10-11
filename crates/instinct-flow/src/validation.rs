@@ -348,9 +348,9 @@ pub(crate) fn validate(
             "node",
         ));
     }
-    if serde_json::to_vec(definition)
-        .map_or(true, |v| v.len() > catalogue.limits.flow_bytes.min(262144))
-    {
+    if serde_json::to_vec(definition).map_or(true, |v| {
+        v.len() > catalogue.limits.flow_bytes.min(MAX_FLOW_BYTES)
+    }) {
         errors.push(Diagnostic::new("limit", "flow exceeds byte limit", "flow"));
     }
     for (name, value) in &definition.constants {
@@ -641,12 +641,15 @@ pub(crate) fn validate(
                     "template content missing",
                     &path,
                 )),
-                Some(text) if text.len() > catalogue.limits.template_bytes.min(65536) => errors
-                    .push(Diagnostic::new(
+                Some(text)
+                    if text.len() > catalogue.limits.template_bytes.min(MAX_TEMPLATE_BYTES) =>
+                {
+                    errors.push(Diagnostic::new(
                         "limit",
                         "template exceeds byte limit",
                         &path,
-                    )),
+                    ))
+                }
                 Some(text) => match crate::rendering::placeholders(text, true) {
                     Ok(names) => {
                         for name in names {

@@ -275,13 +275,13 @@ pub fn inspect_directory(path: &std::path::Path) -> Result<Vec<(String, bool)>, 
     let mut names = dir.names()?;
     names.sort();
     for file in names.into_iter().filter(|n| n.ends_with(".toml")) {
-        let toml = dir.read(&file, 262144, false)?;
+        let toml = dir.read(&file, instinct_flow::MAX_FLOW_BYTES, false)?;
         let mut templates = BTreeMap::new();
         let mut readable = true;
         if let Ok(definition) = Definition::parse(&toml) {
             for node in &definition.node {
                 if let Some(name) = node.kind.template() {
-                    match dir.read(name, 65536, false) {
+                    match dir.read(name, instinct_flow::MAX_TEMPLATE_BYTES, false) {
                         Ok(text) => {
                             templates.insert(name.into(), text);
                         }
@@ -467,7 +467,11 @@ impl FlowStore {
         let path = self.directory(location)?;
         let dir = Directory::open(&path, false).map_err(missing)?;
         let toml = dir
-            .read(&format!("{name}.toml"), 262144, false)
+            .read(
+                &format!("{name}.toml"),
+                instinct_flow::MAX_FLOW_BYTES,
+                false,
+            )
             .map_err(missing)?;
         let parsed = Definition::parse(&toml);
         let mut templates = BTreeMap::new();
@@ -475,7 +479,7 @@ impl FlowStore {
         if let Ok(d) = &parsed {
             for node in &d.node {
                 if let Some(name) = node.kind.template() {
-                    match dir.read(name, 65536, false) {
+                    match dir.read(name, instinct_flow::MAX_TEMPLATE_BYTES, false) {
                         Ok(text) => {
                             templates.insert(name.into(), text);
                         }
@@ -731,7 +735,11 @@ impl FlowStore {
             return Err(StoreError::reason("invalid"));
         }
         let text = v.toml.ok_or_else(|| StoreError::reason("invalid"))?;
-        if text.len() > 262144 || v.templates.values().any(|t| t.len() > 65536) {
+        if text.len() > instinct_flow::MAX_FLOW_BYTES
+            || v.templates
+                .values()
+                .any(|t| t.len() > instinct_flow::MAX_TEMPLATE_BYTES)
+        {
             return Err(StoreError::reason("invalid"));
         }
         // Validate the entire write set before opening or writing any destination.
@@ -749,7 +757,7 @@ impl FlowStore {
         }
         let previous = self.get(name, location).ok();
         for (template, body) in &v.templates {
-            match dir.read(template, 65536, false) {
+            match dir.read(template, instinct_flow::MAX_TEMPLATE_BYTES, false) {
                 Ok(current) if &current != body => {
                     // The document revision covers only its original referenced templates.
                     // Never overwrite an existing file outside that checked write set.

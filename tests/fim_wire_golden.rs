@@ -60,26 +60,40 @@ const PROMPT: &str = "fn main() {\n    ";
 const SUFFIX: &str = "\n}";
 const MAX_TOKENS: u64 = 128;
 
+async fn mount_fim_mock(
+    server: &MockServer,
+    key: &str,
+    expected: Option<serde_json::Value>,
+    response: impl wiremock::Respond + 'static,
+) {
+    let mut mock = Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .and(header("authorization", format!("Bearer {key}")));
+    if let Some(body) = expected {
+        mock = mock.and(body_partial_json(body));
+    }
+    mock.respond_with(response).expect(1).mount(server).await;
+}
+
 /// The exact wire body the Inception endpoint must receive.
 #[tokio::test]
 async fn golden_request_body_and_text_parsing() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/fim/completions"))
-        .and(header("authorization", "Bearer test-key"))
-        .and(body_partial_json(json!({
+    mount_fim_mock(
+        &server,
+        "test-key",
+        Some(json!({
             "model": "mercury-edit-2",
             "prompt": "fn main() {\n    ",
             "suffix": "\n}",
             "max_tokens": 128
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        })),
+        ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{"text": "println!(\"hi\");"}],
             "usage": {"prompt_tokens": 41, "completion_tokens": 7}
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+        })),
+    )
+    .await;
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -96,15 +110,15 @@ async fn golden_request_body_and_text_parsing() {
 #[tokio::test]
 async fn golden_body_carries_temperature() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/fim/completions"))
-        .and(body_partial_json(json!({"temperature": 0.1})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+    mount_fim_mock(
+        &server,
+        "test-key",
+        Some(json!({"temperature": 0.1})),
+        ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{"text": "x"}]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+        })),
+    )
+    .await;
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -122,14 +136,15 @@ async fn golden_body_carries_temperature() {
 #[tokio::test]
 async fn error_status_is_a_provider_error() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/fim/completions"))
-        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+    mount_fim_mock(
+        &server,
+        "test-key",
+        None,
+        ResponseTemplate::new(429).set_body_json(json!({
             "error": {"message": "rate limited"}
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+        })),
+    )
+    .await;
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -150,14 +165,15 @@ async fn error_status_is_a_provider_error() {
 #[tokio::test]
 async fn malformed_body_is_a_malformed_error() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/fim/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+    mount_fim_mock(
+        &server,
+        "test-key",
+        None,
+        ResponseTemplate::new(200).set_body_json(json!({
             "unexpected": true
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+        })),
+    )
+    .await;
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -175,21 +191,17 @@ async fn cancelled_call_stops_waiting() {
     let server = MockServer::start().await;
     let cancel = tokio_util::sync::CancellationToken::new();
     let trigger = cancel.clone();
-    Mock::given(method("POST"))
-        .and(path("/fim/completions"))
-        .respond_with(move |_: &wiremock::Request| {
-            // In October 2026, a timer could cancel before the request reached the mock under
-            // load. Cancel only after receipt, while the delayed response is still outstanding.
-            trigger.cancel();
-            ResponseTemplate::new(200)
-                .set_body_json(json!({
-                    "choices": [{"text": "late"}]
-                }))
-                .set_delay(Duration::from_secs(10))
-        })
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_fim_mock(&server, "test-key", None, move |_: &wiremock::Request| {
+        // In October 2026, a timer could cancel before the request reached the mock under
+        // load. Cancel only after receipt, while the delayed response is still outstanding.
+        trigger.cancel();
+        ResponseTemplate::new(200)
+            .set_body_json(json!({
+                "choices": [{"text": "late"}]
+            }))
+            .set_delay(Duration::from_secs(10))
+    })
+    .await;
 
     let engine = engine(server.uri(), "test-key");
     let result = tokio::time::timeout(
@@ -224,15 +236,15 @@ async fn api_key_resolves_from_the_auth_store() {
 
     // And the engine built with it sends it as the bearer token.
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/fim/completions"))
-        .and(header("authorization", "Bearer golden-test-key"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+    mount_fim_mock(
+        &server,
+        "golden-test-key",
+        None,
+        ResponseTemplate::new(200).set_body_json(json!({
             "choices": [{"text": "ok"}]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+        })),
+    )
+    .await;
     let engine = engine(server.uri(), &key);
     let cancel = tokio_util::sync::CancellationToken::new();
     let answer = engine

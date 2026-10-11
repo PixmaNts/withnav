@@ -669,19 +669,31 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
     if !call.args_valid || !call.args.is_object() {
         return Err("invalid tool arguments".into());
     }
-    if call.name == "bash"
-        && !call
-            .args
-            .get("command")
-            .is_some_and(serde_json::Value::is_string)
-    {
-        return Err("missing string argument: command".into());
-    }
     if !actor.tool_allowed(&call.name) {
         return Err(format!(
             "tool '{}' is disabled by this session's policy",
             call.name
         ));
+    }
+    let schema = actor.registry.get(&call.name).expect("allowed tool").schema();
+    let parameters = &schema["parameters"];
+    if let Some(required) = parameters["required"].as_array() {
+        for name in required.iter().filter_map(serde_json::Value::as_str) {
+            let kind = parameters["properties"][name]["type"].as_str();
+            let valid = call.args.get(name).is_some_and(|value| match kind {
+                Some("string") => value.is_string(),
+                Some("boolean") => value.is_boolean(),
+                Some("integer") => value.is_i64() || value.is_u64(),
+                Some("number") => value.is_number(),
+                Some("array") => value.is_array(),
+                Some("object") => value.is_object(),
+                Some("null") => value.is_null(),
+                _ => true,
+            });
+            if !valid {
+                return Err(format!("missing {} argument: {name}", kind.unwrap_or("required")));
+            }
+        }
     }
     if let Some(role) = actor.role.as_deref() {
         role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)?;
@@ -1627,7 +1639,46 @@ mod tests {
             let mut invalid = call;
             invalid.args_valid = false;
             run_flow_hook(&mut actor, &invalid, &mut |_| {}).await;
+            invalid.args_valid = true;
+            for args in [serde_json::json!({}), serde_json::json!({"path":42})] {
+                invalid.args = args;
+                run_flow_hook(&mut actor, &invalid, &mut |_| {}).await;
+                assert!(tool_result_of(&actor, &invalid.id).is_some());
+            }
+            invalid.args = serde_json::json!({"path":path,"offset":null,"limit":"default"});
+            assert!(preflight(&actor, &invalid).is_ok(), "optional arguments keep tool defaults");
             assert_eq!(flows.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+        let actor = make_actor(String::new(), registry_gated(), CancellationToken::new());
+        for (name, valid, missing, wrong_type) in [
+            (
+                "write",
+                serde_json::json!({"path":"file.txt","content":"text"}),
+                serde_json::json!({"path":"file.txt"}),
+                serde_json::json!({"path":"file.txt","content":false}),
+            ),
+            (
+                "grep",
+                serde_json::json!({"pattern":"needle","path":null}),
+                serde_json::json!({}),
+                serde_json::json!({"pattern":42}),
+            ),
+            (
+                "bash",
+                serde_json::json!({"command":"true","timeout_ms":null}),
+                serde_json::json!({}),
+                serde_json::json!({"command":[]}),
+            ),
+        ] {
+            for (args, accepted) in [(valid, true), (missing, false), (wrong_type, false)] {
+                let call = ToolCall {
+                    id: "validation".into(),
+                    name: name.into(),
+                    args,
+                    args_valid: true,
+                };
+                assert_eq!(preflight(&actor, &call).is_ok(), accepted, "{name}");
+            }
         }
         let mut metadata = serde_json::Value::Null;
         merge_approval_metadata(

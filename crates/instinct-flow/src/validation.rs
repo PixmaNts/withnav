@@ -386,6 +386,7 @@ pub(crate) fn validate(
         }
     }
     let mut predecessors = vec![Vec::new(); definition.node.len()];
+    let mut successors = vec![Vec::new(); definition.node.len()];
     let mut indegree = vec![0; definition.node.len()];
     for (i, node) in definition.node.iter().enumerate() {
         for (port, destinations) in &node.next {
@@ -399,6 +400,7 @@ pub(crate) fn validate(
             for dest in destinations {
                 if let Some(&j) = index.get(dest) {
                     predecessors[j].push((i, port.clone()));
+                    successors[i].push(j);
                     indegree[j] += 1;
                     if matches!(node.kind, NodeKind::Action { .. })
                         && !matches!(definition.node[j].kind, NodeKind::Action { .. })
@@ -443,14 +445,10 @@ pub(crate) fn validate(
         .collect();
     while let Some(i) = ready.pop_first() {
         order.push(i);
-        for (j, preds) in predecessors.iter().enumerate() {
-            for (pred, _) in preds {
-                if *pred == i {
-                    indegree[j] -= 1;
-                    if indegree[j] == 0 {
-                        ready.insert(j);
-                    }
-                }
+        for &j in &successors[i] {
+            indegree[j] -= 1;
+            if indegree[j] == 0 {
+                ready.insert(j);
             }
         }
     }

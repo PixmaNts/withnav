@@ -30,24 +30,17 @@ fn make_state(tmp: &Path, base_url: &str, history_db: PathBuf) -> AppState {
         .assigned_navigator_state()
 }
 
-/// Waits until the writer thread has drained (observed via the store's own
-/// read path through a fresh HTTP list).
-async fn wait_for_list(base: &str, workspace: &Path, min: usize) -> Vec<Value> {
-    let client = reqwest::Client::new();
-    let mut last = Vec::new();
-    for _ in 0..200 {
-        let body = list_sessions(&client, base, workspace).await;
-        let sessions = body["sessions"].as_array().cloned().unwrap_or_default();
-        if sessions.len() >= min {
-            return sessions;
-        }
-        last = sessions;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!(
-        "history writer never caught up (min {min}, saw {})",
-        last.len()
-    );
+/// Waits for the writer's acknowledged barrier, then verifies the HTTP list.
+async fn wait_for_list(state: &AppState, base: &str, workspace: &Path, min: usize) -> Vec<Value> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        state.history().flush().await.expect("flush");
+        let body = list_sessions(&reqwest::Client::new(), base, workspace).await;
+        let sessions = body["sessions"].as_array().expect("sessions").clone();
+        assert!(sessions.len() >= min, "expected {min} sessions: {sessions:?}");
+        sessions
+    })
+    .await
+    .expect("history writer and HTTP list must finish")
 }
 
 // ---- the acceptance tests ----
@@ -122,7 +115,7 @@ async fn converse_persists_events_title_and_transcript() {
         "turn completed"
     );
 
-    let listed = wait_for_list(&server.base, &server.ws, 1).await;
+    let listed = wait_for_list(&server.state, &server.base, &server.ws, 1).await;
     assert_eq!(listed[0]["id"], id.as_str());
     assert_eq!(listed[0]["title"], "Remember the word: pineapple");
     assert_eq!(listed[0]["message_count"], 1);
@@ -182,7 +175,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
     let original_seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
     let original_max = *original_seqs.iter().max().expect("seqs");
-    wait_for_list(&server.base, &server.ws, 1).await;
+    wait_for_list(&server.state, &server.base, &server.ws, 1).await;
     // Kill the first server (drop state: its runtime tasks go with it).
     // The tempdir stays alive through `_keep`: the db file must survive.
     server.task.abort();
@@ -467,7 +460,7 @@ async fn delete_removes_from_memory_and_store() {
         .expect("sub");
     post_message_ok(&server.base, &id, "hello").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
-    wait_for_list(&server.base, &server.ws, 1).await;
+    wait_for_list(&server.state, &server.base, &server.ws, 1).await;
 
     let resp = reqwest::Client::new()
         .delete(format!("{}/v1/sessions/{id}", server.base))
@@ -480,20 +473,14 @@ async fn delete_removes_from_memory_and_store() {
         Err(withnav::error::ServerError::SessionNotFound(_))
     ));
 
-    // Store is empty for the workspace.
+    // Store is empty for the workspace after the writer acknowledges deletion.
     let client = reqwest::Client::new();
-    for _ in 0..50 {
-        let body = list_sessions(&client, &server.base, &server.ws).await;
-        if body["sessions"]
-            .as_array()
-            .map(|a| a.is_empty())
-            .unwrap_or(false)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
-    let body = list_sessions(&client, &server.base, &server.ws).await;
+    let body = tokio::time::timeout(Duration::from_secs(10), async {
+        server.state.history().flush().await.expect("flush deletion");
+        list_sessions(&client, &server.base, &server.ws).await
+    })
+    .await
+    .expect("deleted history list must finish");
     assert_eq!(body["sessions"].as_array().map(|a| a.len()), Some(0));
 
     // A disk-only id that never existed 404s.
@@ -543,10 +530,10 @@ async fn list_is_per_workspace() {
         let _ = collect_until(sub, |e| e.kind == "turn.end").await;
     }
 
-    let first = wait_for_list(&server.base, &server.ws, 1).await;
+    let first = wait_for_list(&server.state, &server.base, &server.ws, 1).await;
     assert_eq!(first.len(), 1, "only the first workspace's session");
     assert_eq!(first[0]["title"], "in the first workspace");
-    let second = wait_for_list(&server.base, &other, 1).await;
+    let second = wait_for_list(&server.state, &server.base, &other, 1).await;
     assert_eq!(second.len(), 1, "only the second workspace's session");
     assert_eq!(second[0]["title"], "in the second");
 }
@@ -588,7 +575,7 @@ async fn test_server_config_never_resolves_to_the_users_data_dir() {
     post_message_ok(&base, &id, "persisted in the temp root").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 
-    let body = wait_for_list(&base, &ws, 1).await;
+    let body = wait_for_list(&state, &base, &ws, 1).await;
     assert_eq!(body.len(), 1, "the conversation is listed from the temp db");
     assert!(db.exists(), "the database is the one in the temp root");
     task.abort();

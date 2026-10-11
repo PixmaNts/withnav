@@ -8,16 +8,35 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use withnav::navigator::ports::{FimAnswer, FimModel, FimRequest, ModelError};
 use withnav::navigator::protocol::Position;
 use withnav::navigator::reflex::{
-    build_fim_request, render_context_block, ReflexService, DEBOUNCE_MS, MAX_CONTEXT_BYTES,
-    MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES, SuggestOutcome, Suggestion,
+    build_fim_request, render_context_block, ReflexService, SuggestOutcome, Suggestion,
+    DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
 
 mod common;
 use common::navigator::ScriptedFim;
 
 const URI: &str = "file:///ws/src/main.rs";
+
+struct ObservedFim {
+    inner: ScriptedFim,
+    started: tokio::sync::Notify,
+}
+
+impl FimModel for ObservedFim {
+    fn complete<'a>(
+        &'a self,
+        request: FimRequest,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<FimAnswer, ModelError>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.inner.complete(request, cancel).await
+        })
+    }
+}
 
 type SuggestResult = Result<Suggestion, SuggestOutcome>;
 
@@ -165,7 +184,11 @@ async fn newer_request_cancels_the_older_one() {
 #[tokio::test(start_paused = true)]
 async fn superseded_while_answering_never_surfaces() {
     let model = ScriptedFim::new(vec!["late".to_string(), "fresh".to_string()]).with_delay(100);
-    let svc = service(model.clone());
+    let observed = Arc::new(ObservedFim {
+        inner: model.clone(),
+        started: tokio::sync::Notify::new(),
+    });
+    let svc = Arc::new(ReflexService::new(observed.clone()));
 
     let older = spawn_suggest(
         &svc,
@@ -178,15 +201,9 @@ async fn superseded_while_answering_never_surfaces() {
         },
         "",
     );
-    // Past the debounce: drive the runtime (advance wakes the timer but
-    // never polls the task) until the older request is inside the model
-    // call, then supersede it.
-    for _ in 0..1000 {
-        tokio::time::advance(Duration::from_millis(10)).await;
-        if model.calls() == 1 {
-            break;
-        }
-    }
+    tokio::time::timeout(Duration::from_secs(20), observed.started.notified())
+        .await
+        .expect("older request entered the model");
     assert_eq!(model.calls(), 1, "the older request must reach the model");
     let newer = spawn_suggest(
         &svc,
@@ -307,10 +324,7 @@ async fn different_documents_do_not_cancel_each_other() {
         "",
     );
     let (ra, rb) = tokio::join!(join_suggest(a), join_suggest(b));
-    let mut texts = [
-        ra.unwrap().item.text,
-        rb.unwrap().item.text,
-    ];
+    let mut texts = [ra.unwrap().item.text, rb.unwrap().item.text];
     texts.sort();
     assert_eq!(texts, ["one", "two"]);
 }

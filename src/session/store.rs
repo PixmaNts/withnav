@@ -317,7 +317,7 @@ enum Write {
         value: Option<AgentOverride>,
         selection: Option<Box<EffectiveAgentSelection>>,
         staged: Option<SelectionCheckpoint>,
-        envelopes: Vec<EventEnvelope>,
+        envelopes: Arc<Vec<EventEnvelope>>,
     },
     RecordSession {
         provenance: Option<String>,
@@ -472,7 +472,7 @@ impl HistoryStore {
             value: Some(value),
             selection: None,
             staged: None,
-            envelopes: vec![],
+            envelopes: Arc::new(vec![]),
         })
         .await
     }
@@ -487,7 +487,7 @@ impl HistoryStore {
             value: None,
             selection: None,
             staged: None,
-            envelopes: vec![],
+            envelopes: Arc::new(vec![]),
         })
         .await
     }
@@ -533,9 +533,10 @@ impl HistoryStore {
         value: Option<AgentOverride>,
         selection: EffectiveAgentSelection,
         staged: Option<SelectionCheckpoint>,
-        envelopes: Vec<EventEnvelope>,
+        envelopes: impl Into<Arc<Vec<EventEnvelope>>>,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<(), String> {
+        let envelopes = envelopes.into();
         if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
             return Err("selection cancelled before admission".into());
         }
@@ -1549,8 +1550,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     ],
                 )?;
             }
-            for event in envelopes {
-                insert_committed_event(&tx, &event).map_err(WriteError::InvalidSelection)?;
+            for event in envelopes.iter() {
+                insert_committed_event(&tx, event).map_err(WriteError::InvalidSelection)?;
             }
         }
         Write::RecordSession {
@@ -2139,12 +2140,12 @@ mod tests {
                         }),
                         selection: None,
                         staged: None,
-                        envelopes: vec![EventEnvelope::new(
+                        envelopes: Arc::new(vec![EventEnvelope::new(
                             id,
                             0,
                             EventKind::ModelChanged,
                             serde_json::json!({}),
-                        )],
+                        )]),
                     })
                     .await
             }
@@ -2186,12 +2187,12 @@ mod tests {
                 }),
                 selection: None,
                 staged: None,
-                envelopes: vec![EventEnvelope::new(
+                envelopes: Arc::new(vec![EventEnvelope::new(
                     id,
                     0,
                     EventKind::ModelChanged,
                     serde_json::json!({}),
-                )],
+                )]),
                 cancel: Some(token),
             })
             .await

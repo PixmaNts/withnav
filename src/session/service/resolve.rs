@@ -763,7 +763,7 @@ impl Service {
             move |target: ModelTarget,
                   floor: usize,
                   staged: Option<crate::bus::runtime::model::StagedCheckpoint>,
-                  envelopes: Vec<crate::bus::event::EventEnvelope>,
+                  envelopes: Arc<Vec<crate::bus::event::EventEnvelope>>,
                   install: crate::bus::runtime::Install,
                   cancel: tokio_util::sync::CancellationToken| {
                 let (service, selected) = (service.clone(), selected.clone());

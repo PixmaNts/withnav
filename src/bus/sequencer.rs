@@ -15,6 +15,8 @@
 //! the runtime (a separate task) can never consume a command whose
 //! `message.received` is not already sequenced.
 
+use std::sync::Arc;
+
 use tokio::sync::{mpsc, oneshot, watch};
 use ulid::Ulid;
 
@@ -57,7 +59,7 @@ pub type AckedCommit = Box<
 >;
 pub type AckedBatchCommit = Box<
     dyn FnOnce(
-            Vec<EventEnvelope>,
+            Arc<Vec<EventEnvelope>>,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
         + Send,
@@ -432,9 +434,10 @@ async fn run(
                     let _ = reply.send(Err(BusError::SeqSpaceExhausted.to_string()));
                     continue;
                 }
-                match commit(envelopes.clone()).await {
+                let envelopes = Arc::new(envelopes);
+                match commit(Arc::clone(&envelopes)).await {
                     Ok(()) => {
-                        for envelope in envelopes {
+                        for envelope in Arc::unwrap_or_clone(envelopes) {
                             emitter.emit(envelope);
                         }
                         let _ = reply.send(Ok(first));
@@ -951,6 +954,46 @@ mod tests {
             .unwrap();
         assert_eq!(ran_rx.await.unwrap(), assigned);
         assert_eq!(rx.recv().await.unwrap().seq, assigned);
+    }
+
+    #[tokio::test]
+    async fn batch_commit_shares_payload_then_emits_in_order_without_gaps_on_failure() {
+        let (seq, mut rx) = spawn_with_collector();
+        let (committed, seen) = oneshot::channel();
+        let first = seq
+            .commit_batch_acked(
+                vec![turn_candidate("first"), turn_candidate("second")],
+                Box::new(move |envelopes| {
+                    Box::pin(async move {
+                        assert_eq!(Arc::strong_count(&envelopes), 2);
+                        let tag = envelopes[0].payload["tag"].as_str().unwrap();
+                        let _ = committed.send((envelopes[0].event_id, tag.as_ptr() as usize));
+                        Ok(())
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        let (event_id, payload_pointer) = seen.await.unwrap();
+        let emitted = rx.recv().await.unwrap();
+        assert_eq!((emitted.seq, emitted.event_id), (first, event_id));
+        assert_eq!(
+            emitted.payload["tag"].as_str().unwrap().as_ptr() as usize,
+            payload_pointer
+        );
+        assert_eq!(rx.recv().await.unwrap().seq, first + 1);
+        assert!(seq
+            .commit_batch_acked(
+                vec![turn_candidate("lost"), turn_candidate("also lost")],
+                Box::new(|_| Box::pin(async { Err("disk full".into()) })),
+            )
+            .await
+            .is_err());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            seq.publish_acked(turn_candidate("next")).await.unwrap(),
+            first + 2
+        );
     }
 
     #[tokio::test]

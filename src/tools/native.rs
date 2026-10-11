@@ -110,10 +110,12 @@ fn slice_lines(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
     if offset.is_none() && limit.is_none() {
         return text.to_string();
     }
-    let start = offset.unwrap_or(1).max(1) as usize - 1;
+    let start = usize::try_from(offset.unwrap_or(1).saturating_sub(1)).unwrap_or(usize::MAX);
     let lines: Vec<&str> = text.lines().collect();
     let end = match limit {
-        Some(l) => (start + l as usize).min(lines.len()),
+        Some(l) => start
+            .saturating_add(usize::try_from(l).unwrap_or(usize::MAX))
+            .min(lines.len()),
         None => lines.len(),
     };
     if start >= lines.len() {
@@ -576,6 +578,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.truncated.unwrap().original_bytes, content.len());
+        for (offset, limit, expected) in [
+            (0, 1, line.as_str()),
+            (2, u64::MAX, &content[100..]),
+            (u64::MAX, u64::MAX, ""),
+            (1, 0, ""),
+        ] {
+            assert_eq!(slice_lines(&content, Some(offset), Some(limit)), expected);
+        }
     }
 
     #[tokio::test]

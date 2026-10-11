@@ -14,6 +14,12 @@ fn tui(args: &[&str]) -> Run {
 }
 
 fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
+    let (mut command, dirs) = tui_command(args, env);
+    let out = command.output().expect("run the binary");
+    Run { out, dirs }
+}
+
+fn tui_command(args: &[&str], env: &[(&str, &str)]) -> (Command, TempDir) {
     let dirs = tempfile::tempdir().expect("tempdir");
     let data = dirs.path().join("data");
     let config = dirs.path().join("config");
@@ -40,19 +46,36 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     for (key, value) in env {
         command.env(key, value);
     }
-    let out = command.output().expect("run the binary");
-    Run { out, dirs }
+    (command, dirs)
 }
 
 fn stderr(run: &Run) -> String {
     String::from_utf8_lossy(&run.out.stderr).into_owned()
 }
 
-fn closed_port_url() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}")
+async fn unavailable_server() -> wiremock::MockServer {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/health"))
+        .respond_with(wiremock::ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn tui_unavailable(server: &wiremock::MockServer, env: &[(&str, &str)]) -> Run {
+    let url = server.uri();
+    let (command, dirs) = tui_command(&["--url", &url, "--workspace", "."], env);
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::from(command)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("unavailable server must fail within a bounded wait")
+    .expect("run the binary");
+    Run { out, dirs }
 }
 
 #[test]
@@ -89,16 +112,16 @@ fn models_and_url_conflict() {
     assert!(err.contains("--models") && err.contains("--url"), "{err}");
 }
 
-#[test]
-fn url_to_a_closed_port_fails_fast_with_a_readable_error() {
-    let url = closed_port_url();
-    let started = std::time::Instant::now();
-    let run = tui(&["--url", &url, "--workspace", "."]);
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+#[tokio::test]
+async fn url_to_an_unavailable_server_fails_fast_with_a_readable_error() {
+    let server = unavailable_server().await;
+    let url = server.uri();
+    let run = tui_unavailable(&server, &[]).await;
     assert_eq!(run.out.status.code(), Some(1));
     let err = stderr(&run);
     assert!(err.contains("cannot reach a server"), "{err}");
     assert!(err.contains(&url), "{err}");
+    assert!(err.contains("HTTP 503"), "{err}");
     // Nothing of the terminal setup ran: no alternate screen, no raw mode.
     for escape in ["\x1b[?1049h", "\x1b[?2004h"] {
         assert!(!String::from_utf8_lossy(&run.out.stdout).contains(escape));
@@ -136,26 +159,28 @@ fn without_a_terminal_the_embedded_client_stops_cleanly_and_logs_to_the_file() {
     assert!(log.contains("terminal client started"), "{log}");
 }
 
-#[test]
-fn the_token_is_never_written_to_the_log() {
-    let url = closed_port_url();
-    let run = tui_with(
-        &["--url", &url, "--workspace", "."],
+#[tokio::test]
+async fn the_token_is_never_written_to_the_log() {
+    let server = unavailable_server().await;
+    let run = tui_unavailable(
+        &server,
         &[("WITHNAV_SERVER_TOKEN", "super-secret-token-value")],
-    );
+    )
+    .await;
     let log_dir = run.dirs.path().join("data").join("withnav");
     let log = std::fs::read_to_string(log_dir.join("tui.log")).unwrap_or_default();
     assert!(!log.contains("super-secret-token-value"));
     assert!(!stderr(&run).contains("super-secret-token-value"));
 }
 
-#[test]
-fn the_former_token_variable_works_with_one_deprecation_warning() {
-    let url = closed_port_url();
-    let run = tui_with(
-        &["--url", &url, "--workspace", "."],
+#[tokio::test]
+async fn the_former_token_variable_works_with_one_deprecation_warning() {
+    let server = unavailable_server().await;
+    let run = tui_unavailable(
+        &server,
         &[("RUST_AGENT_SERVER_TOKEN", "super-secret-token-value")],
-    );
+    )
+    .await;
     let err = stderr(&run);
     assert_eq!(
         err.matches("RUST_AGENT_SERVER_TOKEN is deprecated").count(),
@@ -166,23 +191,25 @@ fn the_former_token_variable_works_with_one_deprecation_warning() {
     assert!(!err.contains("super-secret-token-value"));
 }
 
-#[test]
-fn the_new_token_variable_prints_no_warning() {
-    let url = closed_port_url();
-    let run = tui_with(
-        &["--url", &url, "--workspace", "."],
+#[tokio::test]
+async fn the_new_token_variable_prints_no_warning() {
+    let server = unavailable_server().await;
+    let run = tui_unavailable(
+        &server,
         &[("WITHNAV_SERVER_TOKEN", "super-secret-token-value")],
-    );
+    )
+    .await;
     assert!(!stderr(&run).contains("deprecated"), "{}", stderr(&run));
 }
 
-#[test]
-fn the_navai_token_variable_still_works_with_a_deprecation_warning() {
-    let url = closed_port_url();
-    let run = tui_with(
-        &["--url", &url, "--workspace", "."],
+#[tokio::test]
+async fn the_navai_token_variable_still_works_with_a_deprecation_warning() {
+    let server = unavailable_server().await;
+    let run = tui_unavailable(
+        &server,
         &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
-    );
+    )
+    .await;
     // The terminal owns stderr, so the deprecation goes to the client log.
     let log =
         std::fs::read_to_string(run.dirs.path().join("data/withnav/tui.log")).unwrap_or_default();

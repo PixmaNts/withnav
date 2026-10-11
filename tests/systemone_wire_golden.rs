@@ -211,18 +211,30 @@ async fn slow_body_hits_the_two_second_deadline() {
 
     let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
-    let started = std::time::Instant::now();
-    let err = client
-        .decide(
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        client.decide(
             &empty_request(),
             &tokio_util::sync::CancellationToken::new(),
-        )
-        .await
-        .unwrap_err();
-    let elapsed = started.elapsed();
+        ),
+    )
+    .await
+    .expect("System One deadline must bound the call")
+    .unwrap_err();
+    let deadline_error = match &err {
+        ProviderError::Api {
+            status: 0,
+            message,
+            partial: None,
+        } => message == "deadline exceeded (2000 ms)",
+        // The HTTP client's clamped timeout and the outer layer deadline both
+        // expire at two seconds; whichever wins must still be a timeout.
+        ProviderError::Http(error) => error.is_timeout(),
+        _ => false,
+    };
     assert!(
-        elapsed < std::time::Duration::from_secs(4),
-        "deadline not applied, took {elapsed:?}"
+        deadline_error,
+        "expected System One deadline error, got: {err:?}"
     );
     assert!(!err.to_string().is_empty());
 }

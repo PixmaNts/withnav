@@ -202,7 +202,7 @@ async fn rg_search(
     }
     // Defense in depth only: rg exclusions above prevented sensitive opens.
     let decoded = String::from_utf8_lossy(&bytes);
-    let matches: Vec<_> = decoded
+    let mut matches: Vec<_> = decoded
         .lines()
         .filter(|line| {
             line.split_once(':')
@@ -213,11 +213,8 @@ async fn rg_search(
     if matches.len() > MAX_MATCHES {
         partial = Some("match limit");
     }
-    let text = matches
-        .into_iter()
-        .take(MAX_MATCHES)
-        .collect::<Vec<_>>()
-        .join("\n");
+    matches.truncate(MAX_MATCHES);
+    let text = matches.join("\n");
     count_after_rg(text, partial, root.to_path_buf(), cancel, Limits::default()).await
 }
 

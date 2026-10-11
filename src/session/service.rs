@@ -512,6 +512,11 @@ impl Service {
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
+    pub fn expire_catalog_backoff(&self) {
+        self.catalog.expire_failures();
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
     pub fn pause_negative_result_eligibility(
         &self,
         id: SessionId,

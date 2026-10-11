@@ -912,16 +912,26 @@ async fn variant_works_after_the_provider_recovers() {
         .omniroute()
         .state();
     let id = state.create_session(&ws, None, false).await.unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 
     let out = state.run_command(id, "variant", "high").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out.error.unwrap().contains("cannot confirm"));
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "a failed lookup is not retried within the backoff"
+    );
 
     serve_tiers(&server, &["low", "high"]).await;
-    // A failed lookup is not repeated for a few seconds.
-    tokio::time::sleep(std::time::Duration::from_millis(5300)).await;
+    state.expire_catalog_backoff();
     let out = state.run_command(id, "variant", "high").await.unwrap();
     assert!(out.ok, "{out:?}");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "the lookup is retried after expiring the backoff"
+    );
     assert_eq!(saved(&state, id).await.as_deref(), Some("high"));
     let meta = state.history().meta(id).await.unwrap().unwrap();
     assert_eq!(

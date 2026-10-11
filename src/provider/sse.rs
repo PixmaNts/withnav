@@ -192,6 +192,7 @@ where
                     Err(e) => return Poll::Ready(Some(Err(e))),
                 },
                 Poll::Ready(Some(Err(_))) => {
+                    this.finished = true;
                     return Poll::Ready(Some(Err(SseError::MalformedFrame(
                         "transport error in SSE stream".to_string(),
                     ))));
@@ -310,6 +311,7 @@ mod tests {
         let items: Vec<Result<Bytes, std::io::Error>> = vec![
             Ok(Bytes::from_static(b"data: a\n\n")),
             Err(std::io::Error::other("boom")),
+            Ok(Bytes::from_static(b"data: must not resume\n\n")),
         ];
         let src = futures_util::stream::iter(items);
         let mut ev = SseEventStream::new(src);
@@ -317,6 +319,8 @@ mod tests {
         assert_eq!(first.unwrap(), "a");
         let second = ev.next().await.unwrap();
         assert!(matches!(second, Err(SseError::MalformedFrame(_))));
+        assert!(ev.next().await.is_none());
+        assert!(ev.next().await.is_none());
     }
 
     #[test]

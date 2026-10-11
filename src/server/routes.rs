@@ -1133,80 +1133,24 @@ pub(crate) fn error_response(err: ServerError) -> Response {
             Json(json!({ "error": err.to_string(), "reason": "session_archived", "resume_disabled_reason": reason })),
         ).into_response();
     }
-    if matches!(err, ServerError::ResumeRequired) {
+    let reason = match &err {
+        ServerError::ResumeRequired => Some("resume_required"),
+        ServerError::ChildReadOnly => Some("child_read_only"),
+        ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
+        ServerError::PermissionStale => Some("permission_stale"),
+        ServerError::NoContextWindow { .. } => Some("no_context_window"),
+        ServerError::SavedAgentUnavailable { .. } => Some("saved_agent_unavailable"),
+        ServerError::ImpossibleBudget { .. } => Some("impossible_context_budget"),
+        ServerError::ModelIdentityChanged { .. } => Some("model_identity_changed"),
+        ServerError::VariantUnavailable { .. } => Some("variant_unavailable"),
+        ServerError::VariantOfferUnknown { .. } => Some("variant_offer_unknown"),
+        ServerError::UnknownVariant { .. } => Some("unknown_variant"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
         return (
             status,
-            Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::ChildReadOnly) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "child_read_only" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::SubagentCapacity { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "subagent_capacity" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::PermissionStale) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "permission_stale" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::NoContextWindow { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::SavedAgentUnavailable { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "saved_agent_unavailable" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::ImpossibleBudget { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "impossible_context_budget" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::ModelIdentityChanged { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "model_identity_changed" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::VariantUnavailable { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "variant_unavailable" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::VariantOfferUnknown { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "variant_offer_unknown" })),
-        )
-            .into_response();
-    }
-    if matches!(err, ServerError::UnknownVariant { .. }) {
-        return (
-            status,
-            Json(json!({ "error": err.to_string(), "reason": "unknown_variant" })),
+            Json(json!({ "error": err.to_string(), "reason": reason })),
         )
             .into_response();
     }

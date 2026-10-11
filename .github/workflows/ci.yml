@@ -42,6 +42,21 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
+      # Some tests model a developer machine whose tools are root-owned system binaries,
+      # which the permission gate trusts (a user-owned ~/.cargo/bin tool is deliberately not
+      # trusted). A fresh runner has none of these, so 13 tests failed on 2026-10-12:
+      # - ripgrep: the grep tool tests exercise the real `rg` engine next to the built-in one.
+      # - a root-owned /usr/bin/cargo: the real cargo binary (not the rustup proxy, which
+      #   would resolve into the user-owned ~/.cargo) copied out of the toolchain; tests that
+      #   pin PATH=/usr/bin:/bin resolve it. It is never executed.
+      # - a root-owned /usr/bin/mise: a stand-in executable; one test only needs a root-owned
+      #   file with that name as the target of a user shim link. It is never executed.
+      - name: Provide system tool identities for the permission gate tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
+          sudo install -m 0755 "$(rustup which cargo)" /usr/bin/cargo
+          sudo install -m 0755 /usr/bin/true /usr/bin/mise
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --bins
       - run: cargo test

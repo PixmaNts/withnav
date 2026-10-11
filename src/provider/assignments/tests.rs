@@ -23,6 +23,12 @@ fn settings(value: Value) -> Settings {
     crate::settings::load(dir.path()).unwrap()
 }
 
+fn layer_settings(layer: Layer, model: &str) -> Settings {
+    let mut settings = Settings::default();
+    settings.set_dotted("layers", json!({layer.config_key(): model}));
+    settings
+}
+
 #[test]
 fn model_name_preserves_nested_ids_and_groups_providers() {
     let catalog = catalog();
@@ -126,7 +132,7 @@ fn layers_disable_missing_unknown_and_wrong_api_assignments() {
             matches!(resolver.layer_assignment(layer).unwrap(), LayerAssignment::Disabled(LayerDisabled::Missing { layer: found }) if found == layer)
         );
         for model in ["omniroute/missing", "missing/model", "not-a-name"] {
-            let settings = settings(json!({"layers":{layer.config_key(): model}}));
+            let settings = layer_settings(layer, model);
             assert!(matches!(
                 AssignmentResolver::new(&catalog, &settings)
                     .layer_assignment(layer)
@@ -139,7 +145,7 @@ fn layers_disable_missing_unknown_and_wrong_api_assignments() {
         } else {
             "omniroute/cc/chat"
         };
-        let settings = settings(json!({"layers":{layer.config_key():wrong}}));
+        let settings = layer_settings(layer, wrong);
         let LayerAssignment::Disabled(reason @ LayerDisabled::WrongApi { .. }) =
             AssignmentResolver::new(&catalog, &settings)
                 .layer_assignment(layer)

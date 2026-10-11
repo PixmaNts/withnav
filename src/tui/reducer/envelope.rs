@@ -500,10 +500,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 child.status = ChildStatus::Permission;
                 child.event_seq = Some(e.seq);
             }
-            let text = |key: &str| -> Result<String, ProtocolError> {
-                Ok(strip_controls(v[key].as_str().ok_or_else(bad)?))
+            let text = |value: &Value| -> Result<String, ProtocolError> {
+                Ok(strip_controls(value.as_str().ok_or_else(bad)?))
             };
-            let request_id = text("request_id")?;
+            let request_id = text(&v["request_id"])?;
             let id = format!("permission:{request_id}");
             if s.conversation.blocks.iter().any(|b| b.id == id) {
                 return Ok(());
@@ -513,11 +513,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 skill_script: serde_json::from_value(v["skill_script"].clone()).ok(),
                 child_session_id: child.map(str::to_string),
                 request_id,
-                tool_call_id: text("tool_call_id")?,
-                tool: text("tool")?,
-                arguments: text("arguments")?,
-                scope_kind: strip_controls(v["scope"]["kind"].as_str().ok_or_else(bad)?),
-                scope: strip_controls(v["scope"]["value"].as_str().ok_or_else(bad)?),
+                tool_call_id: text(&v["tool_call_id"])?,
+                tool: text(&v["tool"])?,
+                arguments: text(&v["arguments"])?,
+                scope_kind: text(&v["scope"]["kind"])?,
+                scope: text(&v["scope"]["value"])?,
                 agent: strip_controls(v["agent"].as_str().unwrap_or_default()),
                 reason: strip_controls(&match child {
                     Some(child) => format!(

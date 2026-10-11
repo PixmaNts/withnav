@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::OffsetDateTime;
 use ulid::Ulid;
 
 use crate::provider::{AssistantMessage, StreamDelta, Usage};
@@ -764,7 +765,7 @@ pub struct ContextSnapshot {
     pub revision: u64,
 }
 
-// --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
+// --- RFC 3339 timestamp (time crate; UTC with exactly three millisecond digits) ---
 
 /// Current UTC time as RFC 3339 with millisecond precision (`...Z`).
 /// Also used by the history store for its row timestamps.
@@ -777,30 +778,20 @@ pub(crate) fn now_rfc3339() -> String {
 }
 
 fn rfc3339_from_unix(secs: u64, millis: u32) -> String {
-    let (year, month, day, hour, minute, second) = civil_from_unix(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-/// Days-to-civil conversion (Howard Hinnant's algorithm), UTC only.
-fn civil_from_unix(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (
-        year,
-        month,
-        day,
-        (rem / 3_600) as u32,
-        (rem % 3_600 / 60) as u32,
-        (rem % 60) as u32,
+    let date = i64::try_from(secs)
+        .ok()
+        .and_then(|secs| OffsetDateTime::from_unix_timestamp(secs).ok())
+        .and_then(|date| date.replace_millisecond(u16::try_from(millis).ok()?).ok())
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        date.year(),
+        date.month() as u8,
+        date.day(),
+        date.hour(),
+        date.minute(),
+        date.second(),
+        date.millisecond(),
     )
 }
 
@@ -1375,6 +1366,11 @@ mod tests {
             rfc3339_from_unix(951_782_400, 0),
             "2000-02-29T00:00:00.000Z"
         );
+        assert_eq!(
+            rfc3339_from_unix(946_684_799, 999),
+            "1999-12-31T23:59:59.999Z"
+        );
+        assert_eq!(rfc3339_from_unix(u64::MAX, 999), "1970-01-01T00:00:00.000Z");
     }
 
     /// Manual QA observable: one fully-populated envelope as JSON (paste into

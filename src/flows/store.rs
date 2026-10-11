@@ -69,6 +69,26 @@ pub fn validate(content: Content) -> Validation {
         errors,
     }
 }
+fn load_toml(dir: &Directory, toml: String) -> Validation {
+    let mut templates = BTreeMap::new();
+    let mut extra = vec![];
+    if let Ok(definition) = Definition::parse(&toml) {
+        for node in &definition.node {
+            if let Some(name) = node.kind.template() {
+                match dir.read(name, MAX_TEMPLATE_BYTES, false) {
+                    Ok(text) => {
+                        templates.insert(name.into(), text);
+                    }
+                    Err(e) => extra.push(Diagnostic::new("io", e.to_string(), name)),
+                }
+            }
+        }
+    }
+    let mut validation = validate(Content::Toml { toml, templates });
+    validation.errors.extend(extra);
+    validation.valid = validation.errors.is_empty();
+    validation
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Document {
     pub name: String,
@@ -276,24 +296,7 @@ pub fn inspect_directory(path: &std::path::Path) -> Result<Vec<(String, bool)>, 
     names.sort();
     for file in names.into_iter().filter(|n| n.ends_with(".toml")) {
         let toml = dir.read(&file, instinct_flow::MAX_FLOW_BYTES, false)?;
-        let mut templates = BTreeMap::new();
-        let mut readable = true;
-        if let Ok(definition) = Definition::parse(&toml) {
-            for node in &definition.node {
-                if let Some(name) = node.kind.template() {
-                    match dir.read(name, instinct_flow::MAX_TEMPLATE_BYTES, false) {
-                        Ok(text) => {
-                            templates.insert(name.into(), text);
-                        }
-                        Err(_) => readable = false,
-                    }
-                }
-            }
-        }
-        results.push((
-            file,
-            readable && validate(Content::Toml { toml, templates }).valid,
-        ));
+        results.push((file, load_toml(&dir, toml).valid));
     }
     Ok(results)
 }
@@ -473,34 +476,14 @@ impl FlowStore {
                 false,
             )
             .map_err(missing)?;
-        let parsed = Definition::parse(&toml);
-        let mut templates = BTreeMap::new();
-        let mut extra = vec![];
-        if let Ok(d) = &parsed {
-            for node in &d.node {
-                if let Some(name) = node.kind.template() {
-                    match dir.read(name, instinct_flow::MAX_TEMPLATE_BYTES, false) {
-                        Ok(text) => {
-                            templates.insert(name.into(), text);
-                        }
-                        Err(e) => extra.push(Diagnostic::new("io", e.to_string(), name)),
-                    }
-                }
-            }
-        }
-        let v = validate(Content::Toml {
-            toml: toml.clone(),
-            templates: templates.clone(),
-        });
-        let revision = revision(&toml, &templates);
+        let v = load_toml(&dir, toml.clone());
+        let revision = revision(&toml, &v.templates);
         let saved_since_reload = self
             .revisions
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(location, name.into()))
             != Some(&revision);
-        let mut errors = v.errors;
-        errors.extend(extra);
         Ok(Document {
             name: name.into(),
             location,
@@ -511,8 +494,8 @@ impl FlowStore {
             revision,
             toml,
             definition: v.definition,
-            templates,
-            errors,
+            templates: v.templates,
+            errors: v.errors,
             saved_since_reload,
             read_only: false,
         })

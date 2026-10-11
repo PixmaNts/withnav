@@ -54,11 +54,25 @@ pub fn message_tokens(message: &ChatMessage) -> u64 {
 
 /// The tool definitions as they are serialized into the request.
 pub fn tools_tokens(tools: &[ToolDef]) -> u64 {
-    let bytes: usize = tools
-        .iter()
-        .map(|t| serde_json::to_string(t).map_or(0, |s| s.len()))
-        .sum();
-    bytes_tokens(bytes)
+    let mut counter = ByteCounter(0);
+    for tool in tools {
+        serde_json::to_writer(&mut counter, tool)
+            .expect("tool definitions contain only JSON values and strings");
+    }
+    bytes_tokens(counter.0)
+}
+
+struct ByteCounter(usize);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Breakdown {

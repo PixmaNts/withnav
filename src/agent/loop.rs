@@ -20,18 +20,38 @@ pub const DEFAULT_MAX_STEPS: usize = 50;
 pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
 pub fn max_steps() -> usize {
-    crate::paths::env_var("WITHNAV_MAX_STEPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_STEPS)
+    configured_max_steps(
+        crate::paths::env_var("WITHNAV_MAX_STEPS"),
+        DEFAULT_MAX_STEPS,
+        DEFAULT_MAX_STEPS,
+    )
 }
 
 /// Root turns have no step cap unless the Captain explicitly opts in.
 pub fn root_max_steps() -> usize {
-    crate::paths::env_var("WITHNAV_MAX_STEPS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(usize::MAX)
+    configured_max_steps(
+        crate::paths::env_var("WITHNAV_MAX_STEPS"),
+        usize::MAX,
+        WATCHDOG_FALLBACK_STEPS,
+    )
+}
+
+fn configured_max_steps(
+    value: Result<String, std::env::VarError>,
+    absent: usize,
+    invalid: usize,
+) -> usize {
+    if matches!(value, Err(std::env::VarError::NotPresent)) {
+        return absent;
+    }
+    if let Some(steps) = value.ok().and_then(|value| value.parse::<usize>().ok()) {
+        return steps;
+    }
+    tracing::warn!(
+        fallback = invalid,
+        "invalid WITHNAV_MAX_STEPS; expected a non-negative integer, using a bounded fallback"
+    );
+    invalid
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +131,26 @@ async fn run_steps(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
+    let state = RunState(actor);
+    run_steps_inner(&mut *state.0, observe, budget).await
+}
+
+/// An early error or dropped run cannot leave an inactive actor running.
+struct RunState<'a>(&'a mut AgentActor);
+
+impl Drop for RunState<'_> {
+    fn drop(&mut self) {
+        if self.0.state == AgentState::Running {
+            self.0.state = AgentState::Idle;
+        }
+    }
+}
+
+async fn run_steps_inner(
+    actor: &mut AgentActor,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    budget: usize,
+) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
 
     // One client (one connection pool) for every step of this run.
@@ -167,10 +207,20 @@ async fn run_steps(
         // The safe boundary before a request: every tool result of the last
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
-        if actor
-            .input_budget
-            .is_some_and(|budget| actor.context_breakdown().total() > budget)
-        {
+        let role_message = actor.role_message();
+        let history = actor.effective_history();
+        let tools = actor.effective_tool_schemas();
+        if actor.input_budget.is_some_and(|budget| {
+            crate::agent::context::estimate(
+                role_message.as_deref(),
+                actor.rules.message(),
+                actor.effective_skills_catalog(),
+                &history,
+                &tools,
+            )
+            .total()
+                > budget
+        }) {
             return Ok(RunOutcome::NeedsCompaction {
                 steps_left: budget - step,
             });
@@ -178,14 +228,13 @@ async fn run_steps(
 
         observe(AgentEvent::StepStarted);
 
-        let role_message = actor.role_message();
         let request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
             actor.effective_skills_catalog(),
-            actor.effective_history(),
-            actor.effective_tool_schemas(),
+            history,
+            tools,
             actor.max_tokens,
         );
 
@@ -617,19 +666,38 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
     if !call.args_valid || !call.args.is_object() {
         return Err("invalid tool arguments".into());
     }
-    if call.name == "bash"
-        && !call
-            .args
-            .get("command")
-            .is_some_and(serde_json::Value::is_string)
-    {
-        return Err("missing string argument: command".into());
-    }
     if !actor.tool_allowed(&call.name) {
         return Err(format!(
             "tool '{}' is disabled by this session's policy",
             call.name
         ));
+    }
+    let schema = actor
+        .registry
+        .get(&call.name)
+        .expect("allowed tool")
+        .schema();
+    let parameters = &schema["parameters"];
+    if let Some(required) = parameters["required"].as_array() {
+        for name in required.iter().filter_map(serde_json::Value::as_str) {
+            let kind = parameters["properties"][name]["type"].as_str();
+            let valid = call.args.get(name).is_some_and(|value| match kind {
+                Some("string") => value.is_string(),
+                Some("boolean") => value.is_boolean(),
+                Some("integer") => value.is_i64() || value.is_u64(),
+                Some("number") => value.is_number(),
+                Some("array") => value.is_array(),
+                Some("object") => value.is_object(),
+                Some("null") => value.is_null(),
+                _ => true,
+            });
+            if !valid {
+                return Err(format!(
+                    "missing {} argument: {name}",
+                    kind.unwrap_or("required")
+                ));
+            }
+        }
     }
     if let Some(role) = actor.role.as_deref() {
         role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)?;
@@ -840,15 +908,10 @@ async fn resolve_flow_call(
         };
         let approval =
             serde_json::json!({"approved_by":"captain","flow":{"name":flow,"run_id":run_id}});
-        match execute_call(actor, call, destination, Some(approval), observe).await {
-            DispatchOutcome::Settled(result) => {
-                append_tool_result(actor, &call.id, &result);
-                return One::Settled;
-            }
-            DispatchOutcome::ScriptChanged => {
-                return script_changed_request(actor, call, destination.map(Path::to_path_buf))
-            }
-            DispatchOutcome::DestinationChanged => {}
+        if let Some(outcome) =
+            execute_and_settle(actor, call, destination, Some(approval), observe).await
+        {
+            return outcome;
         }
     }
     if request.flow_regates >= REGATE_LIMIT {
@@ -1048,15 +1111,10 @@ async fn run_gated(
                     serde_json::json!("config_session_grant");
             }
         }
-        match execute_call(actor, call, destination.as_deref(), note, observe).await {
-            DispatchOutcome::Settled(result) => {
-                append_tool_result(actor, &call.id, &result);
-                return One::Settled;
-            }
-            DispatchOutcome::ScriptChanged => {
-                return script_changed_request(actor, call, destination)
-            }
-            DispatchOutcome::DestinationChanged => {}
+        if let Some(outcome) =
+            execute_and_settle(actor, call, destination.as_deref(), note, observe).await
+        {
+            return outcome;
         }
     }
     reject_call(
@@ -1077,17 +1135,35 @@ async fn run_reviewed(
     approval_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
+    if let Some(outcome) =
+        execute_and_settle(actor, call, destination, approval_note, observe).await
+    {
+        return outcome;
+    }
+    run_gated(actor, call, observe).await
+}
+
+/// A changed destination remains the caller's responsibility: retry the gate
+/// or ask for a fresh flow binding, without reusing the old approval.
+async fn execute_and_settle(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    destination: Option<&Path>,
+    approval_note: Option<serde_json::Value>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Option<One> {
     match execute_call(actor, call, destination, approval_note, observe).await {
         DispatchOutcome::Settled(result) => {
             append_tool_result(actor, &call.id, &result);
-            return One::Settled;
+            Some(One::Settled)
         }
-        DispatchOutcome::ScriptChanged => {
-            return script_changed_request(actor, call, destination.map(Path::to_path_buf))
-        }
-        DispatchOutcome::DestinationChanged => {}
+        DispatchOutcome::ScriptChanged => Some(script_changed_request(
+            actor,
+            call,
+            destination.map(Path::to_path_buf),
+        )),
+        DispatchOutcome::DestinationChanged => None,
     }
-    run_gated(actor, call, observe).await
 }
 
 fn script_changed_request(
@@ -1575,7 +1651,49 @@ mod tests {
             let mut invalid = call;
             invalid.args_valid = false;
             run_flow_hook(&mut actor, &invalid, &mut |_| {}).await;
+            invalid.args_valid = true;
+            for args in [serde_json::json!({}), serde_json::json!({"path":42})] {
+                invalid.args = args;
+                run_flow_hook(&mut actor, &invalid, &mut |_| {}).await;
+                assert!(tool_result_of(&actor, &invalid.id).is_some());
+            }
+            invalid.args = serde_json::json!({"path":path,"offset":null,"limit":"default"});
+            assert!(
+                preflight(&actor, &invalid).is_ok(),
+                "optional arguments keep tool defaults"
+            );
             assert_eq!(flows.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+        let actor = make_actor(String::new(), registry_gated(), CancellationToken::new());
+        for (name, valid, missing, wrong_type) in [
+            (
+                "write",
+                serde_json::json!({"path":"file.txt","content":"text"}),
+                serde_json::json!({"path":"file.txt"}),
+                serde_json::json!({"path":"file.txt","content":false}),
+            ),
+            (
+                "grep",
+                serde_json::json!({"pattern":"needle","path":null}),
+                serde_json::json!({}),
+                serde_json::json!({"pattern":42}),
+            ),
+            (
+                "bash",
+                serde_json::json!({"command":"true","timeout_ms":null}),
+                serde_json::json!({}),
+                serde_json::json!({"command":[]}),
+            ),
+        ] {
+            for (args, accepted) in [(valid, true), (missing, false), (wrong_type, false)] {
+                let call = ToolCall {
+                    id: "validation".into(),
+                    name: name.into(),
+                    args,
+                    args_valid: true,
+                };
+                assert_eq!(preflight(&actor, &call).is_ok(), accepted, "{name}");
+            }
         }
         let mut metadata = serde_json::Value::Null;
         merge_approval_metadata(
@@ -1892,6 +2010,16 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
         actor.push_user("run echo hi");
+        actor.input_budget = Some(u64::MAX);
+        let first_request = build_request(
+            &actor.model,
+            actor.role_message().as_deref(),
+            actor.rules.message(),
+            actor.effective_skills_catalog(),
+            actor.effective_history(),
+            actor.effective_tool_schemas(),
+            actor.max_tokens,
+        );
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "all done"));
@@ -1903,6 +2031,20 @@ mod tests {
         assert!(second.contains("\"tool_call_id\":\"call_1\""));
         assert!(second.contains("\"reasoning_content\":\"let me look\""));
         assert!(second.contains("\"tool_calls\""));
+        let second_request = build_request(
+            &actor.model,
+            actor.role_message().as_deref(),
+            actor.rules.message(),
+            actor.effective_skills_catalog(),
+            actor.transcript[..actor.transcript.len() - 1].to_vec(),
+            actor.effective_tool_schemas(),
+            actor.max_tokens,
+        );
+        for (actual, expected) in reqs.iter().zip([first_request, second_request]) {
+            let actual: serde_json::Value =
+                serde_json::from_str(actual.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(actual, serde_json::to_value(expected).unwrap());
+        }
     }
 
     /// Serves keep-alive connections and counts how many were opened.
@@ -2004,6 +2146,38 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Interrupted));
+        assert_eq!(actor.state, AgentState::Idle);
+    }
+
+    #[tokio::test]
+    async fn failed_runs_restore_idle_and_keep_committed_boundary_input() {
+        for boundary_error in [false, true] {
+            let response = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec();
+            let server = spawn_mock(vec![response]).await;
+            let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+            actor.push_user("go");
+            if boundary_error {
+                actor.safe_boundary = Some(Arc::new(|mut transcript, _| {
+                    Box::pin(async move {
+                        transcript.push(ChatMessage::User {
+                            provenance: crate::provider::openai::UserProvenance::Parent,
+                            content: "committed steering".into(),
+                        });
+                        Err(crate::agent::boundary::BoundaryError {
+                            message: "delivery failed".into(),
+                            committed: Some(transcript),
+                        })
+                    })
+                }));
+            }
+            assert!(run_agent(&mut actor, &mut |_| {}).await.is_err());
+            assert_eq!(actor.state, AgentState::Idle);
+            if boundary_error {
+                assert!(
+                    matches!(actor.transcript.last(), Some(ChatMessage::User { content, .. }) if content == "committed steering")
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -2031,6 +2205,35 @@ mod tests {
 
     #[tokio::test]
     async fn max_steps_exhaustion_yields_not_forced_continuation() {
+        for (absent, invalid) in [
+            (usize::MAX, WATCHDOG_FALLBACK_STEPS),
+            (DEFAULT_MAX_STEPS, DEFAULT_MAX_STEPS),
+        ] {
+            assert_eq!(
+                configured_max_steps(Err(std::env::VarError::NotPresent), absent, invalid),
+                absent
+            );
+            for value in ["0", "1", "50"] {
+                assert_eq!(
+                    configured_max_steps(Ok(value.into()), absent, invalid),
+                    value.parse::<usize>().unwrap()
+                );
+            }
+            for value in ["", "50steps", "-1", "999999999999999999999999999999"] {
+                assert_eq!(
+                    configured_max_steps(Ok(value.into()), absent, invalid),
+                    invalid
+                );
+            }
+            assert_eq!(
+                configured_max_steps(
+                    Err(std::env::VarError::NotUnicode(std::ffi::OsString::new())),
+                    absent,
+                    invalid,
+                ),
+                invalid
+            );
+        }
         let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
         let server = spawn_mock(vec![
             http_sse(&sse_body(&[toolcall])),
@@ -2120,6 +2323,7 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(server.requests.lock().await.len(), 1, "nothing was sent");
+        assert_eq!(actor.state, AgentState::Idle, "compaction suspends the run");
         assert!(matches!(
             actor.transcript.last(),
             Some(ChatMessage::Tool { .. })

@@ -201,21 +201,37 @@ pub(super) fn fit(state: &mut Value, instructions: usize, limit: usize) {
     }
     state["untrusted_evidence"]["assistant_text"] = Value::Null;
     state["untrusted_evidence"]["parent_agent_evidence"] = Value::Null;
-    while state.to_string().len() + instructions > limit {
-        let Some(text) = state["untrusted_evidence"]["script"]["text"].as_str() else {
-            break;
-        };
-        if text.is_empty() {
-            break;
-        }
-        let mut end = text.len().saturating_sub(1024);
+    if state.to_string().len() + instructions <= limit
+        || !state["untrusted_evidence"]["script"]["text"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    {
+        return;
+    }
+    state["untrusted_evidence"]["script"]["truncated"] = json!(true);
+    state["host_facts"]["script_binding"]["complete"] = json!(false);
+    let mut bytes = state.to_string().len() + instructions;
+    let text = state["untrusted_evidence"]["script"]["text"]
+        .as_str()
+        .unwrap();
+    let mut end = text.len();
+    loop {
+        let previous = end;
+        end = end.saturating_sub(1024);
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        state["untrusted_evidence"]["script"]["text"] = json!(&text[..end]);
-        state["untrusted_evidence"]["script"]["truncated"] = json!(true);
-        state["host_facts"]["script_binding"]["complete"] = json!(false);
+        // Count each discarded suffix once, retaining the old UTF-8 cut points
+        // and exact JSON escaping without reserializing the unchanged state.
+        bytes -= serde_json::to_string(&text[end..previous])
+            .expect("script text JSON")
+            .len()
+            - 2;
+        if bytes <= limit || end == 0 {
+            break;
+        }
     }
+    state["untrusted_evidence"]["script"]["text"] = json!(&text[..end]);
 }
 
 pub(crate) fn still_matches(note: Option<&Value>) -> bool {

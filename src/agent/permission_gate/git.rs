@@ -28,18 +28,17 @@ pub(super) fn push(words: &[&str], current: Option<&str>) -> Option<Value> {
     let mut understood = true;
     for word in &words[2..] {
         match *word {
-            "-f" | "--force" | "--force-with-lease" => force = true,
-            "-d" | "--delete" => delete = true,
-            "-u" | "--set-upstream" | "--no-verify" | "--porcelain" | "--verbose" | "-v" => {}
-            option if option.starts_with("--force-with-lease=") => force = true,
+            option if option.starts_with('-') && force_push_operand(option) => force = true,
+            option if option.starts_with('-') && delete_push_operand(option) => delete = true,
+            option if safe_push_option(option) => {}
             option if option.starts_with('-') => understood = false,
             operand => positional.push(operand),
         }
     }
     let remote = positional.first().copied();
     let refspec = positional.get(1).copied();
-    force |= refspec.is_some_and(|spec| spec.starts_with('+'));
-    delete |= refspec.is_some_and(|spec| spec.starts_with(':'));
+    force |= positional.iter().any(|spec| force_push_operand(spec));
+    delete |= positional.iter().any(|spec| delete_push_operand(spec));
     // An omitted refspec depends on push.default / remote configuration: never guess.
     let target = refspec.map(|spec| {
         let spec = spec.trim_start_matches('+');
@@ -53,9 +52,37 @@ pub(super) fn push(words: &[&str], current: Option<&str>) -> Option<Value> {
     }) && target == current;
     Some(
         json!({"remote":remote,"branch":target,"force":force,"delete":delete,
-        "literal_target":understood && positional.len() == 2 && remote == Some("origin") && target.is_some_and(|branch| !branch.is_empty() && !branch.starts_with("refs/")),
-        "own_branch":own_branch}),
+        "literal_target":understood && !force && !delete && positional.len() == 2 && remote == Some("origin") && target.is_some_and(|branch| !branch.is_empty() && !branch.starts_with("refs/")),
+        "own_branch":own_branch && !force && !delete}),
     )
+}
+
+pub(super) fn safe_push_option(word: &str) -> bool {
+    matches!(
+        word,
+        "-u" | "--set-upstream" | "--no-verify" | "--porcelain" | "--verbose" | "-v"
+    )
+}
+
+pub(super) fn captain_only_push_operand(word: &str) -> bool {
+    (word.starts_with('-') && !safe_push_option(word))
+        || force_push_operand(word)
+        || delete_push_operand(word)
+        || broad_push_operand(word)
+}
+
+pub(super) fn force_push_operand(word: &str) -> bool {
+    matches!(word, "-f" | "--force" | "--force-with-lease")
+        || word.starts_with("--force-with-lease=")
+        || word.starts_with('+')
+}
+
+pub(super) fn delete_push_operand(word: &str) -> bool {
+    matches!(word, "-d" | "--delete") || word.trim_start_matches('+').starts_with(':')
+}
+
+pub(super) fn broad_push_operand(word: &str) -> bool {
+    matches!(word, "--all" | "--mirror" | "--tags" | "--follow-tags")
 }
 
 async fn read(workspace: &Path, args: &[&str]) -> Option<String> {

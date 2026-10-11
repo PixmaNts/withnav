@@ -3,6 +3,14 @@ use serde_json::Value;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+fn path_directory(directory: PathBuf, facts: &Value) -> Option<PathBuf> {
+    if directory.is_absolute() {
+        Some(directory)
+    } else {
+        Some(Path::new(facts["workspace"].as_str()?).join(directory))
+    }
+}
+
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
 /// Both its spelling and symlink target must be outside every writable root,
 /// with non-writable directory chains (secure current-user shim links are allowed).
@@ -35,13 +43,7 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
         })
     };
     let resolved = std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| {
-            if dir.is_absolute() {
-                dir
-            } else {
-                Path::new(facts["workspace"].as_str().unwrap()).join(dir)
-            }
-        })
+        .filter_map(|dir| path_directory(dir, facts))
         .map(|dir| dir.join(name))
         .find(|candidate| {
             candidate
@@ -136,6 +138,10 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             } else {
                 word.push(c);
             }
+        } else if c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n') {
+            // Bash does not split words at CR, VT, FF or Unicode whitespace.
+            // Never invent a boundary that could turn an operand's # into a comment.
+            return None;
         } else if c == '\'' || c == '"' {
             quote = Some(c);
         // Filename globs (`*`, `?`, `[...]`) only pick existing paths: the program and
@@ -161,10 +167,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             if fd {
                 chars.next();
             }
-            while chars
-                .peek()
-                .is_some_and(|c| c.is_whitespace() && *c != '\n')
-            {
+            while chars.peek().is_some_and(|c| matches!(c, ' ' | '\t')) {
                 chars.next();
             }
             let mut target = String::new();
@@ -172,6 +175,9 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             while let Some(&next) = chars.peek() {
                 if let Some(q) = target_quote {
                     chars.next();
+                    if q == '"' && matches!(next, '$' | '`' | '\\') {
+                        return None;
+                    }
                     if next == q {
                         target_quote = None;
                     } else {
@@ -180,8 +186,12 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 } else if matches!(next, '\'' | '"') {
                     target_quote = Some(next);
                     chars.next();
-                } else if next.is_whitespace() || ";|&<>".contains(next) {
+                } else if next.is_whitespace() && !matches!(next, ' ' | '\t' | '\n') {
+                    return None;
+                } else if matches!(next, ' ' | '\t' | '\n') || ";|&<>".contains(next) {
                     break;
+                } else if matches!(next, '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '#') {
+                    return None;
                 } else {
                     target.push(next);
                     chars.next();
@@ -194,7 +204,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 words.push(">".into());
                 words.push(target);
             }
-        } else if c.is_whitespace() || ";|&<".contains(c) {
+        } else if matches!(c, ' ' | '\t' | '\n') || ";|&<".contains(c) {
             if !word.is_empty() {
                 words.push(std::mem::take(&mut word));
             }
@@ -304,6 +314,14 @@ fn lookup(words: &[String]) -> bool {
 }
 
 pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
+    // env wrappers expose their program but must not erase execution-affecting
+    // Git assignments from the command being reviewed.
+    if words
+        .iter()
+        .any(|word| word.starts_with("GIT_") && word.contains('='))
+    {
+        return true;
+    }
     let Some(inner) = inner_command(words) else {
         return true;
     };
@@ -318,20 +336,94 @@ pub(super) fn identity_floor(words: &[String], facts: &Value) -> bool {
             }
             let exists = word.contains('/')
                 || std::env::var_os("PATH").is_some_and(|path| {
-                    std::env::split_paths(&path)
-                        .any(|dir| dir.join(word).metadata().is_ok_and(|m| m.is_file()))
+                    std::env::split_paths(&path).any(|dir| {
+                        // Preserve the daemon-cwd check as well as the workspace
+                        // check: an additional location must never remove a floor.
+                        dir.join(word).metadata().is_ok_and(|m| m.is_file())
+                            || path_directory(dir, facts).is_some_and(|dir| {
+                                dir.join(word).metadata().is_ok_and(|m| m.is_file())
+                            })
+                    })
                 });
             exists && trusted_program(word, facts).is_none()
         })
 }
 
-pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
+/// Only classified directory-neutral commands may preserve relative PATH lookup.
+/// Shell prefixes run builtins in this shell; execution strings remain opaque.
+fn changes_directory(words: &[String], facts: &Value) -> Option<bool> {
+    let mut words = inner_command(words)?;
+    loop {
+        match words.first()?.as_str() {
+            "builtin" | "command" => {
+                let command = words[0] == "command";
+                let mut i = 1;
+                while let Some(option) = words.get(i).filter(|word| word.starts_with('-')) {
+                    match option.as_str() {
+                        "--" => {
+                            i += 1;
+                            break;
+                        }
+                        "-v" | "-V" if command => return Some(false),
+                        "-p" if command => i += 1,
+                        _ => return None,
+                    }
+                }
+                words = words.get(i..)?;
+            }
+            "cd" | "pushd" | "popd" => return Some(true),
+            "echo" | "printf" | "pwd" | "true" | "false" | ":" | "type" => return Some(false),
+            "exec" | "eval" | "source" | "." => return None,
+            program => return trusted_program(program, facts).map(|_| false),
+        }
+    }
+}
+
+pub(super) fn command_identity_floor(command: &str, facts: &Value) -> bool {
     segments(command).is_none_or(|parts| {
+        let relative_path = std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| !dir.is_absolute()));
+        let mut changed_directory = false;
+        parts.iter().any(|words| {
+            // Later PATH lookup is no longer relative to the reviewed workspace.
+            // Only literal shell builtins and absolute programs avoid that ambiguity.
+            if changed_directory
+                && relative_path
+                && inner_command(words).is_none_or(|inner| {
+                    !Path::new(&inner[0]).is_absolute()
+                        && (inner.len() != words.len()
+                            || !matches!(
+                                inner[0].as_str(),
+                                "echo"
+                                    | "printf"
+                                    | "pwd"
+                                    | "true"
+                                    | "false"
+                                    | ":"
+                                    | "cd"
+                                    | "pushd"
+                                    | "popd"
+                                    | "command"
+                                    | "type"
+                            ))
+                })
+            {
+                return true;
+            }
+            changed_directory |= changes_directory(words, facts).unwrap_or(true);
+            identity_floor(words, facts)
+        })
+    })
+}
+
+pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
+    command_identity_floor(command, facts) || segments(command).is_none_or(|parts| {
         parts.iter().any(|words| {
             inner_command(words).is_none_or(|inner| {
                 let program = basename(&inner[0]);
-            identity_floor(words, facts)
-                || destructive(inner)
+             identity_floor(words, facts)
+                 || destructive(inner)
+                 || git_read_side_effect(inner)
                 // Shell identity, 2026-10-10: aliases can hide shell bodies;
                 // keep that floor while leaving ordinary programs to Instinct.
                 || (program == "git" && git_subcommand(inner).is_none_or(|i| !matches!(inner[i].as_str(), "add" | "commit" | "status" | "diff" | "log" | "show" | "push" | "restore" | "reset" | "checkout" | "switch" | "branch" | "remote" | "ls-files" | "rev-parse" | "fetch" | "merge" | "rebase" | "stash" | "tag" | "clean" | "config")))
@@ -344,7 +436,7 @@ pub(super) fn execution_floor(command: &str, facts: &Value) -> bool {
                         program,
                         "sh" | "bash" | "zsh" | "eval" | "source" | "." | "sudo" | "xargs" | "exec"
                     )
-                    || (program == "command" && !lookup(inner))
+                    || (matches!(program, "command" | "builtin") && !lookup(inner))
                     || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
                         && (inner.get(1).is_some_and(|w| !w.starts_with('-'))
                             || inner.iter().any(|w| matches!(w.as_str(), "-c" | "-e"))))
@@ -371,12 +463,124 @@ fn git_subcommand(words: &[String]) -> Option<usize> {
     let mut i = 1;
     while i < words.len() {
         match words[i].as_str() {
-            "-C" | "-c" | "--git-dir" | "--work-tree" => i += 2,
-            w if w.starts_with('-') => i += 1,
+            "-C" | "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
+            | "--super-prefix" => {
+                words.get(i + 1)?;
+                i += 2;
+            }
+            "-p"
+            | "--paginate"
+            | "-P"
+            | "--no-pager"
+            | "--bare"
+            | "--no-replace-objects"
+            | "--no-optional-locks"
+            | "--literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs"
+            | "--no-lazy-fetch"
+            | "--no-advice" => {
+                i += 1;
+            }
+            w if w.starts_with("-C")
+                || w.starts_with("-c") && !w.starts_with("--")
+                || [
+                    "--config-env=",
+                    "--git-dir=",
+                    "--work-tree=",
+                    "--namespace=",
+                    "--super-prefix=",
+                    "--exec-path=",
+                ]
+                .iter()
+                .any(|prefix| w.starts_with(prefix)) =>
+            {
+                i += 1;
+            }
+            // --exec-path without '=' and --list-cmds= print and exit. Unknown
+            // options may consume a value: never guess a following subcommand.
+            w if w.starts_with('-') => return None,
             _ => return Some(i),
         }
     }
     None
+}
+
+fn git_read_side_effect(words: &[String]) -> bool {
+    basename(&words[0]) == "git"
+        && git_subcommand(words).is_none_or(|i| {
+            // Configuration, cwd, repository and executable overrides can run
+            // helpers. Only explicitly inert global options preserve read safety.
+            words[1..i]
+                .iter()
+                .any(|word| !matches!(word.as_str(), "--no-pager" | "--no-optional-locks"))
+                || (words[i] == "diff" && !safe_diff_options(&words[i + 1..]))
+                || matches!(words[i].as_str(), "status" | "diff" | "log" | "show")
+                    && words[i + 1..].iter().any(|word| {
+                        matches!(
+                            word.split('=').next(),
+                            Some("--exec" | "--ext-diff" | "--textconv")
+                        ) || word.starts_with("--output")
+                    })
+        })
+}
+
+fn safe_diff_options(args: &[String]) -> bool {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            continue;
+        }
+        if matches!(
+            arg.as_str(),
+            "-p" | "--patch"
+                | "-s"
+                | "--no-patch"
+                | "-u"
+                | "--stat"
+                | "--numstat"
+                | "--shortstat"
+                | "--summary"
+                | "--name-only"
+                | "--name-status"
+                | "--check"
+                | "--exit-code"
+                | "--quiet"
+                | "--cached"
+                | "--staged"
+                | "--no-ext-diff"
+                | "--no-textconv"
+                | "--no-color"
+                | "--color=never"
+                | "--color=always"
+                | "--color=auto"
+                | "-w"
+                | "--ignore-all-space"
+                | "-b"
+                | "--ignore-space-change"
+                | "--ignore-space-at-eol"
+                | "--ignore-cr-at-eol"
+                | "--ignore-blank-lines"
+                | "--binary"
+                | "--full-index"
+                | "--no-renames"
+                | "--no-index"
+        ) {
+            continue;
+        }
+        let context = arg
+            .strip_prefix("-U")
+            .or_else(|| arg.strip_prefix("--unified="));
+        if !context
+            .is_some_and(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) fn destructive(words: &[String]) -> bool {
@@ -400,21 +604,9 @@ pub(super) fn destructive(words: &[String]) -> bool {
             let args = &words[i + 1..];
             let opt = |s: &str| args.iter().any(|w| w == s);
             match words[i].as_str() {
-                "push" => args.iter().any(|w| {
-                    matches!(
-                        w.as_str(),
-                        "-f" | "--force"
-                            | "--force-with-lease"
-                            | "-d"
-                            | "--delete"
-                            | "--all"
-                            | "--mirror"
-                            | "--tags"
-                            | "--follow-tags"
-                    ) || w.starts_with("--force-with-lease=")
-                        || w.starts_with('+')
-                        || w.starts_with(':')
-                }),
+                "push" => args
+                    .iter()
+                    .any(|word| super::git::captain_only_push_operand(word)),
                 "checkout" => opt("--") || opt("."),
                 "restore" => !opt("--staged") || opt("--worktree") || opt("-W"),
                 "stash" => args.iter().any(|w| matches!(w.as_str(), "drop" | "clear")),
@@ -455,6 +647,45 @@ pub(super) fn destructive(words: &[String]) -> bool {
         p if p.starts_with("mkfs.") => true,
         _ => false,
     }
+}
+
+/// Unknown push options may be destructive clusters or Git's long abbreviations.
+/// Keep the Captain hold even when metacognition approves, including compound calls.
+pub(super) fn captain_only_push(command: &str) -> bool {
+    let push_uncertainty = || {
+        // Normalisation cannot decode expansions: an opaque Git subcommand may
+        // become push. Non-Git expansions retain ordinary metacognition review.
+        let normalised = command.replace(['\\', '\'', '"'], "");
+        normalised.contains("push")
+            || (normalised
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|word| word == "git")
+                && (command.contains(['$', '`'])
+                    || command.contains("<(")
+                    || command.contains(">(")))
+    };
+    let Some(parts) = segments(command) else {
+        return push_uncertainty();
+    };
+    parts.iter().any(|words| {
+        let Some(words) = inner_command(words) else {
+            return push_uncertainty();
+        };
+        let Some(i) = executable(words) else {
+            return push_uncertainty();
+        };
+        let words = &words[i..];
+        basename(&words[0]) == "git"
+            && git_subcommand(words).map_or_else(
+                || words[1..].iter().any(|word| word == "push"),
+                |i| {
+                    words[i] == "push"
+                        && words[i + 1..]
+                            .iter()
+                            .any(|word| super::git::captain_only_push_operand(word))
+                },
+            )
+    })
 }
 
 pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
@@ -517,10 +748,7 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
                     }
                     safe && message
                 }
-                "status" | "diff" | "log" | "show" => !args.iter().any(|w| {
-                    matches!(w.as_str(), "--exec" | "--ext-diff" | "--textconv")
-                        || w.starts_with("--output")
-                }),
+                "status" | "diff" | "log" | "show" => !git_read_side_effect(words),
                 _ => false,
             }
         }
@@ -606,6 +834,7 @@ pub(super) fn read_floor(command: &str) -> bool {
             }
             let program = basename(&words[0]);
             destructive(words)
+                || git_read_side_effect(words)
                 || words[0].starts_with("./")
                 // These write or change files through their operands rather than
                 // a `>` redirection, so the redirection parser cannot see them.
@@ -651,7 +880,8 @@ pub(super) fn read_floor(command: &str) -> bool {
                         | "xargs"
                         | "sudo"
                         | "exec"
-                        | "command"
+                         | "command"
+                         | "builtin"
                 )
                 || (matches!(program, "python" | "python3" | "node" | "perl" | "ruby")
                     && words.iter().any(|w| matches!(w.as_str(), "-c" | "-e")))
@@ -904,8 +1134,30 @@ mod tests {
     #[test]
     fn literal_regex_and_transparent_wrappers_preserve_effects() {
         assert!(segments(r#"grep -n "^name\|^version" Cargo.toml"#).is_some());
-        for command in [r#"echo "$HOME""#, r#"echo "\$x""#] {
+        for command in [
+            r#"echo "$HOME""#,
+            r#"echo "\$x""#,
+            "git status # $(evil)",
+            "echo a#$(evil)",
+            "echo ''#$(evil)",
+            "git status # continuation\\\nrm -r x",
+        ] {
             assert!(segments(command).is_none());
+        }
+        // Bash comments and `#` inside unquoted words stay opaque (review).
+        for command in [
+            "git status # inspection",
+            "echo a#b",
+            "git status # inspection\nrm -r x",
+        ] {
+            assert!(segments(command).is_none(), "{command}");
+            assert!(read_floor(command), "{command}");
+        }
+        for (command, expected) in [
+            ("echo '#'", vec![vec!["echo", "#"]]),
+            (r##"echo "a#b""##, vec![vec!["echo", "a#b"]]),
+        ] {
+            assert_eq!(segments(command).unwrap(), expected, "{command}");
         }
         for command in [
             "timeout 15 ls",
@@ -1020,6 +1272,22 @@ mod tests {
         for command in ["ls | tee out.txt", "chmod +x run.sh", "ln -s a b"] {
             assert!(read_floor(command), "{command}");
         }
+        for command in [
+            r#"echo x > "$HOME/out""#,
+            r#"echo x > "$(evil)""#,
+            r#"echo x > "`evil`""#,
+            r#"echo x > "\"; evil; echo \"""#,
+            "echo x > $HOME/out",
+            "echo x > $(evil)",
+            "echo x > out\\ file",
+        ] {
+            assert!(segments(command).is_none(), "{command}");
+            assert!(read_floor(command), "{command}");
+        }
+        assert_eq!(
+            overwrite_paths("echo x > '$HOME/out'"),
+            Some(vec!["$HOME/out".into()])
+        );
     }
 
     #[test]
@@ -1032,6 +1300,7 @@ mod tests {
             assert!(trusted_program("python3", &facts).is_none());
             assert!(script_operand(&["python3".into(), "local.py".into()], &facts).is_none());
             assert!(trusted_program("git", &facts).is_none());
+            assert!(identity_floor(&["workspace-only".into()], &facts));
             let call = crate::provider::ToolCall {
                 id: "command".into(),
                 name: "bash".into(),
@@ -1047,6 +1316,9 @@ mod tests {
         let bin = tmp.path().join("unregistered-bin");
         std::fs::create_dir(&workspace).unwrap();
         std::fs::create_dir(&bin).unwrap();
+        let relative_bin = workspace.join("bin");
+        std::fs::create_dir(&relative_bin).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/true", relative_bin.join("workspace-only")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o777)).unwrap();
         for name in ["python3", "git"] {
             std::os::unix::fs::symlink(format!("/usr/bin/{name}"), bin.join(name)).unwrap();
@@ -1059,7 +1331,7 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, &workspace)
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("PATH", format!("bin:{}:/usr/bin:/bin", bin.display()))
             .output()
             .unwrap();
         assert!(

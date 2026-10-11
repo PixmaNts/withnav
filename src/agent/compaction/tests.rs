@@ -386,6 +386,10 @@ fn a_boundary_that_would_overflow_is_refused_not_wrapped() {
     for through in [t.len() - 1, t.len(), usize::MAX] {
         let checkpoint = k(through, "s", vec![]);
         assert!(invalid(&checkpoint, &t).contains("leaves nothing"));
+        assert!(matches!(
+            plan(&t, Some(&checkpoint), &components(), 100_000, Aim::Fit),
+            Err(CompactionError::Invalid(_))
+        ));
         assert_eq!(
             serde_json::to_value(effective_history(&t, Some(&checkpoint))).unwrap(),
             serde_json::to_value(&t).unwrap(),

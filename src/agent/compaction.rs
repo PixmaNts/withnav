@@ -511,7 +511,21 @@ pub fn plan(
     budget: u64,
     aim: Aim,
 ) -> Result<Plan, CompactionError> {
-    let floor = current.map_or(0, |c| c.checkpoint.through_message + 1);
+    let floor = match current {
+        Some(c) => c
+            .checkpoint
+            .through_message
+            .checked_add(1)
+            .filter(|&next| next < transcript.len())
+            .ok_or_else(|| {
+                CompactionError::Invalid(format!(
+                    "the boundary {} leaves nothing of a transcript of {} messages",
+                    c.checkpoint.through_message,
+                    transcript.len()
+                ))
+            })?,
+        None => 0,
+    };
     let tail_start = match aim {
         Aim::FitMidTurn => latest_exchange_start(transcript),
         Aim::Fit | Aim::Shrink => protected_start(transcript),

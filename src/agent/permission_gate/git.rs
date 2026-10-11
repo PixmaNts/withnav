@@ -62,6 +62,7 @@ async fn read(workspace: &Path, args: &[&str]) -> Option<String> {
     // Never resolve a pre-approval executable through the workspace/PATH. No ambient
     // GIT_* override, global configuration, fsmonitor or hook may execute here.
     let mut command = tokio::process::Command::new("/usr/bin/git");
+    crate::workspace::git::git_command(&mut command);
     command.env_clear();
     // Config and remote get-url only parse data and must include effective
     // publication settings (including global URL rewrites). Ref/index probes
@@ -92,10 +93,7 @@ async fn read(workspace: &Path, args: &[&str]) -> Option<String> {
         .args(args)
         .current_dir(workspace)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
         .spawn()
         .ok()?;
     let mut output = Vec::new();

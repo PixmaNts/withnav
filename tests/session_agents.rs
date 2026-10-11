@@ -7,7 +7,6 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
-use withnav::bus::event::EventEnvelope;
 use withnav::server::{app, AppState};
 
 mod common;
@@ -444,7 +443,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
         .await
         .is_err());
 }
-use common::server::{collect_until, request_json, TestServerConfig};
+use common::server::{collect_until, request_json, stored_events as events, TestServerConfig};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
 
 use common::TestEnv as Env;
@@ -510,17 +509,6 @@ fn sent(provider: &CapturingProvider, n: usize) -> Vec<(String, String)> {
             )
         })
         .collect()
-}
-
-async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
-    let sub = state.subscribe(id, None).await.expect("subscribe");
-    match sub.replay {
-        withnav::bus::ResumeOutcome::Replay(all) => {
-            all.into_iter().filter(|e| e.kind == kind).collect()
-        }
-        other => panic!("expected replay, got {other:?}"),
-    }
 }
 
 async fn stored_agent(state: &AppState, id: ulid::Ulid) -> Option<String> {

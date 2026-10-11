@@ -13,7 +13,7 @@ use withnav::bus::event::EventEnvelope;
 use withnav::server::{app, AppState};
 
 mod common;
-use common::server::{request_json, TestServerConfig};
+use common::server::{request_json, stored_events as events, TestServerConfig};
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
     text_chunk, tool_call_chunk, CapturingProvider,
@@ -94,18 +94,6 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
         })
         .await
         .expect("wake");
-}
-
-/// Every stored event of `kind`, in order.
-async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
-    let sub = state.subscribe(id, None).await.expect("subscribe");
-    match sub.replay {
-        withnav::bus::ResumeOutcome::Replay(all) => {
-            all.into_iter().filter(|e| e.kind == kind).collect()
-        }
-        other => panic!("expected replay, got {other:?}"),
-    }
 }
 
 /// Waits until at least `count` events of `kind` exist; returns them all.

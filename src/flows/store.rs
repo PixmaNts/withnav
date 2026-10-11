@@ -69,25 +69,43 @@ pub fn validate(content: Content) -> Validation {
         errors,
     }
 }
-fn load_toml(dir: &Directory, toml: String) -> Validation {
+fn load_toml(dir: &Directory, toml: String) -> (Validation, Option<CompiledDefinition>) {
     let mut templates = BTreeMap::new();
-    let mut extra = vec![];
-    if let Ok(definition) = Definition::parse(&toml) {
+    let (definition, mut errors) = match Definition::parse(&toml) {
+        Ok(d) => (Some(d), vec![]),
+        Err(e) => (None, e),
+    };
+    if let Some(definition) = &definition {
         for node in &definition.node {
             if let Some(name) = node.kind.template() {
                 match dir.read(name, MAX_TEMPLATE_BYTES, false) {
                     Ok(text) => {
                         templates.insert(name.into(), text);
                     }
-                    Err(e) => extra.push(Diagnostic::new("io", e.to_string(), name)),
+                    Err(e) => errors.push(Diagnostic::new("io", e.to_string(), name)),
                 }
             }
         }
     }
-    let mut validation = validate(Content::Toml { toml, templates });
-    validation.errors.extend(extra);
-    validation.valid = validation.errors.is_empty();
-    validation
+    let compiled = definition.as_ref().and_then(|d| {
+        match d.validate(&catalogue(), &Capabilities { images: false }, &templates) {
+            Ok(compiled) => Some(compiled),
+            Err(e) => {
+                errors.extend(e);
+                None
+            }
+        }
+    });
+    (
+        Validation {
+            valid: errors.is_empty(),
+            toml: Some(toml),
+            definition,
+            templates,
+            errors,
+        },
+        compiled,
+    )
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Document {
@@ -296,7 +314,7 @@ pub fn inspect_directory(path: &std::path::Path) -> Result<Vec<(String, bool)>, 
     names.sort();
     for file in names.into_iter().filter(|n| n.ends_with(".toml")) {
         let toml = dir.read(&file, instinct_flow::MAX_FLOW_BYTES, false)?;
-        results.push((file, load_toml(&dir, toml).valid));
+        results.push((file, load_toml(&dir, toml).0.valid));
     }
     Ok(results)
 }
@@ -444,6 +462,13 @@ impl FlowStore {
             .clone()
     }
     pub fn get(&self, name: &str, location: Location) -> Result<Document, StoreError> {
+        self.document_with_compiled(name, location).map(|(d, _)| d)
+    }
+    fn document_with_compiled(
+        &self,
+        name: &str,
+        location: Location,
+    ) -> Result<(Document, Option<CompiledDefinition>), StoreError> {
         check_name(name)?;
         if location == Location::Builtin {
             let (definition, templates) = super::builtin::definitions()
@@ -454,18 +479,21 @@ impl FlowStore {
                 reason: "invalid",
                 errors,
             })?;
-            return Ok(Document {
-                name: name.into(),
-                location,
-                path: format!("builtin/{name}.toml"),
-                revision: revision(&toml, &templates),
-                toml,
-                definition: Some(definition),
-                templates,
-                errors: vec![],
-                saved_since_reload: false,
-                read_only: true,
-            });
+            return Ok((
+                Document {
+                    name: name.into(),
+                    location,
+                    path: format!("builtin/{name}.toml"),
+                    revision: revision(&toml, &templates),
+                    toml,
+                    definition: Some(definition),
+                    templates,
+                    errors: vec![],
+                    saved_since_reload: false,
+                    read_only: true,
+                },
+                None,
+            ));
         }
         let path = self.directory(location)?;
         let dir = Directory::open(&path, false).map_err(missing)?;
@@ -476,7 +504,7 @@ impl FlowStore {
                 false,
             )
             .map_err(missing)?;
-        let v = load_toml(&dir, toml.clone());
+        let (v, compiled) = load_toml(&dir, toml.clone());
         let revision = revision(&toml, &v.templates);
         let saved_since_reload = self
             .revisions
@@ -484,21 +512,24 @@ impl FlowStore {
             .unwrap_or_else(|e| e.into_inner())
             .get(&(location, name.into()))
             != Some(&revision);
-        Ok(Document {
-            name: name.into(),
-            location,
-            path: path
-                .join(format!("{name}.toml"))
-                .to_string_lossy()
-                .into_owned(),
-            revision,
-            toml,
-            definition: v.definition,
-            templates: v.templates,
-            errors: v.errors,
-            saved_since_reload,
-            read_only: false,
-        })
+        Ok((
+            Document {
+                name: name.into(),
+                location,
+                path: path
+                    .join(format!("{name}.toml"))
+                    .to_string_lossy()
+                    .into_owned(),
+                revision,
+                toml,
+                definition: v.definition,
+                templates: v.templates,
+                errors: v.errors,
+                saved_since_reload,
+                read_only: false,
+            },
+            compiled,
+        ))
     }
     pub fn list(&self) -> Result<Vec<FlowSummary>, StoreError> {
         let mut summaries: Vec<_> = self
@@ -522,9 +553,16 @@ impl FlowStore {
         Ok(summaries)
     }
     fn documents(&self, include_workspace: bool) -> Result<Vec<Document>, StoreError> {
+        self.documents_with_compiled(include_workspace)
+            .map(|documents| documents.into_iter().map(|(d, _)| d).collect())
+    }
+    fn documents_with_compiled(
+        &self,
+        include_workspace: bool,
+    ) -> Result<Vec<(Document, Option<CompiledDefinition>)>, StoreError> {
         let mut documents = super::builtin::definitions()
             .into_iter()
-            .map(|(d, _)| self.get(&d.flow.name, Location::Builtin))
+            .map(|(d, _)| self.document_with_compiled(&d.flow.name, Location::Builtin))
             .collect::<Result<Vec<_>, _>>()?;
         for location in [Location::Global, Location::Workspace] {
             if location == Location::Workspace && !include_workspace {
@@ -538,11 +576,11 @@ impl FlowStore {
             };
             for file in dir.names()? {
                 if let Some(name) = file.strip_suffix(".toml") {
-                    documents.push(self.get(name, location)?);
+                    documents.push(self.document_with_compiled(name, location)?);
                 }
             }
         }
-        documents.sort_by(|a, b| {
+        documents.sort_by(|(a, _), (b, _)| {
             (
                 &a.definition.as_ref().map(|d| &d.flow.on),
                 &a.name,
@@ -623,11 +661,11 @@ impl FlowStore {
     fn reload_local(&self) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let trusted = self.trusted();
-        let documents = self.documents(trusted)?;
+        let documents = self.documents_with_compiled(trusted)?;
         let mut candidate = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         let mut errors = vec![];
-        for document in documents {
+        for (document, compiled) in documents {
             if document.location == Location::Workspace && !trusted {
                 continue;
             }
@@ -640,28 +678,36 @@ impl FlowStore {
                         "flow.name",
                     ));
                 }
-                match definition.validate(
-                    &catalogue(),
-                    &Capabilities { images: false },
-                    &document.templates,
-                ) {
-                    Ok(compiled) => {
-                        revisions.insert(
-                            (document.location, document.name.clone()),
-                            document.revision,
-                        );
-                        let flow = Arc::new(LoadedFlow {
-                            location: document.location,
-                            compiled,
-                        });
-                        if candidate
-                            .get(&document.name)
-                            .is_none_or(|old: &Arc<LoadedFlow>| old.location < document.location)
-                        {
-                            candidate.insert(document.name, flow);
+                let compiled = if document.location == Location::Builtin {
+                    match definition.validate(
+                        &catalogue(),
+                        &Capabilities { images: false },
+                        &document.templates,
+                    ) {
+                        Ok(compiled) => Some(compiled),
+                        Err(e) => {
+                            errors.extend(e);
+                            None
                         }
                     }
-                    Err(e) => errors.extend(e),
+                } else {
+                    compiled
+                };
+                if let Some(compiled) = compiled {
+                    revisions.insert(
+                        (document.location, document.name.clone()),
+                        document.revision,
+                    );
+                    let flow = Arc::new(LoadedFlow {
+                        location: document.location,
+                        compiled,
+                    });
+                    if candidate
+                        .get(&document.name)
+                        .is_none_or(|old: &Arc<LoadedFlow>| old.location < document.location)
+                    {
+                        candidate.insert(document.name, flow);
+                    }
                 }
             }
         }
@@ -1025,6 +1071,28 @@ mod tests {
             )
             .unwrap();
         assert!(store.reload().is_err());
+        assert!(Arc::ptr_eq(&old, &store.snapshot()));
+        let doc = store.get("guard", Location::Global).unwrap();
+        store
+            .save(
+                "guard",
+                Location::Global,
+                Some(&doc.revision),
+                content("guard", "unknown_action"),
+            )
+            .unwrap();
+        let diagnostics = store.get("guard", Location::Global).unwrap().errors;
+        assert!(!diagnostics.is_empty());
+        let failed = store.reload().unwrap_err();
+        assert_eq!(failed.reason, "reload_invalid");
+        assert_eq!(failed.errors.len(), diagnostics.len());
+        for diagnostic in diagnostics {
+            assert_eq!(
+                failed.errors.iter().filter(|e| **e == diagnostic).count(),
+                1,
+                "each validation diagnostic must appear once"
+            );
+        }
         assert!(Arc::ptr_eq(&old, &store.snapshot()));
         store.set_trust(false).unwrap();
         assert!(!store.trusted());

@@ -6,7 +6,7 @@ use nix::{
 };
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     os::fd::{AsFd, OwnedFd},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -113,6 +113,22 @@ impl Directory {
         private: bool,
         exact: bool,
     ) -> std::io::Result<String> {
+        let file = self.open_read(name, max, private, exact)?;
+        let mut text = String::new();
+        file.take((max as u64).saturating_add(1))
+            .read_to_string(&mut text)?;
+        if text.len() > max {
+            return Err(std::io::Error::other("file exceeds byte limit"));
+        }
+        Ok(text)
+    }
+    pub(crate) fn open_read(
+        &self,
+        name: &str,
+        max: usize,
+        private: bool,
+        exact: bool,
+    ) -> std::io::Result<File> {
         valid_name(name)?;
         let fd = openat(
             &self.0,
@@ -131,14 +147,55 @@ impl Directory {
         if !SFlag::from_bits_truncate(stat.st_mode).contains(SFlag::S_IFREG) {
             return Err(std::io::Error::other("not a regular file"));
         }
-        let mut text = String::new();
-        File::from(fd)
-            .take((max as u64).saturating_add(1))
-            .read_to_string(&mut text)?;
-        if text.len() > max {
+        if stat.st_size < 0 || stat.st_size as u64 > max as u64 {
             return Err(std::io::Error::other("file exceeds byte limit"));
         }
-        Ok(text)
+        Ok(File::from(fd))
+    }
+    /// The caller holds the stable resource lock through append and any compaction.
+    pub(crate) fn append(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        valid_name(name)?;
+        let fd = openat(
+            &self.0,
+            name,
+            OFlag::O_RDWR
+                | OFlag::O_APPEND
+                | OFlag::O_CREAT
+                | OFlag::O_NOFOLLOW
+                | OFlag::O_NONBLOCK
+                | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(io)?;
+        let stat = fstat(&fd).map_err(io)?;
+        if stat.st_uid != getuid().as_raw()
+            || stat.st_mode & 0o777 != 0o600
+            || stat.st_nlink != 1
+            || !SFlag::from_bits_truncate(stat.st_mode).contains(SFlag::S_IFREG)
+        {
+            return Err(std::io::Error::other("unsafe capture file"));
+        }
+        let mut file = File::from(fd);
+        let length = file.metadata()?.len();
+        let result = (|| {
+            if length > 0 {
+                file.seek(SeekFrom::End(-1))?;
+                let mut last = [0];
+                file.read_exact(&mut last)?;
+                // Separate a crash-truncated tail so it cannot swallow the next capture.
+                if last[0] != b'\n' {
+                    file.write_all(b"\n")?;
+                }
+            }
+            file.write_all(bytes)?;
+            file.sync_all()
+        })();
+        if result.is_err() {
+            // Preserve previously accepted captures on a partial write.
+            file.set_len(length)?;
+            file.sync_all()?;
+        }
+        result
     }
     pub fn names(&self) -> std::io::Result<Vec<String>> {
         let mut dir = nix::dir::Dir::from_fd(nix::unistd::dup(&self.0).map_err(io)?).map_err(io)?;
@@ -249,6 +306,19 @@ mod tests {
         assert!(dir.read_private("marker", 10).is_err());
         symlink("marker", temp.path().join("link")).unwrap();
         assert!(dir.read_private("link", 10).is_err());
+        assert!(dir.open_read("link", 10, true, false).is_err());
+        assert!(dir.append("link", b"2\n").is_err());
+        assert!(dir.append("marker", b"2\n").is_err());
+        std::fs::set_permissions(
+            temp.path().join("marker"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        std::fs::hard_link(temp.path().join("marker"), temp.path().join("hardlink")).unwrap();
+        assert!(dir.append("hardlink", b"2\n").is_err());
+        dir.append("runs", b"first\n").unwrap();
+        dir.append("runs", b"second\n").unwrap();
+        assert_eq!(dir.read_private("runs", 100).unwrap(), "first\nsecond\n");
     }
     #[test]
     fn no_replace_install_preserves_existing_file() {

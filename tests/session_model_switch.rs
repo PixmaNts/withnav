@@ -593,13 +593,12 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
     let state = state(&env, &a, &b, 128_000, 128_000);
     let id = seeded(&state, &env.ws, 2, true).await;
     state.history().flush().await.unwrap();
-    let head = state.session_summary(id).await.unwrap().current_seq + 1;
-
-    // A row already sits where the event would be written.
+    // Reject only the selection event, leaving ordinary refusal events writable.
     let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
-    conn.execute(
-        "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, 'x', '{}')",
-        rusqlite::params![id.to_string(), head as i64],
+    conn.execute_batch(
+        "CREATE TRIGGER reject_model_change BEFORE INSERT ON events
+         WHEN NEW.kind='model.changed'
+         BEGIN SELECT RAISE(ABORT, 'injected selection write failure'); END;",
     )
     .unwrap();
 
@@ -613,6 +612,8 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
     assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
+    conn.execute_batch("DROP TRIGGER reject_model_change")
+        .unwrap();
 
     turn_done(&state, id, "go on").await;
     assert!(b.bodies().is_empty());

@@ -1091,6 +1091,12 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
         serde_json::to_value(state.context(id).await.unwrap()).unwrap(),
         before_gauge
     );
+    // Remove the injected collision before the runtime legitimately reuses the reserved seq.
+    conn.execute(
+        "DELETE FROM events WHERE session_id=?1 AND seq=?2 AND kind='x'",
+        rusqlite::params![id.to_string(), (head + 1) as i64],
+    )
+    .unwrap();
 
     // The same actor must still send the original history after the refusal.
     assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
@@ -1343,6 +1349,11 @@ async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runt
     );
     assert!(stored(&state, id, "model.changed").await.is_empty());
     // No close/resume here: exercise the actor whose staged switch failed.
+    conn.execute(
+        "DELETE FROM events WHERE session_id=?1 AND seq=?2 AND kind='x'",
+        rusqlite::params![id.to_string(), (head + 1) as i64],
+    )
+    .unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "same runtime continues").await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;

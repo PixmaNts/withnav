@@ -353,6 +353,8 @@ enum WriteError {
     UnknownSession(Ulid),
     #[error("the saved model resolution of session {0} changed while it was being completed")]
     ResolutionChanged(Ulid),
+    #[error("conflicting event for session {id} at seq {seq}")]
+    EventConflict { id: Ulid, seq: u64 },
 }
 
 /// The handle side of the store: clones a sender into the single writer
@@ -1671,11 +1673,28 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 }
             }
             let payload = serde_json::to_string(&envelope)?;
-            tx.execute(
+            let inserted = tx.execute(
                 "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![id.to_string(), envelope.seq as i64, envelope.kind, payload],
             )?;
+            if inserted == 0 {
+                let (kind, existing): (String, String) = tx.query_row(
+                    "SELECT kind, envelope FROM events WHERE session_id=?1 AND seq=?2",
+                    params![id.to_string(), envelope.seq as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                // Compare JSON values so formatting of an existing row is immaterial.
+                if kind != envelope.kind
+                    || serde_json::from_str::<serde_json::Value>(&existing)?
+                        != serde_json::from_str::<serde_json::Value>(&payload)?
+                {
+                    return Err(WriteError::EventConflict {
+                        id,
+                        seq: envelope.seq,
+                    });
+                }
+            }
             let touched = tx.execute(
                 "UPDATE sessions SET updated_at = ?2, last_seq = MAX(last_seq, ?3)
                  WHERE id = ?1",
@@ -3065,14 +3084,27 @@ mod tests {
             .flush()
             .await
             .expect_err("poisoned by an unknown session");
+        let event = envelope(0, EventKind::SessionStart);
         store
-            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .append_event_acked(id, event.clone())
             .await
             .expect("its own append committed");
         store
             .flush()
             .await
             .expect_err("the poison is still reported");
+        store
+            .append_event_acked(id, event.clone())
+            .await
+            .expect("identical retry");
+        let mut conflicting = event;
+        conflicting.payload = serde_json::json!({"different": true});
+        let error = store.append_event_acked(id, conflicting).await.unwrap_err();
+        assert!(error.contains("conflicting event"), "{error}");
+        let loaded = store.load(id).await.unwrap().unwrap();
+        assert_eq!(loaded.envelopes.len(), 1);
+        assert_eq!(loaded.meta.last_seq, 0);
+        assert!(store.load_for_resume(id).await.unwrap().is_some());
         store
             .append_event_acked(Ulid::new(), envelope(1, EventKind::SessionStart))
             .await

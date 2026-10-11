@@ -1009,6 +1009,23 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         Some(parent.to_string().as_str())
     );
     assert!(!summary.promptable);
+    assert_eq!(summary.child_status.as_deref(), Some("running"));
+    let root = fx
+        .state
+        .session_summary(parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(root.parent_session_id.is_none());
+    assert!(root.child_status.is_none());
+    assert!(root.promptable);
+    assert!(matches!(
+        fx.state
+            .session_summary(ulid::Ulid::new())
+            .bounded(file!(), line!())
+            .await,
+        Err(withnav::error::ServerError::SessionNotFound(_))
+    ));
     let child_events = events(&fx, child).bounded(file!(), line!()).await;
     assert!(child_events
         .iter()
@@ -1069,6 +1086,8 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         Some(parent.to_string().as_str())
     );
     assert!(!stored.promptable);
+    assert_eq!(stored.child_status.as_deref(), Some("stopped"));
+    assert_eq!(stored.actor_state, "stopped");
     let parent_events = events(&fx, parent).bounded(file!(), line!()).await;
     assert!(parent_events
         .iter()

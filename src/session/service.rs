@@ -1830,18 +1830,7 @@ impl Service {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
-            let mut summary = self.stored_summary(id).await?;
-            if let Some(link) = self
-                .history
-                .child_link(id)
-                .await
-                .map_err(ServerError::History)?
-            {
-                summary.parent_session_id = Some(link.parent_id.to_string());
-                summary.child_status = Some(link.status);
-                summary.promptable = false;
-            }
-            return Ok(summary);
+            return self.stored_summary(id).await;
         };
         let current_seq = handle
             .sequencer
@@ -1851,7 +1840,12 @@ impl Service {
             .unwrap_or(0);
         let selected = handle.selected();
         let identity = selected.identity();
-        let metadata = self.history.meta(id).await.map_err(ServerError::History)?;
+        let (metadata, child_link) = self
+            .history
+            .meta_with_child_link(id)
+            .await
+            .map_err(ServerError::History)?
+            .map_or((None, None), |(meta, link)| (Some(meta), link));
         let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
         let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
         let bypass = *handle
@@ -1878,11 +1872,7 @@ impl Service {
             current_seq,
             parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
             child_status: if handle.parent_session_id.is_some() {
-                self.history
-                    .child_link(id)
-                    .await
-                    .map_err(ServerError::History)?
-                    .map(|link| link.status)
+                child_link.map(|link| link.status)
             } else {
                 None
             },
@@ -1894,9 +1884,9 @@ impl Service {
     /// The summary of a conversation that only the store holds (stopped, or
     /// from before a restart): stopped at its stored `last_seq`.
     async fn stored_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
-        let meta = self
+        let (meta, child_link) = self
             .history
-            .meta(id)
+            .meta_with_child_link(id)
             .await
             .map_err(ServerError::History)?
             .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
@@ -1936,9 +1926,9 @@ impl Service {
                 .unwrap_or_else(|| AgentId::build().to_string()),
             variant: meta.variant,
             current_seq: meta.last_seq,
-            parent_session_id: None,
-            child_status: None,
-            promptable: meta.resume_disabled_reason.is_none(),
+            parent_session_id: child_link.as_ref().map(|link| link.parent_id.to_string()),
+            promptable: child_link.is_none() && meta.resume_disabled_reason.is_none(),
+            child_status: child_link.map(|link| link.status),
             resume_disabled_reason: meta.resume_disabled_reason,
         })
     }

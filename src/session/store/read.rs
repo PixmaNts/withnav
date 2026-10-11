@@ -92,6 +92,47 @@ impl HistoryStore {
         .await
     }
 
+    /// Metadata and an optional child link from the same read snapshot. A root
+    /// has metadata with no link; an unknown session has neither.
+    pub async fn meta_with_child_link(
+        &self,
+        id: Ulid,
+    ) -> Result<Option<(StoredSession, Option<super::ChildLink>)>, String> {
+        let path = Arc::clone(&self.path);
+        blocking(move || {
+            with_read_tx(&path, |tx| {
+                let row = tx
+                    .query_row(
+                        "SELECT s.id, s.workspace, s.model, s.editor, s.title, s.created_at,
+                            s.updated_at, s.last_seq, s.model_resolution, s.variant,
+                            s.variant_override, s.primary_agent, s.reasoning_floor,
+                            s.agent_overrides, s.selection_provenance, s.resume_disabled_reason,
+                            c.parent_id, c.child_id, c.agent, c.goal, c.policy_snapshot,
+                            c.status, c.created_at, c.terminal_at, c.terminal_reason, c.result_text
+                     FROM sessions s LEFT JOIN child_links c ON c.child_id = s.id
+                     WHERE s.id = ?1",
+                        params![id.to_string()],
+                        |row| {
+                            let meta = row_to_session(row)?;
+                            let link = if row.get::<_, Option<String>>(17)?.is_some() {
+                                Some(super::child_link_from_row_at(row, 16)?)
+                            } else {
+                                None
+                            };
+                            Ok((meta, link))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| format!("meta row: {e}"))?;
+                row.map(|(meta, link)| {
+                    Ok((meta, link.map(super::ChildLinkRow::decode).transpose()?))
+                })
+                .transpose()
+            })
+        })
+        .await
+    }
+
     /// Stored envelopes with `after < seq <= through`, in seq order (`after`
     /// of `None` starts at the first event), read in one transaction. A row
     /// that does not decode is an error naming its seq, never a gap.

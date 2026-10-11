@@ -4,11 +4,79 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-10-11
+
+WithNav 0.7.7 is a maintenance release with no new feature. A pass over the audit backlog fixes
+edge-case bugs, makes the permission gate stricter on git, paths and shell syntax, speeds up a few
+hot paths, and makes the test suite faster and steadier.
+
+### Fixed
+
+- **git pushes that delete or force always ask the Captain, however they are spelled.** This
+  covers deletion refspecs (`:branch`, `+:branch`, `--delete`), clustered or abbreviated options
+  (`-fvd`, `--delet`, `--forc`), global options before `push` (`git -C . -c x=y push`,
+  `git --config-env …`), and escaped or expanded spellings (`\git push`, `git pu\sh`,
+  `git $'\x70ush'`, `git "$p"`). Metacognition can no longer approve them on its own.
+- **A `git diff` that can run a program is no longer treated as a read.** This covers
+  `--ext-diff`, `--textconv`, `-c diff.external=…`, `--config-env`, `--exec-path`, `core.pager`
+  and `GIT_*` assignments in the command.
+- **Shell syntax can't hide what a command does.** A carriage return or another invisible space
+  before `#`, a redirection target with `$` or an escape, a relative `PATH` entry, or a `cd` /
+  `pushd` / `builtin cd` before the real command now send the command to review.
+- **Protected config and credential paths are recognised in more spellings.** This covers quoted
+  paths containing a space, `~login/.config/withnav/…` (the home directory comes from the system
+  account database), `~+/…`, repeated slashes after `~`, and paths followed by a shell comment.
+- **Ordinary commands with a comment, and symlinked workspaces, no longer go to review.**
+  `git status # check` is read as `git status`. A workspace opened through a symlink or a relative
+  path can again prove that an overwritten file is recoverable from git.
+- **`nav auth set` no longer erases other providers' keys.** When `auth.json` is unreadable or has
+  unsafe permissions, the command reports the error instead of replacing the file.
+- **Streaming answers end cleanly.** An event spread over many `data:` lines can't grow past the
+  size limit, and a network error mid-stream ends the stream.
+- **An agent no longer stays "Running" after an error.** A provider failure, a cancellation or the
+  switch to compaction returns it to idle.
+- **An invalid `WITHNAV_MAX_STEPS` no longer means "no limit".** It logs a warning and caps the
+  turn at 500 steps (50 for subagents). Unset still means no cap for the main agent.
+- **A tool call missing a required argument is refused with a clear message.** It no longer
+  reaches the permission checks first. Optional and `null` arguments are still accepted.
+- **`fetch` output no longer ends with `�`** when converted HTML is cut inside a character. The
+  fallback HTML flattener decodes entities once (`&amp;lt;` stays `&lt;`).
+- **`read` and `glob` with huge `offset` / `limit` values no longer overflow.**
+- **Flow expressions compare integers and decimals exactly**, including beyond 2^53.
+- **Reloading flows reports each validation error once** instead of twice.
+- **Git status is correct when WithNav runs from a git hook or a worktree script.** Inherited
+  `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` are ignored.
+- **The Settings API answers a malformed JSON body with a 400 and the parser's reason.**
+- **The history store no longer silently drops an event.** A different event written at an
+  already-used sequence number is refused. An identical retry is still accepted, and a subagent
+  can't be finished with an invalid status.
+- **Compaction and skills handle limits safely.** An out-of-range compaction boundary or an
+  exhausted summary counter is refused without a model call. A skill header exactly at the size
+  limit is no longer reported as truncated. An oversized agent definition is reported as too large
+  even when it isn't valid UTF-8.
+
 ### Changed
 
+- **Flow run history is cheaper.** Each capture is appended instead of rewriting a log of up to
+  32 MiB. The Studio run list reads only the requested page: listing 20 runs from a 33 MB log
+  drops from about 1.4 s to 6 ms. Retention is unchanged (1000 runs, 32 MiB, 7 days).
+- **Agent steps no longer copy the whole conversation** when nothing is injected at the step
+  boundary.
+- **Smaller speed-ups:**
+  - the event bus shares envelopes instead of copying them;
+  - a session summary takes one database read;
+  - the conversation digest and the picker search avoid repeated work;
+  - flow graphs reuse their validated node index.
 - The hand-run Instinct setup probe now delegates to `nav doctor --layer instinct`, like the
   Reflex probe. Permission-corpus calibration remains available through
   `cargo run --example permission_corpus_probe -- [optional-alias] [--raw] [--fast-only]`.
+- **The test suite is faster and steadier.**
+  - Fixed sleeps and polling loops give way to signals and virtual time, always with a bounded
+    timeout.
+  - Duplicated fixtures move to `tests/common/`.
+  - A missing golden fixture now fails instead of being created.
+  - `nav doctor` has acceptance tests for every layer, legacy names, trust files, the VS Code
+    extension and its read-only promise.
 
 ## [0.7.6] - 2026-10-11
 

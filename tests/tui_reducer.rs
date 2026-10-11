@@ -1745,8 +1745,7 @@ fn regenerate_fixtures() {
 #[test]
 fn committed_fixtures_match_the_generator() {
     for (name, envs) in scenarios() {
-        let on_disk = std::fs::read_to_string(format!("{DIR}/{name}.jsonl")).unwrap();
-        assert_eq!(on_disk, jsonl(&envs), "{name}.jsonl is stale; regenerate");
+        assert_eq!(load(name), envs, "{name}.jsonl is stale; regenerate");
     }
 }
 

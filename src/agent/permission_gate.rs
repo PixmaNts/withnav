@@ -607,7 +607,9 @@ pub fn route(
             shell::execution_floor(command, &state["host_facts"])
                 || shell::removal_or_move(command)
                 || shell::overwrite_paths(command).is_some_and(|paths| {
-                    !paths.is_empty() && state["host_facts"]["overwrites_recoverable"] != true
+                    !paths.is_empty()
+                        && (state["host_facts"]["overwrites_recoverable"] != true
+                            || shell::segments(command).is_none_or(|parts| parts.len() != 1))
                 })
         })
     {
@@ -963,9 +965,15 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
         }
         if let Some(paths) = shell::overwrite_paths(command) {
             if !paths.is_empty() {
-                let mut recoverable = paths.len() <= 16;
-                for path in paths.iter().take(16) {
-                    recoverable &= git::recoverable_file(&actor.tool_context.workspace, path).await;
+                // A compound command may have changed cwd before an overwrite.
+                // Workspace recovery is evidence only for one literal segment.
+                let mut recoverable = paths.len() <= 16
+                    && shell::segments(command).is_some_and(|parts| parts.len() == 1);
+                if recoverable {
+                    for path in paths.iter().take(16) {
+                        recoverable &=
+                            git::recoverable_file(&actor.tool_context.workspace, path).await;
+                    }
                 }
                 let mut state: Value = serde_json::from_str(&input.state).expect("host-built JSON");
                 state["host_facts"]["overwrites_recoverable"] = json!(recoverable);
@@ -2846,7 +2854,7 @@ mod tests {
             let corpus: Vec<Value> =
                 serde_json::from_str(include_str!("../../tests/fixtures/permissions/calls.json"))
                     .unwrap();
-            let cx = test_context(&base.join("project"));
+            let cx = test_context(&base.join("project-link"));
             let needed = Needed {
                 scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
                 destination: None,
@@ -2855,7 +2863,10 @@ mod tests {
             assert!(shell::identity_floor(&["helper".into()], &facts));
             let mut count = 0;
             for row in corpus.into_iter().filter(|row| row["fixture"].is_string()) {
-                assert_eq!(row["fixture"], "relative_path");
+                assert!(matches!(
+                    row["fixture"].as_str(),
+                    Some("relative_path" | "overwrite_recovery")
+                ));
                 count += 1;
                 let command = row["command"]
                     .as_str()
@@ -2870,7 +2881,9 @@ mod tests {
                 };
                 let input = PermissionReviewInput {
                     questions: permission_questions(),
-                    state: json!({"captain_request_complete":true,"host_facts":facts,
+                    state: json!({"captain_request_complete":true,"host_facts":{
+                        "workspace":cx.workspace,"writable_roots":cx.writable_roots,
+                        "overwrites_recoverable":row["fixture"] == "overwrite_recovery"},
                         "untrusted_evidence":{"arguments":call.args}})
                     .to_string(),
                 };
@@ -2896,7 +2909,7 @@ mod tests {
                     "{command}"
                 );
             }
-            assert_eq!(count, 5);
+            assert_eq!(count, 8);
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -2908,6 +2921,33 @@ mod tests {
             let path = tmp.path().join(executable);
             std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let project = tmp.path().join("project");
+        std::os::unix::fs::symlink(&project, tmp.path().join("project-link")).unwrap();
+        std::fs::write(project.join("file"), "original").unwrap();
+        std::fs::write(tmp.path().join("outside/file"), "only copy").unwrap();
+        for args in [
+            vec!["init", "-b", "feat/task"],
+            vec!["add", "file"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(std::process::Command::new("/usr/bin/git")
+                .args(args)
+                .current_dir(&project)
+                .output()
+                .unwrap()
+                .status
+                .success());
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "agent::permission_gate::tests::environment_security_corpus_preserves_review_floors", "--nocapture"])

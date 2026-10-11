@@ -139,6 +139,10 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             } else {
                 word.push(c);
             }
+        } else if c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n') {
+            // Bash does not split words at CR, VT, FF or Unicode whitespace.
+            // Never invent a boundary that could turn an operand's # into a comment.
+            return None;
         } else if c == '\'' || c == '"' {
             word_started = true;
             quote = Some(c);
@@ -174,10 +178,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
             if fd {
                 chars.next();
             }
-            while chars
-                .peek()
-                .is_some_and(|c| c.is_whitespace() && *c != '\n')
-            {
+            while chars.peek().is_some_and(|c| matches!(c, ' ' | '\t')) {
                 chars.next();
             }
             let mut target = String::new();
@@ -196,7 +197,9 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 } else if matches!(next, '\'' | '"') {
                     target_quote = Some(next);
                     chars.next();
-                } else if next.is_whitespace() || ";|&<>".contains(next) {
+                } else if next.is_whitespace() && !matches!(next, ' ' | '\t' | '\n') {
+                    return None;
+                } else if matches!(next, ' ' | '\t' | '\n') || ";|&<>".contains(next) {
                     break;
                 } else if matches!(next, '$' | '`' | '\\' | '(' | ')' | '{' | '}' | '#') {
                     return None;
@@ -212,7 +215,7 @@ pub(super) fn segments(command: &str) -> Option<Vec<Vec<String>>> {
                 words.push(">".into());
                 words.push(target);
             }
-        } else if c.is_whitespace() || ";|&<".contains(c) {
+        } else if matches!(c, ' ' | '\t' | '\n') || ";|&<".contains(c) {
             word_started = false;
             if !word.is_empty() {
                 words.push(std::mem::take(&mut word));

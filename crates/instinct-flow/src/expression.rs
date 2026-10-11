@@ -351,11 +351,18 @@ impl Expression {
                     if *op == Operator::Not {
                         return Ok(Value::Boolean(!boolean(a)?));
                     }
-                    let b = if c.len() > 1 {
-                        ev(&c[1], values)?
-                    } else {
-                        Value::Int(0)
-                    };
+                    if *op == Operator::Neg {
+                        return match a {
+                            Value::Int(n) => n
+                                .checked_neg()
+                                .map(Value::Int)
+                                .ok_or_else(|| error("integer overflow")),
+                            Value::Float(n) if n.is_finite() => Ok(Value::Float(-n)),
+                            Value::Float(_) => Err(error("nonfinite arithmetic result")),
+                            _ => Err(error("numeric operand required")),
+                        };
+                    }
+                    let b = ev(&c[1], values)?;
                     if b == Value::Empty {
                         return Err(error("absent operand"));
                     }
@@ -395,7 +402,6 @@ impl Expression {
                                     Operator::Mul => x.checked_mul(*y),
                                     Operator::Div => x.checked_div(*y),
                                     Operator::Mod => x.checked_rem(*y),
-                                    Operator::Neg => x.checked_neg(),
                                     _ => None,
                                 }
                                 .ok_or_else(|| error("integer overflow"))?;
@@ -407,7 +413,6 @@ impl Expression {
                                 Operator::Mul => x * y,
                                 Operator::Div => x / y,
                                 Operator::Mod => x % y,
-                                Operator::Neg => -x,
                                 _ => return Err(error("unsupported operator")),
                             };
                             if !n.is_finite() {
@@ -475,6 +480,22 @@ mod tests {
     }
     #[test]
     fn unsafe_operators_and_complexity_are_rejected() {
+        let symbols = BTreeMap::from([("x".into(), ValueType::Number)]);
+        let neg = Expression::compile("-x", &symbols).unwrap();
+        for (operand, expected) in [
+            (Value::Int(5), Ok(Value::Int(-5))),
+            (Value::Float(1.5), Ok(Value::Float(-1.5))),
+            (Value::Int(i64::MIN), Err("integer overflow")),
+            (Value::Float(f64::INFINITY), Err("nonfinite arithmetic result")),
+            (Value::Float(f64::NAN), Err("nonfinite arithmetic result")),
+            (Value::Empty, Err("absent operand")),
+            (Value::Boolean(true), Err("numeric operand required")),
+        ] {
+            assert_eq!(
+                neg.evaluate(&Values::from([("x".into(), operand)])),
+                expected.map_err(error)
+            );
+        }
         for source in [
             "1 ^ 2",
             "x = 2",

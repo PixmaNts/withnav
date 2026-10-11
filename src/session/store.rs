@@ -361,7 +361,7 @@ enum Write {
     },
     AppendEvent {
         id: Ulid,
-        envelope: EventEnvelope,
+        envelope: Arc<EventEnvelope>,
     },
     SaveTranscript {
         id: Ulid,
@@ -651,8 +651,9 @@ impl HistoryStore {
         goal: String,
         policy_snapshot: String,
         capacity: usize,
-        envelope: EventEnvelope,
+        envelope: impl Into<Arc<EventEnvelope>>,
     ) -> Result<(), String> {
+        let envelope = envelope.into();
         let path = self.path.clone();
         let owner = self.owner.map(|id| id.to_string());
         tokio::task::spawn_blocking(move || {
@@ -943,8 +944,9 @@ impl HistoryStore {
     pub async fn deliver_completion(
         &self,
         child: Ulid,
-        envelope: EventEnvelope,
+        envelope: impl Into<Arc<EventEnvelope>>,
     ) -> Result<(), String> {
+        let envelope = envelope.into();
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
@@ -1009,6 +1011,17 @@ impl HistoryStore {
         children: Vec<Ulid>,
         transcript: Vec<ChatMessage>,
         envelope: Option<EventEnvelope>,
+    ) -> Result<(), String> {
+        self.consume_completions_shared(parent, children, transcript, envelope.map(Arc::new))
+            .await
+    }
+
+    pub(crate) async fn consume_completions_shared(
+        &self,
+        parent: Ulid,
+        children: Vec<Ulid>,
+        transcript: Vec<ChatMessage>,
+        envelope: Option<Arc<EventEnvelope>>,
     ) -> Result<(), String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -1216,7 +1229,10 @@ impl HistoryStore {
     /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
     /// surfaces at the next [`HistoryStore::flush`].
     pub fn append_event(&self, id: Ulid, envelope: EventEnvelope) {
-        self.enqueue(Write::AppendEvent { id, envelope });
+        self.enqueue(Write::AppendEvent {
+            id,
+            envelope: Arc::new(envelope),
+        });
     }
 
     /// Appends one durable envelope like [`HistoryStore::append_event`] and
@@ -1225,9 +1241,13 @@ impl HistoryStore {
     pub async fn append_event_acked(
         &self,
         id: Ulid,
-        envelope: EventEnvelope,
+        envelope: impl Into<Arc<EventEnvelope>>,
     ) -> Result<(), String> {
-        self.acked(Write::AppendEvent { id, envelope }).await
+        self.acked(Write::AppendEvent {
+            id,
+            envelope: envelope.into(),
+        })
+        .await
     }
 
     /// Snapshots the actor transcript after a turn end (also bumps
@@ -1719,7 +1739,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     queue_permission_resolution(&tx, parent, &payload)?;
                 }
             }
-            let payload = serde_json::to_string(&envelope)?;
+            let payload = serde_json::to_string(envelope.as_ref())?;
             let inserted = tx.execute(
                 "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
                  VALUES (?1, ?2, ?3, ?4)",

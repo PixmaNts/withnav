@@ -52,7 +52,7 @@ pub type CommandCommit = Box<dyn FnOnce() + Send>;
 /// the bus never imports the store.
 pub type AckedCommit = Box<
     dyn FnOnce(
-            EventEnvelope,
+            Arc<EventEnvelope>,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
         + Send,
@@ -457,10 +457,10 @@ async fn run(
                     let _ = reply.send(Err(BusError::SeqSpaceExhausted.to_string()));
                     break;
                 };
-                let envelope = stamp(session_id, seq, candidate);
-                match commit(envelope.clone()).await {
+                let envelope = Arc::new(stamp(session_id, seq, candidate));
+                match commit(Arc::clone(&envelope)).await {
                     Ok(()) => {
-                        emitter.emit(envelope);
+                        emitter.emit(Arc::unwrap_or_clone(envelope));
                         let _ = reply.send(Ok(seq));
                     }
                     Err(why) => {
@@ -945,15 +945,24 @@ mod tests {
                 turn_candidate("switch"),
                 Box::new(move |envelope| {
                     Box::pin(async move {
-                        let _ = ran_tx.send(envelope.seq);
+                        assert_eq!(Arc::strong_count(&envelope), 2);
+                        let tag = envelope.payload["tag"].as_str().unwrap();
+                        let _ =
+                            ran_tx.send((envelope.seq, envelope.event_id, tag.as_ptr() as usize));
                         Ok(())
                     })
                 }),
             )
             .await
             .unwrap();
-        assert_eq!(ran_rx.await.unwrap(), assigned);
-        assert_eq!(rx.recv().await.unwrap().seq, assigned);
+        let (committed_seq, event_id, payload_pointer) = ran_rx.await.unwrap();
+        assert_eq!(committed_seq, assigned);
+        let emitted = rx.recv().await.unwrap();
+        assert_eq!((emitted.seq, emitted.event_id), (assigned, event_id));
+        assert_eq!(
+            emitted.payload["tag"].as_str().unwrap().as_ptr() as usize,
+            payload_pointer
+        );
     }
 
     #[tokio::test]

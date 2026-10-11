@@ -761,9 +761,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     entry.child_status = entry.child_status.as_deref().map(strip_controls);
                 }
                 s.sessions = b.sessions;
-                let snapshots = s.sessions.clone();
-                for tab in &mut s.tabs {
-                    if let Some(entry) = snapshots.iter().find(|entry| {
+                let State { sessions, tabs, .. } = s;
+                for tab in tabs {
+                    if let Some(entry) = sessions.iter().find(|entry| {
                         tab.session
                             .as_ref()
                             .is_some_and(|m| m.session_id == entry.id)

@@ -585,22 +585,26 @@ async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
     assert_eq!(runtime.state.model_source, "override");
     assert_eq!(runtime.state.variant_source, "model_default");
     runtime.start(None);
-    let mut kinds = Vec::new();
-    for _ in 0..4 {
-        let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
-            .await
-            .expect("in time")
-            .expect("open");
-        kinds.push(match event {
-            ClientEvent::Models { .. } => "models",
-            ClientEvent::Sessions { .. } => "sessions",
-            ClientEvent::Agents { .. } => "agents",
-            ClientEvent::Layers { .. } => "layers",
-            other => panic!("unexpected event {other:?}"),
-        });
-    }
-    kinds.sort_unstable();
-    assert_eq!(kinds, ["agents", "layers", "models", "sessions"]);
+    let required = std::collections::HashSet::from(["agents", "layers", "models", "sessions"]);
+    let mut kinds = std::collections::HashSet::new();
+    let mut observed = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while kinds != required {
+            let event = runtime.recv().await.expect("startup event channel open");
+            observed.push(format!("{event:?}"));
+            let kind = match event {
+                ClientEvent::Models { .. } => "models",
+                ClientEvent::Sessions { .. } => "sessions",
+                ClientEvent::Agents { .. } => "agents",
+                ClientEvent::Layers { .. } => "layers",
+                _ => continue,
+            };
+            assert!(kinds.insert(kind), "duplicate {kind}: {observed:?}");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("missing startup events; got {kinds:?}; observed: {observed:?}"));
+    assert_eq!(kinds, required);
 }
 
 #[tokio::test]

@@ -798,8 +798,8 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
     );
     let id = state.create_session(&env.ws, None, false).await.unwrap();
 
-    // The provider comes back: the model list is slow, and so is the turn,
-    // but less. A failed lookup is not repeated for a few seconds.
+    // The provider comes back, but a busy-session variant command must be
+    // refused before refreshing its offer, regardless of the lookup cache TTL.
     server.reset().await;
     let delayed = |ms: u64| std::time::Duration::from_millis(ms);
     wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
@@ -828,7 +828,6 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
         })
         .mount(&server)
         .await;
-    tokio::time::sleep(delayed(5300)).await;
 
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go").await;

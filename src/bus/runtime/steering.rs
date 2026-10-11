@@ -127,9 +127,47 @@ mod tests {
                 transcript = steering.apply(transcript);
                 assert!(transcript.is_empty());
             }
-            transcript = steering.replacement(id, transcript).unwrap();
-            transcript = steering.apply(transcript);
-            assert_eq!(transcript.len(), 1);
+            for content in ["first guidance", "second guidance"] {
+                assert!(steering.admit(Operation {
+                    wake: false,
+                    id: Ulid::new(),
+                    content: content.into(),
+                    provenance: UserProvenance::Parent,
+                    interrupt: false,
+                }));
+            }
+            if !boundary_first {
+                transcript = steering.replacement(id, transcript).unwrap();
+            }
+            let injected = steering.apply_at_boundary(Cow::Borrowed(&transcript));
+            assert!(matches!(injected, Cow::Owned(_)));
+            assert_eq!(transcript.len(), usize::from(!boundary_first));
+            transcript = injected.into_owned();
+            if boundary_first {
+                assert!(steering.has_interrupt(id));
+                transcript = steering.replacement(id, transcript).unwrap();
+            }
+            let unchanged = steering.apply_at_boundary(Cow::Borrowed(&transcript));
+            assert!(matches!(unchanged, Cow::Borrowed(_)));
+            assert_eq!(unchanged.as_ptr(), transcript.as_ptr());
+            let contents: Vec<_> = unchanged
+                .iter()
+                .map(|message| match message {
+                    ChatMessage::User {
+                        content,
+                        provenance: UserProvenance::Parent,
+                    } => content.as_str(),
+                    _ => panic!("expected parent guidance"),
+                })
+                .collect();
+            assert_eq!(
+                contents,
+                if boundary_first {
+                    ["first guidance", "second guidance", "replace"]
+                } else {
+                    ["replace", "first guidance", "second guidance"]
+                }
+            );
             assert!(steering.replacement(id, transcript).is_none());
         }
     }
@@ -276,19 +314,26 @@ impl Steering {
         &self,
         mut transcript: Cow<'a, [ChatMessage]>,
     ) -> Cow<'a, [ChatMessage]> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        let mut kept = VecDeque::new();
-        while let Some(operation) = queue.pop_front() {
-            if operation.interrupt {
-                kept.push_back(operation);
-                continue;
+        let operations = {
+            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let mut kept = VecDeque::new();
+            let mut eligible = Vec::new();
+            while let Some(operation) = queue.pop_front() {
+                if operation.interrupt {
+                    kept.push_back(operation);
+                } else {
+                    eligible.push(operation);
+                }
             }
+            *queue = kept;
+            eligible
+        };
+        for operation in operations {
             transcript.to_mut().push(ChatMessage::User {
                 content: operation.content,
                 provenance: operation.provenance,
             });
         }
-        *queue = kept;
         transcript
     }
 

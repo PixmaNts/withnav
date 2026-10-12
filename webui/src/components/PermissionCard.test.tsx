@@ -5,32 +5,40 @@ import { expect, it, vi } from "vitest";
 import { PermissionCard } from "./PermissionCard";
 import type { Permission } from "../session/reducer";
 
-it("offers the machine answer only for a bound skill and sends its typed decision", async () => {
+const perm: Permission = { requestId: "r", toolCallId: "c", tool: "bash", agent: "build", reason: "review", scope: { kind: "folder", value: "/workspace" }, arguments: "{}" };
+
+for (const [label, decision] of [["Once", "allow_once"], ["Always (project): bash git push *", "allow_always"], ["Reject", "reject"]]) {
+  it(`sends the ${label} answer`, async () => {
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    const answer = vi.fn(async () => {});
+    await act(async () => root.render(<PermissionCard perm={{ ...perm, alwaysLabel: "Always (project): bash git push *" }} onAnswer={answer} />));
+    expect([...host.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Once", "Always (project): bash git push *", "Reject"]);
+    await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === label)!.click());
+    expect(answer).toHaveBeenCalledWith(decision, undefined);
+    await act(async () => root.unmount());
+  });
+}
+
+it("hides Always without a label, even for legacy offers", async () => {
   const host = document.createElement("div");
   const root = createRoot(host);
-  const answer = vi.fn(async () => {});
-  const perm: Permission = { requestId: "r", toolCallId: "c", tool: "bash", agent: "build", reason: "script", scope: {kind:"folder",value:"/workspace"}, arguments: "{}" };
-  await act(async () => root.render(<PermissionCard perm={perm} onAnswer={answer} />));
-  expect(host.textContent).not.toContain("on this machine");
-  await act(async () => root.render(<PermissionCard perm={{...perm, skillName:"sync"}} onAnswer={answer} />));
-  const button = [...host.querySelectorAll("button")].find(b => b.textContent === "Allow scripts of skill sync on this machine")!;
-  expect(button).toBeDefined();
-  await act(async () => button.click());
-  expect(answer).toHaveBeenCalledWith("allow_skill_machine");
+  await act(async () => root.render(<PermissionCard perm={{ ...perm, tool: "fetch", skillName: "sync", allowConfigSession: true }} onAnswer={async () => {}} />));
+  expect([...host.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Once", "Reject"]);
   await act(async () => root.unmount());
 });
 
-it("offers and sends the session config answer only for protected config", async () => {
+it("sends an optional reject message", async () => {
   const host = document.createElement("div");
   const root = createRoot(host);
   const answer = vi.fn(async () => {});
-  const perm: Permission = { requestId: "r", toolCallId: "c", tool: "write", agent: "build", reason: "config", scope: {kind:"folder",value:"/config"}, arguments: "{}" };
   await act(async () => root.render(<PermissionCard perm={perm} onAnswer={answer} />));
-  expect(host.textContent).not.toContain("Allow WithNav config for this session");
-  await act(async () => root.render(<PermissionCard perm={{...perm, allowConfigSession:true}} onAnswer={answer} />));
-  const button = [...host.querySelectorAll("button")].find(b => b.textContent === "Allow WithNav config for this session")!;
-  expect(button).toBeDefined();
-  await act(async () => button.click());
-  expect(answer).toHaveBeenCalledWith("allow_config_session");
+  const input = host.querySelector("input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, " Use cargo clean ");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Reject")!.click());
+  expect(answer).toHaveBeenCalledWith("reject", "Use cargo clean");
   await act(async () => root.unmount());
 });

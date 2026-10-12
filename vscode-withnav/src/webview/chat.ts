@@ -781,8 +781,8 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   const controls = el("div", "permission-controls");
   const denyMessage = el("textarea", "deny-message");
   denyMessage.rows = 2;
-  denyMessage.placeholder = "Deny message (optional)";
-  denyMessage.setAttribute("aria-label", `Optional deny message for ${card.tool}`);
+  denyMessage.placeholder = "Reject message (optional)";
+  denyMessage.setAttribute("aria-label", `Optional reject message for ${card.tool}`);
   const buttons = el("div", "control-actions");
   const answer = (decision: PermissionDecision): void => {
     if (!sessionId) return;
@@ -790,13 +790,11 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
     denyMessage.disabled = true;
     outcome.textContent = "Sending answer…";
     post({ type: "answerPermission", sessionId, requestId: card.requestId, decision,
-      ...(decision === "deny" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
+      ...(decision === "reject" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
   };
-  buttons.append(actionButton("Allow once", () => answer("allow_once"), true));
-  if (card.skillName) buttons.append(actionButton(`Allow scripts of skill ${card.skillName} on this machine`, () => answer("allow_skill_machine")));
-  if (card.allowConfigSession) buttons.append(actionButton("Allow WithNav config for this session", () => answer("allow_config_session")));
-  if (card.allowFolder) buttons.append(actionButton(card.scope.kind === "origin" ? "Allow site" : "Allow folder", () => answer("allow_folder")));
-  buttons.append(actionButton("Deny", () => answer("deny")));
+  buttons.append(actionButton("Once", () => answer("allow_once"), true));
+  if (card.alwaysLabel !== undefined) buttons.append(actionButton(card.alwaysLabel, () => answer("allow_always")));
+  buttons.append(actionButton("Reject", () => answer("reject")));
   controls.append(denyMessage, buttons);
   const outcome = el("div", "control-outcome", "Waiting for your answer");
   outcome.setAttribute("role", "status");
@@ -1011,7 +1009,7 @@ function receive(event: HostToWebview): void {
       card.outcome.textContent = permissionOutcome(event.resolution, event.message);
       card.root.dataset.resolution = event.resolution;
       const review = card.root.querySelector(".approval-evidence summary");
-    if (review?.textContent === "Captain review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";
+    if (review?.textContent === "Captain review required" && ["allow_once", "allow_always", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
       for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = readOnly || event.resolution === "pending";
       follow();

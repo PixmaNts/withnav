@@ -12,6 +12,7 @@ const PREVIEW_LINES: usize = 6;
 #[cfg(test)]
 pub(crate) fn test_prompt() -> PermissionPrompt {
     PermissionPrompt {
+        always_label: None,
         allow_config_session: false,
         skill_script: None,
         child_session_id: None,
@@ -109,9 +110,9 @@ pub(crate) fn copy_sections(p: &PermissionPrompt, call: Option<&Value>, sent: bo
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Keys<'a> {
     Historical,
-    /// `y`, `a` and `n` answer it.
+    /// `o`, `a` and `r` answer it.
     Ready,
-    /// `n` was pressed: this deny message is being typed.
+    /// `r` was pressed: this deny message is being typed.
     Denying(&'a str),
     /// An answer was sent: nothing until the server ends the request.
     Sent,
@@ -213,42 +214,31 @@ fn build(
         (None, _) if p.stale => lines.push(Line::styled(" no longer waiting", theme.muted())),
         (None, Keys::Denying(message)) => {
             lines.push(Line::from(vec![
-                Span::styled(" deny with a message: ", theme.warning()),
+                Span::styled(" reject with a message: ", theme.warning()),
                 Span::styled(message.to_string(), theme.text()),
                 Span::styled("▏", theme.accent_line()),
             ]));
             lines.push(Line::styled(
-                " enter send · esc deny without a message",
+                " enter send · esc reject without a message",
                 theme.muted(),
             ));
         }
-        (None, Keys::Ready) if p.skill_script.is_some() => lines.push(Line::styled(
-            format!(
-                " y allow once · a allow scripts of skill {} on this machine · n deny",
-                p.skill_script.as_ref().unwrap().skill
-            ),
-            theme.muted(),
-        )),
-        (None, Keys::Ready) if p.allow_config_session => lines.push(Line::from(vec![
-            Span::styled(" y", theme.strong()),
-            Span::styled(
-                " allow once · a allow WithNav config for this session · n deny",
-                theme.muted(),
-            ),
-        ])),
         (None, Keys::Ready) if !offers_always(p) => lines.push(Line::from(vec![
-            Span::styled(" y", theme.strong()),
-            Span::styled(" allow once · ", theme.muted()),
-            Span::styled("n", theme.strong()),
-            Span::styled(" deny", theme.muted()),
+            Span::styled(" o", theme.strong()),
+            Span::styled(" once · ", theme.muted()),
+            Span::styled("r", theme.strong()),
+            Span::styled(" reject", theme.muted()),
         ])),
         (None, Keys::Ready) => lines.push(Line::from(vec![
-            Span::styled(" y", theme.strong()),
-            Span::styled(" allow once   ", theme.muted()),
+            Span::styled(" o", theme.strong()),
+            Span::styled(" once   ", theme.muted()),
             Span::styled("a", theme.strong()),
-            Span::styled(format!(" always {}   ", always_text(p)), theme.muted()),
-            Span::styled("n", theme.strong()),
-            Span::styled(" deny", theme.muted()),
+            Span::styled(
+                format!(" {}   ", p.always_label.as_deref().unwrap_or("Always")),
+                theme.muted(),
+            ),
+            Span::styled("r", theme.strong()),
+            Span::styled(" reject", theme.muted()),
         ])),
         (None, Keys::Sent) => {
             lines.push(Line::styled(" sent, waiting for the server", theme.muted()))
@@ -265,68 +255,25 @@ fn build(
     lines
 }
 
-/// Whether the request can be allowed "always" for its folder or site. The `plan` agent's
-/// exceptions cannot: each one is allowed once or denied.
+/// Always is only offered with a server-supplied rule and scope label.
 pub(crate) fn offers_always(p: &PermissionPrompt) -> bool {
-    p.agent != "plan" && p.tool == "fetch"
+    p.always_label.is_some()
 }
 
 #[cfg(test)]
 #[test]
-fn only_fetch_offers_reusable_approval() {
-    let mut prompt = PermissionPrompt {
-        allow_config_session: false,
-        skill_script: None,
-        child_session_id: None,
-        request_id: String::new(),
-        tool_call_id: String::new(),
-        tool: String::new(),
-        arguments: String::new(),
-        scope_kind: "folder".into(),
-        scope: "/workspace".into(),
-        agent: "build".into(),
-        reason: String::new(),
-        resolution: None,
-        message: None,
-        stale: false,
-    };
-    for tool in ["read", "grep", "glob", "write", "edit", "bash", "fetch"] {
-        prompt.tool = tool.into();
-        prompt.agent = "build".into();
-        assert_eq!(offers_always(&prompt), tool == "fetch");
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn config_session_answer_is_only_shown_when_offered() {
-    let mut prompt = test_prompt();
-    prompt.resolution = None;
-    prompt.allow_config_session = true;
-    let theme = super::super::theme::Theme::default();
-    let rendered = lines(&prompt, None, Keys::Ready, &theme, 200);
-    assert!(rendered.iter().any(|line| line
-        .to_string()
-        .contains("allow WithNav config for this session")));
-}
-
-#[cfg(test)]
-#[test]
-fn skill_machine_answer_is_only_shown_when_offered() {
+fn always_answer_requires_the_server_label() {
     let mut prompt = test_prompt();
     prompt.resolution = None;
     let theme = super::super::theme::Theme::default();
-    assert!(!lines(&prompt, None, Keys::Ready, &theme, 200)
-        .iter()
-        .any(|line| line.to_string().contains("on this machine")));
-    prompt.skill_script = Some(Box::new(super::super::state::SkillScript {
-        skill: "sync".into(),
-    }));
+    assert!(!offers_always(&prompt));
+    prompt.always_label = Some("Always (project): bash git push *".into());
+    assert!(offers_always(&prompt));
     assert!(lines(&prompt, None, Keys::Ready, &theme, 200)
         .iter()
         .any(|line| line
             .to_string()
-            .contains("allow scripts of skill sync on this machine")));
+            .contains("a Always (project): bash git push *")));
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.
@@ -349,6 +296,7 @@ fn always_text(p: &PermissionPrompt) -> &'static str {
 
 fn outcome(p: &PermissionPrompt, resolution: &str, theme: &Theme) -> Line<'static> {
     let (text, style) = match resolution {
+        "allow_always" => ("allowed always".to_string(), theme.success()),
         "allow_once" => ("allowed once".to_string(), theme.success()),
         "allow_skill_machine" => ("allowed skill on this machine".to_string(), theme.success()),
         "allow_config_session" => (
@@ -356,7 +304,7 @@ fn outcome(p: &PermissionPrompt, resolution: &str, theme: &Theme) -> Line<'stati
             theme.success(),
         ),
         "allow_folder" => (format!("allowed {}", always_text(p)), theme.success()),
-        "deny" => match p.message.as_deref().filter(|m| !m.is_empty()) {
+        "deny" | "reject" => match p.message.as_deref().filter(|m| !m.is_empty()) {
             Some(message) => (format!("denied: {message}"), theme.error()),
             None => ("denied".to_string(), theme.error()),
         },

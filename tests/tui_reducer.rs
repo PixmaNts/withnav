@@ -4389,6 +4389,7 @@ fn permission_script(request: u128) -> Script {
     s.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(request),
             tool_call_id: "w1".into(),
@@ -4497,6 +4498,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
     script.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(11),
             tool_call_id: "w1".into(),
@@ -4545,6 +4547,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
     script.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(21),
             tool_call_id: "w1".into(),
@@ -4629,6 +4632,7 @@ fn an_accepted_answer_waiting_for_its_resolution_is_not_sent_again() {
     script.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(31),
             tool_call_id: "w1".into(),

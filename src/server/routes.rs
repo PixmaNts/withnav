@@ -26,7 +26,7 @@
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
-//! - `POST /v1/sessions/:id/permissions/:request_id` `{decision:"allow_once"|"allow_folder"|"deny", message?}`
+//! - `POST /v1/sessions/:id/permissions/:request_id` `{decision:"allow_once"|"allow_always"|"reject", message?}` (legacy values accepted)
 //!   -> `{accepted:true}`: the typed answer to a `permission.requested`. 404 unknown session or
 //!   malformed id, 409 `{"error","reason":"permission_stale"}` for a request that is not waiting
 //!   (answered, cancelled, expired, never existed), 400 for a body that is not a decision.
@@ -971,6 +971,8 @@ pub struct AnswerPermissionRequest {
 #[serde(rename_all = "snake_case")]
 pub enum DecisionKind {
     AllowOnce,
+    AllowAlways,
+    Reject,
     AllowFolder,
     AllowConfigSession,
     AllowSkillMachine,
@@ -1023,6 +1025,10 @@ async fn answer_permission(
     use crate::agent::permissions::PermissionDecision;
     let decision = match body.decision {
         DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
+        DecisionKind::AllowAlways => PermissionDecision::AllowAlways,
+        DecisionKind::Reject => PermissionDecision::Reject {
+            message: body.message.filter(|m| !m.trim().is_empty()),
+        },
         DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
         DecisionKind::AllowConfigSession => PermissionDecision::AllowConfigSession,
         DecisionKind::AllowSkillMachine => PermissionDecision::AllowSkillMachine,

@@ -35,6 +35,13 @@ pub enum PermissionOrigin {
 pub enum PermissionDecision {
     /// Run this one call.
     AllowOnce,
+    /// Run this call and save an allow rule after the permission-rule cutover.
+    AllowAlways,
+    /// Do not run the call; the optional message is the Captain's reason.
+    Reject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     /// Run this call and every later call of the same capability inside the
     /// same scope, for this agent, until the session ends.
     AllowFolder,

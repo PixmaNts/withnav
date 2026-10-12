@@ -671,9 +671,9 @@ fn variant_step(state: &State, ui: &mut UiState, pick: VariantPick) {
         .insert(format!("{:?}", Overlay::Variants), start);
 }
 
-/// Keys for the open permission request of the tab on screen. `y`, `a` and `n` answer it while the
-/// message is empty (with text in it they type); after `n` every key types the deny message until
-/// enter sends it or esc denies without one. `Some(action)` when the key was the prompt's.
+/// Keys for the open permission request of the tab on screen. `o`, `a` and `r` answer it while the
+/// message is empty (with text in it they type); after `r` every key types the reject message until
+/// enter sends it or esc rejects without one. `Some(action)` when the key was the prompt's.
 fn permission_key(
     key: KeyEvent,
     state: &State,
@@ -705,11 +705,11 @@ fn permission_key(
                 let message = std::mem::take(message);
                 ui.deny_message = None;
                 let message = Some(message.trim().to_string()).filter(|m| !m.is_empty());
-                Some(answer("deny", message))
+                Some(answer("reject", message))
             }
             KeyCode::Esc => {
                 ui.deny_message = None;
-                Some(answer("deny", None))
+                Some(answer("reject", None))
             }
             KeyCode::Backspace => {
                 message.pop();
@@ -728,13 +728,13 @@ fn permission_key(
     }
     // Answered already: the prompt's keys wait for the server to end it.
     if state.answered_permission.as_deref() == Some(request_id.as_str()) {
-        return matches!(key.code, KeyCode::Char('y' | 'a' | 'n')).then_some(None);
+        return matches!(key.code, KeyCode::Char('o' | 'a' | 'r')).then_some(None);
     }
     // Not on screen at the last frame: a key only scrolls to the prompt. Only a
     // frame that actually draws the prompt's keys marks it shown (the render
     // sets `prompt_shown`), so keys queued before that frame, or a terminal too
     // small to show the prompt, never answer an unseen request.
-    if matches!(key.code, KeyCode::Char('y' | 'a' | 'n'))
+    if matches!(key.code, KeyCode::Char('o' | 'a' | 'r'))
         && ui.prompt_shown.as_deref() != Some(request_id.as_str())
     {
         ui.selected_block = Some(format!("permission:{request_id}"));
@@ -742,23 +742,14 @@ fn permission_key(
         return Some(None);
     }
     match key.code {
-        KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
-        KeyCode::Char('a') if open.skill_script.is_some() => {
-            Some(Some(answer("allow_skill_machine", None)))
+        KeyCode::Char('o') => Some(Some(answer("allow_once", None))),
+        KeyCode::Char('a') if open.always_label.is_some() => {
+            Some(Some(answer("allow_always", None)))
         }
-        KeyCode::Char('a') if open.allow_config_session => {
-            Some(Some(answer("allow_config_session", None)))
-        }
-        // The plan agent's exceptions are allowed once or denied (the prompt shows no `a`).
-        KeyCode::Char('a')
-            if open.agent == "plan" || matches!(open.tool.as_str(), "bash" | "write" | "edit") =>
-        {
-            Some(Some(Action::ShowNotice(
-                "this request can be allowed once or denied, not always".into(),
-            )))
-        }
-        KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),
-        KeyCode::Char('n') => {
+        KeyCode::Char('a') => Some(Some(Action::ShowNotice(
+            "Always is not offered for this request".into(),
+        ))),
+        KeyCode::Char('r') => {
             ui.deny_message = Some(DenyDraft {
                 request_id: request_id.clone(),
                 text: String::new(),
@@ -892,7 +883,7 @@ pub fn route_paste(
     if state.read_only() {
         return None;
     }
-    // While a deny message is typed, a paste goes into it (one line); a message left from a
+    // While a reject message is typed, a paste goes into it (one line); a message left from a
     // request that is no longer the open one is dropped.
     let open = state.open_permission().map(|p| p.request_id.as_str());
     if ui.deny_message.is_some() && open.is_none_or(|id| ui.deny_draft(id).is_none()) {

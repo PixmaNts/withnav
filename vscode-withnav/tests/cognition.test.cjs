@@ -118,6 +118,24 @@ test("child approval posts to parent with bearer token and exact deny body", asy
   assert.equal(backend.hasOpenPermissions(), true);
 });
 
+for (const decision of ["allow_once", "allow_always", "reject"]) {
+  test(`new ${decision} answer posts to the owner with its optional message`, async t => {
+    const { backend, calls, permission } = setup(t);
+    permission({ child_session_id: "child", always_label: "Always (project): bash git push *" });
+    await backend.answerPermission("parent", "R", decision, "Use another approach");
+    assert.deepEqual(JSON.parse(calls[0].body), {
+      decision, ...(decision === "reject" ? { message: "Use another approach" } : {}),
+    });
+  });
+}
+
+test("Always without a server label never posts", async t => {
+  const { backend, calls, permission } = setup(t);
+  permission({ tool: "fetch" });
+  await assert.rejects(backend.answerPermission("parent", "R", "allow_always"));
+  assert.equal(calls.length, 0);
+});
+
 test("sending a message percent-encodes the session id in the request path", async t => {
   const { backend, calls } = setup(t);
   backend.state.session = "a/b c";

@@ -591,6 +591,8 @@ pub struct CompactionWriter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequested {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<Ulid>,
     pub request_id: Ulid,
     pub tool_call_id: String,
@@ -606,6 +608,11 @@ pub struct PermissionRequested {
 #[serde(tag = "resolution", rename_all = "snake_case")]
 pub enum PermissionResolution {
     AllowOnce,
+    AllowAlways,
+    Reject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     AllowFolder,
     AllowConfigSession,
     AllowSkillMachine,
@@ -625,6 +632,10 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
         use crate::agent::permissions::PermissionDecision as Decision;
         match decision {
             Decision::AllowOnce => Self::AllowOnce,
+            Decision::AllowAlways => Self::AllowAlways,
+            Decision::Reject { message } => Self::Reject {
+                message: message.clone(),
+            },
             Decision::AllowFolder => Self::AllowFolder,
             Decision::AllowConfigSession => Self::AllowConfigSession,
             Decision::AllowSkillMachine => Self::AllowSkillMachine,
@@ -1098,6 +1109,7 @@ mod tests {
             (
                 "permission.requested",
                 serde_json::to_value(&PermissionRequested {
+                    always_label: None,
                     child_session_id: None,
                     request_id: Ulid::generate(),
                     tool_call_id: "call_1".into(),
@@ -1186,6 +1198,7 @@ mod tests {
     fn permission_events_wire_shape_roundtrips() {
         let request_id = Ulid::generate();
         let requested = PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id,
             tool_call_id: "call_1".into(),

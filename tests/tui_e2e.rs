@@ -898,12 +898,12 @@ fn open_request(rt: &Runtime) -> Option<String> {
 }
 
 // Given a build conversation whose model asks to write a file
-// When the prompt appears and the Captain presses y
+// When the prompt appears and the Captain presses o
 // Then the file is written, the prompt shows "allowed once" and the turn carries on to the answer
-// And when the model asks again and the Captain presses n, types a reason and enter, the file is
+// And when the model asks again and the Captain presses r, types a reason and enter, the file is
 //     left alone and the model's next request carries the denial with that reason
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
+async fn a_permission_prompt_allows_with_o_and_rejects_with_r_and_a_reason() {
     let root = tempfile::tempdir().expect("tempdir");
     let ws = workspace_of(&root);
     std::fs::create_dir_all(&ws).expect("ws");
@@ -930,10 +930,10 @@ async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
     let shown = screen(&mut rt);
     assert!(shown.contains("wants to run write in"), "{shown}");
     assert!(shown.contains("+ hello"), "{shown}");
-    assert!(shown.contains("y allow once"), "{shown}");
+    assert!(shown.contains("o once"), "{shown}");
     assert!(shown.contains("permission needed"), "{shown}");
 
-    press(&mut rt, KeyCode::Char('y'));
+    press(&mut rt, KeyCode::Char('o'));
     until("the answer after the write", &mut rt, |_, rt| {
         has_final(rt, "Written.")
     })
@@ -950,7 +950,7 @@ async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
     })
     .await;
     screen(&mut rt);
-    type_keys(&mut rt, "nkeep the folder clean⏎");
+    type_keys(&mut rt, "rkeep the folder clean⏎");
     until("the answer after the denial", &mut rt, |_, rt| {
         has_final(rt, "Understood.")
     })

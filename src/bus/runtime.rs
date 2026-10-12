@@ -1821,7 +1821,7 @@ fn publish_resolved_with_origin(
         candidate.payload["approved_by"] = serde_json::json!("bypass");
     } else if matches!(
         candidate.payload["resolution"].as_str(),
-        Some("allow_once" | "allow_folder" | "deny")
+        Some("allow_once" | "allow_always" | "allow_folder" | "reject" | "deny")
     ) {
         candidate.payload["approved_by"] = serde_json::json!("captain");
         if let Some(signature) = request
@@ -1879,6 +1879,7 @@ fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
     let mut payload = to_value(&crate::bus::event::PermissionRequested {
+        always_label: None,
         child_session_id: None,
         request_id: request.id,
         tool_call_id: request.tool_call_id.clone(),

@@ -152,6 +152,51 @@ fn body_of(provider: &CapturingProvider, n: usize) -> String {
     provider.bodies()[n].clone()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_new_answers_keep_current_execution_semantics_and_legacy_answers_work() {
+    for decision in [
+        "allow_once",
+        "allow_always",
+        "reject",
+        "allow_folder",
+        "deny",
+    ] {
+        let env = Env::new();
+        let target = env.ws.join("answer.txt");
+        let provider = provider(vec![one_write("w1", &target), done("finished")]).await;
+        let state = config(&env, &provider).state();
+        let router = app(state.clone());
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, id, "write answer.txt").await;
+        let requested = wait_events(&state, id, "permission.requested", 1).await;
+        assert!(requested[0].payload.get("always_label").is_none());
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[0]),
+            json!({"decision":decision,"message":"Choose another approach"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_events(&state, id, "task.done", 1).await;
+        let rejected = matches!(decision, "reject" | "deny");
+        assert_eq!(target.exists(), !rejected);
+        if rejected {
+            assert!(body_of(&provider, 1).contains("Choose another approach"));
+        }
+        let resolved = events(&state, id, "permission.resolved").await;
+        assert_eq!(
+            resolved[0].payload["resolution"],
+            if decision == "allow_folder" {
+                "allow_once"
+            } else {
+                decision
+            }
+        );
+        state.close_session(id).await.unwrap();
+    }
+}
+
 // Given a write, when the Captain allows it once
 // Then the call runs once, its real result is what the next model request
 //      carries, and the request is stored with its resolution

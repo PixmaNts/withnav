@@ -19,8 +19,8 @@ expression: snapshot
                      │ │ PERMISSION · build wants to run bash in /ws                                
                      │ │  it changes files                                                          
                      │ │  $ rm -rf target                                                           
-                     │ │  deny with a message: use cargo clean▏                                     
-                     │ │  enter send · esc deny without a message                                   
+                     │ │  reject with a message: use cargo clean▏                                   
+                     │ │  enter send · esc reject without a message                                 
                      │ │                                                                            
                      │                                                                              
                      │                                                                              
@@ -31,4 +31,4 @@ expression: snapshot
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter deny with this message · esc deny without one
+ alt+b hide bar      │ enter reject with this message · esc reject without one

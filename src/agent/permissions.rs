@@ -200,6 +200,7 @@ impl GrantStore {
     /// file: the rename alone keeps readers from seeing a torn file, but two
     /// unlocked writers both read the old content and the later rename drops
     /// the other's grant.
+    #[cfg(unix)]
     fn save(&self, entries: &[Entry]) -> Result<(), String> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -1099,5 +1100,12 @@ mod tests {
         assert!(!still_resolves(&args, Some(&file), &f.cx));
         // Reviewed for the link's target as it now resolves: still the same file.
         assert!(still_resolves(&args, Some(&f.ws.join("b.rs")), &f.cx));
+    }
+}
+
+#[cfg(windows)]
+impl GrantStore {
+    fn save(&self, _entries: &[Entry]) -> Result<(), String> {
+        Err("Private permission grant persistence is not yet supported on Windows".into())
     }
 }

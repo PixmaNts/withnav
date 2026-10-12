@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -63,6 +65,7 @@ fn parse_store(text: &str) -> Result<AuthStore, ProviderError> {
         .map_err(|e| ProviderError::Auth(format!("failed to parse auth.json: {e}")))
 }
 
+#[cfg(unix)]
 fn check_perms_or_fail(path: &Path) -> Result<(), ProviderError> {
     let meta = std::fs::metadata(path)
         .map_err(|e| ProviderError::Auth(format!("failed to stat auth.json: {e}")))?;
@@ -144,6 +147,7 @@ pub fn set_key(config_dir: &Path, provider_name: &str, api_key: &str) -> Result<
 
 /// Helper function to save a Store to disk.
 /// Used for saving the store after adding a key or removing one
+#[cfg(unix)]
 pub fn save_store(config_dir: &Path, store: AuthStore) -> Result<(), ProviderError> {
     let path = auth_path(config_dir);
     if path.exists() {
@@ -272,4 +276,17 @@ mod tests {
         assert_eq!(names, vec!["omniroute".to_string()]);
         assert!(!names.iter().any(|n| n.contains("super-secret-value")));
     }
+}
+
+#[cfg(windows)]
+fn check_perms_or_fail(_path: &Path) -> Result<(), ProviderError> {
+    Err(ProviderError::Auth(
+        "Credential permission validation is not yet supported on Windows".into(),
+    ))
+}
+#[cfg(windows)]
+pub fn save_store(_config_dir: &Path, _store: AuthStore) -> Result<(), ProviderError> {
+    Err(ProviderError::Auth(
+        "Private credential persistence is not yet supported on Windows".into(),
+    ))
 }

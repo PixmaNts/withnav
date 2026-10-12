@@ -1,6 +1,8 @@
 //! Deliberate machine-wide Captain grants, bound to one user skill and script digest.
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +24,7 @@ mod tests {
 
     #[test]
     fn concurrent_grants_persist_digests_and_revoke_without_lost_updates() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = SkillGrants::in_dir(dir.path());
@@ -86,6 +89,7 @@ impl SkillGrants {
         }
     }
 
+    #[cfg(unix)]
     pub fn read(&self) -> Result<Vec<SkillGrant>, String> {
         use std::io::Read;
         match std::fs::OpenOptions::new()
@@ -146,6 +150,7 @@ impl SkillGrants {
         self.update(|grants| grants.retain(|grant| grant.skill != skill))
     }
 
+    #[cfg(unix)]
     fn update(&self, change: impl FnOnce(&mut Vec<SkillGrant>)) -> Result<(), String> {
         let parent = self.file.parent().ok_or("grant file has no parent")?;
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -185,5 +190,15 @@ impl SkillGrants {
             let _ = std::fs::remove_file(tmp);
         }
         result
+    }
+}
+
+#[cfg(windows)]
+impl SkillGrants {
+    pub fn read(&self) -> Result<Vec<SkillGrant>, String> {
+        Err("Checked skill grants are not yet supported on Windows".into())
+    }
+    fn update(&self, _change: impl FnOnce(&mut Vec<SkillGrant>)) -> Result<(), String> {
+        Err("Private skill grant persistence is not yet supported on Windows".into())
     }
 }

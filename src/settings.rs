@@ -341,6 +341,7 @@ pub fn load_with_revision(config_dir: &Path) -> Result<(Settings, String), Setti
 /// Writes the settings through a synced temporary file renamed over the old one, then syncs the
 /// directory: atomic (a crash never leaves a half-written file) and durable (the rename itself
 /// survives a crash).
+#[cfg(unix)]
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError> {
     let path = path(config_dir);
     let write_err = |source| SettingsError::Write {
@@ -366,6 +367,7 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
 /// setting) cannot lose each other's changes. `edit` gets the settings and the revision of the
 /// bytes they were parsed from; an error from it leaves the file untouched. Programs that edit
 /// `config.json` without taking the lock are outside this guarantee.
+#[cfg(unix)]
 pub fn update<T, E: From<SettingsError>>(
     config_dir: &Path,
     edit: impl FnOnce(&mut Settings, &str) -> Result<T, E>,
@@ -721,4 +723,28 @@ mod tests {
         settings.set_tui_theme("nord-dark");
         assert_eq!(settings.tui_theme(), Some("nord-dark"));
     }
+}
+
+#[cfg(windows)]
+pub fn save(config_dir: &Path, _settings: &Settings) -> Result<(), SettingsError> {
+    Err(SettingsError::Write {
+        path: path(config_dir),
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Atomic settings persistence is not yet supported on Windows",
+        ),
+    })
+}
+#[cfg(windows)]
+pub fn update<T, E: From<SettingsError>>(
+    config_dir: &Path,
+    _edit: impl FnOnce(&mut Settings, &str) -> Result<T, E>,
+) -> Result<T, E> {
+    Err(E::from(SettingsError::Write {
+        path: path(config_dir),
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Locked settings updates are not yet supported on Windows",
+        ),
+    }))
 }

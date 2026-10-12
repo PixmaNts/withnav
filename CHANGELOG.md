@@ -4,6 +4,13 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- Native Windows x64 packaging and CI: an MSVC `nav.exe` ZIP with licenses, a `win32-x64`
+  VSIX using the bundled executable without chmod, and checksums for Windows release assets.
+  Explicit server paths (including spaces), bundled binaries and PATH retain their precedence.
+  Windows runtime support remains dependent on the Rust port and native artifact validation.
+
 ### Changed
 
 - The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with

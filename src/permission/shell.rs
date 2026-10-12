@@ -8,10 +8,14 @@ pub struct Redirection {
 }
 
 /// One command and the source information needed by rules and the fixed floor.
+/// An opaque command matches no allow or ask rule. Only a deny rule with resource
+/// exactly `*` applies to it; the decision layer enforces this contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellCommand {
     pub raw: String,
     pub normalized: String,
+    /// Rule matching text: identifying prefix followed by the remaining operands.
+    pub rule_text: Option<String>,
     /// Unquoted words, including leading assignments and literal path operands.
     pub words: Vec<String>,
     pub prefix: Vec<String>,
@@ -20,8 +24,12 @@ pub struct ShellCommand {
 }
 
 impl ShellCommand {
-    pub fn save_pattern(&self) -> String {
-        format!("{} *", self.prefix.join(" "))
+    pub fn save_pattern(&self) -> Option<String> {
+        if self.opaque || self.prefix.is_empty() {
+            None
+        } else {
+            Some(format!("{} *", self.prefix.join(" ")))
+        }
     }
 }
 
@@ -147,14 +155,16 @@ fn wrapper_option_value(program: &str, option: &str) -> bool {
     }
 }
 
-fn arity_prefix(words: &[String]) -> Vec<String> {
+fn command_identity(words: &[String]) -> (Vec<String>, Option<String>) {
     let mut index = 0;
-    let mut prefix = Vec::new();
+    let mut selected = Vec::new();
+    let mut assignments = vec![false; words.len()];
     while words.get(index).is_some_and(|word| assignment(word)) {
+        assignments[index] = true;
         index += 1;
     }
     while let Some(program) = words.get(index).filter(|word| wrapper(word)) {
-        prefix.push(program.clone());
+        selected.push(index);
         index += 1;
         while let Some(word) = words.get(index) {
             if word == "--" {
@@ -162,6 +172,7 @@ fn arity_prefix(words: &[String]) -> Vec<String> {
                 break;
             }
             if assignment(word) || word.starts_with('-') {
+                assignments[index] = assignment(word);
                 index += 1;
                 if wrapper_option_value(program, word) && index < words.len() {
                     index += 1;
@@ -171,29 +182,92 @@ fn arity_prefix(words: &[String]) -> Vec<String> {
             }
         }
     }
-    let Some(program) = words.get(index) else {
-        return prefix;
-    };
-    let mut significant = vec![program.clone()];
-    index += 1;
-    while let Some(word) = words.get(index) {
+    if let Some(program) = words.get(index) {
+        let mut significant = vec![index];
         index += 1;
-        if program == "git" && significant.len() == 1 && matches!(word.as_str(), "-C" | "-c") {
-            index = (index + 1).min(words.len());
-        } else if !word.starts_with('-') {
-            significant.push(word.clone());
+        while let Some(word) = words.get(index) {
+            index += 1;
+            let git_global =
+                program == "git" && significant.len() == 1 && matches!(word.as_str(), "-C" | "-c");
+            let compose_file = program == "docker"
+                && significant.len() == 2
+                && words[significant[1]] == "compose"
+                && matches!(word.as_str(), "-f" | "--file");
+            if git_global || compose_file {
+                index = (index + 1).min(words.len());
+            } else if !word.starts_with('-') {
+                significant.push(index - 1);
+            }
         }
+        let count = ARITY
+            .iter()
+            .filter(|(key, _)| {
+                key.split(' ')
+                    .zip(&significant)
+                    .all(|(a, b)| a == words[*b])
+                    && key.split(' ').count() <= significant.len()
+            })
+            .max_by_key(|(key, _)| key.len())
+            .map_or(1, |(_, count)| *count);
+        selected.extend(significant.into_iter().take(count));
     }
-    let count = ARITY
-        .iter()
-        .filter(|(key, _)| {
-            key.split(' ').zip(&significant).all(|(a, b)| a == b)
-                && key.split(' ').count() <= significant.len()
-        })
-        .max_by_key(|(key, _)| key.len())
-        .map_or(1, |(_, count)| *count);
-    prefix.extend(significant.into_iter().take(count));
-    prefix
+    let prefix: Vec<String> = selected.iter().map(|&i| words[i].clone()).collect();
+    let rule_text = if prefix.is_empty() {
+        None
+    } else {
+        let mut reordered = prefix.clone();
+        reordered.extend(
+            words
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !assignments[*i] && !selected.contains(i))
+                .map(|(_, word)| word.clone()),
+        );
+        Some(reordered.join(" "))
+    };
+    (prefix, rule_text)
+}
+
+// Keep a source boundary map so lexical continuation removal does not lose raw
+// spelling. Single-quoted text and comments retain their literal newlines.
+fn lexical_text(line: &str) -> (String, Vec<usize>) {
+    let mut text = String::new();
+    let mut offsets = Vec::new();
+    let mut quote = None;
+    let mut comment = false;
+    let mut boundary = true;
+    let mut pos = 0;
+    while pos < line.len() {
+        let rest = &line[pos..];
+        let c = rest.chars().next().expect("nonempty remainder");
+        if !comment && quote != Some('\'') && rest.starts_with("\\\n") {
+            pos += 2;
+            continue;
+        }
+        let mut length = c.len_utf8();
+        if comment {
+            if c == '\n' {
+                comment = false;
+            }
+        } else if c == '\\' && quote != Some('\'') {
+            if let Some(next) = rest[1..].chars().next() {
+                length += next.len_utf8();
+            }
+        } else if Some(c) == quote {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else if quote.is_none() && c == '#' && boundary {
+            comment = true;
+        }
+        text.push_str(&line[pos..pos + length]);
+        offsets.extend(pos..pos + length);
+        pos += length;
+        boundary = quote.is_none() && (c.is_whitespace() || matches!(c, ';' | '|' | '&' | '('));
+    }
+    offsets.push(line.len());
+    offsets[0] = 0;
+    (text, offsets)
 }
 
 /// Split supported shell syntax without executing or expanding anything.
@@ -205,12 +279,20 @@ pub fn split(line: &str) -> Vec<ShellCommand> {
     if line.trim().is_empty() {
         return Vec::new();
     }
-    let mut parser = Parser { text: line, pos: 0 };
+    let (text, offsets) = lexical_text(line);
+    let mut parser = Parser {
+        text: &text,
+        source: line,
+        offsets: &offsets,
+        pos: 0,
+        backticks: 0,
+    };
     match parser.list(None, 0) {
         Ok(commands) if !commands.is_empty() => commands,
         _ => vec![ShellCommand {
             raw: line.to_owned(),
             normalized: line.to_owned(),
+            rule_text: None,
             words: Vec::new(),
             prefix: Vec::new(),
             redirections: Vec::new(),
@@ -221,7 +303,10 @@ pub fn split(line: &str) -> Vec<ShellCommand> {
 
 struct Parser<'a> {
     text: &'a str,
+    source: &'a str,
+    offsets: &'a [usize],
     pos: usize,
+    backticks: usize,
 }
 
 #[derive(Default)]
@@ -249,6 +334,8 @@ impl Pending {
                     | "case"
                     | "esac"
                     | "function"
+                    | "coproc"
+                    | "select"
                     | "[["
                     | "]]"
             )
@@ -263,10 +350,12 @@ impl Pending {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
+            let (prefix, rule_text) = command_identity(&self.words);
             commands.push(ShellCommand {
                 raw: raw.to_owned(),
                 normalized,
-                prefix: arity_prefix(&self.words),
+                prefix,
+                rule_text,
                 words: std::mem::take(&mut self.words),
                 redirections: std::mem::take(&mut self.redirections),
                 opaque: false,
@@ -278,6 +367,9 @@ impl Pending {
 }
 
 impl Parser<'_> {
+    fn raw(&self, start: usize) -> &str {
+        &self.source[self.offsets[start]..self.offsets[self.pos]]
+    }
     fn rest(&self) -> &str {
         &self.text[self.pos..]
     }
@@ -307,14 +399,14 @@ impl Parser<'_> {
                 if needs_command {
                     return Err(());
                 }
-                pending.finish(&self.text[start..self.pos], &mut commands)?;
+                pending.finish(self.raw(start), &mut commands)?;
                 self.advance()?;
                 return Ok(commands);
             }
             if c.is_whitespace() && c != '\n' {
                 self.advance()?;
             } else if c == '#' {
-                pending.finish(&self.text[start..self.pos], &mut commands)?;
+                pending.finish(self.raw(start), &mut commands)?;
                 while self.peek().is_some_and(|c| c != '\n') {
                     self.advance()?;
                 }
@@ -335,7 +427,7 @@ impl Parser<'_> {
                 if c != '\n' && !has_command {
                     return Err(());
                 }
-                pending.finish(&self.text[start..self.pos], &mut commands)?;
+                pending.finish(self.raw(start), &mut commands)?;
                 self.advance()?;
                 let mut binary = c == '|';
                 if (c == '|' && matches!(self.peek(), Some('|' | '&')))
@@ -353,7 +445,10 @@ impl Parser<'_> {
                 if !pending.words.is_empty() {
                     return Err(());
                 }
-                pending.finish(&self.text[start..self.pos], &mut commands)?;
+                if self.rest().starts_with("((") {
+                    return Err(());
+                }
+                pending.finish(self.raw(start), &mut commands)?;
                 self.advance()?;
                 commands.extend(self.list(Some(if c == '(' { ')' } else { '}' }), depth + 1)?);
                 needs_command = false;
@@ -362,9 +457,13 @@ impl Parser<'_> {
             } else if matches!(c, ')' | '}') {
                 return Err(());
             } else {
-                pending
-                    .words
-                    .push(self.word(&mut pending.children, depth, stop)?);
+                let word_start = self.pos;
+                let word = self.word(&mut pending.children, depth, stop)?;
+                if &self.text[word_start..self.pos] == "!" && pending.words.is_empty() {
+                    needs_command = true;
+                    continue;
+                }
+                pending.words.push(word);
                 needs_command = false;
                 has_command = true;
             }
@@ -372,7 +471,7 @@ impl Parser<'_> {
         if stop.is_some() || needs_command {
             return Err(());
         }
-        pending.finish(&self.text[start..self.pos], &mut commands)?;
+        pending.finish(self.raw(start), &mut commands)?;
         Ok(commands)
     }
 
@@ -401,7 +500,10 @@ impl Parser<'_> {
         if !backtick && self.peek() == Some('(') {
             return Err(());
         }
-        children.extend(self.list(Some(if backtick { '`' } else { ')' }), depth + 1)?);
+        self.backticks += usize::from(backtick);
+        let nested = self.list(Some(if backtick { '`' } else { ')' }), depth + 1);
+        self.backticks -= usize::from(backtick);
+        children.extend(nested?);
         Ok(self.text[start..self.pos].to_owned())
     }
 
@@ -415,6 +517,11 @@ impl Parser<'_> {
         let mut value = String::new();
         let mut quote = None;
         while let Some(c) = self.peek() {
+            if self.backticks > 0 && self.rest().starts_with("\\`") {
+                // Backticks undergo an extra escape-processing pass in Bash.
+                // Retain the entire line instead of hiding nested execution.
+                return Err(());
+            }
             if quote.is_none() && Some(c) == stop {
                 break;
             } else if quote == Some('\'') {
@@ -521,7 +628,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(command.save_pattern(), "make check *");
+        assert_eq!(command.save_pattern().as_deref(), Some("make check *"));
         let quoted = split("FOO='a b' echo \"literal path\" a\\ b 'x;y' \\\nnext");
         assert_eq!(quoted[0].normalized, "echo literal path a b x;y next");
         assert_eq!(
@@ -598,5 +705,99 @@ mod tests {
                 prop_assert_eq!(&commands[0].raw, &line);
             }
         }
+    }
+
+    #[test]
+    fn reviewed_syntax_never_hides_execution() {
+        for line in [
+            "echo `echo \\`printf NESTED\\``",
+            "coproc git status",
+            "select x in a; do pwd; done",
+            "if true; then pwd; fi",
+            "while true; do pwd; done",
+            "until true; do pwd; done",
+            "for x in a; do pwd; done",
+            "case x in x) pwd;; esac",
+            "function f { pwd; }",
+            "[[ -f x ]]",
+            "(( 1 + 2 ))",
+        ] {
+            let commands = split(line);
+            assert_eq!(commands.len(), 1, "{line}");
+            assert!(commands[0].opaque, "{line}");
+            assert_eq!(commands[0].rule_text, None);
+            assert_eq!(commands[0].save_pattern(), None);
+        }
+        let commands = split("! git status | ! grep x");
+        assert_eq!(commands[0].prefix, ["git", "status"]);
+        assert_eq!(commands[1].prefix, ["grep"]);
+        for line in ["FOO=1", ">out", "echo 'unclosed"] {
+            assert_eq!(split(line)[0].save_pattern(), None);
+        }
+    }
+
+    #[test]
+    fn saved_patterns_match_reordered_rule_text_and_bare_prefixes() {
+        // Permission matching treats a trailing space-star as optional operands.
+        fn matches(pattern: &str, text: &str) -> bool {
+            let prefix = pattern.strip_suffix(" *").unwrap();
+            text == prefix
+                || text
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with(' '))
+        }
+        for (line, expected) in [
+            (
+                "git -C ../x push origin main",
+                "git push -C ../x origin main",
+            ),
+            (
+                "git -c core.editor=vim status",
+                "git status -c core.editor=vim",
+            ),
+            (
+                "sudo -u root systemctl restart nginx",
+                "sudo systemctl restart -u root nginx",
+            ),
+            (
+                "docker compose -f a.yml up -d",
+                "docker compose up -f a.yml -d",
+            ),
+            ("env -u X FOO=1 git status", "env git status -u X"),
+            (
+                "time -o f nice -n 5 xargs -n 1 git status",
+                "time nice xargs git status -o f -n 5 -n 1",
+            ),
+            ("FOO=1 make check >out", "make check"),
+            ("git status", "git status"),
+        ] {
+            let command = &split(line)[0];
+            assert_eq!(command.rule_text.as_deref(), Some(expected), "{line}");
+            let pattern = command.save_pattern().unwrap();
+            assert!(matches(&pattern, expected));
+            assert!(matches(&pattern, &command.prefix.join(" ")));
+        }
+        assert!(!matches("git status *", "git status-other"));
+    }
+
+    #[test]
+    fn continuations_are_removed_before_tokens_but_not_literals_or_comments() {
+        let line = "\\\necho 2\\\n>out";
+        let command = &split(line)[0];
+        assert_eq!(command.prefix, ["echo"]);
+        assert_eq!(command.words, ["echo"]);
+        assert_eq!(
+            command.redirections,
+            [Redirection {
+                op: "2>".into(),
+                target: "out".into()
+            }]
+        );
+        assert_eq!(command.raw, line);
+        assert_eq!(split("echo '' \\\n x")[0].words, ["echo", "", "x"]);
+        assert_eq!(split("echo 'a\\\nb'")[0].words, ["echo", "a\\\nb"]);
+        let commands = split("echo ok # comment\\\npwd");
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[1].prefix, ["pwd"]);
     }
 }

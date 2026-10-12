@@ -429,7 +429,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let feed = crate::navigator::ConversationFeed::new();
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         feed.register_session(
             id,
             Arc::new(|_| Box::pin(async { panic!("flow note must not enter message admission") })),

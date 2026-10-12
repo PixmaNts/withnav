@@ -11,8 +11,8 @@ The 0.6 flow work followed ADR 0012: the existing pipeline deepened into staged 
 with ordered branches on one path, three actions, drafts and activation in a private database, and
 a separate vanilla JS Studio. The driver rejected it: a flow is a canvas of cards, one decision per
 card, whose outputs feed any number of later cards, and the engine should later run as a standalone
-application (events pushed over an API, actions that run code). The specification is
-`.scratch/instinct-flow/spec.md`; the vocabulary is in [CONTEXT.md](../../CONTEXT.md).
+application (events pushed over an API, actions that run code). The Captain's guide is
+[docs/instinct-flow.md](../instinct-flow.md); the vocabulary is in [CONTEXT.md](../../CONTEXT.md).
 
 ## Decision
 

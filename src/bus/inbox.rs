@@ -496,8 +496,8 @@ mod tests {
 
     fn text_command(mode: DeliveryMode, text: &str) -> Command {
         Command {
-            command_id: Ulid::new(),
-            session_id: Ulid::new(),
+            command_id: Ulid::generate(),
+            session_id: Ulid::generate(),
             source_actor_id: "user:cli".into(),
             target_actor_id: "agent:main".into(),
             mode,
@@ -760,7 +760,7 @@ mod tests {
                 allow_config_session: false,
                 skill_script: None,
                 permission_gate: None,
-                id: Ulid::new(),
+                id: Ulid::generate(),
                 tool_call_id: "w1".into(),
                 tool: "write".into(),
                 arguments: "{}".into(),

@@ -1,0 +1,38 @@
+name: Labels sync
+
+# Keeps the repository labels in line with .github/labels.yml.
+# Labels missing from the file are never deleted.
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - .github/labels.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/labels.yml
+      - name: Create or update labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # --force updates the label when it already exists.
+          yq -o=json -I=0 '.labels[]' .github/labels.yml | while IFS= read -r label; do
+            name=$(jq -r '.name' <<<"$label")
+            color=$(jq -r '.color' <<<"$label")
+            description=$(jq -r '.description' <<<"$label")
+            echo "Syncing label: $name"
+            gh label create "$name" --color "$color" --description "$description" --force
+          done

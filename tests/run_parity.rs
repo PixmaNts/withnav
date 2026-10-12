@@ -88,7 +88,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
 
     // --- Path 2: THROUGH THE BUS (runtime task + event_to_ui). ---
     let (_bus_server, _bus_workspace, bus_actor) = scripted_actor(done).await;
-    let session_id = Ulid::new();
+    let session_id = Ulid::generate();
     let sequencer = Sequencer::spawn(session_id, SessionBus::default(), 0);
     let (inbox_tx, inbox) = ActorInbox::channel();
     let session_cancel = CancellationToken::new();
@@ -177,7 +177,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
     let phase1_stderr = format!("\nerror: {message}");
 
     let payload = TurnEnd {
-        turn_id: Ulid::new(),
+        turn_id: Ulid::generate(),
         actor_id: "agent:main".to_string(),
         outcome: TurnEndOutcome::Error,
         usage: None,
@@ -188,7 +188,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
         }),
     };
     let env = EventEnvelope::new(
-        Ulid::new(),
+        Ulid::generate(),
         7,
         EventKind::TurnEnd,
         serde_json::to_value(&payload).unwrap(),
@@ -316,7 +316,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
 fn user_command(session_id: Ulid, text: &str) -> withnav::bus::command::Command {
     use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
     Command {
-        command_id: Ulid::new(),
+        command_id: Ulid::generate(),
         session_id,
         source_actor_id: "user:cli".to_string(),
         target_actor_id: "agent:main".to_string(),

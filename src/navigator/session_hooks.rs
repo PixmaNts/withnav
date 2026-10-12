@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn an_old_incarnation_does_not_forget_a_resumed_one() {
         let incarnations = Incarnations::default();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let old = incarnations.begin(id);
         let new = incarnations.begin(id);
         assert!(!incarnations.end(id, old), "stale cleanup is a no-op");

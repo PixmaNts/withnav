@@ -18,7 +18,7 @@ impl Instance {
         directory.push(".instances");
         let directory = PathBuf::from(directory);
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let file = OpenOptions::new()
             .read(true)
             .write(true)

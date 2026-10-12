@@ -199,7 +199,7 @@ impl EventEnvelope {
     pub fn new(session_id: Ulid, seq: u64, kind: EventKind, payload: Value) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            event_id: Ulid::new(),
+            event_id: Ulid::generate(),
             seq,
             session_id,
             actor_id: ROOT_ACTOR_ID.to_string(),
@@ -857,12 +857,12 @@ mod tests {
 
     #[test]
     fn envelope_roundtrips_through_serde_json_unchanged() {
-        let session_id = Ulid::new();
-        let task_id = Ulid::new();
-        let cause_id = Ulid::new();
+        let session_id = Ulid::generate();
+        let task_id = Ulid::generate();
+        let cause_id = Ulid::generate();
         let payload = serde_json::to_value(LlmResponse {
-            turn_id: Ulid::new(),
-            step_id: Ulid::new(),
+            turn_id: Ulid::generate(),
+            step_id: Ulid::generate(),
             message: AssistantMessage {
                 text: "doné — ✓".into(),
                 thinking: "thought".into(),
@@ -924,7 +924,7 @@ mod tests {
                 serde_json::to_value(&MessageReceived {
                     answer: None,
                     selected_skill: None,
-                    command_id: Ulid::new(),
+                    command_id: Ulid::generate(),
                     source: "user:http".into(),
                     target: ROOT_ACTOR_ID.into(),
                     mode: "next-turn".into(),
@@ -935,16 +935,16 @@ mod tests {
             (
                 "turn.start",
                 serde_json::to_value(&TurnStart {
-                    turn_id: Ulid::new(),
+                    turn_id: Ulid::generate(),
                     actor_id: ROOT_ACTOR_ID.into(),
-                    task_id: Ulid::new(),
+                    task_id: Ulid::generate(),
                 })
                 .unwrap(),
             ),
             (
                 "turn.end",
                 serde_json::to_value(&TurnEnd {
-                    turn_id: Ulid::new(),
+                    turn_id: Ulid::generate(),
                     actor_id: ROOT_ACTOR_ID.into(),
                     outcome: TurnEndOutcome::Yielded,
                     usage: None,
@@ -959,8 +959,8 @@ mod tests {
             (
                 "llm.delta",
                 serde_json::to_value(&LlmDelta {
-                    turn_id: Ulid::new(),
-                    step_id: Ulid::new(),
+                    turn_id: Ulid::generate(),
+                    step_id: Ulid::generate(),
                     delta: StreamDelta::ToolCallArgs {
                         index: 2,
                         fragment: "{\"pa".into(),
@@ -971,8 +971,8 @@ mod tests {
             (
                 "llm.response",
                 serde_json::to_value(&LlmResponse {
-                    turn_id: Ulid::new(),
-                    step_id: Ulid::new(),
+                    turn_id: Ulid::generate(),
+                    step_id: Ulid::generate(),
                     message: AssistantMessage::default(),
                     usage: None,
                     finish_reason: None,
@@ -1017,7 +1017,7 @@ mod tests {
                     choices: None,
                     question_call_id: None,
                     actor_id: ROOT_ACTOR_ID.into(),
-                    turn_id: Ulid::new(),
+                    turn_id: Ulid::generate(),
                     question: "proceed?".into(),
                     kind: Some("budget".into()),
                     details: Some(json!({"steps": 50})),
@@ -1027,9 +1027,9 @@ mod tests {
             (
                 "task.done",
                 serde_json::to_value(&TaskDone {
-                    task_id: Ulid::new(),
+                    task_id: Ulid::generate(),
                     actor_id: ROOT_ACTOR_ID.into(),
-                    result_message_id: Ulid::new(),
+                    result_message_id: Ulid::generate(),
                     status: TaskStatus::Done,
                 })
                 .unwrap(),
@@ -1037,7 +1037,7 @@ mod tests {
             (
                 "command.result",
                 serde_json::to_value(&CommandResult {
-                    operation_id: Ulid::new(),
+                    operation_id: Ulid::generate(),
                     name: "help".into(),
                     ok: true,
                     data: Some(json!({"commands": []})),
@@ -1064,7 +1064,7 @@ mod tests {
                     last_usage: None,
                     skills: Default::default(),
                     rule_files: 0,
-                    incarnation: Ulid::new(),
+                    incarnation: Ulid::generate(),
                     revision: 3,
                 })
                 .unwrap(),
@@ -1099,7 +1099,7 @@ mod tests {
                 "permission.requested",
                 serde_json::to_value(&PermissionRequested {
                     child_session_id: None,
-                    request_id: Ulid::new(),
+                    request_id: Ulid::generate(),
                     tool_call_id: "call_1".into(),
                     tool: "bash".into(),
                     arguments: "{\"command\":\"ls\"}".into(),
@@ -1113,7 +1113,7 @@ mod tests {
                 "permission.resolved",
                 serde_json::to_value(&PermissionResolved {
                     child_session_id: None,
-                    request_id: Ulid::new(),
+                    request_id: Ulid::generate(),
                     tool_call_id: "call_1".into(),
                     resolution: PermissionResolution::Expired,
                 })
@@ -1122,7 +1122,7 @@ mod tests {
             (
                 "model.changed",
                 serde_json::to_value(&ModelChanged {
-                    operation_id: Some(Ulid::new()),
+                    operation_id: Some(Ulid::generate()),
                     revision: 2,
                     reason: ModelChangeReason::Switch,
                     previous: Some(ModelIdentity::from_upstream("p", "m1")),
@@ -1137,8 +1137,8 @@ mod tests {
             (
                 "subagent.spawned",
                 serde_json::to_value(&SubagentSpawned {
-                    parent_session_id: Ulid::new(),
-                    child_session_id: Ulid::new(),
+                    parent_session_id: Ulid::generate(),
+                    child_session_id: Ulid::generate(),
                     agent: "vigie".into(),
                     goal: "map the parser".into(),
                     tool_call_id: "call_1".into(),
@@ -1148,12 +1148,12 @@ mod tests {
             (
                 "subagent.done",
                 serde_json::to_value(&SubagentDone {
-                    parent_session_id: Ulid::new(),
-                    child_session_id: Ulid::new(),
+                    parent_session_id: Ulid::generate(),
+                    child_session_id: Ulid::generate(),
                     agent: "vigie".into(),
                     outcome: SubagentOutcome::Stopped,
                     reason: Some("server_restart".into()),
-                    notification_id: Ulid::new(),
+                    notification_id: Ulid::generate(),
                 })
                 .unwrap(),
             ),
@@ -1162,7 +1162,7 @@ mod tests {
         cases.push((
             "subagent.watchdog",
             serde_json::to_value(SubagentWatchdog {
-                child_session_id: Ulid::new(),
+                child_session_id: Ulid::generate(),
                 verdict: "doubt".into(),
                 reason: Some("unavailable".into()),
                 checked_at: now_rfc3339(),
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[test]
     fn permission_events_wire_shape_roundtrips() {
-        let request_id = Ulid::new();
+        let request_id = Ulid::generate();
         let requested = PermissionRequested {
             child_session_id: None,
             request_id,
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn command_result_wire_shape_and_bounded_data() {
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let ok = CommandResult {
             operation_id: id,
             name: "model".into(),
@@ -1280,8 +1280,8 @@ mod tests {
     #[test]
     fn llm_delta_stream_delta_wire_uses_delta_type_tag() {
         let delta = LlmDelta {
-            turn_id: Ulid::new(),
-            step_id: Ulid::new(),
+            turn_id: Ulid::generate(),
+            step_id: Ulid::generate(),
             delta: StreamDelta::Text {
                 text: "héllo ✓".into(),
             },
@@ -1377,12 +1377,12 @@ mod tests {
     /// the todo report as the human-readable frozen shape).
     #[test]
     fn manual_qa_print_fully_populated_envelope() {
-        let session_id = Ulid::new();
-        let task_id = Ulid::new();
-        let command_id = Ulid::new();
+        let session_id = Ulid::generate();
+        let task_id = Ulid::generate();
+        let command_id = Ulid::generate();
         let payload = serde_json::to_value(&LlmDelta {
-            turn_id: Ulid::new(),
-            step_id: Ulid::new(),
+            turn_id: Ulid::generate(),
+            step_id: Ulid::generate(),
             delta: StreamDelta::ToolCallStarted {
                 index: 0,
                 name: "read".into(),

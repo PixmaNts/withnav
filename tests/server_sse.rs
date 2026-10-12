@@ -231,7 +231,7 @@ async fn subscribe_then_replay_seam_is_complete_and_delivers_once() {
     use withnav::bus::sequencer::{Candidate, Sequencer};
     use withnav::bus::{ResumeOutcome, SessionBus};
 
-    let seq = Sequencer::spawn(ulid::Ulid::new(), SessionBus::default(), 0);
+    let seq = Sequencer::spawn(ulid::Ulid::generate(), SessionBus::default(), 0);
 
     seq.publish(Candidate::new(EventKind::TurnStart, json!({ "n": 0 })))
         .expect("publish 0");

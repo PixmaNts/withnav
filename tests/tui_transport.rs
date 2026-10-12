@@ -379,7 +379,7 @@ async fn a_wrong_token_ends_the_stream_without_a_reconnect_loop() {
 async fn an_unknown_session_ends_the_stream_with_the_reason() {
     let server = TestServer::start(vec![]).await;
     let client = Client::new(server.base.clone(), None);
-    let missing = ulid::Ulid::new().to_string();
+    let missing = ulid::Ulid::generate().to_string();
 
     let (mut stream, _cancel) = open(&client, &missing, None);
     match next(&mut stream).await.expect("protocol error") {
@@ -521,7 +521,7 @@ fn sse_head() -> &'static str {
 }
 
 fn frame(seq: u64, kind: EventKind) -> String {
-    let envelope = EventEnvelope::new(ulid::Ulid::new(), seq, kind, json!({}));
+    let envelope = EventEnvelope::new(ulid::Ulid::generate(), seq, kind, json!({}));
     format!(
         "id: {seq}\ndata: {}\n\n",
         serde_json::to_string(&envelope).expect("envelope json")
@@ -634,7 +634,7 @@ async fn a_send_that_never_connected_or_was_refused_is_rejected() {
 
     let server = TestServer::start(vec![]).await;
     let client = Client::new(server.base.clone(), None);
-    let missing = ulid::Ulid::new().to_string();
+    let missing = ulid::Ulid::generate().to_string();
     match client.send(&missing, submit("hi")).await {
         Err(SendError::Rejected(message)) => assert!(message.contains("404"), "{message}"),
         other => panic!("expected a rejection, got {other:?}"),

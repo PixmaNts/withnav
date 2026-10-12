@@ -539,7 +539,7 @@ async fn spawn_cognition_server(
 /// bits each with millisecond ordering, plenty for a per-process secret.
 fn bearer_token() -> String {
     use ulid::Ulid;
-    format!("{}{}", Ulid::new(), Ulid::new()).to_lowercase()
+    format!("{}{}", Ulid::generate(), Ulid::generate()).to_lowercase()
 }
 
 /// Stand-in used when the metacognition layer could not be built: every

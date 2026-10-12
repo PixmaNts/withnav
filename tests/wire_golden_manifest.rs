@@ -28,7 +28,7 @@ fn locked_golden_fixtures_are_unchanged() {
         );
         assert!(listed.insert(name), "duplicate MANIFEST fixture: {name}");
         let bytes = std::fs::read(format!("{dir}/{name}")).expect("read fixture");
-        let actual = format!("{:x}", Sha256::digest(&bytes));
+        let actual = hex::encode(Sha256::digest(&bytes));
         assert_eq!(
             actual, expected,
             "{name} changed: update its SHA-256 in MANIFEST.txt only if the wire change is intended"

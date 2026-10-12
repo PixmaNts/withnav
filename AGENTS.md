@@ -21,7 +21,9 @@ one you need probably exists.
   Captain, and how it was verified.
 - A release: bump the version in `Cargo.toml` and `vscode-withnav/package.json`, move the
   `Unreleased` entries of `CHANGELOG.md` under the new version, merge `develop` into `main`, tag
-  `vX.Y.Z`, push the tag.
+  `vX.Y.Z`, push the tag. The tag triggers `.github/workflows/release.yml`, which builds the static
+  Linux binaries and the VSIX packages and publishes the release with them (`scripts/package-vsix.sh`
+  builds the same files locally into `dist/`).
 - Parallel agents work in separate git worktrees, one branch each, and never edit another
   branch's files.
 
@@ -29,7 +31,7 @@ one you need probably exists.
 
 ### Issue tracker
 
-Issues and specs live as local markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs live as local markdown files under `.scratch/<feature-slug>/`, ignored by git. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

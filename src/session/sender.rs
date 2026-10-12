@@ -47,7 +47,7 @@ impl SessionSender {
     /// validation and event-before-action sequencing as `POST /messages`.
     pub async fn send(&self, text: String, source: &str) -> Result<(), ServerError> {
         let command = Command {
-            command_id: Ulid::new(),
+            command_id: Ulid::generate(),
             session_id: self.session_id,
             source_actor_id: source.to_string(),
             target_actor_id: ROOT_ACTOR_ID.to_string(),

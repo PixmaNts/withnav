@@ -87,7 +87,7 @@ impl Service {
                 .take(UNKNOWN_NAME_CAP)
                 .collect(),
         };
-        let operation_id = Ulid::new();
+        let operation_id = Ulid::generate();
         let mut created = None;
         let result = match spec {
             Some(spec) => {

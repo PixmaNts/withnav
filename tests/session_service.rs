@@ -61,7 +61,7 @@ async fn service_send_rejects_invalid_content_without_event() {
         .expect("create");
 
     let command = |target: &str, content: Vec<ContentBlock>| Command {
-        command_id: ulid::Ulid::new(),
+        command_id: ulid::Ulid::generate(),
         session_id: id,
         source_actor_id: "user:test".to_string(),
         target_actor_id: target.to_string(),
@@ -191,7 +191,7 @@ async fn service_subscription_matches_http_replay() {
 
     // An unknown id is not found.
     assert!(matches!(
-        server.state.subscribe(ulid::Ulid::new(), None).await,
+        server.state.subscribe(ulid::Ulid::generate(), None).await,
         Err(withnav::error::ServerError::SessionNotFound(_))
     ));
 }
@@ -229,7 +229,7 @@ async fn service_delete_removes_listing_and_routing() {
 
     assert!(service.list(&ws_str).await.expect("list").is_empty());
     let command = Command {
-        command_id: ulid::Ulid::new(),
+        command_id: ulid::Ulid::generate(),
         session_id: id,
         source_actor_id: "user:test".to_string(),
         target_actor_id: "agent:main".to_string(),

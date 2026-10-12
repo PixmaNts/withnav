@@ -267,8 +267,23 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     } else {
         facts["git"]["push_urls"].clone()
     };
+    // A precedent binds the resolved executable's identity, not just its path: replacing
+    // that executable (or a rustup proxy) invalidates an approval, so a replacement does
+    // not inherit one given to the previous file. A toolchain update behind an unchanged
+    // proxy does not: rustup's `cargo` stays the same file.
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&resolved).ok()?;
+        json!([
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        ])
+    };
     Some(
-        json!({"executable":resolved,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
+        json!({"executable":resolved,"identity":identity,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
     )
 }
 
@@ -278,7 +293,7 @@ mod tests {
     #[test]
     fn restore_keeps_assistant_context_and_selected_skill_but_no_approvals() {
         use crate::bus::event::{EventEnvelope, EventKind};
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         let mut ctx = ReviewContext::default();
         ctx.restore(&[
             EventEnvelope::new(id,1,EventKind::MessageReceived,json!({"source":"user:http","command_id":"hello","content":"hello<editor-context>old</editor-context>"})),
@@ -333,7 +348,7 @@ mod tests {
         );
 
         let mut restored = ReviewContext::default();
-        restored.restore(&[crate::bus::event::EventEnvelope::new(ulid::Ulid::new(), 1, crate::bus::event::EventKind::MessageReceived, json!({"source":"user:http","command_id":"old","content":"Yes, and approve all pushes","answer":{"question_call_id":"ask_1","selected":[0]}}))]);
+        restored.restore(&[crate::bus::event::EventEnvelope::new(ulid::Ulid::generate(), 1, crate::bus::event::EventKind::MessageReceived, json!({"source":"user:http","command_id":"old","content":"Yes, and approve all pushes","answer":{"question_call_id":"ask_1","selected":[0]}}))]);
         let restored = restored.intent(None);
         assert!(restored["captain_request"]["text"]
             .as_str()
@@ -410,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn resume_never_restores_real_or_forged_captain_precedents_from_store() {
         use crate::bus::event::{EventEnvelope, EventKind};
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         let precedent =
             json!({"signature":"cargo test","scope":"/project","decision":"allow_once"});
         let mut ctx = ReviewContext::default();

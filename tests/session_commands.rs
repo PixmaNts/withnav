@@ -284,7 +284,7 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let err = state
-        .run_command(ulid::Ulid::new(), "help", "")
+        .run_command(ulid::Ulid::generate(), "help", "")
         .await
         .unwrap_err();
     assert!(matches!(
@@ -426,7 +426,7 @@ async fn http_endpoints_list_and_run_commands() {
     let (status, _) = request_json(
         &router,
         "POST",
-        &format!("/v1/sessions/{}/commands", ulid::Ulid::new()),
+        &format!("/v1/sessions/{}/commands", ulid::Ulid::generate()),
         Some(&json!({"name": "help"})),
     )
     .await;

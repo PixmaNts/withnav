@@ -1001,7 +1001,7 @@ mod tests {
     #[tokio::test]
     async fn http_session_views_use_durable_identity_and_reject_foreign_workspace() {
         let (root, state) = fixture(json!({"agents":{"build":{"model":"mock/combo/chat"}}}));
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         state
             .history()
             .record_session(id, root.path().to_str().unwrap(), "legacy-chat", false)
@@ -1106,7 +1106,7 @@ mod tests {
             &state,
             root.path(),
             "agents",
-            &format!("&session_id={}", ulid::Ulid::new()),
+            &format!("&session_id={}", ulid::Ulid::generate()),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1129,7 +1129,7 @@ mod tests {
             json!({"agents":{"build":{"model":"mock/combo/chat"}}}).to_string(),
         )
         .unwrap();
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         state
             .history()
             .record_session(id, root.path().to_str().unwrap(), "legacy-chat", false)
@@ -1236,7 +1236,7 @@ mod tests {
         let (root, state) = fixture(json!({"agents":{"build":{"model":"mock/combo/chat"}}}));
         let secret = "https://user:synthetic-secret@host";
         for name in [secret, "missing-agent"] {
-            let id = ulid::Ulid::new();
+            let id = ulid::Ulid::generate();
             state
                 .history()
                 .record_session(id, root.path().to_str().unwrap(), "legacy-chat", false)

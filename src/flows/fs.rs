@@ -5,9 +5,10 @@ use nix::{
     unistd::{getuid, unlinkat, UnlinkatFlags},
 };
 use std::{
+    ffi::CString,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::fd::{AsFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
@@ -232,7 +233,7 @@ impl Directory {
             Err(nix::errno::Errno::ENOENT) => {}
             Err(e) => return Err(io(e)),
         }
-        let temporary = format!(".flow-{}", ulid::Ulid::new());
+        let temporary = format!(".flow-{}", ulid::Ulid::generate());
         let fd = openat(
             &self.0,
             temporary.as_str(),
@@ -245,14 +246,24 @@ impl Directory {
             file.write_all(bytes)?;
             file.sync_all()?;
             if no_replace {
-                nix::fcntl::renameat2(
-                    &self.0,
-                    temporary.as_str(),
-                    &self.0,
-                    name,
-                    nix::fcntl::RenameFlags::RENAME_NOREPLACE,
-                )
-                .map_err(io)
+                // nix wraps renameat2 on glibc only, and the static musl release binary needs it:
+                // measured 2026-10-12, Rust's musl libc.a and zig 0.16's musl export no renameat2
+                // symbol. The raw syscall keeps the single atomic rename that fails with EEXIST
+                // instead of replacing, so behaviour is the same on every libc.
+                let old = CString::new(temporary.as_str())?;
+                let new = CString::new(name)?;
+                // SAFETY: both C strings and the owned directory fd remain live for the call.
+                let result = unsafe {
+                    nix::libc::syscall(
+                        nix::libc::SYS_renameat2,
+                        self.0.as_raw_fd(),
+                        old.as_ptr(),
+                        self.0.as_raw_fd(),
+                        new.as_ptr(),
+                        nix::libc::RENAME_NOREPLACE,
+                    )
+                };
+                nix::errno::Errno::result(result).map(|_| ()).map_err(io)
             } else {
                 renameat(&self.0, temporary.as_str(), &self.0, name).map_err(io)
             }

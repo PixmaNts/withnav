@@ -664,7 +664,7 @@ async fn a_legacy_row_resumes_as_build() {
     let env = Env::new();
     let provider = provider(1).await;
     let state = state(&env, &provider);
-    let id = ulid::Ulid::new();
+    let id = ulid::Ulid::generate();
     state
         .history()
         .record_session(id, &env.ws.display().to_string(), "mock/mock-model", false)
@@ -791,7 +791,7 @@ async fn a_switch_during_a_pending_ask_is_refused() {
     let sub = state.subscribe(id, None).await.unwrap();
     state
         .send(Command {
-            command_id: ulid::Ulid::new(),
+            command_id: ulid::Ulid::generate(),
             session_id: id,
             source_actor_id: "user:test".to_string(),
             target_actor_id: "agent:main".to_string(),

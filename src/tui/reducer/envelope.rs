@@ -45,7 +45,7 @@ mod tests {
                 .insert("0".into(), "unfinished".into());
             apply_envelope(
                 &mut state,
-                EventEnvelope::new(Ulid::new(), 1, kind, payload),
+                EventEnvelope::new(Ulid::generate(), 1, kind, payload),
             )
             .unwrap();
             assert!(state.conversation.pending_tool_fragments.is_empty());
@@ -56,7 +56,7 @@ mod tests {
     fn budget_yield_stays_out_of_steps_through_turn_end_and_agent_state() {
         for kind in [Some("budget"), Some("choice"), None] {
             let mut state = State::default();
-            let session = Ulid::new();
+            let session = Ulid::generate();
             for (seq, event, payload) in [
                 (
                     1,

@@ -905,7 +905,7 @@ fn json_result<T: Serialize>(result: Result<T, ServerError>) -> Response {
 /// Public so the WS route and integration tests share the exact POST core.
 pub fn build_command(session_id: Ulid, request: PostMessageRequest, mode: DeliveryMode) -> Command {
     Command {
-        command_id: Ulid::new(),
+        command_id: Ulid::generate(),
         session_id,
         source_actor_id: HTTP_USER_ACTOR_ID.to_string(),
         target_actor_id: request.target_actor_id,

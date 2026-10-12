@@ -808,7 +808,7 @@ fn message_event(session_id: ulid::Ulid, source: &str) -> withnav::bus::event::E
         session_id,
         withnav::bus::event::EventKind::MessageReceived,
         json!({
-            "command_id": ulid::Ulid::new().to_string(),
+            "command_id": ulid::Ulid::generate().to_string(),
             "source": source,
             "target": "agent:main",
             "mode": "next-turn",
@@ -822,7 +822,7 @@ fn turn_end_event(session_id: ulid::Ulid) -> withnav::bus::event::EventEnvelope 
         session_id,
         withnav::bus::event::EventKind::TurnEnd,
         json!({
-            "turn_id": ulid::Ulid::new().to_string(),
+            "turn_id": ulid::Ulid::generate().to_string(),
             "actor_id": "agent:main",
             "outcome": "done",
             "duration_ms": 1,

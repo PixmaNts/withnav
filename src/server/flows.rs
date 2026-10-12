@@ -269,7 +269,7 @@ async fn handle(
                         + Duration::from_millis(
                             compiled.definition().flow.budget_ms.unwrap_or(5000),
                         ),
-                    run_id: ulid::Ulid::new().to_string(),
+                    run_id: ulid::Ulid::generate().to_string(),
                 },
                 &cancel,
             )

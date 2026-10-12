@@ -11,9 +11,28 @@ fn path_directory(directory: PathBuf, facts: &Value) -> Option<PathBuf> {
     }
 }
 
+/// The names rustup installs as proxies to itself (`TOOLS` and `DUP_TOOLS` in
+/// rust-lang/rustup `src/lib.rs`). A link to `rustup` is a dispatcher only under these.
+const RUSTUP_PROXIES: &[&str] = &[
+    "rustc",
+    "rustdoc",
+    "cargo",
+    "rust-lldb",
+    "rust-gdb",
+    "rust-gdbgui",
+    "rls",
+    "cargo-clippy",
+    "clippy-driver",
+    "cargo-miri",
+    "rust-analyzer",
+    "rustfmt",
+    "cargo-fmt",
+];
+
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
-/// Both its spelling and symlink target must be outside every writable root,
-/// with non-writable directory chains (secure current-user shim links are allowed).
+/// Both its spelling and symlink target must be outside every writable root, in
+/// directory chains that nobody but root (system tools) or root and the current user
+/// (user toolchains, see below) owns, and that are not group/world-writable.
 pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, PathBuf)> {
     let name = basename(word);
     let path = Path::new(word);
@@ -51,26 +70,45 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
                 .is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0)
         })?;
     // Check identity at review time, without skipping an untrusted PATH hit.
-    // A root-owned binary replaced between review and spawn is a remaining TOCTOU
-    // outside this advisory gate's scope: bash is advisory, not a sandbox (CONTEXT.md).
+    // A binary replaced between review and spawn is a remaining TOCTOU outside this
+    // advisory gate's scope: bash is advisory, not a sandbox (CONTEXT.md).
     let metadata = resolved.metadata().ok()?;
-    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+    let uid = nix::unistd::getuid().as_raw();
+    if !accepted_owner(metadata.uid(), uid) || metadata.mode() & 0o022 != 0 {
         return None;
     }
     let canonical = resolved.canonicalize().ok()?;
-    // Executable identity, 2026-10-10: mise links point to root-owned binaries;
-    // accept secure owned link directories, never user-owned regular executables.
+    // System tools: root-owned executable in a root-owned chain, any link name.
+    let system = metadata.uid() == 0
+        && trusted_directories(&resolved, |owner| owner == 0)
+        && trusted_directories(&canonical, |owner| owner == 0);
+    // User toolchains, 2026-10-12: a rustup `~/.cargo/bin/cargo` is owned by the user, so
+    // the root-only rule left `cargo test` on a clean CI runner (and for every rustup
+    // user) reviewed by metacognition, with 13 gate tests failing. Ownership by root or
+    // by the current user now suffices, when neither the file nor any directory of its
+    // spelling or of its canonical path is group/world-writable (sticky directories such
+    // as /tmp stay rejected) and both lie outside every workspace, writable and scratch
+    // root. rustup's `cargo` is a hard link to `rustup`: link count is not restricted.
     // The link's name is what the host classifies, so it must not impersonate another
-    // program (`~/.local/bin/ls -> /usr/bin/rm`): only same-name links or version-manager
-    // dispatchers, which run the tool named by the link, qualify.
-    let safe_shim = resolved.symlink_metadata().ok()?.is_symlink()
-        && trusted_shim_directories(&resolved)
-        && canonical
-            .file_name()
-            .and_then(|target| target.to_str())
-            .is_some_and(|target| target == name || matches!(target, "mise" | "asdf" | "rtx"));
-    if (!trusted_directories(&resolved) && !safe_shim)
-        || !trusted_directories(&canonical)
+    // program (`~/.local/bin/ls -> /usr/bin/rm`): only same-name targets or
+    // version-manager dispatchers, which run the tool named by the link, qualify.
+    // Accepted risk (Captain decision): an agent that can write a file in a user-owned
+    // toolchain dir outside the workspace can get it run as a known tool. Native writes ask
+    // the Captain automatically only for `$CARGO_HOME/bin` and `$RUSTUP_HOME/toolchains`
+    // (`toolchain_execution_write`), not for every user-owned tool directory; shell and
+    // build scripts are not confined.
+    let user = canonical
+        .file_name()
+        .and_then(|target| target.to_str())
+        .is_some_and(|target| {
+            target == name
+                || matches!(target, "mise" | "asdf" | "rtx")
+                // rustup's own proxy names only: `rm -> rustup` must not pass.
+                || (target == "rustup" && RUSTUP_PROXIES.contains(&name))
+        })
+        && trusted_directories(&resolved, |owner| accepted_owner(owner, uid))
+        && trusted_directories(&canonical, |owner| accepted_owner(owner, uid));
+    if !(system || user)
         || !outside(&resolved)
         || !outside(&canonical)
         || (path.is_absolute() && (path != canonical || !outside(path)))
@@ -84,29 +122,53 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
     Some((name.to_owned(), canonical))
 }
 
-fn trusted_directories(path: &Path) -> bool {
+/// Test fixture: a rustup-shaped toolchain below `root` (a directory the caller owns):
+/// `.cargo/bin/rustup` with `cargo` hard-linked to it, and a versioned toolchain. The
+/// executables are copies of `/usr/bin/true`; they are never run.
+#[cfg(test)]
+pub(super) fn rustup_fixture(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    let bin = root.join(".cargo/bin");
+    let toolchain = root.join(".rustup/toolchains/stable-x/bin");
+    for dir in [&bin, &toolchain] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for dir in [
+        root.join(".cargo"),
+        bin.clone(),
+        root.join(".rustup"),
+        root.join(".rustup/toolchains"),
+        root.join(".rustup/toolchains/stable-x"),
+        toolchain.clone(),
+    ] {
+        mode(&dir, 0o755);
+    }
+    std::fs::copy("/usr/bin/true", bin.join("rustup")).unwrap();
+    std::fs::hard_link(bin.join("rustup"), bin.join("cargo")).unwrap();
+    std::fs::copy("/usr/bin/true", toolchain.join("cargo")).unwrap();
+    mode(&bin.join("rustup"), 0o755);
+    mode(&toolchain.join("cargo"), 0o755);
+    bin
+}
+
+/// Root, or the user the gate runs as, may own a trusted toolchain.
+fn accepted_owner(owner: u32, current: u32) -> bool {
+    owner == 0 || owner == current
+}
+
+/// Every directory of the path's spelling, and of each resolved ancestor, is owned by an
+/// accepted owner and not group/world-writable.
+fn trusted_directories(path: &Path, owner_ok: impl Fn(u32) -> bool) -> bool {
     path.ancestors().skip(1).all(|parent| {
         // Check the spelling's chain (including a symlink's containing directory)
         // and every resolved directory's chain, not just the executable target.
         parent.canonicalize().is_ok_and(|canonical| {
             canonical.ancestors().all(|directory| {
                 directory.metadata().is_ok_and(|metadata| {
-                    metadata.is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0
-                })
-            })
-        })
-    })
-}
-
-fn trusted_shim_directories(path: &Path) -> bool {
-    let uid = nix::unistd::getuid().as_raw();
-    path.ancestors().skip(1).all(|parent| {
-        parent.canonicalize().is_ok_and(|canonical| {
-            canonical.ancestors().all(|directory| {
-                directory.metadata().is_ok_and(|metadata| {
-                    metadata.is_dir()
-                        && (metadata.uid() == 0 || metadata.uid() == uid)
-                        && metadata.mode() & 0o022 == 0
+                    metadata.is_dir() && owner_ok(metadata.uid()) && metadata.mode() & 0o022 == 0
                 })
             })
         })
@@ -1324,13 +1386,24 @@ mod tests {
     }
 
     #[test]
-    fn secure_user_shim_accepts_system_target_but_not_regular_binary() {
+    fn secure_user_shim_accepts_system_target_and_owned_binary_but_not_impersonation() {
         const CHILD: &str = "WITHNAV_TEST_SECURE_SHIM";
         if let Ok(workspace) = std::env::var(CHILD) {
             let facts = json!({"workspace":workspace,"writable_roots":[workspace]});
             assert!(trusted_program("cargo", &facts).is_some());
-            assert!(trusted_program("local-binary", &facts).is_none());
+            // Accepted product change: a user-owned regular executable in a secure user
+            // directory outside the workspace is trusted by ownership, like a rustup cargo.
+            assert!(trusted_program("local-binary", &facts).is_some());
+            // A link must not impersonate another program.
             assert!(trusted_program("ls", &facts).is_none());
+            // A link to rustup is a dispatcher only under rustup's proxy names.
+            assert!(trusted_program("rustc", &facts).is_some());
+            for impersonator in ["rm", "sudo", "git"] {
+                assert!(
+                    trusted_program(impersonator, &facts).is_none(),
+                    "{impersonator}"
+                );
+            }
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -1341,6 +1414,12 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::os::unix::fs::symlink("/usr/bin/mise", bin.join("cargo")).unwrap();
         std::os::unix::fs::symlink("/usr/bin/rm", bin.join("ls")).unwrap();
+        std::fs::copy("/usr/bin/true", bin.join("rustup")).unwrap();
+        std::fs::set_permissions(bin.join("rustup"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        for name in ["rustc", "rm", "sudo", "git"] {
+            std::os::unix::fs::symlink(bin.join("rustup"), bin.join(name)).unwrap();
+        }
         std::fs::copy("/usr/bin/true", bin.join("local-binary")).unwrap();
         std::fs::set_permissions(
             bin.join("local-binary"),
@@ -1348,7 +1427,7 @@ mod tests {
         )
         .unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "agent::permission_gate::shell::tests::secure_user_shim_accepts_system_target_but_not_regular_binary"])
+            .args(["--exact", "agent::permission_gate::shell::tests::secure_user_shim_accepts_system_target_and_owned_binary_but_not_impersonation"])
             .env(CHILD, "/nonexistent-workspace")
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .output().unwrap();
@@ -1485,5 +1564,123 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// Run `case` in an isolated process: PATH is process-global.
+    fn isolated(case: &str, path: String, env: &[(&str, &str)]) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", case, "--nocapture"])
+            .env("PATH", path)
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{case} {env:?}\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn user_owned_toolchain_is_trusted_by_ownership_with_guards() {
+        const CASE: &str = "agent::permission_gate::shell::tests::user_owned_toolchain_is_trusted_by_ownership_with_guards";
+        if let Ok(expect) = std::env::var("WITHNAV_TEST_TOOLCHAIN") {
+            let workspace = std::env::var("WITHNAV_TEST_WORKSPACE").unwrap();
+            let writable = std::env::var("WITHNAV_TEST_WRITABLE").unwrap();
+            let facts =
+                json!({"workspace":workspace,"writable_roots":[writable],"scratch_roots":[]});
+            let found = trusted_program("cargo", &facts);
+            assert_eq!(found.is_some(), expect == "trusted", "{found:?}");
+            if let Some((name, canonical)) = found {
+                assert_eq!(name, "cargo");
+                assert!(canonical.ends_with(".cargo/bin/cargo"), "{canonical:?}");
+                // The absolute spelling of the very same binary is trusted too.
+                assert!(trusted_program(&canonical.to_string_lossy(), &facts).is_some());
+            }
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::var_os("HOME").unwrap();
+        let elsewhere = tempfile::tempdir_in(&home).unwrap();
+        let chmod = |path: &Path, mode| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let run = |root: &Path, workspace: &Path, writable: &Path, expect: &str| {
+            let bin = root.join(".cargo/bin");
+            isolated(
+                CASE,
+                format!("{}:/usr/bin:/bin", bin.display()),
+                &[
+                    ("WITHNAV_TEST_TOOLCHAIN", expect),
+                    ("WITHNAV_TEST_WORKSPACE", &workspace.to_string_lossy()),
+                    ("WITHNAV_TEST_WRITABLE", &writable.to_string_lossy()),
+                ],
+            );
+        };
+        // 1. rustup layout (cargo hard-linked to rustup, nlink > 1), outside the workspace.
+        let tmp = tempfile::tempdir_in(&home).unwrap();
+        let bin = rustup_fixture(tmp.path());
+        assert!(std::fs::metadata(bin.join("cargo")).unwrap().nlink() > 1);
+        run(tmp.path(), elsewhere.path(), elsewhere.path(), "trusted");
+        // 2. The same layout inside the workspace, or inside another writable root.
+        run(tmp.path(), tmp.path(), elsewhere.path(), "untrusted");
+        run(tmp.path(), elsewhere.path(), tmp.path(), "untrusted");
+        run(
+            tmp.path(),
+            elsewhere.path(),
+            &tmp.path().join(".cargo"),
+            "untrusted",
+        );
+        // 3. Group/world-writable file, direct parent, or intermediate directory.
+        for (relative, mode) in [
+            (".cargo/bin/cargo", 0o775),
+            (".cargo/bin/cargo", 0o757),
+            (".cargo/bin", 0o775),
+            (".cargo", 0o777),
+        ] {
+            let tmp = tempfile::tempdir_in(&home).unwrap();
+            rustup_fixture(tmp.path());
+            chmod(&tmp.path().join(relative), mode);
+            run(tmp.path(), elsewhere.path(), elsewhere.path(), "untrusted");
+        }
+        // A sticky world-writable directory (a /tmp-like place) is not secure either.
+        let sticky = tempfile::tempdir().unwrap();
+        rustup_fixture(sticky.path());
+        run(
+            sticky.path(),
+            elsewhere.path(),
+            elsewhere.path(),
+            "untrusted",
+        );
+        // An untrusted first PATH hit never falls through to a later trusted one.
+        let unsafe_first = tempfile::tempdir_in(&home).unwrap();
+        let first = unsafe_first.path().join("first");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::copy("/usr/bin/true", first.join("cargo")).unwrap();
+        chmod(&first.join("cargo"), 0o775);
+        chmod(&first, 0o755);
+        isolated(
+            CASE,
+            format!("{}:{}:/usr/bin:/bin", first.display(), bin.display()),
+            &[
+                ("WITHNAV_TEST_TOOLCHAIN", "untrusted"),
+                (
+                    "WITHNAV_TEST_WORKSPACE",
+                    &elsewhere.path().to_string_lossy(),
+                ),
+                ("WITHNAV_TEST_WRITABLE", &elsewhere.path().to_string_lossy()),
+            ],
+        );
+    }
+
+    #[test]
+    fn only_root_or_the_current_user_may_own_a_trusted_toolchain() {
+        // Changing a file's owner needs privileges these tests lack, so the ownership
+        // predicate is checked with injected ids instead of a chowned fixture.
+        assert!(accepted_owner(0, 1000));
+        assert!(accepted_owner(1000, 1000));
+        assert!(!accepted_owner(1001, 1000));
+        assert!(!accepted_owner(65534, 1000));
     }
 }

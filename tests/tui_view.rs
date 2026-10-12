@@ -344,7 +344,11 @@ fn state() -> State {
             resume_disabled_reason: None,
             session_id: "01JABCDEFGH".into(),
             actor_state: "idle".into(),
-            workspace: "/home/pixma/dev/project".into(),
+            // The status line shows the home folder as `~`, and the snapshots expect
+            // `~/dev/project`. A fixed `/home/pixma/...` only matched on a machine whose home
+            // is `/home/pixma` (observed 2026-10-12: ten snapshots failed on a runner whose
+            // home is `/home/runner`), so build the path from the actual home.
+            workspace: format!("{}/dev/project", std::env::var("HOME").unwrap()),
             model: "cognition".into(),
             agent: None,
             variant: None,
@@ -984,7 +988,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         last_usage: None,
         skills: Default::default(),
         rule_files: 0,
-        incarnation: ulid::Ulid::new(),
+        incarnation: ulid::Ulid::generate(),
         revision: 1,
     });
     let terminal = cells(&s, &ui, (60, 20));
@@ -1509,7 +1513,7 @@ fn the_gauge_follows_the_active_tab() {
         last_usage: None,
         skills: Default::default(),
         rule_files: 0,
-        incarnation: ulid::Ulid::new(),
+        incarnation: ulid::Ulid::generate(),
         revision: 1,
     };
     let mut s = done();
@@ -1994,7 +1998,7 @@ fn the_status_line_reads_model_variant_and_gauge() {
         last_usage: None,
         skills: Default::default(),
         rule_files: 0,
-        incarnation: ulid::Ulid::new(),
+        incarnation: ulid::Ulid::generate(),
         revision: 1,
     });
     let t = cells(&s, &UiState::default(), (120, 30));

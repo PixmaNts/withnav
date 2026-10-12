@@ -339,9 +339,9 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
         .chat_tools(128_000)
         .config();
     let store = withnav::session::store::HistoryStore::open(&config.history_db).unwrap();
-    let parent = ulid::Ulid::new();
-    let child = ulid::Ulid::new();
-    let request = ulid::Ulid::new();
+    let parent = ulid::Ulid::generate();
+    let child = ulid::Ulid::generate();
+    let request = ulid::Ulid::generate();
     store
         .record_session(parent, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
@@ -413,8 +413,8 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
         .chat_tools(128_000)
         .config();
     let first = AppState::new(config.clone()).unwrap();
-    let parent = ulid::Ulid::new();
-    let child = ulid::Ulid::new();
+    let parent = ulid::Ulid::generate();
+    let child = ulid::Ulid::generate();
     first
         .history()
         .record_session(parent, "/ws", "default", false)
@@ -838,8 +838,8 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
         .chat_tools(128_000)
         .config();
     let history = withnav::session::store::HistoryStore::open(config.history_db.clone()).unwrap();
-    let parent = ulid::Ulid::new();
-    let child = ulid::Ulid::new();
+    let parent = ulid::Ulid::generate();
+    let child = ulid::Ulid::generate();
     history
         .record_session(parent, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
@@ -1209,8 +1209,8 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
 async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("history.db");
-    let parent = ulid::Ulid::new();
-    let child = ulid::Ulid::new();
+    let parent = ulid::Ulid::generate();
+    let child = ulid::Ulid::generate();
     let store = withnav::session::store::HistoryStore::open(&path).unwrap();
     store
         .record_session(parent, "/ws", "default", false)
@@ -1286,7 +1286,11 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         content: "untrusted answer".into(),
     }];
     assert!(store
-        .consume_completions(parent, vec![child, ulid::Ulid::new()], transcript.clone())
+        .consume_completions(
+            parent,
+            vec![child, ulid::Ulid::generate()],
+            transcript.clone()
+        )
         .bounded(file!(), line!())
         .await
         .is_err());

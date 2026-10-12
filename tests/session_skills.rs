@@ -13,7 +13,7 @@ mod common;
 #[test]
 fn message_received_type_roundtrips_optional_captain_selection() {
     use withnav::bus::event::MessageReceived;
-    let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"captain text"});
+    let mut payload = json!({"command_id":ulid::Ulid::generate(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"captain text"});
     let legacy: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert!(legacy.selected_skill.is_none());
     assert!(serde_json::to_value(legacy)
@@ -324,7 +324,7 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
     let pending = tokio::spawn(async move {
         sender
             .send(Command {
-                command_id: ulid::Ulid::new(),
+                command_id: ulid::Ulid::generate(),
                 session_id: id,
                 source_actor_id: "user:test".into(),
                 target_actor_id: "agent:main".into(),
@@ -409,7 +409,7 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_captain_task() 
     let pending = tokio::spawn(async move {
         sender
             .send(Command {
-                command_id: ulid::Ulid::new(),
+                command_id: ulid::Ulid::generate(),
                 session_id: id,
                 source_actor_id: "user:test".into(),
                 target_actor_id: "agent:main".into(),

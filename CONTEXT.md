@@ -341,7 +341,8 @@ Edit/write approvals bind canonical file and scope; later writes/edits reuse the
 the next Captain message, never for sensitive or protected-config paths.
 New human turns conservatively invalidate precedents; every typed Captain deny clears all session
 precedents, even when the denied call has no signature. Signatures
-use the trusted resolver's validated canonical executable, subcommand and sorted flags. Push
+use the trusted resolver's validated canonical executable and its file identity (device, inode,
+size, mtime, so a replaced binary inherits no approval), subcommand and sorted flags. Push
 signatures retain the confirmed target and the full effective push URL list, including Git URL
 rewrites; unavailable URLs prevent a signature and precedent reuse. Python JSON exemptions require
 `python3 -I -S` to exclude workspace/PYTHONPATH imports and startup hooks.
@@ -356,7 +357,11 @@ Script execution always retains the opaque-script floor and goes to metacognitio
 never the Instinct-only fast path. Bounded script content is untrusted evidence, not authorization;
 it makes the effects visible so the reviewer can return fewer `unsure` decisions. Direct executable
 scripts attach only with a trusted canonical shebang interpreter (the executable identity resolver:
-root-owned, not group/other writable, outside workspace/writable roots), without `env` indirection.
+owned by root or the current user, not group/other writable, in directory chains owned by root or the
+current user and not group/other writable, outside workspace/writable roots), without `env`
+indirection. A user-installed toolchain (rustup's `~/.cargo/bin/cargo`) is trusted that way, like a
+system one; native writes into `$CARGO_HOME/bin` and `$RUSTUP_HOME/toolchains` are Captain-only
+floors, shell and build scripts are not confined (accepted risk, 2026-10-12).
 Evidence records that interpreter identity. No-follow reads reject multiply linked files as well
 as symlinks, sensitive targets and protected configuration. Complete evidence binds the canonical
 path, original spelling, file/parent identities and SHA-256. Validation is repeated before dispatch
@@ -469,7 +474,7 @@ See Replay (flows) below.
 ## Flows
 
 Implemented for editor triggers; see [ADR 0013](docs/adr/0013-instinct-flow-engine-crate.md)
-and `.scratch/instinct-flow/spec.md`.
+and the [InstinctFlow guide](docs/instinct-flow.md).
 
 **InstinctFlow**:
 The feature: flows run by the instinct layer, edited in the studio.

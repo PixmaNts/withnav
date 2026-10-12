@@ -612,7 +612,7 @@ mod tests {
     fn spawn_with_collector() -> (Arc<Sequencer>, mpsc::UnboundedReceiver<EventEnvelope>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (
-            Arc::new(Sequencer::spawn(Ulid::new(), ForwardEmitter { tx }, 0)),
+            Arc::new(Sequencer::spawn(Ulid::generate(), ForwardEmitter { tx }, 0)),
             rx,
         )
     }
@@ -633,12 +633,12 @@ mod tests {
             EventKind::TurnStart,
             serde_json::json!({
                 "tag": tag,
-                "turn_id": Ulid::new(),
+                "turn_id": Ulid::generate(),
                 "actor_id": "agent:main",
-                "task_id": Ulid::new(),
+                "task_id": Ulid::generate(),
             }),
         )
-        .with_correlation_id(Ulid::new())
+        .with_correlation_id(Ulid::generate())
     }
 
     /// (c) 100 concurrent publishes: seqs form a gapless monotonic set with
@@ -776,9 +776,9 @@ mod tests {
             timeline: Arc::clone(&timeline),
             tx,
         };
-        let seq = Sequencer::spawn(Ulid::new(), emitter, 0);
+        let seq = Sequencer::spawn(Ulid::generate(), emitter, 0);
 
-        let command_id = Ulid::new();
+        let command_id = Ulid::generate();
         let commit_timeline = Arc::clone(&timeline);
         let commit_counter = Arc::clone(&counter);
         let commit = Box::new(move || {

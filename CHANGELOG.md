@@ -4,6 +4,44 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-10-12
+
+WithNav 0.7.8 prepares the public opening. Tagged releases now ship ready-to-install Linux
+packages with `nav` inside, a toolchain you installed yourself (such as rustup's `cargo`) is
+trusted like a system one, and the HTTP and data dependencies move to their current majors.
+
+### Added
+
+- **A tagged release now ships ready-to-install packages for Linux.** The GitHub Release holds a
+  VS Code package for x64 and one for arm64, each with a statically linked `nav` inside that the
+  extension uses on its own, plus a universal package without a binary (it needs `nav` on `PATH`
+  or `withnav.serverPath`), the bare `nav` binaries as tarballs, and `SHA256SUMS`. A path you set
+  in `withnav.serverPath` still wins over the bundled binary. `scripts/package-vsix.sh` builds the
+  same files locally.
+
+### Changed
+
+- **HTTPS connections use the system's trusted certificates**, including locally installed
+  certificate authorities, through the platform verifier. TLS cryptography now uses aws-lc-rs
+  instead of ring.
+- **The VS Code extension needs VS Code 1.91 or later** (was 1.90). It now uses
+  `vscode-languageclient` 10, which requires it.
+- **A toolchain you installed yourself, such as rustup's `cargo`, is trusted like a system one.**
+  The permission gate used to trust only root-owned programs, so on a rustup machine `cargo test`
+  went to review every time. A program now qualifies when you or root own it, nobody else can
+  write it or any directory above it, and it is outside the workspace. The trade-off: any such
+  program you own is trusted by ownership, so an agent that can write one there (with the shell or
+  a build script) can have it run as a known tool. Edits through the `write` and `edit` tools to
+  `~/.cargo/bin` and `~/.rustup/toolchains` (or `$CARGO_HOME` / `$RUSTUP_HOME`) always ask you, and
+  replacing the resolved executable (or rustup proxy) invalidates an approval for a command. A
+  toolchain update behind an unchanged proxy does not.
+
+### Fixed
+
+- **`nav` builds for musl Linux.** Writing a flow file that must not replace an existing one now
+  calls `renameat2` through the raw system call, because `nix` only wraps it with glibc. The
+  behaviour is unchanged: one atomic rename that fails if the file exists.
+
 ## [0.7.7] - 2026-10-11
 
 WithNav 0.7.7 is a maintenance release with no new feature. A pass over the audit backlog fixes

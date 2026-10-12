@@ -207,7 +207,7 @@ mod tests {
 
     fn durable_envelope(seq: u64) -> EventEnvelope {
         EventEnvelope::new(
-            Ulid::new(),
+            Ulid::generate(),
             seq,
             EventKind::TurnStart,
             serde_json::json!({ "n": seq }),
@@ -216,7 +216,7 @@ mod tests {
 
     fn delta_envelope(seq: u64) -> EventEnvelope {
         EventEnvelope::new(
-            Ulid::new(),
+            Ulid::generate(),
             seq,
             EventKind::LlmDelta,
             serde_json::json!({ "n": seq }),
@@ -359,7 +359,7 @@ mod tests {
         let mut expected_durable_kinds: Vec<EventKind> = Vec::new();
         for kind in &durable_kinds {
             bus.emit(EventEnvelope::new(
-                Ulid::new(),
+                Ulid::generate(),
                 seq,
                 *kind,
                 serde_json::json!({ "n": seq }),
@@ -487,7 +487,7 @@ mod tests {
     /// or a duplicate across the subscribe boundary.
     #[tokio::test]
     async fn sequencer_subscribe_replay_then_live_is_gap_and_dup_free() {
-        let sequencer = Sequencer::spawn(Ulid::new(), SessionBus::default(), 0);
+        let sequencer = Sequencer::spawn(Ulid::generate(), SessionBus::default(), 0);
         sequencer.publish(durable_candidate(0)).unwrap();
         sequencer.publish(durable_candidate(1)).unwrap();
 
@@ -545,7 +545,7 @@ mod tests {
                 emitted: 0,
                 at_registration: std::sync::Arc::clone(&at_registration),
             };
-            let sequencer = Sequencer::spawn(Ulid::new(), probe, 0);
+            let sequencer = Sequencer::spawn(Ulid::generate(), probe, 0);
 
             // An OS thread publishes while this task subscribes, so the two
             // genuinely race; the spin length sweeps the landing point.
@@ -597,7 +597,7 @@ mod tests {
     /// instead of being silently lost.
     #[tokio::test]
     async fn session_close_ends_live_streams_and_fails_late_publish() {
-        let sequencer = Sequencer::spawn(Ulid::new(), SessionBus::default(), 0);
+        let sequencer = Sequencer::spawn(Ulid::generate(), SessionBus::default(), 0);
         let mut sub = sequencer.subscribe_since(None).await.unwrap();
         sequencer.publish(durable_candidate(0)).unwrap();
 

@@ -392,7 +392,7 @@ async fn post_prompt(
     use crate::bus::event::ROOT_ACTOR_ID;
 
     let command = Command {
-        command_id: ulid::Ulid::new(),
+        command_id: ulid::Ulid::generate(),
         session_id,
         source_actor_id: "user:cli".to_string(),
         target_actor_id: ROOT_ACTOR_ID.to_string(),

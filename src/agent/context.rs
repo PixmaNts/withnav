@@ -326,7 +326,7 @@ impl ContextTracker {
     /// The first snapshot (revision 0) of a session, from the estimate of the
     /// request its history would produce now.
     pub fn new(limits: ContextLimits, breakdown: Breakdown) -> Self {
-        let incarnation = ulid::Ulid::new();
+        let incarnation = ulid::Ulid::generate();
         let current = ContextSnapshot::new(&limits, breakdown, None, incarnation, 0);
         Self {
             limits,

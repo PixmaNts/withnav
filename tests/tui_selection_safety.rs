@@ -10,7 +10,7 @@ fn summary(seq: u64, agent: &str, model: &str, variant: Option<&str>) -> Session
 }
 fn event(s: &mut State, seq: u64, kind: &str, payload: serde_json::Value) {
     let envelope = withnav::bus::event::EventEnvelope::new(
-        ulid::Ulid::new(),
+        ulid::Ulid::generate(),
         seq,
         withnav::bus::event::EventKind::ModelChanged,
         payload,

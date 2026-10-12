@@ -1,0 +1,33 @@
+name: Welcome
+
+# Greets a first-time contributor. pull_request_target is used for pull
+# requests so the comment can be posted on pull requests from forks, where
+# the pull_request token is read-only. This job never checks out or runs
+# pull request code, so the privileged token is not exposed to it.
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/first-interaction@1c4688942c71f71d4f5502a26ea67c331730fa4d # v3.1.0
+        with:
+          issue_message: |
+            Thanks for your first contribution to WithNav! 👋 If you get stuck, ask in
+            [Discussions](https://github.com/PixmaNts/withnav/discussions) or read
+            [CONTRIBUTING.md](https://github.com/PixmaNts/withnav/blob/develop/CONTRIBUTING.md).
+            A maintainer will triage this soon.
+          pr_message: |
+            Thanks for your first contribution to WithNav! 👋 If you get stuck, ask in
+            [Discussions](https://github.com/PixmaNts/withnav/discussions) or read
+            [CONTRIBUTING.md](https://github.com/PixmaNts/withnav/blob/develop/CONTRIBUTING.md).
+            A maintainer will triage this soon.

@@ -8,6 +8,13 @@ use serde_json::{json, Value};
 use withnav::agent::instructions::RulesRoots;
 use withnav::session::preflight::Preflight;
 
+/// A hang guard for waits on a child process, not a performance assertion. `nav` starts in
+/// about 45 ms alone and 0.1 to 1.4 s on a CPU-limited, oversubscribed container; on the
+/// 2026-10-12 GitHub runner the 5 s guard fired in 2 of 3 runs, because of a lost `initialized`
+/// frame (see `lsp_workspace_catalog_and_project_primary_override_are_authoritative`), not
+/// slowness. 30 s leaves load headroom and still fires on a real hang or deadlock.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 fn fixture(config: Value) -> tempfile::TempDir {
     let mut config = config;
     if let Some(agents) = config.get_mut("agents").and_then(Value::as_object_mut) {
@@ -175,13 +182,11 @@ async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_r
         vec!["tui", "--model", "mock/chat"],
     ] {
         let dir = fixture(json!({"agents":{"build":"mock/fim"}}));
-        let output = tokio::time::timeout(
-            Duration::from_secs(5),
-            command(dir.path(), false).args(args).output(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let output =
+            tokio::time::timeout(HANG_GUARD, command(dir.path(), false).args(args).output())
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(output.status.code(), Some(1));
         let err = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -280,14 +285,17 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             .unwrap();
         let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":format!("file://{}",workspace.display())}}).to_string();
         let initialized = json!({"jsonrpc":"2.0","method":"initialized","params":{}}).to_string();
-        // Both frames in one write prove the original reader and trailing bytes survive.
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
+        // The `initialize` frame and the header of the next frame go out in one write, so
+        // bytes after the first frame must survive the startup reader. The `initialized`
+        // body is only sent once the client has the `initialize` answer, as the protocol
+        // requires: the server drops an `initialized` that is read while `initialize` is
+        // still being handled (2026-10-12: a frame pipelined behind `initialize` was lost
+        // in about 10% of runs under load, and `withnav/serverInfo` never came).
+        let stdin = child.stdin.as_mut().unwrap();
+        stdin
             .write_all(
                 format!(
-                    "Content-Length: {}\r\n\r\n{body}Content-Length: {}\r\n\r\n{initialized}",
+                    "Content-Length: {}\r\n\r\n{body}Content-Length: {}\r\n\r\n",
                     body.len(),
                     initialized.len()
                 )
@@ -296,13 +304,14 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             .await
             .unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
-        let info = tokio::time::timeout(Duration::from_secs(5), async {
+        let info = tokio::time::timeout(HANG_GUARD, async {
             let mut ready = false;
             loop {
                 let message = lsp_message(&mut stdout).await;
                 if message["id"] == 1 {
                     assert!(message["result"]["capabilities"].is_object(), "{message}");
                     ready = true;
+                    stdin.write_all(initialized.as_bytes()).await.unwrap();
                 }
                 if message["method"] == "withnav/serverInfo" {
                     assert!(ready);
@@ -403,7 +412,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
             .write_all(frame.as_bytes())
             .await
             .unwrap();
-        let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        let output = tokio::time::timeout(HANG_GUARD, child.wait_with_output())
             .await
             .unwrap()
             .unwrap();
@@ -496,7 +505,7 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
             let mut out = child.stdout.take().unwrap();
             let mut bytes = vec![0; 8192];
             let mut received = Vec::new();
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(HANG_GUARD, async {
                 loop {
                     let count = out.read(&mut bytes).await.unwrap();
                     assert!(count > 0, "LSP exited before initialize response");
@@ -511,7 +520,7 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
             child.start_kill().unwrap();
             child.wait().await.unwrap();
         } else {
-            let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+            let output = tokio::time::timeout(HANG_GUARD, child.wait_with_output())
                 .await
                 .unwrap()
                 .unwrap();
@@ -599,7 +608,7 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
         if succeeds {
             let mut out = child.stdout.take().unwrap();
             let mut received = Vec::new();
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(HANG_GUARD, async {
                 let mut buffer = [0; 8192];
                 loop {
                     let count = out.read(&mut buffer).await.unwrap();
@@ -619,7 +628,7 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
             child.start_kill().unwrap();
             child.wait().await.unwrap();
         } else {
-            let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+            let output = tokio::time::timeout(HANG_GUARD, child.wait_with_output())
                 .await
                 .unwrap()
                 .unwrap();

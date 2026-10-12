@@ -171,7 +171,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("up / down", "select transcript block"),
     (
         "drag permission",
-        "copy full review; y still allows an open prompt",
+        "copy full review; o once / a always / r reject answer an open prompt",
     ),
     (
         "drag / double-click",

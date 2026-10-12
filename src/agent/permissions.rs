@@ -54,6 +54,25 @@ pub enum PermissionDecision {
     },
 }
 
+/// Maximum Captain-provided refusal reason, measured on the UTF-8 wire.
+pub const REJECT_MESSAGE_MAX_BYTES: usize = 2048;
+pub const REJECT_MESSAGE_LIMIT_ERROR: &str = "Reject message must be at most 2048 UTF-8 bytes";
+
+impl PermissionDecision {
+    pub fn validate_message(&self) -> Result<(), &'static str> {
+        let message = match self {
+            Self::Reject { message } => message.as_deref(),
+            Self::Deny { message } => Some(message.as_str()),
+            _ => None,
+        };
+        if message.is_some_and(|message| message.len() > REJECT_MESSAGE_MAX_BYTES) {
+            Err(REJECT_MESSAGE_LIMIT_ERROR)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// What a gated call touches.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]

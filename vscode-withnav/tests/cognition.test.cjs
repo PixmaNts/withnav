@@ -136,6 +136,18 @@ test("Always without a server label never posts", async t => {
   assert.equal(calls.length, 0);
 });
 
+test("reject reasons enforce UTF-8 admission without consuming the request", async t => {
+  const { backend, calls, permission } = setup(t);
+  permission();
+  for (const message of ["a".repeat(2049), "a".repeat(2047) + "é"]) {
+    await assert.rejects(backend.answerPermission("parent", "R", "reject", message), /2048 UTF-8 bytes/);
+    assert.equal(calls.length, 0);
+    assert.equal(backend.hasOpenPermissions(), true);
+  }
+  await backend.answerPermission("parent", "R", "reject", "é".repeat(1024));
+  assert.equal(JSON.parse(calls[0].body).message, "é".repeat(1024));
+});
+
 test("sending a message percent-encodes the session id in the request path", async t => {
   const { backend, calls } = setup(t);
   backend.state.session = "a/b c";

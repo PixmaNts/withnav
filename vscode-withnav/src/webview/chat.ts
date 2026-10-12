@@ -783,9 +783,26 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   denyMessage.rows = 2;
   denyMessage.placeholder = "Reject message (optional)";
   denyMessage.setAttribute("aria-label", `Optional reject message for ${card.tool}`);
+  const messageFeedback = el("div", "control-meta", "0 / 2048 UTF-8 bytes");
+  messageFeedback.setAttribute("role", "status");
+  let previousMessage = "";
+  denyMessage.addEventListener("input", () => {
+    const bytes = new TextEncoder().encode(denyMessage.value).length;
+    if (bytes > 2048) {
+      denyMessage.value = previousMessage;
+      messageFeedback.textContent = "Reject message must be at most 2048 UTF-8 bytes";
+    } else {
+      previousMessage = denyMessage.value;
+      messageFeedback.textContent = `${bytes} / 2048 UTF-8 bytes`;
+    }
+  });
   const buttons = el("div", "control-actions");
   const answer = (decision: PermissionDecision): void => {
     if (!sessionId) return;
+    if (decision === "reject" && new TextEncoder().encode(denyMessage.value).length > 2048) {
+      messageFeedback.textContent = "Reject message must be at most 2048 UTF-8 bytes";
+      return;
+    }
     for (const button of buttons.querySelectorAll("button")) button.disabled = true;
     denyMessage.disabled = true;
     outcome.textContent = "Sending answer…";
@@ -795,7 +812,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   buttons.append(actionButton("Once", () => answer("allow_once"), true));
   if (card.alwaysLabel !== undefined) buttons.append(actionButton(card.alwaysLabel, () => answer("allow_always")));
   buttons.append(actionButton("Reject", () => answer("reject")));
-  controls.append(denyMessage, buttons);
+  controls.append(denyMessage, messageFeedback, buttons);
   const outcome = el("div", "control-outcome", "Waiting for your answer");
   outcome.setAttribute("role", "status");
   root.append(controls, outcome);

@@ -103,7 +103,14 @@ export function PermissionCard({
           <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("reject")}>
             Reject
           </button>
-          <div className="question-custom"><input aria-label="Reject message (optional)" placeholder="Reject message (optional)" value={message} disabled={!!sending} onChange={(event) => setMessage(event.target.value)} /></div>
+          <div className="question-custom"><input aria-label="Reject message (optional)" placeholder="Reject message (optional)" value={message} disabled={!!sending} onChange={(event) => {
+            if (new TextEncoder().encode(event.target.value).length > 2048) {
+              setError("Reject message must be at most 2048 UTF-8 bytes");
+              return;
+            }
+            setError(null);
+            setMessage(event.target.value);
+          }} /><span className="muted" role="status">{new TextEncoder().encode(message).length} / 2048 UTF-8 bytes</span></div>
           {sending && <span className="muted">Sending…</span>}
         </div>
       )}

@@ -1023,6 +1023,15 @@ async fn answer_permission(
         Err(err) => return error_response(err),
     };
     use crate::agent::permissions::PermissionDecision;
+    if matches!(body.decision, DecisionKind::Reject | DecisionKind::Deny)
+        && body.message.as_ref().is_some_and(|message| {
+            message.len() > crate::agent::permissions::REJECT_MESSAGE_MAX_BYTES
+        })
+    {
+        return error_response(ServerError::MalformedBody(
+            crate::agent::permissions::REJECT_MESSAGE_LIMIT_ERROR.into(),
+        ));
+    }
     let decision = match body.decision {
         DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
         DecisionKind::AllowAlways => PermissionDecision::AllowAlways,

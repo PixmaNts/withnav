@@ -733,6 +733,9 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation = this.state.streamGeneration): Promise<void> {
+    if ((decision === "reject" || decision === "deny") && typeof message === "string" && Buffer.byteLength(message, "utf8") > 2048) {
+      throw new Error("Reject message must be at most 2048 UTF-8 bytes");
+    }
     if (this.isReadOnly()) throw new Error("Answer subagent permissions in the parent conversation.");
     this.checkGeneration(generation);
     const card = this.state.controls.permissions.get(requestId);

@@ -2628,6 +2628,44 @@ fn a_does_nothing_for_a_plan_exception_but_says_why() {
 }
 
 #[test]
+fn reject_draft_limits_utf8_bytes_without_answering_or_truncating() {
+    let s = asking(prompt("bash", json!({"command":"true"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    keys("r", &s, &mut ui, &mut editor);
+    assert!(route_paste("é".repeat(1024), &s, &mut ui, &mut editor).is_none());
+    assert_eq!(ui.deny_draft("R1").unwrap().len(), 2048);
+    assert!(matches!(
+        route_paste("a".into(), &s, &mut ui, &mut editor),
+        Some(Action::ShowNotice(_))
+    ));
+    assert!(matches!(
+        keys("é", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    assert_eq!(ui.deny_draft("R1").unwrap().len(), 2048);
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::AnswerPermission { .. }]
+    ));
+    keys("r", &s, &mut ui, &mut editor);
+    ui.deny_message.as_mut().unwrap().text = "a".repeat(2047);
+    assert!(matches!(
+        keys("é", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    ui.deny_message.as_mut().unwrap().text = "a".repeat(2049);
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    assert_eq!(ui.deny_draft("R1").unwrap().len(), 2049);
+}
+
+#[test]
 fn a_answers_always_only_when_the_server_supplies_its_label() {
     let mut block = prompt(
         "bash",

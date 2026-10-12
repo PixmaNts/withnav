@@ -702,6 +702,11 @@ fn permission_key(
     if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
         return Some(match key.code {
             KeyCode::Enter => {
+                if message.len() > crate::bus::event::REJECT_MESSAGE_MAX_BYTES {
+                    return Some(Some(Action::ShowNotice(
+                        crate::bus::event::REJECT_MESSAGE_LIMIT_ERROR.into(),
+                    )));
+                }
                 let message = std::mem::take(message);
                 ui.deny_message = None;
                 let message = Some(message.trim().to_string()).filter(|m| !m.is_empty());
@@ -716,6 +721,11 @@ fn permission_key(
                 None
             }
             KeyCode::Char(c) if plain || key.modifiers == KeyModifiers::SHIFT => {
+                if message.len() + c.len_utf8() > crate::bus::event::REJECT_MESSAGE_MAX_BYTES {
+                    return Some(Some(Action::ShowNotice(
+                        crate::bus::event::REJECT_MESSAGE_LIMIT_ERROR.into(),
+                    )));
+                }
                 message.push(c);
                 None
             }
@@ -891,7 +901,13 @@ pub fn route_paste(
     }
     if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
         if ui.overlay.is_none() {
-            message.push_str(&text.replace(['\n', '\r'], " "));
+            let text = text.replace(['\n', '\r'], " ");
+            if message.len() + text.len() > crate::bus::event::REJECT_MESSAGE_MAX_BYTES {
+                return Some(Action::ShowNotice(
+                    crate::bus::event::REJECT_MESSAGE_LIMIT_ERROR.into(),
+                ));
+            }
+            message.push_str(&text);
             return None;
         }
     }

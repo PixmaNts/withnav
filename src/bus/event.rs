@@ -587,6 +587,9 @@ pub struct CompactionWriter {
 }
 
 /// A gated tool call waits for a Captain's decision. The call has not run.
+pub use crate::agent::permissions::{REJECT_MESSAGE_LIMIT_ERROR, REJECT_MESSAGE_MAX_BYTES};
+
+/// A gated tool call waits for a Captain's decision. The call has not run.
 /// `arguments` is the call's JSON text cut to 4 KiB, for review only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequested {

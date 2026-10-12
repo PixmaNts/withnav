@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { HttpError } from "../../api/http";
 import { createMockApi } from "./server";
 
 const WS = "/repo";
@@ -49,26 +48,21 @@ describe("mock flows API", () => {
     await expect(api.save("guard-mutations", { location: "workspace", revision: doc.revision, content: { format: "graph", definition: def, templates: {} } })).rejects.toMatchObject({ status: 409, reason: "stale" });
   });
 
-  it("keeps an invalid TOML save, then refuses the reload with its errors", async () => {
+  it("keeps invalid TOML saves inactive and refuses stale validation", async () => {
     const api = createMockApi(WS);
-    await api.setTrust(true);
     const doc = await api.get("guard-mutations", "workspace");
     const bad = await api.save("guard-mutations", { location: "workspace", revision: doc.revision, content: { format: "toml", toml: "[flow\n", templates: {} } });
     expect(bad.definition).toBeNull();
     expect(bad.errors[0]?.code).toBe("parse");
-    const error = await api.reload().catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(HttpError);
-    expect((error as HttpError).status).toBe(422);
-    expect((error as HttpError).body.errors.length).toBeGreaterThan(0);
-    expect((await api.list()).errors?.some((diagnostic) => diagnostic.code === "parse")).toBe(true);
+    await expect(api.setTrust({ name: bad.name, location: bad.location, revision: doc.revision })).rejects.toMatchObject({ reason: "stale" });
+    await expect(api.reload()).resolves.toMatchObject({ reloaded: true });
   });
 
-  it("refuses sample and replay of workspace flows until trusted", async () => {
+  it("validates the exact workspace flow version and permits explicit samples", async () => {
     const api = createMockApi(WS);
     const doc = await api.get("guard-mutations", "workspace");
     const source = { saved: { name: doc.name, location: doc.location, revision: doc.revision } };
-    await expect(api.sample({ source, payload: {}, session_id: null })).rejects.toMatchObject({ status: 403, reason: "untrusted" });
-    await api.setTrust(true);
+    await api.setTrust({ name: doc.name, location: doc.location, revision: doc.revision });
     const run = await api.sample({ source, payload: { tool: "write", args: { path: "x" }, call_id: "s" }, session_id: null });
     expect(run.mode).toBe("sample");
     expect(run.nodes.find((n) => n.id === "effect")?.status).toBe("completed");
@@ -78,7 +72,6 @@ describe("mock flows API", () => {
 
   it("replays the recorded run without new answers", async () => {
     const api = createMockApi(WS);
-    await api.setTrust(true);
     const doc = await api.get("guard-mutations", "workspace");
     const { runs } = await api.runs("guard-mutations");
     const live = runs.find((r) => r.mode === "live")!;

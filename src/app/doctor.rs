@@ -289,7 +289,7 @@ pub async fn inspect(
         &workspace,
         settings_document.as_ref(),
     );
-    workspace_checks(&mut report, config, &workspace);
+    workspace_checks(&mut report, config, &workspace, data.as_deref());
     binary_checks(&mut report, home, &workspace).await;
     let mut keys = BTreeMap::new();
     if let Ok((models, _, _)) = &models {
@@ -913,7 +913,7 @@ fn legacy(
     }
 }
 
-fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
+fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: Option<&Path>) {
     report.add(
         "workspace.directory",
         if workspace.is_dir() {
@@ -946,32 +946,6 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
         intent.display().to_string(),
         Some("Create a readable .withnav/intent.md."),
     );
-    let trust = crate::flows::store::inspect_trust(config, workspace);
-    report.add(
-        "flows.trust_file",
-        if trust.is_ok() {
-            Status::Ok
-        } else {
-            Status::Failed
-        },
-        if trust.is_ok() {
-            "valid or absent flows-trust.json"
-        } else {
-            "invalid or unsafe flows-trust.json"
-        },
-        Some("Review flows-trust.json schema, ownership and permissions."),
-    );
-    let trusted = trust.unwrap_or(false);
-    report.add(
-        "flows.workspace_trust",
-        if trusted { Status::Ok } else { Status::Warning },
-        if trusted {
-            "workspace explicitly trusted"
-        } else {
-            "untrusted: workspace flow validation skipped; no workspace flow read"
-        },
-        Some("Explicitly trust workspace flows in WithNav before validating them."),
-    );
     for (definition, templates) in crate::flows::builtin::definitions() {
         let name = definition.flow.name.clone();
         let valid = crate::flows::store::validate(crate::flows::store::Content::Graph {
@@ -993,9 +967,6 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
             crate::paths::workspace_dir(workspace).join("flows"),
         ),
     ] {
-        if scope == "workspace" && !trusted {
-            continue;
-        }
         match crate::flows::store::inspect_directory(&path) {
             Ok(entries) if entries.is_empty() => report.add(
                 format!("flows.{scope}"),
@@ -1004,16 +975,25 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
                 None,
             ),
             Ok(entries) => {
-                for (name, valid) in entries {
+                for (name, valid, hash) in entries {
+                    let location = path
+                        .canonicalize()
+                        .unwrap_or_else(|_| path.clone())
+                        .join(&name);
+                    let approval = crate::permission::validation::inspect_valid(
+                        data,
+                        crate::permission::validation::ValidationKind::Flow,
+                        &location.to_string_lossy(),
+                        &hash,
+                    );
                     report.add(
                         format!("flows.{scope}.{name}"),
-                        if valid { Status::Ok } else { Status::Failed },
-                        if valid {
-                            "schema and templates validated"
-                        } else {
-                            "invalid schema or unreadable template"
-                        },
-                        Some("Review flow TOML/templates; doctor does not reload flows."),
+                        if !valid || approval.is_err() { Status::Failed } else if approval.as_ref().is_ok_and(|valid| *valid) { Status::Ok } else { Status::Warning },
+                        if !valid { "invalid schema or unreadable template" }
+                        else if approval.is_err() { "validation database unreadable" }
+                        else if approval.unwrap_or(false) { "current flow version validated" }
+                        else { "current flow version not validated; not loaded" },
+                        Some("Review the flow and use nav permissions validate flow <name>; doctor does not reload flows."),
                     );
                 }
             }

@@ -369,12 +369,12 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     std::fs::create_dir_all(args.workspace.join(".withnav/flows")).unwrap();
     std::fs::write(
         args.workspace.join(".withnav/flows/broken.toml"),
-        "this must remain unread until trusted",
+        "invalid flow",
     )
     .unwrap();
     let before = snapshot(root.path());
     let report = inspect(&args, &config, None, None).await;
-    assert_eq!(report.exit_code(), 0, "{}", report.human());
+    assert_eq!(report.exit_code(), 1, "{}", report.human());
     assert!(check(&report, "assignment.layer.instinct")
         .value
         .contains("must use"));
@@ -404,62 +404,14 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
         .contains("unknown"));
     assert!(!serde_json::to_string(&report).unwrap().contains(SECRET));
     assert_eq!(snapshot(root.path()), before);
-    let canonical = args.workspace.canonicalize().unwrap();
-    let trust = config.join("flows-trust.json");
-    let trusted = json!({"version":1,"workspaces":{canonical.display().to_string():{"trusted":true,"granted_at":"2026-01-01T00:00:00Z"}}}).to_string();
-    for kind in ["malformed", "wrong_mode", "symlink"] {
-        if kind == "symlink" {
-            let target = config.join("trust-target.json");
-            std::fs::write(&target, &trusted).unwrap();
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
-            std::os::unix::fs::symlink(target, &trust).unwrap();
-        } else {
-            std::fs::write(
-                &trust,
-                if kind == "malformed" {
-                    "{invalid"
-                } else {
-                    &trusted
-                },
-            )
-            .unwrap();
-            std::fs::set_permissions(
-                &trust,
-                std::fs::Permissions::from_mode(if kind == "wrong_mode" { 0o666 } else { 0o600 }),
-            )
-            .unwrap();
-        }
-        let before = snapshot(root.path());
-        let report = inspect(&args, &config, None, None).await;
-        assert_eq!(
-            check(&report, "flows.trust_file").status,
-            Status::Failed,
-            "{kind}"
-        );
-        assert_eq!(
-            check(&report, "flows.workspace_trust").status,
-            Status::Warning,
-            "{kind}"
-        );
-        assert!(
-            !report
-                .checks
-                .iter()
-                .any(|c| c.id == "flows.workspace.broken.toml"),
-            "{kind}: workspace flows must remain unread"
-        );
-        assert_eq!(snapshot(root.path()), before, "{kind}");
-        std::fs::remove_file(&trust).unwrap();
-    }
-    std::fs::write(&trust, trusted).unwrap();
-    std::fs::set_permissions(&trust, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let report = inspect(&args, &config, None, None).await;
     assert_eq!(
         check(&report, "flows.workspace.broken.toml").status,
-        withnav::app::doctor::Status::Failed
+        Status::Failed
     );
-    assert_eq!(check(&report, "flows.trust_file").status, Status::Ok);
-    assert_eq!(check(&report, "flows.workspace_trust").status, Status::Ok);
+    assert!(!report
+        .checks
+        .iter()
+        .any(|check| check.id.contains("workspace_trust") || check.id.contains("trust_file")));
     // The editor server is nav lsp, including after migration of a legacy path.
     let home = root.path().join("home");
     let settings = home.join(".config/Code/User/settings.json");

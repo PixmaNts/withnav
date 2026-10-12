@@ -8,7 +8,9 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Location {
     Builtin,
@@ -153,6 +155,7 @@ pub type Snapshot = BTreeMap<String, Arc<LoadedFlow>>;
 pub struct FlowStore {
     pub workspace: PathBuf,
     pub config_dir: PathBuf,
+    data_dir: PathBuf,
     loaded: RwLock<Arc<Snapshot>>,
     revisions: RwLock<BTreeMap<(Location, String), String>>,
     write: std::sync::Mutex<()>,
@@ -217,6 +220,7 @@ impl ReloadMarker {
             Err(e) => Err(e.into()),
         }
     }
+    #[cfg(test)]
     fn publish(&self) -> Result<(), StoreError> {
         let mut state = self.state.lock().map_err(|_| StoreError::reason("io"))?;
         self.publish_locked(&mut state).map(|_| ())
@@ -261,46 +265,11 @@ impl From<std::io::Error> for StoreError {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TrustFile {
-    version: u32,
-    workspaces: BTreeMap<String, Grant>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Grant {
-    trusted: bool,
-    granted_at: String,
-}
-/// Read-only trust inspection: does not instantiate a store or create reload state.
-pub fn inspect_trust(
-    config: &std::path::Path,
-    workspace: &std::path::Path,
-) -> Result<bool, StoreError> {
-    let dir = match Directory::open(config, false) {
-        Ok(dir) => dir,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    let text = match dir.read("flows-trust.json", 262144, true) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    let file: TrustFile = serde_json::from_str(&text).map_err(|_| StoreError::reason("invalid"))?;
-    if file.version != 1 {
-        return Err(StoreError::reason("invalid"));
-    }
-    Ok(file
-        .workspaces
-        .get(&workspace.to_string_lossy().to_string())
-        .is_some_and(|g| g.trusted))
-}
-
 /// Validate local documents with the runtime's no-follow access and byte/entry limits.
-/// The caller must not invoke this for an untrusted workspace directory.
-pub fn inspect_directory(path: &std::path::Path) -> Result<Vec<(String, bool)>, StoreError> {
+/// Reading a document for inspection does not activate it.
+pub fn inspect_directory(
+    path: &std::path::Path,
+) -> Result<Vec<(String, bool, String)>, StoreError> {
     let dir = match Directory::open(path, false) {
         Ok(dir) => dir,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -311,22 +280,41 @@ pub fn inspect_directory(path: &std::path::Path) -> Result<Vec<(String, bool)>, 
     names.sort();
     for file in names.into_iter().filter(|n| n.ends_with(".toml")) {
         let toml = dir.read(&file, instinct_flow::MAX_FLOW_BYTES, false)?;
-        results.push((file, load_toml(&dir, toml).0.valid));
+        let validation = load_toml(&dir, toml).0;
+        let hash = revision(
+            validation.toml.as_deref().unwrap_or_default(),
+            &validation.templates,
+        );
+        results.push((file, validation.valid, hash));
     }
     Ok(results)
 }
 impl FlowStore {
+    #[cfg(test)]
+    pub(crate) fn validate_test_documents(&self) {
+        for document in self.documents(true).unwrap() {
+            if document.location != Location::Builtin && document.errors.is_empty() {
+                self.validate_version(&document.name, document.location, &document.revision)
+                    .unwrap();
+            }
+        }
+    }
     pub fn new(workspace: PathBuf, config_dir: PathBuf) -> Self {
-        Self::construct(workspace, config_dir, None)
+        #[cfg(test)]
+        let data = config_dir.join("test-data");
+        #[cfg(not(test))]
+        let data = crate::paths::data_dir().unwrap_or_else(|| config_dir.join("data"));
+        Self::construct(workspace, config_dir, data, None)
     }
     pub fn with_data(workspace: PathBuf, config_dir: PathBuf, data: PathBuf) -> Self {
         let workspace = workspace.canonicalize().unwrap_or(workspace);
-        let marker = ReloadMarker::new(data, &workspace);
-        Self::construct(workspace, config_dir, Some(marker))
+        let marker = ReloadMarker::new(data.clone(), &workspace);
+        Self::construct(workspace, config_dir, data, Some(marker))
     }
     fn construct(
         workspace: PathBuf,
         config_dir: PathBuf,
+        data_dir: PathBuf,
         reload_marker: Option<ReloadMarker>,
     ) -> Self {
         if let Some(marker) = &reload_marker {
@@ -359,6 +347,7 @@ impl FlowStore {
         let store = Self {
             workspace,
             config_dir,
+            data_dir,
             loaded: RwLock::new(Arc::new(BTreeMap::new())),
             revisions: RwLock::new(BTreeMap::new()),
             write: std::sync::Mutex::new(()),
@@ -401,56 +390,50 @@ impl FlowStore {
             Location::Builtin => Err(StoreError::reason("read_only")),
         }
     }
-    fn trust_file(&self) -> Result<TrustFile, StoreError> {
-        let text =
-            Directory::open(&self.config_dir, false)?.read("flows-trust.json", 262144, true)?;
-        let file: TrustFile = serde_json::from_str(&text).map_err(|_| StoreError {
-            reason: "io",
-            errors: vec![Diagnostic::new("trust", "malformed trust file", "")],
-        })?;
-        if file.version != 1 {
-            return Err(StoreError::reason("io"));
-        }
-        Ok(file)
+    fn permission_store(&self) -> Result<crate::permission::store::PermissionStore, StoreError> {
+        crate::permission::store::PermissionStore::open(&self.data_dir).map_err(validation_error)
     }
-    pub fn trusted(&self) -> bool {
-        self.trust_file()
-            .ok()
-            .and_then(|f| {
-                f.workspaces
-                    .get(&self.workspace.to_string_lossy().to_string())
-                    .map(|g| g.trusted)
-            })
-            .unwrap_or(false)
-    }
-    pub fn set_trust(&self, trusted: bool) -> Result<(), StoreError> {
-        let dir = Directory::open(&self.config_dir, true)?;
-        let lock = super::fs::resource_lock(&self.config_dir.join("flows-trust.json"));
-        let _guard = lock.lock().map_err(|_| StoreError::reason("io"))?;
-        let _file_lock = dir.lock(".flows-trust.lock")?;
-        let mut file = match dir.read("flows-trust.json", 262144, true) {
-            Ok(_) => self.trust_file()?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => TrustFile {
-                version: 1,
-                workspaces: BTreeMap::new(),
-            },
-            Err(e) => return Err(e.into()),
-        };
-        file.workspaces.insert(
-            self.workspace.to_string_lossy().into_owned(),
-            Grant {
-                trusted,
-                granted_at: timestamp(),
-            },
-        );
-        dir.write(
-            "flows-trust.json",
-            &serde_json::to_vec(&file).map_err(|_| StoreError::reason("io"))?,
-        )?;
-        if let Some(marker) = &self.reload_marker {
-            marker.publish()?;
+    pub fn validate_version(
+        &self,
+        name: &str,
+        location: Location,
+        expected: &str,
+    ) -> Result<crate::permission::validation::Validation, StoreError> {
+        if location == Location::Builtin {
+            return Err(StoreError::reason("read_only"));
         }
-        Ok(())
+        let document = self.get(name, location)?;
+        if document.revision != expected {
+            return Err(StoreError::reason("stale"));
+        }
+        if !document.errors.is_empty() {
+            return Err(StoreError {
+                reason: "invalid",
+                errors: document.errors,
+            });
+        }
+        let validation = self
+            .permission_store()?
+            .validate(
+                crate::permission::validation::ValidationKind::Flow,
+                name,
+                &document.path,
+                &document.revision,
+            )
+            .map_err(validation_error)?;
+        Ok(validation)
+    }
+    pub fn validated(&self, document: &Document) -> Result<bool, StoreError> {
+        if document.location == Location::Builtin {
+            return Ok(true);
+        }
+        self.permission_store()?
+            .is_valid(
+                crate::permission::validation::ValidationKind::Flow,
+                &document.path,
+                &document.revision,
+            )
+            .map_err(validation_error)
     }
     pub fn snapshot(&self) -> Arc<Snapshot> {
         self.loaded
@@ -492,7 +475,7 @@ impl FlowStore {
                 None,
             ));
         }
-        let path = self.directory(location)?;
+        let path = self.directory(location)?.canonicalize().map_err(missing)?;
         let dir = Directory::open(&path, false).map_err(missing)?;
         let toml = dir
             .read(
@@ -657,13 +640,18 @@ impl FlowStore {
     }
     fn reload_local(&self) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
-        let trusted = self.trusted();
-        let documents = self.documents_with_compiled(trusted)?;
+        let documents = self.documents_with_compiled(true)?;
         let mut candidate = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         let mut errors = vec![];
+        let mut diagnostics = vec![];
         for (document, compiled) in documents {
-            if document.location == Location::Workspace && !trusted {
+            if !self.validated(&document)? {
+                diagnostics.push(Diagnostic::new(
+                    "validation",
+                    "flow version is not validated; not loaded",
+                    &document.path,
+                ));
                 continue;
             }
             errors.extend(document.errors.clone());
@@ -719,10 +707,10 @@ impl FlowStore {
         }
         *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(candidate);
         *self.revisions.write().unwrap_or_else(|e| e.into_inner()) = revisions;
-        self.reload_errors
+        *self
+            .reload_errors
             .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+            .unwrap_or_else(|e| e.into_inner()) = diagnostics;
         Ok(())
     }
     pub fn save(
@@ -831,6 +819,12 @@ impl FlowStore {
         Ok(())
     }
 }
+fn validation_error(error: crate::permission::store::Error) -> StoreError {
+    StoreError {
+        reason: "io",
+        errors: vec![Diagnostic::new("validation", error.to_string(), "")],
+    }
+}
 fn missing(e: std::io::Error) -> StoreError {
     if e.kind() == std::io::ErrorKind::NotFound {
         StoreError::reason("not_found")
@@ -874,6 +868,77 @@ pub(crate) fn timestamp() -> String {
 mod tests {
     use super::*;
     #[test]
+    fn approvals_bind_loaded_toml_templates_and_location_and_revoke_on_reload() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::with_data(
+            temp.path().into(),
+            temp.path().join("config"),
+            temp.path().join("data"),
+        );
+        let builtins = store.snapshot().len();
+        for location in [Location::Global, Location::Workspace] {
+            let document = store.save("check", location, None, Content::Toml {
+                toml: "[flow]\nversion=1\nname='check'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\nstate_template='state.txt'\n".into(),
+                templates: BTreeMap::from([("state.txt".into(), "original".into())]),
+            }).unwrap();
+            store.reload().unwrap();
+            assert!(!store.snapshot().contains_key("check"));
+            assert!(!store.reload_diagnostics().is_empty());
+            let approval = store
+                .validate_version("check", location, &document.revision)
+                .unwrap();
+            store.reload().unwrap();
+            assert_eq!(store.snapshot()["check"].location, location);
+            let directory = store.directory(location).unwrap();
+            std::fs::write(directory.join("state.txt"), "changed").unwrap();
+            // The displayed snapshot remains immutable even after disk edits.
+            assert_eq!(
+                revision(&document.toml, &document.templates),
+                document.revision
+            );
+            assert_eq!(
+                store
+                    .validate_version("check", location, &document.revision)
+                    .unwrap_err()
+                    .reason,
+                "stale"
+            );
+            store.reload().unwrap();
+            assert!(!store.snapshot().contains_key("check"));
+            let changed = store.get("check", location).unwrap();
+            store
+                .validate_version("check", location, &changed.revision)
+                .unwrap();
+            store.reload().unwrap();
+            assert!(store.snapshot().contains_key("check"));
+            std::fs::write(
+                directory.join("check.toml"),
+                format!("{}\n# changed", changed.toml),
+            )
+            .unwrap();
+            store.reload().unwrap();
+            assert!(!store.snapshot().contains_key("check"));
+            let changed = store.get("check", location).unwrap();
+            let current = store
+                .validate_version("check", location, &changed.revision)
+                .unwrap();
+            store.reload().unwrap();
+            store
+                .permission_store()
+                .unwrap()
+                .revoke_validation(current.id)
+                .unwrap();
+            store
+                .permission_store()
+                .unwrap()
+                .revoke_validation(approval.id)
+                .unwrap();
+            store.reload().unwrap();
+            assert!(!store.snapshot().contains_key("check"));
+        }
+        assert_eq!(store.snapshot().len(), builtins);
+    }
+    #[test]
     fn concurrent_markers_advance_monotonically_and_reject_unsafe_files() {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let temp = tempfile::tempdir().unwrap();
@@ -899,51 +964,6 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         symlink(temp.path().join("external"), &path).unwrap();
         assert!(marker.read(&mut state).is_err());
-    }
-    #[test]
-    fn untrusted_files_are_excluded_before_enumeration() {
-        use std::os::unix::fs::symlink;
-        let temp = tempfile::tempdir().unwrap();
-        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
-        store
-            .save(
-                "guard",
-                Location::Global,
-                None,
-                content("guard", "no_objection"),
-            )
-            .unwrap();
-        std::fs::create_dir_all(temp.path().join(".withnav")).unwrap();
-        symlink("/not-readable", temp.path().join(".withnav/flows")).unwrap();
-        store.reload().unwrap();
-        assert!(store.snapshot().contains_key("guard"));
-        let restarted = FlowStore::new(temp.path().into(), temp.path().join("config"));
-        assert!(restarted.snapshot().contains_key("guard"));
-    }
-    #[test]
-    fn independent_stores_serialize_trust_updates() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = temp.path().join("config");
-        let stores: Vec<_> = (0..16)
-            .map(|i| FlowStore::new(temp.path().join(format!("repo-{i}")), config.clone()))
-            .collect();
-        std::thread::scope(|scope| {
-            for store in &stores {
-                scope.spawn(move || {
-                    store.set_trust(true).unwrap();
-                });
-            }
-        });
-        assert!(stores.iter().all(FlowStore::trusted));
-        std::thread::scope(|scope| {
-            for store in &stores {
-                scope.spawn(move || {
-                    store.set_trust(false).unwrap();
-                });
-            }
-        });
-        assert!(stores.iter().all(|s| !s.trusted()));
-        assert_eq!(stores[0].trust_file().unwrap().workspaces.len(), 16);
     }
     #[test]
     fn template_write_set_refuses_definitions_and_unchecked_existing_files() {
@@ -1049,74 +1069,30 @@ mod tests {
                 content("guard", "no_objection"),
             )
             .unwrap();
+        let doc = store.get("guard", Location::Global).unwrap();
+        store
+            .validate_version("guard", Location::Global, &doc.revision)
+            .unwrap();
         store.reload().unwrap();
         assert_eq!(store.snapshot()["guard"].location, Location::Global);
-        store.set_trust(true).unwrap();
+        let doc = store.get("guard", Location::Workspace).unwrap();
+        store
+            .validate_version("guard", Location::Workspace, &doc.revision)
+            .unwrap();
         store.reload().unwrap();
         assert_eq!(store.snapshot()["guard"].location, Location::Workspace);
-        let old = store.snapshot();
-        let doc = store.get("guard", Location::Global).unwrap();
-        store
-            .save(
-                "guard",
-                Location::Global,
-                Some(&doc.revision),
-                Content::Toml {
-                    toml: "not toml".into(),
-                    templates: BTreeMap::new(),
-                },
-            )
+        let doc = store.get("guard", Location::Workspace).unwrap();
+        let approval = store
+            .validate_version("guard", Location::Workspace, &doc.revision)
             .unwrap();
-        assert!(store.reload().is_err());
-        assert!(Arc::ptr_eq(&old, &store.snapshot()));
-        let doc = store.get("guard", Location::Global).unwrap();
-        store
-            .save(
-                "guard",
-                Location::Global,
-                Some(&doc.revision),
-                content("guard", "unknown_action"),
-            )
-            .unwrap();
-        let diagnostics = store.get("guard", Location::Global).unwrap().errors;
-        assert!(!diagnostics.is_empty());
-        let failed = store.reload().unwrap_err();
-        assert_eq!(failed.reason, "reload_invalid");
-        assert_eq!(failed.errors.len(), diagnostics.len());
-        for diagnostic in diagnostics {
-            assert_eq!(
-                failed.errors.iter().filter(|e| **e == diagnostic).count(),
-                1,
-                "each validation diagnostic must appear once"
-            );
+        let permissions = store.permission_store().unwrap();
+        for validation in permissions.list_validations().unwrap() {
+            if validation.location == approval.location {
+                permissions.revoke_validation(validation.id).unwrap();
+            }
         }
-        assert!(Arc::ptr_eq(&old, &store.snapshot()));
-        store.set_trust(false).unwrap();
-        assert!(!store.trusted());
-    }
-    #[test]
-    fn trust_is_fail_closed_and_ancestor_links_are_refused() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
-        let temp = tempfile::tempdir().unwrap();
-        let config = temp.path().join("config");
-        let store = FlowStore::new(temp.path().into(), config.clone());
-        assert!(!store.trusted());
-        store.set_trust(true).unwrap();
-        assert!(store.trusted());
-        std::fs::set_permissions(
-            config.join("flows-trust.json"),
-            std::fs::Permissions::from_mode(0o666),
-        )
-        .unwrap();
-        assert!(!store.trusted());
-        std::fs::set_permissions(
-            config.join("flows-trust.json"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-        std::fs::write(config.join("flows-trust.json"), "oops").unwrap();
-        assert!(!store.trusted());
-        symlink(&config, temp.path().join("link")).unwrap();
-        assert!(Directory::open(&temp.path().join("link/flows"), true).is_err());
+        store.reload().unwrap();
+        assert_eq!(store.snapshot()["guard"].location, Location::Global);
+        assert!(!store.reload_diagnostics().is_empty());
     }
 }

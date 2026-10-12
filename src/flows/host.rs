@@ -215,6 +215,7 @@ mod tests {
             .save("guard", Location::Global, None, content("deny"))
             .unwrap();
         assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
         let next = store
@@ -226,6 +227,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        store.validate_test_documents();
         store.reload().unwrap();
         // A publishes a valid set; an external editor corrupts the file before B evaluates.
         store
@@ -239,9 +241,9 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
         assert!(!b.diagnostics(temp.path()).is_empty());
-        assert!(store.reload().is_err());
+        store.reload().unwrap();
         let dir =
             super::super::fs::Directory::private(&a.data.join("flows/reload"), false).unwrap();
         let marker = dir
@@ -252,7 +254,7 @@ mod tests {
             .unwrap();
         let generation: serde_json::Value =
             serde_json::from_str(&dir.read(&marker, 1024, true).unwrap()).unwrap();
-        assert_eq!(generation["generation"], 2);
+        assert_eq!(generation["generation"], 3);
         assert!(time::OffsetDateTime::parse(
             generation["reloaded_at"].as_str().unwrap(),
             &time::format_description::well_known::Rfc3339
@@ -273,7 +275,8 @@ mod tests {
         store
             .save("guard", Location::Workspace, None, content("deny"))
             .unwrap();
-        store.set_trust(true).unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
         assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
         store
             .save(
@@ -286,7 +289,11 @@ mod tests {
                 },
             )
             .unwrap();
-        store.set_trust(false).unwrap();
+        let permissions = crate::permission::store::PermissionStore::open(&a.data).unwrap();
+        for approval in permissions.list_validations().unwrap() {
+            permissions.revoke_validation(approval.id).unwrap();
+        }
+        store.reload().unwrap();
         assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
         assert!(!runtime.store.reload_diagnostics().is_empty());
     }
@@ -310,6 +317,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(
             editor.store.snapshot()["editor"]
@@ -329,6 +337,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(
             !editor.store.snapshot()["editor"]
@@ -362,6 +371,7 @@ mod tests {
                 toml: format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\n{node}\n"), templates: BTreeMap::new()
             }).unwrap();
         }
+        runtime.store.validate_test_documents();
         runtime.store.reload().unwrap();
         let verdict = runtime
             .tool_pre_call(

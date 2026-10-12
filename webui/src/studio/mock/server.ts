@@ -8,7 +8,7 @@ import { isDecision, portsOf, TRIGGER_ID, topoOrder, wiresOf } from "../graph";
 import { renderState } from "../inputs";
 import type {
   Answer, Content, Definition, Diagnostic, FlowDocument, FlowSource, FlowSummary, Location, ProposedAction,
-  ReplayResult, RunNode, RunRecord, Trust, ValidateResult,
+  ReplayResult, RunNode, RunRecord, ValidateResult,
 } from "../types";
 import { evaluate } from "./expr";
 import { BUILTIN_TOML, CATALOGUE, GUARD_MUTATIONS_TOML, HOST_DIAGNOSTICS, RELOAD_PROPAGATION, REMARK_ON_SAVE_TOML, mixedApplicationRunRecord, sampleRunRecord, suppressedRunRecord } from "./fixtures";
@@ -53,7 +53,7 @@ export function createMockApi(workspace: string): StudioApi {
   put({ name: "turn-digest", location: "builtin", toml: BUILTIN_TOML, templates: {} });
   /** What the last successful reload loaded: file key → revision. */
   let loaded = new Map([...files.values()].map((s) => [key(s.name, s.location), revisionOf(s)]));
-  let trusted = false;
+  const approvals = new Set<string>();
   const runs: RunRecord[] = [sampleRunRecord(`sha256:${hash(GUARD_MUTATIONS_TOML)}`), suppressedRunRecord(), mixedApplicationRunRecord()];
   let reloadErrors: Diagnostic[] = [];
 
@@ -114,9 +114,7 @@ export function createMockApi(workspace: string): StudioApi {
     return { definition: v.definition, workspaceScoped: true };
   };
 
-  const requireTrust = (workspaceScoped: boolean) => {
-    if (workspaceScoped && !trusted) fail(403, "untrusted", "This workspace's flows are not trusted: trust them to run a sample or a replay.");
-  };
+
 
   return {
     mocked: true,
@@ -173,7 +171,7 @@ export function createMockApi(workspace: string): StudioApi {
     async sample({ source, payload }) {
       await pause(350);
       const { definition, workspaceScoped } = resolveSource(source);
-      requireTrust(workspaceScoped);
+      void workspaceScoped;
       const record = simulate(definition, payload, "sample");
       runs.unshift(record);
       return clone(record);
@@ -198,7 +196,7 @@ export function createMockApi(workspace: string): StudioApi {
     async replay({ source, run_id }) {
       await pause(120);
       const { definition, workspaceScoped } = resolveSource(source);
-      requireTrust(workspaceScoped);
+      void workspaceScoped;
       const record = runs.find((r) => r.run_id === run_id);
       if (!record) fail(404, "not_found", `No run ${run_id}.`);
       return replay(definition, record);
@@ -207,7 +205,7 @@ export function createMockApi(workspace: string): StudioApi {
       await pause(200);
       const errors: Diagnostic[] = [];
       for (const s of files.values()) {
-        if (s.location === "workspace" && !trusted) continue;
+        if (s.location !== "builtin" && !approvals.has(`${key(s.name, s.location)}:${revisionOf(s)}`)) continue;
         for (const e of document(s).errors) errors.push({ ...e, path: `${s.location}:${s.name} ${e.path}`.trim() });
       }
       reloadErrors = errors;
@@ -226,14 +224,12 @@ export function createMockApi(workspace: string): StudioApi {
       });
       return { window_start: new Date(end.getTime() - 86_400_000).toISOString(), window_end: end.toISOString(), flows: rows };
     },
-    async trust(): Promise<Trust> {
-      await pause(30);
-      return { workspace, has_workspace_flows: [...files.values()].some((s) => s.location === "workspace"), trusted };
-    },
-    async setTrust(value) {
+    async setTrust(flow) {
       await pause(60);
-      trusted = value;
-      return { workspace, has_workspace_flows: [...files.values()].some((s) => s.location === "workspace"), trusted };
+      const saved = files.get(key(flow.name, flow.location));
+      if (!saved || revisionOf(saved) !== flow.revision) fail(409, "stale", "Flow version changed.");
+      approvals.add(`${key(flow.name, flow.location)}:${flow.revision}`);
+      return {};
     },
   };
 }

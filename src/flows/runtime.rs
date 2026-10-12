@@ -1,8 +1,5 @@
 //! Per-workspace evaluation; asynchronous effects never change an admitted event.
-use super::{
-    catalogue::catalogue,
-    store::{FlowStore, Location},
-};
+use super::{catalogue::catalogue, store::FlowStore};
 use instinct_flow::*;
 use serde_json::{json, Value};
 use std::{
@@ -28,6 +25,7 @@ pub struct ToolCallContextLike {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flows::store::Location;
     #[tokio::test]
     async fn large_builtin_save_records_limit_failure_without_applying_effects() {
         struct NoCalls;
@@ -183,6 +181,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
         let runtime = FlowRuntime::new(
@@ -229,6 +228,7 @@ mod tests {
         for (name, toml) in [("deny", text("deny", "deny")), ("async", "[flow]\nversion=1\nname='async'\non='tool.pre_call'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='note'\n".into())] {
             store.save(name, Location::Global, None, super::super::store::Content::Toml { toml, templates: BTreeMap::new() }).unwrap();
         }
+        store.validate_test_documents();
         store.reload().unwrap();
         let runtime = FlowRuntime::new(
             store,
@@ -369,6 +369,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
         let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), effects.clone());
@@ -401,6 +402,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         for _ in 0..2 {
             assert!(matches!(
@@ -680,16 +682,12 @@ impl FlowRuntime {
     ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         self.store.refresh();
         let snapshot = self.store.snapshot();
-        let trusted = self.store.trusted();
         let started = Instant::now();
         let mut blocking = futures_util::stream::FuturesUnordered::new();
         let mut handles = vec![];
         for (name, flow) in snapshot.iter() {
             let header = &flow.compiled.definition().flow;
-            if !header.enabled
-                || header.on != event.trigger
-                || (flow.location == Location::Workspace && !trusted)
-            {
+            if !header.enabled || header.on != event.trigger {
                 continue;
             }
             let budget = if header.blocking {

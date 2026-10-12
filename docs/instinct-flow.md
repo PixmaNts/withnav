@@ -8,7 +8,7 @@ WithNav to do. A node's active **port** carries the run along its wires. A **con
 belongs to the definition; a **variable** exists only for this run. A **fallback**
 replaces the run's proposed actions on failure. The Studio edits the definition,
 Save writes it, and **reload** changes what runs. A **workspace flow** requires
-explicit **trust**; a **global flow** comes from your own configuration.
+per-version **validation**; a **global flow** comes from your own configuration.
 ```text
 event + payload → trigger / when → decision → expression → action → then → action
                                       yes/no     true/false
@@ -27,9 +27,8 @@ no instinct call. It does not answer the message or change a permission.
    Set `when` to `text == "test"`. Do not write `event.text == "test"` there.
 4. Select the `log` action and set its `text` parameter to `Matched test`.
    The trigger's event port must be wired to this action.
-5. If the trust banner appears, inspect the workspace flows, then choose
-   **Trust this workspace's flows**. Trust allows declared context reads, not
-   tool permissions. Trust itself does not reload.
+5. Inspect the saved flow and choose **Validate this flow version**. A validated
+   flow can allow tool calls. Validation itself does not reload.
 6. **Save**, then **Reload**. Check the reload result; `saved · not reloaded`
    means the file is newer than the running definition.
 7. Click the sample payload in the bottom bar and replace it with:
@@ -342,21 +341,21 @@ exceeding 32 KiB are cut individually, then exhaust the 64 KiB run input budget
 alongside the other selected inputs. The failure is recorded; there is no fallback
 and nothing is applied.
 
-## 9. Files, trust, reload and TOML
+## 9. Files, validation, reload and TOML
 
 | Location | Path / precedence |
 | --- | --- |
-| Workspace flow | `<workspace>/.withnav/flows/<name>.toml`; trusted workspace wins by name. |
+| Workspace flow | `<workspace>/.withnav/flows/<name>.toml`; validated workspace flow wins by name. |
 | Global flow | `~/.config/withnav/flows/<name>.toml` (or configured config directory); wins over built-in. |
 | Built-in | Shipped in WithNav: `navigator-default-save`, `navigator-default-idle`, `navigator-default-conversation`; read-only. |
-| Trust | `<config_dir>/flows-trust.json`, private Captain-granted canonical-workspace trust, not tracked in the workspace. |
+| Validations | `<data_dir>/withnav.db`, Captain approvals bound to flow location and content hash. |
 | Run records | `<data_dir>/flows/runs/<sha256-canonical-workspace>/runs.jsonl`, private captures. |
 
-Untrusted workspace flows stay listed and editable, but cannot run, sample,
-replay or shadow globals. Inspect files before granting trust. Missing/malformed
-or insecure trust storage fails closed. Revoking trust stops new workspace runs
-immediately; runs already in progress finish. Trust grants no model destination
-or tool permission. Definitions/templates must not use symlinks.
+Unvalidated global and workspace flows stay listed and editable but do not run
+or shadow validated globals. Explicit samples and replays are diagnostic only;
+they apply no effects. Inspect files before validating. Revoking an approval
+unloads that version at the next reload; runs already in progress finish. No
+old workspace-wide trust is imported.
 
 **Save is not reload**, including enabled toggles and edits outside the Studio.
 No definition-file watching: a `git pull` alone does not change what runs. Reload
@@ -588,7 +587,7 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 | `skipped: when is false` | Payload does not satisfy exact comparison. | Inspect text, case and whitespace; edit sample JSON or correct the condition. |
 | Unknown name in `when` | Alias not declared in `[flow.inputs]`, or dotted reference used as expression name. | Select the input chip first; bind `text = "event.text"`, then use `text`. Node inputs do not declare flow inputs. |
 | `in [...]` / single-quoted expression string fails | Unsupported expression syntax. | Use double-quoted string literals and `||`: `text == "test" || text == "hello"`. |
-| Workspace flow cannot sample/replay or does not run | Workspace is untrusted. | Inspect definitions; grant trust explicitly, then reload. Global/built-in flows remain available. |
+| Custom flow does not run | Its current version is not validated. | Inspect the flow and templates, validate the exact version, then reload. Built-ins remain available. |
 | Saved but live behaviour is unchanged | Save did not reload, or another process has not seen the signal yet. | Reload, inspect errors/propagation; other processes reload on their next event. |
 | Reload fails after editing a different flow | Replacement is all-or-nothing, including eligible disabled/shadowed definitions. | Fix every reported error; reload again. The previous set remains running. |
 | Sample/replay says `not applied` | Intentional test behaviour. | Inspect proposed actions/path; use View run on a live record to inspect real application. |
@@ -604,3 +603,17 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 
 Next: create `message-test`, declare `text`, and run the exact sample before adding
 a decision.
+# Flow validation
+
+Every non-built-in flow, global or workspace, must be validated by the Captain
+before reload can activate it. Validation binds its exact location and a SHA-256
+hash of the loaded TOML and all referenced templates. Editing either requires
+a new validation. Built-in flows need none. Previous workspace-wide flow trust
+is not imported.
+
+**A validated flow, including a workspace flow, can allow tool calls.** Review
+its instructions and templates before approving it. Use the Studio's “Validate
+this flow version” action or `nav permissions validate flow <name>` (use
+`--location global|workspace` when the name is ambiguous), then reload.
+`nav permissions validations --json` lists approvals; revoke one with
+`nav permissions revoke-validation <id>` and reload to unload that version.

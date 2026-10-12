@@ -1756,7 +1756,7 @@ Rules:
 - Keys live in `~/.config/withnav/auth.json` (mode 0600, written by `nav auth set <provider>`), with the `api_key_env` variable as a fallback.
 - Unknown model aliases fail before any request.
 - A conversation saves its provider, model, api and limits when it is created (`sessions.model_resolution`). A resume uses them, and refuses an alias that now points elsewhere (409 `model_identity_changed`). `/model <alias>` switches the conversation to another alias between turns; the switch is saved in one step and announced by `model.changed`. The new model gets the whole history, and the earlier reasoning is only replayed to the same provider and model. A switch is refused when the conversation does not fit the new model's input budget (`/compact` first).
-- `scripts/import-opencode-models` can generate this file from an OpenCode config (see the README).
+- `scripts/import-opencode-models` can generate this file from an OpenCode config (see the [catalogue import guide](https://withnav.dev/docs/catalogue-import.html)).
 
 ### 21.3 Streaming Parser
 

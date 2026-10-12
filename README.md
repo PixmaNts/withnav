@@ -1,269 +1,71 @@
 # WithNav
 
 [![CI](https://github.com/PixmaNts/withnav/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/PixmaNts/withnav/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PixmaNts/withnav)](https://github.com/PixmaNts/withnav/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 **You set the course. Nav lights the way.** <https://withnav.dev>
 
-A pair-programming system in Rust. The human keeps the keyboard and stays the author of the code.
-Several models of different speeds watch, complete, judge and discuss. Under them runs a small,
-owned coding-agent core with a terminal client and a local server.
+## What it is
 
-Risky permission calls use one metacognition review. Set `permissions.review_timeout_secs` in
-`config.json` to an integer from 5 to 300 seconds (default 40); it applies to new sessions and is
-inherited by their children. Ordinary confident reads and recoverable workspace changes are decided
-by Instinct alone. On review timeout, eligible reads retain their safe fallback; changes ask you.
+WithNav is a pair-programming system. You keep the keyboard and stay the author of the code.
+Several models of different speeds watch your work, complete it, judge it and discuss it with you:
 
-> **Status:** pre-1.0 and moving fast; each release is listed with its changes in
-> [`CHANGELOG.md`](CHANGELOG.md). [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the code and
-> [`CONTEXT.md`](CONTEXT.md) defines the vocabulary.
+- **Reflex** completes what you type, as ghost text.
+- **Instinct** makes small, fast decisions: when to speak, and whether a tool call is safe.
+- **Metacognition** writes short remarks beside your code and reviews risky tool calls.
+- **Cognition** is Nav, the chat you talk to, with agents that read, edit and run commands.
 
-> **Breaking change for 0.5:** model names are gateway-qualified and assignments are separate
-> from the catalogue ([ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md)). The guide
-> describes this checkout, not your installed binaries. Existing configuration needs manual migration.
-
-## What exists today
-
-- **InstinctFlow Studio.** Draw, test, save and reload flows: [Captain's guide](docs/instinct-flow.md).
-
-**The agent core** (`nav`):
-
-- `nav tui`: a terminal chat client. Several conversations in tabs (up to nine, `alt+1` to
-  `alt+9`), a header with the workspace, git branch, agent and model, a right-hand column with the
-  context breakdown, skills and git changes (`alt+r`), a key bar, a command palette (`ctrl+p` or
-   `/`), a model picker with variants, a session list to resume, and eight themes (Ayu, Nord,
-   Tide and Moss, dark and light; `/theme`). Tide Dark is the default. It starts a private server, or connects to one with
-  `--url`.
-- `nav run -p "<task>"`: one task in a terminal. It never approves a tool call by itself, unless you pass `--yes`.
-- `nav serve`: the session server alone (HTTP and SSE, loopback by default).
-- `nav auth set|list|remove <provider>`: API keys.
-- `nav doctor`: read-only configuration, assignment and live model diagnostics.
-- **Agents.** `build` (the default: implement, verify, report) and `plan` (research, write markdown
-  plans). The Captain switches between turns. Agents can also be defined in Markdown files.
-- **Permissions.** `write`, `edit`, `bash` and `fetch` ask first: allow once, allow the folder, or
-  deny with a message. For `plan`, a second model (Instinct) checks each gated call (`write`, `edit`, `bash`,
-  `fetch`) except a plain `.md` write, and what it does not clear is asked to the Captain. This is a
-  guard against drift, not a sandbox.
-- **Tools.** `read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`, and `skill` when
-  skills are found.
-- **Rules and skills.** `AGENTS.md`, `CLAUDE.md` and `rules.md` files, and `SKILL.md` skills, are
-  read when a session starts.
-- **Models.** Model access, provider-reported context windows and request variants (for example
-  reasoning effort). The catalogue and assignment rules are described below.
-- **Context.** An estimate of the next request and how full the window is. `/compact` summarizes
-  the older part of a long conversation.
-- **Session commands.** `/help`, `/stop`, `/context`, `/compact`, and selection commands.
-  `/model`, `/variant`, `/agent` and `/new [agent]` are explained below.
-
-**The navigator** (`nav lsp` and the VS Code extension in `vscode-withnav/`): a Language
-Server that watches your edits. A reflex layer offers ghost-text suggestions, an instinct layer
-decides when to speak, a metacognition layer writes short remarks beside your code, and a
-cognition chat discusses the work with you. See [`vscode-withnav/README.md`](vscode-withnav/README.md).
-
-### Command line
-
-| Command | Main flags |
-|---|---|
-| `nav run` | `-m/--model <gateway/id>`, `-p/--prompt <text>` (a `/command` runs it), `--workspace <dir>`, `--models <file>`, `--agent <agent>`, `--variant <name\|off>`, `--show-thinking`, `--yes` (turn on bypass for the run: ordinary permission prompts run once, protected ones still stop it with exit 3; unsafe) |
-| `nav tui` | `--workspace <dir>`, `--model <gateway/id>` or `--session <id>` (resume), `--models <file>` or `--url <server>` (token in `WITHNAV_SERVER_TOKEN`) |
-| `nav serve` | `--bind <addr>` (default `127.0.0.1:7310`), `--allow-non-loopback`, `--models <file>` |
-| `nav auth` | `set <provider>`, `list`, `remove <provider>` |
-| `nav doctor` | `--offline`, `--json`, `--workspace <dir>`, `--layer <reflex\|instinct\|metacognition>` |
-
-### Check the setup: `nav doctor`
-
-```sh
-nav doctor --workspace /path/to/project
-nav doctor --offline --json
-nav doctor --layer instinct
-```
-
-By default, doctor **sends small synthetic requests to your configured providers and may incur
-charges**: two Reflex FIM calls (plain and bounded context), three Instinct calls (editor decision,
-role conformance and one permission review), and one tool-free Metacognition chat call. Instinct
-keeps its 2-second deadline; FIM is bounded at 10 seconds and chat at 20 seconds. No project source,
-session or tool is executed or sent. Provider catalogue discovery may also run to verify offers.
-
-Doctor uses the same platform config directory, workspace catalogue resolution, agent precedence,
-default fallback and layer assignments as WithNav. It reports the effective compaction writer,
-trusted system bash, `nav lsp` version and detectable VS Code server path (`nav` by default).
-Missing optional features and
-unavailable detection are warnings. Workspace flows are not even read until explicitly trusted.
-Nothing is migrated, fixed, trusted, reloaded or written, including metadata caches.
-
-Example (abbreviated):
-
-```text
-✓ ok assignment.layer.instinct: gateway/typesafe/jev variant=off
-✓ ok live.instinct.editor: valid answer (145 ms)
-⚠ warning flows.workspace_trust: untrusted: workspace flow validation skipped; no workspace flow read
-✕ failed live.metacognition.chat: HTTP 401 rejected; Check provider authentication, model id and API support.
-```
-
-`--offline` makes **zero network calls**, reads only local config/cache and marks live checks skipped;
-an unverifiable variant offer is a warning, not a false success. `--layer` restricts layer/live checks
-but retains shared config, agent, compaction and workspace checks. `--json` emits one report only on
-stdout (`schema_version`, `checks`, `summary`); each check has an id, status, measured value, optional
-sanitized error category, hint and elapsed milliseconds. Neither mode prints response bodies,
-credential-bearing URLs, keys or environment values. Exit `0` means no failed checks (warnings are
-allowed), `1` means at least one failure; invalid CLI flags/layer names use clap's exit `2`.
-
-`nav run` exit codes: `0` done, `1` error, `2` the agent asked a question, `3` a tool call needs
-approval (`permission_required`), `130` interrupted.
+It is one Rust binary, `nav`, with a terminal client (`nav tui`), a browser client (`nav web`), a
+language server and a VS Code extension.
 
 ## Install
 
-```bash
-cargo build --release --bins
-install -m755 target/release/nav ~/.local/bin/
-(cd vscode-withnav && npm ci && npm run package)
-code --install-extension vscode-withnav/withnav-*.vsix
+Download the VSIX for your platform from the
+[GitHub Releases page](https://github.com/PixmaNts/withnav/releases) and install it:
+
+```sh
+code --install-extension withnav-linux-x64-<version>.vsix
 ```
 
-Releases also publish prebuilt files on the
-[GitHub Releases page](https://github.com/PixmaNts/withnav/releases): a VSIX for linux-x64 and
-one for linux-arm64, each bundling a static `nav` binary; a universal VSIX without the binary
-(it uses `nav` on your `PATH` or the `withnav.serverPath` setting); and bare `nav` binaries.
-Native Windows is not supported yet; WSL or VS Code Remote works with the linux VSIX.
+- `linux-x64` and `linux-arm64` packages bundle `nav`. Nothing else to install.
+- The universal package has no binary. Put `nav` on your `PATH` or set `withnav.serverPath`.
+- Nix: `nix build .#withnav .#vscode-withnav`, or use `overlays.default`.
+- From source: `cargo build --release --bins`.
+- Native Windows is not supported yet. Use WSL or a VS Code Remote window.
 
-On NixOS, the flake at the root builds both: `nix build .#withnav .#vscode-withnav`. In a
-system flake, add this repository as an input and apply `overlays.default`; it provides
-`pkgs.withnav` (the `nav` command) and `pkgs.vscode-withnav` (for Home Manager's
-`programs.vscode.profiles.<name>.extensions`).
+VS Code 1.91 or later is required. The extension is not on the Marketplace yet. See the
+[install guide](https://withnav.dev/docs/install.html) for details.
 
-## Configuration and data
+## Quick start
 
-`models.json` is a **catalogue**, not a list of choices. Each model name is
-`<gateway>/<upstream_id>`: in `omniroute/combo/gpt-6-astra`, `omniroute` names the configured
-endpoint and `combo/gpt-6-astra` is sent to it verbatim. `config.json` makes the **assignments**.
-The old alias entries `default`, `fast` and `cognition` are removed, not compatibility names.
+1. Describe a gateway and a model in `~/.config/withnav/models.json`.
+2. Give the `build` agent that model in `~/.config/withnav/config.json`.
+3. Store your API key with `nav auth set <provider>`, or export the variable named in `api_key_env`.
+4. Run `nav doctor --offline` to check the setup.
+5. Open a project in VS Code and open the Nav chat, or run `nav tui` or `nav web`.
 
-| Where | What |
-|---|---|
-| `~/.config/withnav/models.json` | catalogue: gateways, qualified model names, API kinds, capabilities, limits and variants; a workspace `models.json` or `--models` wins |
-| `~/.config/withnav/auth.json` | API keys, mode 0600; write them with `nav auth set <provider>` |
-| `~/.config/withnav/config.json` | `layers`, `agents`, `default_agent`, and client settings such as `tui.theme` |
-| `~/.config/withnav/agents/*.md`, `<project>/.withnav/agents/*.md` | agent definitions; `~/.config/opencode/agents/` is also read |
-| `~/.config/withnav/flows/`, `<project>/.withnav/flows/` | editor flows; historical `pipeline.toml` files are converted once, originals retained |
-| `<project>/.withnav/intent.md` | the navigator's intent record |
-| `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills (`~/.claude/` is read too); projects add `AGENTS.md`, `rules.md` and `.agents/skills` (also `.claude/` and `.opencode/`) |
-| `~/.local/share/withnav/` | conversation history `withnav.db`, decision log `withnav.jsonl`, `tui.log`, `model-catalog/` |
+The [quick start](https://withnav.dev/docs/quick-start.html) has the two files, ready to copy.
 
-### Example setup
+## Documentation
 
-Start from [`models.example.json`](models.example.json) and
-[`config.example.json`](config.example.json), adapting endpoints and assignments before copying
-them to `~/.config/withnav/`. No real keys are included. Use `nav auth set omniroute` and
-`nav auth set inception`, or the example's `OMNIROUTE_API_KEY` and `INCEPTION_API_KEY`
-environment variables. A stored key takes precedence over the environment.
+The full guide is at **<https://withnav.dev/docs/>**:
 
-The example leaves chat limits for provider discovery rather than guessing them: a usable chat
-model needs a resolvable context window. Reflex FIM and Instinct System One retain fixed sample
-windows and output caps; verify those values against your deployment. Combo variants declare
-`low`, `medium`, `high` as request-body `reasoning_effort`, never a `-high` model-name suffix.
+- [Install](https://withnav.dev/docs/install.html) and [quick start](https://withnav.dev/docs/quick-start.html)
+- [Using Nav](https://withnav.dev/docs/using-nav.html) and the [command line](https://withnav.dev/docs/cli.html)
+- [Configuration](https://withnav.dev/docs/configuration.html): models, layers and agents
+- [Permissions](https://withnav.dev/docs/permissions.html): how Nav asks before it acts
+- [Troubleshooting](https://withnav.dev/docs/troubleshooting.html), including `nav doctor`
 
-`build` is the default agent when `default_agent` is absent. Its assigned chat model must be
-usable. `plan`, `vigie` and `lux` assignments are optional: an unassigned primary agent
-uses the default agent's model; an unassigned child uses its parent's effective model. To use
-the Crew, choose `vigie` (read-only scouting), `lux` (expert advice), or `mousse`
-(small local edits after approval). `cartographe` and `sondeur` are available on demand;
-Cartographe writes Mermaid charts to `.withnav/charts/`. `config.json`
-assignments win over `model:` in a definition's header; adding an assignment does not itself
-create an agent definition.
+To work on the code, read [`ARCHITECTURE.md`](ARCHITECTURE.md) for how it is laid out and
+[`CONTEXT.md`](CONTEXT.md) for the vocabulary.
 
-### Layers, agents and editor context
+## Status
 
-| Layer | Assignment | API |
-|---|---|---|
-| Reflex | one model, editor-only inline completion | `fim` (Mercury in the example) |
-| Instinct | one model, typed decisions and supervision | `systemone` |
-| Metacognition | one model, remarks and review; prefers `low` when offered, otherwise model default | `chat` |
-| Cognition | agents with independent roles and model choices, not a singleton model entry | `chat` agent loop |
+WithNav is pre-1.0 and moves fast. Every release and its changes are listed in
+[`CHANGELOG.md`](CHANGELOG.md).
 
-An **editor session** adds the pair-programmer prompt, `intent` tool and navigator conversation
-feed to its chosen agent. It starts on the same default agent as other sessions; editor context
-does not select a model. Children do not inherit the editor attachment.
-
-- `/new [agent]` starts fresh on that agent's assignment, not the previous session's overrides.
-- `/model <gateway/id>` switches the current agent's model in the same session at a safe boundary
-  (after the turn when busy), taking the new model's default variant. A pending request must not
-  apply to a different agent. The history must fit the destination budget, with compaction when possible.
-- `/variant <name|off|inherit>` sets a named variant, explicitly disables variants, or removes the
-  variant override to return to the assignment/model default. Bare `/model` and `/variant` report
-  the effective choice, its source and available choices.
-- `/agent <id>` uses that agent's assignment or its saved override. `/model` and `/variant` choices
-  persist per **(session, agent)**: switch back or reopen to restore them. They never mutate global
-  `config.json`. A child with its own model uses that assignment; an unassigned child inherits the
-  parent's **effective** model and variant, including local overrides.
-
-The clients choose an agent first, with an optional local model override. Model pickers group
-by gateway, then provider within it (`omniroute` → `cc`, `combo`, …); groups collapse but search
-includes hidden groups. The TUI right panel and VS Code header tooltip show lower-layer choices
-and the current agent's model, marked when overridden. The historical `navai.modelAlias` setting remains removed.
-
-### Startup errors and migration
-
-The `navai` command is gone: run `nav`. New project files go in
-`.withnav/`; when absent, `.navai/` then `.navigator/` are read with a migration hint.
-Old config/data files move to the WithNav directories on first start without
-overwriting new files. `NAVAI_*` variables remain fallbacks for `WITHNAV_*`, with
-warnings. Old agent ids still resolve as deprecated aliases. See
-[ADR 0014](docs/adr/0014-rebrand-withnav.md) for the full compatibility window;
-removal is planned for 0.8.
-
-A missing, unknown or API-incompatible lower-layer assignment disables that layer with a clear
-diagnostic: no reflex suggestions, permission review asks the Captain when it cannot decide, and
-unavailable instinct supervision uses the visible renewable 500-step fallback cap. These
-fallbacks do not silently choose a different lower-layer model. An unknown nondefault agent model
-falls back to the default agent's model with a warning naming the agent and requested model.
-An unknown/nonprimary `default_agent`, or a default agent with no usable chat model, is fatal to
-server and LSP startup: the error names the field/model and valid agents where applicable.
-
-Configuration migration for 0.5 is **manual**; WithNav does not automatically convert old configuration
-or create missing agent definitions. Historical sessions whose model identity cannot be proved stay
-readable, read-only archives with resume disabled, never silently rebound to a new model. Existing
-session ids are preserved.
-
-### Catalogue import
-
-To build `models.json` and `auth.json` from an OpenCode config, the importer entry point is
-`scripts/import-opencode-models [--dry-run] [--config-dir DIR] [--opencode FILE] [--with-windows]`
-(`--self-test` runs its built-in tests). It imports OpenAI-compatible providers only,
-writes qualified catalogue names and `"catalog_format": "omniroute"` on the omniroute provider,
-and never writes layer/agent choices to `config.json`. Gateway qualification keeps otherwise equal
-upstream ids distinct. Combo entries receive `low`/`medium`/`high` body variants; manually declared
-variants are preserved when merging. Context windows are left out so WithNav
-reads them from the provider; `--with-windows` copies them from OpenCode instead. A literal `apiKey`
-goes to `auth.json` (mode 0600). An `{env:NAME}` key becomes `api_key_env` in `models.json`, and any key
-stored in `auth.json` for that provider is removed, because WithNav prefers a stored key over the
-environment (other entries are kept; the script says what it removed). Other references and a
-`baseURL` that carries credentials are refused. Nothing is written until the whole config checks out.
-Each file is replaced atomically; the two are not replaced together. If the second replacement
-fails, the first file has already been updated, and the script says which one was and which was not.
-
-Coming from `rust-agent`? The first start of `nav` moves your data and config from
-`~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new
-dirs; nothing is overwritten. Remove the old `rust-agent` binaries and the old `Navigator`
-extension (`rust-agent.navigator`) yourself.
-
-## Direction
-
-The first design ([`docs/SPEC.md`](docs/SPEC.md)) aimed higher: one event bus and actor model under
-everything, with external-process plugins over JSON-RPC, MCP tools, non-blocking subagents, a
-meta-loop co-agent, hot reload and a memory integration. That document is not a deployment
-checklist. The bus, server and clients exist; background children and automatic compaction are
-mapped in [`ARCHITECTURE.md`](ARCHITECTURE.md), along with the selection rules above.
-Configuration editors that write `config.json` and flow configuration are planned for 0.6;
-they are not part of 0.5.
-
-## Contributing
-
-The repository is on GitHub: <https://github.com/PixmaNts/withnav>. `main` holds releases only.
-Work branches off `develop` as `feat/<name>` or `fix/<name>` and comes back through a pull request
-into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow and [`AGENTS.md`](AGENTS.md) for the branch rules.
-
-## Community
+## Contributing and community
 
 - Ask questions → [GitHub Discussions (Q&A)](https://github.com/PixmaNts/withnav/discussions/new?category=q-a)
 - Report a bug → the [bug issue form](https://github.com/PixmaNts/withnav/issues/new?template=bug_report.yml)
@@ -273,5 +75,5 @@ into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. S
 
 ## License
 
-WithNav is dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option
-(`license = "MIT OR Apache-2.0"` in `Cargo.toml`).
+WithNav is dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
+option.

@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { pickServerCommand } = require('../out/tests/serverPath.js');
+const { bundledServerName, pickServerCommand } = require('../out/tests/serverPath.js');
 
 const base = { configured: 'nav', explicit: false, bundled: '/ext/bin/nav', bundledExists: false };
 
@@ -25,4 +25,21 @@ test('the bundled binary is used when the user set nothing', () => {
 
 test('a universal package falls back to nav on PATH', () => {
   assert.deepEqual(pickServerCommand(base), { command: 'nav', source: 'path' });
+});
+
+test('the bundled executable name follows the platform', () => {
+  assert.equal(bundledServerName('win32'), 'nav.exe');
+  assert.equal(bundledServerName('linux'), 'nav');
+  assert.equal(bundledServerName('darwin'), 'nav');
+});
+
+test('Windows paths with spaces stay unquoted and preserve resolution precedence', () => {
+  const bundled = 'C:\\Program Files\\WithNav\\bin\\nav.exe';
+  const configured = 'C:\\My Tools\\nav.exe';
+  const input = { configured, explicit: true, bundled, bundledExists: true };
+  assert.deepEqual(pickServerCommand(input), { command: configured, source: 'setting' });
+  assert.deepEqual(pickServerCommand({ ...input, explicit: false }),
+    { command: bundled, source: 'bundled' });
+  assert.deepEqual(pickServerCommand({ ...input, configured: 'nav', explicit: false, bundledExists: false }),
+    { command: 'nav', source: 'path' });
 });

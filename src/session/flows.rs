@@ -53,7 +53,7 @@ impl FlowEffects for Effects {
     }
     fn instinct_unavailable(&self) {
         let _ = self.sequencer.publish(crate::bus::sequencer::Candidate::new(crate::bus::event::EventKind::CommandResult,
-            json!({"operation_id":ulid::Ulid::new(),"name":"flow_notice","ok":false,"data":{"warning":"instinct unavailable"}})));
+            json!({"operation_id":ulid::Ulid::generate(),"name":"flow_notice","ok":false,"data":{"warning":"instinct unavailable"}})));
     }
 }
 

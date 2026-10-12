@@ -319,7 +319,7 @@ impl NavLog {
 
 /// Fresh lowercase ULID: trigger, remark and run ids share one format.
 pub fn new_ulid_string() -> String {
-    ulid::Ulid::new().to_string().to_lowercase()
+    ulid::Ulid::generate().to_string().to_lowercase()
 }
 
 /// Truncates a string for a log field, cutting on a char boundary and

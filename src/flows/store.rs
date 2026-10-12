@@ -186,10 +186,7 @@ impl ReloadMarker {
         use sha2::{Digest, Sha256};
         Self {
             path: data.join("flows/reload"),
-            name: format!(
-                "{:x}",
-                Sha256::digest(workspace.as_os_str().as_encoded_bytes())
-            ),
+            name: hex::encode(Sha256::digest(workspace.as_os_str().as_encoded_bytes())),
             state: std::sync::Mutex::new(MarkerState::default()),
         }
     }
@@ -865,7 +862,7 @@ fn revision(text: &str, templates: &BTreeMap<String, String>) -> String {
         h.update((body.len() as u64).to_le_bytes());
         h.update(body);
     }
-    format!("sha256:{:x}", h.finalize())
+    format!("sha256:{}", hex::encode(h.finalize()))
 }
 pub(crate) fn timestamp() -> String {
     time::OffsetDateTime::now_utc()

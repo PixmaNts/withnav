@@ -15,6 +15,9 @@ requests land in `develop`.
 
 ### Changed
 
+- **HTTPS connections use the system's trusted certificates**, including locally installed
+  certificate authorities, through the platform verifier. TLS cryptography now uses aws-lc-rs
+  instead of ring.
 - **The VS Code extension needs VS Code 1.91 or later** (was 1.90). It now uses
   `vscode-languageclient` 10, which requires it.
 - **A toolchain you installed yourself, such as rustup's `cargo`, is trusted like a system one.**

@@ -53,7 +53,7 @@ impl WatchdogPark {
         *self.root.lock().unwrap_or_else(|e| e.into_inner()) = Some(RootHold {
             token: PauseToken {
                 incarnation: *self.incarnation.lock().unwrap_or_else(|e| e.into_inner()),
-                hold_id: Ulid::new(),
+                hold_id: Ulid::generate(),
             },
             evidence,
             published: false,
@@ -257,7 +257,7 @@ mod tests {
         let first = park.publish_root_hold().unwrap().token;
         assert!(!park.resolve_root(
             PauseToken {
-                incarnation: Ulid::new(),
+                incarnation: Ulid::generate(),
                 ..first
             },
             || {}

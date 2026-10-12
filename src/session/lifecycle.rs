@@ -375,10 +375,10 @@ mod tests {
             flows: None,
             skills: Arc::default(),
             publications: Arc::default(),
-            incarnation: Ulid::new(),
+            incarnation: Ulid::generate(),
             inbox_tx: mpsc::channel(1).0,
             permissions: mpsc::channel(1).0,
-            sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
+            sequencer: Sequencer::spawn(Ulid::generate(), SessionBus::default(), 0),
             session_cancel: CancellationToken::new(),
             runtime_task: Arc::new(Mutex::new(Some(tokio::spawn(async {
                 std::future::pending::<()>().await;
@@ -421,7 +421,7 @@ mod tests {
         // wedged stand-in (which awaits nothing) stays parked.
         tokio::time::pause();
         let (_dir, state) = test_service();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let handle = wedged_runtime_handle();
         handle
             .sequencer
@@ -449,7 +449,7 @@ mod tests {
         use crate::bus::sequencer::Candidate;
 
         let (_dir, state) = test_service();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let mut handle = wedged_runtime_handle();
         handle
             .sequencer

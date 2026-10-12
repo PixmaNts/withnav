@@ -331,7 +331,7 @@ fn notice(sequencer: &Sequencer, text: &str) {
     let _ = sequencer.publish(Candidate::new(
         EventKind::CommandResult,
         serde_json::json!({
-            "name":"watchdog", "ok":true, "operation_id":ulid::Ulid::new(), "data":{"message":text}
+            "name":"watchdog", "ok":true, "operation_id":ulid::Ulid::generate(), "data":{"message":text}
         }),
     ));
 }
@@ -524,7 +524,8 @@ mod tests {
     #[tokio::test]
     async fn verdict_paths_ignore_idle_and_stale_turns_and_park_only_doubt() {
         let status = RuntimeStatus::default();
-        let sequencer = Sequencer::spawn(ulid::Ulid::new(), crate::bus::SessionBus::default(), 0);
+        let sequencer =
+            Sequencer::spawn(ulid::Ulid::generate(), crate::bus::SessionBus::default(), 0);
         apply_review(&status, &sequencer, 0, Review::AskCaptain, &evidence());
         assert!(!status.watchdog.is_doubt());
         status.selection.begin_turn().await;

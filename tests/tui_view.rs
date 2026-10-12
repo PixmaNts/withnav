@@ -988,7 +988,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         last_usage: None,
         skills: Default::default(),
         rule_files: 0,
-        incarnation: ulid::Ulid::new(),
+        incarnation: ulid::Ulid::generate(),
         revision: 1,
     });
     let terminal = cells(&s, &ui, (60, 20));
@@ -1513,7 +1513,7 @@ fn the_gauge_follows_the_active_tab() {
         last_usage: None,
         skills: Default::default(),
         rule_files: 0,
-        incarnation: ulid::Ulid::new(),
+        incarnation: ulid::Ulid::generate(),
         revision: 1,
     };
     let mut s = done();
@@ -1998,7 +1998,7 @@ fn the_status_line_reads_model_variant_and_gauge() {
         last_usage: None,
         skills: Default::default(),
         rule_files: 0,
-        incarnation: ulid::Ulid::new(),
+        incarnation: ulid::Ulid::generate(),
         revision: 1,
     });
     let t = cells(&s, &UiState::default(), (120, 30));

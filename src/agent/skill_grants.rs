@@ -131,14 +131,14 @@ impl SkillGrants {
                     skill: script.skill.clone(),
                     base_dir: script.base_dir.clone(),
                     scripts: BTreeMap::new(),
-                    granted_at: ulid::Ulid::new().to_string(),
+                    granted_at: ulid::Ulid::generate().to_string(),
                 });
                 grants.len() - 1
             });
             grants[index]
                 .scripts
                 .insert(script.relative_path.clone(), script.sha256.clone());
-            grants[index].granted_at = ulid::Ulid::new().to_string();
+            grants[index].granted_at = ulid::Ulid::generate().to_string();
         })
     }
 
@@ -165,7 +165,7 @@ impl SkillGrants {
         let bytes = serde_json::to_vec_pretty(&grants).map_err(|e| e.to_string())?;
         let tmp = self
             .file
-            .with_extension(format!("{}.tmp", ulid::Ulid::new()));
+            .with_extension(format!("{}.tmp", ulid::Ulid::generate()));
         let result = (|| {
             let mut out = std::fs::OpenOptions::new()
                 .write(true)

@@ -2278,7 +2278,7 @@ impl Service {
             Some(loaded) => loaded.meta.id,
             // NB: NOT Ulid::default() — that is the nil ULID; every fresh
             // session must mint its own id.
-            None => Ulid::new(),
+            None => Ulid::generate(),
         };
         let (workspace, mut alias, editor) = match &resumed {
             Some(loaded) => (
@@ -2953,7 +2953,7 @@ impl Service {
             let _ = sequencer.publish(start_candidate(&workspace));
         }
         if let Some(warning) = assignment_warning {
-            sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({"operation_id":Ulid::new(),"name":"model_assignment","ok":true,"data":{"warning":warning}}))).map_err(|_| ServerError::SessionStopping)?;
+            sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({"operation_id":Ulid::generate(),"name":"model_assignment","ok":true,"data":{"warning":warning}}))).map_err(|_| ServerError::SessionStopping)?;
         }
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
@@ -3029,7 +3029,7 @@ impl Service {
                 Box::pin(async move {
                     history.flush().await?;
                     let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
-                        "name":"watchdog","ok":true,"operation_id":Ulid::new(),
+                        "name":"watchdog","ok":true,"operation_id":Ulid::generate(),
                         "data":{"captain_committed":true,"message":"Fresh captain instruction checkpointed"}
                     }));
                     sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
@@ -3212,7 +3212,7 @@ impl Service {
             completion,
         ))));
 
-        let incarnation = Ulid::new();
+        let incarnation = Ulid::generate();
         status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
             flows,

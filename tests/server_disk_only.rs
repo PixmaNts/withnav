@@ -244,7 +244,7 @@ async fn posting_to_a_stopped_conversation_says_to_resume_first() {
         "{body}"
     );
 
-    let unknown = post_message(&restarted.base, &ulid::Ulid::new().to_string(), "x").await;
+    let unknown = post_message(&restarted.base, &ulid::Ulid::generate().to_string(), "x").await;
     assert_eq!(unknown.status(), 404);
 
     // Resumed and stopped again: the store answers the same way.
@@ -286,7 +286,7 @@ async fn unknown_and_deleted_ids_stay_404_everywhere() {
         .expect("delete");
     assert_eq!(deleted.status(), 204);
 
-    for id in [restarted.id.clone(), ulid::Ulid::new().to_string()] {
+    for id in [restarted.id.clone(), ulid::Ulid::generate().to_string()] {
         let get = reqwest::get(format!("{}/v1/sessions/{id}", restarted.base))
             .await
             .expect("get");

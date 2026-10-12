@@ -217,7 +217,7 @@ fn bypass_snapshot_watermark_prevents_replayed_on_and_end_clears_live_state() {
     }
     assert!(!s.bypass);
     let mut e = EventEnvelope::new(
-        Ulid::new(),
+        Ulid::generate(),
         11,
         EventKind::SessionEnd,
         json!({"reason":"stopped"}),

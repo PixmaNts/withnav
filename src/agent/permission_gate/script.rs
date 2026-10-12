@@ -178,7 +178,7 @@ pub(super) fn attach(
     }
     let complete = bytes.len() <= SCRIPT_BYTES && metadata.len() == bytes.len() as u64;
     bytes.truncate(SCRIPT_BYTES);
-    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let hash = hex::encode(Sha256::digest(&bytes));
     let Ok(text) = String::from_utf8(bytes) else {
         return;
     };

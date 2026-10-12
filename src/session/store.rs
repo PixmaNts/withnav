@@ -987,7 +987,7 @@ impl HistoryStore {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
             conn.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5)",
-                params![Ulid::new().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
+                params![Ulid::generate().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
             Ok(())
         }).await.map_err(|e| e.to_string())?
     }
@@ -1428,7 +1428,7 @@ fn finish_child_link_sync(
         agent: row.agent.clone(),
         outcome,
         reason: reason.clone(),
-        notification_id: Ulid::new(),
+        notification_id: Ulid::generate(),
     })
     .map_err(|e| e.to_string())?;
     payload["delivery"] = serde_json::json!(delivery);
@@ -2152,7 +2152,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_at_writer_precommit_rolls_back_override_and_inserted_event() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "old", false).await.unwrap();
         let token = tokio_util::sync::CancellationToken::new();
         let reached = Arc::new(std::sync::Barrier::new(2));
@@ -2206,7 +2206,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_selection_writer_leaves_identity_override_and_events_unchanged() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "old", false).await.unwrap();
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
@@ -2250,7 +2250,7 @@ mod tests {
                 variant: AgentVariantOverride::Off,
             },
         );
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session_with_overrides(id, "/w", "p/model", false, None, None, None, &overrides)
             .await
@@ -2260,7 +2260,7 @@ mod tests {
             overrides
         );
         side_connection(&dir).execute_batch("CREATE TRIGGER fail_initial AFTER INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'insert fault'); END;").unwrap();
-        let failed = Ulid::new();
+        let failed = Ulid::generate();
         assert!(store
             .record_session_with_overrides(
                 failed, "/w", "p/model", false, None, None, None, &overrides
@@ -2279,7 +2279,7 @@ mod tests {
     #[tokio::test]
     async fn agent_overrides_are_independent_durable_clearable_and_deleted() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "old", false).await.unwrap();
         assert!(store
             .meta(id)
@@ -2338,7 +2338,7 @@ mod tests {
     async fn agent_selection_events_identity_and_overrides_commit_or_rollback_together() {
         use crate::provider::catalog::{Bounds, ModelResolution, Provenance, RESOLUTION_VERSION};
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "old", false).await.unwrap();
         let selection = EffectiveAgentSelection {
             provenance: None,
@@ -2590,7 +2590,7 @@ mod tests {
     #[tokio::test]
     async fn missing_session_override_updates_and_clears_fail() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         assert!(store
             .update_agent_override(id, "build", AgentOverride::default())
             .await
@@ -2607,7 +2607,7 @@ mod tests {
     async fn concurrent_store_handles_preserve_sibling_agent_overrides() {
         let (dir, first) = temp_store();
         let second = HistoryStore::open(dir.path().join("sessions.db")).unwrap();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         first.record_session(id, "/w", "old", false).await.unwrap();
         let build = AgentOverride {
             model: Some("p/build".into()),
@@ -2632,7 +2632,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_agent_overrides_fail_reads_and_updates_explicitly() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "old", false).await.unwrap();
         for raw in [
             "{bad",
@@ -2657,7 +2657,7 @@ mod tests {
     #[tokio::test]
     async fn permission_writer_waits_for_outbox_write_ownership_without_poisoning_flush() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/ws", "model", false)
             .await
@@ -2677,7 +2677,7 @@ mod tests {
                 id,
                 0,
                 EventKind::PermissionResolved,
-                serde_json::json!({"request_id":Ulid::new(),"resolution":"allow_once"}),
+                serde_json::json!({"request_id":Ulid::generate(),"resolution":"allow_once"}),
             ),
         );
         let flushing = store.flush();
@@ -2697,7 +2697,7 @@ mod tests {
     }
 
     fn envelope(seq: u64, kind: EventKind) -> EventEnvelope {
-        EventEnvelope::new(Ulid::new(), seq, kind, serde_json::json!({ "n": seq }))
+        EventEnvelope::new(Ulid::generate(), seq, kind, serde_json::json!({ "n": seq }))
     }
 
     /// Polls until the session row carries a title (the writer drained the
@@ -2739,8 +2739,8 @@ mod tests {
     #[tokio::test]
     async fn record_append_snapshot_roundtrip() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
-        let id2 = Ulid::new();
+        let id = Ulid::generate();
+        let id2 = Ulid::generate();
         store
             .record_session(id, "/w", "cognition", true)
             .await
@@ -2797,7 +2797,7 @@ mod tests {
     #[tokio::test]
     async fn title_is_set_once() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
@@ -2815,7 +2815,7 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_row_and_events() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
@@ -2850,7 +2850,7 @@ mod tests {
         let path = dir.path().join("sessions.db");
         let _a = HistoryStore::open(&path).expect("first open");
         let b = HistoryStore::open(&path).expect("second open");
-        b.record_session(Ulid::new(), "/w", "m", false)
+        b.record_session(Ulid::generate(), "/w", "m", false)
             .await
             .expect("record");
         let listed = poll_list(&b, "/w", 1).await;
@@ -2870,7 +2870,7 @@ mod tests {
     #[tokio::test]
     async fn replay_respects_both_bounds_and_rejects_corruption() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
@@ -2894,7 +2894,10 @@ mod tests {
         assert!(none_after.is_empty());
         let inverted = store.replay(id, Some(3), 2).await.expect("inverted range");
         assert!(inverted.is_empty());
-        let unknown = store.replay(Ulid::new(), None, 4).await.expect("unknown");
+        let unknown = store
+            .replay(Ulid::generate(), None, 4)
+            .await
+            .expect("unknown");
         assert!(unknown.is_empty());
 
         side_connection(&dir)
@@ -2919,7 +2922,7 @@ mod tests {
     #[tokio::test]
     async fn meta_and_resume_load_omit_the_envelopes() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", true)
             .await
@@ -2946,7 +2949,7 @@ mod tests {
         assert!(joined.editor);
         assert!(link.is_none());
         assert!(store
-            .meta_with_child_link(Ulid::new())
+            .meta_with_child_link(Ulid::generate())
             .await
             .expect("unknown meta with link")
             .is_none());
@@ -2958,9 +2961,9 @@ mod tests {
         assert_eq!(resumed.id, id);
         assert_eq!(transcript.len(), 1);
         assert!(compaction.is_none());
-        assert!(store.meta(Ulid::new()).await.expect("meta").is_none());
+        assert!(store.meta(Ulid::generate()).await.expect("meta").is_none());
         assert!(store
-            .load_for_resume(Ulid::new())
+            .load_for_resume(Ulid::generate())
             .await
             .expect("resume")
             .is_none());
@@ -2969,8 +2972,8 @@ mod tests {
     #[tokio::test]
     async fn child_link_terminal_write_is_a_compare_and_set() {
         let (_dir, store) = temp_store();
-        let parent = Ulid::new();
-        let child = Ulid::new();
+        let parent = Ulid::generate();
+        let child = Ulid::generate();
         store
             .record_session(parent, "/w", "m", false)
             .await
@@ -3034,8 +3037,8 @@ mod tests {
     #[tokio::test]
     async fn pending_completion_is_delivered_once_after_live_subscriber_disconnects() {
         let (_dir, store) = temp_store();
-        let parent = Ulid::new();
-        let child = Ulid::new();
+        let parent = Ulid::generate();
+        let child = Ulid::generate();
         store
             .record_session(parent, "/w", "m", false)
             .await
@@ -3093,12 +3096,12 @@ mod tests {
     #[tokio::test]
     async fn acked_append_reports_its_own_outcome_not_the_poison() {
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
             .expect("record");
-        store.append_event(Ulid::new(), envelope(0, EventKind::SessionStart));
+        store.append_event(Ulid::generate(), envelope(0, EventKind::SessionStart));
         store
             .flush()
             .await
@@ -3125,7 +3128,7 @@ mod tests {
         assert_eq!(loaded.meta.last_seq, 0);
         assert!(store.load_for_resume(id).await.unwrap().is_some());
         store
-            .append_event_acked(Ulid::new(), envelope(1, EventKind::SessionStart))
+            .append_event_acked(Ulid::generate(), envelope(1, EventKind::SessionStart))
             .await
             .expect_err("its own failure is reported");
     }
@@ -3133,7 +3136,7 @@ mod tests {
     #[tokio::test]
     async fn failed_append_poison_survives_multiple_flushes() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
@@ -3161,7 +3164,9 @@ mod tests {
             .execute_batch("DROP TABLE sessions")
             .expect("drop sessions");
 
-        let result = store.record_session(Ulid::new(), "/w", "m", false).await;
+        let result = store
+            .record_session(Ulid::generate(), "/w", "m", false)
+            .await;
         assert!(result.is_err(), "the ack must carry the failure");
     }
 
@@ -3171,9 +3176,9 @@ mod tests {
     #[tokio::test]
     async fn flush_reports_the_first_error_only() {
         let (_dir, store) = temp_store();
-        let known = Ulid::new();
-        let unknown_a = Ulid::new();
-        let unknown_b = Ulid::new();
+        let known = Ulid::generate();
+        let unknown_a = Ulid::generate();
+        let unknown_b = Ulid::generate();
         store
             .record_session(known, "/w", "m", false)
             .await
@@ -3193,7 +3198,7 @@ mod tests {
     #[tokio::test]
     async fn event_and_last_seq_commit_together_or_not_at_all() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.append_event(id, envelope(0, EventKind::SessionStart));
         store.flush().await.expect_err("no session row");
 
@@ -3236,7 +3241,7 @@ mod tests {
     async fn migration_adds_the_resolution_column_to_an_old_database() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sessions.db");
-        let id = Ulid::new();
+        let id = Ulid::generate();
         {
             let conn = Connection::open(&path).expect("open");
             conn.execute_batch(
@@ -3283,7 +3288,7 @@ mod tests {
             (name.to_string(), object)
         };
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session_resolved(id, "/w", "m", false, None, Some(&pick("high")), None)
             .await
@@ -3307,7 +3312,7 @@ mod tests {
             None
         );
         assert!(store
-            .set_variant(Ulid::new(), Some(&pick("x")))
+            .set_variant(Ulid::generate(), Some(&pick("x")))
             .await
             .is_err());
         let listed = store.list("/w").await.expect("list");
@@ -3339,7 +3344,7 @@ mod tests {
             },
         };
         let (_dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
@@ -3360,7 +3365,7 @@ mod tests {
         let saved = ModelResolution::from_saved(&meta.model_resolution.expect("saved")).unwrap();
         assert_eq!(saved.bounds.context_window, 100);
         assert!(store
-            .set_model_resolution(Ulid::new(), &make(1))
+            .set_model_resolution(Ulid::generate(), &make(1))
             .await
             .is_err());
     }
@@ -3413,7 +3418,7 @@ mod tests {
     #[tokio::test]
     async fn a_checkpoint_is_saved_with_the_transcript_and_read_back() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "m", false).await.unwrap();
         let transcript: Vec<ChatMessage> = (0..4).flat_map(exchange).collect();
         let k = compaction(3, vec![6]);
@@ -3442,7 +3447,7 @@ mod tests {
     async fn saving_a_checkpoint_of_an_unknown_session_fails() {
         let (_dir, store) = temp_store();
         let err = store
-            .save_checkpoint(Ulid::new(), vec![], &compaction(0, vec![]))
+            .save_checkpoint(Ulid::generate(), vec![], &compaction(0, vec![]))
             .await
             .unwrap_err();
         assert!(err.contains("no stored session"), "{err}");
@@ -3454,7 +3459,7 @@ mod tests {
     #[tokio::test]
     async fn an_invalid_checkpoint_fails_the_resume() {
         let (dir, store) = temp_store();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store.record_session(id, "/w", "m", false).await.unwrap();
         store.save_transcript(id, exchange(0));
         store.flush().await.unwrap();

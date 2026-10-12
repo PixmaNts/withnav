@@ -76,7 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
-      # zig is the C cross-compiler for ring, SQLite and Oniguruma. 0.23 or later is needed: older
+      # zig is the C cross-compiler for aws-lc-rs, SQLite and Oniguruma. 0.23 or later is needed: older
       # cargo-zigbuild passes an arm64 linker flag that zig rejects.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:

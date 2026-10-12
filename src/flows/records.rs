@@ -227,10 +227,9 @@ impl Records {
         )
     }
     pub fn new(data: &Path, workspace: &Path) -> Self {
-        let path = data.join("flows/runs").join(format!(
-            "{:x}",
-            Sha256::digest(workspace.as_os_str().as_encoded_bytes())
-        ));
+        let path = data.join("flows/runs").join(hex::encode(Sha256::digest(
+            workspace.as_os_str().as_encoded_bytes(),
+        )));
         Self {
             write: super::fs::resource_lock(&path.join("runs.jsonl")),
             path,

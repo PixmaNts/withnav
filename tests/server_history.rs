@@ -378,7 +378,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws");
 
-    let id = ulid::Ulid::new();
+    let id = ulid::Ulid::generate();
     let store = withnav::session::store::HistoryStore::open(&db).expect("open");
     store
         .record_session(id, &ws.display().to_string(), "mock/mock-opus", true)
@@ -493,7 +493,7 @@ async fn delete_removes_from_memory_and_store() {
     assert_eq!(body["sessions"].as_array().map(|a| a.len()), Some(0));
 
     // A disk-only id that never existed 404s.
-    let bogus = ulid::Ulid::new().to_string();
+    let bogus = ulid::Ulid::generate().to_string();
     let resp = reqwest::Client::new()
         .delete(format!("{}/v1/sessions/{bogus}", server.base))
         .send()

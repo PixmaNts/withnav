@@ -79,7 +79,7 @@ mod tests {
             rules_roots: Default::default(),
         })
         .unwrap();
-        let task = TaskTool::new(service, ulid::Ulid::new());
+        let task = TaskTool::new(service, ulid::Ulid::generate());
         let cancel = CancellationToken::new();
         cancel.cancel();
         let cx = ToolContext {

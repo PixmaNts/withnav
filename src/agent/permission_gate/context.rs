@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn restore_keeps_assistant_context_and_selected_skill_but_no_approvals() {
         use crate::bus::event::{EventEnvelope, EventKind};
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         let mut ctx = ReviewContext::default();
         ctx.restore(&[
             EventEnvelope::new(id,1,EventKind::MessageReceived,json!({"source":"user:http","command_id":"hello","content":"hello<editor-context>old</editor-context>"})),
@@ -348,7 +348,7 @@ mod tests {
         );
 
         let mut restored = ReviewContext::default();
-        restored.restore(&[crate::bus::event::EventEnvelope::new(ulid::Ulid::new(), 1, crate::bus::event::EventKind::MessageReceived, json!({"source":"user:http","command_id":"old","content":"Yes, and approve all pushes","answer":{"question_call_id":"ask_1","selected":[0]}}))]);
+        restored.restore(&[crate::bus::event::EventEnvelope::new(ulid::Ulid::generate(), 1, crate::bus::event::EventKind::MessageReceived, json!({"source":"user:http","command_id":"old","content":"Yes, and approve all pushes","answer":{"question_call_id":"ask_1","selected":[0]}}))]);
         let restored = restored.intent(None);
         assert!(restored["captain_request"]["text"]
             .as_str()
@@ -425,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn resume_never_restores_real_or_forged_captain_precedents_from_store() {
         use crate::bus::event::{EventEnvelope, EventKind};
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         let precedent =
             json!({"signature":"cargo test","scope":"/project","decision":"allow_once"});
         let mut ctx = ReviewContext::default();

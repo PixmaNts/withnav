@@ -156,7 +156,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
         state
             .answer_permission(
                 id,
-                Ulid::new(),
+                Ulid::generate(),
                 withnav::agent::permissions::PermissionDecision::AllowOnce
             )
             .await,
@@ -191,7 +191,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
             json!({"name":"unknown-archive-command"}),
         ),
         (
-            format!("/v1/sessions/{id}/permissions/{}", Ulid::new()),
+            format!("/v1/sessions/{id}/permissions/{}", Ulid::generate()),
             json!({"decision":"allow_once"}),
         ),
         (
@@ -243,7 +243,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
 async fn old_schema_adds_nullable_marker_without_classifying_sessions() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("old.db");
-    let id = Ulid::new();
+    let id = Ulid::generate();
     {
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute_batch(
@@ -280,8 +280,8 @@ async fn old_schema_adds_nullable_marker_without_classifying_sessions() {
 async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
     let tmp = tempfile::tempdir().unwrap();
     let store = HistoryStore::open(tmp.path().join("history.db")).unwrap();
-    let id = Ulid::new();
-    let normal = Ulid::new();
+    let id = Ulid::generate();
+    let normal = Ulid::generate();
     for session in [id, normal] {
         store
             .record_session(session, "/workspace", "old-original-key", false)
@@ -324,7 +324,7 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
             .resume_disabled_reason
             .is_none());
     }
-    let unknown = Ulid::new();
+    let unknown = Ulid::generate();
     assert!(store.mark_archive(unknown, REASON).await.is_err());
     assert!(!store.exists(unknown).await.unwrap());
     store.mark_archive(id, REASON).await.unwrap();
@@ -373,8 +373,8 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
     let config = TestServerConfig::unreachable(tmp.path());
     let state = config.state();
     let store = state.history();
-    let id = Ulid::new();
-    let normal = Ulid::new();
+    let id = Ulid::generate();
+    let normal = Ulid::generate();
     let workspace = ws.display().to_string();
     for session in [id, normal] {
         store
@@ -449,12 +449,12 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
             json!({"name":"model","arguments":"default"}),
         ),
         (
-            format!("/v1/sessions/{id}/permissions/{}", Ulid::new()),
+            format!("/v1/sessions/{id}/permissions/{}", Ulid::generate()),
             json!({"decision":"allow_once"}),
         ),
         (format!("/v1/sessions/{id}/stop"), json!({})),
         (
-            format!("/v1/sessions/{id}/children/{}/continue", Ulid::new()),
+            format!("/v1/sessions/{id}/children/{}/continue", Ulid::generate()),
             json!({}),
         ),
     ] {

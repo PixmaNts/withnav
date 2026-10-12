@@ -121,7 +121,7 @@ impl PermissionRequest {
             allow_config_session: false,
             skill_script: None,
             permission_gate: None,
-            id: Ulid::new(),
+            id: Ulid::generate(),
             tool_call_id: call.id.clone(),
             tool: call.name.clone(),
             arguments,
@@ -226,7 +226,9 @@ impl GrantStore {
             }
         }
         let json = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
-        let tmp = self.file.with_extension(format!("{}.tmp", Ulid::new()));
+        let tmp = self
+            .file
+            .with_extension(format!("{}.tmp", Ulid::generate()));
         let mut out = std::fs::OpenOptions::new()
             .write(true)
             .create(true)

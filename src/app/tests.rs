@@ -15,7 +15,7 @@ async fn typed_watchdog_pause_exits_yielded_and_notice_renders() {
             choices: None,
             question_call_id: None,
             actor_id: "agent:main".into(),
-            turn_id: ulid::Ulid::new(),
+            turn_id: ulid::Ulid::generate(),
             question: "watchdog pause".into(),
             kind: Some("watchdog".into()),
             details: None,
@@ -162,12 +162,12 @@ use ulid::Ulid;
 
 fn delta_envelope(delta: StreamDelta) -> EventEnvelope {
     let payload = LlmDeltaPayload {
-        turn_id: Ulid::new(),
-        step_id: Ulid::new(),
+        turn_id: Ulid::generate(),
+        step_id: Ulid::generate(),
         delta,
     };
     EventEnvelope::new(
-        Ulid::new(),
+        Ulid::generate(),
         1,
         EventKind::LlmDelta,
         serde_json::to_value(&payload).unwrap(),
@@ -175,12 +175,12 @@ fn delta_envelope(delta: StreamDelta) -> EventEnvelope {
 }
 
 fn kind_envelope(kind: EventKind, payload: serde_json::Value) -> EventEnvelope {
-    EventEnvelope::new(Ulid::new(), 2, kind, payload)
+    EventEnvelope::new(Ulid::generate(), 2, kind, payload)
 }
 
 fn turn_end_envelope(outcome: TurnEndOutcome) -> EventEnvelope {
     let payload = TurnEndPayload {
-        turn_id: Ulid::new(),
+        turn_id: Ulid::generate(),
         actor_id: "agent:main".into(),
         outcome,
         usage: None,
@@ -236,7 +236,7 @@ fn event_to_ui_maps_agent_yield_to_the_yielded_ui_event() {
         choices: None,
         question_call_id: None,
         actor_id: "agent:main".into(),
-        turn_id: Ulid::new(),
+        turn_id: Ulid::generate(),
         question: "insert SD card?".into(),
         kind: Some("confirm".into()),
         details: None,
@@ -290,7 +290,7 @@ fn event_to_ui_maps_interrupted_and_error_turn_ends_to_none() {
         let env = kind_envelope(
             EventKind::TurnEnd,
             serde_json::to_value(&TurnEndPayload {
-                turn_id: Ulid::new(),
+                turn_id: Ulid::generate(),
                 actor_id: "agent:main".into(),
                 outcome,
                 usage: None,

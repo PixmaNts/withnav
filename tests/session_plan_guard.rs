@@ -102,7 +102,7 @@ fn state(env: &Env, provider: &CapturingProvider, with_instinct: bool) -> AppSta
 async fn say(state: &AppState, id: ulid::Ulid, text: &str) {
     state
         .send(Command {
-            command_id: ulid::Ulid::new(),
+            command_id: ulid::Ulid::generate(),
             session_id: id,
             source_actor_id: "user:test".to_string(),
             target_actor_id: "agent:main".to_string(),
@@ -146,7 +146,7 @@ async fn wait_events(
 async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
     state
         .send(Command {
-            command_id: ulid::Ulid::new(),
+            command_id: ulid::Ulid::generate(),
             session_id: id,
             source_actor_id: withnav::navigator::NAVIGATOR_ACTOR_ID.to_string(),
             target_actor_id: "agent:main".to_string(),

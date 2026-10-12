@@ -13,6 +13,11 @@ requests land in `develop`.
   in `withnav.serverPath` still wins over the bundled binary. `scripts/package-vsix.sh` builds the
   same files locally.
 
+### Changed
+
+- **The VS Code extension needs VS Code 1.91 or later** (was 1.90). It now uses
+  `vscode-languageclient` 10, which requires it.
+
 ### Fixed
 
 - **`nav` builds for musl Linux.** Writing a flow file that must not replace an existing one now

@@ -1,6 +1,9 @@
 //! Bounded read-only host facts for literal git calls. No shell or git aliases are executed.
 use serde_json::{json, Value};
-use std::{path::Path, process::Stdio, time::Duration};
+#[cfg(unix)]
+use std::process::Stdio;
+use std::{path::Path, time::Duration};
+#[cfg(unix)]
 use tokio::io::AsyncReadExt;
 
 pub(super) fn literal(command: &str) -> Option<Vec<&str>> {
@@ -85,6 +88,7 @@ pub(super) fn broad_push_operand(word: &str) -> bool {
     matches!(word, "--all" | "--mirror" | "--tags" | "--follow-tags")
 }
 
+#[cfg(unix)]
 async fn read(workspace: &Path, args: &[&str]) -> Option<String> {
     // Never resolve a pre-approval executable through the workspace/PATH. No ambient
     // GIT_* override, global configuration, fsmonitor or hook may execute here.
@@ -273,4 +277,9 @@ pub(super) async fn recoverable_file(workspace: &Path, path: &str) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+#[cfg(windows)]
+async fn read(_: &Path, _: &[&str]) -> Option<String> {
+    None
 }

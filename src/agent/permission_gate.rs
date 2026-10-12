@@ -832,6 +832,8 @@ pub enum HardFloorReason {
     ScratchChanged,
     /// A native write or edit inside the directories user toolchains run from.
     ToolchainExecution,
+    #[cfg(windows)]
+    UnsupportedShell,
 }
 
 /// Where a user-installed toolchain's executables live: `$CARGO_HOME/bin` and
@@ -933,6 +935,10 @@ pub fn hard_floor(
     call: &ToolCall,
     needed: &Needed,
 ) -> Option<HardFloorReason> {
+    #[cfg(windows)]
+    if call.name == "bash" {
+        return Some(HardFloorReason::UnsupportedShell);
+    }
     if protected_call(actor, call, needed) {
         return Some(HardFloorReason::ProtectedConfig);
     }
@@ -1526,6 +1532,7 @@ fn bash_command(call: &ToolCall) -> Option<&str> {
 
 /// Resolve shell homes through the account database, as Bash does for `~login`.
 /// Unknown users and unresolved directory-stack forms keep ordinary review.
+#[cfg(unix)]
 fn bash_requested_path(word: &str, cx: &ToolContext) -> Option<std::path::PathBuf> {
     let Some(tilde) = word.strip_prefix('~') else {
         return super::permissions::requested_path(std::path::Path::new(word), cx).ok();
@@ -1673,6 +1680,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn tilde_operands_keep_normal_review_without_spurious_config_holds() {
         const CHILD: &str = "WITHNAV_TEST_TILDE_ACCOUNT_LOOKUP";
         if std::env::var_os(CHILD).is_none() {
@@ -2270,6 +2278,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn recorded_ordinary_calls_run_without_metacognition() {
         // The recorded calls were made with a toolchain the gate trusts. PATH is
         // process-global: pin it in an isolated test process to a rustup-shaped user
@@ -2574,6 +2583,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn rustup_cargo_test_runs_like_the_system_cargo_and_precedent_tracks_the_binary() {
         // PATH and CARGO_HOME are process-global: isolated process, rustup-shaped HOME.
         if std::env::var_os("WITHNAV_RUSTUP_CARGO_TEST").is_none() {
@@ -2640,6 +2650,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn native_writes_into_user_toolchain_execution_dirs_are_a_hard_floor() {
         if std::env::var_os("WITHNAV_TOOLCHAIN_FLOOR_TEST").is_none() {
             let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
@@ -2718,6 +2729,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn toolchain_floor_follows_links_dotdot_and_relative_overrides() {
         // CARGO_HOME / RUSTUP_HOME are process-global: each case runs in an isolated
         // child process with its own environment.
@@ -2855,6 +2867,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn cargo_test_allow_once_then_unsure_uses_captain_precedent() {
         // PATH is process-global; use an isolated test process with a rustup-shaped
         // user toolchain rather than racing other tests' executable checks.
@@ -3432,6 +3445,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn environment_security_corpus_preserves_review_floors() {
         const CHILD: &str = "WITHNAV_TEST_SECURITY_CORPUS";
         if let Some(base) = std::env::var_os(CHILD) {
@@ -3578,6 +3592,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn user_owned_binary_outside_workspace_requires_review_with_optimistic_judge() {
         const CHILD: &str = "WITHNAV_TEST_USER_BINARY";
         if let Some(workspace) = std::env::var_os(CHILD) {
@@ -3639,6 +3654,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn git_probes_never_execute_repository_fsmonitor() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
@@ -3714,6 +3730,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn overwrite_recovery_requires_tracked_and_unmodified_file() {
         let cwd = std::env::current_dir().unwrap();
         let tmp = tempfile::tempdir_in(&cwd).unwrap();
@@ -3999,6 +4016,7 @@ mod tests {
         assert!(!config_settings_unchanged(&json!({}), &json!(null)));
     }
     #[test]
+    #[cfg(unix)]
     fn bash_literal_aliases_and_uncertain_sensitive_expansions_force_risk() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
@@ -4051,6 +4069,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn filename_globs_parse_but_never_hide_a_credential() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
@@ -4189,4 +4208,9 @@ mod tests {
         ))
         .is_ok());
     }
+}
+
+#[cfg(windows)]
+fn bash_requested_path(_: &str, _: &ToolContext) -> Option<std::path::PathBuf> {
+    None
 }

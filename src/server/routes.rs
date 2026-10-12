@@ -1157,6 +1157,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
 /// process IS the server process, so raising SIGTERM on itself exercises the
 /// production `SignalKind::terminate` branch of `shutdown_signal`.
 #[doc(hidden)]
+#[cfg(unix)]
 pub fn send_test_sigterm() {
     let pid = std::process::id();
     let _ = std::process::Command::new("kill")

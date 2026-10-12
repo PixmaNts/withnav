@@ -626,6 +626,7 @@ async fn convert_html(
 /// signal, limit, timeout) is an `Err`; the child is killed on every path,
 /// including when this future is dropped by a cancellation or the tool
 /// timeout.
+#[cfg(unix)]
 async fn convert_in_child(
     program: &Path,
     html: &str,
@@ -1566,4 +1567,14 @@ mod tests {
             assert!(!is_textual(m), "{m}");
         }
     }
+}
+
+#[cfg(windows)]
+async fn convert_in_child(
+    _: &Path,
+    _: &str,
+    _: ConvertFormat,
+    _: Duration,
+) -> Result<String, String> {
+    Err("converter resource containment is unavailable on Windows".into())
 }

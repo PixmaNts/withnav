@@ -119,6 +119,8 @@ async fn hostile_pages_fall_back_within_the_timeout() {
 // Then the child process is killed
 #[cfg(unix)]
 #[tokio::test]
+#[cfg(unix)]
+#[cfg(unix)]
 async fn cancellation_kills_the_converter() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -180,6 +182,7 @@ async fn cancellation_kills_the_converter() {
 //      executable, so it must answer without spending the limit on an
 //      async runtime before reading the page
 #[test]
+#[cfg(unix)]
 fn nav_converts_under_the_child_memory_limit() {
     use std::io::Write;
     use std::os::unix::process::CommandExt;

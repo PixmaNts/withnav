@@ -47,7 +47,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 ulid = { version = "3.0.0", features = ["std", "serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
-nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
 sha2 = "0.11.0"
 # sha2 0.11 digests no longer implement LowerHex: hex-encode them explicitly.
 hex = "0.4"
@@ -80,6 +79,9 @@ html2text = "0.17.1"
 encoding_rs = "0.8.42"
 unicode-segmentation = "1"
 include_dir = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }

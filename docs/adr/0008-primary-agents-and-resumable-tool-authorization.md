@@ -1,5 +1,8 @@
 # Primary agents set the role; effects are authorized separately, through resumable interactions
 
+Status: Amended by [ADR 0015](0015-permission-rules-and-instinct-flow.md) on 2026-10-13: the role
+guard is removed and an agent's limits are permission rules with agent scope.
+
 A session runs as one **primary agent**: `build` (implement, verify, report) or `plan` (research, write
 markdown plans, delegate), or a custom one defined in a markdown file. The agent is a role: a prompt, an
 optional model, a tool allow/deny map and an access level. It says what the agent is for. It does not

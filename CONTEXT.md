@@ -249,6 +249,63 @@ _Avoid_: tool, action (an action is what a flow proposes)
 
 ## Permissions
 
+[ADR 0015](docs/adr/0015-permission-rules-and-instinct-flow.md) replaces the per-call review
+described in this section with rules and a permission flow. It is decided, not built: the terms
+below the "Permission rules" heading name the new model; the others describe the code as it is
+until the change lands.
+
+### Permission rules
+
+**Control level**:
+How much WithNav checks before a tool call runs: yolo (nothing), bypass (only the fixed floor),
+or normal (rules, then the permission flow, then the Captain).
+_Avoid_: security mode, trust level
+
+**Yolo**:
+The control level that checks nothing, turned on only by `"yolo": true` in the Captain's
+`config.json`. Every call records `approved_by: yolo`, and every client shows it.
+_Avoid_: bypass (bypass still keeps the fixed floor), unsafe mode
+
+**Permission rule**:
+A row of the database saying what happens to a tool call: an action (tool name), a resource
+pattern with `*`, an effect (`allow`, `ask`, `deny`) and a scope. Revoked, never deleted. No
+matching rule means `ask`. The most precise rule wins.
+_Avoid_: grant, whitelist, policy
+
+**Rule scope**:
+Where a permission rule applies: one agent, one project, or every project. On equal precision,
+agent beats project, which beats global.
+_Avoid_: level, layer
+
+**Arity prefix**:
+The words that identify a shell command for a rule, from a fixed table (`git push`, `cargo test`,
+`npm run build`); an unknown program is identified by its first word. "Always" saves the prefix
+followed by ` *`.
+_Avoid_: command signature
+
+**Once / Always / Reject**:
+The Captain's three answers to a permission request. Always saves an `allow` rule with the tool's
+default scope; Reject may carry a message the model reads.
+_Avoid_: allow folder, deny (deny is a rule effect)
+
+**Permission flow**:
+The flow on the `tool.pre_call` trigger that judges a call after the rules: it may allow an `ask`
+the Captain or a validated skill asked for, and turn a dangerous `allow` into a question. A
+written `deny` never reaches it. When it fails, the rule's result applies.
+_Avoid_: permission review (the per-call review it replaces), gate
+
+**Fixed floor**:
+The only checks written in Rust, skipped only by yolo: writes to WithNav's own configuration and
+database, and any access to credentials.
+_Avoid_: hard floor (the older, broader set of checks)
+
+**Validation** (skills and flows):
+The Captain's one-time approval of a skill or flow, bound to a hash of its content. A changed file
+is validated again.
+_Avoid_: trust (workspace trust is a different thing), grant
+
+### Current per-call review
+
 **Captain request**:
 Permission review uses the ordered verified Captain turns and retained newer constraints;
 the role guard still uses only the latest message. Questions,
@@ -404,7 +461,7 @@ session starts off, and its history says so. HTTP changes require a configured b
 an authenticated client, including slash commands; servers without a token allow only state reads.
 The in-process `nav run --yes` path does not require HTTP authentication.
 Not a sandbox: bash keeps its ambient access.
-_Avoid_: auto-approve, yolo, allow all
+_Avoid_: auto-approve, allow all, yolo (yolo is a different control level)
 
 **Folder grant**:
 Historical bash/file folder approvals remain readable on disk but never authorize execution.

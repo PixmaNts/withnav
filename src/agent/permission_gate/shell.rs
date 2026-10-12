@@ -36,7 +36,6 @@ const RUSTUP_PROXIES: &[&str] = &[
 /// directory chains that nobody but root (system tools) or root and the current user
 /// (user toolchains, see below) owns, and that are not group/world-writable.
 #[cfg(unix)]
-#[cfg(unix)]
 pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, PathBuf)> {
     let name = basename(word);
     let path = Path::new(word);
@@ -1401,7 +1400,6 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[cfg(unix)]
     fn secure_user_shim_accepts_system_target_and_owned_binary_but_not_impersonation() {
         const CHILD: &str = "WITHNAV_TEST_SECURE_SHIM";
         if let Ok(workspace) = std::env::var(CHILD) {
@@ -1532,7 +1530,6 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[cfg(unix)]
     fn script_and_command_identity_reject_system_symlinks_in_writable_path_directory() {
         const CHILD: &str = "WITHNAV_TEST_WRITABLE_PATH_SYMLINK";
         if let Ok(workspace) = std::env::var(CHILD) {
@@ -1602,7 +1599,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     #[cfg(unix)]
     fn user_owned_toolchain_is_trusted_by_ownership_with_guards() {
         const CASE: &str = "agent::permission_gate::shell::tests::user_owned_toolchain_is_trusted_by_ownership_with_guards";

@@ -420,7 +420,10 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "tools::bash::tests::impostor_bash_first_in_path_is_never_executed",
+                &format!(
+                    "{}::impostor_bash_first_in_path_is_never_executed",
+                    module_path!().split_once("::").unwrap().1
+                ),
                 "--nocapture",
             ])
             .env(CHILD, tmp.path())
@@ -431,6 +434,11 @@ mod tests {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stdout)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains("1 passed"),
+            "{stdout}"
         );
         assert!(!marker.exists());
     }
@@ -459,7 +467,10 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "tools::bash::tests::bash_env_and_exported_functions_are_not_sourced",
+                &format!(
+                    "{}::bash_env_and_exported_functions_are_not_sourced",
+                    module_path!().split_once("::").unwrap().1
+                ),
                 "--nocapture",
             ])
             .env(CHILD, tmp.path())
@@ -475,6 +486,11 @@ mod tests {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stdout)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains("1 passed"),
+            "{stdout}"
         );
         assert!(!marker.exists());
     }

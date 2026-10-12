@@ -21,6 +21,10 @@ pub struct AuthStore {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(root) = crate::paths::preview_test_root() {
+        return Some(root.join("config/withnav"));
+    }
     directories::ProjectDirs::from("", "", crate::paths::APP_NAME)
         .map(|p| p.config_dir().to_path_buf())
 }

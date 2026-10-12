@@ -120,7 +120,6 @@ async fn hostile_pages_fall_back_within_the_timeout() {
 #[cfg(unix)]
 #[tokio::test]
 #[cfg(unix)]
-#[cfg(unix)]
 async fn cancellation_kills_the_converter() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();

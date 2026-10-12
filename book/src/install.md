@@ -89,10 +89,9 @@ Explicit settings still take precedence over the bundled executable, then PATH.
 
 Install the Microsoft Visual C++ v14 x64 Redistributable if the executable reports missing
 MSVC runtime DLLs. Redistributables are not bundled; clean-machine runtime verification remains
-a release gate. Git for Windows is needed only for the Bash tool, not to start the native clients
-or LSP. The shell backend requires a trusted installation; missing or untrusted Git Bash disables
-shell capability. Windows shell commands require explicit Captain approval when their execution
-identity cannot be proven. PowerShell and cmd are not replacements for the Bash tool.
+a release gate.
+
+Windows artifacts are a compile/packaging preview, not a supported runtime. Private persistence (credentials, settings, grants, session ownership, flows and scratch), native no-follow file tools, shell execution even with Git Bash, and browser auto-open are disabled. Trusted Git Bash support is upcoming.
 
 Build on Windows with the MSVC Rust toolchain and Visual Studio C++ build tools. The existing
 packaging script can run under Git Bash with a prebuilt binary:

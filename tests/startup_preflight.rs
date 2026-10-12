@@ -165,6 +165,7 @@ fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
         cmd.args(["lsp", "--stdio"]);
     }
     cmd.current_dir(dir)
+        .env("WITHNAV_PREVIEW_TEST_ROOT", dir.join("home"))
         .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))

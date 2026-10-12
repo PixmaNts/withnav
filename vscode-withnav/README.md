@@ -124,3 +124,5 @@ Keybindings are active only when a remark is visible (`withnav.remarkVisible` co
 | `withnav.minChangedLines` | `3` | Minimum changed lines to consider speaking |
 | `withnav.cooldownMs` | `20000` | Cooldown between remarks on one file |
 | `withnav.reflex.enabled` | `true` | Offer inline suggestions from the reflex layer |
+
+Windows artifacts are a compile/packaging preview, not a supported runtime. Private persistence (credentials, settings, grants, session ownership, flows and scratch), native no-follow file tools, shell execution even with Git Bash, and browser auto-open are disabled. Trusted Git Bash support is upcoming.

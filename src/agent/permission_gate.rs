@@ -1682,6 +1682,26 @@ fn bash_requested_path(_: &str, _: &ToolContext) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_has_an_unconditional_captain_floor() {
+        let actor = review_actor();
+        let call = crate::provider::ToolCall {
+            id: "windows-shell".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"echo safe"}),
+            args_valid: true,
+        };
+        let needed = super::super::permissions::Needed {
+            scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        assert_eq!(
+            super::hard_floor(&actor, &call, &needed),
+            Some(super::HardFloorReason::UnsupportedShell)
+        );
+    }
+
     use super::*;
 
     #[tokio::test]

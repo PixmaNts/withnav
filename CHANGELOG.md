@@ -1076,3 +1076,5 @@ keyboard; four layers of models watch, complete, judge and discuss.
 
 The coding-agent core: the agent loop with five tools and `ask`, OpenAI-compatible streaming
 providers, the event bus and the local session server.
+
+Windows artifacts are a compile/packaging preview, not a supported runtime. Private persistence (credentials, settings, grants, session ownership, flows and scratch), native no-follow file tools, shell execution even with Git Bash, and browser auto-open are disabled. Trusted Git Bash support is upcoming.

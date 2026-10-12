@@ -92,6 +92,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         .arg(&models)
         .current_dir(root.path())
         .env("WITHNAV_TEST_KEY", "test-key")
+        .env("WITHNAV_PREVIEW_TEST_ROOT", root.path().join("home"))
         .env("HOME", root.path().join("home"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_CONFIG_HOME", root.path().join("config"))

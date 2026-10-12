@@ -15,6 +15,10 @@ pub(crate) const APP_NAME: &str = "withnav";
 /// WithNav's data dir (`~/.local/share/withnav` on Linux), when the home
 /// directory can be resolved.
 pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(root) = preview_test_root() {
+        return Some(root.join("data/withnav"));
+    }
     ProjectDirs::from("", "", APP_NAME).map(|dirs| dirs.data_dir().to_path_buf())
 }
 
@@ -148,4 +152,12 @@ mod env_tests {
             );
         }
     }
+}
+
+/// Explicit routing for isolated Windows preview subprocesses; defaults are unchanged.
+#[cfg(windows)]
+pub fn preview_test_root() -> Option<PathBuf> {
+    std::env::var_os("WITHNAV_PREVIEW_TEST_ROOT")
+        .map(PathBuf::from)
+        .filter(|root| root.is_absolute())
 }

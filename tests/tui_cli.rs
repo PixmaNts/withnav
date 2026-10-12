@@ -39,6 +39,7 @@ fn tui_command(args: &[&str], env: &[(&str, &str)]) -> (Command, TempDir) {
         .args(args)
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CONFIG_HOME", &config)
+        .env("WITHNAV_PREVIEW_TEST_ROOT", dirs.path())
         .env("HOME", dirs.path())
         .env_remove("WITHNAV_SERVER_TOKEN")
         .env_remove("NAVAI_SERVER_TOKEN")

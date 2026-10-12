@@ -461,36 +461,54 @@ mod tests {
     use super::*;
     #[test]
     fn snapshot_revision_matches_parsed_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        save_tui_theme(dir.path(), "nord-dark").unwrap();
-        let (snapshot, revision) = load_with_revision(dir.path()).unwrap();
-        save_tui_theme(dir.path(), "ayu-light").unwrap();
-        assert_eq!(snapshot.tui_theme(), Some("nord-dark"));
-        assert_ne!(revision, load_with_revision(dir.path()).unwrap().1);
+        #[cfg(windows)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(save_tui_theme(dir.path(), "nord-dark").is_err());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            save_tui_theme(dir.path(), "nord-dark").unwrap();
+            let (snapshot, revision) = load_with_revision(dir.path()).unwrap();
+            save_tui_theme(dir.path(), "ayu-light").unwrap();
+            assert_eq!(snapshot.tui_theme(), Some("nord-dark"));
+            assert_ne!(revision, load_with_revision(dir.path()).unwrap().1);
+        }
     }
     #[test]
     fn concurrent_updates_preserve_keys_despite_stale_views() {
-        let dir = tempfile::tempdir().unwrap();
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        std::thread::scope(|scope| {
-            for key in ["first", "second"] {
-                let barrier = barrier.clone();
-                let path = dir.path();
-                scope.spawn(move || {
-                    let stale = load(path).unwrap();
-                    assert!(stale.get_dotted(key).is_none());
-                    barrier.wait();
-                    update::<_, SettingsError>(path, |settings, _| {
-                        settings.set_dotted(key, Value::Bool(true));
-                        Ok(())
-                    })
-                    .unwrap();
-                });
-            }
-        });
-        let settings = load(dir.path()).unwrap();
-        assert_eq!(settings.get_dotted("first"), Some(&Value::Bool(true)));
-        assert_eq!(settings.get_dotted("second"), Some(&Value::Bool(true)));
+        #[cfg(windows)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(save_tui_theme(dir.path(), "nord-dark").is_err());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            std::thread::scope(|scope| {
+                for key in ["first", "second"] {
+                    let barrier = barrier.clone();
+                    let path = dir.path();
+                    scope.spawn(move || {
+                        let stale = load(path).unwrap();
+                        assert!(stale.get_dotted(key).is_none());
+                        barrier.wait();
+                        update::<_, SettingsError>(path, |settings, _| {
+                            settings.set_dotted(key, Value::Bool(true));
+                            Ok(())
+                        })
+                        .unwrap();
+                    });
+                }
+            });
+            let settings = load(dir.path()).unwrap();
+            assert_eq!(settings.get_dotted("first"), Some(&Value::Bool(true)));
+            assert_eq!(settings.get_dotted("second"), Some(&Value::Bool(true)));
+        }
     }
     #[test]
     fn assignment_mode_uses_captured_settings_not_replaced_file() {

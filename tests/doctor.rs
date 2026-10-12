@@ -362,7 +362,6 @@ async fn fim_and_chat_deadlines_use_virtual_time() {
 
 #[tokio::test]
 #[cfg(unix)]
-#[cfg(unix)]
 async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants() {
     let root = tempfile::tempdir().unwrap();
     let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1/v1");

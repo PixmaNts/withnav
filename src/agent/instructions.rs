@@ -49,7 +49,18 @@ impl RulesRoots {
     /// The current user's home directory, for the binaries.
     pub fn from_user_home() -> Self {
         Self {
-            home: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
+            home: {
+                #[cfg(windows)]
+                let override_home = crate::paths::preview_test_root().map(|root| root.join("home"));
+                #[cfg(windows)]
+                if override_home.is_some() {
+                    override_home
+                } else {
+                    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+                }
+                #[cfg(unix)]
+                directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+            },
         }
     }
 }

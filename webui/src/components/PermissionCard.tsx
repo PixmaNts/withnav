@@ -2,7 +2,7 @@ import { FilePlus, PencilSimple, ShieldCheck, Terminal } from "@phosphor-icons/r
 import { useState } from "react";
 import type { Permission } from "../session/reducer";
 
-type Decision = "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny";
+type Decision = "allow_once" | "allow_always" | "reject";
 
 /** What the call would do, as the Captain reviews it: path and content, or the command. */
 function preview(perm: Permission): { title: string; path?: string; lines: { kind: "add" | "del" | "ctx"; text: string }[]; extra?: string } {
@@ -44,33 +44,29 @@ function addedLines(perm: Permission): number | null {
 
 const ICONS = { write: FilePlus, edit: PencilSimple, bash: Terminal } as const;
 
-/**
- * The permission prompt of the design: allow once / always for this folder /
- * deny. "Always" is offered only where the server honours it (`fetch`, never
- * for the plan agent: `src/agent/permissions.rs::offered_decision` turns any
- * other "allow folder" into a single approval), so the button never lies.
- */
+/** The server supplies the scope and rule shown on the Always answer. */
 export function PermissionCard({
   perm,
   onAnswer,
   readOnly,
 }: {
   perm: Permission;
-  onAnswer: (decision: Decision) => Promise<void>;
+  onAnswer: (decision: Decision, message?: string) => Promise<void>;
   readOnly?: boolean;
 }) {
   const [sending, setSending] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
   const view = preview(perm);
   const Icon = ICONS[perm.tool as keyof typeof ICONS] ?? ShieldCheck;
   const count = addedLines(perm);
-  const offersAlways = perm.agent !== "plan" && perm.tool === "fetch";
+  const offersAlways = perm.alwaysLabel !== undefined;
   const site = perm.scope.kind === "origin";
   const answer = async (decision: Decision) => {
     setSending(decision);
     setError(null);
     try {
-      await onAnswer(decision);
+      await onAnswer(decision, decision === "reject" ? message.trim() || undefined : undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setSending(null);
@@ -97,18 +93,24 @@ export function PermissionCard({
       {waiting && !readOnly && (
         <div className="actions">
           <button type="button" className="btn" disabled={!!sending} onClick={() => answer("allow_once")} autoFocus>
-            Allow once
+            Once
           </button>
-          {perm.skillName && <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("allow_skill_machine")}>Allow scripts of skill {perm.skillName} on this machine</button>}
-          {perm.allowConfigSession && <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("allow_config_session")}>Allow WithNav config for this session</button>}
           {offersAlways && (
-            <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("allow_folder")}>
-              {site ? "Always for this site" : "Always for this folder"}
+            <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("allow_always")}>
+              {perm.alwaysLabel}
             </button>
           )}
-          <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("deny")}>
-            Deny
+          <button type="button" className="btn ghost" disabled={!!sending} onClick={() => answer("reject")}>
+            Reject
           </button>
+          <div className="question-custom"><input aria-label="Reject message (optional)" placeholder="Reject message (optional)" value={message} disabled={!!sending} onChange={(event) => {
+            if (new TextEncoder().encode(event.target.value).length > 2048) {
+              setError("Reject message must be at most 2048 UTF-8 bytes");
+              return;
+            }
+            setError(null);
+            setMessage(event.target.value);
+          }} /><span className="muted" role="status">{new TextEncoder().encode(message).length} / 2048 UTF-8 bytes</span></div>
           {sending && <span className="muted">Sending…</span>}
         </div>
       )}
@@ -129,6 +131,9 @@ function Outcome({ perm, site }: { perm: Permission; site: boolean }) {
       return <div className="outcome"><span className="ok">✓</span> Allowed WithNav config for this session.</div>;
     case "allow_folder":
       return <div className="outcome"><span className="ok">✓</span> Allowed for this {site ? "site" : "folder"}.</div>;
+    case "allow_always":
+      return <div className="outcome"><span className="ok">✓</span> Allowed always.</div>;
+    case "reject":
     case "deny":
       return <div className="outcome"><span className="bad">✕</span> Denied.{perm.message && perm.message !== "the user denied this tool call" ? ` ${perm.message}` : " Nav proposes an alternative."}</div>;
     case "cancelled":

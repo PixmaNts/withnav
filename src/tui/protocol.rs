@@ -266,7 +266,7 @@ pub struct StopResponse {
 /// `POST /v1/sessions/{id}/permissions/{request_id}` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionAnswer {
-    /// `allow_once`, `allow_folder` or `deny`.
+    /// `allow_once`, `allow_always` or `reject`.
     pub decision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

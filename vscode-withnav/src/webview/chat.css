@@ -268,15 +268,15 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .message.subagent .byline, .child-open, .child-header strong, .subagents summary {
   color: var(--vscode-charts-purple, var(--vscode-textLink-foreground, var(--vscode-foreground)));
 }
-.permission-card[data-resolution=allow_once], .permission-card[data-resolution=allow_folder] {
+.permission-card[data-resolution=allow_once], .permission-card[data-resolution=allow_always], .permission-card[data-resolution=allow_folder] {
   border-left-color: var(--vscode-testing-iconPassed, var(--vscode-foreground));
 }
-.permission-card[data-resolution=deny] { border-left-color: var(--vscode-errorForeground, var(--vscode-foreground)); }
-.permission-card[data-resolution=allow_once] .control-outcome, .permission-card[data-resolution=allow_folder] .control-outcome {
+.permission-card[data-resolution=deny], .permission-card[data-resolution=reject] { border-left-color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.permission-card[data-resolution=allow_once] .control-outcome, .permission-card[data-resolution=allow_always] .control-outcome, .permission-card[data-resolution=allow_folder] .control-outcome {
   color: var(--vscode-testing-iconPassed, var(--vscode-foreground));
   color: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-foreground)) 75%, var(--vscode-foreground) 25%);
 }
-.permission-card[data-resolution=deny] .control-outcome { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
+.permission-card[data-resolution=deny] .control-outcome, .permission-card[data-resolution=reject] .control-outcome { color: var(--vscode-errorForeground, var(--vscode-foreground)); }
 /* Text in the warning, passed and git-added colours: those tokens are tuned for icons and
    decorations (3:1), so text mixes them with the foreground to reach 4.5:1 in light themes. */
 :root {

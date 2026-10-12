@@ -8,7 +8,7 @@ import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./QuestionCard";
 import { ToolList } from "./ToolList";
 
-type Answer = (requestId: string, decision: "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny") => Promise<void>;
+type Answer = (requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) => Promise<void>;
 
 interface Props {
   view: SessionView;
@@ -100,7 +100,7 @@ function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, 
 }
 
 function PermissionBlock({ perm, onAnswer, readOnly }: { perm: Permission; onAnswer: Answer; readOnly?: boolean }) {
-  return <PermissionCard perm={perm} onAnswer={(decision) => onAnswer(perm.requestId, decision)} readOnly={readOnly} />;
+  return <PermissionCard perm={perm} onAnswer={(decision, message) => onAnswer(perm.requestId, decision, message)} readOnly={readOnly} />;
 }
 
 function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpenChild, readOnly }: { turn: Turn; fallbackAgent?: string } & Omit<Props, "agent" | "empty">) {

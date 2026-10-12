@@ -5,6 +5,7 @@ pub mod error;
 pub mod flows;
 pub mod navigator;
 pub mod paths;
+pub mod permission;
 pub mod provider;
 pub mod render;
 pub mod server;

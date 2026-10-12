@@ -294,10 +294,11 @@ same gate from registration to the child's first prompt and commits the inherite
 **Yolo.** `"yolo": true` in the user settings is the lowest of three control levels: yolo (nothing
 checked) < bypass < normal. `Settings::yolo` is read at session start into
 `EffectiveExecution.yolo` (children inherit their parent's value, like `automatic_review`) and from
-there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_gated` checks it first and calls
-`run_yolo`: the call is dispatched with `approved_by: yolo` without `gate`, `consult`, `guard_step`
-or `hard_floor`, so no Instinct or metacognition request is made, and file tools are not confined to
-the session's roots. What stays is not approval: `preflight` (tool availability for the session and
+there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_flow_hook` and `run_gated` check it
+first, so no `tool.pre_call` flow is asked, and `run_gated` calls `run_yolo`: the call is dispatched
+with `approved_by: yolo` without `gate`, `consult`, `guard_step` or `hard_floor`, so no Instinct or
+metacognition request is made, and file tools are not confined to the session's roots. What stays is
+not approval: `preflight` (tool availability for the session and
 role, malformed arguments, the cartographe write scope) and cancellation.
 
 A call that needs approval is not run: it, and the calls behind it, become

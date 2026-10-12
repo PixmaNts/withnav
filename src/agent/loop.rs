@@ -842,6 +842,10 @@ async fn run_flow_hook(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
     use super::flow_hook::{FlowVerdict, ToolCallContext};
+    // Yolo is no control at all: flows are not asked either.
+    if actor.yolo {
+        return run_gated(actor, call, observe).await;
+    }
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);
         return One::Settled;
@@ -5833,6 +5837,41 @@ mod tests {
         assert_eq!(instinct.asked(), 0, "no Instinct request in yolo");
         assert_eq!(std::fs::read_to_string(&protected).unwrap(), "changed");
         assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "outside");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn yolo_does_not_consult_tool_flows() {
+        for mode in ["deny", "ask", "timeout"] {
+            let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+            actor.yolo = true;
+            let path = actor.tool_context.workspace.join("file.txt");
+            std::fs::write(&path, "hello").unwrap();
+            let call = ToolCall {
+                id: "flow-call".into(),
+                name: "read".into(),
+                args: serde_json::json!({"path":path}),
+                args_valid: true,
+            };
+            let flows = Arc::new(FakeFlows {
+                mode,
+                calls: Default::default(),
+            });
+            actor.tool_flows = Some(flows.clone());
+            let mut approved = Vec::new();
+            let one = run_flow_hook(&mut actor, &call, &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    approved.push(result.metadata["approved_by"].clone());
+                }
+            })
+            .await;
+            assert!(matches!(one, One::Settled), "{mode}");
+            assert_eq!(approved, [serde_json::json!("yolo")], "{mode}");
+            assert_eq!(
+                flows.calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{mode}: flows must not be asked"
+            );
+        }
     }
 
     #[tokio::test]

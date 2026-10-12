@@ -1238,12 +1238,19 @@ fn reject_call(
     message: String,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
-    observe(AgentEvent::PreCall {
-        permission_gate: None,
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    // A missing platform backend is a preflight refusal, not a dispatch.
+    #[cfg(windows)]
+    let announce = !message.contains("not yet supported on Windows");
+    #[cfg(unix)]
+    let announce = true;
+    if announce {
+        observe(AgentEvent::PreCall {
+            permission_gate: None,
+            tool_call_id: &call.id,
+            name: &call.name,
+            args: &call.args,
+        });
+    }
     let result = ToolResult::error("tool_error", message);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,

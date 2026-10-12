@@ -39,6 +39,7 @@ fn isolate_xdg() {
         std::env::set_var("XDG_DATA_HOME", dir.path().join("data"));
         std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
         std::env::set_var("HOME", dir.path());
+        std::env::set_var("WITHNAV_PREVIEW_TEST_ROOT", dir.path());
         dir
     });
 }

@@ -314,15 +314,20 @@ navigator/flow injections, tool output, assistant text or compaction summary.
 The host drops oldest complete messages to fit 16 KiB (including JSON framing),
 marks `cut`, and never partially shows the latest. If that latest message alone
 cannot fit, it is absent and marked cut. The cutover obtains messages through
-`agent::flow_hook::captain_messages`.
+`agent::flow_hook::captain_messages_with_cut`, passing both returned messages
+and the completeness flag into `PermissionCallContext`. Editor attachments are
+removed through their final outer closing delimiter; malformed framing drops
+the whole message and marks evidence cut, including after transcript resume.
 
 The built-in first checks protected calls using only Captain messages and the
 call, never the skill. Its dedicated `protected_requested` question must answer
 yes at ≥ 0.9 and reach `protected_allow` with `protected_ok = true`. The host
-checks that exact question, Captain-only inputs, threshold and exclusive yes
-wire, as well as successful-run provenance. A same-name validated override may
-retain that contract; an arbitrary allow node or fallback cannot authorize a
-protected call. A skipped/failed/missing check asks even under an allow rule.
+evaluates this check itself from the binary's embedded definition and state
+template, independently of loader overrides. No disk flow, even a same-name
+override or exact clone, can supply protected authority. Other flows can only
+tighten the protected verdict. A skipped/failed/missing check or cut Captain
+evidence asks even under an allow rule. Ordinary validated workspace allows
+remain unrestricted for non-protected calls.
 Otherwise the built-in asks whether the action was requested (≥ 0.6), then
 whether it is a read or recoverable project change (≥ 0.7). For an allow rule,
 it asks about destruction, irreversibility, publication and credentials (≥ 0.5).

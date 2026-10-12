@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 #[path = "captain_messages.rs"]
 mod captain_evidence;
-pub use captain_evidence::captain_messages;
+pub use captain_evidence::{captain_messages, captain_messages_with_cut};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FlowVerdict {
@@ -57,6 +57,7 @@ pub struct PermissionCallContext {
     pub protected: bool,
     pub skill: Option<ValidatedSkill>,
     pub captain_messages: Vec<String>,
+    pub captain_messages_cut: bool,
 }
 
 #[derive(Debug)]

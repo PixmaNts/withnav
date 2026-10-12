@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with
+  install, configuration, permissions and troubleshooting rewritten for clarity.
+
 ## [0.7.8] - 2026-10-12
 
 WithNav 0.7.8 prepares the public opening. Tagged releases now ship ready-to-install Linux

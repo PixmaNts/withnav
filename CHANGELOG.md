@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-10-12
+
+WithNav 0.7.8 prepares the public opening. Tagged releases now ship ready-to-install Linux
+packages with `nav` inside, a toolchain you installed yourself (such as rustup's `cargo`) is
+trusted like a system one, and the HTTP and data dependencies move to their current majors.
+
 ### Added
 
 - **A tagged release now ships ready-to-install packages for Linux.** The GitHub Release holds a

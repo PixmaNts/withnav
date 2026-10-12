@@ -54,7 +54,11 @@ impl PermissionStore {
                 approved_by TEXT
             );
             CREATE INDEX IF NOT EXISTS permission_decisions_session
-                ON permission_decisions(session_id, id);",
+                ON permission_decisions(session_id, id);
+            CREATE INDEX IF NOT EXISTS permission_decisions_time
+                ON permission_decisions(time DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS permission_decisions_session_time
+                ON permission_decisions(session_id, time DESC, id DESC);",
         )?;
         // Validation schema belongs here when content-bound approvals are added.
         Ok(Self { connection })

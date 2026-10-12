@@ -27,6 +27,118 @@ mod tests {
     use crate::permission::rules::{RuleOrigin, RuleScope};
 
     #[test]
+    fn history_queries_use_ordered_indexes_without_table_scan_or_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PermissionStore::open(dir.path()).unwrap();
+        for (filter, index) in [
+            (DecisionFilter::default(), "permission_decisions_time"),
+            (
+                DecisionFilter {
+                    session_id: Some("session".into()),
+                    ..Default::default()
+                },
+                "permission_decisions_session_time",
+            ),
+        ] {
+            let (sql, values) = history_query(&filter, 100).unwrap();
+            let mut statement = store
+                .connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let plan = statement
+                .query_map(rusqlite::params_from_iter(values), |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert!(plan.iter().any(|detail| detail.contains(index)), "{plan:?}");
+            for detail in plan {
+                assert!(!detail.contains("TEMP B-TREE"), "{detail}");
+                // An ordered index walk is expected for unfiltered history,
+                // but an unindexed full table scan is not.
+                assert!(
+                    !detail.contains("SCAN permission_decisions") || detail.contains("USING INDEX"),
+                    "{detail}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn session_migrations_preserve_permissions_in_both_open_orders() {
+        use crate::session::store::HistoryStore;
+
+        for history_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let database = dir.path().join("withnav.db");
+            let mut history = history_first.then(|| HistoryStore::open(&database).unwrap());
+            let store = PermissionStore::open(dir.path()).unwrap();
+            let rule = store
+                .add(
+                    "bash",
+                    "git status *",
+                    Effect::Allow,
+                    RuleScope::Global,
+                    RuleOrigin::Manual,
+                )
+                .unwrap();
+            let decision = Decision {
+                id: 0,
+                time: crate::bus::event::now_rfc3339(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                request_id: None,
+                agent: "build".into(),
+                workspace: dir.path().into(),
+                tool: "bash".into(),
+                call_snapshot: CallSnapshot {
+                    arguments: "git status".into(),
+                    truncated: false,
+                },
+                command_matches: serde_json::json!([{ "rule_id": rule.id }]),
+                rule_id: Some(rule.id),
+                effect: Some(Effect::Allow),
+                flow_verdict: None,
+                captain_answer: None,
+                outcome: Outcome::Allowed,
+                approved_by: Some("rule".into()),
+            };
+            let id = store.record(&decision).unwrap();
+            if history.is_none() {
+                history = Some(HistoryStore::open(&database).unwrap());
+            }
+            assert_eq!(
+                store
+                    .list(&crate::permission::rules::RuleFilter::default())
+                    .unwrap(),
+                vec![rule.clone()]
+            );
+            drop(store);
+            drop(history);
+            // Opening the session store again reruns its idempotent migration.
+            let _history = HistoryStore::open(&database).unwrap();
+            let store = PermissionStore::open(dir.path()).unwrap();
+            assert_eq!(
+                store
+                    .matching("bash", "git status", dir.path(), "build")
+                    .unwrap(),
+                Some(rule)
+            );
+            let mut expected = decision;
+            expected.id = id;
+            expected.workspace = dir.path().canonicalize().unwrap();
+            assert_eq!(
+                store
+                    .list_decisions(&DecisionFilter::default(), 100)
+                    .unwrap(),
+                vec![expected]
+            );
+        }
+    }
+
+    #[test]
     fn bounded_history_survives_revocation_and_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let store = PermissionStore::open(dir.path()).unwrap();
@@ -221,6 +333,46 @@ fn read_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
     })
 }
 
+fn history_query(
+    filter: &DecisionFilter,
+    limit: usize,
+) -> Result<(String, Vec<rusqlite::types::Value>), Error> {
+    let mut clauses = Vec::new();
+    let mut values = Vec::new();
+    if let Some(session) = &filter.session_id {
+        clauses.push("session_id = ?");
+        values.push(session.clone().into());
+    }
+    if let Some(agent) = &filter.agent {
+        clauses.push("agent = ?");
+        values.push(agent.clone().into());
+    }
+    if let Some(workspace) = &filter.workspace {
+        clauses.push("workspace = ?");
+        values.push(path_text(&workspace.canonicalize()?)?.to_owned().into());
+    }
+    if let Some(outcome) = filter.outcome {
+        clauses.push("outcome = ?");
+        values.push(outcome.as_str().to_owned().into());
+    }
+    let mut sql = String::from(
+        "SELECT id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,
+         call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by
+         FROM permission_decisions",
+    );
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(" ORDER BY time DESC,id DESC LIMIT ?");
+    values.push(
+        i64::try_from(limit)
+            .map_err(|_| Error::Invalid("history limit is too large".into()))?
+            .into(),
+    );
+    Ok((sql, values))
+}
+
 impl PermissionStore {
     pub fn record(&self, decision: &Decision) -> Result<i64, Error> {
         let mut snapshot = decision.call_snapshot.clone();
@@ -289,30 +441,9 @@ impl PermissionStore {
         filter: &DecisionFilter,
         limit: usize,
     ) -> Result<Vec<Decision>, Error> {
-        let workspace = filter
-            .workspace
-            .as_ref()
-            .map(|path| path.canonicalize())
-            .transpose()?;
-        let limit = i64::try_from(limit)
-            .map_err(|_| Error::Invalid("history limit is too large".into()))?;
-        let mut statement = self.connection.prepare(
-            "SELECT id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,
-             call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by
-             FROM permission_decisions
-             WHERE (?1 IS NULL OR session_id=?1) AND (?2 IS NULL OR agent=?2)
-             AND (?3 IS NULL OR workspace=?3) AND (?4 IS NULL OR outcome=?4)
-             ORDER BY time DESC,id DESC LIMIT ?5")?;
-        let rows = statement.query_map(
-            params![
-                filter.session_id,
-                filter.agent,
-                workspace.as_deref().map(path_text).transpose()?,
-                filter.outcome.map(Outcome::as_str),
-                limit
-            ],
-            read_decision,
-        )?;
+        let (sql, values) = history_query(filter, limit)?;
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(values), read_decision)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }

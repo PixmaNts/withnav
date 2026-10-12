@@ -11,6 +11,24 @@ fn path_directory(directory: PathBuf, facts: &Value) -> Option<PathBuf> {
     }
 }
 
+/// The names rustup installs as proxies to itself (`TOOLS` and `DUP_TOOLS` in
+/// rust-lang/rustup `src/lib.rs`). A link to `rustup` is a dispatcher only under these.
+const RUSTUP_PROXIES: &[&str] = &[
+    "rustc",
+    "rustdoc",
+    "cargo",
+    "rust-lldb",
+    "rust-gdb",
+    "rust-gdbgui",
+    "rls",
+    "cargo-clippy",
+    "clippy-driver",
+    "cargo-miri",
+    "rust-analyzer",
+    "rustfmt",
+    "cargo-fmt",
+];
+
 /// Resolve the actual PATH executable, not a script borrowing a tool's basename.
 /// Both its spelling and symlink target must be outside every writable root, in
 /// directory chains that nobody but root (system tools) or root and the current user
@@ -75,13 +93,18 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
     // program (`~/.local/bin/ls -> /usr/bin/rm`): only same-name targets or
     // version-manager dispatchers, which run the tool named by the link, qualify.
     // Accepted risk (Captain decision): an agent that can write a file in a user-owned
-    // toolchain dir outside the workspace can get it run as a known tool; native writes
-    // there always ask the Captain; shell and build scripts are not confined.
+    // toolchain dir outside the workspace can get it run as a known tool. Native writes ask
+    // the Captain automatically only for `$CARGO_HOME/bin` and `$RUSTUP_HOME/toolchains`
+    // (`toolchain_execution_write`), not for every user-owned tool directory; shell and
+    // build scripts are not confined.
     let user = canonical
         .file_name()
         .and_then(|target| target.to_str())
         .is_some_and(|target| {
-            target == name || matches!(target, "mise" | "asdf" | "rtx" | "rustup")
+            target == name
+                || matches!(target, "mise" | "asdf" | "rtx")
+                // rustup's own proxy names only: `rm -> rustup` must not pass.
+                || (target == "rustup" && RUSTUP_PROXIES.contains(&name))
         })
         && trusted_directories(&resolved, |owner| accepted_owner(owner, uid))
         && trusted_directories(&canonical, |owner| accepted_owner(owner, uid));
@@ -1373,6 +1396,14 @@ mod tests {
             assert!(trusted_program("local-binary", &facts).is_some());
             // A link must not impersonate another program.
             assert!(trusted_program("ls", &facts).is_none());
+            // A link to rustup is a dispatcher only under rustup's proxy names.
+            assert!(trusted_program("rustc", &facts).is_some());
+            for impersonator in ["rm", "sudo", "git"] {
+                assert!(
+                    trusted_program(impersonator, &facts).is_none(),
+                    "{impersonator}"
+                );
+            }
             return;
         }
         use std::os::unix::fs::PermissionsExt;
@@ -1383,6 +1414,12 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::os::unix::fs::symlink("/usr/bin/mise", bin.join("cargo")).unwrap();
         std::os::unix::fs::symlink("/usr/bin/rm", bin.join("ls")).unwrap();
+        std::fs::copy("/usr/bin/true", bin.join("rustup")).unwrap();
+        std::fs::set_permissions(bin.join("rustup"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        for name in ["rustc", "rm", "sudo", "git"] {
+            std::os::unix::fs::symlink(bin.join("rustup"), bin.join(name)).unwrap();
+        }
         std::fs::copy("/usr/bin/true", bin.join("local-binary")).unwrap();
         std::fs::set_permissions(
             bin.join("local-binary"),

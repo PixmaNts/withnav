@@ -839,12 +839,24 @@ pub enum HardFloorReason {
 /// (`shell::trusted_program`), so a native write into them could mint a trusted tool.
 /// The cargo registry and git caches are deliberately absent: they hold sources, not
 /// programs the gate resolves.
-fn toolchain_execution_dirs() -> Vec<std::path::PathBuf> {
+///
+/// An empty variable is ignored (the default applies), an absolute one is used as is, and
+/// a relative one is joined to `workspace`: bash starts there, so that is where cargo and
+/// rustup resolve it. A `cd` or env change inside a shell command is within the accepted
+/// shell limitation (bash is advisory, not a sandbox).
+fn toolchain_execution_dirs(workspace: &std::path::Path) -> Vec<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let under = |variable: &str, default: &str, leaf: &str| {
         let base = std::env::var_os(variable)
+            .filter(|value| !value.is_empty())
             .map(std::path::PathBuf::from)
-            .filter(|path| path.is_absolute())
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    workspace.join(path)
+                }
+            })
             .or_else(|| home.as_ref().map(|home| home.join(default)))?;
         Some(base.join(leaf))
     };
@@ -855,6 +867,36 @@ fn toolchain_execution_dirs() -> Vec<std::path::PathBuf> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// `dir` with its existing ancestor resolved through links. `resolve_protected_root`
+/// refuses a `..` that follows a missing component (`~/x/missing/../bin`); a missing
+/// component cannot be a link, so such a tail is collapsed lexically over the resolved
+/// ancestor, which is exact.
+fn resolve_toolchain_dir(dir: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(resolved) = super::permissions::resolve_protected_root(dir) {
+        return resolved;
+    }
+    let mut existing = dir.to_path_buf();
+    while !existing.exists() {
+        if !existing.pop() {
+            return dir.to_path_buf();
+        }
+    }
+    let (Ok(mut resolved), Ok(tail)) = (existing.canonicalize(), dir.strip_prefix(&existing))
+    else {
+        return dir.to_path_buf();
+    };
+    for component in tail.components() {
+        match component {
+            std::path::Component::Normal(part) => resolved.push(part),
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            _ => {}
+        }
+    }
+    resolved
 }
 
 fn toolchain_execution_write(
@@ -872,13 +914,18 @@ fn toolchain_execution_write(
         .and_then(|path| {
             super::permissions::requested_path(std::path::Path::new(path), &actor.tool_context).ok()
         });
-    toolchain_execution_dirs().iter().any(|dir| {
-        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-        [needed.destination.as_deref(), spelling.as_deref()]
-            .into_iter()
-            .flatten()
-            .any(|path| path.starts_with(dir) || path.starts_with(&canonical))
-    })
+    toolchain_execution_dirs(&actor.tool_context.workspace)
+        .iter()
+        .any(|dir| {
+            // Resolve through the nearest existing ancestor: `bin` or `toolchains` may not
+            // exist yet below a symlinked or `..`-spelled parent, and a plain
+            // `canonicalize` would then fall back to the unresolved spelling.
+            let resolved = resolve_toolchain_dir(dir);
+            [needed.destination.as_deref(), spelling.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|path| path.starts_with(dir) || path.starts_with(&resolved))
+        })
 }
 
 pub fn hard_floor(
@@ -2667,6 +2714,143 @@ mod tests {
                 destination: Some(target.clone()),
             };
             assert_eq!(hard_floor(&actor, &call, &needed), None, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn toolchain_floor_follows_links_dotdot_and_relative_overrides() {
+        // CARGO_HOME / RUSTUP_HOME are process-global: each case runs in an isolated
+        // child process with its own environment.
+        const CASE: &str = "WITHNAV_TOOLCHAIN_DIRS_CASE";
+        const BASE: &str = "WITHNAV_TOOLCHAIN_DIRS_BASE";
+        if let Ok(case) = std::env::var(CASE) {
+            let base = std::path::PathBuf::from(std::env::var_os(BASE).unwrap());
+            let mut actor = review_actor();
+            actor.tool_context.workspace = base.join("ws");
+            actor.tool_context.writable_roots.push(base.clone());
+            let floored = |tool: &str, target: std::path::PathBuf| {
+                let call = ToolCall {
+                    id: "floor".into(),
+                    name: tool.into(),
+                    args: json!({"path":target,"content":"x","old_string":"a","new_string":"b"}),
+                    args_valid: true,
+                };
+                // The destination comes from the same resolver the real gate uses.
+                let needed = Needed {
+                    scope: super::super::permissions::Scope::Folder(
+                        target.parent().unwrap().to_path_buf(),
+                    ),
+                    destination: Some(
+                        super::super::permissions::resolve_protected_root(&target).unwrap(),
+                    ),
+                };
+                hard_floor(&actor, &call, &needed) == Some(HardFloorReason::ToolchainExecution)
+            };
+            match case.as_str() {
+                "cargo-link-missing-bin" => {
+                    for tool in ["write", "edit"] {
+                        assert!(floored(tool, base.join("storage/bin/cargo")));
+                        assert!(floored(tool, base.join("cargo-link/bin/cargo")));
+                    }
+                    assert!(!floored("write", base.join("storage/registry/x")));
+                    assert!(!base.join("storage/bin").exists());
+                }
+                "rustup-link-missing-toolchains" => {
+                    assert!(floored(
+                        "write",
+                        base.join("storage/toolchains/s/bin/cargo")
+                    ));
+                    assert!(floored(
+                        "edit",
+                        base.join("rustup-link/toolchains/s/bin/cargo")
+                    ));
+                    assert!(!floored("write", base.join("storage/downloads/x")));
+                }
+                "absolute-dotdot-missing-leaf" => {
+                    assert!(floored("write", base.join("cargo/bin/cargo")));
+                    assert!(floored("write", base.join("rustup/toolchains/s/bin/cargo")));
+                    assert!(!floored("write", base.join("cargo/registry/x")));
+                }
+                "existing-dir-through-outside-alias" => {
+                    assert!(floored("write", base.join("cargo-bin-alias/cargo")));
+                    assert!(floored("edit", base.join("toolchains-alias/s/bin/cargo")));
+                    assert!(!floored("write", base.join("elsewhere/cargo")));
+                }
+                "relative-with-dotdot" => {
+                    // Resolved against the workspace (`base/ws`), not silently ~/.cargo.
+                    assert!(floored("write", base.join("cg/bin/cargo")));
+                    assert!(floored("write", base.join("ru2/toolchains/s/bin/cargo")));
+                    assert!(!floored("write", base.join("home/.cargo/bin/cargo")));
+                    assert!(!floored("write", base.join("home/.rustup/toolchains/s/x")));
+                }
+                "empty-falls-back-to-home" => {
+                    assert!(floored("write", base.join("home/.cargo/bin/cargo")));
+                    assert!(floored("write", base.join("home/.rustup/toolchains/s/x")));
+                }
+                other => panic!("unknown case {other}"),
+            }
+            return;
+        }
+        let mk = |base: &std::path::Path, dirs: &[&str]| {
+            for dir in dirs {
+                std::fs::create_dir_all(base.join(dir)).unwrap();
+            }
+        };
+        let link = |base: &std::path::Path, target: &str, alias: &str| {
+            std::os::unix::fs::symlink(base.join(target), base.join(alias)).unwrap();
+        };
+        for case in [
+            "cargo-link-missing-bin",
+            "rustup-link-missing-toolchains",
+            "absolute-dotdot-missing-leaf",
+            "existing-dir-through-outside-alias",
+            "relative-with-dotdot",
+            "empty-falls-back-to-home",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().canonicalize().unwrap();
+            mk(&base, &["ws", "home", "storage", "elsewhere", "a"]);
+            let home = base.join("home");
+            let (cargo_home, rustup_home) = match case {
+                "cargo-link-missing-bin" => {
+                    link(&base, "storage", "cargo-link");
+                    (base.join("cargo-link"), home.join(".rustup"))
+                }
+                "rustup-link-missing-toolchains" => {
+                    link(&base, "storage", "rustup-link");
+                    (home.join(".cargo"), base.join("rustup-link"))
+                }
+                "absolute-dotdot-missing-leaf" => {
+                    (base.join("a/../cargo"), base.join("a/../rustup"))
+                }
+                "existing-dir-through-outside-alias" => {
+                    mk(&base, &["cargo/bin", "rustup/toolchains/s/bin"]);
+                    link(&base, "cargo/bin", "cargo-bin-alias");
+                    link(&base, "rustup/toolchains", "toolchains-alias");
+                    (base.join("cargo"), base.join("rustup"))
+                }
+                "relative-with-dotdot" => ("../cg".into(), "../ru/../ru2".into()),
+                _ => ("".into(), "".into()),
+            };
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "agent::permission_gate::tests::toolchain_floor_follows_links_dotdot_and_relative_overrides",
+                    "--nocapture",
+                ])
+                .env("HOME", &home)
+                .env("CARGO_HOME", cargo_home)
+                .env("RUSTUP_HOME", rustup_home)
+                .env(CASE, case)
+                .env(BASE, &base)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 

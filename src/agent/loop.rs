@@ -5737,6 +5737,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bypass_and_optimistic_review_cannot_write_into_user_toolchain_dirs() {
+        // CARGO_HOME and RUSTUP_HOME are process-global: run in an isolated child.
+        const CHILD: &str = "WITHNAV_TOOLCHAIN_LOOP_TEST";
+        let Some(base) = std::env::var_os(CHILD) else {
+            let base = tempfile::tempdir().unwrap();
+            let base_path = base.path().canonicalize().unwrap();
+            // CARGO_HOME is a link to storage that has no `bin` yet; RUSTUP_HOME is real.
+            std::fs::create_dir_all(base_path.join("tool-storage")).unwrap();
+            std::os::unix::fs::symlink(
+                base_path.join("tool-storage"),
+                base_path.join("cargo-link"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(base_path.join("rustup/toolchains/stable/bin")).unwrap();
+            std::fs::write(base_path.join("rustup/toolchains/stable/bin/cargo"), "keep").unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "agent::run_loop::tests::bypass_and_optimistic_review_cannot_write_into_user_toolchain_dirs",
+                    "--nocapture",
+                ])
+                .env("CARGO_HOME", base_path.join("cargo-link"))
+                .env("RUSTUP_HOME", base_path.join("rustup"))
+                .env(CHILD, &base_path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let base = std::path::PathBuf::from(base);
+        let mut actor = plan_actor(
+            Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+            "http://unused",
+        );
+        as_build(&mut actor);
+        actor.captain_task = Some("Update the toolchain".into());
+        actor.permission_judge = Some(Arc::new(OptimisticScriptJudge));
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        }));
+        actor.bypass.lock().unwrap().enabled = true;
+        actor.tool_context.writable_roots.push(base.clone());
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::EditTool));
+        let existing = base.join("rustup/toolchains/stable/bin/cargo");
+        for (tool, args, path) in [
+            // A canonical alias: through the link or through its real target, `bin`
+            // does not exist yet.
+            (
+                "write",
+                serde_json::json!({"path":base.join("cargo-link/bin/cargo"),"content":"x"}),
+                base.join("tool-storage/bin/cargo"),
+            ),
+            (
+                "write",
+                serde_json::json!({"path":base.join("tool-storage/bin/cargo"),"content":"x"}),
+                base.join("tool-storage/bin/cargo"),
+            ),
+            (
+                "write",
+                serde_json::json!({"path":base.join("rustup/toolchains/new/bin/cargo"),"content":"x"}),
+                base.join("rustup/toolchains/new/bin/cargo"),
+            ),
+            (
+                "write",
+                serde_json::json!({"path":existing,"content":"x"}),
+                existing.clone(),
+            ),
+            (
+                "edit",
+                serde_json::json!({"path":existing,"old_string":"keep","new_string":"x"}),
+                existing.clone(),
+            ),
+        ] {
+            let call = ToolCall {
+                id: "c".into(),
+                name: tool.into(),
+                args,
+                args_valid: true,
+            };
+            let outcome = run_gated(&mut actor, &call, &mut |_| {
+                panic!("{tool} {} must not dispatch", path.display())
+            })
+            .await;
+            assert!(
+                matches!(&outcome, One::Ask(request, _) if request.requires_captain),
+                "{tool} {} must ask the Captain",
+                path.display()
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).ok().as_deref(),
+                path.exists().then_some("keep"),
+                "{tool} {}",
+                path.display()
+            );
+        }
+        assert!(!base.join("tool-storage/bin").exists());
+        assert!(!base.join("rustup/toolchains/new").exists());
+    }
+
+    #[tokio::test]
     async fn bypass_rechecks_protected_destination_after_symlink_replacement() {
         let mut actor = plan_actor(None, "http://unused");
         actor.automatic_permission_review = false;

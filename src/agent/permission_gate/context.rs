@@ -267,9 +267,10 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     } else {
         facts["git"]["push_urls"].clone()
     };
-    // A precedent binds the executable's identity, not just its path: a user-owned
-    // toolchain binary can be replaced by the user's own tooling (or an agent), and the
-    // replacement must not inherit an approval given to the previous file.
+    // A precedent binds the resolved executable's identity, not just its path: replacing
+    // that executable (or a rustup proxy) invalidates an approval, so a replacement does
+    // not inherit one given to the previous file. A toolchain update behind an unchanged
+    // proxy does not: rustup's `cargo` stays the same file.
     let identity = {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(&resolved).ok()?;

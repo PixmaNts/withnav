@@ -24,7 +24,8 @@ requests land in `develop`.
   program you own is trusted by ownership, so an agent that can write one there (with the shell or
   a build script) can have it run as a known tool. Edits through the `write` and `edit` tools to
   `~/.cargo/bin` and `~/.rustup/toolchains` (or `$CARGO_HOME` / `$RUSTUP_HOME`) always ask you, and
-  an approval for a command no longer carries over to a replaced program file.
+  replacing the resolved executable (or rustup proxy) invalidates an approval for a command. A
+  toolchain update behind an unchanged proxy does not.
 
 ### Fixed
 

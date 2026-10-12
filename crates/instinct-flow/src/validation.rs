@@ -777,7 +777,7 @@ pub(crate) fn validate(
         .map_err(|e| vec![Diagnostic::new("schema", e.to_string(), "flow")])?;
     // SHA-256 is provided by the existing transitive ecosystem; explicit dependency keeps the digest stable.
     use sha2::{Digest, Sha256};
-    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
     Ok(CompiledDefinition {
         definition: definition.clone(),
         catalogue: catalogue.clone(),

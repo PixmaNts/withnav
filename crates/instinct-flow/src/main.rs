@@ -163,7 +163,7 @@ async fn execute(cli: Cli) -> Result<(), String> {
                 &client,
                 RunOptions {
                     deadline: Instant::now() + Duration::from_secs(5),
-                    run_id: ulid::Ulid::new().to_string(),
+                    run_id: ulid::Ulid::generate().to_string(),
                 },
                 &CancellationToken::new(),
             )

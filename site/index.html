@@ -99,7 +99,7 @@
         </ul>
         <p class="eyebrow" aria-hidden="true">WITHNAV</p>
         <h1 id="hero-title"><span>You set the course.</span><span class="accent">Nav lights the way.</span></h1>
-        <p class="hero__sub">A pair-programming system where you keep the keyboard. A crew of AI models helps you explore, understand and change your code, without taking the helm away from you.</p>
+        <p class="hero__sub">A pair-programming system where you keep the keyboard. A crew of AI models helps you explore, understand and change your code. You stay at the helm.</p>
         <div class="btn-row">
           <a class="btn btn--primary" href="#install">Install WithNav</a>
           <a class="btn" href="/docs/">Read the docs</a>
@@ -275,7 +275,7 @@
           <div class="stack">
             <h3>Or build your own client</h3>
             <p class="muted">HTTP for commands, Server-Sent Events for the stream. Every event carries a sequence number, so a client can reconnect and pick up where it left off. <code>nav serve</code> listens on loopback by default.</p>
-            <a class="link" href="/docs/">Read the docs <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+            <a class="link" href="/docs/cli.html#nav-serve">Server reference <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
           </div>
 <pre tabindex="0" class="code-block" aria-label="Example: start a session and follow its events with curl"><span class="c"># start a session</span>
 curl -s -H 'content-type: application/json' \
@@ -318,7 +318,7 @@ curl -N <span class="k">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
       <div class="wrap section">
         <div class="intro">
           <p class="kicker">Install</p>
-          <h2 id="install-title" class="h2">Pick the package that fits your setup.</h2>
+          <h2 id="install-title" class="h2">Pick the package for your setup.</h2>
           <p class="lead">Every release on GitHub ships ready-to-install files for Linux, with <code>SHA256SUMS</code> to check them.</p>
         </div>
         <div class="grid-cards grid-cards--3">
@@ -350,9 +350,9 @@ curl -N <span class="k">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
         </div>
         <div class="btn-row">
           <a class="btn btn--primary" href="https://github.com/PixmaNts/withnav/releases/latest"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Latest release</a>
-          <a class="btn" href="/docs/">Setup guide</a>
+          <a class="btn" href="/docs/install.html">Install guide</a>
         </div>
-        <p class="notice"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>The extension needs VS Code 1.91 or later. It is not on the VS Code Marketplace yet: install the VSIX file with <code>code --install-extension</code>. Native Windows is not supported; use WSL or a VS Code Remote window with the Linux package. Then add your gateways and keys, and run <code>nav doctor</code> to check the setup.</span></p>
+        <p class="notice"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>The extension needs VS Code 1.91 or later. It is not on the VS Code Marketplace yet: install the VSIX file with <code>code --install-extension</code>. Native Windows is not supported; use WSL or a VS Code Remote window with the Linux package. Then add your gateways and keys (see the <a href="/docs/quick-start.html">quick start</a>) and run <code>nav doctor</code> to check the setup.</span></p>
       </div>
     </section>
 

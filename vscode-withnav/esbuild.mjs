@@ -1,5 +1,4 @@
 import esbuild from "esbuild";
-import fs from "node:fs/promises";
 
 const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
@@ -50,12 +49,6 @@ async function main() {
   } else {
     await Promise.all([ctx.rebuild(), webview.rebuild(), styles.rebuild(), settings.rebuild()]);
     await Promise.all([ctx.dispose(), webview.dispose(), styles.dispose(), settings.dispose()]);
-    // vscode-languageclient spawns lib/node/terminateProcess.sh from __dirname
-    // when force-killing the server; copy it next to the bundle.
-    await fs.copyFile(
-      "node_modules/vscode-languageclient/lib/node/terminateProcess.sh",
-      "out/terminateProcess.sh"
-    );
   }
 }
 

@@ -14,7 +14,7 @@
   },
   "private": true,
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.91.0"
   },
   "categories": [
     "Other"
@@ -164,11 +164,11 @@
     "mdast-util-from-markdown": "^2.1.0",
     "mdast-util-gfm": "^3.1.0",
     "micromark-extension-gfm": "^3.0.0",
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.1.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/vscode": "^1.140.0",
+    "@types/vscode": "^1.91.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.28.2",
     "jsdom": "^26.1.0",

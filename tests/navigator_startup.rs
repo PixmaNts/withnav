@@ -3,7 +3,9 @@
 
 use std::io::Write;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -97,7 +99,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         .env("WITHNAV_TEST_KEY", "test-key")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .expect("spawn nav lsp");
@@ -108,6 +110,7 @@ async fn startup_does_not_wait_for_model_discovery() {
         let body = value.to_string();
         format!("Content-Length: {}\r\n\r\n{body}", body.len())
     };
+    #[cfg(unix)]
     let started = Instant::now();
     tokio::io::AsyncWriteExt::write_all(
         &mut stdin,
@@ -131,22 +134,44 @@ async fn startup_does_not_wait_for_model_discovery() {
     .await
     .expect("initialized");
 
-    let announced = loop {
-        let msg = tokio::time::timeout(HANG_GUARD, read_message(&mut stdout))
-            .await
-            .expect("the announcement arrives while discovery is still pending");
-        if msg["method"] == "withnav/serverInfo" {
-            break msg;
-        }
-    };
-    assert!(
-        announced["params"]["port"].as_u64().is_some(),
-        "{announced}"
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "startup waited for discovery: {:?}",
-        started.elapsed()
-    );
+    #[cfg(windows)]
+    {
+        let mut stderr = BufReader::new(child.stderr.take().unwrap());
+        tokio::time::timeout(HANG_GUARD, async {
+            loop {
+                let mut line = String::new();
+                assert!(
+                    stderr.read_line(&mut line).await.unwrap() > 0,
+                    "missing ownership refusal"
+                );
+                if line.contains("Session ownership locking is not yet supported on Windows") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("session startup must refuse without waiting for discovery");
+        assert!(!root.path().join("data/withnav/.instances").exists());
+    }
+    #[cfg(unix)]
+    {
+        let announced = loop {
+            let msg = tokio::time::timeout(HANG_GUARD, read_message(&mut stdout))
+                .await
+                .expect("the announcement arrives while discovery is still pending");
+            if msg["method"] == "withnav/serverInfo" {
+                break msg;
+            }
+        };
+        assert!(
+            announced["params"]["port"].as_u64().is_some(),
+            "{announced}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "startup waited for discovery: {:?}",
+            started.elapsed()
+        );
+    }
     let _ = child.start_kill();
 }

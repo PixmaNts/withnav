@@ -156,15 +156,29 @@ fn without_a_terminal_the_embedded_client_stops_cleanly_and_logs_to_the_file() {
     let workspace = tempfile::tempdir().unwrap();
     let run = tui(&["--workspace", workspace.path().to_str().unwrap()]);
     assert_eq!(run.out.status.code(), Some(1), "{}", stderr(&run));
-    assert!(
-        stderr(&run).contains("interactive terminal"),
-        "{}",
-        stderr(&run)
-    );
-    assert!(run.out.stdout.is_empty(), "stdout must stay clean");
-    let log = std::fs::read_to_string(run.dirs.path().join("data").join("withnav").join("tui.log"))
-        .expect("tui.log exists");
-    assert!(log.contains("terminal client started"), "{log}");
+    #[cfg(windows)]
+    {
+        assert!(
+            stderr(&run).contains("Session ownership locking is not yet supported on Windows"),
+            "{}",
+            stderr(&run)
+        );
+        assert!(!run.dirs.path().join("data/withnav/.instances").exists());
+        assert!(run.out.stdout.is_empty());
+    }
+    #[cfg(unix)]
+    {
+        assert!(
+            stderr(&run).contains("interactive terminal"),
+            "{}",
+            stderr(&run)
+        );
+        assert!(run.out.stdout.is_empty(), "stdout must stay clean");
+        let log =
+            std::fs::read_to_string(run.dirs.path().join("data").join("withnav").join("tui.log"))
+                .expect("tui.log exists");
+        assert!(log.contains("terminal client started"), "{log}");
+    }
 }
 
 #[tokio::test]

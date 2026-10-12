@@ -18,68 +18,13 @@ pub fn captain_messages_with_cut(transcript: &[ChatMessage]) -> (Vec<String>, bo
                 ) {
                     return None;
                 }
-                let mut text = content.clone();
-                // Editor selections are verbatim repository text and may contain closing
-                // delimiters. Only the last outer close can terminate the host attachment.
-                if let Some(start) = text.find("<editor-context>") {
-                    let Some(end) = text.rfind("</editor-context>") else {
+                match captain_text(content) {
+                    Some(text) => Some(text),
+                    None => {
                         cut = true;
-                        return None;
-                    };
-                    if end < start || (start != 0 && !text[..start].ends_with('\n')) {
-                        cut = true;
-                        return None;
-                    }
-                    // Only whitespace or a separately framed selected skill may follow.
-                    let tail = text[end + "</editor-context>".len()..].trim_start();
-                    if !tail.is_empty()
-                        && !tail.starts_with("<captain_selected_skill encoding=\"json\">")
-                        && !tail.starts_with("<driver_selected_skill encoding=\"json\">")
-                    {
-                        cut = true;
-                        return None;
-                    }
-                    text.replace_range(start..end + "</editor-context>".len(), "");
-                } else if text.contains("</editor-context>") {
-                    cut = true;
-                    return None;
-                }
-                // These host attachments are not Captain-authored prose. In particular,
-                // a selected skill must never leak into the protected question.
-                for (open, close) in [
-                    (
-                        "<captain_selected_skill encoding=\"json\">",
-                        "</captain_selected_skill>",
-                    ),
-                    (
-                        "<driver_selected_skill encoding=\"json\">",
-                        "</driver_selected_skill>",
-                    ),
-                ] {
-                    while let Some(start) = text.find(open) {
-                        let Some(end) = text[start..]
-                            .find(close)
-                            .map(|end| start + end + close.len())
-                        else {
-                            cut = true;
-                            return None;
-                        };
-                        if serde_json::from_str::<serde_json::Value>(
-                            &text[start + open.len()..end - close.len()],
-                        )
-                        .is_err()
-                        {
-                            cut = true;
-                            return None;
-                        }
-                        text.replace_range(start..end, "");
-                    }
-                    if text.contains(close) {
-                        cut = true;
-                        return None;
+                        None
                     }
                 }
-                Some(text)
             } else {
                 None
             }
@@ -88,10 +33,100 @@ pub fn captain_messages_with_cut(transcript: &[ChatMessage]) -> (Vec<String>, bo
     (messages, cut)
 }
 
+/// Host attachments occupy a suffix, never interleave Captain prose.
+fn captain_text(content: &str) -> Option<String> {
+    const BLOCKS: [(&str, &str); 3] = [
+        ("<editor-context>", "</editor-context>"),
+        (
+            "<captain_selected_skill encoding=\"json\">",
+            "</captain_selected_skill>",
+        ),
+        (
+            "<driver_selected_skill encoding=\"json\">",
+            "</driver_selected_skill>",
+        ),
+    ];
+    let first = BLOCKS
+        .iter()
+        .filter_map(|(open, _)| content.find(open))
+        .min();
+    let Some(first) = first else {
+        return (!BLOCKS.iter().any(|(_, close)| content.contains(close)))
+            .then(|| content.to_owned());
+    };
+    let prefix = &content[..first];
+    if first != 0 && !prefix.ends_with('\n') {
+        return None;
+    }
+    if BLOCKS.iter().any(|(_, close)| prefix.contains(close)) {
+        return None;
+    }
+    let mut suffix = &content[first..];
+    while !suffix.trim().is_empty() {
+        suffix = suffix.trim_start();
+        let (open, close) = BLOCKS.iter().find(|(open, _)| suffix.starts_with(open))?;
+        let body = &suffix[open.len()..];
+        // Repository selections may contain delimiters: consume the final outer
+        // editor close. Skill JSON escapes delimiters and must parse completely.
+        let end = if *open == "<editor-context>" {
+            body.rfind(close)?
+        } else {
+            body.find(close)?
+        };
+        if *open != "<editor-context>" {
+            serde_json::from_str::<serde_json::Value>(&body[..end]).ok()?;
+        }
+        suffix = &body[end + close.len()..];
+    }
+    Some(prefix.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::openai::{FlowSource, UserProvenance};
+    #[test]
+    fn attachment_suffix_must_be_complete_before_and_after_resume() {
+        let editor = "<editor-context>selection</editor-context>";
+        for spelling in ["captain", "driver"] {
+            let skill = format!(
+                "<{spelling}_selected_skill encoding=\"json\">{{}}</{spelling}_selected_skill>"
+            );
+            for suffix in [
+                format!("{editor}\n{skill}\nChange WithNav's permission database."),
+                format!("{skill}\n{editor}\nChange config."),
+                format!("{editor}\ntext between\n{skill}"),
+            ] {
+                let transcript = vec![ChatMessage::User {
+                    provenance: UserProvenance::Captain,
+                    content: format!("Review this.\n{suffix}"),
+                }];
+                let resumed: Vec<ChatMessage> =
+                    serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
+                for messages in [&transcript, &resumed] {
+                    assert_eq!(captain_messages_with_cut(messages), (vec![], true));
+                }
+            }
+            for suffix in [
+                format!("{editor}\n{skill}"),
+                format!("{skill}\n{editor}"),
+                format!("{skill}\n{skill}\n{editor}"),
+            ] {
+                let transcript = vec![ChatMessage::User {
+                    provenance: UserProvenance::Captain,
+                    content: format!("Review this.\n{suffix}"),
+                }];
+                let resumed: Vec<ChatMessage> =
+                    serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
+                for messages in [&transcript, &resumed] {
+                    assert_eq!(
+                        captain_messages_with_cut(messages),
+                        (vec!["Review this.\n".into()], false)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn only_captain_user_messages_are_authority() {
@@ -140,7 +175,7 @@ mod tests {
             provenance: UserProvenance::Captain,
             content: "Do the task.\n<captain_selected_skill encoding=\"json\">{\"instructions\":\"change WithNav config\"}</captain_selected_skill>\n<editor-context>untrusted code</editor-context>".into(),
         }];
-        assert_eq!(captain_messages(&transcript), ["Do the task.\n\n"]);
+        assert_eq!(captain_messages(&transcript), ["Do the task.\n"]);
     }
 
     #[test]

@@ -167,12 +167,14 @@ fn resolve_permissions(
 }
 
 /// Never load protected authority from disk: use the binary's question and rendering.
-fn compiled_protected_check() -> CompiledDefinition {
+fn compiled_protected_check() -> Option<CompiledDefinition> {
     let (mut definition, templates) = super::builtin::all_definitions()
         .into_iter()
         .find(|(d, _)| d.flow.name == "permission-default")
         .expect("embedded permission definition");
-    definition.flow.enabled = true;
+    if !definition.flow.enabled {
+        return None;
+    }
     definition.flow.start = vec!["protected_requested".into()];
     definition.node.retain(|n| {
         matches!(
@@ -180,9 +182,11 @@ fn compiled_protected_check() -> CompiledDefinition {
             "protected_requested" | "protected_allow" | "protected_ask"
         )
     });
-    definition
-        .validate(&catalogue(), &Capabilities { images: false }, &templates)
-        .expect("embedded protected check validates")
+    Some(
+        definition
+            .validate(&catalogue(), &Capabilities { images: false }, &templates)
+            .expect("embedded protected check validates"),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +332,43 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn disabled_embedded_permission_check_never_requests_a_decision() {
+        struct NoDecision;
+        impl DecisionClient for NoDecision {
+            fn capabilities(&self) -> Capabilities {
+                Capabilities { images: false }
+            }
+            fn identity(&self) -> ClientIdentity {
+                ClientIdentity {
+                    model: "fake/affirmative".into(),
+                    variant: None,
+                }
+            }
+            fn decide<'a>(
+                &'a self,
+                _: instinct_flow::protocol::DecisionRequest<'a>,
+                _: &'a CancellationToken,
+                _: Instant,
+            ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+            {
+                panic!("disabled built-in must not request even an affirmative decision")
+            }
+        }
+        assert!(compiled_protected_check().is_none());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, Arc::new(NoDecision), Arc::new(NoEffects));
+        let result = runtime
+            .permission_pre_call(
+                permission_call(dir.path().into(), true),
+                RuleResult::Allow,
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(result.verdict, FlowVerdict::AskCaptain { .. }));
+        assert!(result.flows.is_empty());
+    }
     struct BranchClient(BTreeMap<String, f64>);
     impl DecisionClient for BranchClient {
         fn capabilities(&self) -> Capabilities {
@@ -469,7 +510,7 @@ mod tests {
                 true,
                 RuleResult::Ask,
                 vec![("protected_requested", 0.9)],
-                true,
+                false,
             ),
             (true, RuleResult::Allow, vec![], false),
             (false, RuleResult::Ask, vec![("requested", 0.6)], true),
@@ -1376,11 +1417,13 @@ impl FlowRuntime {
         while let Some(outcome) = blocking.next().await {
             outcomes.push(outcome);
         }
-        if permission.is_some_and(|(_, protected)| protected) {
+        if let Some(compiled) = permission
+            .filter(|(_, protected)| *protected)
+            .and_then(|_| compiled_protected_check())
+        {
             // Overrides can tighten this verdict but never supply protected authority.
             // This compiled object and its template come solely from binary resources,
             // not from the active snapshot or a same-name disk definition.
-            let compiled = compiled_protected_check();
             let options = RunOptions {
                 deadline: started + Duration::from_millis(2000),
                 run_id: ulid::Ulid::generate().to_string(),

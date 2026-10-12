@@ -267,8 +267,23 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     } else {
         facts["git"]["push_urls"].clone()
     };
+    // A precedent binds the resolved executable's identity, not just its path: replacing
+    // that executable (or a rustup proxy) invalidates an approval, so a replacement does
+    // not inherit one given to the previous file. A toolchain update behind an unchanged
+    // proxy does not: rustup's `cargo` stays the same file.
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&resolved).ok()?;
+        json!([
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        ])
+    };
     Some(
-        json!({"executable":resolved,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
+        json!({"executable":resolved,"identity":identity,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
     )
 }
 

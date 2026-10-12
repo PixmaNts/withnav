@@ -79,8 +79,17 @@ review because it clearly contradicts the Captain. Remote own-work publication k
 requirements. Destruction, shared publication, sensitive changes, outside changes, opaque execution,
 scripts, unsafe executable identity, removal/move and unrecoverable overwrites retain their floors.
 Scheduling wrappers expose the inner command; lookups are reads. Regex escapes inside double quotes
-are literal, while shell expansion remains opaque. Secure current-user shim directories may contain
-symlinks to trusted root-owned binaries, never user-owned regular executables or workspace binaries.
+are literal, while shell expansion remains opaque. A program's identity is trusted when
+its executable is owned by root or by the current user, is not group/other writable, every directory of
+its spelling and of its canonical path is owned by root or that user and not group/other writable (a
+sticky `/tmp`-like directory does not qualify), and neither lies in a workspace, writable or scratch
+root. A user-installed toolchain such as rustup's `~/.cargo/bin/cargo` (a hard link to `rustup`, so no
+link-count rule applies) is therefore trusted like a system cargo. Accepted risk, decided by the
+Captain 2026-10-12: an agent that can write a file in such a directory outside the workspace can get
+it run as a known tool. Native `write`/`edit` into `$CARGO_HOME/bin` and `$RUSTUP_HOME/toolchains`
+(default `~/.cargo/bin`, `~/.rustup/toolchains`) is a Captain-only floor; shell commands and build
+scripts are not confined, since bash is advisory. A link may not impersonate another program
+(`ls -> rm`); only same-name targets and version-manager dispatchers qualify.
 
 A structured Captain choice authenticates the selected option as the agreed task, never permission
 for unrelated effects. Metacognition uses its configured variant (normally `low`), min(model output

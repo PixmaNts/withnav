@@ -52,3 +52,8 @@ __pycache__/
 
 # Release packages built by scripts/package-vsix.sh
 /dist/
+
+# Local agent workspace: the issue tracker (specs, tickets, maps) and OpenCode session files.
+# They stay on the maintainer's machine; see docs/agents/issue-tracker.md.
+/.scratch/
+/.opencode/

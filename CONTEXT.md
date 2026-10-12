@@ -474,7 +474,7 @@ See Replay (flows) below.
 ## Flows
 
 Implemented for editor triggers; see [ADR 0013](docs/adr/0013-instinct-flow-engine-crate.md)
-and `.scratch/instinct-flow/spec.md`.
+and the [InstinctFlow guide](docs/instinct-flow.md).
 
 **InstinctFlow**:
 The feature: flows run by the instinct layer, edited in the studio.

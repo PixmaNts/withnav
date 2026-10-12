@@ -23,14 +23,15 @@ const identity = new ConversationIdentity(() => {
 const post = (message: WebviewToHost): void => rawPost({ ...message, generation: identity.generation });
 const bypassToggle = document.createElement("button");
 bypassToggle.type = "button"; bypassToggle.className = "bypass-toggle";
-function renderBypass(enabled: boolean, pending = false): void {
-  const label = enabled ? "Bypass active" : "Safe mode";
+function renderBypass(enabled: boolean, pending = false, yolo = false): void {
+  enabled = enabled || yolo;
+  const label = yolo ? "YOLO" : enabled ? "Bypass active" : "Safe mode";
   bypassToggle.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 1 14 3v5c0 3-6 7-6 7S2 11 2 8V3Z"/>${enabled ? '<path d="m2 2 12 12"/>' : ''}</svg><span></span>`;
   bypassToggle.querySelector("span")!.textContent = label;
   bypassToggle.setAttribute("aria-label", label);
   bypassToggle.setAttribute("aria-pressed", String(enabled));
   bypassToggle.dataset.pending = String(pending);
-  bypassToggle.title = enabled ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.";
+  bypassToggle.title = yolo ? "YOLO: no permission control at all. Set yolo to false in config.json to turn it off." : enabled ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.";
 }
 renderBypass(false);
 document.querySelector(".topbar .identity")!.after(bypassToggle);
@@ -861,8 +862,8 @@ function receive(event: HostToWebview): void {
   if (conversations(event)) return;
   switch (event.type) {
     case "bypass":
-      bypassToggle.disabled = event.disabled || event.pending;
-      renderBypass(event.enabled, event.pending);
+      bypassToggle.disabled = event.disabled || event.pending || event.yolo === true;
+      renderBypass(event.enabled, event.pending, event.yolo === true);
       break;
     case "compaction": {
       compacting = event.pending;

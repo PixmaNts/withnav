@@ -211,6 +211,8 @@ pub struct CreateSessionResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     #[serde(default, skip_serializing_if = "is_false")]
+    pub yolo: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub bypass: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub bypass_seq: u64,

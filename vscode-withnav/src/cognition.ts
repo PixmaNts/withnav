@@ -27,6 +27,7 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  yolo = false;
   bypass = false;
   bypassSeq = -1;
   bypassEvents: { seq: number; enabled: boolean }[] = [];
@@ -87,9 +88,10 @@ export class CognitionBackend implements ChatBackend {
   private bypassConfirmations = new Set<string>();
   publishBypass(): void {
     this.emit({ type: "bypass", enabled: this.state.bypass, pending: this.state.bypassPending,
-      disabled: this.state.readOnly || this.state.starting });
+      disabled: this.state.readOnly || this.state.starting, yolo: this.state.yolo });
   }
   private acceptBypassSnapshot(summary: any): void {
+    if (typeof summary?.yolo === "boolean") this.state.yolo = summary.yolo;
     if (typeof summary?.bypass !== "boolean" || !Number.isSafeInteger(summary.bypass_seq) || summary.bypass_seq < 0 ||
         !(typeof summary.incarnation === "string" || summary.incarnation === null)) return;
     if (summary.bypass_seq < this.state.bypassSeq) return;

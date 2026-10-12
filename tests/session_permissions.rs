@@ -292,6 +292,29 @@ async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn yolo_runs_a_protected_write_without_a_request_and_says_so() {
+    let env = Env::new();
+    let target = env.ws.join("auth.json");
+    let provider = provider(vec![one_write("yolo-write", &target), done("written")]).await;
+    let state = config(&env, &provider).state();
+    let settings = env.root.join("cfg/config.json");
+    let mut document: Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    document["yolo"] = json!(true);
+    std::fs::write(&settings, document.to_string()).unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    assert!(state.session_summary(id).await.unwrap().yolo);
+    say(&state, id, "write credentials").await;
+    wait_events(&state, id, "task.done", 1).await;
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "from yolo-write");
+    assert!(events(&state, id, "permission.requested").await.is_empty());
+    let posts = events(&state, id, "tool.post_call").await;
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].payload["metadata"]["approved_by"], "yolo");
+    state.close_session(id).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bypass_leaves_pending_sensitive_request_open() {
     let env = Env::new();
     let target = env.ws.join("auth.json");

@@ -291,6 +291,15 @@ same gate from registration to the child's first prompt and commits the inherite
 `nav run --yes` is `set_bypass(user:cli)` before the first prompt; any remaining
 `permission.requested` ends the run with exit 3.
 
+**Yolo.** `"yolo": true` in the user settings is the lowest of three control levels: yolo (nothing
+checked) < bypass < normal. `Settings::yolo` is read at session start into
+`EffectiveExecution.yolo` (children inherit their parent's value, like `automatic_review`) and from
+there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_gated` checks it first and calls
+`run_yolo`: the call is dispatched with `approved_by: yolo` without `gate`, `consult`, `guard_step`
+or `hard_floor`, so no Instinct or metacognition request is made, and file tools are not confined to
+the session's roots. What stays is not approval: `preflight` (tool availability for the session and
+role, malformed arguments, the cartographe write scope) and cancellation.
+
 A call that needs approval is not run: it, and the calls behind it, become
 `PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
 The runtime publishes `permission.requested` and the turn ends `yielded`. `POST

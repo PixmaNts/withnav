@@ -335,6 +335,7 @@ fn state() -> State {
         selected_model_name: Some("cc/claude-opus-5-5".into()),
         context_window: Some(200_000),
         session: Some(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,

@@ -792,6 +792,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 // A fetch issued before this (re)start may describe the old runtime.
                 s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
+                    yolo: false,
                     bypass: false,
                     bypass_seq: 0,
                     incarnation: None,

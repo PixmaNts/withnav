@@ -4,6 +4,15 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and
+  new sessions run every tool call without asking you: no approval prompt, no Instinct or
+  Metacognition review, no plan-role check, and no protected-config or credential floor. Each call
+  records `approved_by: yolo`, and `YOLO` stays visible in the terminal, the browser and VS Code,
+  and `nav doctor` warns. It is off by default and unsafe: use it only on a machine you can afford
+  to lose. Bypass is unchanged.
+
 ### Changed
 
 - The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with

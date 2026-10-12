@@ -41,6 +41,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: FlowCommand,
     },
+    /// Manage permission rules and inspect decision history.
+    Permissions {
+        #[command(subcommand)]
+        command: PermissionCommand,
+    },
     Run(RunArgs),
     Serve(ServeArgs),
     Auth(AuthArgs),
@@ -56,6 +61,141 @@ pub enum Commands {
 #[derive(Subcommand, Debug)]
 pub enum FlowCommand {
     Catalogue,
+}
+
+#[derive(Args, Debug, Default)]
+#[group(multiple = false)]
+pub struct PermissionScopeArgs {
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    #[arg(long)]
+    pub global: bool,
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
+impl PermissionScopeArgs {
+    fn scope(self) -> Option<crate::permission::rules::RuleScope> {
+        use crate::permission::rules::RuleScope;
+        if self.global {
+            Some(RuleScope::Global)
+        } else if let Some(project) = self.project {
+            Some(RuleScope::Project(project))
+        } else {
+            self.agent.map(RuleScope::Agent)
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PermissionCommand {
+    List {
+        /// Include revoked rules.
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        scope: PermissionScopeArgs,
+        #[arg(long)]
+        json: bool,
+    },
+    Add {
+        action: String,
+        resource: String,
+        #[arg(value_enum)]
+        effect: crate::permission::rules::Effect,
+        /// Defaults to the current project.
+        #[command(flatten)]
+        scope: PermissionScopeArgs,
+    },
+    Revoke {
+        id: i64,
+    },
+    History {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
+    use crate::permission::{
+        decisions::DecisionFilter,
+        rules::{RuleFilter, RuleOrigin, RuleScope},
+        store::PermissionStore,
+    };
+    let data_dir = crate::paths::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
+    let store = PermissionStore::open(data_dir)?;
+    match command {
+        PermissionCommand::List { all, scope, json } => {
+            let rules = store.list(&RuleFilter {
+                include_revoked: all,
+                scope: scope.scope(),
+            })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rules)?);
+            } else if rules.is_empty() {
+                println!("(no permission rules)");
+            } else {
+                for rule in rules {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{:?}{}",
+                        rule.id,
+                        rule.action,
+                        rule.resource,
+                        rule.effect.as_str(),
+                        rule.scope,
+                        if rule.revoked_at.is_some() {
+                            "\trevoked"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        PermissionCommand::Add {
+            action,
+            resource,
+            effect,
+            scope,
+        } => {
+            let scope = match scope.scope() {
+                Some(scope) => scope,
+                None => RuleScope::Project(std::env::current_dir()?),
+            };
+            let rule = store.add(&action, &resource, effect, scope, RuleOrigin::Manual)?;
+            println!("added permission rule {}", rule.id);
+        }
+        PermissionCommand::Revoke { id } => {
+            if !store.revoke(id)? {
+                anyhow::bail!("permission rule {id} not found or already revoked");
+            }
+            println!("revoked permission rule {id}");
+        }
+        PermissionCommand::History { limit, json } => {
+            let decisions = store.list_decisions(&DecisionFilter::default(), limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&decisions)?);
+            } else if decisions.is_empty() {
+                println!("(no permission decisions)");
+            } else {
+                for decision in decisions {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        decision.id,
+                        decision.time,
+                        decision.session_id,
+                        decision.agent,
+                        decision.tool,
+                        decision.outcome.as_str()
+                    );
+                }
+            }
+        }
+    }
+    Ok(EXIT_DONE)
 }
 
 #[derive(Args, Debug)]
@@ -201,6 +341,9 @@ pub fn init_tracing() {
 pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Commands::Doctor(args) => doctor::command(args).await,
+        Commands::Permissions { command } => {
+            tokio::task::spawn_blocking(move || permissions_command(command)).await?
+        }
         Commands::Flows {
             command: FlowCommand::Catalogue,
         } => {

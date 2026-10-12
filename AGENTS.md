@@ -31,7 +31,7 @@ one you need probably exists.
 
 ### Issue tracker
 
-Issues and specs live as local markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs live as local markdown files under `.scratch/<feature-slug>/`, ignored by git. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -42,8 +42,8 @@ expensive to maintain:
    flow, no Instinct request, no fixed floor, no role restriction beyond the tools an agent has.
    Every call records `approved_by: yolo`, and every client shows that yolo is on. Only the
    Captain's settings file turns it on; it is not a session toggle.
-2. **Bypass**: the existing per-session switch (`/bypass on`, `nav run --yes`). Rules and the flow
-   are skipped and every call runs, except the fixed floor, which still asks.
+2. **Bypass**: the existing per-session switch (`/bypass on`, `nav run --yes`). `ask` rules and the
+   flow are skipped and the call runs; a written `deny` rule and the fixed floor still apply.
 3. **Normal**: rules, then the permission flow, then the Captain.
 
 Yolo can only be turned on by the Captain: without yolo, the settings file is behind the fixed
@@ -81,9 +81,11 @@ its order; this is one more reason the rules are rows.
 A command line is split into its commands (pipes, `&&`, `||`, `;`, subshells), and each command is
 checked on its own. "Always" saves the command's prefix followed by ` *`, using an **arity table**
 that says how many words identify a command: `git: 2`, `git config: 3`, `cargo: 2`,
-`cargo run: 3`, `npm run: 3`, `docker compose: 3`, `rm: 1`, `cat: 1`. An unknown program is
-identified by its first word. Answering "Always" to `git push origin feature` saves
-`bash` / `git push *`.
+`npm run: 3`, `docker compose: 3`, `rm: 1`, `cat: 1`. Options (words starting with `-`) are not
+counted. An unknown program is identified by its first word. Answering "Always" to
+`git push origin feature` saves `bash` / `git push *`, and that rule also matches a bare
+`git push`. Commands are normalised before matching (leading assignments, redirections and repeated
+spaces removed), and a line that cannot be parsed is checked as one opaque command, never as none.
 
 ### Questions: Once, Always, Reject
 
@@ -147,7 +149,9 @@ rule (a skill that says "push the branch" pushes without a question), never a `d
   open permissions, which is why every flow must be validated (below).
 - A failed run (timeout, provider error, invalid answer) falls back to **`apply_rule`**: the rule's
   result applies, `allow` runs and `ask` asks. A Jev outage does not turn into a stream of
-  questions. This replaces "a blocking flow asks the Captain" as the default fallback.
+  questions. This replaces "a blocking flow asks the Captain" as the default fallback. Each
+  flow's `apply_rule` is resolved to `allow` or `ask_captain` before the strictest answer is
+  chosen, and no flow verdict at all also applies the rule.
 
 ### Metacognition leaves the decision
 
@@ -163,10 +167,11 @@ The only checks written in Rust, skipped only by yolo:
 
 | Target | Read | Write |
 |---|---|---|
-| `withnav.db`, `config.json`, global flows | free | only when the permission flow answers that the Captain explicitly asked for it (threshold 0.9), otherwise asks |
+| `config.json`, `withnav.db` and its `-wal` / `-shm` files, the global flows directory | free | only when the permission flow's protected check answers that the Captain's own messages explicitly ask for it (threshold 0.9); a skill cannot satisfy it, a failed or skipped check asks, and "Always" never covers it |
 | Credentials: `auth.json`, `~/.ssh/id_*`, `.env` and the existing sensitive-name list | asks | asks |
 
-Bypass does not skip the floor.
+Bypass does not skip the floor. For bash the floor looks at literal paths and redirections of each
+command, and at WithNav's own commands that change rules (`nav permissions add`); it is best effort.
 
 ### Validated skills and flows
 
@@ -179,9 +184,11 @@ validates it; it is a separate issue.
 ### Agents and the role guard
 
 The role guard (`agent/guard.rs`, the `role_conformance` question, the `plan` Markdown exception)
-is removed. An agent's limits are rules with `agent` scope, for example `plan` with `write` /
-`*.md` / `allow` and `write` / `*` / `ask`. This amends ADR 0008: the role still does not remove
-tools, and its limits are now rules like any other.
+is removed. An agent's limits are rules with `agent` scope that the Captain adds, for example `plan`
+with `write` / `*.md` / `allow` and `write` / `*` / `ask`. WithNav seeds none, consistent with "no
+default rule": without them, `plan`'s writes are judged like any other call and its prompt still
+tells it to write only Markdown. This amends ADR 0008: the role still does not remove tools, and
+its limits are now rules like any other.
 
 ### What is removed
 

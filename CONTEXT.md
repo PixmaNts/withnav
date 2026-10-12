@@ -257,8 +257,8 @@ until the change lands.
 ### Permission rules
 
 **Control level**:
-How much WithNav checks before a tool call runs: yolo (nothing), bypass (only the fixed floor),
-or normal (rules, then the permission flow, then the Captain).
+How much WithNav checks before a tool call runs: yolo (nothing), bypass (written `deny` rules and
+the fixed floor), or normal (rules, then the permission flow, then the Captain).
 _Avoid_: security mode, trust level
 
 **Yolo**:
@@ -279,8 +279,8 @@ _Avoid_: level, layer
 
 **Arity prefix**:
 The words that identify a shell command for a rule, from a fixed table (`git push`, `cargo test`,
-`npm run build`); an unknown program is identified by its first word. "Always" saves the prefix
-followed by ` *`.
+`npm run build`), options not counted; an unknown program is identified by its first word.
+"Always" saves the prefix followed by ` *`, which also matches the bare prefix.
 _Avoid_: command signature
 
 **Once / Always / Reject**:

@@ -238,11 +238,11 @@ Payload fields below are required unless marked `?`. `s` = string, `i` = integer
 Unknown payload fields are rejected.
 
 Action groups: **common** = `wake`, `inject_note`, `log`; **editor** = common plus
-`remark`; **tool** = common plus `no_objection`, `deny`, `ask_captain`.
+`remark`; **tool** = common plus `allow`, `apply_rule`, `deny`, `ask_captain`.
 
 | Trigger | Payload fields | Can block | Allowed actions |
 | --- | --- | --- | --- |
-| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s` | yes | tool |
+| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s`, `rule_effect?:s`, `rule?:s`, `commands?:a`, `inside_project?:boolean`, `protected?:boolean`, `skill?:o` | yes | tool |
 | `message.received` | `command_id:s`, `author:s`, `text:s`, `selected_skill?:o` | yes | common |
 | `turn.end` | `turn_id:s`, `text:s`, `status:s` | no | common |
 | `save` | `uri:s`, `language_id:s`, `version:i`, `diff:s`; editor extras below | no | editor |
@@ -267,11 +267,14 @@ Only root-session events emit flows in v1; editor events use attached root conte
 `turn.end` is asynchronous after the turn settles. Tool preflight rejection is
 final and is not offered to flows.
 
-All listed parameters are required strings; `no_objection` has an empty map.
+Listed text parameters are required strings; `allow` accepts an optional boolean
+`protected_ok`, and `apply_rule` has an empty map. Loading `no_objection` still
+works as an alias for `allow`.
 
 | Action | Parameters | Kind | What WithNav does |
 | --- | --- | --- | --- |
-| `no_objection` | `{}` | verdict, priority 0 | Continue normal tool permission review, unchanged; not permission to run. |
+| `allow` | optional `protected_ok` | verdict, priority 0 | Allow on the new permission hook; on the legacy hook, continue normal review unchanged. |
+| `apply_rule` | `{}` | verdict, no static priority | Resolve to the caller's rule (`allow` → allow; `ask` or `none` → ask Captain) before comparing verdicts. |
 | `ask_captain` | `note` | verdict, priority 1 | Hold the call for a Captain-only permission request, skipping model reviews. |
 | `deny` | `note` | verdict, priority 2 | Do not run the tool; return the note as the denied tool result. |
 | `remark` | `prompt` | effect | Ask metacognition for an editor remark using inline rendered text, not a prompt-file lookup. |
@@ -283,8 +286,53 @@ Verdicts are only for **blocking `tool.pre_call` flows**, including fallbacks.
 At most one verdict may be reachable per run. `wake` / `inject_note` have typed
 non-Captain provenance (`source: flow`, flow name, run id), remain untrusted data,
 and never update the Captain request, choose a skill, answer an ask or generate
-recursive `message.received` events. No action runs arbitrary code, grants tool
-permission, switches agent/model or starts a session.
+recursive `message.received` events. No action runs arbitrary code, switches
+agent/model or starts a session. A validated workspace flow may open permissions
+on the new hook: inspect what you validate.
+
+### Permission hook (prepared, not enabled)
+
+The embedded `permission-default` flow ships **disabled**. Existing `pre_call`
+callers still perform today's review: no verdict means no objection, and the
+implicit failure fallback still asks. Nothing switches the agent loop here.
+`permission_pre_call` is a separate entry point for the later cutover. Each
+blocking flow's `apply_rule` (or lack of a verdict) resolves using the rule;
+then `deny` > `ask_captain` > `allow` wins. Zero answering flows also applies
+the rule. The return value includes flow names, run ids, resolved actions and
+whether the rule was used, for decision history.
+
+`rule_effect` is `allow`, `ask` or `none`; written denies stop before this hook.
+`rule` is human text, such as `bash git push * ask (project)`.
+`commands` contains `{raw, normalized, prefix}` entries. `inside_project`
+describes a file target. `protected` marks changes to WithNav configuration,
+rules, database or global flows. `skill` is `{name, instructions}` for the
+validated skill active this turn, never an arbitrary loaded skill.
+
+`conversation.captain_messages` contains only Captain-authored user-role
+transcript messages, newest last: no parent steering, subagent deliveries,
+navigator/flow injections, tool output, assistant text or compaction summary.
+The host drops oldest complete messages to fit 16 KiB (including JSON framing),
+marks `cut`, and never partially shows the latest. If that latest message alone
+cannot fit, it is absent and marked cut. The cutover obtains messages through
+`agent::flow_hook::captain_messages_with_cut`, passing both returned messages
+and the completeness flag into `PermissionCallContext`. Editor attachments are
+removed through their final outer closing delimiter; malformed framing drops
+the whole message and marks evidence cut, including after transcript resume.
+
+The built-in first checks protected calls using only Captain messages and the
+call, never the skill. Its dedicated `protected_requested` question must answer
+yes at ≥ 0.9 and reach `protected_allow` with `protected_ok = true`. The host
+evaluates this check itself from the binary's embedded definition and state
+template, independently of loader overrides. No disk flow, even a same-name
+override or exact clone, can supply protected authority. Other flows can only
+tighten the protected verdict. A skipped/failed/missing check or cut Captain
+evidence asks even under an allow rule. Ordinary validated workspace allows
+remain unrestricted for non-protected calls.
+Otherwise the built-in asks whether the action was requested (≥ 0.6), then
+whether it is a read or recoverable project change (≥ 0.7). For an allow rule,
+it asks about destruction, irreversibility, publication and credentials (≥ 0.5).
+Its state explicitly treats everything except Captain messages and the validated
+active skill as untrusted evidence.
 
 ## 8. Blocking, budget and fallback
 
@@ -318,14 +366,15 @@ Fallback inputs can read event, host and constants only. `failure_kind` and
 on_failure = { action = "log", params = { text = "Failed: {failure_kind}: {failure_message}" } }
 ```
 
-Without a matching fallback, a blocking tool flow defaults to `ask_captain` with
-`Flow failed: {failure_message}`. Blocking message flows have **no verdict default**:
+Without a matching fallback, the catalogue defaults a blocking tool flow to
+`apply_rule`; the legacy hook retains `ask_captain` with
+`Flow failed: {failure_message}` until cutover. Blocking message flows have **no verdict default**:
 the message continues after failure/deadline, with host outage handling. Async
 flows have **no default fallback**; failure with none leaves **not applied**.
 Cancellation of a no-longer-current event applies no live effect or fallback.
 
 Several enabled flows on one event run with independent budgets. Blocking verdicts
-combine as **deny > ask Captain > no objection**. Tied notes are retained in flow-name
+combine as **deny > ask Captain > allow** after rule resolution on the new hook. Tied notes are retained in flow-name
 order; effects accumulate in flow-name / topological order, preserving `then`.
 A flow's no objection never skips normal permission review. **Bypass never answers
 a flow's `ask_captain`**, including follow-ups, and never defeats a flow's denial.
@@ -403,7 +452,7 @@ MIN_YES = 0.75
 
 [fallback]
 on_failure = { action = "ask_captain", params = { note = "Flow failed: {failure_message}" } }
-on_timeout = { action = "no_objection", params = {} }
+on_timeout = { action = "allow", params = {} }
 on_provider_error = { action = "ask_captain", params = { note = "Instinct unavailable" } }
 on_invalid_answer = { action = "ask_captain", params = { note = "Invalid instinct answer" } }
 
@@ -481,7 +530,7 @@ false = ["ask"]
 [[node]]
 id = "continue"
 type = "action"
-action = "no_objection"
+action = "allow"
 [node.params]
 
 [[node]]

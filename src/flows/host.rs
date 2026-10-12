@@ -214,7 +214,7 @@ mod tests {
         let doc = store
             .save("guard", Location::Global, None, content("deny"))
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
         store.reload().unwrap();
         assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
         let next = store
@@ -287,7 +287,7 @@ mod tests {
             )
             .unwrap();
         store.set_trust(false).unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
         assert!(!runtime.store.reload_diagnostics().is_empty());
     }
     #[test]

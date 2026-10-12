@@ -366,7 +366,7 @@ function ActionFields({ node, def, catalogue, setNode, disabled }: { node: Extra
           disabled={disabled}
           onChange={(e) => {
             const next = catalogue?.actions.find((a) => a.name === e.target.value);
-            setNode((n) => ({ ...n, action: e.target.value, params: Object.fromEntries((next?.params ?? []).map((p) => [p.name, (n as typeof node).params[p.name] ?? ""])) }) as FlowNode);
+            setNode((n) => ({ ...n, action: e.target.value, params: Object.fromEntries((next?.params ?? []).filter((p) => p.required || (n as typeof node).params[p.name] !== undefined).map((p) => [p.name, (n as typeof node).params[p.name] ?? (p.value_type === "boolean" ? false : "")])) }) as FlowNode);
           }}
         >
           {allowed.map((a) => (
@@ -385,7 +385,7 @@ function ActionFields({ node, def, catalogue, setNode, disabled }: { node: Extra
           {spec!.params.map((p) => (
             <label key={p.name} className="sf-field">
               <span className="sf-note mono">{p.name}</span>
-              <ParamInput value={node.params[p.name]} aliases={aliases} disabled={disabled} multiline={p.value_type === "string"} onChange={(v) => setNode((n) => ({ ...n, params: { ...(n as typeof node).params, [p.name]: v } }) as FlowNode)} />
+              {p.value_type === "boolean" ? <input type="checkbox" checked={node.params[p.name] === true} disabled={disabled} onChange={(e) => setNode((n) => ({ ...n, params: { ...(n as typeof node).params, [p.name]: e.target.checked } }) as FlowNode)} /> : <ParamInput value={node.params[p.name]} aliases={aliases} disabled={disabled} multiline={p.value_type === "string"} onChange={(v) => setNode((n) => ({ ...n, params: { ...(n as typeof node).params, [p.name]: v } }) as FlowNode)} />}
             </label>
           ))}
           <div className="sf-note">Text may use {"{alias}"} for a declared input; an absent one shows as —.</div>
@@ -590,7 +590,7 @@ function FallbackFields({ def, catalogue, edit }: { def: Definition; catalogue: 
                 onChange={(e) => {
                   const name = e.target.value;
                   const s = catalogue?.actions.find((x) => x.name === name);
-                  set(k, name ? { action: name, params: Object.fromEntries((s?.params ?? []).map((p) => [p.name, a?.params[p.name] ?? ""])), then: null } : null);
+                   set(k, name ? { action: name, params: Object.fromEntries((s?.params ?? []).filter((p) => p.required || a?.params[p.name] !== undefined).map((p) => [p.name, a?.params[p.name] ?? (p.value_type === "boolean" ? false : "")])), then: null } : null);
                 }}
               >
                 <option value="">{k === "on_failure" ? "default" : "same as on failure"}</option>
@@ -604,7 +604,7 @@ function FallbackFields({ def, catalogue, edit }: { def: Definition; catalogue: 
             </div>
             {a &&
               spec?.params.map((p) => (
-                <input key={p.name} className="sf-input" value={String(a.params[p.name] ?? "")} disabled={!edit} placeholder={`${p.name} · may use {failure_message}`} onChange={(e) => set(k, { ...a, params: { ...a.params, [p.name]: e.target.value } })} />
+                 p.value_type === "boolean" ? <label key={p.name}><input type="checkbox" checked={a.params[p.name] === true} disabled={!edit} onChange={(e) => set(k, { ...a, params: { ...a.params, [p.name]: e.target.checked } })} />{p.name}</label> : <input key={p.name} className="sf-input" value={String(a.params[p.name] ?? "")} disabled={!edit} placeholder={`${p.name} · may use {failure_message}`} onChange={(e) => set(k, { ...a, params: { ...a.params, [p.name]: e.target.value } })} />
               ))}
           </div>
         );

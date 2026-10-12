@@ -372,7 +372,7 @@ impl FlowStore {
                 diagnostics = e.errors.len(),
                 "flow startup rejected; builtins only"
             );
-            let builtins = super::builtin::definitions()
+            let builtins = super::builtin::all_definitions()
                 .into_iter()
                 .filter_map(|(definition, templates)| {
                     let name = definition.flow.name.clone();
@@ -468,7 +468,7 @@ impl FlowStore {
     ) -> Result<(Document, Option<CompiledDefinition>), StoreError> {
         check_name(name)?;
         if location == Location::Builtin {
-            let (definition, templates) = super::builtin::definitions()
+            let (definition, templates) = super::builtin::all_definitions()
                 .into_iter()
                 .find(|(d, _)| d.flow.name == name)
                 .ok_or_else(|| StoreError::reason("not_found"))?;
@@ -557,7 +557,7 @@ impl FlowStore {
         &self,
         include_workspace: bool,
     ) -> Result<Vec<(Document, Option<CompiledDefinition>)>, StoreError> {
-        let mut documents = super::builtin::definitions()
+        let mut documents = super::builtin::all_definitions()
             .into_iter()
             .map(|(d, _)| self.document_with_compiled(&d.flow.name, Location::Builtin))
             .collect::<Result<Vec<_>, _>>()?;

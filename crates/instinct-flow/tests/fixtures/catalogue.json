@@ -25,7 +25,7 @@
         "ask_captain",
         "deny",
         "log",
-        "no_objection"
+        "allow"
       ],
       "sample_payload": {
         "tool": "write",
@@ -135,7 +135,7 @@
       ]
     },
     {
-      "name": "no_objection",
+      "name": "allow",
       "kind": "verdict",
       "priority": 0,
       "params": [],

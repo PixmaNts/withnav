@@ -225,6 +225,7 @@ pub async fn inspect(
         ],
     );
     let credentials = auth::load_store_with_document(config);
+    #[cfg(unix)]
     let auth_ok = credentials.is_ok();
     if let Ok((store, document)) = &credentials {
         let names: Vec<_> = store.providers.keys().cloned().collect();
@@ -234,30 +235,40 @@ pub async fn inspect(
             .collect();
         unknown_keys(&mut report, Some(document), "auth", &sections);
     }
-    let auth_path = config.join("auth.json");
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(&auth_path)
-        .ok()
-        .map(|m| m.permissions().mode() & 0o777);
+    #[cfg(unix)]
+    {
+        let auth_path = config.join("auth.json");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&auth_path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777);
+        report.add(
+            "config.auth",
+            if auth_ok && mode.is_none_or(|m| m == 0o600) {
+                if mode.is_some() {
+                    Status::Ok
+                } else {
+                    Status::Warning
+                }
+            } else {
+                Status::Failed
+            },
+            match mode {
+                Some(mode) => format!(
+                    "auth.json mode {mode:04o}; parse {}",
+                    if auth_ok { "valid" } else { "invalid" }
+                ),
+                None => "auth.json absent; environment credentials may be used".into(),
+            },
+            Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        );
+    }
+    #[cfg(windows)]
     report.add(
         "config.auth",
-        if auth_ok && mode.is_none_or(|m| m == 0o600) {
-            if mode.is_some() {
-                Status::Ok
-            } else {
-                Status::Warning
-            }
-        } else {
-            Status::Failed
-        },
-        match mode {
-            Some(mode) => format!(
-                "auth.json mode {mode:04o}; parse {}",
-                if auth_ok { "valid" } else { "invalid" }
-            ),
-            None => "auth.json absent; environment credentials may be used".into(),
-        },
-        Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        Status::Warning,
+        "credential mode not checked on Windows",
+        None,
     );
     let models = crate::provider::config::load_models_with_document(&workspace, config);
     if let Ok((_, path, document)) = &models {
@@ -1029,6 +1040,14 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
 
 async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Path) {
     report.add("binary.nav", Status::Ok, env!("CARGO_PKG_VERSION"), None);
+    #[cfg(windows)]
+    report.add(
+        "binary.bash",
+        Status::Failed,
+        "shell execution is not yet supported on Windows",
+        None,
+    );
+    #[cfg(unix)]
     match crate::tools::bash::trusted_shell() {
         Some(path) => report.add(
             "binary.bash",

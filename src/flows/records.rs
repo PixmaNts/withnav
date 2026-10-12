@@ -527,6 +527,7 @@ mod tests {
         );
     }
     #[test]
+    #[cfg(unix)]
     fn append_retains_count_and_compacts_only_periodically() {
         use std::os::unix::fs::MetadataExt;
         let temp = tempfile::tempdir().unwrap();

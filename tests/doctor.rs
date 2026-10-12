@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 mod common;
 
 use axum::{
@@ -9,7 +11,6 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::{
-    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -149,6 +150,7 @@ struct SnapshotEntry {
     mode: u32,
     modified: SystemTime,
 }
+#[cfg(unix)]
 fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     let mut entries = vec![];
     for entry in std::fs::read_dir(root).unwrap() {
@@ -358,6 +360,8 @@ async fn fim_and_chat_deadlines_use_virtual_time() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+#[cfg(unix)]
 async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants() {
     let root = tempfile::tempdir().unwrap();
     let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1/v1");
@@ -558,6 +562,7 @@ async fn live_catalogue_refresh_is_memory_only_and_offline_offer_warns() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     const ENV_SECRET: &str = "private-legacy-env-sentinel";
     let (base, calls, task) = server(401, false, Duration::ZERO).await;

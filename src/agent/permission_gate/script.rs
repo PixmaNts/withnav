@@ -1,14 +1,20 @@
 //! Bounded, no-follow script evidence. It never supplies authorization.
+#[cfg(unix)]
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
 use serde_json::{json, Value};
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
 
+#[cfg(unix)]
 use super::{bash_command, sensitive_read, shell};
 
+#[cfg(unix)]
 const SCRIPT_BYTES: usize = 48 * 1024;
 
+#[cfg(unix)]
 pub(crate) fn skill_script(
     actor: &super::super::actor::AgentActor,
     call: &crate::provider::ToolCall,
@@ -75,6 +81,7 @@ pub(crate) fn skill_script(
     })
 }
 
+#[cfg(unix)]
 pub(super) fn attach(
     actor: &super::super::actor::AgentActor,
     call: &crate::provider::ToolCall,
@@ -244,4 +251,19 @@ pub(crate) fn still_matches(note: Option<&Value>) -> bool {
         return true;
     };
     crate::tools::bash::script_matches(binding)
+}
+
+#[cfg(windows)]
+pub(crate) fn skill_script(
+    _: &super::super::actor::AgentActor,
+    _: &crate::provider::ToolCall,
+) -> Option<super::super::skill_grants::SkillScript> {
+    None
+}
+#[cfg(windows)]
+pub(super) fn attach(
+    _: &super::super::actor::AgentActor,
+    _: &crate::provider::ToolCall,
+    _: &mut Value,
+) {
 }

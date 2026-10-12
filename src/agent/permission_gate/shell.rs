@@ -1,5 +1,6 @@
 //! Deterministic shell risk floors; ordinary effects belong to Instinct.
 use serde_json::Value;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,7 @@ fn path_directory(directory: PathBuf, facts: &Value) -> Option<PathBuf> {
 
 /// The names rustup installs as proxies to itself (`TOOLS` and `DUP_TOOLS` in
 /// rust-lang/rustup `src/lib.rs`). A link to `rustup` is a dispatcher only under these.
+#[cfg(unix)]
 const RUSTUP_PROXIES: &[&str] = &[
     "rustc",
     "rustdoc",
@@ -33,6 +35,8 @@ const RUSTUP_PROXIES: &[&str] = &[
 /// Both its spelling and symlink target must be outside every writable root, in
 /// directory chains that nobody but root (system tools) or root and the current user
 /// (user toolchains, see below) owns, and that are not group/world-writable.
+#[cfg(unix)]
+#[cfg(unix)]
 pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, PathBuf)> {
     let name = basename(word);
     let path = Path::new(word);
@@ -125,7 +129,8 @@ pub(super) fn trusted_program(word: &str, facts: &Value) -> Option<(String, Path
 /// Test fixture: a rustup-shaped toolchain below `root` (a directory the caller owns):
 /// `.cargo/bin/rustup` with `cargo` hard-linked to it, and a versioned toolchain. The
 /// executables are copies of `/usr/bin/true`; they are never run.
-#[cfg(test)]
+#[cfg(all(test, unix))]
+#[cfg(unix)]
 pub(super) fn rustup_fixture(root: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let mode = |path: &Path, mode| {
@@ -155,12 +160,14 @@ pub(super) fn rustup_fixture(root: &Path) -> PathBuf {
 }
 
 /// Root, or the user the gate runs as, may own a trusted toolchain.
+#[cfg(unix)]
 fn accepted_owner(owner: u32, current: u32) -> bool {
     owner == 0 || owner == current
 }
 
 /// Every directory of the path's spelling, and of each resolved ancestor, is owned by an
 /// accepted owner and not group/world-writable.
+#[cfg(unix)]
 fn trusted_directories(path: &Path, owner_ok: impl Fn(u32) -> bool) -> bool {
     path.ancestors().skip(1).all(|parent| {
         // Check the spelling's chain (including a symlink's containing directory)
@@ -1291,6 +1298,7 @@ pub(super) fn removal_or_move(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use serde_json::json;
 
     #[test]
@@ -1386,6 +1394,8 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    #[cfg(unix)]
     fn secure_user_shim_accepts_system_target_and_owned_binary_but_not_impersonation() {
         const CHILD: &str = "WITHNAV_TEST_SECURE_SHIM";
         if let Ok(workspace) = std::env::var(CHILD) {
@@ -1515,6 +1525,8 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    #[cfg(unix)]
     fn script_and_command_identity_reject_system_symlinks_in_writable_path_directory() {
         const CHILD: &str = "WITHNAV_TEST_WRITABLE_PATH_SYMLINK";
         if let Ok(workspace) = std::env::var(CHILD) {
@@ -1583,6 +1595,8 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    #[cfg(unix)]
     fn user_owned_toolchain_is_trusted_by_ownership_with_guards() {
         const CASE: &str = "agent::permission_gate::shell::tests::user_owned_toolchain_is_trusted_by_ownership_with_guards";
         if let Ok(expect) = std::env::var("WITHNAV_TEST_TOOLCHAIN") {
@@ -1675,6 +1689,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn only_root_or_the_current_user_may_own_a_trusted_toolchain() {
         // Changing a file's owner needs privileges these tests lack, so the ownership
         // predicate is checked with injected ids instead of a chowned fixture.
@@ -1683,4 +1698,9 @@ mod tests {
         assert!(!accepted_owner(1001, 1000));
         assert!(!accepted_owner(65534, 1000));
     }
+}
+
+#[cfg(windows)]
+pub(super) fn trusted_program(_: &str, _: &Value) -> Option<(String, PathBuf)> {
+    None
 }

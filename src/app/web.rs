@@ -46,6 +46,7 @@ pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
 }
 
 /// Hands `url` to the desktop's opener; it is not waited for.
+#[cfg(unix)]
 fn open_browser(url: &str) -> std::io::Result<()> {
     let program = if cfg!(target_os = "macos") {
         "open"
@@ -59,4 +60,12 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+#[cfg(windows)]
+fn open_browser(_: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "automatic browser opening is not supported on Windows; open the printed URL",
+    ))
 }

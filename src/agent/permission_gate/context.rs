@@ -271,6 +271,12 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     // that executable (or a rustup proxy) invalidates an approval, so a replacement does
     // not inherit one given to the previous file. A toolchain update behind an unchanged
     // proxy does not: rustup's `cargo` stays the same file.
+    #[cfg(windows)]
+    {
+        let _ = (resolved, push_urls);
+        return None;
+    }
+    #[cfg(unix)]
     let identity = {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(&resolved).ok()?;
@@ -282,6 +288,7 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
             metadata.mtime_nsec()
         ])
     };
+    #[cfg(unix)]
     Some(
         json!({"executable":resolved,"identity":identity,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
     )
@@ -487,6 +494,7 @@ mod tests {
             .is_none());
     }
     #[test]
+    #[cfg(unix)]
     fn signature_uses_validated_executable_after_non_executable_path_entry() {
         const CHILD: &str = "WITHNAV_TEST_NONEXEC_PATH";
         if let Ok(workspace) = std::env::var(CHILD) {

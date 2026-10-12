@@ -1313,6 +1313,7 @@ async fn execute_call(
             .iter()
             .find(|root| destination.starts_with(&root.path))
             .cloned(),
+        #[cfg(unix)]
         script: None,
     });
     if let Some(binding) = guard_note.as_ref().and_then(|note| {
@@ -1324,6 +1325,7 @@ async fn execute_call(
         cx.binding = Some(crate::tools::DispatchBinding {
             destination: PathBuf::from(binding["path"].as_str().unwrap_or("")),
             scratch: None,
+            #[cfg(unix)]
             script: Some(binding.clone()),
         });
     }
@@ -2929,6 +2931,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn a_symlink_retargeted_while_approval_waits_needs_a_fresh_approval() {
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),
@@ -3452,6 +3455,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn user_skill_machine_grant_rejects_user_root_symlinked_into_workspace() {
         let home = tempfile::tempdir().unwrap();
         let mut actor = script_actor();
@@ -3485,6 +3489,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn user_skill_machine_grant_rejects_user_alias_to_project_skill() {
         let home = tempfile::tempdir().unwrap();
         let mut actor = script_actor();
@@ -3561,6 +3566,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn script_review_input_attaches_literal_python_and_executable_shebang() {
         use std::os::unix::fs::PermissionsExt;
         let actor = script_actor();
@@ -3638,6 +3644,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn script_direct_execution_refuses_untrusted_and_env_shebangs() {
         use std::os::unix::fs::PermissionsExt;
         let actor = script_actor();
@@ -3691,6 +3698,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn script_review_input_is_bounded_and_refuses_sensitive_links_and_special_files() {
         let mut actor = script_actor();
         let root = actor.tool_context.workspace.clone();
@@ -3898,6 +3906,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn script_replacement_and_script_or_parent_symlink_swap_return_to_captain() {
         for swap in [
             "replacement",
@@ -3988,6 +3997,7 @@ mod tests {
         assert_eq!(posts, 1);
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn relative_reads_in_sensitive_named_workspace_alias_require_review() {
         let tmp = tempfile::tempdir().unwrap();
         let ordinary = tmp.path().join("ordinary");
@@ -4023,6 +4033,7 @@ mod tests {
         }
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn sensitive_file_and_directory_aliases_are_refused_before_canonical_dispatch() {
         let mut actor = plan_actor(None, "http://unused");
         as_build(&mut actor);
@@ -4117,6 +4128,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn relative_native_paths_bind_to_workspace_and_inside_read_swaps_regate() {
         let mut actor = plan_actor(None, "http://unused");
         as_build(&mut actor);
@@ -4604,6 +4616,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn reviewed_read_replacement_symlink_regates_without_reading_the_new_target() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("README.md");
@@ -5122,6 +5135,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn external_native_retarget_through_typed_resolution_or_native_open_regates() {
         for tool in ["write", "edit"] {
             for at_open in [false, true] {
@@ -5280,6 +5294,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn protected_config_always_asks_even_with_approving_models_and_scratch() {
         for workspace_is_config in [false, true] {
             let mut actor = plan_actor(
@@ -5329,6 +5344,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn missing_config_under_symlinked_parent_and_literal_bash_are_protected() {
         let mut actor = plan_actor(
             Some(FakeInstinct::new(Ok(Verdict::Conforms))),
@@ -5460,6 +5476,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn meta_approval_of_a_changed_destination_requires_a_fresh_review() {
         let mut actor = plan_actor(
             Some(FakeInstinct::new(Ok(Verdict::Conforms))),
@@ -5683,6 +5700,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn bypass_hard_floor_checks_original_and_canonical_sensitive_targets() {
         let mut actor = plan_actor(None, "http://unused");
         actor.automatic_permission_review = false;
@@ -5737,6 +5755,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn bypass_and_optimistic_review_cannot_write_into_user_toolchain_dirs() {
         // CARGO_HOME and RUSTUP_HOME are process-global: run in an isolated child.
         const CHILD: &str = "WITHNAV_TOOLCHAIN_LOOP_TEST";
@@ -5846,6 +5865,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn bypass_rechecks_protected_destination_after_symlink_replacement() {
         let mut actor = plan_actor(None, "http://unused");
         actor.automatic_permission_review = false;
@@ -5906,6 +5926,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn changed_scratch_asks_the_captain_whoever_else_would_authorize() {
         use super::super::permission_gate::ReviewDecision;
         for bypass in [true, false] {
@@ -5960,6 +5981,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn bash_operands_reach_protected_config_and_changed_scratch_floor() {
         for case in [
             "config-is-workspace",
@@ -6441,6 +6463,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn a_markdown_name_that_is_a_link_to_another_file_is_guarded() {
         let instinct = FakeInstinct::new(Ok(Verdict::Violates));
         let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
@@ -6603,12 +6626,14 @@ mod tests {
     }
 
     /// A guard that answers from a script and runs `during` while "asking".
+    #[cfg(unix)]
     struct ScriptedInstinct {
         answers: std::sync::Mutex<Vec<Verdict>>,
         during: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
         asked: std::sync::atomic::AtomicUsize,
     }
 
+    #[cfg(unix)]
     impl RoleGuard for ScriptedInstinct {
         fn judge<'a>(
             &'a self,
@@ -6623,6 +6648,7 @@ mod tests {
             Box::pin(async move { Ok(verdict) })
         }
     }
+    #[cfg(unix)]
     impl super::super::permission_gate::PermissionJudge for ScriptedInstinct {
         fn judge<'a>(
             &'a self,
@@ -6641,6 +6667,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn markdown_swapped_for_a_link_to_code_between_check_and_dispatch_is_gated_again() {
         let instinct = FakeInstinct::new(Ok(Verdict::Violates));
         let mut actor = plan_actor(Some(instinct.clone()), "http://127.0.0.1:1/v1");
@@ -6681,6 +6708,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn a_target_swapped_while_instinct_is_asked_is_not_written_on_the_old_verdict() {
         let mut actor = plan_actor(None, "http://127.0.0.1:1/v1");
         let ws = actor.tool_context.workspace.clone();
@@ -6743,6 +6771,7 @@ mod tests {
 
     // These race tests need a recoverable initial overwrite; untracked files now
     // correctly stop for review before dispatch and would not reach the race.
+    #[cfg(unix)]
     fn track_clean_fixture(workspace: &std::path::Path) {
         for args in [
             vec!["init"],
@@ -6770,6 +6799,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn markdown_swapped_for_a_link_after_the_final_check_is_never_written_through() {
         for tool in ["write", "edit"] {
             let instinct = FakeInstinct::new(Ok(Verdict::Violates));
@@ -6820,6 +6850,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn an_approved_write_swapped_for_a_link_after_the_final_check_asks_again() {
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),

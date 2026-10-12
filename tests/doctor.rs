@@ -147,10 +147,10 @@ fn check<'a>(report: &'a Report, id: &str) -> &'a withnav::app::doctor::Check {
 struct SnapshotEntry {
     path: std::path::PathBuf,
     contents: Vec<u8>,
+    #[cfg(unix)]
     mode: u32,
     modified: SystemTime,
 }
-#[cfg(unix)]
 fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     let mut entries = vec![];
     for entry in std::fs::read_dir(root).unwrap() {
@@ -171,6 +171,7 @@ fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
         entries.push(SnapshotEntry {
             path: entry.path(),
             contents,
+            #[cfg(unix)]
             mode: metadata.permissions().mode(),
             modified: metadata.modified().unwrap(),
         });

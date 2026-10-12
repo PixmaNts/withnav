@@ -622,6 +622,21 @@ pub fn needs_permission(
     }
 }
 
+#[cfg(windows)]
+impl GrantStore {
+    fn save(&self, _entries: &[Entry]) -> Result<(), String> {
+        Err("Private permission grant persistence is not yet supported on Windows".into())
+    }
+}
+
+#[cfg(windows)]
+pub fn resolve_protected_root(_path: &Path) -> Result<PathBuf, ToolError> {
+    Err(ToolError::Denied {
+        code: "unsupported_platform".into(),
+        message: "All-root permission resolution is not yet supported on Windows".into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,19 +1124,4 @@ mod tests {
         // Reviewed for the link's target as it now resolves: still the same file.
         assert!(still_resolves(&args, Some(&f.ws.join("b.rs")), &f.cx));
     }
-}
-
-#[cfg(windows)]
-impl GrantStore {
-    fn save(&self, _entries: &[Entry]) -> Result<(), String> {
-        Err("Private permission grant persistence is not yet supported on Windows".into())
-    }
-}
-
-#[cfg(windows)]
-pub fn resolve_protected_root(_path: &Path) -> Result<PathBuf, ToolError> {
-    Err(ToolError::Denied {
-        code: "unsupported_platform".into(),
-        message: "All-root permission resolution is not yet supported on Windows".into(),
-    })
 }

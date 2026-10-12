@@ -356,6 +356,7 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    #[cfg(unix)]
     async fn unbound_relative_reads_preserve_sensitive_workspace_spelling() {
         let tmp = tempfile::tempdir().unwrap();
         let ordinary = tmp.path().join("ordinary");
@@ -380,6 +381,7 @@ mod tests {
         }
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn unbound_native_read_and_search_reject_sensitive_alias_spellings() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
@@ -715,6 +717,7 @@ mod tests {
     // When the built-in search runs
     // Then only the real files are searched and the search ends
     #[test]
+    #[cfg(unix)]
     fn grep_builtin_does_not_follow_links() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");
@@ -740,6 +743,7 @@ mod tests {
     // When it searches the root
     // Then it ends without reading what the links lead to
     #[tokio::test]
+    #[cfg(unix)]
     async fn grep_tool_with_the_builtin_engine_ignores_links() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");
@@ -766,6 +770,7 @@ mod tests {
     // When the built-in search runs on the validated, canonical root
     // Then its files are searched
     #[tokio::test]
+    #[cfg(unix)]
     async fn grep_builtin_searches_a_linked_root_through_validation() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("real");

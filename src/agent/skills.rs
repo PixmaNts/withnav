@@ -73,6 +73,7 @@ pub struct Skill {
 }
 
 impl Skill {
+    #[cfg(unix)]
     pub(crate) fn is_user(&self) -> bool {
         self.rank.user
     }
@@ -209,6 +210,7 @@ impl Skills {
     }
 
     /// Discovery provenance alone does not make project content machine-trusted.
+    #[cfg(unix)]
     pub(crate) fn machine_grant_location(&self, base_dir: &Path, script: &Path) -> bool {
         let inside_user = self.grant_user_roots.iter().any(|root| {
             root.canonicalize()

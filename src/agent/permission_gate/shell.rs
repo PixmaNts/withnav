@@ -952,6 +952,7 @@ pub(super) fn understood(words: &[String], facts: &Value, whole: &str) -> bool {
 }
 
 /// Only literal interpreter operands or explicit executable paths are evidence candidates.
+#[cfg(unix)]
 pub(super) fn script_operand<'a>(words: &'a [String], facts: &Value) -> Option<(&'a str, bool)> {
     let first = words.first()?;
     if words
@@ -1295,6 +1296,11 @@ pub(super) fn removal_or_move(command: &str) -> bool {
     })
 }
 
+#[cfg(windows)]
+pub(super) fn trusted_program(_: &str, _: &Value) -> Option<(String, PathBuf)> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1579,6 +1585,7 @@ mod tests {
     }
 
     /// Run `case` in an isolated process: PATH is process-global.
+    #[cfg(unix)]
     fn isolated(case: &str, path: String, env: &[(&str, &str)]) {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", case, "--nocapture"])
@@ -1698,9 +1705,4 @@ mod tests {
         assert!(!accepted_owner(1001, 1000));
         assert!(!accepted_owner(65534, 1000));
     }
-}
-
-#[cfg(windows)]
-pub(super) fn trusted_program(_: &str, _: &Value) -> Option<(String, PathBuf)> {
-    None
 }

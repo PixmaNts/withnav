@@ -486,6 +486,7 @@ const CONVERT_MAX_ADDRESS_SPACE: u64 = 512 * 1024 * 1024;
 const CONVERT_MAX_CPU_SECS: u64 = 10;
 /// Output read from the child: the tool output bound plus a margin for the
 /// note and for the cut.
+#[cfg(unix)]
 const CONVERT_MAX_OUTPUT_BYTES: usize = DEFAULT_MAX_OUTPUT_BYTES + 4096;
 /// The subcommand of the `withnav` binary that runs the converter.
 pub const CONVERT_SUBCOMMAND: &str = "internal-html-convert";
@@ -499,6 +500,7 @@ pub enum ConvertFormat {
 }
 
 impl ConvertFormat {
+    #[cfg(unix)]
     fn name(self) -> &'static str {
         match self {
             Self::Markdown => "markdown",
@@ -721,6 +723,7 @@ async fn convert_in_child(
     Ok(decode_converter_output(&buf))
 }
 
+#[cfg(unix)]
 fn decode_converter_output(buf: &[u8]) -> String {
     let kept = &buf[..buf.len().min(CONVERT_MAX_OUTPUT_BYTES)];
     let kept = if buf.len() > CONVERT_MAX_OUTPUT_BYTES {
@@ -981,6 +984,16 @@ fn flatten(html: &str) -> String {
         }
     }
     normalized
+}
+
+#[cfg(windows)]
+async fn convert_in_child(
+    _: &Path,
+    _: &str,
+    _: ConvertFormat,
+    _: Duration,
+) -> Result<String, String> {
+    Err("converter resource containment is unavailable on Windows".into())
 }
 
 #[cfg(test)]
@@ -1501,11 +1514,13 @@ mod tests {
         let out = convert_html(page, Format::Markdown, None, Duration::from_secs(5)).await;
         assert!(out.starts_with("[note: the HTML was cut"), "{}", &out[..80]);
         assert!(out.contains(UNSAFE_NOTE));
+        #[cfg(unix)]
         for character in ["é", "€", "🦀"] {
             let prefix = "x".repeat(CONVERT_MAX_OUTPUT_BYTES - 1);
             let bytes = format!("{prefix}{character}");
             assert_eq!(decode_converter_output(bytes.as_bytes()), prefix);
         }
+        #[cfg(unix)]
         assert_eq!(decode_converter_output(b"ok\xff"), "ok\u{fffd}");
     }
 
@@ -1567,14 +1582,4 @@ mod tests {
             assert!(!is_textual(m), "{m}");
         }
     }
-}
-
-#[cfg(windows)]
-async fn convert_in_child(
-    _: &Path,
-    _: &str,
-    _: ConvertFormat,
-    _: Duration,
-) -> Result<String, String> {
-    Err("converter resource containment is unavailable on Windows".into())
 }

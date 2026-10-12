@@ -414,6 +414,30 @@ pub fn save_tui_favorite_models(config_dir: &Path, names: &[String]) -> Result<(
     })
 }
 
+#[cfg(windows)]
+pub fn save(config_dir: &Path, _settings: &Settings) -> Result<(), SettingsError> {
+    Err(SettingsError::Write {
+        path: path(config_dir),
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Atomic settings persistence is not yet supported on Windows",
+        ),
+    })
+}
+#[cfg(windows)]
+pub fn update<T, E: From<SettingsError>>(
+    config_dir: &Path,
+    _edit: impl FnOnce(&mut Settings, &str) -> Result<T, E>,
+) -> Result<T, E> {
+    Err(E::from(SettingsError::Write {
+        path: path(config_dir),
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Locked settings updates are not yet supported on Windows",
+        ),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -725,28 +749,4 @@ mod tests {
         settings.set_tui_theme("nord-dark");
         assert_eq!(settings.tui_theme(), Some("nord-dark"));
     }
-}
-
-#[cfg(windows)]
-pub fn save(config_dir: &Path, _settings: &Settings) -> Result<(), SettingsError> {
-    Err(SettingsError::Write {
-        path: path(config_dir),
-        source: std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Atomic settings persistence is not yet supported on Windows",
-        ),
-    })
-}
-#[cfg(windows)]
-pub fn update<T, E: From<SettingsError>>(
-    config_dir: &Path,
-    _edit: impl FnOnce(&mut Settings, &str) -> Result<T, E>,
-) -> Result<T, E> {
-    Err(E::from(SettingsError::Write {
-        path: path(config_dir),
-        source: std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Locked settings updates are not yet supported on Windows",
-        ),
-    }))
 }

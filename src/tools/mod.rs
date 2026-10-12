@@ -202,6 +202,7 @@ pub struct ToolContext {
 pub struct DispatchBinding {
     pub(crate) destination: PathBuf,
     pub(crate) scratch: Option<crate::agent::scratch::Identity>,
+    #[cfg(unix)]
     pub(crate) script: Option<Value>,
 }
 

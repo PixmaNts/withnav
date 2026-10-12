@@ -183,6 +183,19 @@ fn io_api(e: std::io::Error) -> ProviderError {
     ProviderError::Auth(format!("auth.json I/O error: {e}"))
 }
 
+#[cfg(windows)]
+fn check_perms_or_fail(_path: &Path) -> Result<(), ProviderError> {
+    Err(ProviderError::Auth(
+        "Credential permission validation is not yet supported on Windows".into(),
+    ))
+}
+#[cfg(windows)]
+pub fn save_store(_config_dir: &Path, _store: AuthStore) -> Result<(), ProviderError> {
+    Err(ProviderError::Auth(
+        "Private credential persistence is not yet supported on Windows".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,17 +291,4 @@ mod tests {
         assert_eq!(names, vec!["omniroute".to_string()]);
         assert!(!names.iter().any(|n| n.contains("super-secret-value")));
     }
-}
-
-#[cfg(windows)]
-fn check_perms_or_fail(_path: &Path) -> Result<(), ProviderError> {
-    Err(ProviderError::Auth(
-        "Credential permission validation is not yet supported on Windows".into(),
-    ))
-}
-#[cfg(windows)]
-pub fn save_store(_config_dir: &Path, _store: AuthStore) -> Result<(), ProviderError> {
-    Err(ProviderError::Auth(
-        "Private credential persistence is not yet supported on Windows".into(),
-    ))
 }

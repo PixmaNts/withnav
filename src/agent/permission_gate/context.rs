@@ -274,7 +274,7 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     #[cfg(windows)]
     {
         let _ = (resolved, push_urls);
-        return None;
+        None
     }
     #[cfg(unix)]
     let identity = {

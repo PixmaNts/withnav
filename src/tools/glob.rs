@@ -525,6 +525,7 @@ mod tests {
     // When the walk runs
     // Then none is listed or followed
     #[tokio::test]
+    #[cfg(unix)]
     async fn links_are_not_followed() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("root");

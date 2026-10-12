@@ -721,6 +721,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn every_sensitive_rule_generates_rg_exclusions_before_unreadable_files_are_opened() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();

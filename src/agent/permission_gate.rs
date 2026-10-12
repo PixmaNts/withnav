@@ -1675,6 +1675,11 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
     note
 }
 
+#[cfg(windows)]
+fn bash_requested_path(_: &str, _: &ToolContext) -> Option<std::path::PathBuf> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4208,9 +4213,4 @@ mod tests {
         ))
         .is_ok());
     }
-}
-
-#[cfg(windows)]
-fn bash_requested_path(_: &str, _: &ToolContext) -> Option<std::path::PathBuf> {
-    None
 }

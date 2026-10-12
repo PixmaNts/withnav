@@ -267,8 +267,22 @@ pub(super) fn signature(call: &crate::provider::ToolCall, facts: &Value) -> Opti
     } else {
         facts["git"]["push_urls"].clone()
     };
+    // A precedent binds the executable's identity, not just its path: a user-owned
+    // toolchain binary can be replaced by the user's own tooling (or an agent), and the
+    // replacement must not inherit an approval given to the previous file.
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&resolved).ok()?;
+        json!([
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        ])
+    };
     Some(
-        json!({"executable":resolved,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
+        json!({"executable":resolved,"identity":identity,"subcommand":subcommand,"flags":flags,"push":push,"push_urls":push_urls}),
     )
 }
 

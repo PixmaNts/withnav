@@ -17,6 +17,14 @@ requests land in `develop`.
 
 - **The VS Code extension needs VS Code 1.91 or later** (was 1.90). It now uses
   `vscode-languageclient` 10, which requires it.
+- **A toolchain you installed yourself, such as rustup's `cargo`, is trusted like a system one.**
+  The permission gate used to trust only root-owned programs, so on a rustup machine `cargo test`
+  went to review every time. A program now qualifies when you or root own it, nobody else can
+  write it or any directory above it, and it is outside the workspace. The trade-off: any such
+  program you own is trusted by ownership, so an agent that can write one there (with the shell or
+  a build script) can have it run as a known tool. Edits through the `write` and `edit` tools to
+  `~/.cargo/bin` and `~/.rustup/toolchains` (or `$CARGO_HOME` / `$RUSTUP_HOME`) always ask you, and
+  an approval for a command no longer carries over to a replaced program file.
 
 ### Fixed
 

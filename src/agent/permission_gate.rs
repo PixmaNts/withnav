@@ -830,6 +830,55 @@ pub enum HardFloorReason {
     ProtectedConfig,
     SensitiveTarget,
     ScratchChanged,
+    /// A native write or edit inside the directories user toolchains run from.
+    ToolchainExecution,
+}
+
+/// Where a user-installed toolchain's executables live: `$CARGO_HOME/bin` and
+/// `$RUSTUP_HOME/toolchains`. The gate trusts programs there by ownership alone
+/// (`shell::trusted_program`), so a native write into them could mint a trusted tool.
+/// The cargo registry and git caches are deliberately absent: they hold sources, not
+/// programs the gate resolves.
+fn toolchain_execution_dirs() -> Vec<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let under = |variable: &str, default: &str, leaf: &str| {
+        let base = std::env::var_os(variable)
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| home.as_ref().map(|home| home.join(default)))?;
+        Some(base.join(leaf))
+    };
+    [
+        under("CARGO_HOME", ".cargo", "bin"),
+        under("RUSTUP_HOME", ".rustup", "toolchains"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn toolchain_execution_write(
+    actor: &super::actor::AgentActor,
+    call: &ToolCall,
+    needed: &Needed,
+) -> bool {
+    if !matches!(call.name.as_str(), "write" | "edit") {
+        return false;
+    }
+    let spelling = call
+        .args
+        .get("path")
+        .and_then(Value::as_str)
+        .and_then(|path| {
+            super::permissions::requested_path(std::path::Path::new(path), &actor.tool_context).ok()
+        });
+    toolchain_execution_dirs().iter().any(|dir| {
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        [needed.destination.as_deref(), spelling.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|path| path.starts_with(dir) || path.starts_with(&canonical))
+    })
 }
 
 pub fn hard_floor(
@@ -842,6 +891,9 @@ pub fn hard_floor(
     }
     if sensitive_call(call, needed, &actor.tool_context) {
         return Some(HardFloorReason::SensitiveTarget);
+    }
+    if toolchain_execution_write(actor, call, needed) {
+        return Some(HardFloorReason::ToolchainExecution);
     }
     let spelling = call
         .args
@@ -2172,15 +2224,16 @@ mod tests {
 
     #[tokio::test]
     async fn recorded_ordinary_calls_run_without_metacognition() {
-        // The recorded calls were made with the system toolchain (`/usr/bin/cargo`). A
-        // rustup install puts a user-owned `~/.cargo/bin/cargo` first in PATH, which the gate
-        // rightly does not trust (observed 2026-10-12 on a GitHub runner), so the call would
-        // be reviewed instead. PATH is process-global: pin it in an isolated test process,
-        // like `cargo_test_allow_once_then_unsure_uses_captain_precedent` does.
+        // The recorded calls were made with a toolchain the gate trusts. PATH is
+        // process-global: pin it in an isolated test process to a rustup-shaped user
+        // toolchain (user-owned `~/.cargo/bin/cargo`, as on a developer machine or a
+        // GitHub runner) followed by the system directories.
         if std::env::var_os("WITHNAV_RECORDED_SYSTEM_PATH_TEST").is_none() {
+            let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+            let bin = shell::rustup_fixture(home.path());
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "agent::permission_gate::tests::recorded_ordinary_calls_run_without_metacognition", "--nocapture"])
-                .env("PATH", "/usr/bin:/bin")
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
                 .env("WITHNAV_RECORDED_SYSTEM_PATH_TEST", "1")
                 .output()
                 .unwrap();
@@ -2474,13 +2527,159 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rustup_cargo_test_runs_like_the_system_cargo_and_precedent_tracks_the_binary() {
+        // PATH and CARGO_HOME are process-global: isolated process, rustup-shaped HOME.
+        if std::env::var_os("WITHNAV_RUSTUP_CARGO_TEST").is_none() {
+            let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+            let bin = shell::rustup_fixture(home.path());
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::permission_gate::tests::rustup_cargo_test_runs_like_the_system_cargo_and_precedent_tracks_the_binary", "--nocapture"])
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("CARGO_HOME", home.path().join(".cargo"))
+                .env("WITHNAV_RUSTUP_CARGO_TEST", home.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let home = std::path::PathBuf::from(std::env::var_os("WITHNAV_RUSTUP_CARGO_TEST").unwrap());
+        // Optimistic ordinary work: the reviewer must never be consulted.
+        let mut actor = review_actor();
+        let reviewer = std::sync::Arc::new(ReviewStub {
+            decision: ReviewDecision::Reject,
+            timeout: false,
+            calls: Default::default(),
+        });
+        actor.permission_reviewer = Some(reviewer.clone());
+        actor.permission_judge = Some(std::sync::Arc::new(LabelJudge(
+            json!({"labels":{"call_effect":"local_change","call_scope":"inside","reversibility":"recoverable","publication":"none","sensitivity":0.0,"task_fit":0.9},"confidence":1.0}),
+        )));
+        let call = ToolCall {
+            id: "cargo-test".into(),
+            name: "bash".into(),
+            args: json!({"command":"cargo test"}),
+            args_valid: true,
+        };
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        assert!(matches!(
+            consult(&actor, &call, &needed).await,
+            Judged::Run(_)
+        ));
+        assert_eq!(reviewer.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // The precedent signature carries the executable's identity: replacing the
+        // binary (new inode) must not inherit an approval given to the old one.
+        let facts = json!({"workspace":actor.tool_context.workspace,"writable_roots":[actor.tool_context.workspace]});
+        let before = context::signature(&call, &facts).expect("user cargo has a signature");
+        assert_eq!(before, context::signature(&call, &facts).unwrap());
+        let cargo = home.join(".cargo/bin/cargo");
+        let replacement = home.join(".cargo/bin/cargo.new");
+        std::fs::write(&replacement, "#!/bin/true\n").unwrap();
+        std::fs::set_permissions(
+            &replacement,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::rename(&replacement, &cargo).unwrap();
+        assert_ne!(before, context::signature(&call, &facts).unwrap());
+    }
+
+    #[tokio::test]
+    async fn native_writes_into_user_toolchain_execution_dirs_are_a_hard_floor() {
+        if std::env::var_os("WITHNAV_TOOLCHAIN_FLOOR_TEST").is_none() {
+            let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+            shell::rustup_fixture(home.path());
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "agent::permission_gate::tests::native_writes_into_user_toolchain_execution_dirs_are_a_hard_floor", "--nocapture"])
+                .env("CARGO_HOME", home.path().join(".cargo"))
+                .env("RUSTUP_HOME", home.path().join(".rustup"))
+                .env("WITHNAV_TOOLCHAIN_FLOOR_TEST", home.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let home =
+            std::path::PathBuf::from(std::env::var_os("WITHNAV_TOOLCHAIN_FLOOR_TEST").unwrap());
+        let mut actor = review_actor();
+        actor.tool_context.writable_roots.push(home.clone());
+        for (tool, path, floored) in [
+            ("write", ".cargo/bin/cargo", true),
+            ("edit", ".cargo/bin/rustup", true),
+            ("write", ".cargo/bin/new-tool", true),
+            ("write", ".rustup/toolchains/stable-x/bin/cargo", true),
+            // Registry and git caches hold sources, not programs the gate resolves.
+            ("write", ".cargo/registry/index/x", false),
+            ("write", ".cargo/git/x", false),
+            ("write", ".cargo/config.toml", false),
+        ] {
+            let target = home.join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            let call = ToolCall {
+                id: "floor".into(),
+                name: tool.into(),
+                args: json!({"path":target,"content":"x","old_string":"a","new_string":"b"}),
+                args_valid: true,
+            };
+            let needed = Needed {
+                scope: super::super::permissions::Scope::Folder(
+                    target.parent().unwrap().to_path_buf(),
+                ),
+                destination: Some(
+                    target
+                        .parent()
+                        .unwrap()
+                        .canonicalize()
+                        .unwrap()
+                        .join(target.file_name().unwrap()),
+                ),
+            };
+            assert_eq!(
+                hard_floor(&actor, &call, &needed),
+                floored.then_some(HardFloorReason::ToolchainExecution),
+                "{tool} {path}"
+            );
+        }
+        // Reads and shell commands are not native writes: no floor.
+        let target = home.join(".cargo/bin/cargo");
+        for name in ["read", "bash"] {
+            let call = ToolCall {
+                id: "not-a-write".into(),
+                name: name.into(),
+                args: json!({"path":target,"command":"ls"}),
+                args_valid: true,
+            };
+            let needed = Needed {
+                scope: super::super::permissions::Scope::Folder(home.join(".cargo/bin")),
+                destination: Some(target.clone()),
+            };
+            assert_eq!(hard_floor(&actor, &call, &needed), None, "{name}");
+        }
+    }
+
+    #[tokio::test]
     async fn cargo_test_allow_once_then_unsure_uses_captain_precedent() {
-        // PATH is process-global; use an isolated test process with the system
-        // toolchain identity rather than racing other tests' executable checks.
+        // PATH is process-global; use an isolated test process with a rustup-shaped
+        // user toolchain rather than racing other tests' executable checks.
         if std::env::var_os("WITHNAV_PRECEDENT_SYSTEM_PATH_TEST").is_none() {
+            let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+            let bin = shell::rustup_fixture(home.path());
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "agent::permission_gate::tests::cargo_test_allow_once_then_unsure_uses_captain_precedent", "--nocapture"])
-                .env("PATH", "/usr/bin:/bin")
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
                 .env("WITHNAV_PRECEDENT_SYSTEM_PATH_TEST", "1")
                 .status().unwrap();
             assert!(status.success());
@@ -2842,8 +3041,8 @@ mod tests {
                 .judge(&input, &CancellationToken::new())
                 .await
                 .unwrap();
-            // The corpus describes known system tools. Developer installations
-            // (e.g. npm/cargo in a user-owned PATH directory) are opaque instead.
+            // The corpus describes known tools. Programs resolved from a PATH directory
+            // that is writable, inside a workspace or owned by someone else are opaque.
             let facts = json!({"workspace": cx.workspace, "writable_roots": cx.writable_roots});
             let trusted_identity =
                 shell::segments(row["command"].as_str().unwrap()).is_some_and(|segments| {
@@ -3225,6 +3424,10 @@ mod tests {
             return;
         }
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // The binary sits under the system temp directory: a sticky, world-writable
+        // chain is never trusted, whoever owns the file. The same executable in a secure
+        // user-owned directory outside the workspace is trusted by ownership (accepted
+        // product change, see `user_owned_toolchain_is_trusted_by_ownership_with_guards`).
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         let bin = tmp.path().join("outside");

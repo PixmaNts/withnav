@@ -4,6 +4,23 @@ import { createMockApi } from "./server";
 const WS = "/repo";
 
 describe("mock flows API", () => {
+  it("activates only approved versions and excludes mutation and revocation", async () => {
+    const api = createMockApi(WS);
+    const doc = await api.get("guard-mutations", "workspace");
+    expect(doc.saved_since_reload).toBe(true);
+    expect((await api.reload()).errors.some((error) => error.code === "validation")).toBe(true);
+    await api.setTrust(doc);
+    await api.reload();
+    expect((await api.get(doc.name, doc.location)).saved_since_reload).toBe(false);
+    api.revokeApproval(doc);
+    await api.reload();
+    expect((await api.get(doc.name, doc.location)).saved_since_reload).toBe(true);
+    await api.setTrust(doc);
+    const changed = await api.save(doc.name, { location: doc.location, revision: doc.revision,
+      content: { format: "toml", toml: `${doc.toml}\n# change`, templates: doc.templates } });
+    await api.reload();
+    expect((await api.get(changed.name, changed.location)).saved_since_reload).toBe(true);
+  });
   it("exposes host diagnostics, health warnings, reload propagation and a suppressed live wake", async () => {
     const api = createMockApi(WS);
     expect((await api.list()).errors?.[0]?.message).toContain("Instinct unavailable");
@@ -35,7 +52,7 @@ describe("mock flows API", () => {
     expect(doc.errors).toEqual([]);
     expect(doc.definition?.node).toHaveLength(9);
     expect(doc.path).toBe("/repo/.withnav/flows/guard-mutations.toml");
-    expect(doc.saved_since_reload).toBe(false);
+    expect(doc.saved_since_reload).toBe(true);
   });
 
   it("saves with the revision, marks the flow saved since reload, refuses a stale save", async () => {

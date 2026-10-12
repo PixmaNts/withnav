@@ -586,6 +586,7 @@ impl FlowStore {
             }
         })();
         if let Err(e) = &result {
+            self.publish_builtins();
             self.record_reload_error(e);
         }
         result
@@ -629,16 +630,23 @@ impl FlowStore {
         let mut state = marker.state.lock().unwrap_or_else(|e| e.into_inner());
         match marker.read(&mut state) {
             Ok(generation) if generation > state.observed => {
-                state.observed = generation;
                 if let Err(e) = self.reload_local() {
                     self.record_reload_error(&e);
+                } else {
+                    state.observed = generation;
                 }
             }
             Ok(_) => {}
-            Err(e) => self.record_reload_error(&e),
+            Err(e) => {
+                self.publish_builtins();
+                self.record_reload_error(&e);
+            }
         }
     }
     fn reload_local(&self) -> Result<(), StoreError> {
+        // Never retain a custom admission from a previous attempt on an early
+        // filesystem or database error. Existing evaluations own their Arc.
+        self.publish_builtins();
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let documents = self.documents_with_compiled(true)?;
         let mut candidate = BTreeMap::new();
@@ -699,19 +707,44 @@ impl FlowStore {
         if candidate.len() > 64 {
             errors.push(Diagnostic::new("limit", "more than 64 loaded flows", ""));
         }
+        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(candidate);
+        *self.revisions.write().unwrap_or_else(|e| e.into_inner()) = revisions;
         if !errors.is_empty() {
             return Err(StoreError {
                 reason: "reload_invalid",
                 errors,
             });
         }
-        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(candidate);
-        *self.revisions.write().unwrap_or_else(|e| e.into_inner()) = revisions;
         *self
             .reload_errors
             .write()
             .unwrap_or_else(|e| e.into_inner()) = diagnostics;
         Ok(())
+    }
+    fn publish_builtins(&self) {
+        let snapshot = super::builtin::definitions()
+            .into_iter()
+            .filter_map(|(definition, templates)| {
+                let name = definition.flow.name.clone();
+                definition
+                    .validate(&catalogue(), &Capabilities { images: false }, &templates)
+                    .ok()
+                    .map(|compiled| {
+                        (
+                            name,
+                            Arc::new(LoadedFlow {
+                                location: Location::Builtin,
+                                compiled,
+                            }),
+                        )
+                    })
+            })
+            .collect();
+        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(snapshot);
+        self.revisions
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
     pub fn save(
         &self,
@@ -867,6 +900,62 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_reload_drops_revoked_admissions_and_refresh_retries() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        let config = temp.path().join("config");
+        let writer = FlowStore::with_data(temp.path().into(), config.clone(), data.clone());
+        let reader = FlowStore::with_data(temp.path().into(), config.clone(), data.clone());
+        let doc = writer
+            .save(
+                "guard",
+                Location::Global,
+                None,
+                content("guard", "no_objection"),
+            )
+            .unwrap();
+        let approval = writer
+            .validate_version("guard", Location::Global, &doc.revision)
+            .unwrap();
+        writer.reload().unwrap();
+        reader.refresh();
+        assert!(reader.snapshot().contains_key("guard"));
+        writer
+            .permission_store()
+            .unwrap()
+            .revoke_validation(approval.id)
+            .unwrap();
+        let broken = config.join("flows/broken.toml");
+        std::fs::write(&broken, "x".repeat(MAX_FLOW_BYTES + 1)).unwrap();
+        assert!(writer.reload().is_err());
+        assert!(writer
+            .snapshot()
+            .values()
+            .all(|flow| flow.location == Location::Builtin));
+        writer.reload_marker.as_ref().unwrap().publish().unwrap();
+        reader.refresh();
+        assert!(!reader.snapshot().contains_key("guard"));
+        assert!(!reader.reload_diagnostics().is_empty());
+        std::fs::remove_file(broken).unwrap();
+        writer
+            .validate_version("guard", Location::Global, &doc.revision)
+            .unwrap();
+        // No new generation: the failed refresh must retry the previous one.
+        reader.refresh();
+        assert!(reader.snapshot().contains_key("guard"));
+        writer
+            .permission_store()
+            .unwrap()
+            .connection
+            .execute_batch("DROP TABLE validations; CREATE TABLE validations (invalid TEXT)")
+            .unwrap();
+        assert!(reader.reload().is_err());
+        assert!(reader
+            .snapshot()
+            .values()
+            .all(|flow| flow.location == Location::Builtin));
+    }
     #[test]
     fn approvals_bind_loaded_toml_templates_and_location_and_revoke_on_reload() {
         let temp = tempfile::tempdir().unwrap();

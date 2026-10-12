@@ -617,3 +617,5 @@ this flow version” action or `nav permissions validate flow <name>` (use
 `--location global|workspace` when the name is ambiguous), then reload.
 `nav permissions validations --json` lists approvals; revoke one with
 `nav permissions revoke-validation <id>` and reload to unload that version.
+
+Studio samples and replays, including drafts and unvalidated versions, are Captain-started diagnostics: they apply no effects, cannot feed a live tool verdict, and are not exposed as agent tools.

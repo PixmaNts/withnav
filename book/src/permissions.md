@@ -95,11 +95,13 @@ There are three levels of control, from the strongest: **normal** (reviews and p
 (nothing is checked).
 
 - A tool call runs without an approval prompt, without the Instinct and Metacognition review,
-  without the plan role's check, and without the protected-configuration, credentials and
-  scratch-folder rules. No review request is sent at all.
+  without the plan role's check or an agent's write scope, without any `tool.pre_call` flow, and
+  without the protected-configuration, credentials and scratch-folder rules. File tools may reach
+  outside the workspace, and `grep` and `glob` may start in a credentials folder (the credential
+  files in it are still left out of the results). No review request is sent at all.
 - Each call records `approved_by: yolo` in its `tool.pre_call` and `tool.post_call` events.
-- Still enforced: which tools a session or agent has, a tool's own argument checks, and
-  cancellation.
+- Still enforced: which tools a session or agent has, malformed or missing arguments, and
+  cancellation. A refused call still says `approved_by: yolo`.
 - `YOLO` shows in the terminal header and sidebar, as a badge in the browser and in VS Code, and
   `nav doctor` prints `permissions: yolo (no permission control)`.
 - Changing the setting applies to new sessions, not to open ones.

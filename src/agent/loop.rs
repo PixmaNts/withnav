@@ -702,7 +702,8 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
             }
         }
     }
-    if let Some(role) = actor.role.as_deref() {
+    // Role-based authorization, not argument validation: yolo does not check it.
+    if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo) {
         role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)?;
     }
     Ok(())
@@ -1153,7 +1154,8 @@ fn yolo_approval() -> serde_json::Value {
 /// The Captain turned permission control off (`yolo`): the call is dispatched
 /// without the gate, the review, the role guard or the hard floor. What stays
 /// is what is not an approval: the session's tool availability and the call's
-/// own arguments (`preflight`), and cancellation.
+/// own arguments (`preflight`: malformed or missing arguments), and
+/// cancellation.
 async fn run_yolo(
     actor: &mut AgentActor,
     call: &ToolCall,
@@ -1169,17 +1171,27 @@ async fn run_yolo(
         }
         // A file tool is bound to the canonical file it names, as after a
         // Captain's approval, so it opens it without following a link.
-        let destination = if matches!(call.name.as_str(), "read" | "write" | "edit") {
-            call.args
+        let destination = match call.name.as_str() {
+            "read" | "write" | "edit" => call
+                .args
                 .get("path")
                 .and_then(serde_json::Value::as_str)
                 .and_then(|path| {
                     super::permissions::resolve_read_target(Path::new(path), &actor.tool_context)
                         .ok()
                 })
-                .filter(|path| !path.is_dir())
-        } else {
-            None
+                .filter(|path| !path.is_dir()),
+            // Searches are bound too, so the host tells the tool the root is trusted.
+            "grep" | "glob" => {
+                let path = call
+                    .args
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(Path::new)
+                    .unwrap_or(&actor.tool_context.workspace);
+                super::permissions::resolve_read_target(path, &actor.tool_context).ok()
+            }
+            _ => None,
         };
         if let Some(outcome) = execute_and_settle(
             actor,
@@ -1311,13 +1323,20 @@ fn reject_call(
     message: String,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
+    // In yolo the refusal carries the same evidence as a run: nothing was asked.
+    let approval = actor.yolo.then(yolo_approval);
     observe(AgentEvent::PreCall {
-        permission_gate: None,
+        permission_gate: approval
+            .as_ref()
+            .and_then(|note| note.get("permission_gate")),
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
     });
-    let result = ToolResult::error("tool_error", message);
+    let mut result = ToolResult::error("tool_error", message);
+    if let Some(note) = &approval {
+        merge_approval_metadata(&mut result.metadata, note);
+    }
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1353,7 +1372,7 @@ async fn execute_call(
     // The seam tests use to move a file between the check and the dispatch.
     #[cfg(test)]
     tests::before_dispatch();
-    if let Some(role) = actor.role.as_deref() {
+    if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo) {
         if let Err(message) =
             role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)
         {
@@ -1385,12 +1404,18 @@ async fn execute_call(
     }
     cx.binding = destination.map(|destination| crate::tools::DispatchBinding {
         destination: destination.to_path_buf(),
-        scratch: actor
-            .scratch_roots
-            .iter()
-            .find(|root| destination.starts_with(&root.path))
-            .cloned(),
+        // A scratch identity is a permission control (inode and mode): not in yolo.
+        scratch: if actor.yolo {
+            None
+        } else {
+            actor
+                .scratch_roots
+                .iter()
+                .find(|root| destination.starts_with(&root.path))
+                .cloned()
+        },
         script: None,
+        yolo: actor.yolo,
     });
     if let Some(binding) = guard_note.as_ref().and_then(|note| {
         note.get("script_binding").or_else(|| {
@@ -1402,6 +1427,7 @@ async fn execute_call(
             destination: PathBuf::from(binding["path"].as_str().unwrap_or("")),
             scratch: None,
             script: Some(binding.clone()),
+            yolo: actor.yolo,
         });
     }
     let dispatched = actor
@@ -5884,28 +5910,38 @@ mod tests {
             args: serde_json::json!({"content":"x"}),
             args_valid: true,
         };
-        let mut results = Vec::new();
-        let mut observe = |event: AgentEvent| {
-            if let AgentEvent::PostCall { result, .. } = event {
-                results.push(result.status);
-            }
-        };
-        assert!(matches!(
-            run_gated(&mut actor, &missing, &mut observe).await,
-            One::Settled
-        ));
         let absent = ToolCall {
             id: "a".into(),
             name: "no_such_tool".into(),
             args: serde_json::json!({}),
             args_valid: true,
         };
-        assert!(matches!(
-            run_gated(&mut actor, &absent, &mut observe).await,
-            One::Settled
-        ));
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|status| *status != ToolStatus::Ok));
+        for call in [&missing, &absent] {
+            let mut pre = Vec::new();
+            let mut post = Vec::new();
+            let outcome = run_gated(&mut actor, call, &mut |event| match event {
+                AgentEvent::PreCall {
+                    permission_gate, ..
+                } => pre.push(permission_gate.cloned()),
+                AgentEvent::PostCall { result, .. } => {
+                    post.push((result.status, result.metadata.clone()))
+                }
+                _ => {}
+            })
+            .await;
+            assert!(matches!(outcome, One::Settled), "{}", call.id);
+            // Refused, and the refusal carries the same yolo evidence as a run.
+            assert_eq!(pre.len(), 1, "{}", call.id);
+            assert_eq!(pre[0].as_ref().unwrap()["source"], "yolo", "{}", call.id);
+            assert_eq!(post.len(), 1, "{}", call.id);
+            assert_eq!(post[0].0, ToolStatus::Error, "{}", call.id);
+            assert_eq!(post[0].1["approved_by"], "yolo", "{}", call.id);
+            assert_eq!(
+                post[0].1["permission_gate"]["source"], "yolo",
+                "{}",
+                call.id
+            );
+        }
         let call = ToolCall {
             id: "c".into(),
             name: "bash".into(),
@@ -5917,6 +5953,137 @@ mod tests {
             run_gated(&mut actor, &call, &mut |_| panic!("cancelled")).await,
             One::Interrupted
         ));
+    }
+
+    /// Runs `call` in yolo and returns the `approved_by` of its post-call.
+    async fn yolo_run(actor: &mut AgentActor, call: &ToolCall) -> (ToolStatus, serde_json::Value) {
+        let mut post = None;
+        let outcome = run_gated(actor, call, &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                post = Some((result.status, result.metadata["approved_by"].clone()));
+            }
+        })
+        .await;
+        assert!(matches!(outcome, One::Settled), "{}", call.id);
+        post.expect("post call")
+    }
+
+    #[tokio::test]
+    async fn yolo_ignores_scratch_identity_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut actor = plan_actor(None, "http://unused");
+        actor.yolo = true;
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::EditTool));
+        let root = actor.tool_context.workspace.join("scratch");
+        actor
+            .scratch_roots
+            .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+        let write = |name: &str| ToolCall {
+            id: format!("w-{name}"),
+            name: "write".into(),
+            args: serde_json::json!({"path":root.join(name),"content":"one"}),
+            args_valid: true,
+        };
+        let edit = |name: &str| ToolCall {
+            id: format!("e-{name}"),
+            name: "edit".into(),
+            args: serde_json::json!({"path":root.join(name),"old_string":"one","new_string":"two"}),
+            args_valid: true,
+        };
+        // Widened mode: the identity would refuse it.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!actor.scratch_roots[0].valid());
+        for call in [write("a"), edit("a")] {
+            assert_eq!(
+                yolo_run(&mut actor, &call).await,
+                (ToolStatus::Ok, serde_json::json!("yolo")),
+                "{}",
+                call.id
+            );
+        }
+        assert_eq!(std::fs::read_to_string(root.join("a")).unwrap(), "two");
+        // Replaced root: another inode at the same path.
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        for call in [write("b"), edit("b")] {
+            assert_eq!(
+                yolo_run(&mut actor, &call).await,
+                (ToolStatus::Ok, serde_json::json!("yolo")),
+                "{}",
+                call.id
+            );
+        }
+        assert_eq!(std::fs::read_to_string(root.join("b")).unwrap(), "two");
+    }
+
+    #[tokio::test]
+    async fn yolo_searches_a_sensitive_root_but_filters_its_credentials() {
+        let mut actor = plan_actor(None, "http://unused");
+        let ssh = actor.tool_context.workspace.join(".ssh");
+        std::fs::create_dir(&ssh).unwrap();
+        std::fs::write(ssh.join("notes.txt"), "needle in notes\n").unwrap();
+        std::fs::write(ssh.join("id_ed25519"), "needle in key\n").unwrap();
+        let call = ToolCall {
+            id: "g".into(),
+            name: "grep".into(),
+            args: serde_json::json!({"pattern":"needle","path":ssh}),
+            args_valid: true,
+        };
+        let mut output = String::new();
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                output = result.output.clone();
+            }
+        };
+        let _ = run_gated(&mut actor, &call, &mut observe).await;
+        assert!(!output.contains("needle in notes"), "normal mode refuses");
+        actor.yolo = true;
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                output = result.output.clone();
+            }
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut observe).await,
+            One::Settled
+        ));
+        assert!(output.contains("needle in notes"), "{output}");
+        assert!(!output.contains("needle in key"));
+    }
+
+    #[tokio::test]
+    async fn yolo_does_not_enforce_the_cartographe_write_scope() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.role = Some(
+            crate::agent::definitions::Agents::builtin()
+                .get("cartographe")
+                .unwrap()
+                .clone(),
+        );
+        let target = actor.tool_context.workspace.join("src.rs");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        // Normal: the role's scope refuses it before anything runs.
+        let mut refused = false;
+        let _ = run_gated(&mut actor, &call, &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                refused = result.status != ToolStatus::Ok;
+            }
+        })
+        .await;
+        assert!(refused && !target.exists());
+        actor.yolo = true;
+        assert_eq!(
+            yolo_run(&mut actor, &call).await,
+            (ToolStatus::Ok, serde_json::json!("yolo"))
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
     }
 
     #[tokio::test]

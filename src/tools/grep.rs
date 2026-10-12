@@ -27,6 +27,8 @@ struct Limits {
     total_bytes: u64,
     matches: usize,
     duration: Duration,
+    /// The root itself is trusted (yolo): only what is below it is filtered.
+    trusted_root: bool,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -37,6 +39,7 @@ impl Default for Limits {
             total_bytes: MAX_TOTAL_BYTES,
             matches: MAX_MATCHES,
             duration: DEADLINE,
+            trusted_root: false,
         }
     }
 }
@@ -93,8 +96,9 @@ pub(super) async fn search(
     pattern: String,
     root: PathBuf,
     cancel: CancellationToken,
+    trusted_root: bool,
 ) -> Result<ToolResult, ToolError> {
-    search_with(Engine::Auto, pattern, root, cancel).await
+    search_with(Engine::Auto, pattern, root, cancel, trusted_root).await
 }
 
 #[derive(Clone, Copy)]
@@ -111,12 +115,15 @@ pub(super) async fn search_with(
     pattern: String,
     root: PathBuf,
     cancel: CancellationToken,
+    trusted_root: bool,
 ) -> Result<ToolResult, ToolError> {
-    if sensitive_read(&root) {
+    let sensitive_root = sensitive_read(&root);
+    if sensitive_root && !trusted_root {
         return Ok(result(String::new(), "builtin", 1, None, 0));
     }
     let use_rg = match engine {
-        Engine::Auto => rg_available(),
+        // rg's exclusions match whole paths, so a trusted sensitive root walks.
+        Engine::Auto => rg_available() && !sensitive_root,
         #[cfg(test)]
         Engine::Rg => true,
         #[cfg(test)]
@@ -125,7 +132,16 @@ pub(super) async fn search_with(
     if use_rg {
         rg_search(&pattern, &root, &cancel).await
     } else {
-        builtin(pattern, root, cancel, Limits::default()).await
+        builtin(
+            pattern,
+            root,
+            cancel,
+            Limits {
+                trusted_root,
+                ..Limits::default()
+            },
+        )
+        .await
     }
 }
 
@@ -388,7 +404,12 @@ fn walk_with(
             let Ok(entry) = entry else {
                 return Continue;
             };
-            if sensitive_read(entry.path()) {
+            let below_root = if limits.trusted_root {
+                entry.path().strip_prefix(root).unwrap_or(entry.path())
+            } else {
+                entry.path()
+            };
+            if sensitive_read(below_root) {
                 *skipped += 1;
                 return Skip;
             }
@@ -488,6 +509,7 @@ mod tests {
                 "(".into(),
                 tmp.path().to_path_buf(),
                 CancellationToken::new(),
+                false,
             )
             .await
             .unwrap_err();
@@ -503,6 +525,7 @@ mod tests {
             "x".into(),
             tmp.path().into(),
             CancellationToken::new(),
+            false,
         )
         .await
         .unwrap();

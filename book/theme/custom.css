@@ -1,0 +1,28 @@
+/* WithNav brand touch for the mdBook theme. System fonts only; no third-party requests.
+   Accent colours come from the design tokens in docs/design/_ds (--color-accent, accent-600). */
+:root {
+  --withnav-accent: #796cbf;       /* accent-600: readable on light backgrounds */
+  --withnav-accent-soft: #b5abfc;  /* accent-400: readable on dark backgrounds */
+}
+
+.light, .rust {
+  --links: var(--withnav-accent);
+  --sidebar-active: var(--withnav-accent);
+  --searchbar-border-color: var(--withnav-accent);
+}
+
+.navy, .coal, .ayu {
+  --links: var(--withnav-accent-soft);
+  --sidebar-active: var(--withnav-accent-soft);
+  --searchbar-border-color: var(--withnav-accent-soft);
+}
+
+.menu-title {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.content main > h1:first-child {
+  border-bottom: 3px solid var(--withnav-accent);
+  padding-bottom: 0.3em;
+}

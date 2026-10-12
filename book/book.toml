@@ -1,0 +1,14 @@
+[book]
+title = "WithNav"
+description = "User guide for WithNav: you set the course, Nav lights the way."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "build"
+
+[output.html]
+site-url = "/docs/"
+git-repository-url = "https://github.com/PixmaNts/withnav"
+edit-url-template = "https://github.com/PixmaNts/withnav/edit/develop/book/{path}"
+additional-css = ["theme/custom.css"]

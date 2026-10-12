@@ -57,3 +57,6 @@ __pycache__/
 # They stay on the maintainer's machine; see docs/agents/issue-tracker.md.
 /.scratch/
 /.opencode/
+
+# Built user guide (mdBook); see book/
+/book/build/

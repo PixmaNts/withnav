@@ -444,7 +444,7 @@ instinct runs, in the new Studio, and the legacy decision pipeline is gone.
 ### Rebrand to WithNav
 
 Write new names throughout 0.7; legacy readers warn or give a migration hint.
-Removal of the deprecated names is planned for 0.8 ([ADR 0014](docs/adr/0014-rebrand-withnav.md)).
+Removal of the deprecated names is planned for 0.8 ([ADR 0014](https://github.com/PixmaNts/withnav/blob/develop/docs/adr/0014-rebrand-withnav.md)).
 
 - **Product and crate:** Navai → WithNav (withnav.dev), crate `rust-agent` → `withnav`.
   No old crate alias. The GitHub repository moves to `github.com/PixmaNts/withnav`
@@ -497,7 +497,7 @@ Removal of the deprecated names is planned for 0.8 ([ADR 0014](docs/adr/0014-reb
   file and Reload makes it run. A blocking `tool.pre_call` flow can deny a tool call or ask you,
   never allow one past the normal permission review, and bypass never answers it.
   `message.received` and `turn.end` flows can inject a note or wake the cognition, marked as
-  coming from a flow. See [the Captain's guide](docs/instinct-flow.md).
+  coming from a flow. See [the Captain's guide](https://withnav.dev/docs/instinctflow.html).
 - **The Studio** (`#/studio` in the browser): canvas and TOML views of the same file, an inspector
   per node, Run sample against the instinct, Replay of recorded runs without a model call, and
   24-hour health per flow.

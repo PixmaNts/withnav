@@ -15,8 +15,8 @@ use withnav::server::{app, AppState};
 mod common;
 use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
-    text_chunk, text_response as done, tool_call_chunk, tool_calls_chunk, CapturingProvider,
+    http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body, text_chunk,
+    text_response as done, tool_call_chunk, tool_calls_chunk, CapturingProvider,
 };
 
 use common::TestEnv as Env;
@@ -701,25 +701,41 @@ async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     let child_target = target.clone();
     // The parent's second answer is held open, so the child's request is what
     // ends the run.
-    let provider = spawn_holding_provider(
-        3,
-        2,
-        std::sync::Arc::new(tokio::sync::Notify::new()),
-        std::sync::Arc::new(tokio::sync::Notify::new()),
-        move |_, request| {
+    let mut provider = spawn_streaming_provider().await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url).rules_home(&env.root.join("home"));
+    // On 2026-10-12, reqwest's platform verifier changed client startup timing:
+    // the parent's next request can precede the child's first request. Hold
+    // by conversation identity, not arrival index, and keep accepting children.
+    let responder = tokio::spawn(async move {
+        let mut spawned = false;
+        let mut held = Vec::new();
+        while let Some((request, response)) = provider.requests.recv().await {
             if request.contains("Write the requested change.") {
-                one_write("child-write", &child_target)
+                response
+                    .send(tool_call_chunk(
+                        "child-write",
+                        "write",
+                        &json!({
+                            "path": child_target, "content": "secret"
+                        }),
+                    ))
+                    .unwrap();
+            } else if !spawned {
+                spawned = true;
+                response
+                    .send(tool_call_chunk(
+                        "spawn",
+                        "task",
+                        &json!({
+                            "agent": "writer", "prompt": "write auth.json"
+                        }),
+                    ))
+                    .unwrap();
             } else {
-                http_sse(&sse_body(&[&tool_call_chunk(
-                    "spawn",
-                    "task",
-                    &json!({"agent":"writer","prompt":"write auth.json"}),
-                )]))
+                held.push(response);
             }
-        },
-    )
-    .await;
-    let cfg = config(&env, &provider);
+        }
+    });
     cfg.config();
     let models = cfg.models_path();
     let started = std::time::Instant::now();
@@ -729,6 +745,7 @@ async fn withnav_run_yes_stops_when_a_child_reaches_the_hard_floor() {
     })
     .await
     .unwrap();
+    responder.abort();
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(started.elapsed() < Duration::from_secs(5), "ended promptly");
     assert!(!target.exists());

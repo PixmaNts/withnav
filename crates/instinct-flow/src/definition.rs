@@ -173,6 +173,8 @@ pub(crate) fn captain_action<'de, D: serde::Deserializer<'de>>(d: D) -> Result<S
     if action == "ask_driver" {
         eprintln!("ask_driver is deprecated; use ask_captain");
         Ok("ask_captain".into())
+    } else if action == "no_objection" {
+        Ok("allow".into())
     } else {
         Ok(action)
     }

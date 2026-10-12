@@ -346,7 +346,7 @@ async fn exhausted_deadline_selects_timeout_fallback() {
             ..
         }
     ));
-    assert_eq!(outcome.trace.fallback_actions[0].action, "no_objection");
+    assert_eq!(outcome.trace.fallback_actions[0].action, "allow");
 }
 #[test]
 fn conflicts_limits_and_nonblocking_verdicts_fail_closed() {

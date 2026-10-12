@@ -123,7 +123,7 @@ describe("upstream and the inputs picker", () => {
     expect(opt("answer.trusted_host").disabled).toMatch(/upstream/);
     expect(upstream.some((o) => o.reference.includes("plan_overreach"))).toBe(false);
     // Event fields and host inputs come from the catalogue, filtered by trigger.
-    expect(groups[0]!.options.map((o) => o.reference)).toEqual(["event.tool", "event.args", "event.call_id"]);
+    expect(groups[0]!.options.map((o) => o.reference)).toEqual(["event.tool", "event.args", "event.call_id", "event.rule_effect", "event.rule", "event.commands", "event.inside_project", "event.protected", "event.skill"]);
     expect(groups.some((g) => g.options.some((o) => o.reference.startsWith("editor.")))).toBe(false);
   });
 

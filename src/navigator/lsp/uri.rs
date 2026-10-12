@@ -15,6 +15,11 @@ pub fn uri_key(uri: &Uri) -> String {
 /// documents are keyed by). Returns `None` for other schemes and for a
 /// malformed escape.
 pub fn uri_to_path_str(uri: &str) -> Option<String> {
+    platform_path(uri)
+}
+
+#[cfg(unix)]
+fn platform_path(uri: &str) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
     // `file://host/path`: the host is dropped, only the path locates the file.
     let rest = &rest[rest.find('/')?..];
@@ -24,6 +29,29 @@ pub fn uri_to_path_str(uri: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+#[cfg(windows)]
+fn platform_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let slash = rest.find('/')?;
+    let authority = &rest[..slash];
+    // Network paths are rejected until checked native I/O supports their security contract.
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
+    let decoded = percent_decode(&rest[slash..])?;
+    let path = decoded.strip_prefix('/')?;
+    let bytes = path.as_bytes();
+    if bytes.len() < 3
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || bytes[2] != b'/'
+        || path[2..].contains([':', '\\', '\0'])
+    {
+        return None;
+    }
+    Some(path.replace('/', "\\"))
 }
 
 /// Extracts a filesystem path from a `file://` URI, percent-decoded.
@@ -65,6 +93,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn uri_paths_decode() {
         assert_eq!(
             uri_to_path_str("file:///ws/src/main.rs").as_deref(),
@@ -79,5 +108,30 @@ mod tests {
         // A host-bearing file URI keeps its path (no host stripping: VS Code
         // never sends one for local files).
         assert_eq!(uri_to_path_str("file://localhost/x").as_deref(), Some("/x"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn uri_paths_decode() {
+        assert_eq!(
+            uri_to_path_str("file:///C:/a%20b/c%C3%A9.rs").as_deref(),
+            Some("C:\\a b\\cé.rs")
+        );
+        assert_eq!(
+            uri_to_path_str("file://localhost/d:/workspace/main.rs").as_deref(),
+            Some("d:\\workspace\\main.rs")
+        );
+        for uri in [
+            "file://server/share/file.rs",
+            "file:///C:relative.rs",
+            "file:///workspace/file.rs",
+            "file:///C:/file:stream",
+            "file:///C:/bad%2",
+            "file:///C:/bad%00",
+            "file:///C:/bad%5Cname",
+            "untitled:Untitled-1",
+        ] {
+            assert_eq!(uri_to_path_str(uri), None, "{uri}");
+        }
     }
 }

@@ -47,6 +47,12 @@ Permissions chapter of the guide.
   Always saves a global rule. Calls are cancellable, have
   deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
   shutdown. `nav doctor` reports configuration and startup diagnostics.
+### Added
+
+- Native Windows x64 packaging and CI: an MSVC `nav.exe` ZIP with licenses, a `win32-x64`
+  VSIX using the bundled executable without chmod, and checksums for Windows release assets.
+  Explicit server paths (including spaces), bundled binaries and PATH retain their precedence.
+  Windows runtime support remains dependent on the Rust port and native artifact validation.
 
 ### Changed
 

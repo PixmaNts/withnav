@@ -5439,6 +5439,7 @@ mod tests {
             } else {
                 actor.permission_judge = Some(judge.clone());
             }
+            #[cfg(unix)]
             let cancel = actor.cancel.clone();
             let target = actor.tool_context.workspace.join("AGENTS.md");
             let call = ToolCall {
@@ -5454,24 +5455,40 @@ mod tests {
                 }
             };
             let run = run_gated(&mut actor, &call, &mut observe);
-            let stop = async {
-                loop {
-                    let entered = if during_meta {
-                        meta.captured.lock().unwrap().is_some()
-                    } else {
-                        judge.0.lock().unwrap().is_some()
-                    };
-                    if entered {
-                        break;
+            #[cfg(windows)]
+            {
+                assert!(matches!(run.await, One::Ask(..)));
+                assert_eq!(count, 0);
+                assert!(!target.exists());
+                assert!(judge.0.lock().unwrap().is_none());
+                assert!(meta.captured.lock().unwrap().is_none());
+            }
+            #[cfg(unix)]
+            {
+                let stop = async {
+                    loop {
+                        let entered = if during_meta {
+                            meta.captured.lock().unwrap().is_some()
+                        } else {
+                            judge.0.lock().unwrap().is_some()
+                        };
+                        if entered {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
                     }
-                    tokio::task::yield_now().await;
-                }
-                cancel.cancel();
-            };
-            let (outcome, ()) = tokio::join!(run, stop);
-            assert!(matches!(outcome, One::Interrupted));
-            assert_eq!(count, 0);
-            assert!(!target.exists());
+                    cancel.cancel();
+                };
+                let (outcome, ()) =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        tokio::join!(run, stop)
+                    })
+                    .await
+                    .expect("reviewer must be entered and cancellation must settle");
+                assert!(matches!(outcome, One::Interrupted));
+                assert_eq!(count, 0);
+                assert!(!target.exists());
+            }
         }
     }
 

@@ -22,7 +22,8 @@ pub fn catalogue() -> Catalogue {
         ("deny", Some("note"), Some(2), &all[5..6]),
         ("inject_note", Some("text"), None, &all[..]),
         ("log", Some("text"), None, &all[..]),
-        ("no_objection", None, Some(0), &all[5..6]),
+        ("allow", None, Some(0), &all[5..6]),
+        ("apply_rule", None, None, &all[5..6]),
         ("remark", Some("prompt"), None, &editor[..]),
         ("wake", Some("note"), None, &all[..]),
     ] {
@@ -36,7 +37,7 @@ pub fn catalogue() -> Catalogue {
                     required: true,
                 })
                 .collect(),
-            kind: if priority.is_some() {
+            kind: if priority.is_some() || name == "apply_rule" {
                 ActionKind::Verdict
             } else {
                 ActionKind::Effect
@@ -45,6 +46,16 @@ pub fn catalogue() -> Catalogue {
             allowed_triggers: strings(triggers),
         });
     }
+    actions
+        .iter_mut()
+        .find(|a| a.name == "allow")
+        .unwrap()
+        .params
+        .push(ParamSpec {
+            name: "protected_ok".into(),
+            value_type: Boolean,
+            required: false,
+        });
     let schemas = vec![
         (
             "conversation",
@@ -103,6 +114,12 @@ pub fn catalogue() -> Catalogue {
                 ("tool", Text, true),
                 ("args", Object, true),
                 ("call_id", Text, true),
+                ("rule_effect", Text, false),
+                ("rule", Text, false),
+                ("commands", Array, false),
+                ("inside_project", Boolean, false),
+                ("protected", Boolean, false),
+                ("skill", Object, false),
             ],
             json!({"tool":"write","args":{"path":"src/lib.rs","content":""},"call_id":"sample"}),
         ),
@@ -166,11 +183,8 @@ pub fn catalogue() -> Catalogue {
                     .collect(),
                 sample_payload,
                 default_fallback: (name == "tool.pre_call").then(|| FallbackAction {
-                    action: "ask_captain".into(),
-                    params: BTreeMap::from([(
-                        "note".into(),
-                        json!("Flow failed: {failure_message}"),
-                    )]),
+                    action: "apply_rule".into(),
+                    params: BTreeMap::new(),
                     then: None,
                 }),
             }
@@ -185,6 +199,7 @@ pub fn catalogue() -> Catalogue {
         ("conversation.last_captain", Text),
         ("conversation.digest", Text),
         ("conversation.last_turns", Array),
+        ("conversation.captain_messages", Array),
         ("intent.record", Text),
         ("workspace.root", Text),
         ("workspace.branch", Text),
@@ -222,8 +237,8 @@ mod tests {
         let c = catalogue();
         c.validate().unwrap();
         assert_eq!(c.triggers.len(), 7);
-        assert_eq!(c.inputs.len(), 14);
-        assert_eq!(c.actions.len(), 7);
+        assert_eq!(c.inputs.len(), 15);
+        assert_eq!(c.actions.len(), 8);
         assert_eq!(
             serde_json::to_value(&c).unwrap()["limits"]["flow_bytes"],
             262144

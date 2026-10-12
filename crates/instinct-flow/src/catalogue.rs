@@ -206,10 +206,10 @@ impl Catalogue {
             }
         }
         for action in &self.actions {
-            if (action.kind == ActionKind::Verdict) != action.priority.is_some() {
+            if action.kind == ActionKind::Effect && action.priority.is_some() {
                 errors.push(Diagnostic::new(
                     "schema",
-                    "only verdicts require a priority",
+                    "only verdicts may have a priority",
                     &action.name,
                 ));
             }

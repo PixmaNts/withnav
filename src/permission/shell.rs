@@ -99,15 +99,19 @@ fn assignment(word: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+fn basename(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
 fn wrapper(word: &str) -> bool {
     matches!(
-        word,
+        basename(word),
         "sudo" | "env" | "time" | "nice" | "nohup" | "command" | "exec"
     )
 }
 
 fn wrapper_option_value(program: &str, option: &str) -> bool {
-    match program {
+    match basename(program) {
         "sudo" => matches!(
             option,
             "-u" | "-g"
@@ -156,6 +160,7 @@ fn wrapper_option_value(program: &str, option: &str) -> bool {
 }
 
 fn execution_bearing(program: &str, operands: &[String]) -> bool {
+    let program = basename(program);
     matches!(program, "eval" | "xargs" | "parallel" | "watch")
         || (program == "env"
             && operands.iter().any(|word| {
@@ -202,6 +207,14 @@ fn command_identity(words: &[String], plain: &[bool]) -> Result<(Vec<String>, Op
                 break;
             }
             if (plain[index] && assignment(word)) || word.starts_with('-') {
+                // Only explicitly understood options may be skipped. Clusters,
+                // attached values and unknown options can change execution.
+                if word.starts_with('-') && !wrapper_option_value(program, word) {
+                    return Err(());
+                }
+                if wrapper_option_value(program, word) && index + 1 >= words.len() {
+                    return Err(());
+                }
                 assignments[index] = plain[index] && assignment(word);
                 index += 1;
                 if wrapper_option_value(program, word) && index < words.len() {
@@ -747,6 +760,55 @@ mod tests {
                 prop_assert_eq!(&commands[0].raw, &line);
             }
         }
+    }
+
+    #[test]
+    fn wrapper_options_and_execution_paths_are_conservative() {
+        for line in [
+            "env -iSrm git push",
+            "env -iu X git push",
+            "sudo -iu root git push",
+            "nice -n5 git push",
+            "time -vo f git push",
+            "nohup -xy git push",
+            "command -pv git push",
+            "exec -la name git push",
+            "env --unknown git push",
+            "sudo --unknown git push",
+            "nice --unknown git push",
+            "time --unknown git push",
+            "nohup --unknown git push",
+            "command --unknown git push",
+            "exec --unknown git push",
+            "/bin/bash -c 'rm victim'",
+            "/usr/bin/xargs rm",
+            "/usr/bin/find . -exec rm {} \\;",
+            "/usr/bin/env -S 'rm' x",
+            "./eval 'rm victim'",
+            "/usr/bin/env -iSrm git push",
+            "/usr/bin/sudo -iu root git push",
+            "./parallel rm",
+            "./watch rm",
+            "/bin/exec -c 'rm victim'",
+            "env -u",
+            "/usr/bin/sudo /bin/sh -c 'rm victim'",
+        ] {
+            let commands = split(line);
+            assert_eq!(commands.len(), 1, "{line}");
+            assert!(commands[0].opaque, "{line}");
+            assert_eq!(commands[0].rule_text, None);
+            assert_eq!(commands[0].save_pattern(), None);
+        }
+        let command = &split("/usr/bin/sudo -u root /usr/bin/env -u X git push origin")[0];
+        assert!(!command.opaque);
+        assert_eq!(
+            command.prefix,
+            ["/usr/bin/sudo", "/usr/bin/env", "git", "push"]
+        );
+        assert_eq!(
+            command.rule_text.as_deref(),
+            Some("/usr/bin/sudo /usr/bin/env git push -u root -u X origin")
+        );
     }
 
     #[test]

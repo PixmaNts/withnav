@@ -34,7 +34,7 @@ mod tests {
         };
         steering.admit(Operation {
             wake: false,
-            id: Ulid::new(),
+            id: Ulid::generate(),
             content: "untrusted note".into(),
             interrupt: false,
             provenance: provenance.clone(),
@@ -107,7 +107,7 @@ mod tests {
     fn interrupt_is_reserved_regardless_of_boundary_control_order() {
         for boundary_first in [true, false] {
             let steering = Steering::default();
-            let id = Ulid::new();
+            let id = Ulid::generate();
             steering.queue.lock().unwrap().push_back(Operation {
                 wake: true,
                 id,
@@ -130,7 +130,7 @@ mod tests {
             for content in ["first guidance", "second guidance"] {
                 assert!(steering.admit(Operation {
                     wake: false,
-                    id: Ulid::new(),
+                    id: Ulid::generate(),
                     content: content.into(),
                     provenance: UserProvenance::Parent,
                     interrupt: false,
@@ -175,8 +175,8 @@ mod tests {
     #[test]
     fn replacements_claim_both_interrupts_in_order_and_obsolete_ids_have_no_effect() {
         let steering = Steering::default();
-        let a = Ulid::new();
-        let b = Ulid::new();
+        let a = Ulid::generate();
+        let b = Ulid::generate();
         for (id, text) in [(a, "first"), (b, "second")] {
             assert!(steering.admit(Operation {
                 wake: true,
@@ -236,7 +236,7 @@ impl Steering {
             return Err("wake cooldown".into());
         }
         let admitted = self.admit(Operation {
-            id: Ulid::new(),
+            id: Ulid::generate(),
             content: format!("<untrusted-flow-note>\n{text}\n</untrusted-flow-note>"),
             provenance: UserProvenance::Flow {
                 source: crate::provider::openai::FlowSource::Flow,

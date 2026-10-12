@@ -2818,7 +2818,7 @@ mod tests {
         let before = actor.transcript.len();
         let mut noop = |_e: AgentEvent| {};
 
-        let wrong = ulid::Ulid::new();
+        let wrong = ulid::Ulid::generate();
         let rejected =
             resolve_permission(&mut actor, wrong, PermissionDecision::AllowOnce, &mut noop).await;
         assert!(matches!(
@@ -2851,7 +2851,7 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let idle = resolve_permission(
             &mut actor,
-            ulid::Ulid::new(),
+            ulid::Ulid::generate(),
             PermissionDecision::AllowOnce,
             &mut noop,
         )
@@ -2863,7 +2863,7 @@ mod tests {
         });
         let asked = resolve_permission(
             &mut actor,
-            ulid::Ulid::new(),
+            ulid::Ulid::generate(),
             PermissionDecision::AllowOnce,
             &mut noop,
         )

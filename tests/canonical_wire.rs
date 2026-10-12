@@ -9,7 +9,7 @@ fn model_changed_round_trip_preserves_selection_provenance() {
         "variant": "high", "source": "override", "variant_source": "override"
     });
     let wire = json!({
-        "operation_id": ulid::Ulid::new().to_string(), "revision": 7,
+        "operation_id": ulid::Ulid::generate().to_string(), "revision": 7,
         "reason": "agent", "previous": identity, "new": identity,
         "variant": "high", "window": 1050000, "input_budget": 989308,
         "from_message": 3
@@ -22,7 +22,7 @@ fn model_changed_round_trip_preserves_selection_provenance() {
 
 #[test]
 fn context_keeps_current_and_historical_usage_identity_separate() {
-    let step = ulid::Ulid::new().to_string();
+    let step = ulid::Ulid::generate().to_string();
     let wire = json!({
         "model": "omniroute/combo/current", "gateway": "omniroute",
         "upstream_id": "combo/current", "window": 100000,
@@ -34,7 +34,7 @@ fn context_keeps_current_and_historical_usage_identity_separate() {
             "prompt_tokens": 90, "completion_tokens": 10, "step": step
         },
         "skills": {"listed":0,"omitted":0}, "rule_files":0,
-        "incarnation": ulid::Ulid::new().to_string(), "revision":9
+        "incarnation": ulid::Ulid::generate().to_string(), "revision":9
     });
     let typed: ContextSnapshot = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), wire);

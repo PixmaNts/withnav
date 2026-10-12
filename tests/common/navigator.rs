@@ -901,7 +901,7 @@ pub fn captain_message(session_id: ulid::Ulid, seq: u64, content: &str) -> Event
         seq,
         EventKind::MessageReceived,
         json!({
-            "command_id": ulid::Ulid::new().to_string(),
+            "command_id": ulid::Ulid::generate().to_string(),
             "source": "user:http",
             "target": "agent:main",
             "mode": "next-turn",
@@ -927,7 +927,7 @@ pub async fn feed_with_session(
         let result = post_result.clone();
         Box::pin(async move { result })
     });
-    let session_id = ulid::Ulid::new();
+    let session_id = ulid::Ulid::generate();
     feed.register_session(session_id, post);
     feed.observe(&captain_message(
         session_id,

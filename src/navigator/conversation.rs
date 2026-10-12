@@ -493,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_human_event_is_read_as_captain() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
         feed.observe(&message_envelope(id, "driver", "legacy request"))
             .await;
@@ -509,7 +509,7 @@ mod tests {
             0,
             EventKind::MessageReceived,
             json!({
-                "command_id": Ulid::new().to_string(),
+                "command_id": Ulid::generate().to_string(),
                 "source": source,
                 "target": "agent:main",
                 "mode": "next-turn",
@@ -523,7 +523,7 @@ mod tests {
             session,
             0,
             EventKind::LlmResponse,
-            json!({ "turn_id": Ulid::new().to_string(), "step_id": Ulid::new().to_string(), "message": { "text": text } }),
+            json!({ "turn_id": Ulid::generate().to_string(), "step_id": Ulid::generate().to_string(), "message": { "text": text } }),
         )
     }
 
@@ -532,7 +532,7 @@ mod tests {
             session,
             0,
             EventKind::AgentYield,
-            json!({ "actor_id": "agent:main", "turn_id": Ulid::new().to_string(), "question": "which one?" }),
+            json!({ "actor_id": "agent:main", "turn_id": Ulid::generate().to_string(), "question": "which one?" }),
         )
     }
 
@@ -578,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn digest_records_authors_newest_last_and_strips_the_block() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted.clone()));
 
@@ -605,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn digest_is_bounded_to_the_last_twelve_exchanges() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted));
         for i in 0..20 {
@@ -622,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn long_texts_are_cut_near_six_hundred_characters() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted));
         let long = "x".repeat(5_000);
@@ -636,8 +636,8 @@ mod tests {
     #[tokio::test]
     async fn active_conversation_switches_on_a_captain_message_to_another_session() {
         let feed = ConversationFeed::new();
-        let a = Ulid::new();
-        let b = Ulid::new();
+        let a = Ulid::generate();
+        let b = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(a, recording_poster(posted.clone()));
         feed.register_session(b, recording_poster(posted));
@@ -664,7 +664,7 @@ mod tests {
     #[tokio::test]
     async fn queued_wakes_coalesce_and_deliver_after_the_captain_answers() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted.clone()));
 
@@ -703,7 +703,7 @@ mod tests {
     #[tokio::test]
     async fn watchdog_resolution_clears_waiting_on_captain() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
         feed.observe(&message_envelope(id, "user:http", "work"))
             .await;
@@ -719,7 +719,7 @@ mod tests {
     #[tokio::test]
     async fn paused_turn_supersession_keeps_replacement_captain_causality() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
         let mut events = feed.subscribe();
         feed.observe(&message_envelope(id, "user:http", "original"))
@@ -739,8 +739,7 @@ mod tests {
             .await;
         let mut resolution = yield_envelope(id);
         resolution.kind = "command.result".into();
-        resolution.payload =
-            json!({"name":"watchdog","data":{"resolution":"superseded","turn_id":Ulid::new()}});
+        resolution.payload = json!({"name":"watchdog","data":{"resolution":"superseded","turn_id":Ulid::generate()}});
         feed.observe(&resolution).await;
         assert!(
             events.try_recv().is_err(),
@@ -765,7 +764,7 @@ mod tests {
             "no conversation at all"
         );
 
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted.clone()));
         feed.observe(&message_envelope(id, "user:http", "hello"))
@@ -784,14 +783,14 @@ mod tests {
             session,
             0,
             EventKind::TurnEnd,
-            json!({ "turn_id": Ulid::new().to_string(), "actor_id": "agent:main", "outcome": "done", "duration_ms": 1 }),
+            json!({ "turn_id": Ulid::generate().to_string(), "actor_id": "agent:main", "outcome": "done", "duration_ms": 1 }),
         )
     }
 
     #[tokio::test]
     async fn turn_ended_tells_whether_the_captain_caused_it() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted));
         let mut events = feed.subscribe();
@@ -825,7 +824,7 @@ mod tests {
     #[tokio::test]
     async fn replayed_turn_ends_and_unknown_sessions_announce_nothing() {
         let feed = ConversationFeed::new();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let posted = Arc::new(Mutex::new(Vec::new()));
         feed.register_session(id, recording_poster(posted));
         let mut events = feed.subscribe();
@@ -833,7 +832,7 @@ mod tests {
         feed.observe_replayed(&message_envelope(id, "user:http", "old chat"))
             .await;
         feed.observe_replayed(&turn_end_envelope(id)).await;
-        feed.observe(&turn_end_envelope(Ulid::new())).await;
+        feed.observe(&turn_end_envelope(Ulid::generate())).await;
         assert!(events.try_recv().is_err());
         assert!(feed.digest().contains("captain: old chat"), "state rebuilt");
     }
@@ -842,9 +841,9 @@ mod tests {
     async fn unknown_sessions_and_empty_kinds_are_ignored() {
         let feed = ConversationFeed::new();
         // Events for a session that was never registered change nothing.
-        feed.observe(&message_envelope(Ulid::new(), "user:http", "hello"))
+        feed.observe(&message_envelope(Ulid::generate(), "user:http", "hello"))
             .await;
-        feed.observe(&yield_envelope(Ulid::new())).await;
+        feed.observe(&yield_envelope(Ulid::generate())).await;
         assert_eq!(feed.active_session(), None);
         assert!(!feed.is_waiting_on_captain());
         assert_eq!(feed.digest(), "");
@@ -853,8 +852,8 @@ mod tests {
     #[tokio::test]
     async fn child_events_do_not_replace_root_conversation_or_answer_its_ask() {
         let feed = ConversationFeed::new();
-        let root = Ulid::new();
-        let child = Ulid::new();
+        let root = Ulid::generate();
+        let child = Ulid::generate();
         feed.register_session(root, recording_poster(Arc::new(Mutex::new(Vec::new()))));
         feed.observe(&message_envelope(root, "user:http", "root request"))
             .await;

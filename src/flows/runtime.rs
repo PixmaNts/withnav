@@ -699,7 +699,7 @@ impl FlowRuntime {
             };
             let options = RunOptions {
                 deadline: started + Duration::from_millis(budget),
-                run_id: ulid::Ulid::new().to_string(),
+                run_id: ulid::Ulid::generate().to_string(),
             };
             let flow = flow.clone();
             let client = self.client.clone();

@@ -228,7 +228,7 @@ async fn the_http_endpoint_serves_the_snapshot() {
     let (status, _) = request_json(
         &router,
         "GET",
-        &format!("/v1/sessions/{}/context", ulid::Ulid::new()),
+        &format!("/v1/sessions/{}/context", ulid::Ulid::generate()),
         None,
     )
     .await;

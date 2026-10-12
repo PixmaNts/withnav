@@ -46,7 +46,7 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
         .unwrap();
     assert!(service.handle(id).unwrap().flows.is_some());
     let command = crate::bus::command::Command {
-        command_id: Ulid::new(),
+        command_id: Ulid::generate(),
         session_id: id,
         source_actor_id: "user:test".into(),
         target_actor_id: ROOT_ACTOR_ID.into(),
@@ -212,14 +212,19 @@ async fn admission_wait_is_cancelled_without_acquiring_the_gate() {
 #[tokio::test]
 async fn concurrent_terminal_winners_release_exactly_their_reservations() {
     let (_dir, service) = test_service();
-    let parent = Ulid::new();
+    let parent = Ulid::generate();
     service
         .history()
         .record_session(parent, "/w", "default", false)
         .await
         .unwrap();
     service.subagent_slots.lock().unwrap().insert(parent, 4);
-    let children = [Ulid::new(), Ulid::new(), Ulid::new(), Ulid::new()];
+    let children = [
+        Ulid::generate(),
+        Ulid::generate(),
+        Ulid::generate(),
+        Ulid::generate(),
+    ];
     for child in children {
         service
             .history()
@@ -275,8 +280,8 @@ async fn concurrent_terminal_winners_release_exactly_their_reservations() {
 #[tokio::test]
 async fn listing_hides_child_until_relationship_commits() {
     let (_dir, service) = test_service();
-    let parent = Ulid::new();
-    let child = Ulid::new();
+    let parent = Ulid::generate();
+    let child = Ulid::generate();
     service
         .history()
         .record_session(parent, "/workspace", "default", false)

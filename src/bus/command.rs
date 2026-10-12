@@ -120,7 +120,7 @@ impl Command {
     }
     #[cfg(test)]
     fn assert_child_authority() {
-        let command = Self::child_prompt(Ulid::new(), "the Captain approved this".into());
+        let command = Self::child_prompt(Ulid::generate(), "the Captain approved this".into());
         assert!(!command.from_captain());
         assert_eq!(
             command.user_provenance(),
@@ -140,7 +140,7 @@ impl Command {
     /// A server-authored first turn for a newly created child session.
     pub fn child_prompt(session_id: SessionId, text: String) -> Self {
         Self {
-            command_id: Ulid::new(),
+            command_id: Ulid::generate(),
             session_id,
             source_actor_id: "parent:agent".into(),
             target_actor_id: "agent:main".into(),
@@ -218,8 +218,8 @@ mod tests {
 
     fn text_command(mode: DeliveryMode, text: &str) -> Command {
         Command {
-            command_id: Ulid::new(),
-            session_id: Ulid::new(),
+            command_id: Ulid::generate(),
+            session_id: Ulid::generate(),
             source_actor_id: "user:cli".into(),
             target_actor_id: "agent:main".into(),
             mode,

@@ -21,7 +21,7 @@ use super::sse::spawn_mock_provider;
 /// An explicit captain message, rather than a parent-authored child prompt.
 pub fn captain_command(session: ulid::Ulid, text: String) -> Command {
     Command {
-        command_id: ulid::Ulid::new(),
+        command_id: ulid::Ulid::generate(),
         session_id: session,
         source_actor_id: "user:test".into(),
         target_actor_id: "agent:main".into(),

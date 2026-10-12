@@ -1021,7 +1021,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     assert!(root.promptable);
     assert!(matches!(
         fx.state
-            .session_summary(ulid::Ulid::new())
+            .session_summary(ulid::Ulid::generate())
             .bounded(file!(), line!())
             .await,
         Err(withnav::error::ServerError::SessionNotFound(_))
@@ -2053,7 +2053,7 @@ async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() 
         .await
         .unwrap();
     // An earlier fire-and-forget write for an unknown session poisons flush.
-    let stray = ulid::Ulid::new();
+    let stray = ulid::Ulid::generate();
     fx.state.history().append_event(
         stray,
         withnav::bus::event::EventEnvelope::new(

@@ -152,7 +152,7 @@ pub(crate) fn script_matches(binding: &Value) -> bool {
         .read_to_end(&mut bytes)
         .is_ok()
         && bytes.len() <= 48 * 1024
-        && format!("{:x}", Sha256::digest(&bytes)) == hash
+        && hex::encode(Sha256::digest(&bytes)) == hash
 }
 
 impl Tool for BashTool {

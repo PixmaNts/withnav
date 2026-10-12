@@ -314,7 +314,7 @@ impl RuntimeStatus {
         }
     }
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
-        let id = Ulid::new();
+        let id = Ulid::generate();
         if !self.steering.admit(steering::Operation {
             wake: true,
             id,
@@ -723,8 +723,8 @@ impl TurnPublisher {
             status,
             turn_id,
             task_id,
-            step_id: Ulid::new(),
-            message_id: Ulid::new(),
+            step_id: Ulid::generate(),
+            message_id: Ulid::generate(),
             pending_tool: None,
             error: None,
         }
@@ -759,7 +759,7 @@ impl TurnPublisher {
     fn observe(&mut self, event: AgentEvent<'_>) {
         self.status.activity.observe(&event);
         match event {
-            AgentEvent::StepStarted => self.step_id = Ulid::new(),
+            AgentEvent::StepStarted => self.step_id = Ulid::generate(),
             AgentEvent::Delta(delta) => {
                 let payload = to_value(&crate::bus::event::LlmDelta {
                     turn_id: self.turn_id,
@@ -773,7 +773,7 @@ impl TurnPublisher {
                 if let Some(usage) = message.usage {
                     self.status.record_usage(self.step_id, usage);
                 }
-                self.message_id = Ulid::new();
+                self.message_id = Ulid::generate();
                 let payload = to_value(&crate::bus::event::LlmResponse {
                     turn_id: self.turn_id,
                     step_id: self.step_id,
@@ -1149,7 +1149,7 @@ async fn runtime_loop(
                 None
             }
             Inbound::Completion => {
-                active_task_id = Some(Ulid::new());
+                active_task_id = Some(Ulid::generate());
                 None
             }
             Inbound::Batch(_) => {
@@ -1280,14 +1280,14 @@ async fn runtime_loop(
         actor.input_budget = status.context_snapshot().map(|s| s.input_budget);
 
         let task_id = active_task_id.unwrap_or_default();
-        let turn_id = Ulid::new();
+        let turn_id = Ulid::generate();
         let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
         if status
             .watchdog_fallback_notice
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
             turn.publish(EventKind::CommandResult, serde_json::json!({
-                "name":"watchdog", "ok":true, "operation_id":Ulid::new(), "data":{"message":"Instinct unavailable: watchdog cannot judge progress. This session falls back to a renewable 500-step cap; partial work is kept when the budget parks."}
+                "name":"watchdog", "ok":true, "operation_id":Ulid::generate(), "data":{"message":"Instinct unavailable: watchdog cannot judge progress. This session falls back to a renewable 500-step cap; partial work is kept when the budget parks."}
             }));
         }
 
@@ -1739,7 +1739,7 @@ fn publish_pause_resolution_for_turn(
     turn_id: Option<Ulid>,
 ) {
     let _ = sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({
-        "name":"watchdog", "ok":true,"operation_id":Ulid::new(),
+        "name":"watchdog", "ok":true,"operation_id":Ulid::generate(),
         "data":{"pause_token":token,"resolution":resolution,"turn_id":turn_id,"message":format!("Watchdog pause {resolution}")}
     })));
 }
@@ -1987,7 +1987,7 @@ mod tests {
         let done = r#"{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}"#;
         let server = spawn_mock(vec![http_sse(&sse_body(&[done])); 3]).await;
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = sequencer.subscribe_live().await.unwrap().receiver;
         let status = Arc::new(RuntimeStatus::default());
@@ -2067,7 +2067,7 @@ mod tests {
             agents, build,
         )));
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = sequencer.subscribe_live().await.unwrap().receiver;
         let cancel = CancellationToken::new();
@@ -2135,7 +2135,7 @@ mod tests {
                 count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 Box::pin(async { Ok(()) })
             }));
-            let id = Ulid::new();
+            let id = Ulid::generate();
             let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
             let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
             let (tx, inbox) = ActorInbox::channel();
@@ -2221,7 +2221,7 @@ mod tests {
             agents,
             Arc::new(denying),
         )));
-        let request_id = Ulid::new();
+        let request_id = Ulid::generate();
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
@@ -2255,7 +2255,7 @@ mod tests {
         *status.policy_pin_barrier.lock().unwrap() = Some((reached.clone(), release.clone()));
         let (tx, mut inbox) = ActorInbox::channel();
         let answers = inbox.permission_sender();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let mut denied = text_command(id, "refused text");
         denied.content.push(ContentBlock::LoadedSkill {
             name: "review".into(),
@@ -2309,7 +2309,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history.db");
         let store = Arc::new(crate::session::store::HistoryStore::open(&path).unwrap());
-        let id = Ulid::new();
+        let id = Ulid::generate();
         store
             .record_session(id, "/workspace", "test-model", false)
             .await
@@ -2390,7 +2390,7 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         *status.initial_watchdog_barrier.lock().unwrap() = Some((entered.clone(), release.clone()));
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let cancel = CancellationToken::new();
         let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
@@ -2449,7 +2449,7 @@ mod tests {
                 })
             }));
             let (tx, inbox) = ActorInbox::channel();
-            let id = Ulid::new();
+            let id = Ulid::generate();
             let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
             let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
             let cancel = CancellationToken::new();
@@ -2464,7 +2464,7 @@ mod tests {
             );
             tx.send(text_command(id, "original task")).await.unwrap();
             delivery_entered.notified().await;
-            status.wake_delivery_mode("interrupt", Ulid::new());
+            status.wake_delivery_mode("interrupt", Ulid::generate());
             notice_entered.notified().await;
             assert!(status
                 .watchdog
@@ -2514,7 +2514,7 @@ mod tests {
             })
         }));
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
         let cancel = CancellationToken::new();
@@ -2529,8 +2529,8 @@ mod tests {
         );
         tx.send(text_command(id, "task")).await.unwrap();
         entered.notified().await;
-        let model = Ulid::new();
-        let compact = Ulid::new();
+        let model = Ulid::generate();
+        let compact = Ulid::generate();
         assert_eq!(
             status.request_model_switch("other".into(), model).await,
             Some(ModelReply::Deferred)
@@ -2566,7 +2566,7 @@ mod tests {
         status.queue_captain();
         status.queue_captain();
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let cancel = CancellationToken::new();
         let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
@@ -2613,7 +2613,7 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         *status.arrival_barrier.lock().unwrap() = Some((reached.clone(), release.clone()));
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
         let cancel = CancellationToken::new();
@@ -2677,7 +2677,7 @@ mod tests {
         *status.arrival_barrier.lock().unwrap() = Some((reached.clone(), release.clone()));
         let (tx, inbox) = ActorInbox::channel();
         let inbox_answers = inbox.permission_sender();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
         let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
         let cancel = CancellationToken::new();
@@ -2741,7 +2741,7 @@ mod tests {
         });
         *status.root_supervisor.lock().unwrap() = Some(supervisor);
         let (tx, inbox) = ActorInbox::channel();
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let task = spawn_with_status(
             id,
             make_actor("http://127.0.0.1:1/v1".into(), CancellationToken::new()),
@@ -2777,7 +2777,7 @@ mod tests {
                     Ok(Some(transcript.to_vec()))
                 })
             }));
-            let id = Ulid::new();
+            let id = Ulid::generate();
             let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
             let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
             let cancel = CancellationToken::new();
@@ -2861,7 +2861,7 @@ mod tests {
                 }
                 let (tx, inbox) = ActorInbox::channel();
                 drop(tx);
-                let id = Ulid::new();
+                let id = Ulid::generate();
                 let actor = spawn_with_status(
                     id,
                     actor,
@@ -2876,7 +2876,7 @@ mod tests {
                 if steer {
                     assert!(status.steering.admit(steering::Operation {
                         wake: false,
-                        id: Ulid::new(),
+                        id: Ulid::generate(),
                         content: "guidance".into(),
                         provenance: UserProvenance::Parent,
                         interrupt: false,
@@ -3015,7 +3015,7 @@ mod tests {
 
     fn text_command(session_id: Ulid, content: &str) -> Command {
         Command {
-            command_id: Ulid::new(),
+            command_id: Ulid::generate(),
             session_id,
             source_actor_id: "user:cli".into(),
             target_actor_id: ROOT_ACTOR_ID.into(),
@@ -3051,7 +3051,7 @@ mod tests {
         if let Some(n) = max_steps {
             actor.max_steps = n;
         }
-        let session_id = Ulid::new();
+        let session_id = Ulid::generate();
         let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
         let live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
         let handle = spawn(
@@ -3487,7 +3487,7 @@ mod tests {
         // PERMANENT teardown: a later try_send fails Closed — NOT "still
         // accepts".
         let err = late_tx
-            .try_send(text_command(Ulid::new(), "too late"))
+            .try_send(text_command(Ulid::generate(), "too late"))
             .unwrap_err();
         assert!(
             matches!(err, mpsc::error::TrySendError::Closed(_)),

@@ -271,8 +271,8 @@ async fn delivered_result_is_live_and_replayed_once_before_the_woken_turn() {
 async fn committed_transcript_message_replays_after_crash_before_live_publication() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("history.db");
-    let parent = Ulid::new();
-    let child = Ulid::new();
+    let parent = Ulid::generate();
+    let child = Ulid::generate();
     let store = HistoryStore::open(&path).unwrap();
     for id in [parent, child] {
         store

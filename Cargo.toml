@@ -34,20 +34,23 @@ tokio = { version = "1.53", features = [
     "time",
     "sync",
 ] }
-# rustls, NOT native-tls, for reproducible builds (no system OpenSSL).
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "deflate", "brotli"] }
+# rustls, NOT native-tls, for reproducible builds (no system OpenSSL). reqwest 0.13 names it
+# `rustls` (aws-lc-rs crypto); `query` gates `RequestBuilder::query`.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "query", "json", "stream", "gzip", "deflate", "brotli"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1.8"
 thiserror = "2.0.20"
 anyhow = "1.0.104"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-ulid = { version = "1", features = ["std", "serde"] }
+ulid = { version = "3.0.0", features = ["std", "serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
 nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
-sha2 = "0.10"
+sha2 = "0.11.0"
+# sha2 0.11 digests no longer implement LowerHex: hex-encode them explicitly.
+hex = "0.4"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 directories = "6.0.0"
 tempfile = "3"

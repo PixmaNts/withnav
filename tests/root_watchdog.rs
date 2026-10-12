@@ -124,7 +124,7 @@ async fn pause_lifecycle(mode: u8) {
             saved.meta.last_seq + 1,
             withnav::bus::event::EventKind::MessageReceived,
             serde_json::json!({
-                "source":"user:http","target":"agent:main","command_id":ulid::Ulid::new(),"mode":"next_turn","content":"lost admitted correction"
+                "source":"user:http","target":"agent:main","command_id":ulid::Ulid::generate(),"mode":"next_turn","content":"lost admitted correction"
             }),
         );
         service.close_session(id).await.unwrap();
@@ -182,7 +182,7 @@ async fn pause_lifecycle(mode: u8) {
         service.send(selected).await.unwrap();
     } else if mode == 1 {
         let command = withnav::bus::command::Command {
-            command_id: ulid::Ulid::new(),
+            command_id: ulid::Ulid::generate(),
             session_id: id,
             source_actor_id: "navigator".into(),
             target_actor_id: "agent:main".into(),
@@ -293,7 +293,7 @@ fn input_command(
     text: &str,
 ) -> withnav::bus::command::Command {
     withnav::bus::command::Command {
-        command_id: ulid::Ulid::new(),
+        command_id: ulid::Ulid::generate(),
         session_id: id,
         source_actor_id: source.into(),
         target_actor_id: "agent:main".into(),
@@ -353,7 +353,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     let sub = service.subscribe(child, None).await.unwrap();
     collect_until(sub, |e| e.kind == "turn.end").await;
     let mut command = withnav::bus::command::Command {
-        command_id: ulid::Ulid::new(),
+        command_id: ulid::Ulid::generate(),
         session_id: id,
         source_actor_id: "navigator".into(),
         target_actor_id: "agent:main".into(),
@@ -372,7 +372,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     }
     service.history().flush().await.unwrap();
     assert_eq!(provider.bodies().len(), 501);
-    command.command_id = ulid::Ulid::new();
+    command.command_id = ulid::Ulid::generate();
     command.source_actor_id = "user:http".into();
     command.content = vec![withnav::bus::command::ContentBlock::Text {
         text: "fresh captain window".into(),

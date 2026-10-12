@@ -82,7 +82,7 @@ async fn live_until(
 /// Stores a conversation of `SEEDED` durable events (seq 0 is
 /// `session.start`) for a fresh id, through a store of its own.
 async fn seed_conversation(fx: &Fixture) -> Ulid {
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let store = HistoryStore::open(&fx.db).expect("open store");
     store
         .record_session(id, &fx.ws.display().to_string(), "mock/mock-model", false)

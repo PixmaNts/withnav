@@ -57,7 +57,7 @@ async fn say(state: &AppState, id: ulid::Ulid, text: &str) {
 async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
     state
         .send(Command {
-            command_id: ulid::Ulid::new(),
+            command_id: ulid::Ulid::generate(),
             session_id: id,
             source_actor_id: withnav::navigator::NAVIGATOR_ACTOR_ID.to_string(),
             target_actor_id: "agent:main".to_string(),
@@ -227,14 +227,14 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     let (status, _) = answer(
         &router2,
         id2,
-        &ulid::Ulid::new().to_string(),
+        &ulid::Ulid::generate().to_string(),
         json!({"decision": "allow_once"}),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "unknown request id");
     let (status, _) = answer(
         &router2,
-        ulid::Ulid::new(),
+        ulid::Ulid::generate(),
         &request2,
         json!({"decision": "allow_once"}),
     )

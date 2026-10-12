@@ -366,7 +366,7 @@ fn stale_assignment_fetch_cannot_change_another_generation_or_session() {
 fn unified_selection_replay_restores_agent_model_variant_and_override_source() {
     let mut s = State::default();
     let mut e: withnav::bus::event::EventEnvelope=serde_json::from_value(json!({
-        "schema_version":1,"session_id":ulid::Ulid::new(),"seq":1,"event_id":ulid::Ulid::new(),"occurred_at":"2026-10-05T00:00:00Z", "kind":"model.changed",
+        "schema_version":1,"session_id":ulid::Ulid::generate(),"seq":1,"event_id":ulid::Ulid::generate(),"occurred_at":"2026-10-05T00:00:00Z", "kind":"model.changed",
         "actor_id":"agent:main","payload":{"previous":null,"new":{"agent":"plan","model":"omniroute/combo/astra","gateway":"omniroute","upstream_id":"combo/astra","variant":"low","source":"override","variant_source":"override"},"window":1000000,"reason":"agent","operation_id":null}
     })).unwrap();
     e.seq = 1;

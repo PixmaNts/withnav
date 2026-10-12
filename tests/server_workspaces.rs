@@ -188,7 +188,7 @@ async fn destructive_removal_deletes_folded_root_sessions_children_and_events() 
     let state = state(tmp.path());
     let root = create(&state, &workspace).await;
     create(&state, &workspace.join("..").join("project")).await;
-    let child = ulid::Ulid::new();
+    let child = ulid::Ulid::generate();
     state
         .history()
         .record_session(child, workspace.to_str().unwrap(), "mock", false)

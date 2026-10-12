@@ -79,7 +79,7 @@ async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
             ),
         ] {
             let envelope =
-                crate::bus::event::EventEnvelope::new(ulid::Ulid::new(), seq, kind, payload);
+                crate::bus::event::EventEnvelope::new(ulid::Ulid::generate(), seq, kind, payload);
             crate::tui::reducer::update(
                 &mut runtime.state,
                 ClientEvent::Envelope {

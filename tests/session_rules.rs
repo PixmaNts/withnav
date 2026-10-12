@@ -68,7 +68,7 @@ async fn converse(state: &AppState, id: ulid::Ulid, text: &str) {
     let sub = state.subscribe(id, None).await.expect("subscribe");
     state
         .send(Command {
-            command_id: ulid::Ulid::new(),
+            command_id: ulid::Ulid::generate(),
             session_id: id,
             source_actor_id: "user:test".to_string(),
             target_actor_id: "agent:main".to_string(),

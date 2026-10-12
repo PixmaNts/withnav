@@ -116,7 +116,7 @@ impl EmbeddedServer {
 /// (52 characters, not hex), whose random parts give plenty of entropy for a
 /// secret that only lives as long as the process.
 fn bearer_token() -> String {
-    format!("{}{}", ulid::Ulid::new(), ulid::Ulid::new()).to_lowercase()
+    format!("{}{}", ulid::Ulid::generate(), ulid::Ulid::generate()).to_lowercase()
 }
 
 /// `GET /v1/health` (no auth), retried briefly so a server that is just

@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(json["error"]["message"], "blocked");
 
         let cancel = CancellationToken::new();
-        let child = ulid::Ulid::new();
+        let child = ulid::Ulid::generate();
         for code in ["subagent_error", "subagent_decision"] {
             assert_eq!(
                 parse_child_id(&serde_json::json!({"child_id": child}), &cancel, code).unwrap(),

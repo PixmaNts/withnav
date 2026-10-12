@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use withnav::agent::instructions::RulesRoots;
 use withnav::session::preflight::Preflight;
+mod common;
 
 /// A hang guard for waits on a child process, not a performance assertion. `nav` starts in
 /// about 45 ms alone and 0.1 to 1.4 s on a CPU-limited, oversubscribed container; on the
@@ -161,14 +162,11 @@ async fn missing_or_malformed_auth_is_explicit_and_secret_safe() {
 
 fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate_tokio(&mut cmd, dir);
     if lsp {
         cmd.args(["lsp", "--stdio"]);
     }
     cmd.current_dir(dir)
-        .env("WITHNAV_PREVIEW_TEST_ROOT", dir.join("home"))
-        .env("HOME", dir.join("home"))
-        .env("XDG_CONFIG_HOME", dir.join("config"))
-        .env("XDG_DATA_HOME", dir.join("data"))
         .env_remove("WITHNAV_STARTUP_ABSENT_KEY")
         .stdin(Stdio::null())
         .kill_on_drop(true);

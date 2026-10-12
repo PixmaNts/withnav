@@ -586,16 +586,13 @@ fn run_withnav(root: &Path, ws: &Path, models: &Path, extra: &[&str]) -> std::pr
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+    common::nav_command(root)
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")
         .arg(models)
         .args(extra)
         .env("WITHNAV_TEST_KEY", "test-key")
-        .env("HOME", root.join("home"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_CONFIG_HOME", root.join("config"))
         .output()
         .expect("run the binary")
 }

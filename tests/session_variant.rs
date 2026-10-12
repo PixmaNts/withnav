@@ -445,16 +445,13 @@ async fn withnav_run_variant_reaches_the_wire() {
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
         tokio::task::spawn_blocking(move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+            common::nav_command(&root)
                 .args(["run", "--workspace"])
                 .arg(&ws)
                 .arg("--models")
                 .arg(&models)
                 .args(["--variant", variant, "--prompt", "go"])
                 .env("WITHNAV_TEST_KEY", "test-key")
-                .env("HOME", root.join("home"))
-                .env("XDG_DATA_HOME", root.join("data"))
-                .env("XDG_CONFIG_HOME", root.join("config"))
                 .output()
                 .expect("run the binary")
         })

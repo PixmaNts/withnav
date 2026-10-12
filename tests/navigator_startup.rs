@@ -9,6 +9,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+mod common;
 
 /// A hang guard for reads from the child process, not a performance assertion (the 2 s
 /// `elapsed` check below is the real one: discovery is delayed 20 s). `nav` starts in about
@@ -86,16 +87,14 @@ async fn startup_does_not_wait_for_model_discovery() {
     )
     .unwrap();
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate_tokio(&mut command, root.path());
+    let mut child = command
         .args(["lsp", "--stdio"])
         .arg("--models")
         .arg(&models)
         .current_dir(root.path())
         .env("WITHNAV_TEST_KEY", "test-key")
-        .env("WITHNAV_PREVIEW_TEST_ROOT", root.path().join("home"))
-        .env("HOME", root.path().join("home"))
-        .env("XDG_DATA_HOME", root.path().join("data"))
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

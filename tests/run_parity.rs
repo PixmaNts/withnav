@@ -244,7 +244,6 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("ws")).unwrap();
-    let data_home = root.join("data");
     let config_home = root.join("config");
     std::fs::create_dir_all(config_home.join("withnav")).unwrap();
     std::fs::write(
@@ -275,7 +274,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+            common::nav_command(&home)
                 .args([
                     "run",
                     "--workspace",
@@ -286,15 +285,6 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "go",
                 ])
                 .env("WITHNAV_RUN_PARITY_KEY", "test-key")
-                // The binary opens the conversation history in the XDG data
-                // dir and migrates legacy files there. Without these two, a
-                // test run wrote into the Captain's real database and moved
-                // their data (observed 2026-10-01).
-                .env("XDG_DATA_HOME", data_home.as_os_str())
-                .env("XDG_CONFIG_HOME", config_home.as_os_str())
-                // The home directory holds the global rules files.
-                .env("WITHNAV_PREVIEW_TEST_ROOT", &home)
-                .env("HOME", &home)
                 .output()
                 .expect("run the binary")
         }
@@ -418,7 +408,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+            common::nav_command(&home)
                 .args([
                     "run",
                     "--workspace",
@@ -429,10 +419,6 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
                     "go",
                 ])
                 .env("WITHNAV_RUN_PARITY_KEY", "test-key")
-                .env("XDG_DATA_HOME", home.join("data"))
-                .env("XDG_CONFIG_HOME", home.join("config"))
-                .env("WITHNAV_PREVIEW_TEST_ROOT", &home)
-                .env("HOME", &home)
                 .output()
                 .expect("run the binary")
         }

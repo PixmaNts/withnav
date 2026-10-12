@@ -26,7 +26,7 @@ Pick the package that matches your machine:
 |---|---|---|
 | `withnav-linux-x64-<version>.vsix` | Linux on x64 | Bundled (static binary). Nothing else to install. |
 | `withnav-linux-arm64-<version>.vsix` | Linux on arm64 | Bundled (static binary). Nothing else to install. |
-| `withnav-win32-x64-<version>.vsix` | Native Windows x64, once available | Bundled `nav.exe`; no global `nav` needed. |
+| `withnav-win32-x64-<version>.vsix` | Windows x64 compile/packaging preview | Bundled `nav.exe`; sessions are disabled. |
 | `withnav-<version>.vsix` (universal) | macOS, Nix, development | Not included. Put `nav` on your `PATH`, or set `withnav.serverPath`. |
 
 A path you set in `withnav.serverPath` always wins over the bundled binary. Set it to the
@@ -91,7 +91,12 @@ Install the Microsoft Visual C++ v14 x64 Redistributable if the executable repor
 MSVC runtime DLLs. Redistributables are not bundled; clean-machine runtime verification remains
 a release gate.
 
-Windows artifacts are a compile/packaging preview, not a supported runtime. Private persistence (credentials, settings, grants, session ownership, flows and scratch), native no-follow file tools, shell execution even with Git Bash, and browser auto-open are disabled. Trusted Git Bash support is upcoming.
+Windows artifacts are a **compile/packaging preview**, not a supported runtime.
+Session ownership is disabled, so `nav run`, TUI and LSP sessions cannot start.
+Credentials-file, settings and grants persistence, flows, scratch, native file tools,
+shell execution (even with Git Bash), and browser auto-open are also disabled.
+`nav doctor` and API keys supplied through environment variables work.
+See [#8](https://github.com/PixmaNts/withnav/issues/8) for the backend plan.
 
 Build on Windows with the MSVC Rust toolchain and Visual Studio C++ build tools. The existing
 packaging script can run under Git Bash with a prebuilt binary:
@@ -109,6 +114,6 @@ cargo xwin check --workspace --all-targets --locked --target x86_64-pc-windows-m
 cargo xwin clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
-Cross-checking is not runtime validation. Native Windows CI and a clean standard-user machine
-must verify ACL/reparse security, child cleanup, console behavior and bundled VSIX activation.
+Cross-checking is not runtime validation. Native Windows tests and a clean standard-user machine
+must verify the preview's refusals, console behavior and bundled VSIX activation.
 Windows ARM64, MSI/winget packages, signing and native PowerShell tooling are not provided.

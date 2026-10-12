@@ -137,6 +137,7 @@ pub fn remove_key(config_dir: &Path, provider_name: &str) -> Result<(), Provider
     Err(ProviderError::MissingApiKey)
 }
 
+#[cfg(unix)]
 pub fn set_key(config_dir: &Path, provider_name: &str, api_key: &str) -> Result<(), ProviderError> {
     std::fs::create_dir_all(config_dir).map_err(io_api)?;
     let mut store = load_store(config_dir)?;
@@ -147,6 +148,17 @@ pub fn set_key(config_dir: &Path, provider_name: &str, api_key: &str) -> Result<
         },
     );
     save_store(config_dir, store)
+}
+
+#[cfg(windows)]
+pub fn set_key(
+    _config_dir: &Path,
+    _provider_name: &str,
+    _api_key: &str,
+) -> Result<(), ProviderError> {
+    Err(ProviderError::Auth(
+        "Private credential persistence is not yet supported on Windows".into(),
+    ))
 }
 
 /// Helper function to save a Store to disk.
@@ -183,6 +195,7 @@ pub fn list_providers(config_dir: &Path) -> Result<Vec<String>, ProviderError> {
     Ok(store.providers.keys().cloned().collect())
 }
 
+#[cfg(unix)]
 fn io_api(e: std::io::Error) -> ProviderError {
     ProviderError::Auth(format!("auth.json I/O error: {e}"))
 }
@@ -230,10 +243,22 @@ mod tests {
     #[test]
     fn file_key_wins_over_env() {
         let tmp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
         set_key(tmp.path(), "omniroute", "from-file").unwrap();
+        #[cfg(windows)]
+        assert!(set_key(tmp.path(), "omniroute", "from-file")
+            .unwrap_err()
+            .to_string()
+            .contains("not yet supported on Windows"));
         std::env::set_var("WITHNAV_TEST_KEY", "from-env");
         let key = resolve_key(tmp.path(), "omniroute", Some("WITHNAV_TEST_KEY")).unwrap();
+        #[cfg(unix)]
         assert_eq!(key, "from-file");
+        #[cfg(windows)]
+        {
+            assert_eq!(key, "from-env");
+            assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+        }
         std::env::remove_var("WITHNAV_TEST_KEY");
     }
 
@@ -249,10 +274,23 @@ mod tests {
     #[test]
     fn remove_key_test() {
         let tmp = tempfile::tempdir().unwrap();
-        set_key(tmp.path(), "omniroute", "super-secret-value").unwrap();
-        assert!(remove_key(tmp.path(), "omniroute").is_ok());
-        let e = resolve_key(tmp.path(), "omniroute", None).unwrap_err();
-        assert!(matches!(e, ProviderError::MissingApiKey));
+        #[cfg(windows)]
+        {
+            let config = tmp.path().join("missing");
+            assert!(set_key(&config, "omniroute", "super-secret-value")
+                .unwrap_err()
+                .to_string()
+                .contains("not yet supported on Windows"));
+            assert!(remove_key(&config, "omniroute").is_err());
+            assert!(!config.exists());
+        }
+        #[cfg(unix)]
+        {
+            set_key(tmp.path(), "omniroute", "super-secret-value").unwrap();
+            assert!(remove_key(tmp.path(), "omniroute").is_ok());
+            let e = resolve_key(tmp.path(), "omniroute", None).unwrap_err();
+            assert!(matches!(e, ProviderError::MissingApiKey));
+        }
     }
 
     #[test]
@@ -290,9 +328,18 @@ mod tests {
     #[test]
     fn list_returns_provider_names_only() {
         let tmp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
         set_key(tmp.path(), "omniroute", "super-secret-value").unwrap();
+        #[cfg(windows)]
+        {
+            assert!(set_key(tmp.path(), "omniroute", "super-secret-value").is_err());
+            assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+        }
         let names = list_providers(tmp.path()).unwrap();
+        #[cfg(unix)]
         assert_eq!(names, vec!["omniroute".to_string()]);
+        #[cfg(windows)]
+        assert!(names.is_empty());
         assert!(!names.iter().any(|n| n.contains("super-secret-value")));
     }
 }

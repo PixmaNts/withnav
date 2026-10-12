@@ -9,7 +9,11 @@ requests land in `develop`.
 - Native Windows x64 packaging and CI: an MSVC `nav.exe` ZIP with licenses, a `win32-x64`
   VSIX using the bundled executable without chmod, and checksums for Windows release assets.
   Explicit server paths (including spaces), bundled binaries and PATH retain their precedence.
-  Windows runtime support remains dependent on the Rust port and native artifact validation.
+  These are compile/packaging previews, not a supported Windows runtime. Session ownership
+  is disabled (`nav run`, TUI and LSP sessions cannot start), as are credentials-file,
+  settings and grants persistence, flows, scratch, native file tools, shell execution
+  (even with Git Bash), and browser auto-open. `nav doctor` and API keys via environment
+  variables work. Backend work is tracked in [#8](https://github.com/PixmaNts/withnav/issues/8).
 
 ### Changed
 

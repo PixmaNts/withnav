@@ -154,9 +154,13 @@ mod env_tests {
     }
 }
 
-/// Explicit routing for isolated Windows preview subprocesses; defaults are unchanged.
+/// Test-only routing for isolated Windows preview subprocesses in debug builds.
+/// Release binaries ignore it; this changes paths, never platform support or policy.
 #[cfg(windows)]
 pub fn preview_test_root() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
     std::env::var_os("WITHNAV_PREVIEW_TEST_ROOT")
         .map(PathBuf::from)
         .filter(|root| root.is_absolute())

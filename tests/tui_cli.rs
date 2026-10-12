@@ -3,6 +3,7 @@
 use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
+mod common;
 
 struct Run {
     out: Output,
@@ -31,16 +32,22 @@ fn tui_command(args: &[&str], env: &[(&str, &str)]) -> (Command, TempDir) {
         r#"{"agents":{"build":{"model":"mock/model"}}}"#,
     )
     .unwrap();
-    std::fs::write(config.join("withnav/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
+    std::fs::write(config.join("withnav/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"WITHNAV_TUI_TEST_KEY"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
+    #[cfg(unix)]
     withnav::provider::auth::set_key(&config.join("withnav"), "mock", "test-key").unwrap();
+    #[cfg(windows)]
+    {
+        let error = withnav::provider::auth::set_key(&config.join("withnav"), "mock", "test-key")
+            .unwrap_err();
+        assert!(error.to_string().contains("not yet supported on Windows"));
+        assert!(!config.join("withnav/auth.json").exists());
+    }
     let mut command = Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, dirs.path());
     command
         .arg("tui")
         .args(args)
-        .env("XDG_DATA_HOME", &data)
-        .env("XDG_CONFIG_HOME", &config)
-        .env("WITHNAV_PREVIEW_TEST_ROOT", dirs.path())
-        .env("HOME", dirs.path())
+        .env("WITHNAV_TUI_TEST_KEY", "test-key")
         .env_remove("WITHNAV_SERVER_TOKEN")
         .env_remove("NAVAI_SERVER_TOKEN")
         .stdin(Stdio::null());

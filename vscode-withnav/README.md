@@ -125,4 +125,9 @@ Keybindings are active only when a remark is visible (`withnav.remarkVisible` co
 | `withnav.cooldownMs` | `20000` | Cooldown between remarks on one file |
 | `withnav.reflex.enabled` | `true` | Offer inline suggestions from the reflex layer |
 
-Windows artifacts are a compile/packaging preview, not a supported runtime. Private persistence (credentials, settings, grants, session ownership, flows and scratch), native no-follow file tools, shell execution even with Git Bash, and browser auto-open are disabled. Trusted Git Bash support is upcoming.
+Windows artifacts are a **compile/packaging preview**, not a supported runtime.
+Session ownership is disabled, so `nav run`, TUI and LSP sessions cannot start.
+Credentials-file, settings and grants persistence, flows, scratch, native file tools,
+shell execution (even with Git Bash), and browser auto-open are also disabled.
+`nav doctor` and API keys supplied through environment variables work.
+See [#8](https://github.com/PixmaNts/withnav/issues/8) for the backend plan.

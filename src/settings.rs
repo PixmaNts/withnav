@@ -580,14 +580,14 @@ mod tests {
         };
         assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
         let settings = super::Settings {
-            root: serde_json::json!({"permissions":{"scratch_dirs":["/tmp/custom"]}})
+            root: serde_json::json!({"permissions":{"scratch_dirs":[std::env::temp_dir().join("custom")]}})
                 .as_object()
                 .unwrap()
                 .clone(),
         };
         assert_eq!(
             settings.permissions_scratch_dirs().unwrap(),
-            vec![std::path::PathBuf::from("/tmp/custom")]
+            vec![std::env::temp_dir().join("custom")]
         );
     }
     #[test]
@@ -658,25 +658,49 @@ mod tests {
             r#"{"editor":{"font":"mono"},"tui":{"theme":"ayu-dark","sidebar":false},"n":3}"#,
         )
         .unwrap();
-        save_tui_theme(dir.path(), "nord-light").unwrap();
-        let settings = load(dir.path()).unwrap();
-        assert_eq!(settings.tui_theme(), Some("nord-light"));
-        let raw: Value =
-            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
-        assert_eq!(raw["editor"]["font"], "mono");
-        assert_eq!(raw["tui"]["sidebar"], false);
-        assert_eq!(raw["n"], 3);
-        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(leftovers.len(), 2, "only config and its stable lock remain");
-        assert!(dir.path().join("config.json.lock").is_file());
+        #[cfg(windows)]
+        {
+            let before = std::fs::read(path(dir.path())).unwrap();
+            assert!(save_tui_theme(dir.path(), "nord-light")
+                .unwrap_err()
+                .to_string()
+                .contains("not yet supported on Windows"));
+            assert_eq!(std::fs::read(path(dir.path())).unwrap(), before);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+        #[cfg(unix)]
+        {
+            save_tui_theme(dir.path(), "nord-light").unwrap();
+            let settings = load(dir.path()).unwrap();
+            assert_eq!(settings.tui_theme(), Some("nord-light"));
+            let raw: Value =
+                serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+            assert_eq!(raw["editor"]["font"], "mono");
+            assert_eq!(raw["tui"]["sidebar"], false);
+            assert_eq!(raw["n"], 3);
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+            assert_eq!(leftovers.len(), 2, "only config and its stable lock remain");
+            assert!(dir.path().join("config.json.lock").is_file());
+        }
     }
 
     #[test]
     fn saving_creates_the_directory_and_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("withnav");
-        save_tui_theme(&nested, "ayu-light").unwrap();
-        assert_eq!(load(&nested).unwrap().tui_theme(), Some("ayu-light"));
+        #[cfg(windows)]
+        {
+            assert!(save_tui_theme(&nested, "ayu-light")
+                .unwrap_err()
+                .to_string()
+                .contains("not yet supported on Windows"));
+            assert!(!nested.exists());
+        }
+        #[cfg(unix)]
+        {
+            save_tui_theme(&nested, "ayu-light").unwrap();
+            assert_eq!(load(&nested).unwrap().tui_theme(), Some("ayu-light"));
+        }
     }
 
     #[test]
@@ -727,23 +751,36 @@ mod tests {
         .unwrap();
         assert!(load(dir.path()).unwrap().tui_favorite_models().is_empty());
         let names = vec!["a/one".to_string(), "b/two".to_string()];
-        save_tui_favorite_models(dir.path(), &names).unwrap();
-        let settings = load(dir.path()).unwrap();
-        assert_eq!(settings.tui_favorite_models(), names);
-        assert_eq!(settings.tui_theme(), Some("ayu-dark"));
-        let raw: Value =
-            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
-        assert_eq!(raw["editor"]["font"], "mono");
-        assert_eq!(raw["tui"]["sidebar"], false);
-        assert_eq!(raw["n"], 3);
-        // Saving the theme afterwards keeps the favorites; an empty list drops the key only.
-        save_tui_theme(dir.path(), "nord-dark").unwrap();
-        assert_eq!(load(dir.path()).unwrap().tui_favorite_models(), names);
-        save_tui_favorite_models(dir.path(), &[]).unwrap();
-        let raw: Value =
-            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
-        assert!(raw["tui"].get("favorite_models").is_none());
-        assert_eq!(raw["tui"]["theme"], "nord-dark");
+        #[cfg(windows)]
+        {
+            let before = std::fs::read(path(dir.path())).unwrap();
+            assert!(save_tui_favorite_models(dir.path(), &names)
+                .unwrap_err()
+                .to_string()
+                .contains("not yet supported on Windows"));
+            assert_eq!(std::fs::read(path(dir.path())).unwrap(), before);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+        #[cfg(unix)]
+        {
+            save_tui_favorite_models(dir.path(), &names).unwrap();
+            let settings = load(dir.path()).unwrap();
+            assert_eq!(settings.tui_favorite_models(), names);
+            assert_eq!(settings.tui_theme(), Some("ayu-dark"));
+            let raw: Value =
+                serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+            assert_eq!(raw["editor"]["font"], "mono");
+            assert_eq!(raw["tui"]["sidebar"], false);
+            assert_eq!(raw["n"], 3);
+            // Saving the theme afterwards keeps the favorites; an empty list drops the key only.
+            save_tui_theme(dir.path(), "nord-dark").unwrap();
+            assert_eq!(load(dir.path()).unwrap().tui_favorite_models(), names);
+            save_tui_favorite_models(dir.path(), &[]).unwrap();
+            let raw: Value =
+                serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+            assert!(raw["tui"].get("favorite_models").is_none());
+            assert_eq!(raw["tui"]["theme"], "nord-dark");
+        }
     }
 
     #[test]

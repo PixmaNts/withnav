@@ -5422,6 +5422,51 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(windows)]
+    async fn windows_shell_stays_captain_only_with_bypass_optimistic_review_and_precedents() {
+        for bypass in [false, true] {
+            for automatic_review in [false, true] {
+                let mut actor = plan_actor(
+                    Some(FakeInstinct::new(Ok(Verdict::Conforms))),
+                    "http://unused",
+                );
+                as_build(&mut actor);
+                actor.bypass.lock().unwrap().enabled = bypass; // `nav run --yes` uses this state too.
+                actor.automatic_permission_review = automatic_review;
+                actor.permission_reviewer = Some(Arc::new(Meta {
+                    decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                    captured: Default::default(),
+                    hangs: false,
+                }));
+                let target = actor.tool_context.workspace.join("shell-output");
+                let call = ToolCall {
+                    id: "windows-shell".into(),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command":format!("echo safe > {}", target.display())}),
+                    args_valid: true,
+                };
+                actor
+                    .permission_context
+                    .lock()
+                    .unwrap()
+                    .record(serde_json::json!({
+                        "signature":{"tool":"bash","command":call.args["command"]},
+                        "scope":Scope::Folder(actor.tool_context.workspace.clone()),
+                        "decision":"allow_once",
+                        "request_id":"earlier-captain-answer"
+                    }));
+                assert!(matches!(
+                    run_gated(&mut actor, &call, &mut |event| {
+                        assert!(!matches!(event, AgentEvent::PreCall { .. }));
+                    }).await,
+                    One::Ask(request, _) if request.requires_captain
+                ));
+                assert!(!target.exists());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn cancellation_after_reviewer_entry_never_dispatches_or_prompts() {
         for during_meta in [false, true] {
             let mut actor = plan_actor(
@@ -5457,11 +5502,14 @@ mod tests {
             let run = run_gated(&mut actor, &call, &mut observe);
             #[cfg(windows)]
             {
-                assert!(matches!(run.await, One::Ask(..)));
+                assert!(matches!(run.await, One::Settled));
                 assert_eq!(count, 0);
                 assert!(!target.exists());
                 assert!(judge.0.lock().unwrap().is_none());
                 assert!(meta.captured.lock().unwrap().is_none());
+                assert!(
+                    matches!(actor.transcript.last(), Some(ChatMessage::Tool { content, .. }) if content.contains("not yet supported on Windows"))
+                );
             }
             #[cfg(unix)]
             {

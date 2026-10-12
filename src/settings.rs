@@ -3,6 +3,7 @@
 //! clients of different versions can share the file.
 //! Cooperating writers use `update` and a stable advisory lock. Manual edits by other programs
 //! are outside this guarantee; PUT revision checks still detect edits made before its read.
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -485,6 +486,7 @@ mod tests {
         );
         assert!(!load(dir.path()).unwrap().has_assignment_configuration());
     }
+    #[cfg(unix)]
     #[test]
     fn private_scratch_uses_only_owned_private_runtime_directory() {
         use std::os::unix::fs::PermissionsExt;

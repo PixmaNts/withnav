@@ -71,6 +71,7 @@ async fn listed(state: &AppState) -> Vec<Value> {
         .clone()
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn hidden_paths_fold_survive_restart_and_reopen_explicitly_or_on_creation() {
     let tmp = tempfile::tempdir().unwrap();

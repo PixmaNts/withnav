@@ -337,7 +337,7 @@ fn folder_covers(grant: &Path, target: &Path, cx: &ToolContext) -> bool {
         {
             return false;
         }
-        validate_path(&[PathBuf::from("/")], root).is_ok_and(|root| {
+        resolve_protected_root(root).is_ok_and(|root| {
             root == workspace || !resolved_target.starts_with(&root) || grant.starts_with(&root)
         })
     })
@@ -453,6 +453,7 @@ fn review_destination(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolErro
     Ok(resolved)
 }
 
+#[cfg(unix)]
 pub fn resolve_protected_root(path: &Path) -> Result<PathBuf, ToolError> {
     validate_path(&[PathBuf::from("/")], path)
 }
@@ -475,7 +476,7 @@ pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext
 
 pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
     let path = requested_path(path, cx)?;
-    validate_path(&[PathBuf::from("/")], &path)
+    resolve_protected_root(&path)
 }
 
 pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
@@ -691,6 +692,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_out_of_the_roots_is_rejected_not_ungated() {
         let f = fixture();
@@ -819,6 +821,7 @@ mod tests {
         assert!(request.reason.contains("write"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_persisted_grant_survives_a_new_session_in_the_same_workspace_only() {
         let f = fixture();
@@ -865,6 +868,7 @@ mod tests {
     // Given a save that waits on the lock another writer holds
     // When that writer commits its own grant and then lets go
     // Then the waiting save merges it instead of replacing the file
+    #[cfg(unix)]
     #[test]
     fn a_save_waits_for_the_lock_and_keeps_what_the_holder_wrote() {
         let f = fixture();
@@ -915,6 +919,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_folder_grant_covers_descendants_for_write_and_edit_alike() {
         let f = fixture();
@@ -1036,6 +1041,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_in_the_final_component_is_never_exempt() {
         let f = fixture();
@@ -1050,6 +1056,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_in_a_parent_folder_is_never_exempt() {
         let f = fixture();
@@ -1086,6 +1093,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_target_that_moved_no_longer_resolves() {
         let f = fixture();
@@ -1108,4 +1116,12 @@ impl GrantStore {
     fn save(&self, _entries: &[Entry]) -> Result<(), String> {
         Err("Private permission grant persistence is not yet supported on Windows".into())
     }
+}
+
+#[cfg(windows)]
+pub fn resolve_protected_root(_path: &Path) -> Result<PathBuf, ToolError> {
+    Err(ToolError::Denied {
+        code: "unsupported_platform".into(),
+        message: "All-root permission resolution is not yet supported on Windows".into(),
+    })
 }

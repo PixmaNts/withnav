@@ -187,6 +187,7 @@ fn io_api(e: std::io::Error) -> ProviderError {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn set_key_writes_0600_atomically() {
         let tmp = tempfile::tempdir().unwrap();
@@ -249,6 +250,7 @@ mod tests {
         assert!(matches!(e, ProviderError::MissingApiKey));
     }
 
+    #[cfg(unix)]
     #[test]
     fn loose_perms_fail_closed() {
         let tmp = tempfile::tempdir().unwrap();

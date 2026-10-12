@@ -406,6 +406,7 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
     state.close_all().bounded(file!(), line!()).await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
     let tmp = tempfile::tempdir().unwrap();

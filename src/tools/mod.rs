@@ -472,6 +472,7 @@ mod tests {
         assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_reuses_symlink_root_ancestor_for_new_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -494,6 +495,7 @@ mod tests {
         assert!(matches!(err, ToolError::PathTraversal(_)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_rejects_symlink_escaping_root() {
         let tmp = tempfile::tempdir().unwrap();

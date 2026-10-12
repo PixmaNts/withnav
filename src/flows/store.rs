@@ -873,6 +873,7 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn concurrent_markers_advance_monotonically_and_reject_unsafe_files() {
         use std::os::unix::fs::{symlink, PermissionsExt};
@@ -900,6 +901,7 @@ mod tests {
         symlink(temp.path().join("external"), &path).unwrap();
         assert!(marker.read(&mut state).is_err());
     }
+    #[cfg(unix)]
     #[test]
     fn untrusted_files_are_excluded_before_enumeration() {
         use std::os::unix::fs::symlink;
@@ -1094,6 +1096,7 @@ mod tests {
         store.set_trust(false).unwrap();
         assert!(!store.trusted());
     }
+    #[cfg(unix)]
     #[test]
     fn trust_is_fail_closed_and_ancestor_links_are_refused() {
         use std::os::unix::fs::{symlink, PermissionsExt};

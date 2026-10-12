@@ -20,8 +20,10 @@ pub struct SkillScript {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn concurrent_grants_persist_digests_and_revoke_without_lost_updates() {
         #[cfg(unix)]

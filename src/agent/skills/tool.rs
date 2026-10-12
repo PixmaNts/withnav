@@ -167,7 +167,7 @@ fn opened_path(file: &std::fs::File, path: &Path) -> Result<PathBuf, String> {
         let _ = path;
         std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         use std::os::unix::fs::MetadataExt;
         let now = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
@@ -179,6 +179,11 @@ fn opened_path(file: &std::fs::File, path: &Path) -> Result<PathBuf, String> {
             return Err("the file changed while it was opened".to_string());
         }
         Ok(now)
+    }
+    #[cfg(windows)]
+    {
+        let _ = (file, path);
+        Err("Checked skill identity is not yet supported on Windows".into())
     }
 }
 

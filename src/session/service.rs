@@ -2288,7 +2288,13 @@ impl Service {
             ),
             None => {
                 let alias = model.unwrap_or("");
-                (workspace.to_path_buf(), alias.to_string(), editor)
+                (
+                    std::fs::canonicalize(workspace).map_err(|error| {
+                        ServerError::History(format!("canonical workspace: {error}"))
+                    })?,
+                    alias.to_string(),
+                    editor,
+                )
             }
         };
         // The agent is chosen before anything is built or written: an unknown
@@ -3196,11 +3202,119 @@ impl Service {
         // The role is on the actor before the first estimate: a session that
         // starts as `plan` counts plan's role before any turn runs.
         actor.role = Some(status.selection.current());
+        let skills = actor.skills.clone();
+        if child_parent.is_none() {
+            let settings = crate::settings::load(&self.config.config_dir)
+                .map_err(|e| ServerError::History(e.to_string()))?;
+            if settings
+                .get_dotted("memory.enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                let record_store = self.history.clone();
+                let mut memory = crate::agent::memory::component::Component {
+                    turn: String::new(),
+                    session: session_id.to_string(),
+                    startup: None,
+                    recalled: Arc::default(),
+                    record: Arc::new(move |injection| {
+                        let store = record_store.clone();
+                        Box::pin(async move { store.memory_inject(injection).await })
+                    }),
+                };
+                if is_resume {
+                    memory.startup = self
+                        .history
+                        .memory_startup(&session_id.to_string())
+                        .await
+                        .map_err(ServerError::History)?;
+                } else if settings
+                    .get_dotted("memory.startup_bundle")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    let episodes = self
+                        .history
+                        .memory_episodes(&workspace.to_string_lossy(), None, 3)
+                        .await
+                        .map_err(ServerError::History)?;
+                    let remaining = limits
+                        .budget
+                        .input_budget
+                        .saturating_sub(actor.context_breakdown().total());
+                    let (ids, text) = crate::agent::memory::render(
+                        &episodes,
+                        crate::agent::memory::STARTUP_BYTES
+                            .min(remaining.saturating_sub(32).saturating_mul(4) as usize),
+                    );
+                    if !ids.is_empty() {
+                        memory.startup = Some(crate::agent::memory::component::Part {
+                            source: "startup".into(),
+                            ids,
+                            text,
+                        });
+                    }
+                }
+                if !is_resume {
+                    self.history
+                        .memory_save_startup(&session_id.to_string(), memory.startup.clone())
+                        .await
+                        .map_err(ServerError::History)?;
+                }
+                if settings
+                    .get_dotted("memory.recall")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    let search_store = self.history.clone();
+                    let search_workspace = workspace.to_string_lossy().into_owned();
+                    actor
+                        .registry
+                        .register(Box::new(crate::tools::recall::RecallTool {
+                            memory: memory.clone(),
+                            search: Arc::new(move |query| {
+                                let store = search_store.clone();
+                                let workspace = search_workspace.clone();
+                                Box::pin(async move {
+                                    store.memory_episodes(&workspace, Some(&query), 5).await
+                                })
+                            }),
+                        }));
+                }
+                actor.memory = Some(memory);
+                let models = super::memory::models(
+                    self.config.models_path.as_deref(),
+                    &workspace,
+                    &self.config.config_dir,
+                );
+                if let Some(notice) = super::memory::unavailable_notice(&models) {
+                    sequencer
+                        .publish(Candidate::new(
+                            EventKind::CommandResult,
+                            serde_json::json!({"name":"memory","ok":false,"error":notice}),
+                        ))
+                        .map_err(|e| ServerError::History(e.to_string()))?;
+                }
+                if models.observer.is_some() {
+                    actor.memory_completed = Some(
+                        super::memory::Watcher {
+                            store: self.history.as_ref().clone(),
+                            session: session_id,
+                            workspace: workspace.to_string_lossy().into_owned(),
+                            models,
+                            sequencer: sequencer.clone(),
+                            cancel: session_cancel.clone(),
+                        }
+                        .start(),
+                    );
+                }
+            }
+        }
+        // Memory and recall schemas are part of the very first snapshot too.
         status.install_context(
-            ContextTracker::new(limits, actor.context_breakdown()),
+            ContextTracker::new(limits.clone(), actor.context_breakdown()),
             actor.system_prompt.clone(),
         );
-        let skills = actor.skills.clone();
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,

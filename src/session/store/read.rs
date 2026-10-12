@@ -13,6 +13,18 @@ use crate::agent::compaction::Compaction;
 use crate::bus::event::EventEnvelope;
 use crate::provider::openai::ChatMessage;
 
+pub(crate) fn rejected_captain_command(event: &EventEnvelope) -> Option<Ulid> {
+    if event.kind != "command.result"
+        || event.payload["name"] != "skill"
+        || event.payload["ok"] != false
+    {
+        return None;
+    }
+    event
+        .correlation_id
+        .filter(|id| event.payload["operation_id"].as_str() == Some(id.to_string().as_str()))
+}
+
 impl HistoryStore {
     pub async fn permission_context_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
         let path = Arc::clone(&self.path);
@@ -227,8 +239,7 @@ impl HistoryStore {
                         let raw = row.map_err(|e| format!("refusal row: {e}"))?;
                         serde_json::from_str::<EventEnvelope>(&raw).map_err(|e| format!("refusal does not decode: {e}"))
                     }).collect::<Result<Vec<_>, String>>()?
-                    .into_iter().filter(|event| event.payload["name"] == "skill" && event.payload["ok"] == false)
-                    .filter_map(|event| event.correlation_id.filter(|id| event.payload["operation_id"].as_str() == Some(id.to_string().as_str())))
+                     .iter().filter_map(rejected_captain_command)
                     .collect::<std::collections::HashSet<_>>();
                 let mut stmt = tx
                     .prepare(
@@ -314,7 +325,7 @@ impl HistoryStore {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(work)
@@ -323,7 +334,7 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// Opens a fresh connection and runs `work` inside one read transaction.
-fn with_read_tx<T>(
+pub(super) fn with_read_tx<T>(
     path: &Path,
     work: impl FnOnce(&Transaction<'_>) -> Result<T, String>,
 ) -> Result<T, String> {

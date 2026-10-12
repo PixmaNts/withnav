@@ -254,6 +254,7 @@ pub(super) async fn run(
         destination_role.as_ref(),
         floor,
         old_compaction.as_ref(),
+        budget,
     );
     let mut compacted = None;
     let mut staged = None;
@@ -273,6 +274,7 @@ pub(super) async fn run(
             destination_role.as_ref(),
             floor,
             Some(&summarized.compaction),
+            budget,
         )
         .total()
             > budget
@@ -328,6 +330,7 @@ pub(super) async fn run(
                 .as_ref()
                 .map(|s| &s.checkpoint)
                 .or(old_compaction.as_ref()),
+            budget,
         ),
     );
     let snapshot = tracker.snapshot().clone();
@@ -462,6 +465,7 @@ async fn compact_for_target(
     let message = destination_message(actor, role);
     let tools = actor.effective_tool_schemas_for_role(role.map(Arc::as_ref));
     let components = || crate::agent::compaction::Components {
+        memory_tokens: 0,
         system_prompt: message.as_deref(),
         rules: actor.rules.message(),
         skills: actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
@@ -509,17 +513,22 @@ fn destination_breakdown(
     role: Option<&Arc<crate::agent::definitions::AgentDefinition>>,
     floor: usize,
     compaction: Option<&crate::agent::compaction::Compaction>,
+    budget: u64,
 ) -> crate::agent::context::Breakdown {
     let message = destination_message(actor, role);
     let transcript = actor.planning_transcript(floor);
     let history = crate::agent::compaction::effective_history(&transcript, compaction);
-    crate::agent::context::estimate(
+    let mut breakdown = crate::agent::context::estimate(
         message.as_deref(),
         actor.rules.message(),
         actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
         &history,
         &actor.effective_tool_schemas_for_role(role.map(Arc::as_ref)),
-    )
+    );
+    breakdown.messages += actor.memory.as_ref().map_or(0, |memory| {
+        memory.tokens_with_budget(budget.saturating_sub(breakdown.total()))
+    });
+    breakdown
 }
 
 fn destination_message(

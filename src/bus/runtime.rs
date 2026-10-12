@@ -1281,6 +1281,9 @@ async fn runtime_loop(
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::generate();
+        if let Some(memory) = &mut actor.memory {
+            memory.turn = turn_id.to_string();
+        }
         let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
         if status
             .watchdog_fallback_notice
@@ -1516,6 +1519,9 @@ async fn runtime_loop(
                     }),
                 );
                 emit_agent_state(&mut turn, "idle");
+                if let Some(memory) = &actor.memory_completed {
+                    let _ = memory.send(turn_id);
+                }
                 active_task_id = None;
             }
             Ok(RunOutcome::Yielded(request)) => {

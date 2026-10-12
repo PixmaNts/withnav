@@ -209,6 +209,7 @@ fn input<'a>(
         transcript,
         current: None,
         components: Components {
+            memory_tokens: 0,
             system_prompt: None,
             rules: None,
             skills: None,

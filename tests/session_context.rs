@@ -40,6 +40,30 @@ fn category_sum(snapshot: &Value) -> u64 {
         .sum()
 }
 
+#[tokio::test]
+async fn startup_snapshot_includes_installed_recall_schema() {
+    let (tmp, ws) = tmp_ws();
+    let config = TestServerConfig::unreachable(tmp.path())
+        .chat_tools(1_000_000)
+        .config();
+    let settings = config.config_dir.join("config.json");
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    value["memory"] = json!({"enabled":false});
+    std::fs::write(&settings, serde_json::to_vec(&value).unwrap()).unwrap();
+    let service = withnav::session::Service::new(config.split().0).unwrap();
+    let without = service.create_session(&ws, None, false).await.unwrap();
+    let baseline = serde_json::to_value(service.context(without).await.unwrap()).unwrap();
+    value["memory"] = json!({"enabled":true});
+    std::fs::write(&settings, serde_json::to_vec(&value).unwrap()).unwrap();
+    let with = service.create_session(&ws, None, false).await.unwrap();
+    let snapshot = serde_json::to_value(service.context(with).await.unwrap()).unwrap();
+    assert!(
+        snapshot["breakdown"]["tools"].as_u64().unwrap()
+            > baseline["breakdown"]["tools"].as_u64().unwrap()
+    );
+    assert_eq!(estimate_of(&snapshot), category_sum(&snapshot));
+}
+
 /// A session on a 1M window whose model reads a file, then answers, with
 /// the provider reporting usage on both steps. Returns the state, the id and
 /// the events up to the turn end.

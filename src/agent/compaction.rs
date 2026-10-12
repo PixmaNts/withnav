@@ -131,6 +131,7 @@ pub fn elision_marker(original_bytes: usize) -> String {
 /// The fixed parts of a request: what is sent besides the history.
 #[derive(Debug, Clone, Copy)]
 pub struct Components<'a> {
+    pub memory_tokens: u64,
     pub system_prompt: Option<&'a str>,
     pub rules: Option<&'a str>,
     pub skills: Option<&'a str>,
@@ -141,6 +142,7 @@ impl Components<'_> {
     /// What the request weighs with an empty history.
     pub fn fixed_tokens(&self) -> u64 {
         estimate(self.system_prompt, self.rules, self.skills, &[], self.tools).total()
+            + self.memory_tokens
     }
 }
 
@@ -731,13 +733,15 @@ pub fn estimate_effective(
     transcript: &[ChatMessage],
     compaction: Option<&Compaction>,
 ) -> Breakdown {
-    estimate(
+    let mut breakdown = estimate(
         components.system_prompt,
         components.rules,
         components.skills,
         &effective_history(transcript, compaction),
         components.tools,
-    )
+    );
+    breakdown.messages += components.memory_tokens;
+    breakdown
 }
 
 #[cfg(test)]

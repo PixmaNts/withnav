@@ -51,6 +51,8 @@ pub struct BypassState {
 }
 
 pub struct AgentActor {
+    pub memory: Option<super::memory::component::Component>,
+    pub memory_completed: Option<tokio::sync::mpsc::UnboundedSender<ulid::Ulid>>,
     pub compaction_writer: Option<super::compaction::SummaryWriter>,
     pub compaction_catalog: Option<crate::provider::catalog::ModelCatalog>,
     pub compaction_max_message_tokens: Option<u64>,
@@ -205,6 +207,8 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            memory: None,
+            memory_completed: None,
             compaction_writer: None,
             compaction_catalog: None,
             compaction_max_message_tokens: None,
@@ -313,6 +317,7 @@ impl AgentActor {
             rules: self.rules.message(),
             skills: self.effective_skills_catalog(),
             tools,
+            memory_tokens: self.memory_tokens_at(self.reasoning_floor),
         }
     }
 
@@ -354,13 +359,39 @@ impl AgentActor {
         // The same role message `build_request` sends: the selected agent's
         // prompt composed with the editor's.
         let role = self.role_message();
-        crate::agent::context::estimate(
+        let mut breakdown = crate::agent::context::estimate(
+            role.as_deref(),
+            self.rules.message(),
+            self.effective_skills_catalog(),
+            &self.effective_history_at(floor),
+            &self.effective_tool_schemas(),
+        );
+        breakdown.messages += self.memory.as_ref().map_or(0, |memory| {
+            memory.tokens_with_budget(
+                self.input_budget
+                    .unwrap_or(u64::MAX)
+                    .saturating_sub(breakdown.total()),
+            )
+        });
+        breakdown
+    }
+
+    pub fn memory_budget_at(&self, floor: usize) -> u64 {
+        let role = self.role_message();
+        let base = crate::agent::context::estimate(
             role.as_deref(),
             self.rules.message(),
             self.effective_skills_catalog(),
             &self.effective_history_at(floor),
             &self.effective_tool_schemas(),
         )
+        .total();
+        self.input_budget.unwrap_or(u64::MAX).saturating_sub(base)
+    }
+    pub fn memory_tokens_at(&self, floor: usize) -> u64 {
+        self.memory.as_ref().map_or(0, |memory| {
+            memory.tokens_with_budget(self.memory_budget_at(floor))
+        })
     }
 
     /// Whether the actor waits for an answer or a decision.

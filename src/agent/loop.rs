@@ -213,17 +213,18 @@ async fn run_steps_inner(
         let role_message = actor.role_message();
         let history = actor.effective_history();
         let tools = actor.effective_tool_schemas();
-        if actor.input_budget.is_some_and(|budget| {
-            crate::agent::context::estimate(
-                role_message.as_deref(),
-                actor.rules.message(),
-                actor.effective_skills_catalog(),
-                &history,
-                &tools,
-            )
-            .total()
-                > budget
-        }) {
+        let base_tokens = crate::agent::context::estimate(
+            role_message.as_deref(),
+            actor.rules.message(),
+            actor.effective_skills_catalog(),
+            &history,
+            &tools,
+        )
+        .total();
+        if actor
+            .input_budget
+            .is_some_and(|budget| base_tokens > budget)
+        {
             return Ok(RunOutcome::NeedsCompaction {
                 steps_left: budget - step,
             });
@@ -231,12 +232,27 @@ async fn run_steps_inner(
 
         observe(AgentEvent::StepStarted);
 
+        let mut request_history = match &actor.memory {
+            Some(memory) => {
+                memory
+                    .admitted_with_budget(
+                        &actor.model,
+                        actor
+                            .input_budget
+                            .unwrap_or(u64::MAX)
+                            .saturating_sub(base_tokens),
+                    )
+                    .await
+            }
+            None => Vec::new(),
+        };
+        request_history.extend(history);
         let request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
             actor.effective_skills_catalog(),
-            history,
+            request_history,
             tools,
             actor.max_tokens,
         );

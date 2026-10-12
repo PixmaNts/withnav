@@ -4,22 +4,38 @@ use serde_json::Value;
 
 pub(crate) fn contains_secret(value: &Value) -> bool {
     match value {
-        Value::String(text) => text
-            .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ':' | '='))
-            .any(|word| {
-                [
-                    "sk-",
-                    "ghp_",
-                    "github_pat_",
-                    "gho_",
-                    "xoxb-",
-                    "xoxp-",
-                    "AKIA",
-                    "eyJ",
-                ]
-                .iter()
-                .any(|prefix| word.starts_with(prefix) && word.len() >= 20)
-            }),
+        Value::String(text) => {
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("bearer ")
+                || text.lines().any(|line| {
+                    let Some((key, value)) = line.split_once('=') else {
+                        return false;
+                    };
+                    let key = key.trim().to_ascii_lowercase();
+                    !value.trim().is_empty()
+                        && ["api_key", "token", "secret", "password"]
+                            .iter()
+                            .any(|name| key.contains(name))
+                })
+            {
+                return true;
+            }
+            text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ':' | '='))
+                .any(|word| {
+                    [
+                        "sk-",
+                        "ghp_",
+                        "github_pat_",
+                        "gho_",
+                        "xoxb-",
+                        "xoxp-",
+                        "AKIA",
+                        "eyJ",
+                    ]
+                    .iter()
+                    .any(|prefix| word.starts_with(prefix) && word.len() >= 20)
+                })
+        }
         Value::Array(values) => values.iter().any(contains_secret),
         Value::Object(values) => values.iter().any(|(key, value)| {
             contains_secret(&Value::String(key.clone())) || contains_secret(value)

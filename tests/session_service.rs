@@ -9,6 +9,39 @@ mod common;
 use common::server::TestServerConfig;
 use common::sse::{read_sse, SseEnd};
 
+#[tokio::test]
+async fn workspace_admission_canonicalizes_aliases_and_relative_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    let other = tmp.path().join("other");
+    std::fs::create_dir(&ws).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&ws, &alias).unwrap();
+    let service =
+        Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0).unwrap();
+    let direct = service.create_session(&ws, None, false).await.unwrap();
+    let linked = service.create_session(&alias, None, false).await.unwrap();
+    let distinct = service.create_session(&other, None, false).await.unwrap();
+    assert_eq!(
+        service.session_summary(direct).await.unwrap().workspace,
+        service.session_summary(linked).await.unwrap().workspace
+    );
+    assert_ne!(
+        service.session_summary(direct).await.unwrap().workspace,
+        service.session_summary(distinct).await.unwrap().workspace
+    );
+    let cwd = std::env::current_dir().unwrap();
+    let relative = service
+        .create_session(std::path::Path::new("."), None, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        service.session_summary(relative).await.unwrap().workspace,
+        cwd.canonicalize().unwrap().display().to_string()
+    );
+}
+
 // Given a Service over a provider nothing listens on
 // When a session is created without any router
 // Then no turn runs (no provider call), and a subscriber sees exactly

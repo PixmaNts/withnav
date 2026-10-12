@@ -470,7 +470,7 @@ impl Watcher {
     }
     fn new_goal(&self, c: &CaptainAnchor) -> Goal {
         Goal {
-            id: Ulid::new().to_string(),
+            id: Ulid::generate().to_string(),
             session: self.session.to_string(),
             workspace: self.workspace.clone(),
             anchor_seq: c.seq,
@@ -512,7 +512,7 @@ impl Watcher {
             let mut shorter = false;
             for attempt in 0..2 {
                 let permit = tokio::select! {biased; _=self.cancel.cancelled()=>return Ok(()),permit=WRITER_GATE.acquire()=>permit.map_err(|e|e.to_string())?};
-                let token = Ulid::new().to_string();
+                let token = Ulid::generate().to_string();
                 self.store.memory_claim(&goal.id, &token).await?;
                 if !self
                     .store
@@ -631,8 +631,8 @@ mod tests {
     use super::*;
     #[test]
     fn rejected_skill_message_cannot_anchor_a_goal() {
-        let session = Ulid::new();
-        let command = Ulid::new();
+        let session = Ulid::generate();
+        let command = Ulid::generate();
         let message = EventEnvelope::new(
             session,
             1,
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn evidence_never_includes_reasoning_or_autonomous_goal_anchors() {
         let event = EventEnvelope::new(
-            Ulid::new(),
+            Ulid::generate(),
             0,
             EventKind::MessageReceived,
             serde_json::json!({"source":"subagent","content":"new task","reasoning":"SECRET"}),

@@ -166,7 +166,7 @@ impl Component {
         budget: u64,
     ) -> Vec<crate::provider::openai::ChatMessage> {
         use sha2::{Digest, Sha256};
-        let request = ulid::Ulid::new().to_string();
+        let request = ulid::Ulid::generate().to_string();
         let parts = self.fitting_parts(budget);
         if parts.is_empty() {
             return Vec::new();
@@ -176,7 +176,7 @@ impl Component {
             .map(|p| p.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let hash = hex::encode(Sha256::digest(text.as_bytes()));
         let injection = Injection {
             request_id: request.clone(),
             session: self.session.clone(),

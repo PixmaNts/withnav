@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let temporary = tempfile::tempdir()?;
     let store =
         HistoryStore::open(temporary.path().join("probe.db")).map_err(anyhow::Error::msg)?;
-    let session = ulid::Ulid::new();
+    let session = ulid::Ulid::generate();
     let scope = workspace.to_string_lossy().into_owned();
     store
         .record_session(session, &scope, "memory-probe", false)
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     for (seq, text) in &evidence {
         store.append_event_acked(session,EventEnvelope::new(session,*seq,EventKind::MessageReceived,serde_json::json!({"source":if *seq==1 {"captain"} else {"subagent"},"content":text}))).await.map_err(anyhow::Error::msg)?;
     }
-    let id = ulid::Ulid::new().to_string();
+    let id = ulid::Ulid::generate().to_string();
     store
         .memory_observe(
             State {
@@ -144,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
         "stored episode missing from startup note"
     );
     println!("Episode: stored=1, startup_contains_goal=true");
-    let new_session = ulid::Ulid::new();
+    let new_session = ulid::Ulid::generate();
     store
         .record_session(new_session, &scope, "memory-probe", false)
         .await

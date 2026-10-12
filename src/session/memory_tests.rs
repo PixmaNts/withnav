@@ -116,7 +116,7 @@ struct Fixture {
 async fn fixture(slow: bool) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let store = HistoryStore::open(temp.path().join("history.db")).unwrap();
-    let session = Ulid::new();
+    let session = Ulid::generate();
     store
         .record_session(session, "/workspace", "fake", false)
         .await
@@ -147,7 +147,7 @@ async fn fixture(slow: bool) -> Fixture {
     }
 }
 async fn turn(w: &Watcher, seq: u64, text: &str) -> Ulid {
-    let turn = Ulid::new();
+    let turn = Ulid::generate();
     for (seq, kind, payload) in [
         (
             seq,
@@ -188,7 +188,7 @@ async fn rejected_skill_text_is_absent_from_observer_and_writer_requests() {
     f.watcher.models.writer = Some(fake.clone());
     let first = turn(&f.watcher, 1, "accepted goal").await;
     f.watcher.completed(first).await.unwrap();
-    let command = Ulid::new();
+    let command = Ulid::generate();
     let message = EventEnvelope::new(
         f.watcher.session,
         3,

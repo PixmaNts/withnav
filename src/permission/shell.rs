@@ -102,7 +102,7 @@ fn assignment(word: &str) -> bool {
 fn wrapper(word: &str) -> bool {
     matches!(
         word,
-        "sudo" | "env" | "time" | "nice" | "nohup" | "xargs" | "command" | "exec"
+        "sudo" | "env" | "time" | "nice" | "nohup" | "command" | "exec"
     )
 }
 
@@ -155,15 +155,45 @@ fn wrapper_option_value(program: &str, option: &str) -> bool {
     }
 }
 
-fn command_identity(words: &[String]) -> (Vec<String>, Option<String>) {
+fn execution_bearing(program: &str, operands: &[String]) -> bool {
+    matches!(program, "eval" | "xargs" | "parallel" | "watch")
+        || (program == "env"
+            && operands.iter().any(|word| {
+                word == "-S"
+                    || word.starts_with("-S")
+                    || word == "--split-string"
+                    || word.starts_with("--split-string=")
+            }))
+        || (matches!(
+            program,
+            "exec" | "bash" | "sh" | "zsh" | "dash" | "ksh" | "fish"
+        ) && operands
+            .iter()
+            .any(|word| word.starts_with('-') && !word.starts_with("--") && word.contains('c')))
+        || (program == "find"
+            && operands
+                .iter()
+                .any(|word| matches!(word.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir")))
+}
+
+fn command_identity(words: &[String], plain: &[bool]) -> Result<(Vec<String>, Option<String>), ()> {
+    if plain.first() == Some(&false) {
+        return Err(());
+    }
     let mut index = 0;
     let mut selected = Vec::new();
     let mut assignments = vec![false; words.len()];
-    while words.get(index).is_some_and(|word| assignment(word)) {
+    while words
+        .get(index)
+        .is_some_and(|word| plain[index] && assignment(word))
+    {
         assignments[index] = true;
         index += 1;
     }
     while let Some(program) = words.get(index).filter(|word| wrapper(word)) {
+        if execution_bearing(program, &words[index + 1..]) {
+            return Err(());
+        }
         selected.push(index);
         index += 1;
         while let Some(word) = words.get(index) {
@@ -171,8 +201,8 @@ fn command_identity(words: &[String]) -> (Vec<String>, Option<String>) {
                 index += 1;
                 break;
             }
-            if assignment(word) || word.starts_with('-') {
-                assignments[index] = assignment(word);
+            if (plain[index] && assignment(word)) || word.starts_with('-') {
+                assignments[index] = plain[index] && assignment(word);
                 index += 1;
                 if wrapper_option_value(program, word) && index < words.len() {
                     index += 1;
@@ -183,6 +213,9 @@ fn command_identity(words: &[String]) -> (Vec<String>, Option<String>) {
         }
     }
     if let Some(program) = words.get(index) {
+        if execution_bearing(program, &words[index + 1..]) {
+            return Err(());
+        }
         let mut significant = vec![index];
         index += 1;
         while let Some(word) = words.get(index) {
@@ -211,6 +244,9 @@ fn command_identity(words: &[String]) -> (Vec<String>, Option<String>) {
             .map_or(1, |(_, count)| *count);
         selected.extend(significant.into_iter().take(count));
     }
+    if selected.iter().any(|&i| !plain[i]) {
+        return Err(());
+    }
     let prefix: Vec<String> = selected.iter().map(|&i| words[i].clone()).collect();
     let rule_text = if prefix.is_empty() {
         None
@@ -225,7 +261,7 @@ fn command_identity(words: &[String]) -> (Vec<String>, Option<String>) {
         );
         Some(reordered.join(" "))
     };
-    (prefix, rule_text)
+    Ok((prefix, rule_text))
 }
 
 // Keep a source boundary map so lexical continuation removal does not lose raw
@@ -312,6 +348,7 @@ struct Parser<'a> {
 #[derive(Default)]
 struct Pending {
     words: Vec<String>,
+    plain: Vec<bool>,
     redirections: Vec<Redirection>,
     children: Vec<ShellCommand>,
 }
@@ -346,11 +383,13 @@ impl Pending {
             let normalized = self
                 .words
                 .iter()
-                .skip_while(|word| assignment(word))
-                .cloned()
+                .enumerate()
+                .skip_while(|(i, word)| self.plain[*i] && assignment(word))
+                .map(|(_, word)| word.clone())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let (prefix, rule_text) = command_identity(&self.words);
+            let (prefix, rule_text) = command_identity(&self.words, &self.plain)?;
+            self.plain.clear();
             commands.push(ShellCommand {
                 raw: raw.to_owned(),
                 normalized,
@@ -464,6 +503,9 @@ impl Parser<'_> {
                     continue;
                 }
                 pending.words.push(word);
+                pending
+                    .plain
+                    .push(!self.text[word_start..self.pos].contains(['\'', '"', '\\']));
                 needs_command = false;
                 has_command = true;
             }
@@ -592,7 +634,7 @@ mod tests {
             ("sudo systemctl restart nginx", vec!["sudo systemctl restart"]),
             ("./script.sh a", vec!["./script.sh"]),
             ("git -c core.editor=vim -C ../x config get user.name", vec!["git config get"]),
-            ("sudo -u root env -u OLD FOO=1 time -o timing nice -n 5 nohup xargs -n 1 command -- exec -a nav git status", vec!["sudo env time nice nohup xargs command exec git status"]),
+            ("sudo -u root env -u OLD FOO=1 time -o timing nice -n 5 nohup command -- exec -a nav git status", vec!["sudo env time nice nohup command exec git status"]),
             ("(git status; cargo test) |& { echo ok; pwd; } & ls\nwhoami || true", vec!["git status", "cargo test", "echo", "pwd", "ls", "whoami", "true"]),
             ("cat <(git show HEAD) >(grep x)", vec!["cat", "git show", "grep"]),
             ("echo `git status`", vec!["echo", "git status"]),
@@ -609,7 +651,7 @@ mod tests {
 
     #[test]
     fn keeps_source_words_and_redirections() {
-        let line = "  FOO=1 make   'check' > out.log 2>&1  ";
+        let line = "  FOO=1 make   check > out.log 2>&1  ";
         let commands = split(line);
         let command = &commands[0];
         assert_eq!(command.raw, line);
@@ -629,11 +671,11 @@ mod tests {
             ]
         );
         assert_eq!(command.save_pattern().as_deref(), Some("make check *"));
-        let quoted = split("FOO='a b' echo \"literal path\" a\\ b 'x;y' \\\nnext");
+        let quoted = split("FOO=ab echo \"literal path\" a\\ b 'x;y' \\\nnext");
         assert_eq!(quoted[0].normalized, "echo literal path a b x;y next");
         assert_eq!(
             quoted[0].words,
-            ["FOO=a b", "echo", "literal path", "a b", "x;y", "next"]
+            ["FOO=ab", "echo", "literal path", "a b", "x;y", "next"]
         );
         let commands = split("cat < 'literal path' &>>log <<<\"text\"");
         assert_eq!(commands[0].normalized, "cat");
@@ -708,6 +750,56 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_identity_and_embedded_execution_are_opaque() {
+        for line in [
+            "'git push' origin",
+            "\"git\" push",
+            "'FOO=1' git push",
+            "g\\it push",
+            "git 'push' origin",
+            "git p\\ush origin",
+            "FOO='a b' git push",
+            "env -S 'rm -f' git push",
+            "env --split-string 'rm -f' git push",
+            "env --split-string=rm git push",
+            "eval 'git push; rm victim'",
+            "exec -c 'rm victim'",
+            "bash -c 'rm victim'",
+            "sh -c 'rm victim'",
+            "zsh -xc 'rm victim'",
+            "dash -c 'rm victim'",
+            "ksh -c 'rm victim'",
+            "fish -c 'rm victim'",
+            "sudo bash -lc 'rm victim'",
+            "find . -exec rm {} \\;",
+            "find . -execdir rm {} +",
+            "find . -ok rm {} \\;",
+            "find . -okdir rm {} \\;",
+            "xargs -I CMD CMD",
+            "xargs rm",
+            "xargs",
+            "parallel rm",
+            "watch rm victim",
+        ] {
+            let commands = split(line);
+            assert_eq!(commands.len(), 1, "{line}");
+            assert!(commands[0].opaque, "{line}");
+            assert_eq!(commands[0].raw, line);
+            assert_eq!(commands[0].rule_text, None);
+            assert_eq!(commands[0].save_pattern(), None);
+        }
+        for line in [
+            "source script.sh",
+            ". script.sh",
+            "timeout 5 git status",
+            "echo 'git push'",
+            "FOO=1 git push",
+        ] {
+            assert!(!split(line)[0].opaque, "{line}");
+        }
+    }
+
+    #[test]
     fn reviewed_syntax_never_hides_execution() {
         for line in [
             "echo `echo \\`printf NESTED\\``",
@@ -765,8 +857,8 @@ mod tests {
             ),
             ("env -u X FOO=1 git status", "env git status -u X"),
             (
-                "time -o f nice -n 5 xargs -n 1 git status",
-                "time nice xargs git status -o f -n 5 -n 1",
+                "time -o f nice -n 5 git status",
+                "time nice git status -o f -n 5",
             ),
             ("FOO=1 make check >out", "make check"),
             ("git status", "git status"),

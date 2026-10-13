@@ -46,6 +46,7 @@ async fn startup_cancel_and_timeout_allow_sigterm_cleanup() {
         if cancel {
             manager.shutdown().await;
         }
+        #[cfg(unix)]
         tokio::time::timeout(Duration::from_secs(3), async {
             while !marker.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -53,6 +54,20 @@ async fn startup_cancel_and_timeout_allow_sigterm_cleanup() {
         })
         .await
         .expect("hanging initialization must get graceful cleanup");
+        #[cfg(windows)]
+        if !cancel {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !manager
+                    .statuses()
+                    .iter()
+                    .any(|status| status.error.is_some())
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("hanging initialization must time out");
+        }
         manager.shutdown().await;
     }
 }
@@ -165,7 +180,7 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let pidfile = directory.path().join("pid");
     let mut settings = Settings::default();
-    let script = format!("import subprocess,time; p=subprocess.Popen(['sleep','60']); open({:?},'w').write(str(p.pid)); time.sleep(60)", pidfile.to_string_lossy());
+    let script = format!("import subprocess,time,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); open({:?},'w').write(str(p.pid)); time.sleep(60)", pidfile.to_string_lossy());
     settings.set_dotted(
         "mcp",
         json!({"hang": {"command":["python3", "-c", script], "startup_timeout_ms":10000}}),
@@ -182,7 +197,21 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     .await
     .unwrap();
     let pid: i32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
+    #[cfg(windows)]
+    let process = unsafe {
+        windows_sys::Win32::System::Threading::OpenProcess(
+            windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE,
+            0,
+            pid as u32,
+        )
+    };
+    #[cfg(windows)]
+    assert!(
+        !process.is_null(),
+        "descendant process must exist before shutdown"
+    );
     manager.shutdown().await;
+    #[cfg(unix)]
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let status = std::fs::read_to_string(format!("/proc/{pid}/stat"));
@@ -194,6 +223,15 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     })
     .await
     .expect("descendant must not survive shutdown");
+    #[cfg(windows)]
+    {
+        let waited =
+            unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(process, 3000) };
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(process);
+        }
+        assert_eq!(waited, 0, "descendant must not survive shutdown");
+    }
 }
 
 #[tokio::test]
@@ -259,6 +297,7 @@ async fn filters_disabled_servers_and_stderr_redaction() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("descendant-cleanup");

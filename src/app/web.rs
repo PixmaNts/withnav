@@ -46,6 +46,7 @@ pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
 }
 
 /// Hands `url` to the desktop's opener; it is not waited for.
+#[cfg(not(windows))]
 fn open_browser(url: &str) -> std::io::Result<()> {
     let program = if cfg!(target_os = "macos") {
         "open"
@@ -59,4 +60,30 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+#[cfg(windows)]
+fn open_browser(url: &str) -> std::io::Result<()> {
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let target: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    // ShellExecute treats the URL as a target, never as shell command text.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as usize <= 32 {
+        Err(std::io::Error::other(format!(
+            "ShellExecuteW failed ({})",
+            result as usize
+        )))
+    } else {
+        Ok(())
+    }
 }

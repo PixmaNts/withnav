@@ -105,7 +105,6 @@ pub(crate) async fn received(
     }) {
         payload["selected_skill"] = json!({"name":name,"origin":"captain"});
     }
-    refresh(runtime).await;
     runtime
         .evaluate_with_effects(
             Event {
@@ -124,64 +123,6 @@ pub(crate) async fn received(
         .await;
 }
 
-/// Picks up a flow reload on the blocking pool. A reload reads flow
-/// validations from the permission database, which may wait on another
-/// connection's write; once this ran, the runtime's own refresh before an
-/// evaluation finds nothing new and does not touch the database.
-pub(crate) async fn refresh(runtime: &Arc<FlowRuntime>) {
-    let store = runtime.store.clone();
-    let _ = tokio::task::spawn_blocking(move || store.refresh()).await;
-}
-
-/// Tool-call flows that pick up a flow reload off the runtime thread first.
-struct Refreshing {
-    runtime: Arc<FlowRuntime>,
-    inner: Arc<dyn crate::agent::flow_hook::ToolCallFlows>,
-}
-
-impl std::fmt::Debug for Refreshing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner.fmt(f)
-    }
-}
-
-impl crate::agent::flow_hook::ToolCallFlows for Refreshing {
-    fn permission_pre_call<'a>(
-        &'a self,
-        ctx: crate::agent::flow_hook::PermissionCallContext,
-        rule_result: crate::agent::flow_hook::RuleResult,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, crate::agent::flow_hook::PermissionVerdict> {
-        Box::pin(async move {
-            refresh(&self.runtime).await;
-            self.inner
-                .permission_pre_call(ctx, rule_result, cancel)
-                .await
-        })
-    }
-    fn protected_check<'a>(
-        &'a self,
-        ctx: crate::agent::flow_hook::PermissionCallContext,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, crate::agent::flow_hook::ProtectedCheck> {
-        Box::pin(async move {
-            refresh(&self.runtime).await;
-            self.inner.protected_check(ctx, cancel).await
-        })
-    }
-}
-
-/// The tool-call flows of a session, with flow reloads read off the runtime thread.
-pub(crate) fn refreshing(
-    runtime: &Arc<FlowRuntime>,
-    inner: Arc<dyn crate::agent::flow_hook::ToolCallFlows>,
-) -> Arc<dyn crate::agent::flow_hook::ToolCallFlows> {
-    Arc::new(Refreshing {
-        runtime: runtime.clone(),
-        inner,
-    })
-}
-
 pub(crate) fn hook(
     runtime: &Arc<FlowRuntime>,
     session_id: String,
@@ -189,7 +130,7 @@ pub(crate) fn hook(
     status: Arc<crate::bus::runtime::RuntimeStatus>,
     sequencer: crate::bus::sequencer::Sequencer,
 ) -> Arc<dyn crate::agent::flow_hook::ToolCallFlows> {
-    let inner = runtime.tool_hook_with_effects(
+    runtime.tool_hook_with_effects(
         session_id,
         selected,
         Arc::new(Effects {
@@ -198,8 +139,7 @@ pub(crate) fn hook(
             sequencer,
             turn_end: false,
         }),
-    );
-    refreshing(runtime, inner)
+    )
 }
 
 pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: String) {
@@ -248,7 +188,6 @@ pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: S
                 turn_end: true,
             });
             tokio::spawn(async move {
-                refresh(&runtime).await;
                 runtime
                     .evaluate_with_effects(
                         Event {

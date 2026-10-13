@@ -3198,13 +3198,10 @@ impl Service {
             // A subagent's calls are judged by the same permission flows as
             // its parent's; flow effects stay with the root session.
             None => runtime.map(|runtime| {
-                super::flows::refreshing(
-                    &runtime,
-                    runtime.tool_hook_with_effects(
-                        session_id.to_string(),
-                        selected_model.clone(),
-                        Arc::new(crate::flows::runtime::NoEffects),
-                    ),
+                runtime.tool_hook_with_effects(
+                    session_id.to_string(),
+                    selected_model.clone(),
+                    Arc::new(crate::flows::runtime::NoEffects),
                 )
             }),
         };

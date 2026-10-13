@@ -1110,7 +1110,7 @@ keyboard; four layers of models watch, complete, judge and discuss.
 - **Reflex**: fill-in-the-middle ghost-text suggestions (Inception Mercury Edit 2), with a short
   context note kept current by the metacognition.
 - **Instinct**: a decision pipeline in TOML and Markdown prompts, asking typed questions to a
-  System One model (Instinct). Project `.navigator/` overrides the user and built-in pipelines; hot
+  System One model. Project `.navigator/` overrides the user and built-in pipelines; hot
   reload on save.
 - **Metacognition**: short end-of-line remarks from a fast model, with read-only `read` and `grep`
   tools under a budget, aware of the conversation, the intent record and recent edits.

@@ -19,7 +19,7 @@ keep every effect under Navai's authority. The vocabulary is in [CONTEXT.md](../
   or running it as a process, was rejected: it adds a runtime and a JSON format Navai does not need,
   its documented limits do not give a whole-run elapsed budget, and it can execute webhooks, an
   authority that would sit beside Navai's permissions. It stays a design reference only. Published
-  Rust Instinct clients were compared as references; they parse answers permissively, so the evaluator
+  Rust System One clients were compared as references; they parse answers permissively, so the evaluator
   validates every answer against the request that produced it.
 - **Staged and acyclic, not a workflow engine.** A flow is a directed graph of question steps with no
   loops. Persistent variables, subflows, action webhooks and a plugin framework are out of scope.

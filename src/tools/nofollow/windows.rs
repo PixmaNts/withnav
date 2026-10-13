@@ -4,6 +4,90 @@ use std::path::Path;
 
 use crate::error::ToolError;
 
+/// The ordinary path Windows will open, including aliases of existing ancestors.
+pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError> {
+    validate_target(path)?;
+    let spelling = path.to_string_lossy().replace('/', "\\");
+    let spelling = spelling.strip_prefix("\\\\?\\").unwrap_or(&spelling);
+    let mut ancestor = std::path::PathBuf::from(spelling);
+    let mut suffix = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                validate_target(&canonical)?;
+                let text = canonical.to_string_lossy();
+                let mut result =
+                    std::path::PathBuf::from(text.strip_prefix("\\\\?\\").unwrap_or(&text));
+                for part in suffix.into_iter().rev() {
+                    result.push(part);
+                }
+                return Ok(result);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = ancestor.file_name().ok_or_else(|| ToolError::Io(error))?;
+                // Ordinary Win32 creation trims these characters too. Keep the
+                // returned suffix ordinary rather than changing it with a verbatim prefix.
+                let name = name
+                    .to_string_lossy()
+                    .trim_end_matches(['.', ' '])
+                    .to_owned();
+                if name.is_empty() {
+                    return Err(ToolError::PathTraversal(path.to_path_buf()));
+                }
+                suffix.push(name);
+                ancestor.pop();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+pub(crate) fn path_within(path: &Path, root: &Path) -> bool {
+    let key = |path: &Path| path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let path = key(path);
+    let root = key(root);
+    path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
+}
+
+pub(crate) fn drive_root(path: &Path) -> Result<std::path::PathBuf, ToolError> {
+    validate_target(path)?;
+    let mut parts = path.components();
+    let Some(std::path::Component::Prefix(prefix)) = parts.next() else {
+        return Err(ToolError::PathTraversal(path.to_path_buf()));
+    };
+    match prefix.kind() {
+        std::path::Prefix::Disk(drive) | std::path::Prefix::VerbatimDisk(drive) => Ok(
+            std::path::PathBuf::from(format!("{}:\\", char::from(drive))),
+        ),
+        _ => Err(ToolError::PathTraversal(path.to_path_buf())),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn short_alias(path: &Path) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let input: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut output = vec![0u16; 32768];
+    let count = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+            input.as_ptr(),
+            output.as_mut_ptr(),
+            output.len() as u32,
+        )
+    } as usize;
+    if count == 0 || count >= output.len() {
+        eprintln!("skipping short alias: volume does not provide an 8.3 path");
+        return None;
+    }
+    let alias = std::path::PathBuf::from(std::ffi::OsString::from_wide(&output[..count]));
+    if alias == path {
+        eprintln!("skipping short alias: 8.3 name generation is disabled or no alias exists");
+        None
+    } else {
+        Some(alias)
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static BEFORE_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -142,6 +226,43 @@ pub fn edit_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roots_follow_the_targets_drive() {
+        assert_eq!(
+            drive_root(Path::new(r"D:\project\file.txt")).unwrap(),
+            Path::new(r"D:\")
+        );
+        assert_eq!(
+            drive_root(Path::new(r"\\?\E:\project\file.txt")).unwrap(),
+            Path::new(r"E:\")
+        );
+    }
+
+    #[test]
+    fn authorized_target_on_another_available_drive() {
+        let workspace = tempfile::tempdir().unwrap();
+        let current = drive_root(workspace.path()).unwrap();
+        let cx = crate::tools::ToolContext {
+            binding: None,
+            workspace: workspace.path().to_path_buf(),
+            writable_roots: vec![],
+            readable_roots: vec![],
+        };
+        let Some(root) = (b'A'..=b'Z')
+            .map(|drive| std::path::PathBuf::from(format!("{}:\\", char::from(drive))))
+            .find(|root| *root != current && root.is_dir())
+        else {
+            eprintln!("skipping second-drive test: only one available drive");
+            return;
+        };
+        let resolved = crate::agent::permissions::resolve_read_target(
+            &root.join("withnav-missing-test-file"),
+            &cx,
+        )
+        .unwrap();
+        assert!(path_within(&resolved, &root));
+    }
 
     #[test]
     fn ordinary_atomic_writes_and_exact_edit_refusals() {

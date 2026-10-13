@@ -179,13 +179,25 @@ impl PermissionDecision {
 
 pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
     let path = requested_path(path, cx)?;
-    validate_path(&[PathBuf::from("/")], &path)
+    #[cfg(windows)]
+    {
+        validate_path(&[crate::tools::nofollow::drive_root(&path)?], &path)
+    }
+    #[cfg(unix)]
+    {
+        validate_path(&[PathBuf::from("/")], &path)
+    }
 }
 
 pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
     // Native tools do not perform shell expansion: only a bare `~` component
     // names HOME; `~name` remains a literal workspace-relative filename.
     let path = if path.starts_with("~") {
+        #[cfg(windows)]
+        let home = directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
+            .ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
+        #[cfg(unix)]
         let home =
             std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
         PathBuf::from(home).join(

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
@@ -307,6 +309,27 @@ impl Registry {
     }
 }
 
+#[cfg(windows)]
+pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    let anchored = if candidate.is_relative() {
+        roots
+            .first()
+            .ok_or_else(|| ToolError::PathTraversal(candidate.to_path_buf()))?
+            .join(candidate)
+    } else {
+        candidate.to_path_buf()
+    };
+    let resolved = nofollow::path_identity(&anchored)?;
+    if roots.iter().any(|root| {
+        nofollow::path_identity(root).is_ok_and(|root| nofollow::path_within(&resolved, &root))
+    }) {
+        Ok(resolved)
+    } else {
+        Err(ToolError::PathTraversal(candidate.to_path_buf()))
+    }
+}
+
+#[cfg(unix)]
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
     #[cfg(windows)]
     nofollow::validate_target(candidate)?;
@@ -355,6 +378,7 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     Ok(resolved)
 }
 
+#[cfg(unix)]
 fn nearest_existing_ancestor(candidate: &Path) -> PathBuf {
     let mut existing = candidate.to_path_buf();
     while !existing.exists() {

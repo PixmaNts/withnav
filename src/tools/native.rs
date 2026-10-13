@@ -291,10 +291,17 @@ impl Tool for EditTool {
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            let content = tokio::fs::read_to_string(&resolved).await?;
-            let (updated, report) = change(content)?;
-            atomic_write(&resolved, updated.as_bytes())?;
-            Ok(ToolResult::ok(report))
+            #[cfg(windows)]
+            {
+                Ok(ToolResult::ok(nofollow::edit_atomic(&resolved, change)?))
+            }
+            #[cfg(unix)]
+            {
+                let content = tokio::fs::read_to_string(&resolved).await?;
+                let (updated, report) = change(content)?;
+                atomic_write(&resolved, updated.as_bytes())?;
+                Ok(ToolResult::ok(report))
+            }
         })
     }
 }
@@ -371,6 +378,23 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn unbound_edit_over_limit_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        let content = "x".repeat(16 * 1024 * 1024 + 1);
+        std::fs::write(&path, &content).unwrap();
+        let result = EditTool
+            .call(
+                json!({"path":path,"old_string":"x","new_string":"y","replace_all":true}),
+                CancellationToken::new(),
+                &ctx(dir.path()),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn unbound_relative_reads_preserve_sensitive_workspace_spelling() {

@@ -7,10 +7,9 @@
 //! redirection targets and WithNav's own rule-changing commands. It does not
 //! expand globs or variables, and it is not a sandbox.
 
-use std::{
-    collections::VecDeque,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::{collections::VecDeque, path::Component};
 
 use serde_json::Value;
 
@@ -156,14 +155,17 @@ fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
     let (files, roots) = protected_targets(cx);
     #[cfg(windows)]
     {
-        let key = windows_spelling(&path.to_string_lossy()).to_lowercase();
-        files
-            .iter()
-            .any(|file| key == windows_spelling(&file.to_string_lossy()).to_lowercase())
-            || roots.iter().any(|root| {
-                let root = windows_spelling(&root.to_string_lossy()).to_lowercase();
-                key == root || key.starts_with(&format!("{}/", root.trim_end_matches('/')))
+        let identity = |path: &Path| crate::tools::nofollow::path_identity(path);
+        identity(path).is_ok_and(|path| {
+            files.iter().any(|file| {
+                identity(file).is_ok_and(|file| {
+                    crate::tools::nofollow::path_within(&path, &file)
+                        && crate::tools::nofollow::path_within(&file, &path)
+                })
+            }) || roots.iter().any(|root| {
+                identity(root).is_ok_and(|root| crate::tools::nofollow::path_within(&path, &root))
             })
+        })
     }
     #[cfg(unix)]
     {
@@ -175,6 +177,14 @@ fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
 fn windows_spelling(path: &str) -> String {
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("//?/").unwrap_or(&path);
+    let path = path.strip_prefix("/cygdrive").unwrap_or(path);
+    let path = if path.to_ascii_uppercase().ends_with("::$DATA") {
+        &path[..path.len() - 7]
+    } else if path.to_ascii_uppercase().ends_with(":$DATA") {
+        &path[..path.len() - 6]
+    } else {
+        path
+    };
     let bytes = path.as_bytes();
     if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
         format!("{}:{}", &path[1..2], &path[2..])
@@ -184,6 +194,7 @@ fn windows_spelling(path: &str) -> String {
 }
 
 /// Links followed before a path counts as a loop, as the kernel does.
+#[cfg(unix)]
 const MAX_LINKS: usize = 40;
 
 /// Resolve a path the way execution does: `~` is the home directory, a
@@ -197,6 +208,30 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
 }
 
 /// [`resolve_path`], optionally leaving a link in the final component alone.
+#[cfg(windows)]
+fn resolve(path: &str, cx: &FloorContext, _follow_last: bool) -> Option<PathBuf> {
+    let path = windows_spelling(path);
+    if path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    let joined = if path == "~" || path.eq_ignore_ascii_case("%USERPROFILE%") {
+        cx.home.clone()?
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        cx.home.as_ref()?.join(rest)
+    } else if path
+        .get(..14)
+        .is_some_and(|p| p.eq_ignore_ascii_case("%USERPROFILE%/"))
+    {
+        cx.home.as_ref()?.join(&path[14..])
+    } else if Path::new(&path).is_absolute() {
+        PathBuf::from(&path)
+    } else {
+        cx.workspace.join(&path)
+    };
+    crate::tools::nofollow::path_identity(&joined).ok()
+}
+
+#[cfg(unix)]
 fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> {
     #[cfg(windows)]
     let normalized = windows_spelling(path);
@@ -572,6 +607,67 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_real_aliases_have_the_same_floor_and_dispatch_target() {
+        let f = fixture();
+        for relative in [
+            "config/config.json",
+            "data/withnav.db",
+            "data/withnav.db-wal",
+            "data/withnav.db-shm",
+            "config/flows/custom.toml",
+            "config/auth.json",
+        ] {
+            let target = f.cx.workspace.parent().unwrap().join(relative);
+            std::fs::write(&target, "original").unwrap();
+            let canonical = crate::tools::nofollow::path_identity(&target).unwrap();
+            let mut spellings = vec![
+                format!("{}.", target.display()),
+                format!("{} ", target.display()),
+                target.parent().unwrap().display().to_string()
+                    + ".\\"
+                    + &target.file_name().unwrap().to_string_lossy(),
+                target.parent().unwrap().display().to_string()
+                    + " \\"
+                    + &target.file_name().unwrap().to_string_lossy(),
+            ];
+            if relative.contains("flows/") {
+                spellings.push(target.display().to_string().replace("flows\\", "flows.\\"));
+                spellings.push(target.display().to_string().replace("flows\\", "flows \\"));
+            }
+            if let Some(alias) = crate::tools::nofollow::short_alias(target.parent().unwrap()) {
+                spellings.push(
+                    alias
+                        .join(target.file_name().unwrap())
+                        .display()
+                        .to_string(),
+                );
+            }
+            for spelling in spellings {
+                let floor = check(&native_call("write", &spelling), &[], &f.cx);
+                assert!(
+                    matches!(floor, Floor::Credential(_) | Floor::Protected(_)),
+                    "{spelling}: {floor:?}"
+                );
+                let dispatch = crate::tools::validate_path(
+                    &[f.cx.workspace.parent().unwrap().to_path_buf()],
+                    Path::new(&spelling),
+                )
+                .unwrap();
+                assert_eq!(dispatch, canonical, "{spelling}");
+                crate::tools::nofollow::write_atomic(&dispatch, b"updated").unwrap();
+                assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
+                for suffix in [":$DATA", "::$DATA"] {
+                    assert!(matches!(
+                        bash_floor(&f.cx, &format!("echo x > '{}{suffix}'", target.display())),
+                        Floor::Credential(_) | Floor::Protected(_)
+                    ));
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_literal_floor_spellings() {
         let cx = FloorContext {
             workspace: PathBuf::from(r"C:\Users\Captain\project"),
@@ -585,6 +681,7 @@ mod tests {
             "c:/users/captain/CONFIG/CONFIG.JSON",
             r"\\?\C:\Users\Captain\config\config.json",
             "/c/Users/Captain/config/config.json",
+            "/cygdrive/c/Users/Captain/config/config.json",
             r"~\config\config.json",
             r"%USERPROFILE%\config\config.json",
             "C:/Users/Captain/data/withnav.db-wal",

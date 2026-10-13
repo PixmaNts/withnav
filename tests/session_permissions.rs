@@ -1335,7 +1335,6 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
 //      fresh request, the held wake does not cancel it, and the wake runs only
 //      after the turn ends
 #[cfg(unix)]
-#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again() {
     let env = Env::new();

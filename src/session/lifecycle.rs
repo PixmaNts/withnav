@@ -157,9 +157,15 @@ impl Service {
     }
 
     /// Graceful shutdown: stop every active session (each one's fence emits
-    /// its `session.end`), then return so axum finishes draining.
+    /// its `session.end`), then shut the MCP servers down and return so axum
+    /// finishes draining. Sessions stop first: an agent still running during
+    /// MCP cleanup could go on to its next queued tool call.
     pub async fn close_all(&self) {
+        self.stop_all_sessions().await;
         self.mcp.shutdown().await;
+    }
+
+    async fn stop_all_sessions(&self) {
         let _gate = self.lifecycle_gate().await;
         loop {
             let admission = self.admission_gate.lock().await;

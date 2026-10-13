@@ -324,7 +324,7 @@ impl RuleScope {
             Self::Project(path) => ("project", {
                 let canonical = crate::tools::canonical_path(path)?;
                 path_text(&canonical)?;
-                crate::tools::path_key(&canonical)
+                path_text(&canonical)?.into()
             }),
             Self::Agent(name) if !name.is_empty() => ("agent", name.clone()),
             Self::Agent(_) => return Err(Error::Invalid("agent name must not be empty".into())),
@@ -559,6 +559,10 @@ impl PermissionStore {
         path_text(&workspace)?;
         let workspace = crate::tools::path_key(&workspace);
         #[cfg(windows)]
+        let project_scope = "lower(replace(replace(scope_value, '/', '\\'), '\\\\?\\', ''))=?3";
+        #[cfg(unix)]
+        let project_scope = "scope_value=?3";
+        #[cfg(windows)]
         let resource = if file_action(action) {
             &crate::tools::path_key(Path::new(resource))
         } else {
@@ -571,7 +575,7 @@ impl PermissionStore {
                     "SELECT {COLUMNS} FROM permission_rules WHERE revoked_at IS NULL
              AND (?1 GLOB action_glob OR ?1 GLOB action_bare_glob)
              AND (?2 GLOB resource_glob OR ?2 GLOB resource_bare_glob)
-             AND (scope='global' OR (scope='project' AND scope_value=?3)
+              AND (scope='global' OR (scope='project' AND {project_scope})
                   OR (scope='agent' AND scope_value=?4))
              ORDER BY precision DESC,
                 CASE scope WHEN 'agent' THEN 2 WHEN 'project' THEN 1 ELSE 0 END DESC,

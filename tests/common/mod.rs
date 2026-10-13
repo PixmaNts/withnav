@@ -14,6 +14,9 @@ pub fn isolate(command: &mut std::process::Command, root: &std::path::Path) {
     let config = root.join("config/withnav");
     let data = root.join("data/withnav");
     command
+        .env_remove("WITHNAV_CONFIG_DIR")
+        .env_remove("WITHNAV_DATA_DIR");
+    command
         .env("WITHNAV_CONFIG_DIR", &config)
         .env("WITHNAV_DATA_DIR", &data);
     #[cfg(windows)]

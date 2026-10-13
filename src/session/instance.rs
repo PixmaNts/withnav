@@ -49,6 +49,10 @@ impl Instance {
             .create_new(true)
             .open(directory.join(format!("{id}.lock")))
             .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock)
+            .map_err(|(_, error)| error.to_string())?;
+        #[cfg(windows)]
         let lock = probe(file)?.ok_or_else(|| "instance lock is already held".to_string())?;
         Ok(Self {
             id,

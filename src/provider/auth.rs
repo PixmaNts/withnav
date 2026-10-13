@@ -25,8 +25,8 @@ pub struct AuthStore {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("WITHNAV_CONFIG_DIR") {
-        return Some(PathBuf::from(path));
+    if let Some(path) = crate::paths::root_override("WITHNAV_CONFIG_DIR") {
+        return Some(path);
     }
     directories::ProjectDirs::from("", "", crate::paths::APP_NAME)
         .map(|p| p.config_dir().to_path_buf())

@@ -54,9 +54,10 @@ fn current_sid() -> Result<String, ProviderError> {
             size,
             &mut size,
         );
+        let error = (ok == 0).then(std::io::Error::last_os_error);
         CloseHandle(token);
-        if ok == 0 {
-            return Err(fail());
+        if let Some(error) = error {
+            return Err(super::io_api(error));
         }
         sid_string((*(buffer.as_ptr().cast::<TOKEN_USER>())).User.Sid)
     }

@@ -548,6 +548,10 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                 .env("XDG_DATA_HOME", home.join(".local/share"))
                 .env("NAVAI_FOO", ENV_SECRET)
                 .env("RUST_LOG", "trace");
+            common::isolate(command.as_std_mut(), root.path());
+            command
+                .env("WITHNAV_CONFIG_DIR", &config)
+                .env("WITHNAV_DATA_DIR", home.join(".local/share/withnav"));
             if json {
                 command.arg("--json");
             }

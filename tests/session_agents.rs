@@ -895,7 +895,9 @@ fn run_withnav(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::pr
         r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, root);
+    command
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")

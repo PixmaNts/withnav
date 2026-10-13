@@ -129,6 +129,8 @@ pub fn inspect_valid(
     }
     PermissionStore {
         connection: std::sync::Mutex::new(connection),
+        #[cfg(test)]
+        fail_action: Default::default(),
     }
     .is_valid(kind, location, hash)
 }

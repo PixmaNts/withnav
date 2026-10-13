@@ -21,6 +21,9 @@ pub enum Error {
 /// one decision; each call is a short local query.
 pub struct PermissionStore {
     pub(crate) connection: std::sync::Mutex<Connection>,
+    /// Makes rule lookups for this action fail, to exercise failure paths.
+    #[cfg(test)]
+    pub(crate) fail_action: std::sync::Mutex<Option<String>>,
 }
 
 impl PermissionStore {
@@ -83,6 +86,8 @@ impl PermissionStore {
         )?;
         Ok(Self {
             connection: std::sync::Mutex::new(connection),
+            #[cfg(test)]
+            fail_action: Default::default(),
         })
     }
 

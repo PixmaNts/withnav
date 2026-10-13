@@ -195,8 +195,10 @@ pub struct Lookup {
     floor: Floor,
     free_read: bool,
     rules: Evaluation,
-    /// The rule for a loop, read only when the call repeats enough.
-    doom: Option<Rule>,
+    /// The rule for a loop, read only when the call repeats enough and no
+    /// written deny stops it. Its failure is kept apart: it only matters at
+    /// the loop check, after the deny and the floor.
+    doom: Result<Option<Rule>, Error>,
 }
 
 /// Reads what deciding `input` needs. Blocking: the database may wait up to
@@ -208,7 +210,7 @@ pub fn lookup(input: &Input<'_>) -> Result<Lookup, Error> {
             floor: Floor::None,
             free_read: false,
             rules: Evaluation::default(),
-            doom: None,
+            doom: Ok(None),
         });
     }
     let floor = floor::check(input.call, input.commands, input.cx);
@@ -218,7 +220,7 @@ pub fn lookup(input: &Input<'_>) -> Result<Lookup, Error> {
     } else {
         evaluate(input)?
     };
-    let doom = if input.repeats >= DOOM_LOOP_THRESHOLD {
+    let doom = if input.repeats >= DOOM_LOOP_THRESHOLD && rules.deny.is_none() {
         input
             .store
             .map(|store| {
@@ -229,10 +231,10 @@ pub fn lookup(input: &Input<'_>) -> Result<Lookup, Error> {
                     input.agent,
                 )
             })
-            .transpose()?
-            .flatten()
+            .transpose()
+            .map(Option::flatten)
     } else {
-        None
+        Ok(None)
     };
     Ok(Lookup {
         floor,
@@ -255,17 +257,20 @@ pub async fn decide_with(
     lookup: Result<Lookup, Error>,
     flows: &dyn PermissionFlows,
 ) -> Decision {
-    let result = match lookup {
-        Ok(lookup) => Ok(run(input, lookup, flows).await),
-        Err(error) => Err(error),
-    };
-    result.unwrap_or_else(|error| Decision {
+    match lookup {
+        Ok(lookup) => run(input, lookup, flows).await,
+        Err(error) => unreadable(error),
+    }
+}
+
+fn unreadable(error: Error) -> Decision {
+    Decision {
         verdict: Verdict::AskCaptain {
             reason: format!("the permission rules could not be read: {error}"),
             always: Vec::new(),
         },
         trace: Trace::default(),
-    })
+    }
 }
 
 async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> Decision {
@@ -363,6 +368,10 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
     // question; bypass skips it.
     if input.repeats >= DOOM_LOOP_THRESHOLD {
         trace.doom_loop = true;
+        let doom = match doom {
+            Ok(rule) => rule,
+            Err(error) => return unreadable(error),
+        };
         match doom {
             Some(rule) if rule.effect == Effect::Deny => {
                 trace.rule_id = Some(rule.id);
@@ -1501,6 +1510,37 @@ mod tests {
         f.add("doom_loop", "bash", Effect::Deny);
         let (decision, _) = f.decide_with(Control::Bypass, &call, 5, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_written_deny_wins_over_a_failing_loop_lookup() {
+        let f = fixture();
+        f.add("bash", "rm *", Effect::Deny);
+        *f.store.fail_action.lock().unwrap() = Some("doom_loop".into());
+        let call = bash("rm -rf target");
+        let (decision, asked) = f.decide_with(
+            Control::Normal,
+            &call,
+            DOOM_LOOP_THRESHOLD,
+            FlowAnswer::Allow,
+        );
+        assert!(
+            matches!(decision.verdict, Verdict::Deny { rule: Some(_), .. }),
+            "{decision:?}"
+        );
+        assert_eq!(asked, 0);
+        // Without a deny the failed loop lookup still asks, in its place.
+        let call = bash("ls -la");
+        let (decision, _) = f.decide_with(
+            Control::Normal,
+            &call,
+            DOOM_LOOP_THRESHOLD,
+            FlowAnswer::Allow,
+        );
+        assert!(
+            matches!(decision.verdict, Verdict::AskCaptain { .. }),
+            "{decision:?}"
+        );
     }
 
     #[test]

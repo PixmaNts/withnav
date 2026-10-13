@@ -85,7 +85,19 @@ pub(super) struct StderrTail {
 }
 
 impl StderrTail {
+    /// Appends `bytes`, redacting every form of every secret that [`redact`] removes from
+    /// tool output. A trailing piece that could still begin a secret form stays pending (at
+    /// most the longest form's length) so a match split across reads is still caught; at
+    /// `eof` a pending prefix is redacted, never published.
     pub fn push(&mut self, bytes: &[u8], secrets: &[String], eof: bool) {
+        let mut forms: Vec<String> = secrets
+            .iter()
+            .filter(|s| !s.is_empty())
+            .flat_map(|s| forms(s))
+            .collect();
+        forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+        forms.dedup();
+        let secrets = &forms;
         self.pending.extend_from_slice(bytes);
         let mut offset = 0;
         let mut safe = vec![];
@@ -169,6 +181,45 @@ mod tests {
         let upper = r#"{"token": "unicod\u00E9-sentinel"}"#;
         assert!(!redact(upper, &["unicodé-sentinel".into()]).contains("sentinel"));
     }
+    #[test]
+    fn escaped_secrets_split_across_reads_eviction_and_eof_never_enter_tail() {
+        let secret = "line\nquote\"back\\-tail-sentinel";
+        let escaped = serde_json::to_string(secret).unwrap();
+        let escaped = &escaped[1..escaped.len() - 1];
+        let secrets = vec![secret.to_string()];
+        let (head, rest) = escaped.split_at(7);
+        // Split across two reads, right at the eviction boundary.
+        let mut tail = StderrTail::default();
+        tail.push(&vec![b'x'; 65534], &secrets, false);
+        tail.push(head.as_bytes(), &secrets, false);
+        assert!(
+            !tail.text().contains(head),
+            "an escaped prefix was published"
+        );
+        tail.push(rest.as_bytes(), &secrets, false);
+        tail.push(b" retained", &secrets, false);
+        assert!(
+            tail.text().ends_with("[redacted] retained"),
+            "{}",
+            &tail.text()[65000..]
+        );
+        assert!(!tail.text().contains("sentinel"));
+        // Many split reads, then eviction of everything before the marker.
+        let mut tail = StderrTail::default();
+        for byte in escaped.bytes() {
+            tail.push(&[byte], &secrets, false);
+        }
+        tail.push(&vec![b'y'; 65530], &secrets, false);
+        assert!(!tail.text().contains("sentinel"));
+        assert!(!tail.text().contains("tail-sen"));
+        // An escaped prefix still pending at EOF is not published.
+        let mut tail = StderrTail::default();
+        tail.push(head.as_bytes(), &secrets, false);
+        tail.push(&escaped.as_bytes()[7..escaped.len() - 3], &secrets, true);
+        assert!(!tail.text().contains("sentinel"), "{}", tail.text());
+        assert!(!tail.text().contains("tail-sen"), "{}", tail.text());
+    }
+
     #[test]
     fn secrets_split_at_read_and_eviction_boundaries_never_enter_tail() {
         let secrets = vec!["abcdefgh".into()];

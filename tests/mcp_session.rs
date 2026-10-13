@@ -154,3 +154,43 @@ async fn subagents_receive_mcp_tools_within_parent_and_definition_limits() {
         state.service().close_all().await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
+    let env = common::TestEnv::new();
+    let provider = spawn_capturing_provider(vec![text_response("done")]).await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url).rules_home(&env.home);
+    cfg.config();
+    let models = cfg.models_path();
+    let config_dir = env.root.join("config/withnav");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.json"),
+        json!({
+            "agents":{"build":{"model":"mock/mock-model"}},
+            "mcp":{"fake":{"command":["python3",FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"},"startup_timeout_ms":5000}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (root, ws) = (env.root.clone(), env.ws.clone());
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+            .args(["run", "--workspace"])
+            .arg(&ws)
+            .arg("--models")
+            .arg(&models)
+            .args(["--prompt", "hello"])
+            .env("WITHNAV_TEST_KEY", "test-key")
+            .env("HOME", root.join("home"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let tools = tool_names(&provider, 0).await;
+    assert!(tools.iter().any(|t| t == "mcp__fake__echo"), "{tools:?}");
+}

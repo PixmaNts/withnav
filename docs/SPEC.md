@@ -1130,7 +1130,9 @@ Dots are rejected by OpenAI-compatible providers. Tool names are sanitized to AS
 digits, `_` and `-`; names above 64 characters are truncated with a stable six-hex SHA-256
 suffix. Sanitization collisions keep the first original name in sorted order and report the
 others in `nav doctor`. Schemas drop `$schema` and `format`, inline acyclic local references,
-and require an object root; unsupported references or root composition skip only that tool.
+and require an object root; unsupported references, root composition, or a `$ref` whose sibling
+constraints would replace the referenced ones skip only that tool. A tool whose name contains a
+configured secret value is skipped too, never renamed.
 
 Global `config.json` owns the `mcp` map; server ids match `[a-z0-9_-]{1,24}` and cannot contain `__`. Each stdio entry
 has a `command` argv array, optional `env`, `enabled` (true), `startup_timeout_ms` (10000),
@@ -1139,10 +1141,15 @@ Children inherit only PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared env
 No shell or workspace configuration is used.
 
 The service starts servers asynchronously with at most four simultaneous initializations.
-Session creation never waits: only Ready tools enter that session's frozen registry. Disconnects
+Session creation never waits: only Ready tools enter that session's frozen registry. `nav run`
+alone waits, before creating its single session, until every enabled server is ready or failed,
+bounded by the largest `startup_timeout_ms` and 30 seconds. A subagent's candidate tools are its
+parent's registry tools (MCP included), filtered by both definitions and the parent's ceiling. Disconnects
 fail in-flight calls with `mcp_disconnected`; servers get five restarts with 1/2/4/8/16-second
 backoff (general cap 60 seconds), then remain failed until service restart. Shutdown closes
-stdio, allows bounded grace, and terminates the process group, including descendants.
+stdio, allows bounded grace, and terminates the process group, including descendants. Service
+shutdown stops every session before it shuts MCP servers down. A failed startup is published,
+with its cause, before the process cleanup.
 Stderr is continuously drained into a last-200-lines/64-KiB memory buffer. `nav doctor` starts
 configured servers and reports states, tool counts, skipped tools and redacted failure tails;
 `--offline` only inspects declarations.
@@ -1150,7 +1157,9 @@ configured servers and reports states, tool counts, skipped tools and redacted f
 Calls have cancellation notifications and configured deadlines (`mcp_timeout`), bounded 64-KiB
 output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content is pretty JSON
 when no text exists; resource links include URI/name; image/audio content is a placeholder.
-`isError` becomes `mcp_tool_error` with the server as `plugin_id`. MCP result text remains
+`isError` becomes `mcp_tool_error` with the server as `plugin_id`. Configured secret values are
+redacted from descriptions, schemas, metadata and results; structured content is redacted as a
+value before serialisation, and text also loses each secret's JSON-escaped forms. MCP result text remains
 untrusted and grants no authorization. MCP uses the ordinary permission rule model without
 MCP-specific exceptions. With no matching rule, the default is ask; the permission flow may still
 allow the call, for example when the Captain asked for it. Without a flow that answers, WithNav

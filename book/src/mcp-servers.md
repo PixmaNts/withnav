@@ -31,11 +31,17 @@ not every provider credential in Nav's environment. Resolved values are never sa
 
 Tools are exposed as `mcp__github__get_issue`, with provider-safe names at most 64 characters.
 The optional `tools` map hides original tool names matching any `false` glob. An agent's
-existing exact-name `tools:` frontmatter can hide the exposed name too. MCP schemas count
+existing exact-name `tools:` frontmatter can hide the exposed name too. Subagents receive the
+MCP tools ready when they are spawned, unless their own definition or their parent's hides them.
+A tool whose name contains a configured secret value is skipped (see `nav doctor`), and so is a
+tool whose schema combines a `$ref` with sibling constraints that would replace the referenced
+ones. Descriptions, schemas and results are redacted of configured secret values. MCP schemas count
 toward the ordinary context budget; hide tools you do not need.
 
 Servers start in the background. A slow or failed server does not prevent session creation;
-its tools are absent from that session. Existing tool inventories are frozen: a server becoming
+its tools are absent from that session. `nav run` is the exception: before creating its single
+session it waits until every enabled server is ready or failed, at most the largest
+`startup_timeout_ms` (and never more than 30 s). Existing tool inventories are frozen: a server becoming
 ready later requires a new session. Calls fail clearly on connection loss, have deadlines and
 cancel notifications, and results are limited to 64 KiB. Crashed servers receive five bounded
 restart attempts. Shutdown cleans up process groups, including launcher descendants.

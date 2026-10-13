@@ -440,6 +440,12 @@ impl Service {
     pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
         self.mcp.statuses()
     }
+
+    /// See [`crate::mcp::McpManager::wait_until_settled`]. Only `nav run` waits:
+    /// session creation in `nav serve` never blocks on MCP servers.
+    pub async fn wait_for_mcp(&self) {
+        self.mcp.wait_until_settled().await;
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_delivery_commit(&self, ordinal: usize) {

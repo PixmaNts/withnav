@@ -529,6 +529,9 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         rules_roots,
         web: None,
     })?;
+    // The run's only session freezes its tool inventory when it is created:
+    // let configured MCP servers finish starting first (bounded).
+    state.service().wait_for_mcp().await;
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state

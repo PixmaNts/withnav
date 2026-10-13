@@ -32,8 +32,8 @@ fn child_resolves_isolated_roots() {
         .find(|check| check["id"] == "config.location")
         .unwrap();
     assert_eq!(
-        location["value"],
-        root.path().join("config").join("withnav").to_str().unwrap()
+        std::path::PathBuf::from(location["value"].as_str().unwrap()),
+        root.path().join("config").join("withnav")
     );
 }
 

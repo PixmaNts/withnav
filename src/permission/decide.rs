@@ -514,9 +514,16 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
             let mut items = vec![classify(find(tool, &text)?, Some(proposal), text.clone())];
             if !inside(&resolved, &project_roots(input.cx)) {
                 let parent = resolved.parent().map_or(String::new(), |p| {
-                    p.to_string_lossy().trim_end_matches('/').to_owned()
+                    p.to_string_lossy().trim_end_matches(['/', '\\']).to_owned()
                 });
-                let proposal = project("external_directory", format!("{}/*", literal(&parent)));
+                #[cfg(windows)]
+                let separator = "\\";
+                #[cfg(unix)]
+                let separator = "/";
+                let proposal = project(
+                    "external_directory",
+                    format!("{}{separator}*", literal(&parent)),
+                );
                 items.push(classify(
                     find("external_directory", &text)?,
                     Some(proposal),
@@ -1101,10 +1108,13 @@ mod tests {
     #[test]
     fn outside_project_write_asks_and_needs_both_rules() {
         let f = fixture();
-        let target = crate::tools::canonical_path(&f.root().join("outside/note.txt"))
-            .unwrap()
-            .display()
-            .to_string();
+        let target = resolve_path(
+            &f.root().join("outside/note.txt").display().to_string(),
+            &f.cx,
+        )
+        .unwrap()
+        .display()
+        .to_string();
         let write = file("write", &target);
         let decision = f.decide(Control::Normal, &write);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
@@ -1116,8 +1126,9 @@ mod tests {
         assert_eq!(
             always[1].resource,
             format!(
-                "{}/*",
-                literal(&f.root().join("outside").display().to_string())
+                "{}{}*",
+                literal(&f.root().join("outside").display().to_string()),
+                std::path::MAIN_SEPARATOR
             )
         );
         // The file rule alone is not enough.
@@ -1129,8 +1140,9 @@ mod tests {
         f.add(
             "external_directory",
             &format!(
-                "{}/*",
-                literal(&f.root().join("outside").display().to_string())
+                "{}{}*",
+                literal(&f.root().join("outside").display().to_string()),
+                std::path::MAIN_SEPARATOR
             ),
             Effect::Allow,
         );
@@ -1140,8 +1152,9 @@ mod tests {
         f.add(
             "external_directory",
             &format!(
-                "{}/*",
-                literal(&f.root().join("outside").display().to_string())
+                "{}{}*",
+                literal(&f.root().join("outside").display().to_string()),
+                std::path::MAIN_SEPARATOR
             ),
             Effect::Deny,
         );
@@ -1152,10 +1165,14 @@ mod tests {
     #[test]
     fn inside_project_file_rules_use_the_canonical_literal_path() {
         let f = fixture();
-        let target = f.cx.workspace.join("a*b.txt");
+        #[cfg(unix)]
+        let filename = "a*b.txt";
+        #[cfg(windows)]
+        let filename = "a[b].txt";
+        let target = f.cx.workspace.join(filename);
         let resource = literal(&target.display().to_string());
         f.add("write", &resource, Effect::Allow);
-        let decision = f.decide(Control::Normal, &file("write", "a*b.txt"));
+        let decision = f.decide(Control::Normal, &file("write", filename));
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
         // A star in the name is not a wildcard.
         let decision = f.decide(Control::Normal, &file("write", "aXb.txt"));

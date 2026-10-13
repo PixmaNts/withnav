@@ -60,7 +60,10 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
     service.send(command).await.unwrap();
     // Captures are persisted by a background writer, off the blocking admission path: wait for
     // the record instead of expecting it synchronously.
-    let records = crate::flows::records::Records::new(&service.config.data_dir, dir.path());
+    let records = crate::flows::records::Records::new(
+        &service.config.data_dir,
+        &dir.path().canonicalize().unwrap(),
+    );
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             let applied = records.read().unwrap().iter().any(|record| {

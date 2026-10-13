@@ -154,10 +154,22 @@ impl Skills {
                 return Err(format!("skill_disabled: skill {name} is disabled"))
             }
             Resolution::Ambiguous(_) => {
+                #[cfg(windows)]
+                return Err(format!(
+                    "skill_ambiguous: skill {name} is ambiguous: {}",
+                    self.ambiguous
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                #[cfg(unix)]
                 return Err(format!(
                     "skill_ambiguous: skill {name} is ambiguous: {:?}",
                     self.ambiguous.get(name)
-                ))
+                ));
             }
             _ => return Err(format!("skill_unknown: no listed skill with id {name:?}")),
         };

@@ -337,6 +337,9 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
         return Floor::None;
     };
     if names_credential(path, cx) {
+        #[cfg(windows)]
+        let path =
+            resolve_path(path, cx).map_or(path.to_owned(), |path| path.display().to_string());
         return Floor::Credential(path.to_owned());
     }
     match (resolve_path(path, cx), writes) {
@@ -586,6 +589,23 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
         candidates.extend(operands.iter().map(String::as_str));
     }
     for word in candidates {
+        // Shell operands also include URLs, header values and arbitrary text.
+        // An invalid Win32 filename cannot name a protected file; native paths
+        // still fail closed through their own resolver.
+        #[cfg(windows)]
+        if let Ok(path) = crate::tools::nofollow::requested_path(
+            Path::new(word),
+            &cx.workspace,
+            cx.home.as_deref(),
+        ) {
+            if matches!(crate::tools::nofollow::path_identity(&path), Err(crate::error::ToolError::Io(ref error)) if matches!(error.raw_os_error(), Some(123 | 206)))
+            {
+                continue;
+            }
+            if word.contains(':') && !Path::new(word).is_absolute() {
+                continue;
+            }
+        }
         match protected_word(word, cx) {
             None => return Floor::Unresolved(word.to_owned()),
             Some(true) => return Floor::Protected(word.to_owned()),
@@ -933,7 +953,7 @@ mod tests {
     #[test]
     fn bash_looks_at_path_words_and_redirections() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         assert_eq!(bash_floor(&f.cx, "ls -la && cargo test"), Floor::None);
         assert!(matches!(
             bash_floor(&f.cx, "cat .env"),
@@ -985,7 +1005,7 @@ mod tests {
     #[test]
     fn credentials_win_over_protected_and_opaque_lines_are_scanned() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         assert!(matches!(
             bash_floor(&f.cx, &format!("cp {root}/config/config.json x; cat .env")),
             Floor::Credential(_)
@@ -1142,7 +1162,7 @@ mod tests {
     #[test]
     fn output_options_and_read_write_redirections_are_writes() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         let config = format!("{root}/config/config.json");
         for line in [
             format!("sort -o {config} in"),
@@ -1214,7 +1234,7 @@ mod tests {
     #[test]
     fn attached_and_separate_output_targets_meet_every_check() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         let config = format!("{root}/config/config.json");
         for line in [
             "sort -o.env input".to_owned(),

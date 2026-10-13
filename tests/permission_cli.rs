@@ -33,7 +33,7 @@ fn child_resolves_isolated_roots() {
         .unwrap();
     assert_eq!(
         location["value"],
-        root.path().join("config/withnav").to_str().unwrap()
+        root.path().join("config").join("withnav").to_str().unwrap()
     );
 }
 
@@ -61,7 +61,7 @@ fn relative_roots_remain_protected_in_another_workspace() {
         .unwrap();
     assert_eq!(
         location["value"],
-        root.path().join("config/withnav").to_str().unwrap()
+        root.path().join("config").join("withnav").to_str().unwrap()
     );
 
     // Probe the public floor in a fresh process with the same roots and cwd as nav.

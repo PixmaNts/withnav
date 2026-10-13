@@ -72,7 +72,12 @@ impl Tool for SkillTool {
                 Resolution::Ambiguous(paths) => {
                     return Ok(ToolResult::error(
                         "skill_ambiguous",
-                        format!("ambiguous skill: {paths:?}"),
+                        {
+                            #[cfg(windows)]
+                            { format!("ambiguous skill: {}", paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")) }
+                            #[cfg(unix)]
+                            { format!("ambiguous skill: {paths:?}") }
+                        },
                     ))
                 }
                 Resolution::Found(_) => {}

@@ -967,7 +967,10 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     assert_eq!(stopped.status.code(), Some(3), "{stopped:?}");
     let stderr = String::from_utf8_lossy(&stopped.stderr);
     assert!(
-        stderr.contains(&format!("permission_required: write {}", env.ws.display())),
+        stderr.contains(&format!(
+            "permission_required: write {}",
+            withnav::tools::canonical_path(&env.ws).unwrap().display()
+        )),
         "{stderr}"
     );
     assert!(!target.exists());
@@ -1013,7 +1016,10 @@ async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("permission_required: write "), "{stderr}");
     assert!(
-        stderr.contains(&format!("{}: ", env.ws.display())),
+        stderr.contains(&format!(
+            "{}: ",
+            withnav::tools::canonical_path(&env.ws).unwrap().display()
+        )),
         "{stderr}"
     );
     assert!(!target.exists());

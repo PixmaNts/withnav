@@ -1101,7 +1101,10 @@ mod tests {
     #[test]
     fn outside_project_write_asks_and_needs_both_rules() {
         let f = fixture();
-        let target = f.root().join("outside/note.txt").display().to_string();
+        let target = crate::tools::canonical_path(&f.root().join("outside/note.txt"))
+            .unwrap()
+            .display()
+            .to_string();
         let write = file("write", &target);
         let decision = f.decide(Control::Normal, &write);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));

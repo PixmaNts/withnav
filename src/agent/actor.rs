@@ -67,6 +67,8 @@ pub struct AgentActor {
     pub protected_config_root: Option<std::path::PathBuf>,
     pub permission_reviewer_unavailable: &'static str,
     pub automatic_permission_review: bool,
+    /// Captain setting `yolo`: no permission control at all for this session.
+    pub yolo: bool,
     pub permission_review_timeout_secs: u64,
     pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
     pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
@@ -218,6 +220,7 @@ impl AgentActor {
             protected_config_root: None,
             permission_reviewer_unavailable: "no alias",
             automatic_permission_review: true,
+            yolo: false,
             permission_review_timeout_secs: 40,
             bypass: Arc::default(),
             config_session_grant: Arc::default(),

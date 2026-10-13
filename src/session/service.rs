@@ -157,6 +157,7 @@ pub struct SelectedModel {
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
     pub(crate) automatic_permission_review: bool,
+    pub(crate) yolo: bool,
     pub(crate) permission_review_timeout_secs: u64,
     pub(crate) scratch_choice: Vec<PathBuf>,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
@@ -169,6 +170,7 @@ type ChildPolicy = (
     bool,
     Option<String>,
     Vec<PathBuf>,
+    bool,
 );
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -326,6 +328,8 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    /// Captain setting `yolo`: the session runs with no permission control.
+    pub yolo: bool,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -957,6 +961,10 @@ impl Service {
                         .as_ref()
                         .map(|execution| execution.scratch_choice.clone())
                         .unwrap_or_default(),
+                    inherited
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.yolo),
                 )),
                 Some(parent),
                 Some(inherited),
@@ -1859,6 +1867,10 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         Ok(SessionSummary {
+            yolo: selected
+                .execution
+                .as_ref()
+                .is_some_and(|execution| execution.yolo),
             bypass: bypass.enabled,
             bypass_seq: bypass.seq,
             incarnation: Some(handle.incarnation.to_string()),
@@ -1913,6 +1925,7 @@ impl Service {
             meta.provenance.as_ref(),
         );
         Ok(SessionSummary {
+            yolo: false,
             bypass: false,
             bypass_seq: meta.last_seq,
             incarnation: None,
@@ -2498,7 +2511,7 @@ impl Service {
                     .map_err(ServerError::MalformedBody)?,
             },
             scratch_choice: match &child_policy {
-                Some((_, _, _, _, choice)) => choice.clone(),
+                Some((_, _, _, _, choice, _)) => choice.clone(),
                 None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
@@ -2508,11 +2521,21 @@ impl Service {
                 },
             },
             automatic_permission_review: match &child_policy {
-                Some((_, _, enabled, _, _)) => *enabled,
+                Some((_, _, enabled, _, _, _)) => *enabled,
                 None => match settings.permissions_automatic_review() {
                     Ok(enabled) => enabled,
                     Err(error) => {
                         tracing::warn!("automatic permission review disabled: {error}");
+                        false
+                    }
+                },
+            },
+            yolo: match &child_policy {
+                Some((_, _, _, _, _, yolo)) => *yolo,
+                None => match settings.yolo() {
+                    Ok(yolo) => yolo,
+                    Err(error) => {
+                        tracing::warn!("yolo ignored: {error}");
                         false
                     }
                 },
@@ -2522,7 +2545,7 @@ impl Service {
         });
         let root_tools_enabled = child_policy.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
-            Some((allowed, read_only, _, _, _)) => build_child_actor(
+            Some((allowed, read_only, _, _, _, _)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
@@ -2612,6 +2635,7 @@ impl Service {
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.automatic_permission_review = execution.automatic_permission_review;
+        actor.yolo = execution.yolo;
         actor.permission_review_timeout_secs = execution.permission_review_timeout_secs;
         actor.protected_config_spelling = Some(self.config.config_dir.clone());
         actor.protected_config_root =
@@ -2642,7 +2666,7 @@ impl Service {
                 Err(error) => crate::agent::scratch::warn_once(&error),
             }
         }
-        if let Some((_, _, _, captain_task, _)) = &child_policy {
+        if let Some((_, _, _, captain_task, _, _)) = &child_policy {
             actor.captain_request_inherited = true;
             actor.captain_task = captain_task.clone();
         }
@@ -2731,7 +2755,7 @@ impl Service {
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
-        if let Some((allowed, _, _, _, _)) = &child_policy {
+        if let Some((allowed, _, _, _, _, _)) = &child_policy {
             actor
                 .registry
                 .retain(|name| allowed.get(name).copied().unwrap_or(false));

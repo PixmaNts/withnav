@@ -81,6 +81,31 @@ covers credentials or protected configuration.
   browser.
 - It is not a sandbox: `bash` keeps its access to your machine.
 
+## Yolo
+
+> **Unsafe.** Yolo turns permission control off. The agent can change or delete anything your
+> account can reach, read your credentials and run any command, with no prompt and no review.
+> Use it only in a disposable machine or container.
+
+Set `"yolo": true` in `config.json` (see [Configuration](configuration.md)). It is off by default,
+applies to new sessions, and their subagents inherit it.
+
+There are three levels of control, from the strongest: **normal** (reviews and prompts),
+**bypass** (ordinary prompts skipped for one session; protected requests still ask) and **yolo**
+(nothing is checked).
+
+- A tool call runs without an approval prompt, without the Instinct and Metacognition review,
+  without the plan role's check or an agent's write scope, without any `tool.pre_call` flow, and
+  without the protected-configuration, credentials and scratch-folder rules. File tools may reach
+  outside the workspace, and `grep` and `glob` may start in a credentials folder (the credential
+  files in it are still left out of the results). No review request is sent at all.
+- Each call records `approved_by: yolo` in its `tool.pre_call` and `tool.post_call` events.
+- Still enforced: which tools a session or agent has, malformed or missing arguments, and
+  cancellation. A refused call still says `approved_by: yolo`.
+- `YOLO` shows in the terminal header and sidebar, as a badge in the browser and in VS Code, and
+  `nav doctor` prints `permissions: yolo (no permission control)`.
+- Changing the setting applies to new sessions, not to open ones.
+
 ## The toolchain trust rule
 
 A program you installed yourself, such as `cargo` from rustup, is trusted like a system one. So

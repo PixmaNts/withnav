@@ -34,6 +34,53 @@ use common::sse::{
 use common::TestEnv as Env;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn yolo_loads_both_skill_paths_without_validation_requests_or_records() {
+    for selected in [true, false] {
+        let env = env();
+        let provider = spawn_capturing_provider(if selected {
+            vec![answer("done")]
+        } else {
+            vec![skill_call("ask-matt"), answer("done")]
+        })
+        .await;
+        let state = TestServerConfig::mock(&env.root, &provider.url)
+            .model_alias("default", "mock-model")
+            .rules_home(&env.home)
+            .state();
+        let settings = env.root.join("cfg/config.json");
+        let mut document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        document["yolo"] = json!(true);
+        std::fs::write(settings, document.to_string()).unwrap();
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        let sub = state.subscribe(id, None).await.unwrap();
+        if selected {
+            let router = withnav::server::app(state.clone());
+            let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({"target_actor_id":"agent:main","content":[{"type":"text","text":"Review this"},{"type":"skill","name":"ask-matt"}]}))).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+        } else {
+            state
+                .send(captain_command(id, "load skill".into()))
+                .await
+                .unwrap();
+        }
+        let events = collect_until(sub, |e| {
+            e.kind == "turn.end" && e.payload["outcome"] == "done"
+        })
+        .await;
+        assert!(!events.iter().any(|e| e.kind == "permission.requested"));
+        assert!(events
+            .iter()
+            .any(|e| e.kind == "tool.post_call" && e.payload["metadata"]["approved_by"] == "yolo"));
+        assert!(provider.bodies().join("\n").contains("STEP ONE"));
+        let store =
+            withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
+        assert!(store.list_validations().unwrap().is_empty());
+        state.close_session(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_skill_paths_hold_the_snapshot_until_captain_validation() {
     for selected in [false, true] {
         for decision in ["allow_once", "allow_always", "reject"] {

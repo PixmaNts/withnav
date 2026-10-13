@@ -40,12 +40,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     }
     frame.buffer_mut().set_style(area, theme.panel());
     {
-        let marker = if state.bypass {
+        let yolo = state.session.as_ref().is_some_and(|m| m.yolo);
+        let marked = yolo || state.bypass;
+        let marker = if yolo {
+            " ⚠ YOLO   "
+        } else if state.bypass {
             " ⚠ bypass "
         } else {
             " 🛡 safe "
         };
-        let marker_width = (if state.bypass {
+        let marker_width = (if marked {
             11
         } else if area.width >= 80 {
             10
@@ -65,7 +69,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 marker,
-                if state.bypass {
+                if marked {
                     theme.warning().add_modifier(Modifier::BOLD)
                 } else {
                     theme.muted()

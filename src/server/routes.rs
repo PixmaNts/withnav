@@ -454,6 +454,7 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub yolo: bool,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -518,6 +519,7 @@ async fn list_sessions(
                     }
                 };
                 sessions.push(SessionListEntry {
+                    yolo: summary.yolo,
                     bypass: summary.bypass,
                     bypass_seq: summary.bypass_seq,
                     incarnation: summary.incarnation,

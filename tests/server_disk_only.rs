@@ -191,7 +191,8 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "upstream_id",
             "variant",
             "variant_source",
-            "workspace"
+            "workspace",
+            "yolo"
         ]
     );
     assert_eq!(restarted.state.session_count(), 0, "no memory slot made");

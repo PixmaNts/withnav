@@ -228,7 +228,13 @@ mod tests {
         let mut servers = vec![];
         let mut tasks = vec![];
         for (id, name, retained) in [("a__b", "c", "wrong"), ("a", "b__c", "retained")] {
-            let config: config::ServerConfig = serde_json::from_value(json!({"command":[super::test_python::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"TOOL_NAMES":json!([name]).to_string(),"RETAINED":retained}})).unwrap();
+            let mut config: config::ServerConfig = serde_json::from_value(json!({"command":[super::test_python::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"TOOL_NAMES":json!([name]).to_string(),"RETAINED":retained}})).unwrap();
+            #[cfg(windows)]
+            config
+                .env
+                .insert("SystemRoot".into(), std::env::var("SystemRoot").unwrap());
+            #[cfg(unix)]
+            let _ = &mut config;
             let server = Arc::new(Server {
                 id: id.into(),
                 config,

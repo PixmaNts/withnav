@@ -612,7 +612,11 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                         serde_json::to_string(&format!("legacy.path.{}", path.display())).unwrap();
                     assert!(stdout.contains(&escaped));
                 } else {
-                    assert!(stdout.contains(&format!("legacy.path.{}", path.display())));
+                    assert!(
+                        stdout.contains(&format!("legacy.path.{}", path.display())),
+                        "missing {}: {stdout}",
+                        path.display()
+                    );
                 }
             }
             if json {

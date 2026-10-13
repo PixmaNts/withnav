@@ -203,7 +203,7 @@ async fn run_steps_inner(
                 },
             }],
         });
-        match run_skill(actor, &call, observe, None).await {
+        match run_skill(actor, &call, observe, None, None).await {
             One::Ask(request, destination) => {
                 actor.pending = Some(PendingInteraction::Permission {
                     request: request.clone(),
@@ -506,7 +506,7 @@ pub async fn resolve_permission_with_origin(
             }
             let note = authorize::answered_approval(&request, "captain");
             if call.name == "skill" {
-                run_skill(actor, &call, observe, Some(note)).await
+                run_skill(actor, &call, observe, Some(note), None).await
             } else {
                 run_approved(
                     actor,
@@ -653,7 +653,7 @@ async fn resolve_skill(
         PermissionDecision::AllowOnce | PermissionDecision::AllowAlways
     ) && snapshot.is_some()
     {
-        match skill_admission(actor, &call, observe, true).await {
+        match skill_admission(actor, &call, observe, true, None).await {
             Admission::Run(note) => gate = Some(note),
             Admission::Done(One::Interrupted) => {
                 actor.end_skill_turn();
@@ -760,14 +760,16 @@ enum Admission {
 /// Decides the loading of a skill whose content is validated, with action
 /// `skill` and the skill's name: a `deny` rule refuses it whoever selected
 /// it. `answered` is true right after the Captain validated it in this turn:
-/// a rule `ask` is then already answered.
+/// a rule `ask` is then already answered. `previous` is the pending decision
+/// of a rule question that bypass answers: this decision settles it.
 async fn skill_admission(
     actor: &mut AgentActor,
     call: &ToolCall,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
     answered: bool,
+    previous: Option<i64>,
 ) -> Admission {
-    match authorize::authorize(actor, call, 1, None, true).await {
+    match authorize::authorize(actor, call, 1, previous, true).await {
         Authorized::Run(note) => Admission::Run(note),
         Authorized::Denied { message, note } => {
             deny_call(actor, call, message, note, observe);
@@ -821,6 +823,7 @@ async fn run_skill(
     call: &ToolCall,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
     admitted: Option<serde_json::Value>,
+    previous: Option<i64>,
 ) -> One {
     if let Err(error) = preflight(actor, call) {
         reject_call(actor, call, error, observe);
@@ -878,7 +881,7 @@ async fn run_skill(
             } else if let Some(note) = admitted {
                 note
             } else {
-                match skill_admission(actor, call, observe, false).await {
+                match skill_admission(actor, call, observe, false, previous).await {
                     Admission::Run(note) => note,
                     Admission::Done(one) => return one,
                 }
@@ -1084,7 +1087,15 @@ async fn run_decided(
     previous: Option<i64>,
 ) -> One {
     if call.name == "skill" {
-        return run_skill(actor, call, observe, None).await;
+        let one = run_skill(actor, call, observe, None, previous).await;
+        // A skill refused before its admission (snapshot gone, validation
+        // revoked) never settles the question bypass answered: end it here.
+        if let Some(id) = previous {
+            if let Err(error) = actor.permission_store.cancel_if_pending(id) {
+                tracing::warn!(%error, "permission decision outcome not recorded");
+            }
+        }
+        return one;
     }
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);
@@ -1235,7 +1246,7 @@ async fn run_yolo(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
     if call.name == "skill" {
-        return run_skill(actor, call, observe, None).await;
+        return run_skill(actor, call, observe, None, None).await;
     }
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);

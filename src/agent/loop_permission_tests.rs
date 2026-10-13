@@ -889,7 +889,11 @@ async fn a_protected_write_asks_the_protected_question_exactly_once() {
 
 /// An actor whose workspace holds the skill `helper`, not yet validated.
 fn actor_with_skill() -> AgentActor {
-    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+    actor_with_skill_and_flow("allow")
+}
+
+fn actor_with_skill_and_flow(mode: &'static str) -> AgentActor {
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new(mode))));
     let ws = actor.tool_context.workspace.clone();
     std::fs::create_dir_all(ws.join(".git")).unwrap();
     let dir = ws.join(".agents/skills/helper");
@@ -1036,4 +1040,85 @@ async fn the_decision_history_keeps_no_secret_and_stays_bounded() {
         .as_deref()
         .unwrap()
         .contains("never send <redacted>"));
+}
+
+/// A validated `helper` skill under an `ask` rule: the model's call waits on a
+/// rule question (not a validation). Returns the request.
+async fn waiting_on_a_skill_rule(
+    actor: &mut AgentActor,
+) -> crate::agent::permissions::PermissionRequest {
+    let snapshot = actor.skills.snapshot("helper").unwrap();
+    actor.skills.validation.approve(&snapshot, true).unwrap();
+    add_rule(actor, "skill", "helper", Effect::Ask);
+    script(
+        actor,
+        vec![
+            owned(&[("s1".into(), "skill".into(), json!({"name": "helper"}))]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(actor).await else {
+        panic!("the ask rule asks");
+    };
+    assert!(request.skill_rule);
+    request
+}
+
+fn skill_rows(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision> {
+    decisions(actor)
+        .into_iter()
+        .filter(|row| row.tool == "skill")
+        .collect()
+}
+
+#[tokio::test]
+async fn bypass_answering_a_skill_rule_question_settles_its_pending_row() {
+    let mut actor = actor_with_skill_and_flow("apply");
+    let request = waiting_on_a_skill_rule(&mut actor).await;
+    actor.bypass.lock().unwrap().enabled = true;
+    assert!(pending_bypass_eligible(&actor));
+    let outcome = resolve_permission_with_origin(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowOnce,
+        PermissionOrigin::Bypass,
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    assert!(tool_result_of(&actor, "s1")
+        .unwrap()
+        .contains("HELPER BODY"));
+    let rows = skill_rows(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].request_id, Some(request.id.to_string()));
+    assert_eq!(
+        (rows[0].outcome, rows[0].approved_by.as_deref()),
+        (Outcome::Allowed, Some("bypass"))
+    );
+}
+
+#[tokio::test]
+async fn a_deny_rule_written_while_a_skill_question_waits_settles_it_as_denied() {
+    let mut actor = actor_with_skill_and_flow("apply");
+    let request = waiting_on_a_skill_rule(&mut actor).await;
+    add_rule(&actor, "skill", "helper", Effect::Deny);
+    actor.bypass.lock().unwrap().enabled = true;
+    resolve_permission_with_origin(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowOnce,
+        PermissionOrigin::Bypass,
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    assert!(!tool_result_of(&actor, "s1")
+        .unwrap()
+        .contains("HELPER BODY"));
+    let rows = skill_rows(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].outcome, Outcome::Denied);
 }

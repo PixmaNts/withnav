@@ -521,6 +521,15 @@ impl PermissionStore {
         )? != 0)
     }
 
+    /// Ends a decision that is still pending, and only then: one a later
+    /// decision already settled keeps its outcome.
+    pub fn cancel_if_pending(&self, id: i64) -> Result<bool, Error> {
+        Ok(self.db().execute(
+            "UPDATE permission_decisions SET outcome='cancelled' WHERE id=?1 AND outcome='pending'",
+            params![id],
+        )? != 0)
+    }
+
     /// A session that restarts cannot answer the questions its previous
     /// process asked: they end as `expired`. Returns how many rows changed.
     pub fn expire_pending(&self, session_id: &str) -> Result<usize, Error> {

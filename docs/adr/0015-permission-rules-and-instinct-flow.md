@@ -148,7 +148,7 @@ rule (a skill that says "push the branch" pushes without a question), never a `d
 - Any flow may allow, workspace flows included. The documentation warns that a workspace flow can
   open permissions, which is why every flow must be validated (below).
 - A failed run (timeout, provider error, invalid answer) falls back to **`apply_rule`**: the rule's
-  result applies, `allow` runs and `ask` asks. A Jev outage does not turn into a stream of
+  result applies, `allow` runs and `ask` asks. An Instinct outage does not turn into a stream of
   questions. This replaces "a blocking flow asks the Captain" as the default fallback. Each
   flow's `apply_rule` is resolved to `allow` or `ask_captain` before the strictest answer is
   chosen, and no flow verdict at all also applies the rule.
@@ -229,7 +229,7 @@ flow, Captain, bypass, yolo), and tool availability per agent.
 
 - The number of questions is driven by the Captain's rules, not by the gate's caution, and
   decreases over the life of a project.
-- A Jev outage leaves the rules in force instead of asking about every call.
+- An Instinct outage leaves the rules in force instead of asking about every call.
 - A validated workspace flow or skill can open permissions. That is the price of trusting what the
   Captain validated, and it is documented.
 - Bash remains unconfined and nothing claims otherwise.

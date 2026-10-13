@@ -1,13 +1,14 @@
+use crate::provider::systemone::DecisionModel;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::watchdog::{Clock, Evidence, InstinctJudge, Judge, RealClock, Watchdog};
+use super::watchdog::{Clock, Evidence, RealClock, Watchdog};
 
 #[cfg(debug_assertions)]
 #[derive(Clone)]
 pub(crate) struct TestWatchdog {
     clock: Arc<dyn Clock>,
-    judge: Arc<dyn Judge>,
+    judge: Arc<dyn DecisionModel>,
 }
 #[cfg(debug_assertions)]
 impl std::fmt::Debug for TestWatchdog {
@@ -22,7 +23,7 @@ use crate::session::service::{Lifecycle, Service, SessionId};
 impl Service {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
-    pub fn install_watchdog_test(&self, clock: Arc<dyn Clock>, judge: Arc<dyn Judge>) {
+    pub fn install_watchdog_test(&self, clock: Arc<dyn Clock>, judge: Arc<dyn DecisionModel>) {
         *self.watchdog_test.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(TestWatchdog { clock, judge });
     }
@@ -46,7 +47,7 @@ impl Service {
                 Arc::new(ClientCache::new()),
             )
         })
-        .map(|client| Arc::new(InstinctJudge(client)) as Arc<dyn Judge>);
+        .map(|client| Arc::new(client) as Arc<dyn DecisionModel>);
         let service = self.clone();
         let clock: Arc<dyn Clock> = Arc::new(RealClock);
         #[cfg(debug_assertions)]

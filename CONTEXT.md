@@ -389,7 +389,7 @@ and the [InstinctFlow guide](docs/instinct-flow.md).
 
 **InstinctFlow**:
 The feature: flows run by the instinct layer, edited in the studio.
-_Avoid_: Jev flows
+_Avoid_: Instinct flows
 
 **Studio**:
 The editor where the Captain draws, tests and saves flows, and asks the engine to reload them.

@@ -64,7 +64,7 @@ They build on the separate role and permission rules of ADR 0008.
   Mid-batch injection was rejected: it can separate a call from its result.
   Persisting every steer was not chosen; volatile guidance is distinct from durable completion.
 - **The watchdog asks the instinct about progress, not role conformance.** Every 300 seconds by
-  default, Jev reads bounded observable activity, never reasoning. Zero disables the checks.
+  default, Instinct reads bounded observable activity, never reasoning. Zero disables the checks.
   `active` does nothing. `stuck` stops execution and delivers partial output marked
   "stopped by watchdog". `doubt` holds the next safe boundary and wakes the parent with evidence.
   Two consecutive unavailable, timed-out or invalid answers mean doubt; one is silent.

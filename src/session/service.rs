@@ -2628,13 +2628,27 @@ impl Service {
         }
         // A scratch directory that contains, or sits inside, WithNav's own
         // configuration would make it writable without the protected check.
+        // On Windows `/` names the current drive's root, so containment in it would refuse a
+        // configuration directory on another drive (checkout on D:, profile on C:) and with it
+        // every scratch directory. Windows compares resolved identities instead.
+        #[cfg(unix)]
         let config_root =
             crate::tools::validate_path(&[PathBuf::from("/")], &self.config.config_dir).ok();
-        for path in &execution.scratch_choice {
-            if config_root
-                .as_ref()
-                .is_none_or(|root| root.starts_with(path) || path.starts_with(root))
+        #[cfg(windows)]
+        let config_root = crate::tools::canonical_path(&self.config.config_dir).ok();
+        let overlaps = |root: &std::path::Path, path: &std::path::Path| {
+            #[cfg(unix)]
             {
+                root.starts_with(path) || path.starts_with(root)
+            }
+            #[cfg(windows)]
+            {
+                crate::tools::nofollow::path_within(root, path)
+                    || crate::tools::nofollow::path_within(path, root)
+            }
+        };
+        for path in &execution.scratch_choice {
+            if config_root.as_ref().is_none_or(|root| overlaps(root, path)) {
                 crate::agent::scratch::warn_once("scratch overlaps protected config directory");
                 continue;
             }

@@ -2,9 +2,9 @@
 pub fn python() -> String {
     let interpreter = std::env::var("WITHNAV_TEST_PYTHON")
         .unwrap_or_else(|_| if cfg!(windows) { "python" } else { "python3" }.to_owned());
-    // MCP clears its environment; resolve before that also drops Windows Path.
+    // Resolve before MCP applies its isolated child environment and configured Path.
     let output = std::process::Command::new(&interpreter)
-        .args(["-c", "import sys; print(sys.executable)"])
+        .args(["-X", "utf8", "-c", "import sys; print(sys.executable)"])
         .output()
         .expect("test Python interpreter must be installed");
     assert!(

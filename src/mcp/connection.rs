@@ -15,7 +15,18 @@ fn resolve_windows_command(
             .map(|(_, value)| value.as_str())
     };
     let extensions = lookup("PATHEXT").unwrap_or(".COM;.EXE;.BAT;.CMD");
-    for dir in std::env::split_paths(lookup("PATH").unwrap_or("")) {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetSystemDirectoryW, GetWindowsDirectoryW,
+    };
+    let mut directories: Vec<_> = std::env::split_paths(lookup("PATH").unwrap_or(""))
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect();
+    if let Some(app_dir) = std::env::current_exe()?.parent() {
+        directories.push(app_dir.to_path_buf());
+    }
+    directories.push(windows_directory(GetSystemDirectoryW)?);
+    directories.push(windows_directory(GetWindowsDirectoryW)?);
+    for dir in directories {
         for extension in extensions
             .split(';')
             .filter(|ext| ext.starts_with('.') && !ext.contains(['/', '\\', ':']))
@@ -31,6 +42,50 @@ fn resolve_windows_command(
         std::io::ErrorKind::NotFound,
         format!("MCP command {command:?} not found in child Path/PATHEXT"),
     ))
+}
+
+#[cfg(windows)]
+fn windows_directory(
+    get_directory: unsafe extern "system" fn(*mut u16, u32) -> u32,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0; 260];
+    loop {
+        let length = unsafe { get_directory(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        if length == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if length < buffer.len() {
+            return Ok(std::ffi::OsString::from_wide(&buffer[..length]).into());
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_command_tests {
+    use super::*;
+
+    #[test]
+    fn system_command_starts_with_isolated_child_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let env = std::collections::BTreeMap::from([
+            ("Path".into(), format!(";{};", directory.path().display())),
+            ("PATHEXT".into(), ".EXE;.CMD".into()),
+        ]);
+        let program = resolve_windows_command("cmd", &env).unwrap();
+        let system_dir =
+            windows_directory(windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW)
+                .unwrap();
+        assert_eq!(program, system_dir.join("cmd.EXE"));
+        assert!(std::process::Command::new(program)
+            .args(["/d", "/c", "exit", "0"])
+            .env_clear()
+            .envs(env)
+            .status()
+            .unwrap()
+            .success());
+    }
 }
 
 use super::{tool::McpTool, Ready, Server};

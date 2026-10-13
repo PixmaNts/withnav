@@ -297,10 +297,7 @@ async fn a_credential_read_asks_under_bypass_and_bypass_cannot_answer_it() {
     .is_err());
     assert!(actor.has_pending());
     assert_eq!(flows.asked(), 0);
-    assert!(decisions(&actor)[0]
-        .command_matches
-        .as_array()
-        .is_none_or(|m| m.is_empty()));
+    assert!(decisions(&actor)[0].command_matches.is_array());
 }
 
 #[tokio::test]

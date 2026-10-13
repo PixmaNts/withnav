@@ -654,9 +654,6 @@ impl FlowStore {
         let mut errors = vec![];
         let mut diagnostics = vec![];
         for (document, compiled) in documents {
-            if document.name == "permission-default" && document.location != Location::Builtin {
-                continue;
-            }
             if !self.validated(&document)? {
                 diagnostics.push(Diagnostic::new(
                     "validation",

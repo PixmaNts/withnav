@@ -90,7 +90,7 @@ jobs:
           components: clippy, rustfmt
           targets: x86_64-pc-windows-msvc
       - name: Install ripgrep for real-engine tests
-        run: choco install ripgrep --version=14.1.1 -y --no-progress
+        run: choco install ripgrep --version=14.1.0 -y --no-progress
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: x86_64-pc-windows-msvc

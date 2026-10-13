@@ -152,8 +152,6 @@ pub struct AgentActor {
     pub cancel: CancellationToken,
     pub state: AgentState,
     pub pending: Option<PendingInteraction>,
-    /// The folder and origin approvals: given in this session, or kept for
-    /// its workspace when the session service loads them.
     pub selected_skill_snapshots: Vec<(u64, String)>,
     pub skill_turn_generation: u64,
     pub skill_turn_start: usize,

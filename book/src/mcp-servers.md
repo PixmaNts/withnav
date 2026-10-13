@@ -40,7 +40,9 @@ ready later requires a new session. Calls fail clearly on connection loss, have 
 cancel notifications, and results are limited to 64 KiB. Crashed servers receive five bounded
 restart attempts. Shutdown cleans up process groups, including launcher descendants.
 
-MCP tools use ordinary permission rules (no rule = ask). Always saves a global allow rule for
+MCP tools use ordinary permission rules. With no matching rule, the default is ask; the permission
+flow may still allow the call, for example when the Captain asked for it. Without a flow that
+answers, WithNav asks. Always saves a global allow rule for
 that exposed tool name; yolo runs them unchecked.
 Installed servers run arbitrary programs with your account's privileges: WithNav is not a
 sandbox. Server descriptions/results are untrusted text, not authorization.

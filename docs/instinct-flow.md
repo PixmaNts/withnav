@@ -272,9 +272,9 @@ works as an alias for `allow`.
 
 | Action | Parameters | Kind | What WithNav does |
 | --- | --- | --- | --- |
-| `allow` | optional `protected_ok` | verdict, priority 0 | Allow on the new permission hook; on the legacy hook, continue normal review unchanged. |
+| `allow` | optional `protected_ok` | verdict, priority 0 | Let the call run (the rules found no `deny`); `protected_ok` is honoured only from the compiled-in protected check. |
 | `apply_rule` | `{}` | verdict, no static priority | Resolve to the caller's rule (`allow` → allow; `ask` or `none` → ask Captain) before comparing verdicts. |
-| `ask_captain` | `note` | verdict, priority 1 | Hold the call for a Captain-only permission request, skipping model reviews. |
+| `ask_captain` | `note` | verdict, priority 1 | Hold the call for a permission request; the note is its reason. |
 | `deny` | `note` | verdict, priority 2 | Do not run the tool; return the note as the denied tool result. |
 | `remark` | `prompt` | effect | Ask metacognition for an editor remark using inline rendered text, not a prompt-file lookup. |
 | `wake` | `note` | effect | Bring the note to cognition's attention; wake delivery rules/cooldown still apply. |
@@ -286,15 +286,16 @@ At most one verdict may be reachable per run. `wake` / `inject_note` have typed
 non-Captain provenance (`source: flow`, flow name, run id), remain untrusted data,
 and never update the Captain request, choose a skill, answer an ask or generate
 recursive `message.received` events. No action runs arbitrary code, switches
-agent/model or starts a session. A validated workspace flow may open permissions
-on the new hook: inspect what you validate.
+agent/model or starts a session.
 
-### Permission hook (prepared, not enabled)
+> **A validated flow can allow tool calls**, a workspace flow included. A flow in
+> a repository you cloned is validated only by you: read it before validating.
 
-The embedded `permission-default` flow ships **disabled**. Existing `pre_call`
-callers still perform today's review: no verdict means no objection, and the
-implicit failure fallback still asks. Nothing switches the agent loop here.
-`permission_pre_call` is a separate entry point for the later cutover. Each
+### Permission hook
+
+The agent loop decides every tool call in the order of ADR 0015: yolo, the fixed
+floor, free reads, rules (a `deny` stops the call), bypass, then the permission
+flows, then the Captain. The embedded `permission-default` flow is enabled. Each
 blocking flow's `apply_rule` (or lack of a verdict) resolves using the rule;
 then `deny` > `ask_captain` > `allow` wins. Zero answering flows also applies
 the rule. The return value includes flow names, run ids, resolved actions and
@@ -312,9 +313,12 @@ transcript messages, newest last: no parent steering, subagent deliveries,
 navigator/flow injections, tool output, assistant text or compaction summary.
 The host drops oldest complete messages to fit 16 KiB (including JSON framing),
 marks `cut`, and never partially shows the latest. If that latest message alone
-cannot fit, it is absent and marked cut. The cutover obtains messages through
+cannot fit, it is absent and marked cut. The agent loop obtains messages through
 `agent::flow_hook::captain_messages_with_cut`, passing both returned messages
-and the completeness flag into `PermissionCallContext`. Editor attachments are
+and the completeness flag into `PermissionCallContext`. They also include the
+Captain's answers to `ask`, labelled with the assistant's question, and, in a
+subagent, the parent's Captain messages; delegated prompts and steering text
+never count. Editor attachments are
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 
@@ -366,8 +370,7 @@ on_failure = { action = "log", params = { text = "Failed: {failure_kind}: {failu
 ```
 
 Without a matching fallback, the catalogue defaults a blocking tool flow to
-`apply_rule`; the legacy hook retains `ask_captain` with
-`Flow failed: {failure_message}` until cutover. Blocking message flows have **no verdict default**:
+`apply_rule`: a flow outage leaves the rules in force. Blocking message flows have **no verdict default**:
 the message continues after failure/deadline, with host outage handling. Async
 flows have **no default fallback**; failure with none leaves **not applied**.
 Cancellation of a no-longer-current event applies no live effect or fallback.
@@ -375,9 +378,9 @@ Cancellation of a no-longer-current event applies no live effect or fallback.
 Several enabled flows on one event run with independent budgets. Blocking verdicts
 combine as **deny > ask Captain > allow** after rule resolution on the new hook. Tied notes are retained in flow-name
 order; effects accumulate in flow-name / topological order, preserving `then`.
-A flow's no objection never skips normal permission review. **Bypass never answers
-a flow's `ask_captain`**, including follow-ups, and never defeats a flow's denial.
-An approved flow-origin call is still rechecked for preflight, binding and hard floor.
+Under bypass the permission flows are not asked. When bypass is turned on while a
+flow's question waits, it answers that question by deciding the call again under
+bypass, so a `deny` rule written meanwhile still wins.
 
 Limits include 64 nodes/flow, at most 16 decisions reachable in a run, 64 loaded
 flows/workspace, 32 KiB per collected input, 64 KiB total inputs/run and rendered
@@ -430,8 +433,8 @@ references and conflicting reachable verdicts are errors. `[layout]` is optional
 
 This is the engine fixture, including its fallback choices and layout. It asks
 about the most consequential effect, then whether changes were requested or how
-far a destructive change could reach. Its timeout deliberately takes no objection
-(normal review still applies). Choose that trade-off consciously for your own flow.
+far a destructive change could reach. Its timeout deliberately allows (the rules
+still decided first). Choose that trade-off consciously for your own flow.
 
 ```toml
 [flow]

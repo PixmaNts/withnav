@@ -30,5 +30,6 @@ If two skills share an id, the nearer scope wins. At the same distance, `.agents
 which beats `.opencode`, and your own `.agents` beats your `.claude`. If two skills of equal rank
 have the same id, neither is offered.
 
-A skill's scripts go through the [permission gate](permissions.md) like any other command. You can
-allow a user skill's scripts once per machine.
+A skill loads only once you have validated its current content; a skill that changes asks again.
+Its scripts are ordinary commands: they go through your [permission rules](permissions.md) like any
+other call. See [Validated skills and flows](permissions.md#validated-skills-and-flows).

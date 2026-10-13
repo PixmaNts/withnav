@@ -249,8 +249,7 @@ _Avoid_: tool, action (an action is what a flow proposes)
 
 ## Permissions
 
-[ADR 0015](docs/adr/0015-permission-rules-and-instinct-flow.md) replaced the per-call review with
-rules and a permission flow.
+These terms follow [ADR 0015](docs/adr/0015-permission-rules-and-instinct-flow.md).
 
 ### Permission rules
 
@@ -305,10 +304,11 @@ _Avoid_: trust (workspace trust is a different thing), grant
 ### Questions and controls
 
 **Permission request**:
-A held tool call awaiting a typed Captain decision: Once, Always (when the decision proposes rules)
-or Reject. A skill not yet validated at its current version asks for validation instead. Chat text
-never approves a call. A pending request is cancelled by a stop or a new message, and expires on
-restart.
+A held tool call awaiting a typed Captain decision: Once, Always (offered only when the decision
+proposes rules, with the rule shown on the button) or Reject. A skill not yet validated at its
+current version asks for validation instead. A child's request is answered in its parent's
+conversation. Chat text never approves a call. A pending request is cancelled by a stop or a new
+message, and expires on restart; its decision row ends `cancelled` or `expired`.
 _Avoid_: confirmation, approval prompt
 
 **Bypass**:
@@ -330,7 +330,8 @@ project, is inherited by children, and never overlaps WithNav's configuration di
 
 **Pending interaction**:
 What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
-the held call and the calls behind it). While a permission request is pending, session commands are
+the held call and the calls behind it, which Always and Once release to the decision again and Reject
+settles with the Captain's message). While a permission request is pending, session commands are
 refused, except `/stop`, which runs and cancels the request. While an `ask` is pending, all session
 commands are refused, `/stop` included, until it is answered. The stop endpoint
 (`POST /v1/sessions/{id}/stop`) works in both cases.
@@ -449,8 +450,8 @@ runs, sessions or workspaces, so a run depends only on its event.
 _Avoid_: state, memory, setting
 
 **Workspace flow** / **Global flow**:
-Where a flow definition lives: in the workspace, read only once the workspace is trusted, or in the
-Captain's own configuration, for every workspace. A workspace flow replaces a global flow of the
+Where a flow definition lives: in the workspace, or in the Captain's own configuration, for every
+workspace. Either runs only once the Captain validated its current content. A workspace flow replaces a global flow of the
 same name. The Captain chooses where when creating the flow.
 _Avoid_: project flow, user flow
 
@@ -465,8 +466,8 @@ _Avoid_: outcome, effect, "no objection" (now `allow`)
 What a flow does when its run fails: the whole run's actions are replaced by it, even if some
 branches had already concluded. One general fallback (on failure) may be specialised per kind of
 failure (on timeout, on provider error, on invalid answer). The failure message is always kept in
-the trace. Without a fallback, a blocking flow asks the Captain and an asynchronous flow does
-nothing.
+the trace. On the permission hook, a failed run without a fallback applies the rule (`apply_rule`):
+an `allow` rule runs, `ask` or no rule asks. An asynchronous flow without a fallback does nothing.
 _Avoid_: on timeout (a timeout is one kind of failure), default action
 
 **Reload**:
@@ -493,7 +494,10 @@ Re-running recorded answers through a flow definition without calling any model.
 _Avoid_: re-evaluation (that calls the model again)
 
 **Workspace trust**:
-One explicit Captain decision that lets a workspace's own flow definitions read the context they declare. It activates nothing and grants no tool permission or model destination.
+The former per-workspace switch for workspace flows, replaced by Validation: each flow, global or
+workspace, is validated on its own content. A validated flow can allow tool calls on the
+permission hook, a workspace flow included, so validate only what you have read. The Studio's
+"Trust" action records a validation.
 _Avoid_: permission, approval
 
 ## Context budget

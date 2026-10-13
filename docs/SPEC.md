@@ -6,7 +6,7 @@
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
 **Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 
-> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. WithNav grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, the permission gate, skills, rules, the model catalog, variants, the context budget and manual compaction were built. Plugins, MCP, subagents, hot reload and the co-agent were not.
+> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. WithNav grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, permission rules with a permission flow (ADR 0015), skills, rules, the model catalog, variants, the context budget, compaction, subagents and stdio MCP servers were built. Plugins, hot reload and the co-agent were not.
 >
 > - **What the code does:** [`ARCHITECTURE.md`](../ARCHITECTURE.md) (modules and flows) and [`CONTEXT.md`](../CONTEXT.md) (vocabulary). The decisions are in [`docs/adr/`](adr/).
 > - **Status of each section** is the line that starts with "Status" under its heading: *built*, *partly built*, *not built*, *superseded*, *historical* or *direction*. Sections 9, 10.3, 17, 18, 20, 21, 22, 24 and 27 were rewritten to match the code. The others keep their original wording; where a statement is not true of the code, the status line says so.
@@ -602,7 +602,7 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 
 - Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the WithNav config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
 - `bash` is not sandboxed. It runs with the operator's OS permissions.
-- A `write` or `edit` whose destination was reviewed is opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the check is refused and the call is checked again.
+- An allowed `write` or `edit` is bound to the canonical pathname it was decided for and opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the decision is refused and the call is decided again.
 - Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
 
 ### 9.4 Permission Decision
@@ -670,7 +670,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 
 ### 10.3 Event Catalog
 
-> **Status: built, without hooks.** The code emits 19 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
+> **Status: built, without hooks.** The code emits 24 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
 
 | Event | Fired when | Payload shape |
 |---|---|---|
@@ -682,7 +682,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 | `llm.delta` | A normalized text, reasoning or tool-call delta arrived (live-only) | `{turn_id, step_id, delta}` |
 | `llm.response` | A full streamed response was normalized | `{turn_id, step_id, message, usage?, finish_reason?}` |
 | `tool.pre_call` | Before a tool runs | `{tool_call_id, name, source, args, actor_id}`; `source` is always `native` |
-| `tool.post_call` | A tool completed, before its result enters the transcript | `{tool_call_id, name, status, output, metadata}`; `metadata` carries `duration_ms` and, for a guarded `plan` call, `guard` |
+| `tool.post_call` | A tool completed, before its result enters the transcript | `{tool_call_id, name, status, output, metadata}`; `metadata` carries `duration_ms` and how the call was allowed (`approved_by`, `permission_gate`) or refused (`denied_by`) |
 | `agent.state` | The actor changed state | `{actor_id, from, to, reason?}`; the values are `idle`, `running`, `yielded` |
 | `agent.yield` | The actor pauses for human input | `{actor_id, turn_id, question, kind?, details?}` |
 | `task.done` | The actor produced a final response for the task | `{task_id, actor_id, result_message_id, status}`; `status` is `done` |
@@ -1152,8 +1152,10 @@ output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content 
 when no text exists; resource links include URI/name; image/audio content is a placeholder.
 `isError` becomes `mcp_tool_error` with the server as `plugin_id`. MCP result text remains
 untrusted and grants no authorization. MCP uses the ordinary permission rule model without
-MCP-specific exceptions (no rule = ask). Always saves a global tool / `*` allow rule.
-Yolo skips review.
+MCP-specific exceptions. With no matching rule, the default is ask; the permission flow may still
+allow the call, for example when the Captain asked for it. Without a flow that answers, WithNav
+asks. Always saves a global tool / `*` allow rule.
+Yolo skips every check.
 
 Version 0.1 does not require:
 
@@ -1520,7 +1522,7 @@ access: read-only
 You are a focused Rust reviewer. ...
 ```
 
-Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). **`model`, `tools` and `access` are loaded and validated but not applied today:** they do not change which tools a session can call, and they do not change the session's model. A session uses the model it was created with, and the permission gate (section 9.4) is what limits `write`, `edit`, `bash` and `fetch`. Only the role prompt (the body) and `mode` take effect. Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
+Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). **`model`, `tools` and `access` are loaded and validated but not applied today:** they do not change which tools a session can call, and they do not change the session's model. A session uses the model it was created with, and the permission decision (section 9.4) is what limits every tool call. Only the role prompt (the body) and `mode` take effect. Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
 
 An agent definition says what the agent is for. It does not say what it may execute: permissions are separate (section 9.4, ADR 0008). `/agent` lists and switches the primary agent between turns. Only primary agents can be selected; subagents cannot be started yet (section 14).
 
@@ -1906,7 +1908,7 @@ When a request is over the input budget the status shows it; the Captain compact
 
 ## 25. Security and Reliability Boundaries
 
-> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission gate are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built. Persistence is queued, and nothing is redacted before it is stored (section 17).
+> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission decision are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built. Persistence is queued; stored permission decisions are redacted and bounded, conversation events are not (section 17).
 
 ### 25.1 Trusted Personal Agent
 
@@ -1995,12 +1997,15 @@ nav/
 │   ├── main.rs, app.rs, app/  the `nav` CLI: run, serve, tui, web, auth, lsp
 │   │   └── lsp.rs              editor startup (Language Server + session server) and replay
 │   ├── lib.rs, error.rs, paths.rs, settings.rs, render.rs
-│   ├── agent/                 loop, actor, prompt, permissions, guard, context, compaction,
+│   ├── agent/                 loop, actor, prompt, authorize, permission wire types, context, compaction,
 │   │                          instructions (rules), skills, definitions (agents), selection
 │   ├── bus/                   sequencer, event catalog, commands, inboxes, runtime task
 │   ├── provider/              models.json, auth, catalog, chat client, SSE, FIM, System One
 │   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask, no-follow open
-│   ├── session/               service, commands, store (SQLite), lifecycle, hooks, guard wiring
+│   ├── session/               service, commands, store (SQLite), lifecycle, hooks, subagents
+│   ├── permission/            rules, decision history, validations, shell splitting, fixed floor, decision order
+│   ├── flows/                 flow store, runtime, built-in flows, run records
+│   ├── mcp/                   stdio MCP servers and their tools
 │   ├── server/                HTTP routes and SSE
 │   ├── navigator/             Language Server, reflex, instinct pipeline, metacognition, replay
 │   ├── tui/                   terminal client: reducer, runtime, view, theme
@@ -2201,6 +2206,12 @@ Version 0.1 is complete when all of the following are true:
 The central success criterion is not feature count. It is that one small, owned agent loop can support many faces and behaviors through a coherent event-driven boundary without fighting its operator.
 # Permission review evidence
 
+> **Status: historical.** This is the evidence of the per-call review that ADR 0015 removed. Stored
+> events written before it keep this shape and stay readable. New non-yolo events write
+> `policy_version: 3`; yolo tool-event evidence still carries `policy_version: 2`. Version 3 records:
+> `source` and `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, `validation`), `reason`,
+> `rule_id`, `effect`, `flow_verdict` and `floor`.
+
 Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_gate` and
 `permission.requested.permission_gate` may carry:
 
@@ -2222,4 +2233,4 @@ Legacy `jev` sources and metadata keys remain readable until 0.8; new events wri
 `source` is `instinct`, `metacognition` or `captain`. Verdicts are validated typed Instinct answers, not
 the deterministic effective classification. Override names are fixed. Unknown model ids, verdicts
 and latencies are omitted. `truncated` reports bounded context excerpts, never cut tool arguments.
-Old events without these optional fields remain valid. No event kind is added; the catalog stays 22.
+Old events without these optional fields remain valid.

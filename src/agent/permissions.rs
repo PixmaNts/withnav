@@ -34,16 +34,19 @@ pub enum PermissionDecision {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
-    /// Run this call and every later call of the same capability inside the
-    /// same scope, for this agent, until the session ends.
+    /// Legacy wire compatibility: the folder answer of the removed per-call
+    /// review. Still parsed from older clients and stored events; applied as
+    /// `AllowOnce` (see [`PermissionDecision::current`]).
     AllowFolder,
-    /// Skip the Captain-only configuration hold until this root session ends.
+    /// Legacy wire compatibility: the session-wide configuration answer of
+    /// the removed per-call review. Applied as `AllowOnce`.
     AllowConfigSession,
+    /// Legacy wire compatibility: the machine-wide skill script answer. Always
+    /// refused as stale.
     AllowSkillMachine,
-    /// Do not run the call; `message` is what the model reads back.
-    Deny {
-        message: String,
-    },
+    /// Legacy wire compatibility: the refusal of the removed per-call review.
+    /// Applied as `Reject` with its message, which the model reads back.
+    Deny { message: String },
 }
 
 /// Maximum Captain-provided refusal reason, measured on the UTF-8 wire.
@@ -65,11 +68,12 @@ impl PermissionDecision {
     }
 }
 
-/// What a gated call touches.
+/// Where a held call acts, shown to the Captain on the request. It is
+/// displayed, never stored as a grant: what an answer saves is a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Scope {
-    /// A canonical folder. A grant on it covers its descendants.
+    /// The canonical folder the call acts in.
     Folder(PathBuf),
     /// A URL origin: `scheme://host[:port]`.
     Origin(String),

@@ -1097,7 +1097,8 @@ The agent may explain the denial, choose a safer command, or use `ask`. It MUST 
 
 ## 13. MCP Integration
 
-> **Status: not built.** There is no `rmcp` dependency and no `tools/mcp.rs`.
+> **Status: stdio client delivered.** `src/mcp/` uses `rmcp` 3.5 with no HTTP/TLS
+> transport features. HTTP, live tool refresh and client status panels are follow-ups.
 
 The core is an MCP client using `rmcp`.
 
@@ -1105,7 +1106,8 @@ Version 0.1 SHALL support:
 
 - MCP servers launched as configured stdio child processes.
 - Tool discovery after initialization.
-- JSON Schema validation of tool arguments.
+- Object-shaped arguments checked locally; full JSON Schema validation delegated to the server
+  in the stdio MVP (no extra validator dependency).
 - Tool invocation.
 - Cancellation where supported.
 - Connection loss and restart reporting.
@@ -1114,17 +1116,45 @@ Version 0.1 SHALL support:
 MCP tools SHOULD be exposed to models as:
 
 ```text
-mcp.<server_id>.<tool_name>
+mcp__<server_id>__<tool_name>
 ```
 
 Example:
 
 ```text
-mcp.contextd.search
-mcp.github.get_issue
+mcp__contextd__search
+mcp__github__get_issue
 ```
 
 This prevents collisions with native tools and tools from other servers.
+
+Dots are rejected by OpenAI-compatible providers. Tool names are sanitized to ASCII letters,
+digits, `_` and `-`; names above 64 characters are truncated with a stable six-hex SHA-256
+suffix. Sanitization collisions keep the first original name in sorted order and report the
+others in `nav doctor`. Schemas drop `$schema` and `format`, inline acyclic local references,
+and require an object root; unsupported references or root composition skip only that tool.
+
+Global `config.json` owns the `mcp` map; server ids match `[a-z0-9_-]{1,24}`. Each stdio entry
+has a `command` argv array, optional `env`, `enabled` (true), `startup_timeout_ms` (10000),
+`call_timeout_ms` (60000), and `tools` glob deny filters. `{env:NAME}` expands only in `env`.
+Children inherit only PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared environment.
+No shell or workspace configuration is used.
+
+The service starts servers asynchronously with at most four simultaneous initializations.
+Session creation never waits: only Ready tools enter that session's frozen registry. Disconnects
+fail in-flight calls with `mcp_disconnected`; servers get five restarts with 1/2/4/8/16-second
+backoff (general cap 60 seconds), then remain failed until service restart. Shutdown closes
+stdio, allows bounded grace, and terminates the process group, including descendants.
+Stderr is continuously drained into a last-200-lines/64-KiB memory buffer. `nav doctor` starts
+configured servers and reports states, tool counts, skipped tools and redacted failure tails;
+`--offline` only inspects declarations.
+
+Calls have cancellation notifications and configured deadlines (`mcp_timeout`), bounded 64-KiB
+output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content is pretty JSON
+when no text exists; resource links include URI/name; image/audio content is a placeholder.
+`isError` becomes `mcp_tool_error` with the server as `plugin_id`. MCP result text remains
+untrusted and grants no authorization. The current gate reviews MCP calls; after permission
+cutover the ordinary rule model applies without MCP-specific exceptions. Yolo skips review.
 
 Version 0.1 does not require:
 

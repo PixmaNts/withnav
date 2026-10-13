@@ -365,6 +365,7 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    pub(crate) mcp: Arc<crate::mcp::McpManager>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
     #[cfg(debug_assertions)]
     skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -707,6 +708,9 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            mcp: crate::mcp::McpManager::start(
+                &crate::settings::load(&config.config_dir).unwrap_or_default(),
+            ),
             flows: Arc::new(crate::flows::host::Host::new(
                 config.config_dir.clone(),
                 config.data_dir.clone(),
@@ -2556,6 +2560,7 @@ impl Service {
                 session_cancel.child_token(),
                 allowed.clone(),
                 *read_only,
+                &self.mcp,
             ),
             None => build_actor(
                 &workspace,
@@ -2563,6 +2568,7 @@ impl Service {
                 resolved,
                 api_key,
                 session_cancel.child_token(),
+                &self.mcp,
             ),
         };
         // "Allow folder" answers are kept per workspace, across sessions. A

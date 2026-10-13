@@ -1,0 +1,325 @@
+//! Provider-safe definitions and the bounded, cancellable tool-call boundary.
+use super::Server;
+use crate::{
+    error::ToolError,
+    tools::{Tool, ToolContext, ToolErrorObj, ToolResult, ToolStatus, DEFAULT_MAX_OUTPUT_BYTES},
+};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+pub struct McpTool {
+    pub(super) wire: String,
+    pub(super) original: String,
+    server: Arc<Server>,
+    schema: Value,
+}
+
+pub(super) fn wire_name(server: &str, original: &str) -> String {
+    let safe: String = original
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut name = format!("mcp__{server}__{safe}");
+    if name.len() > 64 {
+        name.truncate(57);
+        name.push('_');
+        name.push_str(&hex::encode(Sha256::digest(original.as_bytes()))[..6]);
+    }
+    name
+}
+
+pub(super) fn normalize(schema: Value) -> Result<Value, String> {
+    fn visit(
+        value: &Value,
+        root: &Value,
+        refs: &mut Vec<String>,
+        depth: usize,
+    ) -> Result<Value, String> {
+        if depth > 64 {
+            return Err("schema nesting exceeds 64 levels".into());
+        }
+        match value {
+            Value::Object(object) => {
+                if let Some(reference) = object.get("$ref") {
+                    let reference = reference.as_str().ok_or("non-string schema reference")?;
+                    if !reference.starts_with("#/") || refs.iter().any(|r| r == reference) {
+                        return Err("external or recursive schema reference".into());
+                    }
+                    let target = root
+                        .pointer(&reference[1..])
+                        .ok_or("unresolved local schema reference")?;
+                    refs.push(reference.into());
+                    let mut resolved = visit(target, root, refs, depth + 1)?;
+                    refs.pop();
+                    let output = resolved
+                        .as_object_mut()
+                        .ok_or("reference target is not an object schema")?;
+                    for (key, value) in object.iter().filter(|(k, _)| k.as_str() != "$ref") {
+                        output.insert(key.clone(), visit(value, root, refs, depth + 1)?);
+                    }
+                    return Ok(resolved);
+                }
+                let mut output = serde_json::Map::new();
+                for (key, value) in object {
+                    if matches!(key.as_str(), "$schema" | "$defs" | "definitions" | "format") {
+                        continue;
+                    }
+                    if matches!(
+                        key.as_str(),
+                        "properties" | "patternProperties" | "dependentSchemas"
+                    ) {
+                        let entries = value
+                            .as_object()
+                            .ok_or("schema properties must be an object")?;
+                        let mut properties = serde_json::Map::new();
+                        for (name, schema) in entries {
+                            properties.insert(name.clone(), visit(schema, root, refs, depth + 1)?);
+                        }
+                        output.insert(key.clone(), Value::Object(properties));
+                        continue;
+                    }
+                    output.insert(key.clone(), visit(value, root, refs, depth + 1)?);
+                }
+                Ok(Value::Object(output))
+            }
+            Value::Array(values) => values
+                .iter()
+                .map(|v| visit(v, root, refs, depth + 1))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            _ => Ok(value.clone()),
+        }
+    }
+    let mut output = visit(&schema, &schema, &mut vec![], 0)?;
+    let object = output
+        .as_object_mut()
+        .ok_or("input schema must be an object")?;
+    if object.contains_key("oneOf") || object.contains_key("anyOf") || object.contains_key("allOf")
+    {
+        return Err("root schema composition cannot be normalized safely".into());
+    }
+    if object.get("type").is_some_and(|t| t != "object") {
+        return Err("input schema describes non-object arguments".into());
+    }
+    object.insert("type".into(), json!("object"));
+    Ok(output)
+}
+
+pub(super) fn convert(value: &Value, server: &str, original: &str) -> ToolResult {
+    let content = value["content"].as_array();
+    let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
+    let mut parts = vec![];
+    if let Some(blocks) = content {
+        for block in blocks {
+            match block["type"].as_str().unwrap_or("") {
+                "text" => parts.push(block["text"].as_str().unwrap_or("").to_string()),
+                "resource_link" => parts.push(format!(
+                    "{} ({})",
+                    block["uri"].as_str().unwrap_or(""),
+                    block["name"].as_str().unwrap_or("")
+                )),
+                kind @ ("image" | "audio") => {
+                    let bytes = block["data"].as_str().map_or(0, |data| {
+                        (data.len().saturating_mul(3) / 4)
+                            .saturating_sub(data.chars().rev().take_while(|c| *c == '=').count())
+                    });
+                    parts.push(format!(
+                        "[{kind}: {}, {bytes} bytes]",
+                        block["mimeType"].as_str().unwrap_or("unknown")
+                    ));
+                }
+                "resource" => parts.push("[embedded resource omitted]".into()),
+                _ => parts.push("[unsupported MCP content]".into()),
+            }
+        }
+    }
+    if !has_text {
+        if let Some(structured) = value.get("structuredContent") {
+            parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+        }
+    }
+    let mut result = ToolResult::bounded_ok(&parts.join("\n"), DEFAULT_MAX_OUTPUT_BYTES);
+    if value["isError"] == true {
+        result.status = ToolStatus::Error;
+        result.error = Some(ToolErrorObj {
+            code: "mcp_tool_error".into(),
+            plugin_id: Some(server.into()),
+            message: if result.output.is_empty() {
+                "MCP tool failed".into()
+            } else {
+                result.output.clone()
+            },
+        });
+    }
+    result.metadata = json!({"mcp_server": server, "mcp_tool": original});
+    result
+}
+
+impl McpTool {
+    pub(super) fn new(server: Arc<Server>, definition: rmcp::model::Tool) -> Result<Self, String> {
+        let original = definition.name.to_string();
+        let parameters = normalize(Value::Object((*definition.input_schema).clone()))
+            .map_err(|e| format!("{original}: {e}"))?;
+        let wire = wire_name(&server.id, &original);
+        let schema = json!({"description": format!("[mcp:{}] {}", server.id, definition.description.as_deref().unwrap_or("")), "parameters": parameters});
+        Ok(Self {
+            wire,
+            original,
+            server,
+            schema,
+        })
+    }
+
+    fn error(&self, code: &str, message: &str) -> ToolResult {
+        let mut result =
+            ToolResult::bounded_ok(&self.server.redact(message), DEFAULT_MAX_OUTPUT_BYTES);
+        result.status = ToolStatus::Error;
+        result.error = Some(ToolErrorObj {
+            code: code.into(),
+            plugin_id: Some(self.server.id.clone()),
+            message: result.output.clone(),
+        });
+        result.with_metadata(json!({"mcp_server": self.server.id, "mcp_tool": self.original}))
+    }
+}
+
+impl Tool for McpTool {
+    fn name(&self) -> &str {
+        &self.wire
+    }
+    fn schema(&self) -> Value {
+        self.schema.clone()
+    }
+    fn call<'a>(
+        &'a self,
+        args: Value,
+        cancel: CancellationToken,
+        _cx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(arguments) = args.as_object() else {
+                return Ok(self.error("invalid_args", "MCP arguments must be an object"));
+            };
+            let ready = self
+                .server
+                .ready
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|r| (r.peer.clone(), r.disconnected.clone()));
+            let Some((peer, disconnected)) = ready else {
+                return Ok(self.error("mcp_disconnected", "MCP server is disconnected"));
+            };
+            let params = rmcp::model::CallToolRequestParams::new(self.original.clone())
+                .with_arguments(arguments.clone());
+            let request = rmcp::model::ClientRequest::CallToolRequest(
+                rmcp::model::CallToolRequest::new(params),
+            );
+            let deadline =
+                tokio::time::sleep(Duration::from_millis(self.server.config.call_timeout_ms));
+            tokio::pin!(deadline);
+            let mut handle = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(ToolResult::interrupted()),
+                _ = disconnected.cancelled() => return Ok(self.error("mcp_disconnected", "MCP server is disconnected")),
+                _ = &mut deadline => return Ok(self.error("mcp_timeout", "MCP tool call timed out")),
+                result = peer.send_cancellable_request(request, rmcp::service::PeerRequestOptions::no_options()) => match result {
+                    Ok(handle) => handle,
+                    Err(_) => return Ok(self.error("mcp_disconnected", "MCP server is disconnected")),
+                }
+            };
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => ToolResult::interrupted(),
+                _ = disconnected.cancelled() => self.error("mcp_disconnected", "MCP server is disconnected"),
+                _ = &mut deadline => self.error("mcp_timeout", "MCP tool call timed out"),
+                response = &mut handle.rx => {
+                    return Ok(match response {
+                        Ok(Ok(response)) => match serde_json::to_value(response) {
+                            Ok(value) => {
+                                let mut result = convert(&value, &self.server.id, &self.original);
+                                result.output = ToolResult::bounded_ok(&self.server.redact(&result.output), DEFAULT_MAX_OUTPUT_BYTES).output;
+                                if let Some(error) = &mut result.error { error.message = self.server.redact(&error.message); }
+                                result
+                            },
+                            Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
+                        },
+                        Ok(Err(rmcp::ServiceError::McpError(_))) => self.error("mcp_tool_error", "MCP server rejected the call"),
+                        _ => self.error("mcp_disconnected", "MCP server is disconnected"),
+                    });
+                }
+            };
+            // rmcp 3.5 RequestHandle has no cancel-on-drop: send the notification explicitly.
+            let _ = tokio::time::timeout(
+                Duration::from_millis(100),
+                handle.cancel(Some("WithNav call cancelled".into())),
+            )
+            .await;
+            Ok(result
+                .with_metadata(json!({"mcp_server": self.server.id, "mcp_tool": self.original})))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn provider_safe_names_and_hashes() {
+        assert_eq!(wire_name("github", "a.b 🦀"), "mcp__github__a_b__");
+        let name = wire_name("github", &"a".repeat(100));
+        assert_eq!(name.len(), 64);
+        assert_ne!(name, wire_name("github", &"a".repeat(101)));
+    }
+    #[test]
+    fn local_references_and_unsupported_schemas() {
+        assert_eq!(
+            normalize(json!({"properties":{"format":{"type":"string"}, "$ref":{"type":"number"}}}))
+                .unwrap()["properties"]["format"]["type"],
+            "string"
+        );
+        let result = normalize(json!({"$schema":"x", "$defs":{"s":{"type":"string"}}, "properties":{"s":{"$ref":"#/$defs/s"}}})).unwrap();
+        assert_eq!(
+            result,
+            json!({"type":"object", "properties":{"s":{"type":"string"}}})
+        );
+        assert!(normalize(json!({"$ref":"https://bad"})).is_err());
+        assert!(normalize(
+            json!({"$defs":{"s":{"$ref":"#/$defs/s"}},"properties":{"s":{"$ref":"#/$defs/s"}}})
+        )
+        .is_err());
+        assert!(normalize(json!({"oneOf":[]})).is_err());
+    }
+    #[test]
+    fn results_are_bounded_including_error_messages() {
+        let result = convert(
+            &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
+            "test",
+            "big",
+        );
+        assert_eq!(result.status, ToolStatus::Error);
+        assert_eq!(result.truncated.unwrap().original_bytes, 100000);
+        assert!(result.error.unwrap().message.len() <= DEFAULT_MAX_OUTPUT_BYTES);
+        let structured = convert(
+            &json!({"content":[], "structuredContent":{"a":1}}),
+            "test",
+            "echo",
+        );
+        assert_eq!(structured.output, "{\n  \"a\": 1\n}");
+        let mixed = convert(
+            &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
+            "test",
+            "echo",
+        );
+        assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
+    }
+}

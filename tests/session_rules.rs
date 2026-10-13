@@ -232,7 +232,7 @@ async fn withnav_run_sends_the_rules_too() {
     std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
     std::fs::write(
         env.root.join("config/withnav/config.json"),
-        if cfg!(windows) { json!({"agents":{"build":{"model":"mock/mock-model"}}, "permissions":{"scratch_dirs":[env.root.join("scratch")]}}).to_string() } else { r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#.to_owned() },
+        if cfg!(windows) { serde_json::json!({"agents":{"build":{"model":"mock/mock-model"}}, "permissions":{"scratch_dirs":[env.root.join("scratch")]}}).to_string() } else { r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#.to_owned() },
     )
     .unwrap();
     let models = env.root.join("models.json");

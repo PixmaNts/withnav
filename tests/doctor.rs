@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 mod common;
 
 use axum::{
@@ -9,7 +11,6 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::{
-    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -172,6 +173,15 @@ struct SnapshotEntry {
     mode: u32,
     modified: SystemTime,
 }
+#[cfg(unix)]
+fn snapshot_mode(metadata: &std::fs::Metadata) -> u32 {
+    metadata.permissions().mode()
+}
+#[cfg(windows)]
+fn snapshot_mode(metadata: &std::fs::Metadata) -> u32 {
+    u32::from(metadata.permissions().readonly())
+}
+
 fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     let mut entries = vec![];
     for entry in std::fs::read_dir(root).unwrap() {
@@ -192,7 +202,7 @@ fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
         entries.push(SnapshotEntry {
             path: entry.path(),
             contents,
-            mode: metadata.permissions().mode(),
+            mode: snapshot_mode(&metadata),
             modified: metadata.modified().unwrap(),
         });
     }
@@ -459,16 +469,19 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     assert_eq!(result.status, Status::Warning);
     assert!(result.value.contains("not detectable"));
     assert_eq!(snapshot(root.path()), before);
-    std::fs::set_permissions(
-        config.join("auth.json"),
-        std::fs::Permissions::from_mode(0o644),
-    )
-    .unwrap();
-    let report = inspect(&args, &config, None, None).await;
-    assert_eq!(
-        check(&report, "config.auth").status,
-        withnav::app::doctor::Status::Failed
-    );
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(
+            config.join("auth.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let report = inspect(&args, &config, None, None).await;
+        assert_eq!(
+            check(&report, "config.auth").status,
+            withnav::app::doctor::Status::Failed
+        );
+    }
     std::fs::write(
         config.join("config.json"),
         "{invalid secret-doctor-auth-sentinel",
@@ -532,7 +545,10 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     std::fs::create_dir_all(&navigator).unwrap();
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_nav"), bin.join("nav")).unwrap();
+    #[cfg(windows)]
+    std::fs::copy(env!("CARGO_BIN_EXE_nav"), bin.join("nav.exe")).unwrap();
     let before = snapshot(root.path());
     for layer in ["reflex", "instinct", "metacognition"] {
         for (json, offline) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -548,6 +564,10 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                 .env("XDG_DATA_HOME", home.join(".local/share"))
                 .env("NAVAI_FOO", ENV_SECRET)
                 .env("RUST_LOG", "trace");
+            common::isolate(command.as_std_mut(), root.path());
+            command
+                .env("WITHNAV_CONFIG_DIR", &config)
+                .env("WITHNAV_DATA_DIR", home.join(".local/share/withnav"));
             if json {
                 command.arg("--json");
             }

@@ -51,16 +51,8 @@ pub fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
 /// readable by the owner only.
 pub fn write_auth_file(config_dir: &Path, provider: &str, api_key: &str) -> PathBuf {
     let path = config_dir.join("auth.json");
-    std::fs::write(
-        &path,
-        json!({ provider: { "api_key": api_key } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
-    }
+    withnav::provider::auth::set_key(config_dir, provider, api_key)
+        .expect("write private auth.json");
     path
 }
 

@@ -76,8 +76,12 @@ async fn hidden_paths_fold_survive_restart_and_reopen_explicitly_or_on_creation(
     let tmp = tempfile::tempdir().unwrap();
     let workspace = tmp.path().join("project");
     std::fs::create_dir(&workspace).unwrap();
+    #[cfg(unix)]
     let alias = tmp.path().join("alias");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+    #[cfg(windows)]
+    let alias = workspace.join(".");
     let first = state(tmp.path());
     create(&first, &workspace).await;
     create(&first, &alias).await;

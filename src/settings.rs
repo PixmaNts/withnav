@@ -325,9 +325,8 @@ pub fn load_with_revision(config_dir: &Path) -> Result<(Settings, String), Setti
     }
 }
 
-/// Writes the settings through a synced temporary file renamed over the old one, then syncs the
-/// directory: atomic (a crash never leaves a half-written file) and durable (the rename itself
-/// survives a crash).
+/// Writes settings atomically through a synced temporary file. Unix also syncs the
+/// directory to make the rename durable; Windows does not provide that guarantee.
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError> {
     let path = path(config_dir);
     let write_err = |source| SettingsError::Write {
@@ -342,6 +341,7 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
     tmp.write_all(text.as_bytes()).map_err(write_err)?;
     tmp.as_file().sync_all().map_err(write_err)?;
     tmp.persist(&path).map_err(|err| write_err(err.error))?;
+    #[cfg(unix)]
     std::fs::File::open(config_dir)
         .and_then(|dir| dir.sync_all())
         .map_err(write_err)?;
@@ -373,9 +373,15 @@ pub fn update<T, E: From<SettingsError>>(
         .open(&lock_path)
         .map_err(error)
         .map_err(E::from)?;
+    #[cfg(unix)]
     let _lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
         .map_err(|(_, e)| error(std::io::Error::from(e)))
         .map_err(E::from)?;
+    #[cfg(windows)]
+    let _lock = {
+        file.lock().map_err(error).map_err(E::from)?;
+        file
+    };
     let (mut settings, revision) = load_with_revision(config_dir).map_err(E::from)?;
     let result = edit(&mut settings, &revision)?;
     save(config_dir, &settings).map_err(E::from)?;
@@ -453,6 +459,7 @@ mod tests {
         assert!(!load(dir.path()).unwrap().has_assignment_configuration());
     }
     #[test]
+    #[cfg(unix)]
     fn private_scratch_uses_only_owned_private_runtime_directory() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
@@ -495,6 +502,8 @@ mod tests {
     }
     #[test]
     fn scratch_setting_disables_or_selects_absolute_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let custom = temp.path().join("custom");
         let settings = super::Settings {
             root: serde_json::json!({"permissions":{"scratch_dirs":[]}})
                 .as_object()
@@ -503,15 +512,12 @@ mod tests {
         };
         assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
         let settings = super::Settings {
-            root: serde_json::json!({"permissions":{"scratch_dirs":["/tmp/custom"]}})
+            root: serde_json::json!({"permissions":{"scratch_dirs":[custom]}})
                 .as_object()
                 .unwrap()
                 .clone(),
         };
-        assert_eq!(
-            settings.permissions_scratch_dirs().unwrap(),
-            vec![std::path::PathBuf::from("/tmp/custom")]
-        );
+        assert_eq!(settings.permissions_scratch_dirs().unwrap(), vec![custom]);
     }
     #[test]
     fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {

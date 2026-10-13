@@ -314,29 +314,52 @@ pub async fn inspect(
         unknown_keys(&mut report, Some(document), "auth", &sections);
     }
     let auth_path = config.join("auth.json");
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(&auth_path)
-        .ok()
-        .map(|m| m.permissions().mode() & 0o777);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&auth_path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777);
+        report.add(
+            "config.auth",
+            if auth_ok && mode.is_none_or(|m| m == 0o600) {
+                if mode.is_some() {
+                    Status::Ok
+                } else {
+                    Status::Warning
+                }
+            } else {
+                Status::Failed
+            },
+            match mode {
+                Some(mode) => format!(
+                    "auth.json mode {mode:04o}; parse {}",
+                    if auth_ok { "valid" } else { "invalid" }
+                ),
+                None => "auth.json absent; environment credentials may be used".into(),
+            },
+            Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        );
+    }
+    #[cfg(windows)]
     report.add(
         "config.auth",
-        if auth_ok && mode.is_none_or(|m| m == 0o600) {
-            if mode.is_some() {
-                Status::Ok
-            } else {
-                Status::Warning
-            }
-        } else {
+        if !auth_ok {
             Status::Failed
+        } else if auth_path.exists() {
+            Status::Ok
+        } else {
+            Status::Warning
         },
-        match mode {
-            Some(mode) => format!(
-                "auth.json mode {mode:04o}; parse {}",
+        if auth_path.exists() {
+            format!(
+                "auth.json private DACL and parse {}",
                 if auth_ok { "valid" } else { "invalid" }
-            ),
-            None => "auth.json absent; environment credentials may be used".into(),
+            )
+        } else {
+            "auth.json absent; environment credentials may be used".into()
         },
-        Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        Some("Use nav auth set <provider> to create a private auth.json."),
     );
     let models = crate::provider::config::load_models_with_document(&workspace, config);
     if let Ok((_, path, document)) = &models {
@@ -1089,25 +1112,17 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: 
 async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Path) {
     report.add("binary.nav", Status::Ok, env!("CARGO_PKG_VERSION"), None);
     match crate::tools::bash::trusted_shell() {
-        Some(path) => report.add(
-            "binary.bash",
-            Status::Ok,
-            format!(
-                "{} (regular, root-owned, not group/other writable)",
-                path.display()
-            ),
-            None,
-        ),
+        Some(path) => report.add("binary.bash", Status::Ok, shell_description(path), None),
         None => report.add(
             "binary.bash",
             Status::Failed,
-            "no trusted /usr/bin/bash or /bin/bash",
-            Some("Install a root-owned bash without group/other write permissions."),
+            shell_missing(),
+            Some(shell_hint()),
         ),
     }
     let lsp = std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
-            .map(|p| p.join("nav"))
+            .map(|p| p.join(nav_filename()))
             .find(|p| p.is_file())
     });
     if let Some(path) = lsp {
@@ -1157,7 +1172,7 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
     }
     let mut settings = vec![workspace.join(".vscode/settings.json")];
     if let Some(home) = home {
-        settings.push(home.join(".config/Code/User/settings.json"));
+        settings.push(code_settings(home));
     }
     let mut detected = false;
     for path in settings {
@@ -1173,13 +1188,17 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
             // Match the extension's migration of the former server executable.
             let configured = Path::new(server);
             let migrated = match configured.file_name().and_then(|s| s.to_str()) {
-                Some("withnav-lsp" | "navai-lsp") => configured.with_file_name("nav"),
+                Some("withnav-lsp" | "navai-lsp") => configured.with_file_name(nav_filename()),
+                #[cfg(windows)]
+                Some("withnav-lsp.exe" | "navai-lsp.exe") => {
+                    configured.with_file_name(nav_filename())
+                }
                 _ => configured.to_path_buf(),
             };
             let exists = migrated.is_file()
-                || (migrated == Path::new("nav")
+                || ((migrated == Path::new("nav") || migrated == Path::new(nav_filename()))
                     && std::env::var_os("PATH").is_some_and(|paths| {
-                        std::env::split_paths(&paths).any(|p| p.join("nav").is_file())
+                        std::env::split_paths(&paths).any(|p| p.join(nav_filename()).is_file())
                     }));
             report.add(
                 format!("extension.server_path.{}", path.display()),
@@ -1201,6 +1220,53 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
             Some("Check the extension server-path setting in your active VS Code profile."),
         );
     }
+}
+
+#[cfg(unix)]
+fn shell_description(path: &Path) -> String {
+    format!(
+        "{} (regular, root-owned, not group/other writable)",
+        path.display()
+    )
+}
+#[cfg(windows)]
+fn shell_description(path: &Path) -> String {
+    format!("{} (Git Bash)", path.display())
+}
+#[cfg(unix)]
+fn shell_missing() -> &'static str {
+    "no trusted /usr/bin/bash or /bin/bash"
+}
+#[cfg(windows)]
+fn shell_missing() -> &'static str {
+    "Git Bash not found: searched HKLM/HKCU SOFTWARE\\GitForWindows InstallPath, %ProgramFiles%\\Git\\bin\\bash.exe and PATH; Windows/WSL launchers excluded"
+}
+#[cfg(unix)]
+fn shell_hint() -> &'static str {
+    "Install a root-owned bash without group/other write permissions."
+}
+#[cfg(windows)]
+fn shell_hint() -> &'static str {
+    "Install Git for Windows with Git Bash."
+}
+#[cfg(unix)]
+fn nav_filename() -> &'static str {
+    "nav"
+}
+#[cfg(windows)]
+fn nav_filename() -> &'static str {
+    "nav.exe"
+}
+#[cfg(unix)]
+fn code_settings(home: &Path) -> std::path::PathBuf {
+    home.join(".config/Code/User/settings.json")
+}
+#[cfg(windows)]
+fn code_settings(home: &Path) -> std::path::PathBuf {
+    std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join("AppData/Roaming"))
+        .join("Code/User/settings.json")
 }
 
 fn sanitize(text: &str, secrets: &[String]) -> String {

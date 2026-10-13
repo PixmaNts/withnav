@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProviderError;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::check_perms_or_fail;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
@@ -19,6 +25,9 @@ pub struct AuthStore {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
+    if let Some(path) = crate::paths::root_override("WITHNAV_CONFIG_DIR") {
+        return Some(path);
+    }
     directories::ProjectDirs::from("", "", crate::paths::APP_NAME)
         .map(|p| p.config_dir().to_path_buf())
 }
@@ -63,6 +72,7 @@ fn parse_store(text: &str) -> Result<AuthStore, ProviderError> {
         .map_err(|e| ProviderError::Auth(format!("failed to parse auth.json: {e}")))
 }
 
+#[cfg(unix)]
 fn check_perms_or_fail(path: &Path) -> Result<(), ProviderError> {
     let meta = std::fs::metadata(path)
         .map_err(|e| ProviderError::Auth(format!("failed to stat auth.json: {e}")))?;
@@ -152,6 +162,21 @@ pub fn save_store(config_dir: &Path, store: AuthStore) -> Result<(), ProviderErr
 
     let serialized = serde_json::to_string_pretty(&store)
         .map_err(|e| ProviderError::Auth(format!("failed to serialize auth.json: {e}")))?;
+    write_private(config_dir, &path, &serialized)
+}
+
+#[cfg(windows)]
+fn write_private(config_dir: &Path, path: &Path, serialized: &str) -> Result<(), ProviderError> {
+    let mut tmp = tempfile::NamedTempFile::new_in(config_dir).map_err(io_api)?;
+    windows::protect(tmp.path())?;
+    tmp.write_all(serialized.as_bytes()).map_err(io_api)?;
+    tmp.as_file().sync_all().map_err(io_api)?;
+    tmp.persist(path).map_err(|e| io_api(e.error))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_private(config_dir: &Path, _path: &Path, serialized: &str) -> Result<(), ProviderError> {
     let path = auth_path(config_dir);
     let tmp = path.with_extension("json.tmp");
     {
@@ -188,8 +213,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         set_key(tmp.path(), "omniroute", "secret-abc").unwrap();
         let path = auth_path(tmp.path());
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "auth.json must be created 0600");
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "auth.json must be created 0600");
+        }
+        check_perms_or_fail(&path).unwrap();
         let key = resolve_key(tmp.path(), "omniroute", None).unwrap();
         assert_eq!(key, "secret-abc");
         set_key(tmp.path(), "other", "second-key").unwrap();
@@ -246,6 +275,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn loose_perms_fail_closed() {
         let tmp = tempfile::tempdir().unwrap();
         let path = auth_path(tmp.path());

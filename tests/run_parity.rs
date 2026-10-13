@@ -275,7 +275,9 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+            common::isolate(&mut command, &home);
+            command
                 .args([
                     "run",
                     "--workspace",
@@ -417,7 +419,9 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+            common::isolate(&mut command, &home);
+            command
                 .args([
                     "run",
                     "--workspace",

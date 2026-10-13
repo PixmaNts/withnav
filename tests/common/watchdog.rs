@@ -7,7 +7,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use withnav::session::subagents::watchdog::{Clock, Evidence, Judge, JudgeError, Verdict};
+use withnav::session::subagents::watchdog::{Clock, Evidence, JudgeError, Verdict};
+
+use withnav::provider::systemone::{Answer, Answers, DecisionError, DecisionModel, Questions};
 
 pub struct FakeClock {
     pub now: Mutex<Instant>,
@@ -35,31 +37,63 @@ pub struct ScriptedJudge {
     pub checked: mpsc::UnboundedSender<Evidence>,
 }
 
-impl Judge for ScriptedJudge {
-    fn judge<'a>(
+impl DecisionModel for ScriptedJudge {
+    fn decide<'a>(
         &'a self,
-        evidence: &'a Evidence,
+        state: &'a str,
+        _: &'a Questions,
         _: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
+    ) -> BoxFuture<'a, Result<Answers, DecisionError>> {
         Box::pin(async move {
-            self.checked.send(evidence.clone()).unwrap();
-            self.answers
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("scripted verdict")
+            let value: serde_json::Value = serde_json::from_str(state).unwrap();
+            self.checked
+                .send(serde_json::from_value(value["untrusted_evidence"].clone()).unwrap())
+                .unwrap();
+            verdict_answer(
+                self.answers
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("scripted verdict"),
+            )
         })
     }
 }
 
 pub struct ConstantJudge(pub Verdict);
 
-impl Judge for ConstantJudge {
-    fn judge<'a>(
+impl DecisionModel for ConstantJudge {
+    fn decide<'a>(
         &'a self,
-        _: &'a Evidence,
+        _: &'a str,
+        _: &'a Questions,
         _: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
-        Box::pin(async { Ok(self.0) })
+    ) -> BoxFuture<'a, Result<Answers, DecisionError>> {
+        Box::pin(async { verdict_answer(Ok(self.0)) })
     }
+}
+
+pub fn verdict_answer(answer: Result<Verdict, JudgeError>) -> Result<Answers, DecisionError> {
+    answer
+        .map(|verdict| {
+            [(
+                "subagent_progress".into(),
+                Answer::Choice {
+                    choice: serde_json::to_value(verdict)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    probabilities: Default::default(),
+                    confidence: 1.0,
+                },
+            )]
+            .into_iter()
+            .collect()
+        })
+        .map_err(|error| match error {
+            JudgeError::Unavailable => DecisionError::Unavailable,
+            JudgeError::Invalid => DecisionError::Invalid,
+            JudgeError::Cancelled => DecisionError::Cancelled,
+        })
 }

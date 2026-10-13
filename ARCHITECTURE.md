@@ -444,7 +444,8 @@ or disabled supervision installs a visible renewable 500-step fallback cap. Chil
 50-step budget. The root supervisor starts only after publication; runtime exit cancels and joins
 it outside admission and registry locks.
 
-**Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
+**Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock seam and progress evidence/question/verdict conversion, using
+`provider/systemone.rs::DecisionModel` for the decision model,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
 `supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal
 completion. It sleeps a full configured interval between checks, never replays missed ticks,
@@ -644,6 +645,10 @@ the later 0.6 scope, not this contract.
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and
   numbered excerpts), `tools/mod.rs` (`validate_path`).
+- A decision model is exposed by `provider/systemone.rs::DecisionModel` (implemented by
+  `SystemOneClient`). Compaction pruning (`agent/compaction/prune.rs`) and both watchdogs use
+  this same seam; questions and answer interpretation stay with the caller. The standalone
+  `instinct-flow` crate remains independent and owns its own protocol client.
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission

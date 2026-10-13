@@ -2598,7 +2598,7 @@ impl Service {
             data: Some(self.config.data_dir.clone()),
         };
         actor.permission_session = session_id.to_string();
-        actor.compaction_judge = compaction_judge(
+        actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,
@@ -3378,11 +3378,11 @@ pub(crate) mod tests;
 
 /// The session's Instinct layer as the judge compaction asks which old tool
 /// outputs still matter; `None` when Instinct is unavailable.
-fn compaction_judge(
+fn compaction_decision(
     models_path: Option<&std::path::Path>,
     workspace: &std::path::Path,
     config_dir: &std::path::Path,
-) -> Option<Arc<dyn crate::agent::compaction::judge::Judge>> {
+) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
     let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
         .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
         .ok()?;
@@ -3391,7 +3391,5 @@ fn compaction_judge(
         config_dir,
         Arc::new(crate::provider::openai::ClientCache::new()),
     )?;
-    Some(Arc::new(crate::agent::compaction::judge::InstinctJudge(
-        client,
-    )))
+    Some(Arc::new(client))
 }

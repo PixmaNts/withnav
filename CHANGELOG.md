@@ -384,7 +384,7 @@ language server, context budgeting and providers.
 
 - **Permission review and supervision now use the Instinct layer name.**
   New events write `instinct` source, model, latency and guard metadata; clients
-  still read stored `jev` events and display them as `auto · instinct` until 0.8.
+  display these events as `auto · instinct`.
 - **The VS Code panel colours what waits on you, how subagents are doing, and how big a change is.**
   Pause cards and pending permissions get the warning colour; a subagent's state reads blue while
   running, amber when it needs you, green when done, red when failed; a wake shows `+N −M` and its
@@ -764,7 +764,7 @@ reviewed instead of refused, lists are searchable and compaction shows its progr
 - **VS Code conversations can start subagents.** The agent of a VS Code conversation now has the
   `task` tool (and `steer_subagent`, `decide_subagent`), like the terminal client. Subagents'
   results reach the conversation as before; they never become the navigator's conversation.
-- **Reading secrets is never approved on Jev's word.** A read-only call that is risky, such as
+- **Reading secrets is never approved on Instinct's word.** A read-only call that is risky, such as
   reading a key or a credentials file, now goes to metacognition and then to you. Reading
   `~/.ssh`, `~/.gnupg`, `.env` files, `*.pem` / `*.key`, cloud credentials or Navai's
   `auth.json` with the `read` tool always asks you. `grep` and `glob` skip these files (without
@@ -779,7 +779,7 @@ reviewed instead of refused, lists are searchable and compaction shows its progr
 
 ### Changed
 
-- **`read` outside the project is reviewed like `bash`** instead of being refused: if Jev,
+- **`read` outside the project is reviewed like `bash`** instead of being refused: if Instinct,
   metacognition or you approve it, it reads that one file once. `grep` and `glob` outside the
   project are still refused, with a message pointing to `read` or `bash`.
 - A `bash` command that writes into Navai's config directory (`~/.config/navai`) always asks you,
@@ -851,8 +851,8 @@ The VS Code chat can now answer the agent's permission requests and continue a p
 
 ### Added
 
-- **VS Code chat**: tool rows show who approved a reviewed call (Jev or metacognition), with the
-  reason and Jev's verdicts in an expandable note, like the terminal client.
+- **VS Code chat**: tool rows show who approved a reviewed call (Instinct or metacognition), with the
+  reason and Instinct's verdicts in an expandable note, like the terminal client.
 
 ## [0.4.4] - 2026-10-04
 
@@ -861,7 +861,7 @@ who approved each call.
 
 ### Changed
 
-- **Your request counts in the permission review**: Jev and metacognition receive your latest
+- **Your request counts in the permission review**: Instinct and metacognition receive your latest
   request as your intent, so a write you explicitly asked for (for example a file in your home
   folder) can be approved instead of refused as "untrusted". Its text is never an instruction to
   the reviewers, and claims made by the agent, a subagent or a tool still prove nothing. Navai's
@@ -873,10 +873,10 @@ who approved each call.
 
 ### Added
 
-- **Terminal client**: a tool block says who approved a reviewed call (`auto · Jev`,
-  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and the
+- **Terminal client**: a tool block says who approved a reviewed call (`auto · Instinct`,
+  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Instinct's verdicts and the
   plan role check. Copies include it.
-- **Review evidence**: the permission review records Jev's verdicts, the deterministic checks that
+- **Review evidence**: the permission review records Instinct's verdicts, the deterministic checks that
   tightened the call, the reviewer models and their response times on the tool and permission
   events, also when you approved the call yourself.
 
@@ -942,17 +942,17 @@ Every file change and shell command is now reviewed one by one, conversations no
 ### Changed
 
 - **Per-call permission review**: every `bash`, `write` and `edit` call is reviewed before it runs,
-  instead of an "allow folder" answer letting every later call through. Jev classifies the call: a
+  instead of an "allow folder" answer letting every later call through. Instinct classifies the call: a
   read-only call, or a low-risk change inside the project, runs; a risky or outside-project change
   needs metacognition's approval; anything else asks you, with the reason. "Allow folder" is gone
   for these tools and the bash/file grants saved by 0.4.1 are ignored; `fetch` keeps its origin
   grants. `permissions.automatic_review: false` in `config.json` asks for every such call; an
   invalid value fails closed. The review is advisory, not a sandbox.
 - **No more 50-step limit**: a conversation's turn runs until it ends, is stopped, or the watchdog
-  stops it. Every 5 minutes (`agent.watchdog_interval_secs`) Jev checks it is making progress. Stuck:
+  stops it. Every 5 minutes (`agent.watchdog_interval_secs`) Instinct checks it is making progress. Stuck:
   the turn stops after its current tools finish, keeping the work done. In doubt: metacognition
   decides; if it hesitates too, the turn pauses and asks you (`alt+c` continues, a new message
-  replaces the paused turn). With the watchdog off (`0`) or Jev unavailable, a 500-step cap applies,
+  replaces the paused turn). With the watchdog off (`0`) or Instinct unavailable, a 500-step cap applies,
   renewed only by you. `NAVAI_MAX_STEPS` still sets an explicit cap. Subagents keep their 50-step
   budget.
 
@@ -986,7 +986,7 @@ Fixes from daily use of 0.4.0, mostly in the terminal client.
 ## [0.4.0] - 2026-10-04
 
 Background subagents: a conversation's agent can delegate work to other agents that run on their
-own, report back, can be steered or interrupted, and are watched by Jev. The terminal client shows
+own, report back, can be steered or interrupted, and are watched by Instinct. The terminal client shows
 them under their conversation.
 
 ### Added
@@ -1009,10 +1009,10 @@ them under their conversation.
   `steer` adds guidance to the subagent's running turn before its next model request, after all
   the tool results of its current step; `interrupt` cancels that turn and starts a new one with the
   message, keeping the same subagent.
-- **Jev watchdog**: every 5 minutes (`subagents.watchdog_interval_secs`, 0 turns it off) Jev checks
+- **Instinct watchdog**: every 5 minutes (`subagents.watchdog_interval_secs`, 0 turns it off) Instinct checks
   each running subagent from its goal, how long it has been quiet, its last tool call and its step
   count. `stuck` stops it and hands its partial work to the parent; `doubt` pauses it and asks the
-  parent's agent, which answers with `decide_subagent(child_id, continue|stop)`. Jev failing to
+  parent's agent, which answers with `decide_subagent(child_id, continue|stop)`. Instinct failing to
   answer twice in a row counts as doubt.
 - **You stay in control**: a subagent's permission requests appear in the parent conversation and
   are answered there; approvals stay with that subagent. You can read and stop a subagent but not
@@ -1103,7 +1103,7 @@ keyboard; four layers of models watch, complete, judge and discuss.
 - **Reflex**: fill-in-the-middle ghost-text suggestions (Inception Mercury Edit 2), with a short
   context note kept current by the metacognition.
 - **Instinct**: a decision pipeline in TOML and Markdown prompts, asking typed questions to a
-  System One model (Jev). Project `.navigator/` overrides the user and built-in pipelines; hot
+  System One model. Project `.navigator/` overrides the user and built-in pipelines; hot
   reload on save.
 - **Metacognition**: short end-of-line remarks from a fast model, with read-only `read` and `grep`
   tools under a budget, aware of the conversation, the intent record and recent edits.

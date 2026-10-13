@@ -247,6 +247,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn confirms_unresolved_short_root_misses_resolved_target() {
+        let dir = tempfile::Builder::new()
+            .prefix("withnav long directory name ")
+            .tempdir()
+            .unwrap();
+        let Some(short) = short_alias(dir.path()) else {
+            return;
+        };
+        let target = resolve_target(&short.join("note.txt"), &short, None).unwrap();
+        eprintln!(
+            "short root: {}; resolved target: {}",
+            short.display(),
+            target.display()
+        );
+        assert!(!path_within(&target, &short));
+    }
+
+    #[test]
     fn long_target_identity_is_stable_and_deny_rules_ignore_display_prefix() {
         use crate::permission::rules::{literal, Effect, RuleOrigin, RuleScope};
         let dir = tempfile::tempdir().unwrap();

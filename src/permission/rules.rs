@@ -365,8 +365,25 @@ fn bare_glob(pattern: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn path_rule_key(value: &str) -> &str {
-    value.strip_prefix(r"\\?\").unwrap_or(value)
+fn path_pattern_key(value: &str) -> String {
+    let mut unescaped = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && matches!(chars.peek(), Some('\\')) {
+            chars.next();
+        }
+        unescaped.push(ch);
+    }
+    if Path::new(&unescaped).is_absolute()
+        && matches!(Path::new(&unescaped).components().next(), Some(std::path::Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+    {
+        // Keep pattern quoting and wildcards intact; only the identity prefix,
+        // separator spelling and case change.
+        let value = value.strip_prefix(&literal(r"\\?\")).unwrap_or(value);
+        crate::tools::path_key(Path::new(value))
+    } else {
+        value.to_owned()
+    }
 }
 
 #[cfg(windows)]
@@ -421,13 +438,9 @@ fn add_rule(
     let (scope_kind, scope_value) = scope.storage()?;
     let (action_glob, action_precision) = glob(action);
     #[cfg(windows)]
-    let resource_match = if file_action(action) {
-        resource
-            .strip_prefix(&literal(r"\\?\"))
-            .unwrap_or_else(|| path_rule_key(resource))
-    } else {
-        resource
-    };
+    let resource_match = path_pattern_key(resource);
+    #[cfg(windows)]
+    let resource_match = resource_match.as_str();
     #[cfg(unix)]
     let resource_match = resource;
     let (resource_glob, resource_precision) = glob(resource_match);
@@ -544,7 +557,7 @@ impl PermissionStore {
         let workspace = crate::tools::canonical_path(workspace)?;
         #[cfg(windows)]
         let resource = if file_action(action) {
-            path_rule_key(resource)
+            &crate::tools::path_key(Path::new(resource))
         } else {
             resource
         };

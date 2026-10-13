@@ -36,6 +36,25 @@ fn discovers_skill_manifest_across_the_long_path_boundary() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn validates_short_directory_with_verbatim_manifest() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let length = 254 - root.to_string_lossy().encode_utf16().count() - 1;
+    let directory = root.join("a".repeat(length));
+    let manifest = add(&directory, "boundary", "Boundary skill");
+    assert!(!crate::tools::canonical_path(&directory)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    assert!(crate::tools::canonical_path(&manifest)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    assert!(load(&fx).snapshot("boundary").is_ok());
+}
+
 #[test]
 fn skill_authority_and_selection_queue_follow_the_logical_turn() {
     let fx = fixture();

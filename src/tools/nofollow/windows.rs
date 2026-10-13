@@ -82,16 +82,9 @@ pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError
 }
 
 pub(crate) fn path_within(path: &Path, root: &Path) -> bool {
-    let key = |path: &Path| {
-        let text = path.to_string_lossy().replace('/', "\\");
-        text.strip_prefix("\\\\?\\")
-            .unwrap_or(&text)
-            .split('\\')
-            .filter(|part| !part.is_empty())
-            .map(str::to_lowercase)
-            .collect::<Vec<_>>()
-    };
-    key(path).starts_with(&key(root))
+    let path = crate::tools::path_key(path);
+    let root = crate::tools::path_key(root);
+    path == root || path.starts_with(&format!("{}\\", root.trim_end_matches('\\')))
 }
 
 #[cfg(test)]
@@ -232,7 +225,7 @@ pub fn write_scratch(
     content: &[u8],
     identity: &crate::agent::scratch::Identity,
 ) -> Result<(), ToolError> {
-    if !destination.starts_with(&identity.path) {
+    if !path_within(destination, &identity.path) {
         return Err(ToolError::DestinationChanged(destination.to_path_buf()));
     }
     write_atomic(destination, content)
@@ -243,7 +236,7 @@ pub fn edit_scratch(
     identity: &crate::agent::scratch::Identity,
     change: impl FnOnce(String) -> Result<(String, String), ToolError>,
 ) -> Result<String, ToolError> {
-    if !destination.starts_with(&identity.path) {
+    if !path_within(destination, &identity.path) {
         return Err(ToolError::DestinationChanged(destination.to_path_buf()));
     }
     edit_atomic(destination, change)
@@ -278,6 +271,36 @@ mod tests {
         write_atomic(&before, b"long").unwrap();
         let after = resolve_target(&target, dir.path(), None).unwrap();
         assert_eq!(before, after);
+        for action in ["*", "writ*"] {
+            let deny = store
+                .add(
+                    action,
+                    &literal(&before.to_string_lossy()),
+                    Effect::Deny,
+                    RuleScope::Global,
+                    RuleOrigin::Manual,
+                )
+                .unwrap();
+            store.revoke(rule.id).unwrap();
+            assert_eq!(
+                store
+                    .matching("write", &after.to_string_lossy(), dir.path(), "build")
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                deny.id
+            );
+            store.revoke(deny.id).unwrap();
+        }
+        let rule = store
+            .add(
+                "write",
+                &literal(&before.to_string_lossy()),
+                Effect::Deny,
+                RuleScope::Global,
+                RuleOrigin::Manual,
+            )
+            .unwrap();
         for spelling in [
             after.to_string_lossy().into_owned(),
             after

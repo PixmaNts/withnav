@@ -75,7 +75,10 @@ impl SkillValidation {
 }
 
 pub fn snapshot(skill: &Skill) -> Result<SkillSnapshot, String> {
-    if crate::tools::canonical_path(&skill.base_dir).map_err(|e| e.to_string())? != skill.base_dir {
+    if crate::tools::path_key(
+        &crate::tools::canonical_path(&skill.base_dir).map_err(|e| e.to_string())?,
+    ) != crate::tools::path_key(&skill.base_dir)
+    {
         return Err("skill directory changed since discovery".into());
     }
     fn walk(

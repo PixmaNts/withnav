@@ -343,6 +343,29 @@ pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
+/// Comparison identity; display and filesystem access keep the canonical spelling.
+pub fn path_key(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy().replace('/', "\\");
+        let plain = text
+            .strip_prefix(r"\\?\")
+            .filter(|plain| {
+                plain.as_bytes().get(1) == Some(&b':')
+                    && plain
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphabetic)
+            })
+            .unwrap_or(&text);
+        plain.to_lowercase()
+    }
+    #[cfg(unix)]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
 /// Relative file names shown by tools follow the glob/Git separator convention.
 pub(crate) fn relative_path_text(path: &Path) -> String {
     #[cfg(windows)]

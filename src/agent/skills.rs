@@ -312,7 +312,7 @@ struct Walk {
     /// The entry budget is spent: nothing more is read, in any root.
     exhausted: bool,
     /// Canonical directories already walked.
-    seen_dirs: HashSet<PathBuf>,
+    seen_dirs: HashSet<String>,
     found: Vec<Skill>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -322,7 +322,12 @@ impl Walk {
         // An absent root is normal; one reached twice (a link, a home that is
         // the worktree) keeps its best rank.
         if let Ok(canonical) = crate::tools::canonical_path(&dir) {
-            if canonical.is_dir() && !self.roots.iter().any(|(r, _)| *r == canonical) {
+            if canonical.is_dir()
+                && !self
+                    .roots
+                    .iter()
+                    .any(|(r, _)| crate::tools::path_key(r) == crate::tools::path_key(&canonical))
+            {
                 self.roots.push((canonical, rank));
             }
         }
@@ -357,7 +362,7 @@ impl Walk {
 
     /// Walks `dir` (canonical): a `SKILL.md` ends the descent.
     fn dir(&mut self, dir: &Path, root: &Path, rank: Rank, depth: usize, stack: &mut Vec<PathBuf>) {
-        if self.exhausted || !self.seen_dirs.insert(dir.to_path_buf()) {
+        if self.exhausted || !self.seen_dirs.insert(crate::tools::path_key(dir)) {
             return;
         }
         let manifest = dir.join("SKILL.md");
@@ -402,7 +407,10 @@ impl Walk {
             };
             if !self.inside_roots(&canonical) {
                 self.note(&path, DiagnosticKind::Escapes { to: canonical });
-            } else if stack.contains(&canonical) {
+            } else if stack
+                .iter()
+                .any(|path| crate::tools::path_key(path) == crate::tools::path_key(&canonical))
+            {
                 self.note(&path, DiagnosticKind::Cycle { to: canonical });
             } else {
                 self.dir(&canonical, root, rank, depth + 1, stack);
@@ -449,12 +457,12 @@ impl Walk {
         // One manifest reached by several routes (a `SKILL.md` that is a link
         // to another one, a directory linked twice) is one skill, at the best
         // rank any route gave it: it must never make its own id ambiguous.
-        let mut by_manifest: BTreeMap<PathBuf, Skill> = BTreeMap::new();
+        let mut by_manifest: BTreeMap<String, Skill> = BTreeMap::new();
         for skill in found {
-            match by_manifest.get(&skill.path) {
+            match by_manifest.get(&crate::tools::path_key(&skill.path)) {
                 Some(kept) if kept.rank <= skill.rank => {}
                 _ => {
-                    by_manifest.insert(skill.path.clone(), skill);
+                    by_manifest.insert(crate::tools::path_key(&skill.path), skill);
                 }
             }
         }
@@ -501,8 +509,19 @@ impl Walk {
             .into_iter()
             .map(|(root, _)| root)
             .filter(|root| {
-                winners.values().any(|s| s.base_dir.starts_with(root))
-                    || ambiguous.values().flatten().any(|p| p.starts_with(root))
+                #[cfg(windows)]
+                return winners
+                    .values()
+                    .any(|s| crate::tools::nofollow::path_within(&s.base_dir, root))
+                    || ambiguous
+                        .values()
+                        .flatten()
+                        .any(|p| crate::tools::nofollow::path_within(p, root));
+                #[cfg(unix)]
+                {
+                    winners.values().any(|s| s.base_dir.starts_with(root))
+                        || ambiguous.values().flatten().any(|p| p.starts_with(root))
+                }
             })
             .collect();
         let mut offered: Vec<&Skill> = winners.values().filter(|s| !s.disabled).collect();

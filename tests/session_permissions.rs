@@ -302,69 +302,6 @@ async fn config_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn skill_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
-    for decision in ["allow_once", "allow_always", "allow_skill_machine"] {
-        let env = Env::new();
-        let skill = env.root.join("home/.agents/skills/sync");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: sync\ndescription: Sync\n---\nInstructions\n",
-        )
-        .unwrap();
-        let script = skill.join("sync.py");
-        let target = env.ws.join("runs.txt");
-        std::fs::write(
-            &script,
-            format!(
-                "with open({:?}, 'a') as f: f.write('run\\n')\n",
-                target.to_string_lossy()
-            ),
-        )
-        .unwrap();
-        let command = format!("python3 {}", script.display());
-        let provider = provider(vec![
-            calls(&[
-                ("s1", "bash", json!({"command":command})),
-                ("s2", "bash", json!({"command":command})),
-            ]),
-            done("finished"),
-        ])
-        .await;
-        let state = config(&env, &provider).state();
-        let router = app(state.clone());
-        let id = state.create_session(&env.ws, None, false).await.unwrap();
-        say(&state, id, "run the sync script").await;
-        let requested = wait_events(&state, id, "permission.requested", 1).await;
-        assert_eq!(requested[0].payload["skill_script"]["skill"], "sync");
-        let (status, body) = answer(
-            &router,
-            id,
-            &request_id(&requested[0]),
-            json!({"decision":decision}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let requested = wait_events(&state, id, "permission.requested", 2).await;
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "run\n");
-        let grants = withnav::agent::skill_grants::SkillGrants::in_dir(&env.root.join("cfg"))
-            .read()
-            .unwrap();
-        assert_eq!(grants.is_empty(), decision != "allow_skill_machine");
-        let (status, body) = answer(
-            &router,
-            id,
-            &request_id(&requested[1]),
-            json!({"decision":"reject"}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        wait_events(&state, id, "task.done", 1).await;
-        state.close_session(id).await.unwrap();
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_new_answers_keep_current_execution_semantics_and_legacy_answers_work() {
     for decision in [
         "allow_once",

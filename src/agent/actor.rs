@@ -125,7 +125,10 @@ pub struct AgentActor {
     /// The folder and origin approvals: given in this session, or kept for
     /// its workspace when the session service loads them.
     pub grants: Grants,
-    pub skill_grants: Option<super::skill_grants::SkillGrants>,
+    pub selected_skill_snapshots: Vec<(u64, String)>,
+    pub skill_turn_generation: u64,
+    pub skill_turn_start: usize,
+    pub skill_turn_open: bool,
     /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// captain (a human ingress identity), never from a navigator wake, delegated
@@ -250,7 +253,10 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
-            skill_grants: None,
+            selected_skill_snapshots: vec![],
+            skill_turn_generation: 0,
+            skill_turn_start: 0,
+            skill_turn_open: false,
             captain_task: None,
             guard: None,
         }
@@ -304,6 +310,26 @@ impl AgentActor {
         self.skills = skills;
     }
 
+    /// The most recently admitted skill in this turn; new Captain input clears it.
+    pub fn active_validated_skill(&self) -> Option<(String, String)> {
+        self.skill_turn_open
+            .then(|| self.skills.active_validated_skill())
+            .flatten()
+    }
+
+    pub fn begin_skill_turn(&mut self) {
+        self.end_skill_turn();
+        self.skill_turn_generation = self.skill_turn_generation.wrapping_add(1);
+        self.skill_turn_start = self.transcript.len();
+        self.skill_turn_open = true;
+    }
+
+    pub fn end_skill_turn(&mut self) {
+        self.skills.validation.begin_turn();
+        self.selected_skill_snapshots.clear();
+        self.skill_turn_open = false;
+    }
+
     /// The parts of the request besides the history. `role` is
     /// [`AgentActor::role_message`], which the caller keeps alive.
     pub fn components<'a>(
@@ -334,7 +360,14 @@ impl AgentActor {
     /// another model would send.
     pub fn effective_history_at(&self, floor: usize) -> Vec<ChatMessage> {
         effective_history(
-            &project_reasoning(&self.transcript, floor),
+            &super::skills::validation::project_skill_history(
+                &project_reasoning(&self.transcript, floor),
+                if self.skill_turn_open {
+                    Some(self.skill_turn_start)
+                } else {
+                    None
+                },
+            ),
             self.compaction.as_ref(),
         )
     }
@@ -481,6 +514,17 @@ impl AgentActor {
         text: impl Into<String>,
         provenance: crate::provider::openai::UserProvenance,
     ) {
+        if provenance == crate::provider::openai::UserProvenance::Captain {
+            self.begin_skill_turn();
+        }
+        self.push_user_in_current_turn(text, provenance);
+    }
+
+    pub fn push_user_in_current_turn(
+        &mut self,
+        text: impl Into<String>,
+        provenance: crate::provider::openai::UserProvenance,
+    ) {
         let text = text.into();
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
@@ -510,6 +554,7 @@ impl AgentActor {
     /// Settles every call a pending permission holds as interrupted: none of
     /// them runs. For a stop; a pending `ask` is left as it is.
     pub fn interrupt_pending_permission(&mut self) {
+        self.end_skill_turn();
         if let Some(PendingInteraction::Permission {
             call,
             remaining_calls,

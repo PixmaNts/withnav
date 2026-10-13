@@ -1414,20 +1414,17 @@ impl Service {
                     barrier.release.notified().await;
                 }
             }
-            let result = handle.skills.load_listed(name).await;
-            if result.status != crate::tools::ToolStatus::Ok {
-                return Err(ServerError::MalformedBody(
-                    result
-                        .error
-                        .map(|error| format!("{}: {}", error.code, error.message))
-                        .unwrap_or(result.output),
-                ));
-            }
+            let skills = handle.skills.clone();
+            let skill_name = name.clone();
+            let snapshot = tokio::task::spawn_blocking(move || skills.snapshot(&skill_name))
+                .await
+                .map_err(|e| ServerError::MalformedBody(e.to_string()))?
+                .map_err(ServerError::MalformedBody)?;
             for block in &mut command.content {
                 if matches!(block, crate::bus::command::ContentBlock::Skill { .. }) {
                     *block = crate::bus::command::ContentBlock::LoadedSkill {
                         name: name.clone(),
-                        content: result.output.clone(),
+                        content: snapshot.id.clone(),
                     };
                 }
             }
@@ -2566,9 +2563,6 @@ impl Service {
             ),
         };
         // "Allow folder" answers are kept per workspace, across sessions. A
-        actor.skill_grants = Some(crate::agent::skill_grants::SkillGrants::in_dir(
-            &self.config.config_dir,
-        ));
         // subagent keeps its own in memory, as its parent's policy decides.
         if child_policy.is_none() {
             actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);
@@ -2621,9 +2615,13 @@ impl Service {
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
             .await;
-        let skills = self
+        let mut skills = self
             .load_skills(&workspace, session_id, resumed.is_some())
             .await;
+        skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
+            data_dir: Some(self.config.data_dir.clone()),
+            ..Default::default()
+        });
         actor.set_skills(skills);
         actor.guard = super::guard::instinct_guard(
             self.config.models_path.as_deref(),

@@ -1233,11 +1233,6 @@ async fn runtime_loop(
                 }
                 if answer.decision
                     == crate::agent::permissions::PermissionDecision::AllowSkillMachine
-                    && (request.skill_script.is_none()
-                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain
-                        || !matches!(&actor.pending, Some(crate::agent::actor::PendingInteraction::Permission { call, .. })
-                            if crate::agent::permission_gate::script::skill_script(&actor, call).as_ref()
-                                == request.skill_script.as_deref()))
                 {
                     status.release_pin(&actor);
                     status.release_permission(answer.request_id);
@@ -1584,6 +1579,7 @@ async fn runtime_loop(
                 status.resolve_pending_bypass(&actor, &inbox);
             }
             Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
+                actor.end_skill_turn();
                 if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
                     done(
                         crate::provider::AssistantMessage {
@@ -1642,6 +1638,7 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Err(err) => {
+                actor.end_skill_turn();
                 if let Some(done) = &completion {
                     done(
                         crate::provider::AssistantMessage {
@@ -1879,7 +1876,15 @@ fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
     let mut payload = to_value(&crate::bus::event::PermissionRequested {
-        always_label: None,
+        always_label: (request.tool == "skill").then(|| {
+            format!(
+                "Always (global): validate skill {} at this version",
+                serde_json::from_str::<serde_json::Value>(&request.arguments)
+                    .ok()
+                    .and_then(|v| v["name"].as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            )
+        }),
         child_session_id: None,
         request_id: request.id,
         tool_call_id: request.tool_call_id.clone(),
@@ -1891,7 +1896,16 @@ fn permission_requested(
     });
     payload["requires_captain"] = serde_json::json!(request.requires_captain);
     payload["allow_config_session"] = serde_json::json!(request.allow_config_session);
-    payload["skill_script"] = serde_json::json!(request.skill_script);
+    if request.tool == "skill" {
+        let args: serde_json::Value = serde_json::from_str(&request.arguments).unwrap_or_default();
+        payload["action"] = serde_json::json!("skill");
+        payload["resource"] = serde_json::json!(format!(
+            "{} {}",
+            args["name"].as_str().unwrap_or_default(),
+            args["location"].as_str().unwrap_or_default()
+        ));
+    }
+
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
             request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
@@ -2230,7 +2244,7 @@ mod tests {
                 flow_regates: 0,
                 requires_captain: false,
                 allow_config_session: false,
-                skill_script: None,
+
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),

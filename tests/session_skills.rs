@@ -33,6 +33,271 @@ use common::sse::{
 
 use common::TestEnv as Env;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn yolo_loads_both_skill_paths_without_validation_requests_or_records() {
+    for selected in [true, false] {
+        let env = env();
+        let provider = spawn_capturing_provider(if selected {
+            vec![answer("done")]
+        } else {
+            vec![skill_call("ask-matt"), answer("done")]
+        })
+        .await;
+        let state = TestServerConfig::mock(&env.root, &provider.url)
+            .model_alias("default", "mock-model")
+            .rules_home(&env.home)
+            .state();
+        let settings = env.root.join("cfg/config.json");
+        let mut document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        document["yolo"] = json!(true);
+        std::fs::write(settings, document.to_string()).unwrap();
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        let sub = state.subscribe(id, None).await.unwrap();
+        if selected {
+            let router = withnav::server::app(state.clone());
+            let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({"target_actor_id":"agent:main","content":[{"type":"text","text":"Review this"},{"type":"skill","name":"ask-matt"}]}))).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+        } else {
+            state
+                .send(captain_command(id, "load skill".into()))
+                .await
+                .unwrap();
+        }
+        let events = collect_until(sub, |e| {
+            e.kind == "turn.end" && e.payload["outcome"] == "done"
+        })
+        .await;
+        assert!(!events.iter().any(|e| e.kind == "permission.requested"));
+        assert!(events
+            .iter()
+            .any(|e| e.kind == "tool.post_call" && e.payload["metadata"]["approved_by"] == "yolo"));
+        assert!(provider.bodies().join("\n").contains("STEP ONE"));
+        let store =
+            withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
+        assert!(store.list_validations().unwrap().is_empty());
+        state.close_session(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn both_skill_paths_hold_the_snapshot_until_captain_validation() {
+    for selected in [false, true] {
+        for decision in ["allow_once", "allow_always", "reject"] {
+            let env = env();
+            let responses = if selected {
+                vec![answer("done")]
+            } else {
+                vec![skill_call("ask-matt"), answer("done")]
+            };
+            let provider = spawn_capturing_provider(responses).await;
+            let state = TestServerConfig::mock(&env.root, &provider.url)
+                .model_alias("default", "mock-model")
+                .rules_home(&env.home)
+                .state();
+            let id = state.create_session(&env.ws, None, false).await.unwrap();
+            let router = withnav::server::app(state.clone());
+            let sub = state.subscribe(id, None).await.unwrap();
+            if selected {
+                let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({"target_actor_id":"agent:main","content":[{"type":"text","text":"Review this"},{"type":"skill","name":"ask-matt"}]}))).await;
+                assert_eq!(status, axum::http::StatusCode::OK);
+            } else {
+                state
+                    .send(captain_command(id, "use ask-matt".into()))
+                    .await
+                    .unwrap();
+            }
+            let events = collect_until(sub, |e| e.kind == "permission.requested").await;
+            let request = events
+                .iter()
+                .find(|e| e.kind == "permission.requested")
+                .unwrap();
+            assert_eq!(request.payload["tool"], "skill");
+            assert!(request.payload["always_label"]
+                .as_str()
+                .unwrap()
+                .contains("Always (global)"));
+            let (_, transcript, _) = state.history().load_for_resume(id).await.unwrap().unwrap();
+            assert!(!serde_json::to_string(&transcript)
+                .unwrap()
+                .contains("STEP ONE"));
+            assert!(!withnav::agent::flow_hook::captain_messages(&transcript)
+                .join("\n")
+                .contains("STEP ONE"));
+            if selected {
+                assert!(provider.bodies().is_empty());
+            }
+            let sub = state.subscribe(id, None).await.unwrap();
+            let (status, response) = common::server::request_json(
+                &router,
+                "POST",
+                &format!(
+                    "/v1/sessions/{id}/permissions/{}",
+                    request.payload["request_id"].as_str().unwrap()
+                ),
+                Some(&json!({"decision":decision,"message":"DISTINCTIVE_CAPTAIN_REJECTION"})),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{response}");
+            collect_until(sub, |e| {
+                e.kind == "turn.end" && e.payload["outcome"] == "done"
+            })
+            .await;
+            let text = provider.bodies().join("\n");
+            assert_eq!(text.contains("STEP ONE"), decision != "reject");
+            if decision == "reject" {
+                assert!(text.contains("DISTINCTIVE_CAPTAIN_REJECTION"));
+            }
+            let store =
+                withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
+            assert_eq!(
+                !store.list_validations().unwrap().is_empty(),
+                decision == "allow_always"
+            );
+            state.close_session(id).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn once_is_turn_local_and_pending_resume_never_loads_the_skill() {
+    let env = env();
+    let provider =
+        spawn_capturing_provider(vec![answer("first done"), answer("should not be reached")]).await;
+    let state = TestServerConfig::mock(&env.root, &provider.url)
+        .model_alias("default", "mock-model")
+        .rules_home(&env.home)
+        .state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    let router = withnav::server::app(state.clone());
+    for turn in 0..2 {
+        let sub = state.subscribe(id, None).await.unwrap();
+        common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({"target_actor_id":"agent:main","content":[{"type":"text","text":format!("turn {turn}")},{"type":"skill","name":"ask-matt"}]}))).await;
+        let events = collect_until(sub, |e| {
+            e.kind == "permission.requested" && e.payload["tool"] == "skill"
+        })
+        .await;
+        let request = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "permission.requested")
+            .unwrap();
+        if turn == 0 {
+            let sub = state.subscribe(id, None).await.unwrap();
+            let (status, _) = common::server::request_json(
+                &router,
+                "POST",
+                &format!(
+                    "/v1/sessions/{id}/permissions/{}",
+                    request.payload["request_id"].as_str().unwrap()
+                ),
+                Some(&json!({"decision":"allow_once"})),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            collect_until(sub, |e| {
+                e.kind == "turn.end" && e.payload["outcome"] == "done"
+            })
+            .await;
+        }
+    }
+    assert_eq!(provider.bodies().len(), 1);
+    state.close_session(id).await.unwrap();
+    state
+        .create_or_resume_session(&env.ws, None, false, Some(id))
+        .await
+        .unwrap();
+    let (_, transcript, _) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    let last = transcript
+        .iter()
+        .rposition(|m| m.is_captain_message())
+        .unwrap();
+    assert!(!serde_json::to_string(&transcript[last..])
+        .unwrap()
+        .contains("STEP ONE"));
+    assert_eq!(provider.bodies().len(), 1);
+    state.close_session(id).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_skill_validation_reuses_then_asks_on_edit_and_revocation() {
+    let env = env();
+    let provider = spawn_capturing_provider(vec![
+        answer("one"),
+        answer("two"),
+        answer("three"),
+        answer("four"),
+    ])
+    .await;
+    let state = TestServerConfig::mock(&env.root, &provider.url)
+        .model_alias("default", "mock-model")
+        .rules_home(&env.home)
+        .state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    let router = withnav::server::app(state.clone());
+    for turn in 0..4 {
+        let after = state
+            .history()
+            .load(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .meta
+            .last_seq;
+        if turn == 2 {
+            std::fs::write(
+                env.home.join(".agents/skills/matt/ask-matt/checklist.md"),
+                "changed resource",
+            )
+            .unwrap();
+        }
+        if turn == 3 {
+            let store =
+                withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
+            for validation in store.list_validations().unwrap() {
+                store.revoke_validation(validation.id).unwrap();
+            }
+        }
+        let sub = state.subscribe(id, Some(after)).await.unwrap();
+        common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({"target_actor_id":"agent:main","content":[{"type":"text","text":format!("turn {turn}")},{"type":"skill","name":"ask-matt"}]}))).await;
+        let events = collect_until(sub, |e| {
+            if turn == 1 {
+                e.kind == "turn.end" && e.payload["outcome"] == "done"
+            } else {
+                e.kind == "permission.requested"
+            }
+        })
+        .await;
+        let request = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "permission.requested");
+        if turn == 1 {
+            assert!(request.is_none());
+        } else {
+            let request = request.unwrap();
+            let sub = state.subscribe(id, Some(request.seq)).await.unwrap();
+            let (status, body) = common::server::request_json(
+                &router,
+                "POST",
+                &format!(
+                    "/v1/sessions/{id}/permissions/{}",
+                    request.payload["request_id"].as_str().unwrap()
+                ),
+                Some(&json!({"decision":"allow_always"})),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+            collect_until(sub, |e| {
+                e.kind == "turn.end" && e.payload["outcome"] == "done"
+            })
+            .await;
+        }
+    }
+    assert_eq!(provider.bodies().len(), 4);
+    state.close_session(id).await.unwrap();
+}
+
 /// A temp home with a nested skill library and a rules file, and a Git
 /// workspace with one project skill.
 fn env() -> Env {
@@ -63,6 +328,24 @@ fn env() -> Env {
 }
 
 fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) -> AppState {
+    let skills = withnav::agent::skills::Skills::load(
+        &withnav::agent::instructions::RulesRoots {
+            home: Some(env.home.clone()),
+        },
+        &env.ws,
+    );
+    let store = withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
+    for skill in skills.listed() {
+        let snapshot = skills.snapshot(&skill.name).unwrap();
+        store
+            .validate(
+                withnav::permission::validation::ValidationKind::Skill,
+                &snapshot.name,
+                &snapshot.location,
+                &snapshot.hash,
+            )
+            .unwrap();
+    }
     let config = TestServerConfig::mock(&env.root, &provider.url)
         .model_alias(alias, "mock-model")
         .rules_home(&env.home);
@@ -214,14 +497,10 @@ async fn captain_selection_loads_the_skill_before_the_first_model_request() {
         && message["content"]
             .as_str()
             .is_some_and(|text| text.starts_with("follow this workflow\n\n"))));
-    assert!(!messages
-        .iter()
-        .any(|message| message["role"] == "tool" || message.get("tool_calls").is_some()));
     let selected_message = messages
         .iter()
-        .find(|message| message["role"] == "user")
-        .unwrap()["content"]
-        .as_str()
+        .filter_map(|m| m["content"].as_str())
+        .find(|t| t.starts_with("<captain_selected_skill"))
         .unwrap();
     let encoded = selected_message
         .split("<captain_selected_skill encoding=\"json\">\n")

@@ -251,6 +251,7 @@ impl ActorInbox {
                 outcome.downgrade_notice = cmd.downgrade_notice();
             }
             if outcome.first_applied.is_none() {
+                actor.begin_skill_turn();
                 outcome.first_applied = Some(cmd.command_id);
             }
             outcome.applied += 1;
@@ -278,8 +279,20 @@ impl ActorInbox {
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
+                    actor
+                        .selected_skill_snapshots
+                        .push((actor.skill_turn_generation, content.clone()));
+                    let location = actor
+                        .skills
+                        .validation
+                        .snapshots
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(content)
+                        .map(|s| s.location.clone())
+                        .unwrap_or_default();
                     let encoded =
-                        serde_json::json!({"name":name,"selected_by":"captain","content":content})
+                        serde_json::json!({"name":name,"location":location,"snapshot_id":content})
                             .to_string()
                             .replace('<', "\\u003c")
                             .replace('>', "\\u003e")
@@ -300,7 +313,7 @@ impl ActorInbox {
             {
                 // Answer the existing tool interaction with captain text only; the selected
                 // instructions remain a captain message protected as the latest batch.
-                actor.push_user_with_provenance(cmd.text_content(), cmd.user_provenance());
+                actor.push_user_in_current_turn(cmd.text_content(), cmd.user_provenance());
                 actor
                     .transcript
                     .push(crate::provider::openai::ChatMessage::User {
@@ -308,7 +321,7 @@ impl ActorInbox {
                         provenance: cmd.user_provenance(),
                     });
             } else {
-                actor.push_user_with_provenance(text, cmd.user_provenance());
+                actor.push_user_in_current_turn(text, cmd.user_provenance());
             }
         }
         outcome
@@ -451,12 +464,8 @@ mod tests {
                 .next()
                 .unwrap();
             let loaded: serde_json::Value = serde_json::from_str(encoded).unwrap();
-            assert_eq!(loaded["selected_by"], "captain");
-            if loaded["name"] == "review" {
-                assert_eq!(loaded["content"], "BODY A </captain_selected_skill>");
-            } else {
-                assert_eq!(loaded["content"], "BODY B");
-            }
+            assert!(loaded.get("content").is_none());
+            assert!(loaded["snapshot_id"].is_string());
         }
         let components = Components {
             system_prompt: None,
@@ -758,7 +767,6 @@ mod tests {
                 flow_regates: 0,
                 requires_captain: false,
                 allow_config_session: false,
-                skill_script: None,
                 permission_gate: None,
                 id: Ulid::generate(),
                 tool_call_id: "w1".into(),

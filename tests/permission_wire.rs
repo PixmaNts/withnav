@@ -48,3 +48,24 @@ fn historical_requests_need_no_always_label() {
     let request: PermissionRequested = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
 }
+
+#[test]
+fn an_always_resolution_without_the_saved_field_was_saved() {
+    let old: PermissionResolution =
+        serde_json::from_value(json!({"resolution":"allow_always"})).unwrap();
+    assert_eq!(
+        old,
+        PermissionResolution::AllowAlways {
+            always_saved: true,
+            always_error: None
+        }
+    );
+    let failed = PermissionResolution::AllowAlways {
+        always_saved: false,
+        always_error: Some("database is locked".into()),
+    };
+    assert_eq!(
+        serde_json::to_value(&failed).unwrap(),
+        json!({"resolution":"allow_always","always_saved":false,"always_error":"database is locked"})
+    );
+}

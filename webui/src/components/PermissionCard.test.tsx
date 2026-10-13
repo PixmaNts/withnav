@@ -62,3 +62,13 @@ it("caps reject input by UTF-8 bytes and reports overflow", async () => {
   }
   await act(async () => root.unmount());
 });
+
+it("says when an Always answer could not save its rules", async () => {
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  await act(async () => root.render(<PermissionCard perm={{ ...perm, resolution: "allow_always", alwaysSaved: false, message: "database is locked" }} onAnswer={async () => {}} />));
+  expect(host.querySelector(".outcome")!.textContent).toBe("✕ Always not saved: database is locked; ran once");
+  await act(async () => root.render(<PermissionCard perm={{ ...perm, resolution: "allow_always" }} onAnswer={async () => {}} />));
+  expect(host.querySelector(".outcome")!.textContent).toBe("✓ Allowed always.");
+  await act(async () => root.unmount());
+});

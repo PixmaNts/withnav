@@ -126,6 +126,10 @@ pub struct PermissionRequest {
     /// validated: an ordinary question, not a validation.
     #[serde(skip)]
     pub skill_rule: bool,
+    /// The outcome of saving the "Always" rules when it happened before the
+    /// answer was published: the saved rule ids, or why they were not saved.
+    #[serde(skip)]
+    pub always_saved: Option<Result<Vec<i64>, String>>,
 }
 
 impl PermissionRequest {
@@ -153,6 +157,7 @@ impl PermissionRequest {
             decision_id: None,
             repeats: 1,
             skill_rule: false,
+            always_saved: None,
         }
     }
 }

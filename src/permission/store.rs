@@ -21,6 +21,9 @@ pub enum Error {
 /// one decision; each call is a short local query.
 pub struct PermissionStore {
     pub(crate) connection: std::sync::Mutex<Connection>,
+    /// Makes rule lookups for this action fail, to exercise failure paths.
+    #[cfg(test)]
+    pub(crate) fail_action: std::sync::Mutex<Option<String>>,
 }
 
 impl PermissionStore {
@@ -83,7 +86,34 @@ impl PermissionStore {
         )?;
         Ok(Self {
             connection: std::sync::Mutex::new(connection),
+            #[cfg(test)]
+            fail_action: Default::default(),
         })
+    }
+
+    /// Runs `work` on the blocking pool. A query can wait up to the busy
+    /// timeout on another connection's write; async code calls the store
+    /// through here so that the wait never holds a runtime thread.
+    pub async fn run<T: Send + 'static>(
+        self: &std::sync::Arc<Self>,
+        work: impl FnOnce(&Self) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || work(&store))
+            .await
+            .map_err(|error| Error::Invalid(format!("permission database task failed: {error}")))?
+    }
+
+    /// Like [`Self::run`] for a write nobody waits on. Outside a runtime it
+    /// runs inline.
+    pub fn detach(self: &std::sync::Arc<Self>, work: impl FnOnce(&Self) + Send + 'static) {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let store = self.clone();
+                runtime.spawn_blocking(move || work(&store));
+            }
+            Err(_) => work(self),
+        }
     }
 
     pub(crate) fn db(&self) -> std::sync::MutexGuard<'_, Connection> {

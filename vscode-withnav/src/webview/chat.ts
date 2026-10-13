@@ -1024,7 +1024,7 @@ function receive(event: HostToWebview): void {
     case "permissionState": {
       const card = permissionCards.get(event.requestId);
       if (!card) break;
-      card.outcome.textContent = permissionOutcome(event.resolution, event.message);
+      card.outcome.textContent = permissionOutcome(event.resolution, event.message, event.alwaysSaved);
       card.root.dataset.resolution = event.resolution;
       const review = card.root.querySelector(".approval-evidence summary");
     if (review?.textContent === "Captain review required" && ["allow_once", "allow_always", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";

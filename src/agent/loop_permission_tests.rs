@@ -687,6 +687,13 @@ async fn a_stop_cancels_the_pending_decision() {
         RunOutcome::PermissionRequired(_)
     ));
     actor.interrupt_pending_permission();
+    // The cancel is written off the runtime thread.
+    for _ in 0..200 {
+        if decisions(&actor)[0].outcome == Outcome::Cancelled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     assert_eq!(decisions(&actor)[0].outcome, Outcome::Cancelled);
 }
 
@@ -1388,4 +1395,116 @@ async fn unavailable_rules_still_stop_identical_calls_under_bypass() {
     assert_eq!(request.tool_call_id, "b3");
     assert!(request.requires_captain && request.always_label.is_none());
     assert!(request.reason.contains("3 times"));
+}
+
+/// Makes every new rule fail to save, with a secret in the database's error.
+fn refuse_rule_writes(actor: &AgentActor) {
+    actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER refuse_rules BEFORE INSERT ON permission_rules
+             BEGIN SELECT RAISE(ABORT, 'rules refused' || char(10) || 'token=acme_live_Zq81kPw2 at /home/user/.secret'); END;",
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
+    let flows = Arc::new(FakeFlows::new("apply"));
+    let mut actor = actor_with(Some(flows));
+    script(
+        &mut actor,
+        vec![owned(&[bash("p1", "git push origin x")]), done("pushed")],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("no rule asks");
+    };
+    refuse_rule_writes(&actor);
+    let mut approved = Vec::new();
+    let outcome = resolve_permission(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowAlways,
+        &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                approved.push(result.metadata["approved_by"].clone());
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "pushed"));
+    assert_eq!(approved, [json!("captain")], "the call runs once");
+    assert!(actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .list(&RuleFilter::default())
+        .unwrap()
+        .is_empty());
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+    let answer = rows[0].captain_answer.as_ref().unwrap();
+    assert_eq!(answer["decision"], "allow_always");
+    assert_eq!(answer["always_saved"], false, "{answer}");
+    let error = answer["always_error"].as_str().unwrap();
+    assert_eq!(error, "rule write rejected");
+}
+
+/// A decision that waits on a locked `withnav.db` must not stall the runtime:
+/// on one thread, an unrelated task keeps running while the decision waits.
+#[test]
+fn a_locked_permission_database_does_not_stall_the_runtime() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new("apply"))));
+        let data = actor.permission_dirs.data.clone().unwrap();
+        actor.permission_store = Some(Arc::new(
+            crate::permission::store::PermissionStore::open(&data).unwrap(),
+        ));
+        script(&mut actor, vec![owned(&[bash("b1", "echo hi")])]).await;
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = tokio::spawn({
+            let ticks = ticks.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+        let (locked, is_locked) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn({
+            let ticks = ticks.clone();
+            move || {
+                let connection = rusqlite::Connection::open(data.join("withnav.db")).unwrap();
+                connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+                locked.send(()).unwrap();
+                let before = ticks.load(Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                let during = ticks.load(Ordering::SeqCst) - before;
+                connection.execute_batch("COMMIT").unwrap();
+                during
+            }
+        });
+        is_locked.recv().unwrap();
+        let outcome = run(&mut actor).await;
+        assert!(
+            matches!(outcome, RunOutcome::PermissionRequired(_)),
+            "{outcome:?}"
+        );
+        let during = holder.join().unwrap();
+        ticker.abort();
+        // About 120 ticks fit in the hold; a blocked runtime shows almost none.
+        assert!(during >= 40, "the runtime stalled: {during} ticks");
+        assert_eq!(decisions(&actor)[0].outcome, Outcome::Pending);
+    });
 }

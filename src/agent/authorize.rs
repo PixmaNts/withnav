@@ -262,8 +262,39 @@ pub(super) async fn authorize(
         delegation_cut,
         cancel: actor.cancel.clone(),
     };
+    let control = control(actor);
+    // The rules, the floor and the paths are read on the blocking pool: a
+    // locked database waits there, never on a runtime thread.
+    let lookup = {
+        let (store, call, commands, cx, agent) = (
+            actor.permission_store.clone(),
+            call.clone(),
+            commands.clone(),
+            cx.clone(),
+            agent.clone(),
+        );
+        let read = tokio::task::spawn_blocking(move || {
+            decide::lookup(&Input {
+                control,
+                call: &call,
+                commands: &commands,
+                cx: &cx,
+                store: store.as_deref(),
+                agent: &agent,
+                repeats,
+                validated,
+            })
+        });
+        tokio::select! {
+            biased;
+            _ = actor.cancel.cancelled() => return Authorized::Interrupted,
+            read = read => read.unwrap_or_else(|error| {
+                Err(crate::permission::store::Error::Invalid(error.to_string()))
+            }),
+        }
+    };
     let input = Input {
-        control: control(actor),
+        control,
         call,
         commands: &commands,
         cx: &cx,
@@ -275,7 +306,7 @@ pub(super) async fn authorize(
     let mut decision = tokio::select! {
         biased;
         _ = actor.cancel.cancelled() => return Authorized::Interrupted,
-        decision = decide::decide(&input, &flows) => decision,
+        decision = decide::decide_with(&input, lookup, &flows) => decision,
     };
     if let Some(note) = flows
         .reason
@@ -299,11 +330,12 @@ pub(super) async fn authorize(
                 previous,
                 Outcome::Allowed,
                 Some(approved_by.as_str()),
-            );
+            )
+            .await;
             Authorized::Run(approval(approved_by.as_str(), &decision))
         }
         Verdict::Deny { message, .. } => {
-            settle_row(actor, call, &decision, previous, Outcome::Denied, None);
+            settle_row(actor, call, &decision, previous, Outcome::Denied, None).await;
             let by = if decision.trace.effect == Some(Effect::Deny) {
                 "rule"
             } else {
@@ -319,7 +351,7 @@ pub(super) async fn authorize(
         }
         Verdict::AskCaptain { reason, always } => {
             if let Some(id) = previous {
-                update(actor, id, Outcome::Cancelled, None, None);
+                update(actor, id, Outcome::Cancelled, None, None).await;
             }
             let mut request = PermissionRequest::new(call, scope(call, &cx), &agent);
             request.reason = reason;
@@ -338,7 +370,8 @@ pub(super) async fn authorize(
                 Outcome::Pending,
                 None,
                 Some(request.id),
-            );
+            )
+            .await;
             request.always = always;
             Authorized::Ask(Box::new(request))
         }
@@ -427,7 +460,10 @@ pub(super) fn always_label(always: &[RuleProposal]) -> Option<String> {
 }
 
 /// Save every proposal of an "Always" answer in one transaction.
-pub(super) fn save_always(actor: &AgentActor, always: &[RuleProposal]) -> Result<Vec<i64>, String> {
+pub(super) async fn save_always(
+    actor: &AgentActor,
+    always: &[RuleProposal],
+) -> Result<Vec<i64>, String> {
     let rules: Vec<_> = always
         .iter()
         .map(|p| {
@@ -443,9 +479,13 @@ pub(super) fn save_always(actor: &AgentActor, always: &[RuleProposal]) -> Result
         .permission_store
         .as_ref()
         .ok_or("permission rules unavailable")?
-        .add_all(&rules, RuleOrigin::Always)
+        .run(move |store| store.add_all(&rules, RuleOrigin::Always))
+        .await
         .map(|rules| rules.into_iter().map(|rule| rule.id).collect())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            tracing::warn!(%error, "the Always rules were not saved");
+            decisions::public_reason(&error).to_owned()
+        })
 }
 
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {
@@ -479,7 +519,7 @@ pub(super) fn answered_approval(request: &PermissionRequest, approved_by: &str) 
     json!({"approved_by": approved_by, "permission_gate": gate})
 }
 
-fn record(
+async fn record(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
@@ -511,14 +551,15 @@ fn record(
         approved_by: approved_by.map(str::to_owned),
     };
     store
-        .record(&row)
+        .run(move |store| store.record(&row))
+        .await
         .inspect_err(|error| tracing::warn!(%error, "permission decision not recorded"))
         .ok()
 }
 
 /// A bypass answer settles the pending row with the fresh decision; any
 /// other decision is a new row.
-fn settle_row(
+async fn settle_row(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
@@ -527,20 +568,23 @@ fn settle_row(
     approved_by: Option<&str>,
 ) {
     match previous {
-        Some(id) => update(
-            actor,
-            id,
-            outcome,
-            Some(&json!({"answer": "bypass"})),
-            approved_by,
-        ),
+        Some(id) => {
+            update(
+                actor,
+                id,
+                outcome,
+                Some(&json!({"answer": "bypass"})),
+                approved_by,
+            )
+            .await
+        }
         None => {
-            record(actor, call, decision, outcome, approved_by, None);
+            record(actor, call, decision, outcome, approved_by, None).await;
         }
     }
 }
 
-pub(super) fn update(
+pub(super) async fn update(
     actor: &AgentActor,
     id: i64,
     outcome: Outcome,
@@ -550,13 +594,19 @@ pub(super) fn update(
     let Some(store) = &actor.permission_store else {
         return;
     };
-    if let Err(error) = store.update_outcome(id, outcome, answer, approved_by) {
+    let (answer, approved_by) = (answer.cloned(), approved_by.map(str::to_owned));
+    let updated = store
+        .run(move |store| {
+            store.update_outcome(id, outcome, answer.as_ref(), approved_by.as_deref())
+        })
+        .await;
+    if let Err(error) = updated {
         tracing::warn!(%error, "permission decision outcome not recorded");
     }
 }
 
 /// Yolo checks nothing, and the decision table says so.
-pub(super) fn record_yolo(actor: &AgentActor, call: &ToolCall) {
+pub(super) async fn record_yolo(actor: &AgentActor, call: &ToolCall) {
     let decision = Decision {
         verdict: Verdict::Run {
             approved_by: ApprovedBy::Yolo,
@@ -570,5 +620,6 @@ pub(super) fn record_yolo(actor: &AgentActor, call: &ToolCall) {
         Outcome::Allowed,
         Some(ApprovedBy::Yolo.as_str()),
         None,
-    );
+    )
+    .await;
 }

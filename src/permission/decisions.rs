@@ -418,6 +418,25 @@ fn redact_text(text: &str) -> String {
     words.concat()
 }
 
+/// The reason a permission database error gives clients and the decision
+/// history. Database messages can quote paths, SQL and stored values, so
+/// only a fixed phrase chosen from the SQLite error code leaves the process;
+/// callers log the full error through tracing.
+pub fn public_reason(error: &Error) -> &'static str {
+    use rusqlite::ffi::ErrorCode;
+    let Error::Database(rusqlite::Error::SqliteFailure(failure, _)) = error else {
+        return "database error";
+    };
+    match failure.code {
+        ErrorCode::DatabaseLocked => "database is locked",
+        ErrorCode::DatabaseBusy => "database is busy",
+        ErrorCode::ReadOnly => "database is read-only",
+        ErrorCode::DiskFull => "disk is full",
+        ErrorCode::ConstraintViolation => "rule write rejected",
+        _ => "database error",
+    }
+}
+
 fn bound_value(value: &mut Value, limit: usize) {
     match value {
         Value::String(text) => {
@@ -550,5 +569,60 @@ impl PermissionStore {
         let mut statement = db.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(values), read_decision)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+#[cfg(test)]
+mod public_reason_tests {
+    use super::*;
+
+    fn sqlite(code: rusqlite::ffi::ErrorCode, extended: i32, message: &str) -> Error {
+        Error::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code,
+                extended_code: extended,
+            },
+            Some(message.into()),
+        ))
+    }
+
+    #[test]
+    fn public_reasons_never_carry_the_database_message() {
+        use rusqlite::ffi::{self, ErrorCode};
+        let secret = "token=acme_live_Zq81kPw2\nat /home/user/.secret";
+        for (error, reason) in [
+            (
+                sqlite(ErrorCode::DatabaseLocked, ffi::SQLITE_LOCKED, secret),
+                "database is locked",
+            ),
+            (
+                sqlite(ErrorCode::DatabaseBusy, ffi::SQLITE_BUSY, secret),
+                "database is busy",
+            ),
+            (
+                sqlite(ErrorCode::ReadOnly, ffi::SQLITE_READONLY, secret),
+                "database is read-only",
+            ),
+            (
+                sqlite(ErrorCode::DiskFull, ffi::SQLITE_FULL, secret),
+                "disk is full",
+            ),
+            (
+                sqlite(
+                    ErrorCode::ConstraintViolation,
+                    ffi::SQLITE_CONSTRAINT_TRIGGER,
+                    secret,
+                ),
+                "rule write rejected",
+            ),
+            (
+                sqlite(ErrorCode::SystemIoFailure, ffi::SQLITE_IOERR, secret),
+                "database error",
+            ),
+            (Error::Invalid(secret.into()), "database error"),
+            (Error::Io(std::io::Error::other(secret)), "database error"),
+        ] {
+            assert_eq!(public_reason(&error), reason);
+        }
     }
 }

@@ -1035,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn old_import_path_still_resolves() {
+    fn the_sensitive_name_helpers_recognise_a_credential_file() {
         assert!(crate::permission::floor::sensitive_read(Path::new(
             "/x/auth.json"
         )));

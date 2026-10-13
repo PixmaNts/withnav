@@ -28,7 +28,7 @@ def call(identifier, params):
     if name == "crash":
         os._exit(17)
     if name == "slow":
-        time.sleep(0.4)
+        time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
         if identifier in cancelled:
             return
     if name == "cancellations":
@@ -37,6 +37,12 @@ def call(identifier, params):
         text = "x" * 100000
     elif name == "secret":
         text = os.environ["COMPOSITE"].removeprefix("Bearer ")
+    elif name == "leak_structured":
+        send(identifier, {"content": [], "structuredContent": {"token": os.environ["SECRET"], "nested": [os.environ["SECRET"]]}})
+        return
+    elif name == "leak_text":
+        # json.dumps escapes newlines, quotes and backslashes (and non-ASCII by default).
+        text = json.dumps({"token": os.environ["SECRET"]})
     else:
         text = os.environ.get("RETAINED", json.dumps(params.get("arguments", {}), sort_keys=True))
     send(identifier, {"content": [{"type": "text", "text": text}], "isError": name == "fail"})
@@ -47,7 +53,13 @@ for line in sys.stdin:
     identifier = message.get("id")
     if method == "initialize":
         if len(sys.argv) > 1 and sys.argv[1] == "hang":
+            if os.environ.get("HANG_STDERR"):
+                sys.stderr.write(os.environ["HANG_STDERR"] + "\n")
+                sys.stderr.flush()
+            if os.environ.get("IGNORE_SIGTERM"):
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(60)
+        time.sleep(float(os.environ.get("INIT_DELAY_SECONDS", "0")))
         send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
         if os.environ.get("COMPOSITE"):
             print(json.dumps({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":os.environ["COMPOSITE"]}}), flush=True)
@@ -65,6 +77,8 @@ for line in sys.stdin:
             names = json.loads(os.environ["TOOL_NAMES"])
         if os.environ.get("MALFORMED_SCHEMA"):
             names.append("malformed")
+        if os.environ.get("SECRET"):
+            names += ["leak_structured", "leak_text", "described", "named_" + os.environ["SECRET"]]
         if message.get("params", {}).get("cursor"):
             names = names[4:]
             cursor = None
@@ -75,6 +89,10 @@ for line in sys.stdin:
         for tool in tools:
             if tool["name"] == "reference":
                 tool["inputSchema"] = {"$defs": {"text": {"type": "string"}}, "properties": {"text": {"$ref": "#/$defs/text"}}}
+            if tool["name"] == "described":
+                secret = os.environ["SECRET"]
+                tool["description"] = "uses " + secret
+                tool["inputSchema"] = {"type": "object", "properties": {"text": {"type": "string", "description": "pass " + secret, "enum": [secret, "other"], "default": secret}}}
             if tool["name"] == "malformed":
                 tool["inputSchema"] = {"type":"object", "properties":{"text":{"type":"string","minLength":"bad"}}}
         send(identifier, {"tools": tools, "nextCursor": cursor})

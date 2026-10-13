@@ -217,12 +217,16 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     Ok(output)
 }
 
+/// Converts a `tools/call` result to a bounded tool result. Structured content is redacted
+/// as a value before it is serialised: serialisation escapes newlines, quotes and
+/// backslashes, so a raw-value text replacement afterwards would miss such a secret.
 pub(super) fn convert(
     value: &Value,
     server: &str,
     original: &str,
-    redact: impl FnOnce(&str) -> String,
+    secrets: &[String],
 ) -> ToolResult {
+    let redact = |text: &str| super::redaction::redact(text, secrets);
     let content = value["content"].as_array();
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
@@ -252,7 +256,8 @@ pub(super) fn convert(
     }
     if !has_text {
         if let Some(structured) = value.get("structuredContent") {
-            parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+            let structured = super::redaction::redact_value(structured, secrets);
+            parts.push(serde_json::to_string_pretty(&structured).unwrap_or_default());
         }
     }
     let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
@@ -268,7 +273,7 @@ pub(super) fn convert(
             },
         });
     }
-    result.metadata = json!({"mcp_server": server, "mcp_tool": original});
+    result.metadata = json!({"mcp_server": server, "mcp_tool": redact(original)});
     result
 }
 
@@ -299,7 +304,12 @@ impl McpTool {
             plugin_id: Some(self.server.id.clone()),
             message: result.output.clone(),
         });
-        result.with_metadata(json!({"mcp_server": self.server.id, "mcp_tool": self.original}))
+        result.with_metadata(self.metadata())
+    }
+
+    /// Published with every result; the name is redacted like any other server text.
+    fn metadata(&self) -> Value {
+        json!({"mcp_server": self.server.id, "mcp_tool": self.server.redact(&self.original)})
     }
 }
 
@@ -357,7 +367,7 @@ impl Tool for McpTool {
                     return Ok(match response {
                         Ok(Ok(response)) => match serde_json::to_value(response) {
                             Ok(value) => {
-                                convert(&value, &self.server.id, &self.original, |text| self.server.redact(text))
+                                convert(&value, &self.server.id, &self.original, &self.server.secrets())
                             },
                             Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
                         },
@@ -372,8 +382,7 @@ impl Tool for McpTool {
                 handle.cancel(Some("WithNav call cancelled".into())),
             )
             .await;
-            Ok(result
-                .with_metadata(json!({"mcp_server": self.server.id, "mcp_tool": self.original})))
+            Ok(result.with_metadata(self.metadata()))
         })
     }
 }
@@ -413,7 +422,7 @@ mod tests {
             &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
             "test",
             "big",
-            str::to_owned,
+            &[],
         );
         assert_eq!(result.status, ToolStatus::Error);
         assert_eq!(result.truncated.unwrap().original_bytes, 100000);
@@ -422,14 +431,14 @@ mod tests {
             &json!({"content":[], "structuredContent":{"a":1}}),
             "test",
             "echo",
-            str::to_owned,
+            &[],
         );
         assert_eq!(structured.output, "{\n  \"a\": 1\n}");
         let mixed = convert(
             &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
             "test",
             "echo",
-            str::to_owned,
+            &[],
         );
         assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
     }
@@ -442,7 +451,7 @@ mod tests {
             &json!({"isError":true,"content":[{"type":"text","text":text}]}),
             "fake",
             "echo",
-            |text| text.replace(secret, "[redacted]"),
+            &[secret.to_string()],
         );
         assert!(!result.output.contains("TOK"));
         assert_eq!(result.error.as_ref().unwrap().message, result.output);
@@ -451,11 +460,33 @@ mod tests {
             &json!({"isError":true,"content":[{"type":"text","text":"s".repeat(8000)}]}),
             "fake",
             "echo",
-            |text| text.replace('s', "[redacted]"),
+            &["s".to_string()],
         );
         assert_eq!(expanded.truncated.unwrap().original_bytes, 80000);
         assert_eq!(expanded.error.unwrap().message, expanded.output);
         assert!(expanded.output.len() <= 65536);
+    }
+
+    #[test]
+    fn structured_content_secrets_are_redacted_before_serialisation() {
+        for secret in ["multi\nline-sentinel", "quote\"sentinel", "back\\slash-sentinel"] {
+            let result = convert(
+                &json!({"content":[], "structuredContent":{"token":secret,"list":[secret]}}),
+                "fake",
+                secret,
+                &[secret.to_string()],
+            );
+            assert!(!result.output.contains("sentinel"), "{}", result.output);
+            assert!(!result.metadata.to_string().contains("sentinel"));
+            let text = serde_json::to_string(&json!({"token": secret})).unwrap();
+            let result = convert(
+                &json!({"content":[{"type":"text","text":text}]}),
+                "fake",
+                "echo",
+                &[secret.to_string()],
+            );
+            assert!(!result.output.contains("sentinel"), "{}", result.output);
+        }
     }
 
     #[test]

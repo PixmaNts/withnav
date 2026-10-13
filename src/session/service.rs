@@ -924,12 +924,12 @@ impl Service {
         // when its definition is full-access: the child has no write/edit/bash
         // dispatch path, so it cannot launder writes past the plan parent's
         // restriction.
-        for tool in [
-            "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
-        ] {
-            let enabled = child_tool_allowed(tool, &definition, &parent_role);
-            policy.insert(tool.to_string(), enabled);
-            allowed.insert(tool.to_string(), enabled);
+        // Every tool the registry offers, MCP tools included, under the same
+        // child and parent restrictions as the native ones.
+        for tool in super::actor::admissible_tools(&self.mcp) {
+            let enabled = child_tool_allowed(&tool, &definition, &parent_role);
+            policy.insert(tool.clone(), enabled);
+            allowed.insert(tool, enabled);
         }
         let incarnation = parent_handle.incarnation;
         drop(_spawn_lock);

@@ -1,6 +1,6 @@
 //! MCP tools inside sessions: shutdown order, subagent inventories and `nav run` startup.
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 use withnav::server::{AppState, ServerConfig};
 
 mod common;
@@ -66,4 +66,91 @@ async fn shutdown_stops_sessions_before_mcp_so_a_queued_call_never_runs() {
         .expect("shutdown is bounded");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!target.exists(), "the queued call ran during MCP shutdown");
+}
+
+/// A writable subagent with `mcp_child.md` and `mcp_denied.md` definitions.
+fn install_agents(ws: &Path) {
+    let dir = ws.join(".withnav/agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mcpchild.md"),
+        "---\nmode: subagent\naccess: full\n---\nUse the tools.",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mcpdenied.md"),
+        "---\nmode: subagent\naccess: full\ntools:\n  mcp__fake__echo: false\n---\nNo echo.",
+    )
+    .unwrap();
+}
+
+async fn tool_names(provider: &common::sse::CapturingProvider, n: usize) -> Vec<String> {
+    wait_for("the provider request", || provider.bodies().len() > n).await;
+    let body: Value = serde_json::from_str(&provider.bodies()[n]).unwrap();
+    body["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagents_receive_mcp_tools_within_parent_and_definition_limits() {
+    for (parent_agent, child_agent, expected) in [
+        ("build", "mcpchild", true),
+        ("build", "mcpdenied", false),
+        ("nomcp", "mcpchild", false),
+    ] {
+        let env = common::TestEnv::new();
+        install_agents(&env.ws);
+        std::fs::write(
+            env.ws.join(".withnav/agents/nomcp.md"),
+            "---\nmode: primary\naccess: full\ntools:\n  mcp__fake__echo: false\n---\nNo echo.",
+        )
+        .unwrap();
+        let provider = spawn_capturing_provider(vec![text_response("child done")]).await;
+        let cfg = TestServerConfig::mock(&env.root, &provider.url)
+            .chat_tools(128_000)
+            .rules_home(&env.home)
+            .config();
+        with_mcp(&cfg, json!({"command":["python3",FIXTURE]}), false);
+        let state = AppState::new(cfg).unwrap();
+        ready(&state).await;
+        let parent = state
+            .create_session_as(&env.ws, None, false, Some(parent_agent))
+            .await
+            .unwrap();
+        let child = state
+            .create_child_session(parent, child_agent, "inspect")
+            .await
+            .unwrap();
+        let policy: Value = serde_json::from_str(
+            &state
+                .child_metadata(child)
+                .await
+                .unwrap()
+                .unwrap()
+                .policy_snapshot,
+        )
+        .unwrap();
+        assert_eq!(
+            policy["mcp__fake__echo"],
+            json!(expected),
+            "{parent_agent} -> {child_agent}: {policy}"
+        );
+        let tools = tool_names(&provider, 0).await;
+        assert_eq!(
+            tools.iter().any(|t| t == "mcp__fake__echo"),
+            expected,
+            "{parent_agent} -> {child_agent}: {tools:?}"
+        );
+        if expected {
+            assert!(tools.iter().any(|t| t == "mcp__fake__slow"), "{tools:?}");
+        }
+        state.service().close_all().await;
+    }
 }

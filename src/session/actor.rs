@@ -92,6 +92,17 @@ fn build_actor_with_policy(
     actor
 }
 
+/// Every tool a session's registry can hold before agent policy: the base registry
+/// (native tools, ask and the MCP tools ready now), plus `skill` and `task`, which
+/// the actor and the service add later. A child's policy is computed over this set.
+pub(super) fn admissible_tools(mcp: &crate::mcp::McpManager) -> Vec<String> {
+    let mut names = build_registry(None, false, mcp).names();
+    names.extend(["skill".to_string(), "task".to_string()]);
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn build_registry(
     allowed_tools: Option<std::collections::BTreeMap<String, bool>>,
     read_only: bool,

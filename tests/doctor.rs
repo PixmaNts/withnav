@@ -555,7 +555,7 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     let home = root.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let (config, args) = fixture(&home.join(".config"), &base);
-    let legacy = home.join(".config/navai");
+    let legacy = home.join(".config").join("navai");
     let navigator = args.workspace.canonicalize().unwrap().join(".navigator");
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::create_dir_all(&navigator).unwrap();

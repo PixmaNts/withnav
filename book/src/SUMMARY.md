@@ -18,7 +18,6 @@
   - [Agents](agents.md)
   - [Editor context and session overrides](session-overrides.md)
   - [Rules and skills](rules-and-skills.md)
-  - [MCP servers](mcp-servers.md)
   - [Import a catalogue from OpenCode](catalogue-import.md)
 - [Permissions](permissions.md)
 - [InstinctFlow](instinctflow.md)

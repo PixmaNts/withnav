@@ -9,9 +9,8 @@ use serde_json::json;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::ProviderError;
 use crate::provider::systemone::{
-    Answer, DecisionRequest, Question, Questions, SystemOneClient, SYSTEMONE_DEADLINE,
+    Answer, DecisionError, DecisionModel, Question, Questions, SYSTEMONE_DEADLINE,
 };
 
 pub const QUESTION: &str = "subagent_progress";
@@ -35,7 +34,7 @@ impl Clock for RealClock {
 }
 
 /// Only observable activity: reasoning never enters this snapshot.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Evidence {
     pub goal: String,
     pub since_last_message_secs: u64,
@@ -84,49 +83,30 @@ impl JudgeError {
     }
 }
 
-pub trait Judge: Send + Sync {
-    fn judge<'a>(
-        &'a self,
-        evidence: &'a Evidence,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Verdict, JudgeError>>;
-}
-
-pub struct InstinctJudge(pub SystemOneClient);
-impl Judge for InstinctJudge {
-    fn judge<'a>(
-        &'a self,
-        evidence: &'a Evidence,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
-        Box::pin(async move {
-            let state = json!({"untrusted_evidence": evidence.clone().bounded()}).to_string();
-            let questions = questions();
-            let response = self
-                .0
-                .decide(
-                    &DecisionRequest {
-                        state: &state,
-                        questions: &questions,
-                    },
-                    cancel,
-                )
-                .await
-                .map_err(|error| match error {
-                    ProviderError::Canceled { .. } => JudgeError::Cancelled,
-                    ProviderError::MalformedResponse(_) => JudgeError::Invalid,
-                    _ => JudgeError::Unavailable,
-                })?;
-            match response.answers.get(QUESTION) {
-                Some(Answer::Choice { choice, .. }) => match choice.as_str() {
-                    "active" => Ok(Verdict::Active),
-                    "stuck" => Ok(Verdict::Stuck),
-                    "doubt" => Ok(Verdict::Doubt),
-                    _ => Err(JudgeError::Invalid),
-                },
-                _ => Err(JudgeError::Invalid),
-            }
-        })
+/// Translate observable progress into typed questions, then interpret the answer.
+pub async fn judge_progress(
+    model: &dyn DecisionModel,
+    evidence: &Evidence,
+    cancel: &CancellationToken,
+) -> Result<Verdict, JudgeError> {
+    let state = json!({"untrusted_evidence": evidence.clone().bounded()}).to_string();
+    let answers =
+        model
+            .decide(&state, &questions(), cancel)
+            .await
+            .map_err(|error| match error {
+                DecisionError::Cancelled => JudgeError::Cancelled,
+                DecisionError::Invalid => JudgeError::Invalid,
+                DecisionError::Unavailable => JudgeError::Unavailable,
+            })?;
+    match answers.get(QUESTION) {
+        Some(Answer::Choice { choice, .. }) => match choice.as_str() {
+            "active" => Ok(Verdict::Active),
+            "stuck" => Ok(Verdict::Stuck),
+            "doubt" => Ok(Verdict::Doubt),
+            _ => Err(JudgeError::Invalid),
+        },
+        _ => Err(JudgeError::Invalid),
     }
 }
 
@@ -197,7 +177,7 @@ impl Watchdog {
 
     pub async fn check(
         &mut self,
-        judge: Option<&dyn Judge>,
+        judge: Option<&dyn DecisionModel>,
         evidence: &Evidence,
         cancel: &CancellationToken,
     ) -> Option<Checked> {
@@ -206,7 +186,7 @@ impl Watchdog {
             biased;
             _ = cancel.cancelled() => return None,
             answer = tokio::time::timeout(SYSTEMONE_DEADLINE + Duration::from_millis(500), async {
-                judge.judge(evidence, cancel).await
+                judge_progress(judge, evidence, cancel).await
             }) => answer.unwrap_or(Err(JudgeError::Unavailable)),
         };
         match answer {
@@ -243,15 +223,35 @@ mod tests {
             Box::pin(async {})
         }
     }
-    struct FakeJudge(Result<Verdict, JudgeError>);
-    impl Judge for FakeJudge {
-        fn judge<'a>(
-            &'a self,
-            _: &'a Evidence,
-            _: &'a CancellationToken,
-        ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
-            Box::pin(async { self.0 })
-        }
+    use crate::provider::systemone::ScriptedDecisionModel;
+    fn fake_decision(answer: Result<Verdict, JudgeError>) -> ScriptedDecisionModel {
+        ScriptedDecisionModel::new(std::iter::repeat_n(verdict_answer(answer), 8))
+    }
+    fn verdict_answer(
+        answer: Result<Verdict, JudgeError>,
+    ) -> Result<crate::provider::systemone::Answers, DecisionError> {
+        answer
+            .map(|verdict| {
+                [(
+                    QUESTION.into(),
+                    Answer::Choice {
+                        choice: serde_json::to_value(verdict)
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .into(),
+                        probabilities: Default::default(),
+                        confidence: 1.0,
+                    },
+                )]
+                .into_iter()
+                .collect()
+            })
+            .map_err(|error| match error {
+                JudgeError::Unavailable => DecisionError::Unavailable,
+                JudgeError::Invalid => DecisionError::Invalid,
+                JudgeError::Cancelled => DecisionError::Cancelled,
+            })
     }
     fn evidence() -> Evidence {
         Evidence {
@@ -281,12 +281,12 @@ mod tests {
     async fn two_consecutive_failures_escalate_and_a_verdict_resets_them() {
         let mut watchdog = Watchdog::new(Arc::new(RealClock), Duration::from_secs(300));
         let cancel = CancellationToken::new();
-        let failed = FakeJudge(Err(JudgeError::Unavailable));
+        let failed = fake_decision(Err(JudgeError::Unavailable));
         assert_eq!(
             watchdog.check(Some(&failed), &evidence(), &cancel).await,
             None
         );
-        let active = FakeJudge(Ok(Verdict::Active));
+        let active = fake_decision(Ok(Verdict::Active));
         assert_eq!(
             watchdog
                 .check(Some(&active), &evidence(), &cancel)
@@ -299,7 +299,7 @@ mod tests {
             watchdog.check(Some(&failed), &evidence(), &cancel).await,
             None
         );
-        let invalid = FakeJudge(Err(JudgeError::Invalid));
+        let invalid = fake_decision(Err(JudgeError::Invalid));
         assert_eq!(
             watchdog.check(Some(&invalid), &evidence(), &cancel).await,
             Some(Checked {
@@ -317,14 +317,14 @@ mod tests {
             assert_eq!(watchdog.check(None, &evidence(), &cancel).await, None);
         }
         assert_eq!(watchdog.failures, 0);
-        let unavailable = FakeJudge(Err(JudgeError::Unavailable));
+        let unavailable = fake_decision(Err(JudgeError::Unavailable));
         assert_eq!(
             watchdog
                 .check(Some(&unavailable), &evidence(), &cancel)
                 .await,
             None
         );
-        let cancelled = FakeJudge(Err(JudgeError::Cancelled));
+        let cancelled = fake_decision(Err(JudgeError::Cancelled));
         assert_eq!(
             watchdog.check(Some(&cancelled), &evidence(), &cancel).await,
             None

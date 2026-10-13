@@ -323,6 +323,7 @@ struct PreparedSession {
 pub struct SessionSummary {
     /// Captain setting `yolo`: the session runs with no permission control.
     pub yolo: bool,
+    pub permissions_unavailable: Option<String>,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -358,7 +359,6 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
-    pub(crate) mcp: Arc<crate::mcp::McpManager>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
     #[cfg(debug_assertions)]
     skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -433,12 +433,6 @@ pub struct Service {
 }
 
 impl Service {
-    /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
-        self.mcp.statuses()
-    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_delivery_commit(&self, ordinal: usize) {
@@ -707,9 +701,6 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
-            mcp: crate::mcp::McpManager::start(
-                &crate::settings::load(&config.config_dir).unwrap_or_default(),
-            ),
             flows: Arc::new(crate::flows::host::Host::new(
                 config.config_dir.clone(),
                 config.data_dir.clone(),
@@ -1878,6 +1869,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         Ok(SessionSummary {
+            permissions_unavailable: handle.status.permissions_unavailable.clone(),
             yolo: selected
                 .execution
                 .as_ref()
@@ -1937,6 +1929,7 @@ impl Service {
         );
         Ok(SessionSummary {
             yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: meta.last_seq,
             incarnation: None,
@@ -2545,7 +2538,6 @@ impl Service {
                 session_cancel.child_token(),
                 allowed.clone(),
                 *read_only,
-                &self.mcp,
             ),
             None => build_actor(
                 &workspace,
@@ -2553,7 +2545,6 @@ impl Service {
                 resolved,
                 api_key,
                 session_cancel.child_token(),
-                &self.mcp,
             ),
         };
         if root_tools_enabled && role.mode.is_primary() {
@@ -2607,15 +2598,15 @@ impl Service {
             data: Some(self.config.data_dir.clone()),
         };
         actor.permission_session = session_id.to_string();
-        actor.compaction_judge = compaction_judge(
+        actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.yolo = execution.yolo;
-        // Rules and decisions live in the shared database. Without it a deny
-        // rule would silently vanish, so only yolo, which reads no rule, starts.
+        // An unavailable database is an explicit degraded mode: no rules can
+        // be read or saved, but the floor and permission flows still apply.
         match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
             Ok(store) => {
                 if resumed.is_some() {
@@ -2623,12 +2614,17 @@ impl Service {
                         tracing::warn!(%error, "pending permission decisions not expired");
                     }
                 }
-                actor.permission_store = Arc::new(store);
+                actor.permission_store = Some(Arc::new(store));
             }
-            Err(error) if actor.yolo => {
-                tracing::warn!(%error, "permission database unavailable; yolo reads no rule")
+            Err(error) => {
+                let reason = format!(
+                    "{}: {error}",
+                    self.config.data_dir.join("withnav.db").display()
+                );
+                tracing::warn!(%reason, "permission rules unavailable; decisions will not be recorded");
+                actor.permission_store = None;
+                actor.permissions_unavailable = Some(reason);
             }
-            Err(error) => return Err(ServerError::PermissionDatabase(error.to_string())),
         }
         // A scratch directory that contains, or sits inside, WithNav's own
         // configuration would make it writable without the protected check.
@@ -2990,8 +2986,9 @@ impl Service {
             } else {
                 None
             };
-        let runtime_status =
+        let mut runtime_status =
             runtime::RuntimeStatus::with_selection(AgentSelection::new(agents, role));
+        runtime_status.permissions_unavailable = actor.permissions_unavailable.clone();
         if let Some(parent) = child_parent.and_then(|parent| self.handle(parent)) {
             let captain = parent
                 .status
@@ -3381,11 +3378,11 @@ pub(crate) mod tests;
 
 /// The session's Instinct layer as the judge compaction asks which old tool
 /// outputs still matter; `None` when Instinct is unavailable.
-fn compaction_judge(
+fn compaction_decision(
     models_path: Option<&std::path::Path>,
     workspace: &std::path::Path,
     config_dir: &std::path::Path,
-) -> Option<Arc<dyn crate::agent::compaction::judge::Judge>> {
+) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
     let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
         .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
         .ok()?;
@@ -3394,7 +3391,5 @@ fn compaction_judge(
         config_dir,
         Arc::new(crate::provider::openai::ClientCache::new()),
     )?;
-    Some(Arc::new(crate::agent::compaction::judge::InstinctJudge(
-        client,
-    )))
+    Some(Arc::new(client))
 }

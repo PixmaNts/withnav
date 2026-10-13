@@ -336,6 +336,7 @@ fn state() -> State {
         context_window: Some(200_000),
         session: Some(SessionMetadata {
             yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -3669,14 +3670,7 @@ fn permission_layout_is_fresh_with_one_render_cache() {
 
 #[test]
 fn auto_approval_notes_render_narrow_with_optional_evidence() {
-    for source in [
-        "instinct",
-        "jev",
-        "metacognition",
-        "captain",
-        "driver",
-        "none",
-    ] {
+    for source in ["instinct", "metacognition", "captain", "driver", "none"] {
         for detailed in [false, true] {
             let mut s = State::default();
             let mut block = tool_block(Some(ToolStatus::Ok));
@@ -3703,16 +3697,34 @@ fn auto_approval_notes_render_narrow_with_optional_evidence() {
             };
             let collapsed = screen_text(&s, &ui, (70, 24));
             match source {
-                "instinct" | "jev" => assert!(collapsed.contains("auto · instinct")),
+                "instinct" => assert!(collapsed.contains("auto · instinct")),
                 "metacognition" => assert!(collapsed.contains("auto · metacognition")),
                 "captain" | "driver" => assert!(collapsed.contains("Captain approved")),
                 _ => assert!(!collapsed.contains("auto ·")),
             }
             ui.expanded.insert("review".into());
             let shown = screen_text(&s, &ui, (70, 24));
-            if source != "jev" {
-                insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
-            }
+            insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
         }
     }
+}
+
+#[test]
+fn unavailable_permission_rules_are_visible_in_the_header_with_the_open_error() {
+    let mut s = state();
+    s.session.as_mut().unwrap().permissions_unavailable = Some("withnav.db: open failed".into());
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut cache = RenderCache::default();
+    terminal
+        .draw(|frame| view::draw(frame, &s, &UiState::default(), &Editor::new(), &mut cache))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Permission rules unavailable"), "{text}");
+    assert!(text.contains("withnav.db: open failed"), "{text}");
 }

@@ -149,7 +149,7 @@ test("evidence absent and malformed does not invent an approval", () => {
 });
 
 test("evidence preserves all optional review fields only when present", () => {
-  for (const source of ["instinct", "jev", "metacognition", "captain", "driver"]) {
+  for (const source of ["instinct", "metacognition", "captain", "driver"]) {
     const minimal = { policy_version: 1, source };
     assert.deepEqual(permissionEvidence(minimal), minimal);
     const full = { ...minimal, reason: "Low risk", verdicts: { effect: "write", scope: "project", risk: "low" },
@@ -159,12 +159,10 @@ test("evidence preserves all optional review fields only when present", () => {
   }
 });
 
-test("stored legacy instinct events render with the layer name", () => {
+test("instinct events render with the layer name", () => {
   const { evidenceLabel } = require("../out/tests/eventView.js");
-  for (const source of ["jev", "instinct"]) {
-    const evidence = permissionEvidence({ source, policy_version: 1 });
-    assert.equal(evidenceLabel(evidence, "tool"), "auto · instinct");
-  }
+  const evidence = permissionEvidence({ source: "instinct", policy_version: 1 });
+  assert.equal(evidenceLabel(evidence, "tool"), "auto · instinct");
 });
 
 test("open and denied Captain-review cards never claim approval", () => {

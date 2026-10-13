@@ -455,6 +455,7 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
     pub yolo: bool,
+    pub permissions_unavailable: Option<String>,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -520,6 +521,7 @@ async fn list_sessions(
                 };
                 sessions.push(SessionListEntry {
                     yolo: summary.yolo,
+                    permissions_unavailable: summary.permissions_unavailable,
                     bypass: summary.bypass,
                     bypass_seq: summary.bypass_seq,
                     incarnation: summary.incarnation,
@@ -1081,7 +1083,6 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        ServerError::PermissionDatabase(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ChildNotParked

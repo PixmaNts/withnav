@@ -1,6 +1,6 @@
 # The decision pipeline is data, not code
 
-Decision models like Jev are new and there is almost no prior art on which questions to ask or which
+Decision models supporting System One are new and there is almost no prior art on which questions to ask or which
 thresholds to use, so the pipeline will be changed by trial and error far more often than the rest
 of the system. It therefore lives in files, not in Rust: a TOML pipeline (questions, then ordered
 branches whose conditions are short expressions such as `worth_attention > 0.7 && route ==

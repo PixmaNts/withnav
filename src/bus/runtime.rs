@@ -99,6 +99,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub permissions_unavailable: Option<String>,
     pub(crate) question_gate: tokio::sync::Mutex<()>,
     pending_question: Mutex<Option<crate::agent::response::HumanRequest>>,
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
@@ -1222,11 +1223,11 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
-                // "Always" is offered only with rules to save, or for a skill.
+                // Reusable approval is unavailable when the session cannot
+                // persist rules or skill validations. Refuse before resolving.
                 if answer.decision.clone().current()
                     == crate::agent::permissions::PermissionDecision::AllowAlways
-                    && request.always.is_empty()
-                    && request.tool != "skill"
+                    && !request.reusable_approval
                 {
                     status.release_pin(&actor);
                     status.release_permission(answer.request_id);
@@ -1883,7 +1884,7 @@ fn permission_requested(
 ) -> serde_json::Value {
     let mut payload = to_value(&crate::bus::event::PermissionRequested {
         always_label: request.always_label.clone().or_else(|| {
-            (request.tool == "skill").then(|| {
+            (request.tool == "skill" && request.reusable_approval).then(|| {
                 format!(
                     "Always (global): validate skill {} at this version",
                     serde_json::from_str::<serde_json::Value>(&request.arguments)
@@ -2259,6 +2260,7 @@ mod tests {
                 agent: "build".into(),
                 reason: "approval".into(),
                 always_label: None,
+                reusable_approval: false,
                 always: Vec::new(),
                 decision_id: None,
                 repeats: 1,
@@ -3013,6 +3015,8 @@ mod tests {
     fn allow_everything(actor: &AgentActor) {
         actor
             .permission_store
+            .as_ref()
+            .unwrap()
             .add(
                 "*",
                 "*",

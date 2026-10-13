@@ -110,7 +110,19 @@ pub fn credential(path: &Path) -> bool {
 /// flows directory. The path is resolved like execution resolves it; a path that
 /// cannot be resolved counts as protected. Reading these files is free.
 pub fn protected_write(path: &Path, cx: &FloorContext) -> bool {
-    resolve_path(&path.to_string_lossy(), cx).is_none_or(|path| protected_resolved(&path, cx))
+    protected_word(&path.to_string_lossy(), cx).unwrap_or(true)
+}
+
+/// Whether writing the word changes a protected file; `None` when it cannot be
+/// resolved. A write may land on the link itself or on what it points at, so
+/// the word is protected when either the fully resolved target is, or the path
+/// as requested (every directory resolved, the final component not followed)
+/// is: a link below the flows directory pointing elsewhere is still a file of
+/// the flows directory.
+fn protected_word(word: &str, cx: &FloorContext) -> Option<bool> {
+    let followed = resolve_path(word, cx)?;
+    let requested = resolve(word, cx, false)?;
+    Some(protected_resolved(&followed, cx) || protected_resolved(&requested, cx))
 }
 
 /// Every spelling under which a protected file or the flows root can be
@@ -155,6 +167,11 @@ const MAX_LINKS: usize = 40;
 /// write would create the file. `None` when resolution fails (a link loop, an
 /// unreadable directory, a NUL byte); callers fail closed.
 pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
+    resolve(path, cx, true)
+}
+
+/// [`resolve_path`], optionally leaving a link in the final component alone.
+fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\0') {
         return None;
     }
@@ -188,7 +205,9 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
                     continue;
                 }
                 match std::fs::symlink_metadata(&resolved) {
-                    Ok(meta) if meta.file_type().is_symlink() => {
+                    Ok(meta)
+                        if meta.file_type().is_symlink() && (follow_last || !queue.is_empty()) =>
+                    {
                         links += 1;
                         if links > MAX_LINKS {
                             return None;
@@ -238,12 +257,12 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
     if names_credential(path, cx) {
         return Floor::Credential(path.to_owned());
     }
-    match resolve_path(path, cx) {
-        None => Floor::Unresolved(path.to_owned()),
-        Some(resolved) if writes && protected_resolved(&resolved, cx) => {
+    match (resolve_path(path, cx), writes) {
+        (None, _) => Floor::Unresolved(path.to_owned()),
+        (Some(_), true) if protected_word(path, cx) == Some(true) => {
             Floor::Protected(path.to_owned())
         }
-        Some(_) => Floor::None,
+        _ => Floor::None,
     }
 }
 
@@ -256,7 +275,7 @@ fn names_credential(word: &str, cx: &FloorContext) -> bool {
 
 /// Programs that only read their operands, so naming a protected file is free.
 /// A program with an output option is a reader only without it, see
-/// [`writes_output`].
+/// [`output_targets`].
 const READERS: &[&str] = &[
     "cat",
     "head",
@@ -279,27 +298,46 @@ const READERS: &[&str] = &[
     "echo",
 ];
 
-/// Whether a reader is told to write a file: `sort -o`/`--output`, and the
-/// `less` log file options. Short options may be clustered or carry the file
-/// name (`-uo out`, `-oout`).
-fn writes_output(program: &str, words: &[String]) -> bool {
+/// Files a command is told to write through an output option: attached
+/// (`-oPATH`, `--output=PATH`), separate (`-o PATH`, `--output PATH`) or in a
+/// short cluster (`-uo PATH`). `sort` and `less` have their own options; other
+/// readers have none; any other program, and an opaque line that cannot be
+/// attributed to a program, gets the common `-o`, `-O`, `--output` and
+/// `--log-file` (best effort, nothing is expanded).
+fn output_targets<'a>(program: Option<&str>, words: &'a [String], opaque: bool) -> Vec<&'a str> {
     let (short, long): (&[char], &[&str]) = match program {
-        "sort" => (&['o'], &["--output"]),
-        "less" => (&['o', 'O'], &["--log-file", "--LOG-FILE"]),
-        _ => return false,
+        Some("sort") => (&['o'], &["output"]),
+        Some("less") => (&['o', 'O'], &["log-file", "LOG-FILE"]),
+        Some(program) if READERS.contains(&program) => return Vec::new(),
+        _ => (&['o', 'O'], &["output", "log-file"]),
     };
-    words
-        .iter()
-        .take_while(|word| *word != "--")
-        .any(|word| match word.strip_prefix("--") {
-            Some(_) => long.iter().any(|long| {
-                word == long
-                    || word
-                        .strip_prefix(long)
-                        .is_some_and(|rest| rest.starts_with('='))
-            }),
-            None => word.starts_with('-') && word.chars().skip(1).any(|c| short.contains(&c)),
-        })
+    let mut targets = Vec::new();
+    let mut iter = words.iter();
+    while let Some(word) = iter.next() {
+        if word == "--" && !opaque {
+            break;
+        }
+        if let Some(option) = word.strip_prefix("--") {
+            for name in long {
+                if option == *name {
+                    targets.extend(iter.clone().next().map(String::as_str));
+                } else if let Some(value) = option
+                    .strip_prefix(name)
+                    .and_then(|rest| rest.strip_prefix('='))
+                {
+                    targets.push(value);
+                }
+            }
+        } else if word.starts_with('-') {
+            if let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c)) {
+                match &word[at + 1..] {
+                    "" => targets.extend(iter.clone().next().map(String::as_str)),
+                    value => targets.push(value),
+                }
+            }
+        }
+    }
+    targets
 }
 
 fn basename(word: &str) -> &str {
@@ -414,16 +452,18 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     let all = source_words(command);
     let (program, rest, operands) = operands(command, &all);
     let program = program.as_deref().map(basename);
-    let targets = || {
-        command
-            .redirections
-            .iter()
-            .map(|redirection| redirection.target.as_str())
-    };
+    // Every literal file the command names or writes, found before any check
+    // so that the credential, resolution and protected checks see all of them.
+    let outputs = output_targets(program, &rest, command.opaque);
+    let redirected = command
+        .redirections
+        .iter()
+        .map(|redirection| redirection.target.as_str());
     if let Some(word) = operands
         .iter()
         .map(String::as_str)
-        .chain(targets())
+        .chain(redirected)
+        .chain(outputs.iter().copied())
         .find(|word| names_credential(word, cx))
     {
         return Floor::Credential(word.to_owned());
@@ -434,27 +474,16 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
         .filter(|redirection| !reads_only_redirection(&redirection.op))
         .map(|redirection| redirection.target.as_str());
     let reads_only =
-        program.is_some_and(|program| READERS.contains(&program) && !writes_output(program, &rest));
-    let mut candidates: Vec<&str> = written.collect();
+        program.is_some_and(|program| READERS.contains(&program)) && outputs.is_empty();
+    let mut candidates: Vec<&str> = written.chain(outputs.iter().copied()).collect();
     if !reads_only {
         candidates.extend(operands.iter().map(String::as_str));
-        // `sort -oFILE`: the output option carries its value in the same word.
-        if matches!(program, Some("sort" | "less")) {
-            candidates.extend(
-                rest.iter()
-                    .filter(|word| word.starts_with('-') && !word.starts_with("--"))
-                    .filter_map(|word| word.split_once(['o', 'O']).map(|(_, value)| value))
-                    .filter(|value| !value.is_empty()),
-            );
-        }
     }
     for word in candidates {
-        match resolve_path(word, cx) {
+        match protected_word(word, cx) {
             None => return Floor::Unresolved(word.to_owned()),
-            Some(path) if protected_resolved(&path, cx) => {
-                return Floor::Protected(word.to_owned())
-            }
-            Some(_) => {}
+            Some(true) => return Floor::Protected(word.to_owned()),
+            Some(false) => {}
         }
     }
     let words = || all.iter().map(|word| basename(word));
@@ -899,6 +928,110 @@ mod tests {
             scan_words("a 'b c'\"d e\"f x\\ y;z"),
             ["a", "b cd ef", "x y", "z"]
         );
+    }
+
+    #[test]
+    fn attached_and_separate_output_targets_meet_every_check() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let config = format!("{root}/config/config.json");
+        for line in [
+            "sort -o.env input".to_owned(),
+            "sort -o .env input".to_owned(),
+            "sort --output=.env input".to_owned(),
+            "sort --output .env input".to_owned(),
+            "sort -uo .env input".to_owned(),
+            "gcc -o.env main.c".to_owned(),
+            "if true; then sort -o.env input; fi".to_owned(),
+            "if true; then sort -o .env input; fi".to_owned(),
+            "if true; then sort --output=.env input; fi".to_owned(),
+            "if true; then sort --output .env input; fi".to_owned(),
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, &line), Floor::Credential(_)),
+                "{line}"
+            );
+        }
+        for line in [
+            format!("sort -o{config} input"),
+            format!("sort -o {config} input"),
+            format!("if true; then sort -o{config} input; fi"),
+            format!("if true; then sort -o {config} input; fi"),
+            format!("if true; then sort --output={config} input; fi"),
+            format!("if true; then sort --output {config} input; fi"),
+            format!("if true; then cat in > {config}; fi"),
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                "{line}"
+            );
+        }
+        // An output that cannot be resolved fails closed, attached or not.
+        let project = &f.cx.workspace;
+        link(&project.join("b"), &project.join("a"));
+        link(&project.join("a"), &project.join("b"));
+        for line in [
+            "sort -oa/x input",
+            "sort -o a/x input",
+            "if true; then sort -oa/x i; fi",
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, line), Floor::Unresolved(_)),
+                "{line}"
+            );
+        }
+        // Reading and an ordinary output stay free.
+        assert_eq!(bash_floor(&f.cx, "sort -o out.txt input"), Floor::None);
+        assert_eq!(
+            bash_floor(&f.cx, "if true; then sort -u input; fi"),
+            Floor::None
+        );
+    }
+
+    #[test]
+    fn a_link_below_the_flows_directory_stays_a_flows_file() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        std::fs::write(root.join("elsewhere/custom.toml"), "").unwrap();
+        let inside = root.join("config/flows/custom.toml");
+        link(&root.join("elsewhere/custom.toml"), &inside);
+        // A dangling one too: the write would create the target.
+        let dangling = root.join("config/flows/new.toml");
+        link(&root.join("elsewhere/new.toml"), &dangling);
+        for path in [&inside, &dangling] {
+            let name = path.display().to_string();
+            assert!(protected_write(path, &f.cx), "{name}");
+            for tool in ["write", "edit"] {
+                assert!(
+                    matches!(
+                        check(&native_call(tool, &name), &[], &f.cx),
+                        Floor::Protected(_)
+                    ),
+                    "{tool} {name}"
+                );
+            }
+            assert_eq!(check(&native_call("read", &name), &[], &f.cx), Floor::None);
+            for line in [
+                format!("echo x > {name}"),
+                format!("cp a {name}"),
+                format!("sort -o {name} in"),
+                format!("if true; then sort -o{name} in; fi"),
+            ] {
+                assert!(
+                    matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                    "{line}"
+                );
+            }
+        }
+        // Reached through a link to the flows directory itself.
+        link(&root.join("config/flows"), &root.join("project/f"));
+        assert!(matches!(
+            check(&native_call("write", "f/custom.toml"), &[], &f.cx),
+            Floor::Protected(_)
+        ));
+        // The target alone, outside, is not protected.
+        assert!(!protected_write(&root.join("elsewhere/custom.toml"), &f.cx));
     }
 
     #[test]

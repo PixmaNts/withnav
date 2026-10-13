@@ -1184,6 +1184,8 @@ mod tests {
             format!("sort -o {config} in"),
             format!("sort --output={config} in"),
             format!("echo '{{}}' 1<> {config}"),
+            format!("sort -o{config} in"),
+            format!("if true; then sort -o{config} input; fi"),
         ] {
             for control in [Control::Normal, Control::Bypass] {
                 let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Failed);
@@ -1198,6 +1200,46 @@ mod tests {
         // A plain read of it stays free of the floor.
         let decision = f.decide(Control::Bypass, &bash(&format!("sort {config}")));
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
+    }
+
+    #[test]
+    fn attached_output_to_a_credential_asks_under_bypass() {
+        let f = fixture();
+        f.add("bash", "*", Effect::Allow);
+        for line in ["sort -o.env input", "if true; then sort -o.env input; fi"] {
+            for control in [Control::Normal, Control::Bypass] {
+                let decision = f.decide(control, &bash(line));
+                assert!(
+                    matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
+                    "{line}"
+                );
+                assert!(decision
+                    .trace
+                    .floor
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("credential"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_link_below_the_flows_directory_needs_the_protected_check() {
+        let f = fixture();
+        let root = f.root();
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        let inside = root.join("config/flows/custom.toml");
+        std::os::unix::fs::symlink(root.join("elsewhere/custom.toml"), &inside).unwrap();
+        f.add("write", "*", Effect::Allow);
+        let write = file("write", &inside.display().to_string());
+        for control in [Control::Normal, Control::Bypass] {
+            let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Failed);
+            let decision = f.decide_full(control, &write, 1, &flows);
+            assert!(
+                matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty())
+            );
+            assert_eq!(flows.check_calls.get(), 1);
+        }
     }
 
     #[test]

@@ -715,7 +715,8 @@ fn preflight(actor: &AgentActor, call: &ToolCall) -> Result<(), String> {
             }
         }
     }
-    if let Some(role) = actor.role.as_deref() {
+    // Role-based authorization, not argument validation: yolo does not check it.
+    if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo) {
         role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)?;
     }
     Ok(())
@@ -855,6 +856,10 @@ async fn run_flow_hook(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
     use super::flow_hook::{FlowVerdict, ToolCallContext};
+    // Yolo is no control at all: flows are not asked either.
+    if actor.yolo {
+        return run_gated(actor, call, observe).await;
+    }
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);
         return One::Settled;
@@ -964,6 +969,9 @@ async fn run_gated(
     call: &ToolCall,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
+    if actor.yolo {
+        return run_yolo(actor, call, observe).await;
+    }
     for _ in 0..REGATE_LIMIT {
         let (destination, mut note, request) = match gate(actor, call) {
             Gated::Rejected(message) => {
@@ -1142,6 +1150,83 @@ async fn run_gated(
     One::Settled
 }
 
+/// The evidence a yolo call carries: nothing was checked, and it says so.
+fn yolo_approval() -> serde_json::Value {
+    serde_json::json!({
+        "approved_by": "yolo",
+        "permission_gate": {
+            "policy_version": 2,
+            "source": "yolo",
+            "approved_by": "yolo",
+            "reason": "yolo: permission control is off",
+            "truncated": false
+        }
+    })
+}
+
+/// The Captain turned permission control off (`yolo`): the call is dispatched
+/// without the gate, the review, the role guard or the hard floor. What stays
+/// is what is not an approval: the session's tool availability and the call's
+/// own arguments (`preflight`: malformed or missing arguments), and
+/// cancellation.
+async fn run_yolo(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> One {
+    if let Err(message) = preflight(actor, call) {
+        reject_call(actor, call, message, observe);
+        return One::Settled;
+    }
+    for _ in 0..REGATE_LIMIT {
+        if actor.cancel.is_cancelled() {
+            return One::Interrupted;
+        }
+        // A file tool is bound to the canonical file it names, as after a
+        // Captain's approval, so it opens it without following a link.
+        let destination = match call.name.as_str() {
+            "read" | "write" | "edit" => call
+                .args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|path| {
+                    super::permissions::resolve_read_target(Path::new(path), &actor.tool_context)
+                        .ok()
+                })
+                .filter(|path| !path.is_dir()),
+            // Searches are bound too, so the host tells the tool the root is trusted.
+            "grep" | "glob" => {
+                let path = call
+                    .args
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(Path::new)
+                    .unwrap_or(&actor.tool_context.workspace);
+                super::permissions::resolve_read_target(path, &actor.tool_context).ok()
+            }
+            _ => None,
+        };
+        if let Some(outcome) = execute_and_settle(
+            actor,
+            call,
+            destination.as_deref(),
+            Some(yolo_approval()),
+            observe,
+        )
+        .await
+        {
+            return outcome;
+        }
+    }
+    reject_call(
+        actor,
+        call,
+        "the target changed while the call was being checked; nothing was changed".to_string(),
+        observe,
+    );
+    One::Settled
+}
+
 /// Runs a call the Captain reviewed for `destination`; if that file moved, the
 /// call is checked afresh instead.
 async fn run_reviewed(
@@ -1251,13 +1336,20 @@ fn reject_call(
     message: String,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
+    // In yolo the refusal carries the same evidence as a run: nothing was asked.
+    let approval = actor.yolo.then(yolo_approval);
     observe(AgentEvent::PreCall {
-        permission_gate: None,
+        permission_gate: approval
+            .as_ref()
+            .and_then(|note| note.get("permission_gate")),
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
     });
-    let result = ToolResult::error("tool_error", message);
+    let mut result = ToolResult::error("tool_error", message);
+    if let Some(note) = &approval {
+        merge_approval_metadata(&mut result.metadata, note);
+    }
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1293,7 +1385,7 @@ async fn execute_call(
     // The seam tests use to move a file between the check and the dispatch.
     #[cfg(test)]
     tests::before_dispatch();
-    if let Some(role) = actor.role.as_deref() {
+    if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo) {
         if let Err(message) =
             role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)
         {
@@ -1319,14 +1411,24 @@ async fn execute_call(
     });
     let args = call.args.clone();
     let mut cx = actor.tool_context.clone();
+    if actor.yolo {
+        // No root confinement either: yolo is the Captain's word for the whole machine.
+        cx.writable_roots = vec![PathBuf::from("/")];
+    }
     cx.binding = destination.map(|destination| crate::tools::DispatchBinding {
         destination: destination.to_path_buf(),
-        scratch: actor
-            .scratch_roots
-            .iter()
-            .find(|root| destination.starts_with(&root.path))
-            .cloned(),
+        // A scratch identity is a permission control (inode and mode): not in yolo.
+        scratch: if actor.yolo {
+            None
+        } else {
+            actor
+                .scratch_roots
+                .iter()
+                .find(|root| destination.starts_with(&root.path))
+                .cloned()
+        },
         script: None,
+        yolo: actor.yolo,
     });
     if let Some(binding) = guard_note.as_ref().and_then(|note| {
         note.get("script_binding").or_else(|| {
@@ -1338,6 +1440,7 @@ async fn execute_call(
             destination: PathBuf::from(binding["path"].as_str().unwrap_or("")),
             scratch: None,
             script: Some(binding.clone()),
+            yolo: actor.yolo,
         });
     }
     let dispatched = actor
@@ -5693,6 +5796,307 @@ mod tests {
             run_gated(&mut actor, &call, &mut |_| panic!("must ask")).await,
             One::Ask(..)
         ));
+    }
+
+    struct NeverJudge;
+    impl super::super::permission_gate::PermissionJudge for NeverJudge {
+        fn judge<'a>(
+            &'a self,
+            _: &'a super::super::permission_gate::PermissionReviewInput,
+            _: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            panic!("yolo must not consult Instinct")
+        }
+    }
+
+    #[tokio::test]
+    async fn yolo_runs_review_and_hard_floor_calls_without_asking_anyone() {
+        let instinct = FakeInstinct::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(instinct.clone()), "http://unused");
+        let config = actor.tool_context.workspace.join("config");
+        std::fs::create_dir(&config).unwrap();
+        actor.protected_config_root = Some(config.clone());
+        let protected = config.join("models.json");
+        let outside = tempfile::tempdir().unwrap();
+        let elsewhere = outside.path().join("x.txt");
+        let calls = [
+            ToolCall {
+                id: "bash".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":"echo yolo"}),
+                args_valid: true,
+            },
+            ToolCall {
+                id: "config".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":protected,"content":"changed"}),
+                args_valid: true,
+            },
+            ToolCall {
+                id: "outside".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":elsewhere,"content":"outside"}),
+                args_valid: true,
+            },
+        ];
+        // Off: the protected write asks the Captain and does not run.
+        assert!(matches!(
+            run_gated(&mut actor, &calls[1], &mut |_| panic!("must ask")).await,
+            One::Ask(request, _) if request.requires_captain
+        ));
+        assert!(!protected.exists(), "the protected file stays untouched");
+        actor.permission_judge = Some(Arc::new(NeverJudge));
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: None,
+            captured: Default::default(),
+            hangs: true,
+        }));
+        actor.yolo = true;
+        for call in &calls {
+            let mut approved = Vec::new();
+            let mut pre = Vec::new();
+            let outcome = run_gated(&mut actor, call, &mut |event| match event {
+                AgentEvent::PreCall {
+                    permission_gate, ..
+                } => {
+                    pre.push(permission_gate.cloned());
+                }
+                AgentEvent::PostCall { result, .. } => {
+                    approved.push(result.metadata["approved_by"].clone());
+                }
+                _ => {}
+            })
+            .await;
+            assert!(matches!(outcome, One::Settled), "{}", call.id);
+            assert_eq!(approved, [serde_json::json!("yolo")], "{}", call.id);
+            assert_eq!(pre.len(), 1);
+            assert_eq!(pre[0].as_ref().unwrap()["source"], "yolo");
+        }
+        assert_eq!(instinct.asked(), 0, "no Instinct request in yolo");
+        assert_eq!(std::fs::read_to_string(&protected).unwrap(), "changed");
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "outside");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn yolo_does_not_consult_tool_flows() {
+        for mode in ["deny", "ask", "timeout"] {
+            let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+            actor.yolo = true;
+            let path = actor.tool_context.workspace.join("file.txt");
+            std::fs::write(&path, "hello").unwrap();
+            let call = ToolCall {
+                id: "flow-call".into(),
+                name: "read".into(),
+                args: serde_json::json!({"path":path}),
+                args_valid: true,
+            };
+            let flows = Arc::new(FakeFlows {
+                mode,
+                calls: Default::default(),
+            });
+            actor.tool_flows = Some(flows.clone());
+            let mut approved = Vec::new();
+            let one = run_flow_hook(&mut actor, &call, &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    approved.push(result.metadata["approved_by"].clone());
+                }
+            })
+            .await;
+            assert!(matches!(one, One::Settled), "{mode}");
+            assert_eq!(approved, [serde_json::json!("yolo")], "{mode}");
+            assert_eq!(
+                flows.calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{mode}: flows must not be asked"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn yolo_keeps_tool_availability_argument_checks_and_cancellation() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.yolo = true;
+        let missing = ToolCall {
+            id: "m".into(),
+            name: "write".into(),
+            args: serde_json::json!({"content":"x"}),
+            args_valid: true,
+        };
+        let absent = ToolCall {
+            id: "a".into(),
+            name: "no_such_tool".into(),
+            args: serde_json::json!({}),
+            args_valid: true,
+        };
+        for call in [&missing, &absent] {
+            let mut pre = Vec::new();
+            let mut post = Vec::new();
+            let outcome = run_gated(&mut actor, call, &mut |event| match event {
+                AgentEvent::PreCall {
+                    permission_gate, ..
+                } => pre.push(permission_gate.cloned()),
+                AgentEvent::PostCall { result, .. } => {
+                    post.push((result.status, result.metadata.clone()))
+                }
+                _ => {}
+            })
+            .await;
+            assert!(matches!(outcome, One::Settled), "{}", call.id);
+            // Refused, and the refusal carries the same yolo evidence as a run.
+            assert_eq!(pre.len(), 1, "{}", call.id);
+            assert_eq!(pre[0].as_ref().unwrap()["source"], "yolo", "{}", call.id);
+            assert_eq!(post.len(), 1, "{}", call.id);
+            assert_eq!(post[0].0, ToolStatus::Error, "{}", call.id);
+            assert_eq!(post[0].1["approved_by"], "yolo", "{}", call.id);
+            assert_eq!(
+                post[0].1["permission_gate"]["source"], "yolo",
+                "{}",
+                call.id
+            );
+        }
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"echo x"}),
+            args_valid: true,
+        };
+        actor.cancel.cancel();
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!("cancelled")).await,
+            One::Interrupted
+        ));
+    }
+
+    /// Runs `call` in yolo and returns the `approved_by` of its post-call.
+    async fn yolo_run(actor: &mut AgentActor, call: &ToolCall) -> (ToolStatus, serde_json::Value) {
+        let mut post = None;
+        let outcome = run_gated(actor, call, &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                post = Some((result.status, result.metadata["approved_by"].clone()));
+            }
+        })
+        .await;
+        assert!(matches!(outcome, One::Settled), "{}", call.id);
+        post.expect("post call")
+    }
+
+    #[tokio::test]
+    async fn yolo_ignores_scratch_identity_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut actor = plan_actor(None, "http://unused");
+        actor.yolo = true;
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::EditTool));
+        let root = actor.tool_context.workspace.join("scratch");
+        actor
+            .scratch_roots
+            .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+        let write = |name: &str| ToolCall {
+            id: format!("w-{name}"),
+            name: "write".into(),
+            args: serde_json::json!({"path":root.join(name),"content":"one"}),
+            args_valid: true,
+        };
+        let edit = |name: &str| ToolCall {
+            id: format!("e-{name}"),
+            name: "edit".into(),
+            args: serde_json::json!({"path":root.join(name),"old_string":"one","new_string":"two"}),
+            args_valid: true,
+        };
+        // Widened mode: the identity would refuse it.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!actor.scratch_roots[0].valid());
+        for call in [write("a"), edit("a")] {
+            assert_eq!(
+                yolo_run(&mut actor, &call).await,
+                (ToolStatus::Ok, serde_json::json!("yolo")),
+                "{}",
+                call.id
+            );
+        }
+        assert_eq!(std::fs::read_to_string(root.join("a")).unwrap(), "two");
+        // Replaced root: another inode at the same path.
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        for call in [write("b"), edit("b")] {
+            assert_eq!(
+                yolo_run(&mut actor, &call).await,
+                (ToolStatus::Ok, serde_json::json!("yolo")),
+                "{}",
+                call.id
+            );
+        }
+        assert_eq!(std::fs::read_to_string(root.join("b")).unwrap(), "two");
+    }
+
+    #[tokio::test]
+    async fn yolo_searches_a_sensitive_root_but_filters_its_credentials() {
+        let mut actor = plan_actor(None, "http://unused");
+        let ssh = actor.tool_context.workspace.join(".ssh");
+        std::fs::create_dir(&ssh).unwrap();
+        std::fs::write(ssh.join("notes.txt"), "needle in notes\n").unwrap();
+        std::fs::write(ssh.join("id_ed25519"), "needle in key\n").unwrap();
+        let call = ToolCall {
+            id: "g".into(),
+            name: "grep".into(),
+            args: serde_json::json!({"pattern":"needle","path":ssh}),
+            args_valid: true,
+        };
+        let mut output = String::new();
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                output = result.output.clone();
+            }
+        };
+        let _ = run_gated(&mut actor, &call, &mut observe).await;
+        assert!(!output.contains("needle in notes"), "normal mode refuses");
+        actor.yolo = true;
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                output = result.output.clone();
+            }
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut observe).await,
+            One::Settled
+        ));
+        assert!(output.contains("needle in notes"), "{output}");
+        assert!(!output.contains("needle in key"));
+    }
+
+    #[tokio::test]
+    async fn yolo_does_not_enforce_the_cartographe_write_scope() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.role = Some(
+            crate::agent::definitions::Agents::builtin()
+                .get("cartographe")
+                .unwrap()
+                .clone(),
+        );
+        let target = actor.tool_context.workspace.join("src.rs");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        // Normal: the role's scope refuses it before anything runs.
+        let mut refused = false;
+        let _ = run_gated(&mut actor, &call, &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                refused = result.status != ToolStatus::Ok;
+            }
+        })
+        .await;
+        assert!(refused && !target.exists());
+        actor.yolo = true;
+        assert_eq!(
+            yolo_run(&mut actor, &call).await,
+            (ToolStatus::Ok, serde_json::json!("yolo"))
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
     }
 
     #[tokio::test]

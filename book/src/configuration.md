@@ -59,6 +59,7 @@ versions and clients can share the file. The Settings screens write the same fil
 | `permissions.automatic_review` | `true` | `false` asks you for every `bash`, `write` and `edit` call. See [Permissions](permissions.md). |
 | `permissions.review_timeout_secs` | `40` | Deadline of one Metacognition permission review, in seconds. An integer from 5 to 300. It applies to new sessions and is inherited by their children. |
 | `permissions.scratch_dirs` | private runtime directory, then a shared temp one | Absolute paths where the agent may write temporary files without asking. `[]` turns it off. See [Permissions](permissions.md#scratch-folders). |
+| `yolo` | `false` | **Unsafe.** `true` turns off all permission control for new sessions and their subagents: nothing is asked or reviewed. See [Permissions](permissions.md#yolo). |
 | `subagents.max_concurrent` | `4` | How many subagents one session may run at once. An integer from 1 to 64. |
 | `subagents.watchdog_interval_secs` | `300` | How often Instinct checks that a background subagent makes progress. `0` turns it off. |
 | `agent.watchdog_interval_secs` | `300` | How often Instinct checks that the main conversation makes progress. `0` turns it off. See [Long turns](permissions.md#long-turns-and-the-watchdog). |

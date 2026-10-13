@@ -110,6 +110,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const childRow = route.subagent ? sessions.data?.find((s) => s.id === route.subagent) : undefined;
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
   const bypass = route.subagent ? childRow?.bypass === true : chat.bypass;
+  const yolo = route.subagent ? childRow?.yolo === true : chat.summary?.yolo === true;
   const bypassReason = route.subagent ? "Subagent bypass is controlled by its parent" : chat.bypassReason;
   // Narrow screens: the workspace list and the session details become drawers.
   const side = useDrawer(MOBILE);
@@ -344,6 +345,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <WifiSlash size={13} aria-hidden /> {connection}
           </span>
         )}
+        {yolo && <span className="bypass-badge" title="YOLO: no permission control at all; set yolo to false in config.json to turn it off">⚠ YOLO</span>}
         {bypass && <span className="bypass-badge" title="Bypass ordinary permission prompts; protected requests still ask">⚠ bypass</span>}
         <div className="topbar-right">
           <span className="muted agent-label" style={{ fontSize: 12 }}>

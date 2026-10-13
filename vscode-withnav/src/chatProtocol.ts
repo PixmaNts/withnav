@@ -41,7 +41,7 @@ export interface AskAnswer { question_call_id: string; selected: number[]; custo
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
-  | { type: "bypass"; enabled: boolean; pending: boolean; disabled: boolean }
+  | { type: "bypass"; enabled: boolean; pending: boolean; disabled: boolean; yolo?: boolean }
   | { type: "viewMode"; readOnly: boolean; archiveReason?: string }
   | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string; variant_source?: string; models?: ModelInfo[]; locked?: boolean }
   | { type: "compaction"; operationId: string; pending: boolean; text: string; ok?: boolean }

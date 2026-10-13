@@ -186,6 +186,15 @@ impl Settings {
             .as_bool()
             .ok_or_else(|| "permissions.automatic_review must be a boolean".into())
     }
+    /// Top-level `yolo`: disables all permission control for new sessions.
+    pub fn yolo(&self) -> Result<bool, String> {
+        match self.root.get("yolo") {
+            None => Ok(false),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| "yolo must be a boolean".into()),
+        }
+    }
     /// Progress-check interval; zero disables child supervision.
     pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
         let Some(value) = self
@@ -593,6 +602,22 @@ mod tests {
                 serde_json::json!({"watchdog_interval_secs":bad}),
             );
             assert!(settings.agent_watchdog_interval_secs().is_err());
+        }
+    }
+
+    #[test]
+    fn yolo_defaults_to_false_and_must_be_a_boolean() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.yolo(), Ok(false));
+        settings.root.insert("yolo".into(), serde_json::json!(true));
+        assert_eq!(settings.yolo(), Ok(true));
+        settings
+            .root
+            .insert("yolo".into(), serde_json::json!(false));
+        assert_eq!(settings.yolo(), Ok(false));
+        for bad in [serde_json::json!("true"), serde_json::json!(1), Value::Null] {
+            settings.root.insert("yolo".into(), bad);
+            assert_eq!(settings.yolo(), Err("yolo must be a boolean".into()));
         }
     }
 

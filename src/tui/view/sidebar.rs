@@ -196,8 +196,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                 ),
                 Span::styled(" · ", theme.muted()),
                 Span::styled(
-                    if tab.bypass { "⚠ bypass" } else { status },
-                    if tab.bypass {
+                    if tab.session.as_ref().is_some_and(|m| m.yolo) {
+                        "⚠ YOLO"
+                    } else if tab.bypass {
+                        "⚠ bypass"
+                    } else {
+                        status
+                    },
+                    if tab.bypass || tab.session.as_ref().is_some_and(|m| m.yolo) {
                         theme.warning().add_modifier(ratatui::style::Modifier::BOLD)
                     } else {
                         status_style

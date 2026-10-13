@@ -1260,7 +1260,7 @@ async fn runtime_loop(
                     && answer.origin == crate::agent::permissions::PermissionOrigin::Captain
                 {
                     if let Some(error) =
-                        crate::agent::run_loop::save_pending_always(&mut actor, request.id)
+                        crate::agent::run_loop::save_pending_always(&mut actor, request.id).await
                     {
                         resolution = PermissionResolution::AllowAlways {
                             always_saved: false,

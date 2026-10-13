@@ -2607,13 +2607,27 @@ impl Service {
         actor.yolo = execution.yolo;
         // An unavailable database is an explicit degraded mode: no rules can
         // be read or saved, but the floor and permission flows still apply.
-        match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
-            Ok(store) => {
-                if resumed.is_some() {
-                    if let Err(error) = store.expire_pending(&session_id.to_string()) {
+        // Opened on the blocking pool: the database may wait on another
+        // connection's write for its busy timeout.
+        let opened = {
+            let data_dir = self.config.data_dir.clone();
+            let expire = resumed.is_some().then(|| session_id.to_string());
+            tokio::task::spawn_blocking(move || {
+                let store = crate::permission::store::PermissionStore::open(&data_dir)?;
+                if let Some(session) = expire {
+                    if let Err(error) = store.expire_pending(&session) {
                         tracing::warn!(%error, "pending permission decisions not expired");
                     }
                 }
+                Ok(store)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(crate::permission::store::Error::Invalid(error.to_string()))
+            })
+        };
+        match opened {
+            Ok(store) => {
                 actor.permission_store = Some(Arc::new(store));
             }
             Err(error) => {
@@ -3163,10 +3177,16 @@ impl Service {
             variant: selected,
             offer: Arc::new(offered),
         }));
-        let flows = child_parent
-            .is_none()
-            .then(|| self.flows.runtime(&workspace))
-            .flatten();
+        // A new workspace entry loads its flows and reads their validations
+        // from the permission database: built on the blocking pool.
+        let runtime = {
+            let (host, workspace) = (self.flows.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || host.runtime(&workspace))
+                .await
+                .ok()
+                .flatten()
+        };
+        let flows = child_parent.is_none().then(|| runtime.clone()).flatten();
         actor.tool_flows = match &flows {
             Some(runtime) => Some(super::flows::hook(
                 runtime,
@@ -3177,11 +3197,14 @@ impl Service {
             )),
             // A subagent's calls are judged by the same permission flows as
             // its parent's; flow effects stay with the root session.
-            None => self.flows.runtime(&workspace).map(|runtime| {
-                runtime.tool_hook_with_effects(
-                    session_id.to_string(),
-                    selected_model.clone(),
-                    Arc::new(crate::flows::runtime::NoEffects),
+            None => runtime.map(|runtime| {
+                super::flows::refreshing(
+                    &runtime,
+                    runtime.tool_hook_with_effects(
+                        session_id.to_string(),
+                        selected_model.clone(),
+                        Arc::new(crate::flows::runtime::NoEffects),
+                    ),
                 )
             }),
         };

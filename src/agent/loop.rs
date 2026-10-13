@@ -425,7 +425,7 @@ pub async fn resolve_permission(
 /// [`resolve_permission_with_origin`] uses it instead of saving again.
 /// Returns the error when the rules were not saved; `None` when they were, or
 /// when the answer saves no rule (a skill validation, a stopped turn).
-pub fn save_pending_always(actor: &mut AgentActor, request_id: ulid::Ulid) -> Option<String> {
+pub async fn save_pending_always(actor: &mut AgentActor, request_id: ulid::Ulid) -> Option<String> {
     if actor.cancel.is_cancelled() {
         return None;
     }
@@ -438,7 +438,8 @@ pub fn save_pending_always(actor: &mut AgentActor, request_id: ulid::Ulid) -> Op
     {
         return None;
     }
-    let saved = authorize::save_always(actor, &request.always);
+    let always = request.always.clone();
+    let saved = authorize::save_always(actor, &always).await;
     let error = saved.as_ref().err().cloned();
     if let Some(PendingInteraction::Permission { request, .. }) = &mut actor.pending {
         request.always_saved = Some(saved);
@@ -501,7 +502,7 @@ pub async fn resolve_permission_with_origin(
 
     if actor.cancel.is_cancelled() {
         if let Some(id) = request.decision_id {
-            authorize::update(actor, id, Outcome::Cancelled, answer.as_ref(), None);
+            authorize::update(actor, id, Outcome::Cancelled, answer.as_ref(), None).await;
         }
         append_interrupted(actor, &call.id);
         for rest in &remaining_calls {
@@ -521,7 +522,7 @@ pub async fn resolve_permission_with_origin(
             if decision == PermissionDecision::AllowAlways {
                 let saved = match request.always_saved.take() {
                     Some(saved) => saved,
-                    None => authorize::save_always(actor, &request.always),
+                    None => authorize::save_always(actor, &request.always).await,
                 };
                 match saved {
                     Ok(rules) => {
@@ -536,7 +537,8 @@ pub async fn resolve_permission_with_origin(
                 }
             }
             if let Some(id) = request.decision_id {
-                authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"));
+                authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"))
+                    .await;
             }
             let note = authorize::answered_approval(&request, "captain");
             if call.name == "skill" {
@@ -555,7 +557,7 @@ pub async fn resolve_permission_with_origin(
         }
         PermissionDecision::Reject { message } => {
             if let Some(id) = request.decision_id {
-                authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None);
+                authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None).await;
             }
             settle_rejected(actor, &call, &remaining_calls, message);
             return Ok(run_steps(actor, observe, steps_left).await?);
@@ -812,7 +814,8 @@ async fn skill_admission(
                     Outcome::Allowed,
                     Some(&serde_json::json!({"answer":"skill validation"})),
                     Some("captain"),
-                );
+                )
+                .await;
             }
             Admission::Run(authorize::answered_approval(&request, "captain"))
         }
@@ -1121,7 +1124,7 @@ async fn run_decided(
         // A skill refused before its admission (snapshot gone, validation
         // revoked) never settles the question bypass answered: end it here.
         if let (Some(id), Some(store)) = (previous, &actor.permission_store) {
-            if let Err(error) = store.cancel_if_pending(id) {
+            if let Err(error) = store.run(move |store| store.cancel_if_pending(id)).await {
                 tracing::warn!(%error, "permission decision outcome not recorded");
             }
         }
@@ -1132,7 +1135,7 @@ async fn run_decided(
         return One::Settled;
     }
     if actor.yolo {
-        authorize::record_yolo(actor, call);
+        authorize::record_yolo(actor, call).await;
         return run_yolo(actor, call, observe).await;
     }
     // WithNav's own conversation controls act on this session and its

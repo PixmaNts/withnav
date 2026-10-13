@@ -496,9 +496,10 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     }
     let words: Vec<&str> = words().collect();
     if words.contains(&"nav")
-        && words
-            .windows(2)
-            .any(|pair| pair[0] == "permissions" && matches!(pair[1], "add" | "revoke"))
+        && words.windows(2).any(|pair| {
+            pair[0] == "permissions"
+                && matches!(pair[1], "add" | "revoke" | "validate" | "revoke-validation")
+        })
     {
         return Floor::Protected("nav permissions".into());
     }

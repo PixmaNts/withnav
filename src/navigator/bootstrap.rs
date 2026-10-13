@@ -322,7 +322,16 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
                 Some(preflight.models_path().to_path_buf()),
             ))
         });
-    let flow_factory = flow_host.runtime(&root).map(|runtime| {
+    // Loading the workspace's flows reads their validations from the
+    // permission database: on the blocking pool.
+    let flow_runtime = {
+        let (host, root) = (flow_host.clone(), root.clone());
+        tokio::task::spawn_blocking(move || host.runtime(&root))
+            .await
+            .ok()
+            .flatten()
+    };
+    let flow_factory = flow_runtime.map(|runtime| {
         Arc::new(move |effects| runtime.with_effects_adapter(effects))
             as Arc<crate::navigator::FlowFactory>
     });

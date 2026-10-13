@@ -132,6 +132,7 @@ function Outcome({ perm, site }: { perm: Permission; site: boolean }) {
     case "allow_folder":
       return <div className="outcome"><span className="ok">✓</span> Allowed for this {site ? "site" : "folder"}.</div>;
     case "allow_always":
+      if (perm.alwaysSaved === false) return <div className="outcome"><span className="bad">✕</span> Always not saved: {perm.message ?? "unknown error"}; ran once</div>;
       return <div className="outcome"><span className="ok">✓</span> Allowed always.</div>;
     case "reject":
     case "deny":

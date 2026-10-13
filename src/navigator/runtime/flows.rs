@@ -131,7 +131,15 @@ impl Runtime {
             delivered: AtomicBool::new(false),
         });
         let flows = factory(effects.clone());
-        if !owns_trigger(&flows.store, event) {
+        // A reload reads flow validations from the permission database:
+        // on the blocking pool, never on the editor's runtime thread.
+        let owned = {
+            let store = flows.store.clone();
+            tokio::task::spawn_blocking(move || owns_trigger(&store, event))
+                .await
+                .unwrap_or(false)
+        };
+        if !owned {
             return false;
         }
         let Some(mut ctx) = self.gather(uri, event, tokio::time::Instant::now()).await else {

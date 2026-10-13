@@ -101,7 +101,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "tools::bash::process_job::tests::memory_limit_probe",
+                "tools::process_job::tests::memory_limit_probe",
                 "--nocapture",
             ])
             .env("WITHNAV_TEST_JOB_MEMORY", "1")

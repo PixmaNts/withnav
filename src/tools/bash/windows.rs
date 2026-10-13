@@ -94,10 +94,9 @@ pub(super) fn bash_command() -> Result<Command, ToolError> {
     })?;
     let mut command = Command::new(shell);
     command.args(["--noprofile", "--norc", "-c"]);
-    // MSYS decodes argv differently from MSVCRT; transport user text via UTF-16 env instead.
-    command.arg(
-        "__withnav_cmd=$WITHNAV_BASH_COMMAND; unset WITHNAV_BASH_COMMAND; eval \"$__withnav_cmd\"",
-    );
+    // No embedded quotes/backslashes: MSYS and MSYS=noglob decode this identically.
+    // BASH_EXECUTION_STRING shows this wrapper, not the transported user command.
+    command.arg("set -f;IFS=;eval $WITHNAV_BASH_COMMAND");
     for key in [
         "BASH_ENV",
         "ENV",
@@ -116,6 +115,15 @@ pub(super) fn bash_command() -> Result<Command, ToolError> {
         }
     }
     Ok(command)
+}
+
+pub(super) fn set_command(launcher: &mut Command, command: &str) {
+    // Expansion is one word (empty IFS, no globbing); eval restores shell defaults
+    // and removes the transport variable before executing the Captain's command.
+    launcher.env(
+        "WITHNAV_BASH_COMMAND",
+        format!("unset WITHNAV_BASH_COMMAND IFS;set +f;\n{command}"),
+    );
 }
 
 #[cfg(test)]
@@ -213,7 +221,7 @@ mod tests {
         };
         for (command, output, exit) in [
             (r#"printf '%s' 'a\\b'"#, r"a\\b", 0),
-            (r#"printf '%s' 'a"b'\"'\"'c'"#, "a\"b'c", 0),
+            (r#"printf '%s' 'a"b'"'"'c'"#, "a\"b'c", 0),
             (r#"printf '%s' 'tail\'"#, r"tail\", 0),
             (
                 "printf '%s' first\nprintf '%s' second\nexit 3",

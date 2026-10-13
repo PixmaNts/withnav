@@ -668,7 +668,7 @@ async fn convert_in_child(
     #[cfg(not(windows))]
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
     #[cfg(windows)]
-    let (mut child, _job) = super::bash::process_job::Job::spawn(
+    let (mut child, _job) = super::process_job::Job::spawn(
         &mut cmd,
         Some((CONVERT_MAX_ADDRESS_SPACE, CONVERT_MAX_CPU_SECS)),
     )

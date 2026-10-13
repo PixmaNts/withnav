@@ -18,6 +18,8 @@ pub mod glob;
 mod grep;
 pub mod native;
 pub mod nofollow;
+#[cfg(windows)]
+pub(crate) mod process_job;
 pub mod steer_subagent;
 pub mod task;
 

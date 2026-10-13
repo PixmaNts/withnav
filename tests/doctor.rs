@@ -606,10 +606,7 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
             }
             assert!(stdout.contains("NAVAI_FOO"));
             assert!(stdout.contains("WITHNAV_FOO"));
-            for path in [
-                &legacy.canonicalize().unwrap(),
-                &navigator.canonicalize().unwrap(),
-            ] {
+            for path in [&legacy, &navigator] {
                 if json {
                     let escaped =
                         serde_json::to_string(&format!("legacy.path.{}", path.display())).unwrap();
@@ -641,10 +638,7 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                     .unwrap();
                 assert_eq!(env_check["status"], "warning");
                 assert_eq!(env_check["value"], "NAVAI_FOO");
-                for path in [
-                    &legacy.canonicalize().unwrap(),
-                    &navigator.canonicalize().unwrap(),
-                ] {
+                for path in [&legacy, &navigator] {
                     let id = format!("legacy.path.{}", path.display());
                     let result = report["checks"]
                         .as_array()

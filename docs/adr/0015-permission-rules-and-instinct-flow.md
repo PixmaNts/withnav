@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: Accepted — not implemented. Supersedes [ADR 0010](0010-per-call-permission-review.md).
+Status: Accepted — implemented. Supersedes [ADR 0010](0010-per-call-permission-review.md).
 Amends [ADR 0008](0008-primary-agents-and-resumable-tool-authorization.md) (the role guard) and
 [ADR 0013](0013-instinct-flow-engine-crate.md) (what a flow may decide). Tracked in issue #11.
 
@@ -233,3 +233,36 @@ flow, Captain, bypass, yolo), and tool availability per agent.
 - A validated workspace flow or skill can open permissions. That is the price of trusting what the
   Captain validated, and it is documented.
 - Bash remains unconfined and nothing claims otherwise.
+
+## Implementation notes
+
+Decisions taken while implementing this ADR that refine it:
+
+- **Protected writes.** A write to `config.json`, `withnav.db` or the global flows directory runs
+  only when the protected check compiled into the binary answers that the Captain's own messages
+  ask for it. A flow on disk, even a copy of the built-in one, can make that answer stricter but
+  never grant it. The check is asked once per call and its answer is passed to the flows.
+- **Permission database.** A session whose permission database cannot be opened does not start: a
+  missing table would silently drop every `deny` rule. Yolo sessions start anyway, since they read
+  no rule.
+- **Skills.** Validation proves which content the Captain trusted; it does not override rules.
+  Loading a validated skill is decided with action `skill` and the skill's name: a `deny` rule
+  refuses it, an `ask` rule asks, and with no matching rule it loads, recorded as
+  `approved_by: validation`. A skill the Captain selects counts as the Captain's request.
+- **Subagents.** A child's permission flow sees its parent's Captain messages, captured when the
+  child is created and refreshed when the parent steers it. The delegated prompt and the steering
+  text are the parent agent's words, never the Captain's.
+- **Answers to `ask`.** The Captain's answer to an `ask` counts as the Captain's words, labelled
+  with the assistant's question, after editor selections and skill blocks attached to it are
+  removed.
+- **Opaque shell commands.** A command the splitter cannot parse matches only a `deny` rule whose
+  resource is exactly `*`. It never matches an `allow` or `ask` rule, and "Always" is never offered
+  for it.
+- **Not decided.** `task`, `steer_subagent`, `decide_subagent` and `intent` act only on the session,
+  its children and the intent record; they are not decided. Each child's own calls are.
+- **Validation scope.** Validation gates what runs on real events. Studio sample runs, replays and
+  the standalone `instinct-flow` command evaluate a definition without applying actions, and are
+  not gated by validation.
+- **Bash.** The floor's checks on bash are best effort: literal path words, redirection targets and
+  output options. Variables and globs are not expanded.
+

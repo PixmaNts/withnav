@@ -37,14 +37,16 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio configuration (`config.rs`), shared `McpManager`, bounded discovery/process-group supervision (`connection.rs`), provider-safe schemas and cancellable bounded calls (`tool.rs`) | permission policy, session persistence, HTTP transport, live refresh |
+| `mcp/` | global stdio MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and process-group supervision (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`) | permission policy (an MCP tool is decided like any other), session persistence, HTTP transport, live refresh |
+| `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
+| `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
-| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
+| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens the bound write/edit destination without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
-| `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
+| `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
 | `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the Captain perceives as the navigator, below | session internals |
@@ -266,7 +268,8 @@ name as resource: a `deny` rule refuses it on both entry points, no rule loads i
 whose permission database cannot be opened does not start, unless it runs in yolo. Stored decisions
 are redacted (the flows' secret detection) before any field is bounded.
 
-A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`) and the
+A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, or
+`validation` for a validated skill no rule covers) and the
 `permission_gate` evidence (`policy_version: 3`, rule id, flow verdict, floor) on `tool.pre_call` and
 `tool.post_call`; a `deny` rule or a flow `deny` settles it as `permission_denied` with `denied_by`.
 Every decision is a row of `permission_decisions` in `withnav.db` (`pending`, then `allowed`,
@@ -287,10 +290,11 @@ every proposal in one transaction, then runs it, and is refused when nothing can
 settles the held call and every call behind it with the Captain's message. After an allow, each
 sibling goes through the whole decision again, floor included, so a saved rule releases it. Legacy
 answers still parse: "allow folder" and "allow configuration for the session" count as Once, `deny`
-as Reject. A file the Captain was shown is bound at dispatch; one that moved in between is decided
-again. A stop or a chat message cancels the request; a resume expires every request that has no
-`permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`. The per-call review it replaced (the review gate, the role guard, folder
-and session grants, Captain precedents) is gone (ADR 0015).
+as Reject. An allowed file tool is bound to the canonical pathname the decision was made for and opens it
+without following links; when that pathname is no longer a plain file there (a link put in its
+place), nothing is written and the call goes through the decision again. The binding is the
+pathname, not the inode: a regular file swapped in at the same path is written. A stop or a chat message cancels the request; a resume expires every request that has no
+`permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`.
 
 **Bypass.** `BypassState {enabled, seq}` is the actor's ephemeral setting, shared with `RuntimeStatus`;
 only `Control::Bypass` changes it, after the `session.bypass` event is durable (`commit_acked`), in the
@@ -463,7 +467,7 @@ child CAS and bounded partial text before releasing capacity, without taking lif
 `tools/decide_subagent.rs` is installed beside root `task` only;
 `decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
 The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
-as before; no supervision state is restored. The event catalog has 22 kinds.
+as before; no supervision state is restored. The event catalog has 24 kinds.
 
 | Path | What | Written by |
 | --- | --- | --- |
@@ -475,6 +479,9 @@ as before; no supervision state is restored. The event catalog has 22 kinds.
 | `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
+| `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
+| `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
+| `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
 
 Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
 (`paths/migrate.rs`) moves what the former names left behind to the WithNav dirs: `~/.local/share/navigator/*`
@@ -483,6 +490,9 @@ and `~/.local/share/rust-agent/*` (`navigator.db` or `navigator/sessions.db`, wi
 `models.json`, `navigator/pipeline.toml`) to `~/.config/withnav/`. A file is never overwritten, a second
 start does nothing, and a database moves only when no other process holds it: otherwise it stays where
 it is and that run keeps using it.
+
+The permission redesign (ADR 0015) replaced `grants.json`, `skill-grants.json` and `flows-trust.json`
+with the tables above. Their content is not imported, and nothing reads or writes those files any more.
 
 That existing path relocation is not automatic 0.5 configuration conversion. Catalogue and
 assignment migration is manual. History without provable saved model identity remains readable
@@ -500,8 +510,8 @@ over Markdown `model:` headers. See [the examples](models.example.json) and
 Reflex = one FIM model (editor only), instinct = one System One model, metacognition = one chat
 model (prefers `low`, otherwise model default). Cognition runs agents, not a singleton model.
 Missing/unknown/API-incompatible lower layers are disabled with reasons and existing conservative
-fallbacks: no suggestions, Captain permission review, renewable 500-step supervision cap when
-instinct is unavailable. Invalid nondefault agent models warn and fall back to the default agent.
+fallbacks: no suggestions, the permission flow applying the rules (no rule asks the Captain),
+renewable 500-step supervision cap when instinct is unavailable. Invalid nondefault agent models warn and fall back to the default agent.
 An unknown/nonprimary default agent or one without a usable chat model prevents server/LSP startup.
 
 Root selection resolves the `(session, agent)` override, then the agent assignment, then the
@@ -653,6 +663,14 @@ the later 0.6 scope, not this contract.
   required, 130 interrupted.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Tunable editor behaviour goes in `src/flows/builtin/` or custom flow TOML/templates, not in a second evaluator.
+- Permission policy goes in `src/permission/`: a new fixed check in `floor.rs`, a new step of the
+  order in `decide.rs` (a pure function: it reads rules and asks `PermissionFlows`, it runs nothing
+  and writes nothing), a new table or query in `store.rs`, `rules.rs`, `decisions.rs` or
+  `validation.rs`. The agent loop reaches it only through `agent/authorize.rs`. A judgement a
+  Captain may want to tune goes in the permission flow (`src/flows/builtin/permission-default.toml`),
+  not in Rust. Never add a per-tool bypass: an unknown tool, MCP included, is decided like any other.
+- A new MCP capability goes in `src/mcp/`; its tools reach the agent as ordinary registry tools named
+  `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `tui`.

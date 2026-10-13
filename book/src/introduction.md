@@ -17,7 +17,7 @@ Each layer has one job and its own model. You choose the models; see [Layers](la
 |---|---|---|
 | **Reflex** | Completes what you type, fast. | Ghost text in the editor (suggestions). |
 | **Instinct** | Makes small, typed decisions: when to speak, whether a tool call is safe. It never writes free text. | Mostly invisible. It decides when Nav speaks and which tool calls need your approval. |
-| **Metacognition** | Compares your code with your intent and reviews risky tool calls. | Short remarks at the end of a line. You rate each one: useful, noise or dismissed. |
+| **Metacognition** | Compares your code with your intent, and decides doubts about a long turn. | Short remarks at the end of a line. You rate each one: useful, noise or dismissed. |
 | **Cognition** | The conversation. It discusses concepts and problems, and does delegated work with the full set of tools. | The Nav chat in VS Code, the terminal or the browser. |
 
 Without a delegation, Nav assists and you write the code. When you ask Nav to do a piece of

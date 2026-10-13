@@ -4,24 +4,79 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+Permissions are redesigned: written rules decide tool calls, a flow judges the rest, and you answer
+Once, Always or Reject. See [ADR 0015](https://github.com/PixmaNts/withnav/blob/develop/docs/adr/0015-permission-rules-and-instinct-flow.md) and the
+Permissions chapter of the guide.
+
 ### Added
 
-- **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`;
-  ready tools appear as `mcp__server__tool` in new sessions, with permission review,
-  cancellation, deadlines and bounded results. Servers are shared, restarted after crashes
-  and cleaned up on shutdown. `nav doctor` reports configuration and startup diagnostics.
-
-- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and
-  new sessions run every tool call without asking you: no approval prompt, no Instinct or
-  Metacognition review, no plan-role check, and no protected-config or credential floor. Each call
-  records `approved_by: yolo`, and `YOLO` stays visible in the terminal, the browser and VS Code,
-  and `nav doctor` warns. It is off by default and unsafe: use it only on a machine you can afford
-  to lose. Bypass is unchanged.
+- **Permission rules.** A rule says what happens to a tool call (tool, resource pattern with `*`,
+  `allow` / `ask` / `deny`) in one project, every project or for one agent. The most precise rule
+  wins, a `deny` always stops the call, and there are no default rules: with no rule, a call asks.
+  Rules live in `withnav.db` and are revoked, never deleted.
+- **`nav permissions`**: `list`, `add`, `revoke` and `history` for rules and decisions; `validate`,
+  `validations` and `revoke-validation` for flows and skills.
+- **Decision history.** Every permission decision is recorded with the call (secrets redacted, size
+  limited), the matching rule, the flow's verdict, your answer and the outcome (`allowed`, `denied`,
+  `pending`, `cancelled`, `expired`).
+- **Once / Always / Reject.** Always saves the rule shown on its button, for example
+  `bash` / `git push *` for this project, and releases the waiting calls of the turn it covers.
+  Reject carries an optional message the model reads; every waiting call of the turn is rejected
+  with it. Always is not offered for credentials, WithNav's own configuration or a shell line
+  WithNav cannot split.
+- **Shell commands are checked one by one.** A `bash` line is split into its commands; each is
+  matched by its prefix (`git push`, `cargo test`, `npm run build`), and the strictest answer wins.
+- **The permission flow.** The built-in `permission-default` flow asks Instinct whether you, or a
+  skill you validated, asked for the call, or whether it is a read or a recoverable change in the
+  project; under an `allow` rule it asks whether this exact call is destructive. It runs in the
+  Studio like any flow and can be tuned there. If Instinct is unavailable, your rules apply.
+- **Validation of flows and skills.** A global or workspace flow, and a skill, run only once you
+  have validated their current content; a changed file asks again. A validated flow, a workspace
+  flow included, can allow tool calls: read it before validating it.
+- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and new
+  sessions run every tool call without any check: no prompt, no rule, no flow, no protection of
+  credentials or WithNav's configuration. Each call records `approved_by: yolo`, and `YOLO` stays
+  visible in the terminal, the browser and VS Code; `nav doctor` warns. It is off by default and
+  unsafe: use it only on a machine you can afford to lose.
+- **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`; ready tools
+  appear as `mcp__<server>__<tool>` in new sessions and go through your permission rules like any
+  other tool (with no rule, they ask; Always saves a global rule). Calls are cancellable, have
+  deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
+  shutdown. `nav doctor` reports configuration and startup diagnostics.
 
 ### Changed
 
+- **Every tool call goes through one decision**, in a fixed order: yolo, the fixed checks
+  (credentials always ask; a write to WithNav's own configuration or database needs your explicit
+  request), reads inside the project, your rules, bypass, the permission flow, then you. MCP tools
+  and tools of agents without a role are decided too.
+- **Bypass** now answers only questions raised by a rule `ask` or the permission flow; a `deny`
+  rule still denies, and credentials, WithNav's configuration and skill validation still ask.
+- **An agent's limits are rules** with that agent's scope. WithNav seeds none: `plan` writes are
+  decided like any other call, and its prompt still tells it to write Markdown only.
+- A subagent's permission flow sees your messages in the parent conversation; text the parent
+  agent wrote, in the delegation or in steering, never counts as your request. Your answers to an
+  `ask` count as your words.
+- An allowed file write is bound to the path you were shown: if a link is put in its place before
+  it runs, nothing is written and the call is decided again.
+- A session refuses to start if the permission database cannot be opened (yolo sessions start).
 - The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with
   install, configuration, permissions and troubleshooting rewritten for clarity.
+
+### Removed
+
+- **The per-call review.** Instinct's call classification, the Metacognition permission review,
+  their deadlines, Captain precedents and the shell risk analysis are gone. Metacognition still
+  writes remarks and decides the watchdog's doubts.
+- **Settings `permissions.automatic_review` and `permissions.review_timeout_secs`.** Saving them
+  is now refused as an unknown key; a value already in `config.json` is ignored, and `nav doctor`
+  reports it as an unknown key.
+- **The plan role guard** and its `role_conformance` question.
+- **Grants.** "Allow for this folder / site", "Allow WithNav config for this session" and
+  "Allow this skill's scripts on this machine" are no longer offered. `grants.json`,
+  `skill-grants.json` and `flows-trust.json` are no longer read; their content is not imported.
+  Older clients' answers still work and count as Once (`deny` as Reject).
+- The `nav doctor` live checks `live.instinct.role_guard` and `live.instinct.permission`.
 
 ## [0.7.8] - 2026-10-12
 

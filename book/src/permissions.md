@@ -24,20 +24,90 @@ Every tool call goes through the same steps, in this order:
 7. **You**: Once, Always or Reject.
 
 There are no default rules: on a new project you answer more often at first, and each **Always**
-makes the list of questions shorter. Manage rules with `nav permissions list | add | revoke |
-history`.
+makes the list of questions shorter.
+
+A `bash` line is split into its commands (pipes, `&&`, `;`, subshells) and each is checked on its
+own; the strictest answer wins. A line WithNav cannot parse matches only a `deny` rule on `*`, and
+**Always** is never offered for it. MCP tools ([MCP servers](mcp-servers.md)) are decided like any
+other tool: with no rule, they ask.
+
+## Rules
+
+A rule says what happens to a tool call: an **action** (the tool name, such as `bash`, `write`,
+`fetch` or `mcp__github__create_issue`, or `external_directory` for files outside the project), a
+**resource** pattern where `*` matches anything, an **effect** (`allow`, `ask` or `deny`) and a
+**scope** (one project, every project, or one agent). The most precise rule wins; on a tie the
+narrower scope wins, then the stricter effect. A rule is revoked, never deleted.
+
+```sh
+nav permissions list [--all] [--project <dir> | --global | --agent <id>] [--json]
+nav permissions add <action> <resource> <allow|ask|deny> [--project <dir> | --global | --agent <id>]
+nav permissions revoke <id>
+nav permissions history [--limit <n>] [--json]
+```
+
+`add` defaults to the current project. Examples:
+
+```sh
+nav permissions add bash 'git status *' allow          # this project
+nav permissions add bash 'git push --force *' deny --global
+nav permissions add write '*.md' allow --agent plan     # plan may write Markdown
+nav permissions add write '*' ask --agent plan
+```
+
+`history` shows every decision: the call, the matching rule, the flow's verdict, your answer and
+the outcome (`allowed`, `denied`, `pending`, `cancelled`, `expired`). Arguments are stored with
+secrets redacted and size-limited.
+
+Rules and history live in `~/.local/share/withnav/withnav.db`. A session refuses to start if that
+database cannot be opened, so that no `deny` rule is silently skipped; a yolo session starts anyway.
 
 ## Answering a prompt
 
 | Answer | Meaning |
 |---|---|
 | **Once** | Run this call. |
-| **Always** | Save the rule shown on the button (for example `Always (project): bash git push *`), then run the call. Calls of the same turn that the new rule covers run too. Not offered for credentials, WithNav's own configuration, or a command WithNav cannot split. |
+| **Always** | Save the `allow` rule shown on the button, then run the call. Calls of the same turn that the new rule covers run too. Not offered for credentials, WithNav's own configuration, or a command WithNav cannot split. |
 | **Reject** | Do not run it. You can add a message that the model reads; every other waiting call of the turn is rejected with it. |
 | **Validate this skill** | Offered the first time a skill (or a changed version of it) is loaded. **Always** keeps the validation for this exact content. |
 
 In the terminal these are the keys `o`, `a` and `r`. In VS Code and the browser they are buttons on
 a card that shows the reason and the call.
+
+What **Always** saves:
+
+| Call | Rule saved | Scope |
+|---|---|---|
+| `bash git push origin feature` | `bash` / `git push *` (the command's prefix, which also matches a bare `git push`) | this project |
+| `write src/main.rs` | `write` / the exact file path | this project |
+| a file outside the project | the file rule, plus `external_directory` / its folder | this project |
+| `fetch https://docs.rs/serde` | `fetch` / `https://docs.rs/*` | this project |
+| an MCP tool or any other tool | the tool name / `*` | every project |
+
+Change or remove a saved rule with `nav permissions`. A subagent's requests are answered in its
+parent's conversation.
+
+## Validated skills and flows
+
+A skill or a flow runs only after you validate it once. The validation is bound to a hash of its
+content: a changed file asks again.
+
+- **Skills**: the first time a skill (or a new version of it) is loaded, Nav asks you. **Once**
+  loads it for this turn, **Always** keeps the validation, **Reject** does not load it. A validated
+  skill still obeys your rules: `nav permissions add skill <name> deny` refuses it.
+- **Flows**: a global or workspace flow does not run until you validate it, in the Studio
+  (**Validate this flow version**) or with `nav permissions validate flow <name>
+  [--location global|workspace]`. The built-in flows need no validation.
+
+```sh
+nav permissions validations [--json]
+nav permissions revoke-validation <id>
+```
+
+> **A validated flow can allow tool calls.** That includes a workspace flow, which comes with the
+> repository you opened. Read a flow before you validate it, as you would read a script before
+> running it. A validated skill can also ask for an action, and the permission flow may then allow
+> it without asking you; it can never lift a `deny` rule.
 
 ## Bypass
 
@@ -57,9 +127,10 @@ a card that shows the reason and the call.
 
 ## Yolo
 
-> **Unsafe.** Yolo turns permission control off. The agent can change or delete anything your
-> account can reach, read your credentials and run any command, with no prompt and no review.
-> Use it only in a disposable machine or container.
+> **Warning: yolo turns every permission check off.** The agent can change or delete anything your
+> account can reach, read your credentials and keys, push, publish and run any command, with no
+> prompt, no rule and no `deny`. A prompt injected into a web page, a file or a tool result can
+> make it do so. Use it only in a disposable machine or container you can throw away.
 
 Set `"yolo": true` in `config.json` (see [Configuration](configuration.md)). It is off by default,
 applies to new sessions, and their subagents inherit it.
@@ -73,7 +144,8 @@ still apply) and **yolo** (nothing is checked).
   credentials and scratch-folder checks. File tools may reach outside the workspace, and `grep` and
   `glob` may start in a credentials folder (the credential files in it are still left out of the
   results). No Instinct request is sent at all.
-- Each call records `approved_by: yolo` in its `tool.pre_call` and `tool.post_call` events.
+- Each call records `approved_by: yolo` in its `tool.pre_call` and `tool.post_call` events and
+  in the decision history.
 - Still enforced: which tools a session or agent has, malformed or missing arguments, and
   cancellation. A refused call still says `approved_by: yolo`.
 - `YOLO` shows in the terminal header and sidebar, as a badge in the browser and in VS Code, and

@@ -37,6 +37,40 @@ pub(super) fn wire_name(server: &str, original: &str) -> String {
     name
 }
 
+/// Keywords whose meaning depends on sibling keywords of the same schema object: merging a
+/// `$ref` target with its siblings would change what `additionalProperties: false` or
+/// `additionalItems` applies to, so the merged schema would not be the one the server
+/// checks.
+fn scope_conflict(target: &Value, siblings: &serde_json::Map<String, Value>) -> Result<(), String> {
+    const GROUPS: [(&[&str], &[&str]); 2] = [
+        (
+            &["additionalProperties", "unevaluatedProperties"],
+            &["properties", "patternProperties"],
+        ),
+        (
+            &["additionalItems", "unevaluatedItems", "items"],
+            &["items", "prefixItems"],
+        ),
+    ];
+    let Some(target) = target.as_object() else {
+        return Ok(());
+    };
+    for (closing, scoped) in GROUPS {
+        for (a, b) in [(target, siblings), (siblings, target)] {
+            for close in closing {
+                for scope in scoped {
+                    if close != scope && a.contains_key(*close) && b.contains_key(*scope) {
+                        return Err(format!(
+                            "$ref merge would change the scope of `{close}` (with `{scope}` on the other side)"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     fn visit(
         value: &Value,
@@ -58,6 +92,7 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                     let target = root
                         .pointer(&reference[1..])
                         .ok_or("unresolved local schema reference")?;
+                    scope_conflict(target, object)?;
                     refs.push(reference.into());
                     let mut resolved = visit(target, root, refs, depth + 1)?;
                     refs.pop();
@@ -465,6 +500,49 @@ mod tests {
             merged["properties"]["x"],
             json!({"type":"string","minLength":1,"description":"x"})
         );
+    }
+
+    #[test]
+    fn reference_merges_that_change_keyword_scope_skip_the_tool() {
+        let reference = |target: Value, sibling: Value| {
+            let mut x = sibling;
+            x["$ref"] = json!("#/$defs/t");
+            normalize(json!({"$defs": {"t": target}, "properties": {"x": x}}))
+        };
+        let closed = json!({"type":"object","additionalProperties":false});
+        let error = reference(
+            closed.clone(),
+            json!({"properties":{"b":{"type":"string"}}}),
+        )
+        .unwrap_err();
+        assert!(error.contains("additionalProperties"), "{error}");
+        for (target, sibling) in [
+            (
+                json!({"properties":{"a":{}}}),
+                json!({"additionalProperties":false}),
+            ),
+            (
+                json!({"unevaluatedProperties":false}),
+                json!({"patternProperties":{"^a":{}}}),
+            ),
+            (
+                json!({"patternProperties":{"^a":{}}}),
+                json!({"unevaluatedProperties":false}),
+            ),
+            (json!({"prefixItems":[{}]}), json!({"items":false})),
+            (json!({"items":[{}]}), json!({"additionalItems":false})),
+            (
+                json!({"additionalItems":false}),
+                json!({"prefixItems":[{}]}),
+            ),
+        ] {
+            assert!(
+                reference(target.clone(), sibling.clone()).is_err(),
+                "{target} {sibling}"
+            );
+        }
+        assert!(reference(closed, json!({"description":"d"})).is_ok());
+        assert!(reference(json!({"items":{"type":"string"}}), json!({"maxItems":2})).is_ok());
     }
 
     #[test]

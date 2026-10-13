@@ -1,7 +1,7 @@
 //! Per-workspace evaluation; asynchronous effects never change an admitted event.
 use super::{catalogue::catalogue, store::FlowStore};
 pub use crate::agent::flow_hook::{
-    PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, RuleResult,
+    PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, ProtectedCheck, RuleResult,
 };
 use instinct_flow::*;
 use serde_json::{json, Value};
@@ -50,6 +50,20 @@ fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
     }
 }
 
+/// Whether this action is the compiled-in check's answer that the Captain asked
+/// for the protected change: its allow node, reached through a "yes" answer.
+fn grants_protected(outcome: &RunOutcome, action: &ProposedAction) -> bool {
+    matches!(outcome.result, RunResult::Success { .. })
+        && action.node_id.as_deref() == Some("protected_allow")
+        && action.action == "allow"
+        && action.params.get("protected_ok") == Some(&json!(true))
+        && outcome
+            .trace
+            .nodes
+            .iter()
+            .any(|n| n.id == "protected_requested" && n.port.as_deref() == Some("yes"))
+}
+
 fn resolve_permissions(
     outcomes: &[RunOutcome],
     rule: RuleResult,
@@ -96,16 +110,8 @@ fn resolve_permissions(
             ));
         }
         for action in verdicts {
-            protected_ok |= protected_runs.contains(&outcome.trace.run_id)
-                && matches!(outcome.result, RunResult::Success { .. })
-                && action.node_id.as_deref() == Some("protected_allow")
-                && action.action == "allow"
-                && action.params.get("protected_ok") == Some(&json!(true))
-                && outcome
-                    .trace
-                    .nodes
-                    .iter()
-                    .any(|n| n.id == "protected_requested" && n.port.as_deref() == Some("yes"));
+            protected_ok |=
+                protected_runs.contains(&outcome.trace.run_id) && grants_protected(outcome, action);
             let used_rule = action.action == "apply_rule";
             let resolved = if used_rule {
                 rule_action
@@ -165,13 +171,20 @@ fn resolve_permissions(
 
 /// Never load protected authority from disk: use the binary's question and rendering.
 fn compiled_protected_check() -> Option<CompiledDefinition> {
+    compile_protected_check(false)
+}
+
+/// `force` compiles the check although the built-in flow is disabled, so tests
+/// can exercise the enabled path; production callers never force.
+fn compile_protected_check(force: bool) -> Option<CompiledDefinition> {
     let (mut definition, templates) = super::builtin::all_definitions()
         .into_iter()
         .find(|(d, _)| d.flow.name == "permission-default")
         .expect("embedded permission definition");
-    if !definition.flow.enabled {
+    if !definition.flow.enabled && !force {
         return None;
     }
+    definition.flow.enabled = true;
     definition.flow.start = vec!["protected_requested".into()];
     definition.node.retain(|n| {
         matches!(
@@ -501,6 +514,272 @@ mod tests {
                     .verdict,
                 FlowVerdict::AskCaptain { .. }
             ));
+        }
+    }
+
+    /// Answers 1.0 to every question unless the state shows it is not about a
+    /// real Captain request; counts the decision requests.
+    struct CountingClient {
+        answer: f64,
+        requests: std::sync::atomic::AtomicUsize,
+    }
+    impl DecisionClient for CountingClient {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/counting".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            self.requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                instinct_flow::protocol::Answer::Noul { noul: self.answer },
+                            )
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    fn counting(answer: f64) -> Arc<CountingClient> {
+        Arc::new(CountingClient {
+            answer,
+            requests: Default::default(),
+        })
+    }
+
+    fn runtime_with(client: Arc<CountingClient>) -> (tempfile::TempDir, FlowRuntime) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        (dir, FlowRuntime::new(store, client, Arc::new(NoEffects)))
+    }
+
+    #[tokio::test]
+    async fn protected_check_runs_only_the_compiled_node() {
+        let cancel = CancellationToken::new;
+        // The shipped built-in flow is disabled: Unavailable, no decision request.
+        let client = counting(1.0);
+        let (dir, runtime) = runtime_with(client.clone());
+        let call = permission_call(dir.path().into(), true);
+        assert_eq!(
+            runtime.permission_protected_check(call, cancel()).await,
+            ProtectedCheck::Unavailable
+        );
+        assert_eq!(client.requests.load(Ordering::SeqCst), 0);
+        // Enabled: the compiled node answers from the Captain's messages.
+        for (answer, expected) in [(1.0, ProtectedCheck::Passed), (0.0, ProtectedCheck::Failed)] {
+            let client = counting(answer);
+            let (dir, runtime) = runtime_with(client.clone());
+            let call = permission_call(dir.path().into(), true);
+            let result = runtime
+                .protected_check_with(compile_protected_check(true), call, cancel())
+                .await;
+            assert_eq!(result, expected);
+            assert_eq!(client.requests.load(Ordering::SeqCst), 1);
+        }
+        // Missing or cut Captain evidence establishes nothing and asks nothing.
+        let client = counting(1.0);
+        let (dir, runtime) = runtime_with(client.clone());
+        let mut call = permission_call(dir.path().into(), true);
+        call.captain_messages_cut = true;
+        assert_eq!(
+            runtime
+                .protected_check_with(compile_protected_check(true), call, cancel())
+                .await,
+            ProtectedCheck::Unavailable
+        );
+        assert_eq!(client.requests.load(Ordering::SeqCst), 0);
+        // A failing provider is Unavailable, never Passed.
+        let (dir, runtime) = {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+            (
+                dir,
+                FlowRuntime::new(store, Arc::new(Fake), Arc::new(NoEffects)),
+            )
+        };
+        let call = permission_call(dir.path().into(), true);
+        assert_eq!(
+            runtime
+                .protected_check_with(compile_protected_check(true), call, cancel())
+                .await,
+            ProtectedCheck::Unavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flow_named_like_the_builtin_cannot_pass_the_protected_check() {
+        // An enabled clone on disk says yes to everything; the check ignores it.
+        let client = counting(1.0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let (mut definition, templates) = super::super::builtin::all_definitions()
+            .into_iter()
+            .find(|(d, _)| d.flow.name == "permission-default")
+            .unwrap();
+        definition.flow.enabled = true;
+        store
+            .save(
+                "permission-default",
+                Location::Global,
+                None,
+                super::super::store::Content::Graph {
+                    definition: Box::new(definition),
+                    templates,
+                },
+            )
+            .unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let call = permission_call(dir.path().into(), true);
+        assert_eq!(
+            runtime
+                .permission_protected_check(call, CancellationToken::new())
+                .await,
+            ProtectedCheck::Unavailable
+        );
+        assert_eq!(client.requests.load(Ordering::SeqCst), 0);
+    }
+
+    /// The adapter the agent loop will use: the decision path's two questions
+    /// answered by the flow runtime.
+    struct RuntimeFlows<'a> {
+        runtime: &'a FlowRuntime,
+        workspace: PathBuf,
+        compiled: bool,
+    }
+    impl crate::permission::decide::PermissionFlows for RuntimeFlows<'_> {
+        fn flow<'a>(
+            &'a self,
+            query: &'a crate::permission::decide::FlowQuery<'a>,
+        ) -> BoxFuture<'a, crate::permission::decide::FlowAnswer> {
+            use crate::permission::decide::{FlowAnswer, RuleResult as Rules};
+            Box::pin(async move {
+                let rule = match query.rule {
+                    Rules::Allow => RuleResult::Allow,
+                    Rules::Ask => RuleResult::Ask,
+                    Rules::NoRule => RuleResult::None,
+                };
+                let call = permission_call(self.workspace.clone(), false);
+                match self
+                    .runtime
+                    .permission_pre_call(call, rule, CancellationToken::new())
+                    .await
+                    .verdict
+                {
+                    FlowVerdict::Allow => FlowAnswer::Allow,
+                    FlowVerdict::Deny { .. } => FlowAnswer::Deny,
+                    FlowVerdict::AskCaptain { .. } => FlowAnswer::AskCaptain,
+                }
+            })
+        }
+        fn protected_check<'a>(
+            &'a self,
+            _: &'a crate::permission::decide::FlowQuery<'a>,
+        ) -> BoxFuture<'a, ProtectedCheck> {
+            Box::pin(async move {
+                let call = permission_call(self.workspace.clone(), true);
+                if self.compiled {
+                    self.runtime
+                        .protected_check_with(
+                            compile_protected_check(true),
+                            call,
+                            CancellationToken::new(),
+                        )
+                        .await
+                } else {
+                    self.runtime
+                        .permission_protected_check(call, CancellationToken::new())
+                        .await
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_decision_path_runs_a_protected_write_through_the_runtime() {
+        use crate::permission::{
+            decide::{decide, ApprovedBy, Control, Input, Verdict},
+            floor::FloorContext,
+            store::PermissionStore,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for sub in ["project", "config", "data"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        let cx = FloorContext {
+            workspace: root.join("project"),
+            config_dir: Some(root.join("config")),
+            data_dir: Some(root.join("data")),
+            ..Default::default()
+        };
+        let store = PermissionStore::open(root.join("data")).unwrap();
+        let target = root.join("config/config.json").display().to_string();
+        let call = crate::provider::ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: json!({"path": target}),
+            args_valid: true,
+        };
+        for (compiled, answer, control, runs) in [
+            // Enabled node and a yes: the write runs, under bypass without the flow.
+            (true, 1.0, Control::Normal, true),
+            (true, 1.0, Control::Bypass, true),
+            // A no, or a disabled built-in flow: the Captain is asked.
+            (true, 0.0, Control::Normal, false),
+            (true, 0.0, Control::Bypass, false),
+            (false, 1.0, Control::Bypass, false),
+            (false, 1.0, Control::Normal, false),
+        ] {
+            let client = counting(answer);
+            let (_keep, runtime) = runtime_with(client.clone());
+            let flows = RuntimeFlows {
+                runtime: &runtime,
+                workspace: root.join("project"),
+                compiled,
+            };
+            let input = Input {
+                control,
+                call: &call,
+                commands: &[],
+                cx: &cx,
+                store: &store,
+                agent: "build",
+                repeats: 1,
+            };
+            let decision = decide(&input, &flows).await;
+            match (&decision.verdict, runs, control) {
+                (Verdict::Run { approved_by }, true, Control::Bypass) => {
+                    assert_eq!(*approved_by, ApprovedBy::Bypass)
+                }
+                // With no flow on disk the aggregate applies the rule: no rule asks.
+                (Verdict::AskCaptain { always, .. }, true, Control::Normal) => {
+                    assert!(always.is_empty())
+                }
+                (Verdict::AskCaptain { always, .. }, false, _) => assert!(always.is_empty()),
+                other => panic!("{compiled} {answer} {control:?}: {other:?}"),
+            }
         }
     }
 
@@ -1558,14 +1837,12 @@ impl FlowRuntime {
         .await
     }
 
-    async fn permission_with_context(
-        &self,
+    /// The event and context both the permission flows and the protected check read.
+    fn permission_event(
         ctx: PermissionCallContext,
         rule_result: RuleResult,
-        cancel: CancellationToken,
         mut context: ContextSnapshot,
-        effects: Arc<dyn FlowEffects>,
-    ) -> PermissionVerdict {
+    ) -> (Event, ContextSnapshot, bool) {
         context.workspace = Some(ctx.call.workspace.clone());
         for (name, value) in [
             ("session.agent", json!(ctx.call.agent)),
@@ -1594,16 +1871,32 @@ impl FlowRuntime {
                 payload[name] = value;
             }
         }
+        (
+            Event {
+                trigger: "tool.pre_call".into(),
+                payload,
+            },
+            context,
+            ctx.protected,
+        )
+    }
+
+    async fn permission_with_context(
+        &self,
+        ctx: PermissionCallContext,
+        rule_result: RuleResult,
+        cancel: CancellationToken,
+        context: ContextSnapshot,
+        effects: Arc<dyn FlowEffects>,
+    ) -> PermissionVerdict {
+        let (event, context, protected) = Self::permission_event(ctx, rule_result, context);
         let (verdict, _, flows) = self
             .evaluate_inner(
-                Event {
-                    trigger: "tool.pre_call".into(),
-                    payload,
-                },
+                event,
                 context,
                 cancel,
                 effects,
-                Some((rule_result, ctx.protected)),
+                Some((rule_result, protected)),
             )
             .await;
         PermissionVerdict {
@@ -1611,6 +1904,71 @@ impl FlowRuntime {
             flows,
         }
     }
+    /// Run only the compiled-in protected check, the one authority for a write
+    /// to WithNav's own configuration or database. Flows on disk, their names
+    /// and their summaries play no part. A disabled built-in flow is
+    /// `Unavailable` and no decision is requested.
+    pub async fn permission_protected_check(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+    ) -> ProtectedCheck {
+        self.protected_check_with(compiled_protected_check(), ctx, cancel)
+            .await
+    }
+
+    async fn protected_check_with(
+        &self,
+        compiled: Option<CompiledDefinition>,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+    ) -> ProtectedCheck {
+        let Some(compiled) = compiled else {
+            return ProtectedCheck::Unavailable;
+        };
+        let (event, context, _) =
+            Self::permission_event(ctx, RuleResult::None, ContextSnapshot::default());
+        // Captain evidence that was cut or is missing cannot establish a request.
+        if context
+            .values
+            .get("conversation.captain_messages")
+            .is_none_or(|v| v.cut || v.value.is_none())
+        {
+            return ProtectedCheck::Unavailable;
+        }
+        let outcome = run(
+            &compiled,
+            &event,
+            &context,
+            self.client.as_ref(),
+            RunOptions {
+                deadline: Instant::now() + Duration::from_millis(2000),
+                run_id: ulid::Ulid::generate().to_string(),
+            },
+            &cancel,
+        )
+        .await;
+        let result = match &outcome.result {
+            RunResult::Success { actions }
+                if actions.iter().any(|a| grants_protected(&outcome, a)) =>
+            {
+                ProtectedCheck::Passed
+            }
+            RunResult::Success { actions }
+                if actions
+                    .iter()
+                    .any(|a| a.node_id.as_deref() == Some("protected_ask")) =>
+            {
+                ProtectedCheck::Failed
+            }
+            _ => ProtectedCheck::Unavailable,
+        };
+        if let Some(records) = &self.records {
+            records.enqueue(outcome.trace.clone());
+        }
+        result
+    }
+
     pub async fn tool_pre_call(
         &self,
         ctx: ToolCallContextLike,

@@ -1,5 +1,6 @@
 //! Bounded discovery and process-group supervision for one stdio server.
 use super::{tool::McpTool, Ready, Server};
+#[cfg(unix)]
 use nix::{
     sys::signal::{killpg, Signal},
     unistd::Pid,
@@ -9,7 +10,9 @@ use std::{collections::HashSet, process::Stdio, sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
 struct Group(Pid);
+#[cfg(unix)]
 impl Drop for Group {
     fn drop(&mut self) {
         let _ = killpg(self.0, Signal::SIGKILL);
@@ -66,19 +69,26 @@ async fn run(
         .args(&server.config.command[1..])
         .env_clear()
         .envs(env)
-        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(unix)]
     let mut child = command
         .spawn()
         .map_err(|_| "cannot spawn MCP command (details omitted)".to_string())?;
+    #[cfg(windows)]
+    let (mut child, group) = crate::tools::bash::job::Job::spawn(&mut command, None)
+        .map_err(|_| "cannot set up MCP process job (details omitted)".to_string())?;
+    #[cfg(unix)]
     let pid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
         .filter(|id| *id > 0)
         .ok_or("MCP child has no process id")?;
+    #[cfg(unix)]
     let group = Group(Pid::from_raw(pid));
     let stdin = child.stdin.take().ok_or("MCP stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("MCP stdout unavailable")?;
@@ -137,16 +147,19 @@ async fn run(
     // Initialization futures own only stdio, not the child. Dropping them closes stdin;
     // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
     let _ = tokio::time::timeout(Duration::from_millis(100), child.wait()).await;
-    let _ = killpg(group.0, Signal::SIGTERM);
-    let deadline =
-        tokio::time::Instant::now() + Duration::from_millis(crate::tools::bash_grace_ms());
-    // The launcher may already be gone while descendants still run SIGTERM cleanup.
-    // Reap the launcher but use group existence, not its exit, to end the grace period.
-    while !matches!(killpg(group.0, None), Err(nix::errno::Errno::ESRCH))
-        && tokio::time::Instant::now() < deadline
+    #[cfg(unix)]
     {
-        let _ = child.try_wait();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = killpg(group.0, Signal::SIGTERM);
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(crate::tools::bash_grace_ms());
+        // The launcher may already be gone while descendants still run SIGTERM cleanup.
+        // Reap the launcher but use group existence, not its exit, to end the grace period.
+        while !matches!(killpg(group.0, None), Err(nix::errno::Errno::ESRCH))
+            && tokio::time::Instant::now() < deadline
+        {
+            let _ = child.try_wait();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
     drop(group);
     let _ = child.wait().await;

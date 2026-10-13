@@ -182,6 +182,7 @@ async fn cancellation_kills_the_converter() {
 #[test]
 fn nav_converts_under_the_child_memory_limit() {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let exe = env!("CARGO_BIN_EXE_nav");
@@ -192,6 +193,7 @@ fn nav_converts_under_the_child_memory_limit() {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     // SAFETY: setrlimit is async-signal-safe and allocates nothing.
+    #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
             let limit = 512 * 1024 * 1024;

@@ -259,6 +259,7 @@ async fn filters_disabled_servers_and_stderr_redaction() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("descendant-cleanup");

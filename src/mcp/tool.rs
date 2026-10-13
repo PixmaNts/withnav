@@ -79,7 +79,7 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                 }
                 let mut output = serde_json::Map::new();
                 for (key, value) in object {
-                    if matches!(key.as_str(), "$schema" | "format") {
+                    if key == "$schema" {
                         continue;
                     }
                     if matches!(
@@ -156,12 +156,44 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                             value.clone()
                         }
                         // These are instance data, never schemas; preserve even a literal $ref.
-                        "default" | "const" | "enum" | "examples" | "title" | "description"
-                        | "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum"
-                        | "multipleOf" | "minLength" | "maxLength" | "pattern" | "minItems"
-                        | "maxItems" | "uniqueItems" | "minProperties" | "maxProperties"
-                        | "deprecated" | "readOnly" | "writeOnly" => value.clone(),
-                        _ => return Err(format!("unsupported schema keyword: {key}")),
+                        "default" | "const" | "examples" => value.clone(),
+                        "enum" => {
+                            if !value.as_array().is_some_and(|entries| !entries.is_empty()) {
+                                return Err("enum must be a nonempty array".into());
+                            }
+                            value.clone()
+                        }
+                        "minLength" | "maxLength" | "minItems" | "maxItems" | "minProperties"
+                        | "maxProperties" => {
+                            if value.as_u64().is_none() {
+                                return Err(format!("{key} must be a non-negative integer"));
+                            }
+                            value.clone()
+                        }
+                        "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum"
+                        | "multipleOf" => {
+                            if !value.is_number() {
+                                return Err(format!("{key} must be a number"));
+                            }
+                            value.clone()
+                        }
+                        "pattern" | "format" | "description" | "title" => {
+                            if !value.is_string() {
+                                return Err(format!("{key} must be a string"));
+                            }
+                            // Format values are dialect-specific; validate but omit for providers.
+                            if key == "format" {
+                                continue;
+                            }
+                            value.clone()
+                        }
+                        "uniqueItems" => {
+                            if !value.is_boolean() {
+                                return Err("uniqueItems must be a boolean".into());
+                            }
+                            value.clone()
+                        }
+                        _ => continue,
                     };
                     output.insert(key.clone(), normalized);
                 }
@@ -437,9 +469,55 @@ mod tests {
             json!({"properties":{"x":42}}),
             json!({"required":[42]}),
             json!({"type":"string"}),
-            json!({"unknownKeyword":{}}),
         ] {
             assert!(normalize(schema).is_err());
         }
+        assert_eq!(
+            normalize(json!({"unknownKeyword":{}})).unwrap(),
+            json!({"type":"object"})
+        );
+    }
+
+    #[test]
+    fn schema_constraints_are_type_checked_before_provider_projection() {
+        for key in [
+            "minLength",
+            "maxLength",
+            "minItems",
+            "maxItems",
+            "minProperties",
+            "maxProperties",
+        ] {
+            for value in [json!("bad"), json!(-1), json!(1.5), json!(true)] {
+                assert!(
+                    normalize(json!({"properties":{"x":{key:value}}})).is_err(),
+                    "{key}"
+                );
+            }
+        }
+        for key in [
+            "minimum",
+            "maximum",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+            "multipleOf",
+        ] {
+            assert!(normalize(json!({"properties":{"x":{key:"bad"}}})).is_err());
+            assert!(normalize(json!({"properties":{"x":{key:1.5}}})).is_ok());
+        }
+        for key in ["pattern", "format", "description", "title"] {
+            assert!(normalize(json!({"properties":{"x":{key:42}}})).is_err());
+        }
+        for schema in [
+            json!({"enum":42}),
+            json!({"enum":[]}),
+            json!({"uniqueItems":42}),
+            json!({"additionalProperties":42}),
+            json!({"type":["string","bad"]}),
+        ] {
+            assert!(normalize(schema).is_err());
+        }
+        let valid = normalize(json!({"properties":{"x":{"type":["string","null"],"minLength":0,"maxLength":10,"enum":[null,"x"],"pattern":"x","title":"x","description":"x","default":42,"const":42,"examples":42}},"additionalProperties":false,"uniqueItems":true})).unwrap();
+        assert_eq!(valid["properties"]["x"]["examples"], 42);
     }
 }

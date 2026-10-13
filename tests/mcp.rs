@@ -257,3 +257,45 @@ async fn filters_disabled_servers_and_stderr_redaction() {
     assert!(!noisy.stderr_tail.contains("mcp-secret-sentinel"));
     manager.shutdown().await;
 }
+
+#[tokio::test]
+async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("descendant-cleanup");
+    let started = dir.path().join("descendant-ready");
+    let launcher_pid = dir.path().join("launcher-pid");
+    let descendant = format!("import signal,time,sys;\ndef cleanup(*_):\n time.sleep(0.15)\n open({:?},'w').write('cleanup')\n sys.exit(0)\nsignal.signal(signal.SIGTERM,cleanup)\nopen({:?},'w').write('ready')\ntime.sleep(60)",marker.to_string_lossy(),started.to_string_lossy());
+    // The launcher exits after its child installs the handler, leaving the group alive.
+    let launcher = format!("import subprocess,time,os; open({:?},'w').write(str(os.getpid())); subprocess.Popen(['python3','-c',{:?}]);\nwhile not os.path.exists({:?}): time.sleep(0.01)",launcher_pid.to_string_lossy(), descendant,started.to_string_lossy());
+    let mut settings = Settings::default();
+    settings.set_dotted(
+        "mcp",
+        json!({"launcher":{"command":["python3","-c",launcher],"startup_timeout_ms":300}}),
+    );
+    let manager = McpManager::start(&settings);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !started.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let pid = std::fs::read_to_string(launcher_pid).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+            if stat.as_ref().is_err()
+                || stat
+                    .as_ref()
+                    .is_ok_and(|s| s.split_whitespace().nth(2) == Some("Z"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("launcher must exit before shutdown");
+    manager.shutdown().await;
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "cleanup");
+}

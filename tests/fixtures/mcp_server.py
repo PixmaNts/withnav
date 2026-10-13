@@ -63,6 +63,8 @@ for line in sys.stdin:
             names.append("secret")
         if os.environ.get("TOOL_NAMES"):
             names = json.loads(os.environ["TOOL_NAMES"])
+        if os.environ.get("MALFORMED_SCHEMA"):
+            names.append("malformed")
         if message.get("params", {}).get("cursor"):
             names = names[4:]
             cursor = None
@@ -73,6 +75,8 @@ for line in sys.stdin:
         for tool in tools:
             if tool["name"] == "reference":
                 tool["inputSchema"] = {"$defs": {"text": {"type": "string"}}, "properties": {"text": {"$ref": "#/$defs/text"}}}
+            if tool["name"] == "malformed":
+                tool["inputSchema"] = {"type":"object", "properties":{"text":{"type":"string","minLength":"bad"}}}
         send(identifier, {"tools": tools, "nextCursor": cursor})
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()

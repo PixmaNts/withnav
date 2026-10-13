@@ -17,7 +17,7 @@ async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() 
         tools::Registry,
     };
     let mut settings = Settings::default();
-    settings.set_dotted("mcp", json!({"fake":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")]}}));
+    settings.set_dotted("mcp", json!({"fake":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"MALFORMED_SCHEMA":"1"}}}));
     let manager = McpManager::start(&settings);
     tokio::time::timeout(Duration::from_secs(5), async {
         while manager.snapshot().is_empty() {
@@ -59,6 +59,13 @@ async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() 
     let captured: Value = serde_json::from_str(&server.bodies()[0]).unwrap();
     let tools = captured["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 8);
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "mcp__fake__malformed"));
+    assert!(manager.statuses()[0]
+        .skipped_tools
+        .iter()
+        .any(|reason| reason.contains("malformed") && reason.contains("minLength")));
     for tool in tools {
         let function = &tool["function"];
         let name = function["name"].as_str().unwrap();

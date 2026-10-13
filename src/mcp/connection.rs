@@ -132,21 +132,21 @@ async fn run(
         disconnected.cancel();
         let grace = Duration::from_millis(crate::tools::bash_grace_ms());
         let _ = tokio::time::timeout(grace, &mut waiting).await;
-        let _ = killpg(group.0, Signal::SIGTERM);
         Ok(())
     }.await;
     // Initialization futures own only stdio, not the child. Dropping them closes stdin;
     // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
-    if tokio::time::timeout(Duration::from_millis(100), child.wait())
-        .await
-        .is_err()
+    let _ = tokio::time::timeout(Duration::from_millis(100), child.wait()).await;
+    let _ = killpg(group.0, Signal::SIGTERM);
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(crate::tools::bash_grace_ms());
+    // The launcher may already be gone while descendants still run SIGTERM cleanup.
+    // Reap the launcher but use group existence, not its exit, to end the grace period.
+    while !matches!(killpg(group.0, None), Err(nix::errno::Errno::ESRCH))
+        && tokio::time::Instant::now() < deadline
     {
-        let _ = killpg(group.0, Signal::SIGTERM);
-        let _ = tokio::time::timeout(
-            Duration::from_millis(crate::tools::bash_grace_ms()),
-            child.wait(),
-        )
-        .await;
+        let _ = child.try_wait();
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     drop(group);
     let _ = child.wait().await;

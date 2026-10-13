@@ -88,8 +88,12 @@ fn rg_command_with_hidden(pattern: &str, root: &Path, hidden: bool) -> tokio::pr
 }
 
 fn rg_available() -> bool {
+    #[cfg(windows)]
+    let executable = "rg.exe";
+    #[cfg(unix)]
+    let executable = "rg";
     std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rg").is_file()))
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(executable).is_file()))
 }
 
 pub(super) async fn search(

@@ -421,9 +421,7 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     #[cfg(unix)]
     let settings = home.join(".config/Code/User/settings.json");
     #[cfg(windows)]
-    let settings = args
-        .workspace
-        .canonicalize()
+    let settings = withnav::tools::canonical_path(&args.workspace)
         .unwrap()
         .join(".vscode/settings.json");
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
@@ -532,7 +530,9 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     std::fs::create_dir_all(&home).unwrap();
     let (config, args) = fixture(&home.join(".config"), &base);
     let legacy = home.join(".config").join("navai");
-    let navigator = args.workspace.canonicalize().unwrap().join(".navigator");
+    let navigator = withnav::tools::canonical_path(&args.workspace)
+        .unwrap()
+        .join(".navigator");
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::create_dir_all(&navigator).unwrap();
     let bin = home.join("bin");

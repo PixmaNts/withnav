@@ -23,7 +23,7 @@ struct Env {
 /// A temp home and a Git workspace holding its own `AGENTS.md`.
 fn env() -> Env {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical");
     let home = root.join("home");
     let ws = root.join("ws");
     std::fs::create_dir_all(home.join(".agents")).unwrap();

@@ -219,7 +219,8 @@ impl Loader {
                 self.push(
                     fallback,
                     SourceStatus::Shadowed {
-                        by: primary.to_path_buf(),
+                        by: crate::tools::canonical_path(primary)
+                            .unwrap_or_else(|_| primary.to_path_buf()),
                     },
                     0,
                 );
@@ -230,6 +231,10 @@ impl Loader {
     }
 
     fn push(&mut self, path: &Path, status: SourceStatus, loaded_bytes: usize) {
+        #[cfg(windows)]
+        let canonical = crate::tools::canonical_path(path).unwrap_or_else(|_| path.to_path_buf());
+        #[cfg(windows)]
+        let path = canonical.as_path();
         self.sources.push(RuleSource {
             path: path.to_path_buf(),
             status,
@@ -242,7 +247,7 @@ impl Loader {
             Ok(canonical) => canonical,
             Err(e) => return self.push(path, SourceStatus::ReadError(e.to_string()), 0),
         };
-        if !self.seen.insert(canonical.clone()) {
+        if !self.seen.insert(crate::tools::path_key(&canonical)) {
             return self.push(path, SourceStatus::Duplicate { of: canonical }, 0);
         }
         let left = MAX_TOTAL_BYTES - self.used;
@@ -270,6 +275,8 @@ impl Loader {
             None => SourceStatus::Loaded,
         };
         if status != SourceStatus::Empty {
+            #[cfg(windows)]
+            let path = canonical.as_path();
             self.sections.push((path.to_path_buf(), text));
         }
         self.push(path, status, read.kept);

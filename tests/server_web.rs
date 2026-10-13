@@ -188,7 +188,7 @@ async fn an_ordinary_server_serves_no_files() {
 #[tokio::test]
 async fn workspaces_list_launched_first_then_history_and_skip_missing() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical root");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical root");
     let launched_b = root.join("beta");
     let launched_a = root.join("alpha");
     let history = root.join("history-only");
@@ -257,7 +257,7 @@ async fn plain_launched_workspace_and_verbatim_history_are_one_entry() {
 #[tokio::test]
 async fn workspaces_without_launch_list_history_only() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical root");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical root");
     let ws = root.join("proj");
     std::fs::create_dir_all(&ws).expect("workspace dir");
     let state = TestServerConfig::unreachable(&root)

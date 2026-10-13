@@ -17,7 +17,7 @@ fn fixture_with_prefix(prefix: &str) -> Fixture {
         .prefix(prefix)
         .tempdir()
         .expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
+    let base = crate::tools::canonical_path(tmp.path()).expect("canonical");
     let home = base.join("home");
     let root = base.join("repo");
     fs::create_dir_all(home.join(".agents")).unwrap();
@@ -187,7 +187,7 @@ fn a_git_file_marks_the_worktree_root() {
 #[test]
 fn without_git_only_the_workspace_is_read() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).unwrap();
+    let base = crate::tools::canonical_path(tmp.path()).unwrap();
     write(&base.join("AGENTS.md"), "parent");
     write(&base.join("ws/AGENTS.md"), "workspace");
     let rules = Instructions::load(&RulesRoots::default(), &base.join("ws"));

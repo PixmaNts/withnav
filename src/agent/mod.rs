@@ -1,4 +1,5 @@
 pub mod actor;
+pub(crate) mod authorize;
 pub mod boundary;
 pub mod compaction;
 pub mod context;
@@ -14,7 +15,6 @@ pub mod response;
 pub mod run_loop;
 pub mod scratch;
 pub mod selection;
-pub mod skill_grants;
 pub mod skills;
 
 #[cfg(test)]

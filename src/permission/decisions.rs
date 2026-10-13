@@ -41,10 +41,8 @@ mod tests {
             ),
         ] {
             let (sql, values) = history_query(&filter, 100).unwrap();
-            let mut statement = store
-                .connection
-                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-                .unwrap();
+            let db = store.db();
+            let mut statement = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
             let plan = statement
                 .query_map(rusqlite::params_from_iter(values), |row| {
                     row.get::<_, String>(3)
@@ -373,19 +371,103 @@ fn history_query(
     Ok((sql, values))
 }
 
+/// Every variable text of a stored decision, after redaction.
+const SNAPSHOT_BYTES: usize = 4096;
+const MATCH_LABEL_BYTES: usize = 256;
+const MATCHES_KEPT: usize = 32;
+const ANSWER_BYTES: usize = 2048;
+const SHORT_TEXT_BYTES: usize = 256;
+
+/// Cut `text` at a character boundary; returns whether it was cut.
+fn cut(text: &mut String, limit: usize) -> bool {
+    if text.len() <= limit {
+        return false;
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    true
+}
+
+/// Secrets are redacted before anything is cut, so a cut never leaves part
+/// of a token behind.
+fn redact_text(text: &str) -> String {
+    let mut value = Value::String(text.to_owned());
+    if !crate::flows::redaction::contains_secret(&value) {
+        return text.to_owned();
+    }
+    let words: Vec<String> = text
+        .split_inclusive(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ':' | '='))
+        .map(|word| {
+            let (body, tail) = word.split_at(
+                word.trim_end_matches(|c: char| {
+                    c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ':' | '=')
+                })
+                .len(),
+            );
+            value = Value::String(body.to_owned());
+            if crate::flows::redaction::contains_secret(&value) {
+                format!("<redacted>{tail}")
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect();
+    words.concat()
+}
+
+fn bound_value(value: &mut Value, limit: usize) {
+    match value {
+        Value::String(text) => {
+            *text = redact_text(text);
+            cut(text, limit);
+        }
+        Value::Array(values) => values.iter_mut().for_each(|v| bound_value(v, limit)),
+        Value::Object(values) => values.values_mut().for_each(|v| bound_value(v, limit)),
+        _ => {}
+    }
+}
+
+fn bound_matches(matches: &Value) -> Value {
+    let mut matches = matches.clone();
+    if let Value::Array(items) = &mut matches {
+        let total = items.len();
+        items.truncate(MATCHES_KEPT);
+        if total > MATCHES_KEPT {
+            items.push(serde_json::json!({"omitted": total - MATCHES_KEPT}));
+        }
+    }
+    bound_value(&mut matches, MATCH_LABEL_BYTES);
+    matches
+}
+
+fn bound_answer(answer: &Value) -> Value {
+    let mut answer = answer.clone();
+    bound_value(&mut answer, ANSWER_BYTES);
+    answer
+}
+
 impl PermissionStore {
     pub fn record(&self, decision: &Decision) -> Result<i64, Error> {
         let mut snapshot = decision.call_snapshot.clone();
-        if snapshot.arguments.len() > 4096 {
-            let mut end = 4096;
-            while !snapshot.arguments.is_char_boundary(end) {
-                end -= 1;
-            }
-            snapshot.arguments.truncate(end);
-            snapshot.truncated = true;
-        }
+        snapshot.arguments = redact_text(&snapshot.arguments);
+        snapshot.truncated |= cut(&mut snapshot.arguments, SNAPSHOT_BYTES);
+        let command_matches = bound_matches(&decision.command_matches);
+        let captain_answer = decision.captain_answer.as_ref().map(bound_answer);
+        let short = |text: &Option<String>| {
+            text.as_ref().map(|text| {
+                let mut text = redact_text(text);
+                cut(&mut text, SHORT_TEXT_BYTES);
+                text
+            })
+        };
+        let flow_verdict = short(&decision.flow_verdict);
+        let approved_by = short(&decision.approved_by);
         let workspace = decision.workspace.canonicalize()?;
-        self.connection.execute(
+        let db = self.db();
+        db.execute(
             "INSERT INTO permission_decisions
              (time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,
               command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by)
@@ -400,20 +482,19 @@ impl PermissionStore {
                 path_text(&workspace)?,
                 decision.tool,
                 serde_json::to_string(&snapshot)?,
-                serde_json::to_string(&decision.command_matches)?,
+                serde_json::to_string(&command_matches)?,
                 decision.rule_id,
                 decision.effect.map(Effect::as_str),
-                decision.flow_verdict,
-                decision
-                    .captain_answer
+                flow_verdict,
+                captain_answer
                     .as_ref()
                     .map(serde_json::to_string)
                     .transpose()?,
                 decision.outcome.as_str(),
-                decision.approved_by
+                approved_by
             ],
         )?;
-        Ok(self.connection.last_insert_rowid())
+        Ok(db.last_insert_rowid())
     }
 
     pub fn update_outcome(
@@ -423,17 +504,40 @@ impl PermissionStore {
         captain_answer: Option<&Value>,
         approved_by: Option<&str>,
     ) -> Result<bool, Error> {
-        Ok(self.connection.execute(
+        Ok(self.db().execute(
             "UPDATE permission_decisions SET outcome=?1,
              captain_answer=COALESCE(?2,captain_answer), approved_by=COALESCE(?3,approved_by)
              WHERE id=?4",
             params![
                 outcome.as_str(),
-                captain_answer.map(serde_json::to_string).transpose()?,
+                captain_answer
+                    .map(bound_answer)
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
                 approved_by,
                 id
             ],
         )? != 0)
+    }
+
+    /// Ends a decision that is still pending, and only then: one a later
+    /// decision already settled keeps its outcome.
+    pub fn cancel_if_pending(&self, id: i64) -> Result<bool, Error> {
+        Ok(self.db().execute(
+            "UPDATE permission_decisions SET outcome='cancelled' WHERE id=?1 AND outcome='pending'",
+            params![id],
+        )? != 0)
+    }
+
+    /// A session that restarts cannot answer the questions its previous
+    /// process asked: they end as `expired`. Returns how many rows changed.
+    pub fn expire_pending(&self, session_id: &str) -> Result<usize, Error> {
+        Ok(self.db().execute(
+            "UPDATE permission_decisions SET outcome='expired'
+             WHERE session_id=?1 AND outcome='pending'",
+            params![session_id],
+        )?)
     }
 
     pub fn list_decisions(
@@ -442,7 +546,8 @@ impl PermissionStore {
         limit: usize,
     ) -> Result<Vec<Decision>, Error> {
         let (sql, values) = history_query(filter, limit)?;
-        let mut statement = self.connection.prepare(&sql)?;
+        let db = self.db();
+        let mut statement = db.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(values), read_decision)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }

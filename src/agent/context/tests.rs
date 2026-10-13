@@ -68,6 +68,7 @@ fn a_tool_message_counts_its_id_and_output() {
     let m = ChatMessage::Tool {
         tool_call_id: "abcd".into(),
         content: "efgh".into(),
+        answered_by: None,
     };
     assert_eq!(message_tokens(&m), 2 + MESSAGE_FRAMING_TOKENS);
 }

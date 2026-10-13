@@ -84,6 +84,7 @@ fn pairs(transcript: &[ChatMessage]) -> Vec<Pair> {
             ChatMessage::Tool {
                 tool_call_id,
                 content,
+                ..
             } => {
                 let Some((call_index, call)) = calls.remove(tool_call_id.as_str()) else {
                     continue;

@@ -58,6 +58,9 @@ pub struct PermissionCallContext {
     pub skill: Option<ValidatedSkill>,
     pub captain_messages: Vec<String>,
     pub captain_messages_cut: bool,
+    /// The host already ran the compiled protected check for this call: its
+    /// answer is the only authority, and the flows do not ask it again.
+    pub protected_check: Option<ProtectedCheck>,
 }
 
 /// The answer of the compiled-in protected check alone, the only authority
@@ -119,6 +122,16 @@ pub trait ToolCallFlows: Send + Sync + std::fmt::Debug {
                 flows: vec![],
             }
         })
+    }
+    /// The compiled-in protected check alone; without a flow runtime nothing
+    /// can establish the Captain's request.
+    fn protected_check<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = ProtectedCheck> + Send + 'a>> {
+        let _ = (ctx, cancel);
+        Box::pin(async { ProtectedCheck::Unavailable })
     }
     fn pre_call<'a>(
         &'a self,

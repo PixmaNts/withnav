@@ -37,6 +37,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     std::fs::create_dir(&ws).unwrap();
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
+        .allow_everything()
         .state();
     let parent = state
         .create_session(&ws, None, false)

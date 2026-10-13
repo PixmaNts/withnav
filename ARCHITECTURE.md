@@ -42,7 +42,7 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
-| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Instinct from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
@@ -147,9 +147,10 @@ shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Every co
 descriptor-relatively without following links. Native execution carries the reviewed root identity,
 opens it again without creation and writes relative to that descriptor. Validation is read-only.
 
-The actor carries an explicit protected config root. Resolved native write/edit targets inside it
-ask the Captain before instinct, metacognition or scratch exemptions. Literal config references in
-bash ask too; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
+The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
+flows directory: a write there needs the compiled-in protected check, asked once by the host and
+passed to the flows, which never ask it again; anything else asks the Captain. Literal references in
+bash are checked too, best effort; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
 
 Permission review includes outside-project write/edit destinations, binding approvals to one canonical
@@ -231,63 +232,74 @@ conversation keeps its snapshot, its epoch and its retired incarnations, a `cont
 `FetchContext` answer lands on the tab whose generation it carries (without marking it unread), and the
 status line shows the active tab's.
 
-**Permission request to answer.** Before each tool call of an assistant message, `run_loop` asks
-`needs_permission`, which validates the call and its paths. Every `bash`, `write` and `edit` then goes
-through review, as do native single-file `read` calls outside readable roots or targeting credentials.
-`grep`/`glob` outside readable roots are refused; inside walks skip sensitive entries before opening
-them and report a count. Directory grep uses ripgrep's normal ignore/hidden rules with case-insensitive
-pre-open exclusions generated from the same sensitive-name rules as the gate. Only when ripgrep is
-missing, an `ignore::WalkBuilder` fallback runs on a blocking worker with cancellation, deadline,
-entry/depth/per-file/total-byte/match limits and partial-result notices.
-Inside-root ordinary reads remain ungated but bound. Native reads bind one canonical target, re-resolve
-before dispatch and hold a no-follow descriptor; they never expand readable roots. Deterministic
-credential/key flags on native reads require metacognition and then the Captain even after model approval. Reading
-ordinary WithNav config follows this policy; config mutation stays Captain-only.
-Bash is not confined and sensitive-file detection there is best effort, not a guarantee against
-arbitrary commands. Literal supported file operands are canonicalized; ambiguous sensitive
-expansions tighten risk. Native sensitivity is deterministic. In-root search descendant reopen
-races remain a documented follow-up, not grounds to permit outside walks.
-Every gated call goes to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
-families, canonical destinations) only tighten, then Instinct answers `call_effect`, `call_scope` and
-`reversibility`, `publication`, `sensitivity` and `task_fit` in one bounded request (plus `role_conformance` for `plan`). Confident read-only calls run on Instinct alone regardless of task fit or workspace, below sensitivity 0.5 and without credential, mutation, overwrite, destructive, opaque-wrapper or executable-identity floors. Fd duplication and redirects to `/dev/null` are not writes; plain unknown programs and read-filter pipelines leave effects to Instinct. Low-risk recoverable project changes can also run. Other calls go to a synchronous,
-tool-free metacognition review (configurable `permissions.review_timeout_secs`, default 40 s); only `approve` runs it. Anything else (reject, unsure, a
-malformed answer, a timeout, an oversized call, no reviewer) becomes a permission request. The
-verdicts are recorded as `permission_gate` on `tool.pre_call`, `tool.post_call` and
-`permission.requested`. Only `fetch` keeps reusable origin grants (`Grants`); saved bash/file folder
-grants are never used. `permissions.automatic_review: false` asks for every such call; children
-inherit their parent's value. The review is advisory, never a sandbox (ADR 0010).
+**Permission request to answer.** Before each tool call of an assistant message, `run_loop`
+(`run_decided`) checks tool availability for the session and role and the call's arguments
+(`preflight`), then makes ONE decision through `agent/authorize.rs`, which calls
+`permission::decide` (ADR 0015). The order is fixed: yolo, the fixed floor (`permission/floor.rs`:
+credentials ask, WithNav's `config.json`, `withnav.db` and global flows directory need the protected
+check, an unresolvable path asks), free reads inside the readable roots, the rules
+(`permission/rules.rs`, the most precise match wins; a `deny` stops the call), the doom-loop check
+(`DoomTracker`, reset at each `run_agent`), bypass, the permission flows, then the Captain. No rule
+means ask; there are no default rules, and a tool the decision does not know (an MCP tool, a role-less
+actor's call) is judged like any other: no rule, ask. `bash` lines are split into commands
+(`permission/shell.rs`) and each command's `rule_text` is matched; an opaque command matches no
+`allow` or `ask` rule and offers no "Always". WithNav's own conversation controls (`task`,
+`steer_subagent`, `decide_subagent`) act on the session and its children, whose own calls are decided,
+and `intent` only rewrites the sections of `.withnav/intent.md` it owns (no path argument): they are
+not decided.
 
-Review context is the ordered conversation: trusted Captain turns and untrusted assistant final
-replies, not a task anchor. Latest Captain turns determine the active task in any language; newer
-restrictions still bind. Selected skills contribute name, description and base directory, never
-the body or filesystem grants. Older editor-context blocks are stripped. Instinct input uses
-`context_window_tokens * 3 / 2` bytes (64000 → 96000), falling back to 16 KiB; rules appear once.
-Oldest turns are dropped first, then older pasted text shortened; the latest Captain turn is
-never partially shown, and an unshowable request is incomplete. Metacognition sees at most the latest
-16 KiB of conversation and three tool calls with outputs capped at 512 bytes, within its 64 KiB total
-budget. It uses the configured variant (normally `low`) and up to 16384 output tokens.
-A metacognition timeout can retain a floor-free Instinct read-only
-verdict below the normal sensitivity threshold; writes still ask. Captain allow-once edit/write
-precedents bind canonical file and scope until the next Captain turn, never credentials or protected
-configuration. Resume restores conversation, never precedents.
+The flows are reached through `PermissionFlows`, implemented by `authorize::SessionFlows` over the
+session's `ToolCallFlows`: `flow` is `FlowRuntime::permission_pre_call` with the payload
+`rule_effect`, `rule`, `commands {raw, normalized, prefix}`, `inside_project`, `protected`, the
+active validated skill and `conversation.captain_messages` (`captain_messages_with_cut`); flows that
+gave no verdict of their own apply the rule. `protected_check` is
+`FlowRuntime::permission_protected_check`, the compiled-in node alone. Without a flow runtime the rule
+applies and the protected check is `Unavailable`. Children get the same flows without their effects.
+The built-in `permission-default` flow is enabled. The Captain's evidence is the session's own
+Captain messages, the Captain's answers to `ask` (tool results marked `answered_by: captain`,
+labelled with their question, never sent to the model) and, for a child, a snapshot of the parent's
+Captain messages taken at creation and refreshed when the parent steers it; a delegated prompt or
+steering text never counts. A skill is decided after its validation, with action `skill` and its
+name as resource: a `deny` rule refuses it on both entry points, no rule loads it
+(`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
+whose permission database cannot be opened does not start, unless it runs in yolo. Stored decisions
+are redacted (the flows' secret detection) before any field is bounded.
 
-On 2026-10-10, ten of eleven real reviews timed out; 45–54 KB requests took up to 40.4 seconds.
-Instinct now decides ordinary reads and confident inside, recoverable changes alone, without requiring
-a known program or task fit ≥ 0.6. Only clear task contradiction (< 0.2), uncertainty or risk floors
-require metacognition. Destruction, shared publication, sensitive changes, outside changes, unsafe
-executable identity, opaque execution and unrecoverable overwrites retain review. Remote own-work
-publication keeps its existing host confirmation and task-fit requirements. A structured Captain
-selection establishes the selected option's task, never an unrelated permission. Review has one
-attempt, not a second five-second retry; evidence records input bytes and the configured deadline.
+A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`) and the
+`permission_gate` evidence (`policy_version: 3`, rule id, flow verdict, floor) on `tool.pre_call` and
+`tool.post_call`; a `deny` rule or a flow `deny` settles it as `permission_denied` with `denied_by`.
+Every decision is a row of `permission_decisions` in `withnav.db` (`pending`, then `allowed`,
+`denied`, `cancelled` on a stop or new message, `expired` on resume), filed under the session and the
+turn. A question becomes a `PermissionRequest` with its reason, `requires_captain` (set unless a rule
+`ask` or the flow raised it), the "Always" proposals and `always_label` (for example
+`Always (project): bash git push *`; project scope for `bash`, file tools, `fetch` and
+`external_directory`, global for the rest).
+
+A call that needs a question is not run: it, and the calls behind it, become
+`PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`). The runtime
+publishes `permission.requested` and the turn ends `yielded`. `POST
+/v1/sessions/{id}/permissions/{request_id}` reaches `Service::answer_permission`, which checks the
+request id against the runtime's status (a child's request is answered through its parent), then sends
+a typed `PermissionAnswer` on a channel of its own (never a `Command`). The runtime publishes
+`permission.resolved` and calls `resolve_permission`: Once runs the held call; Always first saves
+every proposal in one transaction, then runs it, and is refused when nothing can be saved; Reject
+settles the held call and every call behind it with the Captain's message. After an allow, each
+sibling goes through the whole decision again, floor included, so a saved rule releases it. Legacy
+answers still parse: "allow folder" and "allow configuration for the session" count as Once, `deny`
+as Reject. A file the Captain was shown is bound at dispatch; one that moved in between is decided
+again. A stop or a chat message cancels the request; a resume expires every request that has no
+`permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`. The old
+per-call review (`permission_gate`, the role guard, folder grants) is still in the tree but no longer
+called.
 
 **Bypass.** `BypassState {enabled, seq}` is the actor's ephemeral setting, shared with `RuntimeStatus`;
 only `Control::Bypass` changes it, after the `session.bypass` event is durable (`commit_acked`), in the
-idle and the running select alike. Right before a gated call would return `One::Ask`, `run_gated`
-checks `hard_floor` (protected config, sensitive target, changed scratch root) and then the setting:
-off or on the floor, the request goes out (`requires_driver` set from the floor); otherwise the call
-runs once with `approved_by: bypass`, keeping the review evidence. Turning it on, and a request
-published just after, claim the eligible waiting request and queue an internal `AllowOnce` of origin
-`Bypass`; a Captain answer that already holds the claim wins. `Service::set_bypass` applies the root,
+idle and the running select alike. The decision reads it as its control level: a call that no `deny`
+rule, floor or loop stops runs with `approved_by: bypass`, without asking a flow. Turning it on, and a
+request published just after, claim the waiting request when `pending_bypass_eligible` says it was
+raised by a rule `ask` or a flow (never the floor, a loop or a skill validation) and queue an internal
+`AllowOnce` of origin `Bypass`, which decides the call again under bypass and settles the pending
+decision row; a Captain answer that already holds the claim wins. `Service::set_bypass` applies the root,
 then each active child by `parent:<id>`, under `RuntimeStatus::bypass_gate`; `admit_child` holds the
 same gate from registration to the child's first prompt and commits the inherited ON before it.
 `nav run --yes` is `set_bypass(user:cli)` before the first prompt; any remaining
@@ -296,10 +308,10 @@ same gate from registration to the child's first prompt and commits the inherite
 **Yolo.** `"yolo": true` in the user settings is the lowest of three control levels: yolo (nothing
 checked) < bypass < normal. `Settings::yolo` is read at session start into
 `EffectiveExecution.yolo` (children inherit their parent's value, like `automatic_review`; a model
-switch keeps it) and from there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_flow_hook`
-and `run_gated` check it first, so no `tool.pre_call` flow is asked, and `run_gated` calls
-`run_yolo`: the call is dispatched with `approved_by: yolo` without `gate`, `consult`, `guard_step`
-or `hard_floor`, so no Instinct or metacognition request is made. The role's write scope
+switch keeps it) and from there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_decided`
+checks it right after `preflight`, so no rule, floor or `tool.pre_call` flow is consulted: `run_yolo`
+dispatches the call with `approved_by: yolo` (recorded as such in `permission_decisions`), and no
+Instinct request is made. Skill validation is skipped too. The role's write scope
 (`validate_write_scope`, Cartographe) is authorization and is not checked either. At dispatch the
 host sets `DispatchBinding::yolo` (never from arguments) and a `ToolContext` whose writable root is
 `/`: file tools are not confined to the session's roots, no scratch identity (inode, mode) is
@@ -308,27 +320,9 @@ entries below it and bounding output. What stays is `preflight` (reserved and ma
 tool availability for the session and role) and cancellation; a call `preflight` refuses still
 carries the `approved_by: yolo` evidence, with an error status.
 
-A call that needs approval is not run: it, and the calls behind it, become
-`PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
-The runtime publishes `permission.requested` and the turn ends `yielded`. `POST
-/v1/sessions/{id}/permissions/{request_id}` reaches `Service::answer_permission`, which checks the
-request id against the runtime's status, then sends a typed `PermissionAnswer` on a channel of its own
-(never a `Command`). The runtime publishes `permission.resolved` and calls `resolve_permission`:
-the held call runs once (or is denied) after fresh validation, a changed destination is reviewed
-again, the siblings go through the gate again, and the turn goes on. For `bash`, `write` and `edit`
-an "allow folder" answer counts as allow once. A stop or a chat message cancels the request; a
-resume expires every request that has no `permission.resolved` and settles its calls as interrupted.
-
-**Plan exception to the role guard.** For the `plan` agent, a `write` or `edit` whose path as
-written is not a symlink, and whose destination is an existing regular `.md` file or a missing `.md`
-file in an existing directory, needs no `role_conformance` answer; it still goes through the
-permission review. Every other `write` or `edit`, and every `bash`, asks Instinct `role_conformance` in the
-same batched request (role prompt, the Captain's latest message, workspace, resolved target, tool,
-exact arguments, at most 16 KiB); a `fetch` asks it alone. Only a valid `conforms` lets the call
-continue, and the verdict is recorded as `guard` in the metadata of its durable `tool.post_call`.
-Anything else (`violates`, `uncertain`, a malformed answer, no usable instinct assignment or key, a timeout, an
-oversized call) is an ordinary permission request whose `reason` says why. Instinct is advisory, never a
-sandbox.
+**Agent limits.** The role guard no longer runs: an agent's limits are rules with `agent` scope
+that the Captain adds (ADR 0015). Tool availability per agent (`tool_allowed_for_role`) and the
+Cartographe write scope (`validate_write_scope`) still apply before the decision.
 
 **Keystroke to suggestion (reflex).** The extension asks `withnav/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM

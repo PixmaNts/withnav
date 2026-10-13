@@ -69,6 +69,7 @@ fn resolve_permissions(
     rule: RuleResult,
     protected: bool,
     protected_runs: &std::collections::BTreeSet<String>,
+    host_passed: bool,
 ) -> (VerdictLike, Vec<PermissionFlowAnswer>) {
     let rule_action = if rule == RuleResult::Allow {
         "allow"
@@ -77,7 +78,7 @@ fn resolve_permissions(
     };
     let mut answers = vec![];
     let mut candidates = vec![];
-    let mut protected_ok = false;
+    let mut protected_ok = host_passed;
     for outcome in outcomes {
         let actions = match &outcome.result {
             RunResult::Success { actions } => actions,
@@ -214,6 +215,29 @@ mod tests {
     use crate::agent::flow_hook::{FlowVerdict, ToolCallContext};
     use crate::flows::store::Location;
 
+    /// A disabled global copy of the built-in permission flow shadows it, so a
+    /// test sees only the flows it saves itself.
+    fn without_builtin(store: &FlowStore) {
+        let (mut definition, templates) = super::super::builtin::all_definitions()
+            .into_iter()
+            .find(|(d, _)| d.flow.name == "permission-default")
+            .unwrap();
+        definition.flow.enabled = false;
+        store
+            .save(
+                "permission-default",
+                Location::Global,
+                None,
+                super::super::store::Content::Graph {
+                    definition: Box::new(definition),
+                    templates,
+                },
+            )
+            .unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+    }
+
     fn permission_call(workspace: PathBuf, protected: bool) -> PermissionCallContext {
         PermissionCallContext {
             call: ToolCallContext {
@@ -230,6 +254,7 @@ mod tests {
             skill: None,
             captain_messages: vec!["Change the configuration".into()],
             captain_messages_cut: false,
+            protected_check: None,
         }
     }
 
@@ -237,12 +262,13 @@ mod tests {
     async fn permission_aggregation_is_separate_from_legacy_hook() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
-        let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), Arc::new(NoEffects));
         assert!(store
             .list()
             .unwrap()
             .iter()
-            .any(|f| f.name == "permission-default" && f.enabled == Some(false)));
+            .any(|f| f.name == "permission-default" && f.enabled == Some(true)));
+        without_builtin(&store);
+        let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), Arc::new(NoEffects));
         assert_eq!(
             runtime
                 .tool_pre_call(
@@ -271,7 +297,7 @@ mod tests {
                 )
                 .await;
             assert_eq!(matches!(result.verdict, FlowVerdict::Allow), allowed);
-            assert!(result.flows.is_empty());
+            assert!(result.flows.iter().all(|f| f.used_rule));
         }
         for (name, toml) in [("allow", "[flow]\nversion=1\nname='allow'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='no_objection'\n[node.params]\n".into()), ("failed", "[flow]\nversion=1\nname='failed'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n".into())] {
             store.save(name, Location::Global, None, super::super::store::Content::Toml { toml, templates: BTreeMap::new() }).unwrap();
@@ -298,7 +324,7 @@ mod tests {
                 )
                 .await;
             assert_eq!(matches!(result.verdict, FlowVerdict::Allow), allowed);
-            assert_eq!(result.flows.len(), 2);
+            assert_eq!(result.flows.len(), 2, "{:?}", result.flows);
             assert!(result
                 .flows
                 .iter()
@@ -368,19 +394,22 @@ mod tests {
                 panic!("disabled built-in must not request even an affirmative decision")
             }
         }
-        assert!(compiled_protected_check().is_none());
+        // The shipped flow is enabled; a build that disables it reaches this path.
+        assert!(compiled_protected_check().is_some());
+        assert!(compile_protected_check(false).is_some());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
         let runtime = FlowRuntime::new(store, Arc::new(NoDecision), Arc::new(NoEffects));
-        let result = runtime
-            .permission_pre_call(
-                permission_call(dir.path().into(), true),
-                RuleResult::Allow,
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(matches!(result.verdict, FlowVerdict::AskCaptain { .. }));
-        assert!(result.flows.is_empty());
+        assert_eq!(
+            runtime
+                .protected_check_with(
+                    None,
+                    permission_call(dir.path().into(), true),
+                    CancellationToken::new()
+                )
+                .await,
+            ProtectedCheck::Unavailable
+        );
     }
     struct BranchClient(BTreeMap<String, f64>);
     impl DecisionClient for BranchClient {
@@ -576,15 +605,22 @@ mod tests {
     #[tokio::test]
     async fn protected_check_runs_only_the_compiled_node() {
         let cancel = CancellationToken::new;
-        // The shipped built-in flow is disabled: Unavailable, no decision request.
+        // A disabled built-in flow: Unavailable, no decision request.
         let client = counting(1.0);
         let (dir, runtime) = runtime_with(client.clone());
         let call = permission_call(dir.path().into(), true);
         assert_eq!(
-            runtime.permission_protected_check(call, cancel()).await,
+            runtime.protected_check_with(None, call, cancel()).await,
             ProtectedCheck::Unavailable
         );
         assert_eq!(client.requests.load(Ordering::SeqCst), 0);
+        // The shipped flow is enabled: the compiled node answers.
+        let call = permission_call(dir.path().into(), true);
+        assert_eq!(
+            runtime.permission_protected_check(call, cancel()).await,
+            ProtectedCheck::Passed
+        );
+        assert_eq!(client.requests.load(Ordering::SeqCst), 1);
         // Enabled: the compiled node answers from the Captain's messages.
         for (answer, expected) in [(1.0, ProtectedCheck::Passed), (0.0, ProtectedCheck::Failed)] {
             let client = counting(answer);
@@ -651,10 +687,11 @@ mod tests {
         store.validate_test_documents();
         store.reload().unwrap();
         let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        // Without the compiled node the clone supplies no authority at all.
         let call = permission_call(dir.path().into(), true);
         assert_eq!(
             runtime
-                .permission_protected_check(call, CancellationToken::new())
+                .protected_check_with(None, call, CancellationToken::new())
                 .await,
             ProtectedCheck::Unavailable
         );
@@ -709,7 +746,7 @@ mod tests {
                         .await
                 } else {
                     self.runtime
-                        .permission_protected_check(call, CancellationToken::new())
+                        .protected_check_with(None, call, CancellationToken::new())
                         .await
                 }
             })
@@ -767,15 +804,16 @@ mod tests {
                 store: &store,
                 agent: "build",
                 repeats: 1,
+                validated: false,
             };
             let decision = decide(&input, &flows).await;
             match (&decision.verdict, runs, control) {
                 (Verdict::Run { approved_by }, true, Control::Bypass) => {
                     assert_eq!(*approved_by, ApprovedBy::Bypass)
                 }
-                // With no flow on disk the aggregate applies the rule: no rule asks.
-                (Verdict::AskCaptain { always, .. }, true, Control::Normal) => {
-                    assert!(always.is_empty())
+                // The enabled built-in flow hears the Captain's request.
+                (Verdict::Run { approved_by }, true, Control::Normal) => {
+                    assert_eq!(*approved_by, ApprovedBy::Flow)
                 }
                 (Verdict::AskCaptain { always, .. }, false, _) => assert!(always.is_empty()),
                 other => panic!("{compiled} {answer} {control:?}: {other:?}"),
@@ -786,11 +824,12 @@ mod tests {
     #[tokio::test]
     async fn builtin_branches_and_protected_provenance() {
         for (protected, rule, answers, allowed) in [
+            // The compiled node runs with the flows and grants it.
             (
                 true,
                 RuleResult::Ask,
                 vec![("protected_requested", 0.9)],
-                false,
+                true,
             ),
             (true, RuleResult::Allow, vec![], false),
             (false, RuleResult::Ask, vec![("requested", 0.6)], true),
@@ -861,6 +900,7 @@ mod tests {
     async fn a_successful_blocking_flow_without_a_verdict_applies_rule() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        without_builtin(&store);
         let toml = "[flow]\nversion=1\nname='silent'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='audit'\n";
         store
             .save(
@@ -1030,6 +1070,7 @@ mod tests {
     async fn outage_notice_resets_only_after_provider_success() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        without_builtin(&store);
         let toml = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
         store
             .save(
@@ -1546,7 +1587,7 @@ impl FlowRuntime {
         effects: Arc<dyn FlowEffects>,
     ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         let (verdict, handles, _) = self
-            .evaluate_inner(event, context, cancel, effects, None)
+            .evaluate_inner(event, context, cancel, effects, None, None)
             .await;
         (verdict, handles)
     }
@@ -1558,6 +1599,7 @@ impl FlowRuntime {
         cancel: CancellationToken,
         effects: Arc<dyn FlowEffects>,
         permission: Option<(RuleResult, bool)>,
+        host_check: Option<ProtectedCheck>,
     ) -> (
         VerdictLike,
         Vec<tokio::task::JoinHandle<RunOutcome>>,
@@ -1704,7 +1746,7 @@ impl FlowRuntime {
             outcomes.push(outcome);
         }
         if let Some(compiled) = permission
-            .filter(|(_, protected)| *protected)
+            .filter(|(_, protected)| *protected && host_check.is_none())
             .and_then(|_| compiled_protected_check())
         {
             // Overrides can tighten this verdict but never supply protected authority.
@@ -1735,8 +1777,13 @@ impl FlowRuntime {
         outcomes.sort_by(|a, b| a.trace.flow_name.cmp(&b.trace.flow_name));
         let (permission_verdict, answers) = permission
             .map(|(rule, protected)| {
-                let (verdict, answers) =
-                    resolve_permissions(&outcomes, rule, protected, &protected_runs);
+                let (verdict, answers) = resolve_permissions(
+                    &outcomes,
+                    rule,
+                    protected,
+                    &protected_runs,
+                    host_check == Some(ProtectedCheck::Passed),
+                );
                 (Some(verdict), answers)
             })
             .unwrap_or((None, vec![]));
@@ -1842,7 +1889,7 @@ impl FlowRuntime {
         ctx: PermissionCallContext,
         rule_result: RuleResult,
         mut context: ContextSnapshot,
-    ) -> (Event, ContextSnapshot, bool) {
+    ) -> (Event, ContextSnapshot, (bool, Option<ProtectedCheck>)) {
         context.workspace = Some(ctx.call.workspace.clone());
         for (name, value) in [
             ("session.agent", json!(ctx.call.agent)),
@@ -1860,7 +1907,10 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.captain_messages".into(), captain_evidence);
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected});
+        // With the host's answer in hand the flows judge the ordinary
+        // question; the protected branch is not walked a second time.
+        let walk_protected = ctx.protected && ctx.protected_check.is_none();
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":walk_protected});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),
@@ -1877,7 +1927,7 @@ impl FlowRuntime {
                 payload,
             },
             context,
-            ctx.protected,
+            (ctx.protected, ctx.protected_check),
         )
     }
 
@@ -1889,7 +1939,8 @@ impl FlowRuntime {
         context: ContextSnapshot,
         effects: Arc<dyn FlowEffects>,
     ) -> PermissionVerdict {
-        let (event, context, protected) = Self::permission_event(ctx, rule_result, context);
+        let (event, context, (protected, host_check)) =
+            Self::permission_event(ctx, rule_result, context);
         let (verdict, _, flows) = self
             .evaluate_inner(
                 event,
@@ -1897,6 +1948,7 @@ impl FlowRuntime {
                 cancel,
                 effects,
                 Some((rule_result, protected)),
+                host_check,
             )
             .await;
         PermissionVerdict {
@@ -1926,8 +1978,14 @@ impl FlowRuntime {
         let Some(compiled) = compiled else {
             return ProtectedCheck::Unavailable;
         };
-        let (event, context, _) =
-            Self::permission_event(ctx, RuleResult::None, ContextSnapshot::default());
+        let (event, context, _) = Self::permission_event(
+            PermissionCallContext {
+                protected_check: None,
+                ..ctx
+            },
+            RuleResult::None,
+            ContextSnapshot::default(),
+        );
         // Captain evidence that was cut or is missing cannot establish a request.
         if context
             .values
@@ -2054,6 +2112,13 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
                 )
                 .await
         })
+    }
+    fn protected_check<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, ProtectedCheck> {
+        Box::pin(self.runtime.permission_protected_check(ctx, cancel.clone()))
     }
     fn pre_call<'a>(
         &'a self,

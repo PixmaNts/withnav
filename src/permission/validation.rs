@@ -63,24 +63,25 @@ impl PermissionStore {
                 "validation requires a name, location and sha256 digest".into(),
             ));
         }
-        if let Some(existing) = self.connection.query_row(
+        let db = self.db();
+        if let Some(existing) = db.query_row(
             "SELECT id,kind,name,location,content_sha256,validated_at,revoked_at FROM validations
              WHERE kind=?1 AND location=?2 AND content_sha256=?3 AND revoked_at IS NULL ORDER BY id DESC LIMIT 1",
             params![kind.as_str(), location, hash], read_validation,
         ).optional()? {
             return Ok(existing);
         }
-        self.connection.execute(
+        db.execute(
             "INSERT INTO validations(kind,name,location,content_sha256,validated_at) VALUES (?1,?2,?3,?4,?5)",
             params![kind.as_str(), name, location, hash, crate::bus::event::now_rfc3339()],
         )?;
-        Ok(self.connection.query_row(
+        Ok(db.query_row(
             "SELECT id,kind,name,location,content_sha256,validated_at,revoked_at FROM validations WHERE id=?1",
-            [self.connection.last_insert_rowid()], read_validation,
+            [db.last_insert_rowid()], read_validation,
         )?)
     }
     pub fn revoke_validation(&self, id: i64) -> Result<bool, Error> {
-        Ok(self.connection.execute(
+        Ok(self.db().execute(
             "UPDATE validations SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL",
             params![crate::bus::event::now_rfc3339(), id],
         )? != 0)
@@ -91,12 +92,13 @@ impl PermissionStore {
         location: &str,
         hash: &str,
     ) -> Result<bool, Error> {
-        Ok(self.connection.query_row(
+        Ok(self.db().query_row(
             "SELECT EXISTS(SELECT 1 FROM validations WHERE kind=?1 AND location=?2 AND content_sha256=?3 AND revoked_at IS NULL)",
             params![kind.as_str(), location, hash], |row| row.get(0))?)
     }
     pub fn list_validations(&self) -> Result<Vec<Validation>, Error> {
-        let mut statement = self.connection.prepare("SELECT id,kind,name,location,content_sha256,validated_at,revoked_at FROM validations ORDER BY id DESC")?;
+        let db = self.db();
+        let mut statement = db.prepare("SELECT id,kind,name,location,content_sha256,validated_at,revoked_at FROM validations ORDER BY id DESC")?;
         let rows = statement.query_map([], read_validation)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -125,7 +127,10 @@ pub fn inspect_valid(
     if !exists {
         return Ok(false);
     }
-    PermissionStore { connection }.is_valid(kind, location, hash)
+    PermissionStore {
+        connection: std::sync::Mutex::new(connection),
+    }
+    .is_valid(kind, location, hash)
 }
 
 #[cfg(test)]

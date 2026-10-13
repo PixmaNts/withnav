@@ -498,6 +498,7 @@ fn render_part(
             ChatMessage::Tool {
                 tool_call_id,
                 content,
+                ..
             } => {
                 let text = if elided.contains(&i) {
                     super::elision_marker(content.len())

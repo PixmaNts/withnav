@@ -1418,20 +1418,17 @@ impl Service {
                     barrier.release.notified().await;
                 }
             }
-            let result = handle.skills.load_listed(name).await;
-            if result.status != crate::tools::ToolStatus::Ok {
-                return Err(ServerError::MalformedBody(
-                    result
-                        .error
-                        .map(|error| format!("{}: {}", error.code, error.message))
-                        .unwrap_or(result.output),
-                ));
-            }
+            let skills = handle.skills.clone();
+            let skill_name = name.clone();
+            let snapshot = tokio::task::spawn_blocking(move || skills.snapshot(&skill_name))
+                .await
+                .map_err(|e| ServerError::MalformedBody(e.to_string()))?
+                .map_err(ServerError::MalformedBody)?;
             for block in &mut command.content {
                 if matches!(block, crate::bus::command::ContentBlock::Skill { .. }) {
                     *block = crate::bus::command::ContentBlock::LoadedSkill {
                         name: name.clone(),
-                        content: result.output.clone(),
+                        content: snapshot.id.clone(),
                     };
                 }
             }
@@ -1555,6 +1552,19 @@ impl Service {
                 "steering message must be nonempty and at most 16 KiB".into(),
             ));
         }
+        // The steering text is the parent's, not the Captain's: only the
+        // parent's current Captain messages are refreshed.
+        let captain = owner
+            .status
+            .captain_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        *handle
+            .status
+            .parent_captain
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(captain);
         if !handle.status.steer(message.to_string(), interrupt) {
             return Err(ServerError::ChildNotParked);
         }
@@ -2572,9 +2582,6 @@ impl Service {
             ),
         };
         // "Allow folder" answers are kept per workspace, across sessions. A
-        actor.skill_grants = Some(crate::agent::skill_grants::SkillGrants::in_dir(
-            &self.config.config_dir,
-        ));
         // subagent keeps its own in memory, as its parent's policy decides.
         if child_policy.is_none() {
             actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);
@@ -2627,10 +2634,19 @@ impl Service {
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
             .await;
-        let skills = self
+        let mut skills = self
             .load_skills(&workspace, session_id, resumed.is_some())
             .await;
+        skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
+            data_dir: Some(self.config.data_dir.clone()),
+            ..Default::default()
+        });
         actor.set_skills(skills);
+        actor.permission_dirs = crate::agent::actor::PermissionDirs {
+            config: Some(self.config.config_dir.clone()),
+            data: Some(self.config.data_dir.clone()),
+        };
+        actor.permission_session = session_id.to_string();
         actor.guard = super::guard::instinct_guard(
             self.config.models_path.as_deref(),
             &workspace,
@@ -2644,6 +2660,22 @@ impl Service {
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.automatic_permission_review = execution.automatic_permission_review;
         actor.yolo = execution.yolo;
+        // Rules and decisions live in the shared database. Without it a deny
+        // rule would silently vanish, so only yolo, which reads no rule, starts.
+        match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
+            Ok(store) => {
+                if resumed.is_some() {
+                    if let Err(error) = store.expire_pending(&session_id.to_string()) {
+                        tracing::warn!(%error, "pending permission decisions not expired");
+                    }
+                }
+                actor.permission_store = Arc::new(store);
+            }
+            Err(error) if actor.yolo => {
+                tracing::warn!(%error, "permission database unavailable; yolo reads no rule")
+            }
+            Err(error) => return Err(ServerError::PermissionDatabase(error.to_string())),
+        }
         actor.permission_review_timeout_secs = execution.permission_review_timeout_secs;
         actor.protected_config_spelling = Some(self.config.config_dir.clone());
         actor.protected_config_root =
@@ -3045,6 +3077,18 @@ impl Service {
                 runtime_status.permission_context = handle.status.permission_context.clone();
             }
         }
+        if let Some(parent) = child_parent.and_then(|parent| self.handle(parent)) {
+            let captain = parent
+                .status
+                .captain_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            *runtime_status
+                .parent_captain
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(captain);
+        }
         let status = Arc::new(runtime_status);
         status.init_variant(selected.clone());
         if let Some(seq) = resumed_bypass_seq {
@@ -3211,15 +3255,24 @@ impl Service {
             .is_none()
             .then(|| self.flows.runtime(&workspace))
             .flatten();
-        actor.tool_flows = flows.as_ref().map(|runtime| {
-            super::flows::hook(
+        actor.tool_flows = match &flows {
+            Some(runtime) => Some(super::flows::hook(
                 runtime,
                 session_id.to_string(),
                 selected_model.clone(),
                 status.clone(),
                 sequencer.clone(),
-            )
-        });
+            )),
+            // A subagent's calls are judged by the same permission flows as
+            // its parent's; flow effects stay with the root session.
+            None => self.flows.runtime(&workspace).map(|runtime| {
+                runtime.tool_hook_with_effects(
+                    session_id.to_string(),
+                    selected_model.clone(),
+                    Arc::new(crate::flows::runtime::NoEffects),
+                )
+            }),
+        };
         status.install_model_switcher(self.model_switcher(
             session_id,
             workspace.clone(),

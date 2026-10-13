@@ -302,9 +302,11 @@ fn elided(message: &ChatMessage) -> ChatMessage {
         ChatMessage::Tool {
             tool_call_id,
             content,
+            ..
         } => ChatMessage::Tool {
             tool_call_id: tool_call_id.clone(),
             content: elision_marker(content.len()),
+            answered_by: None,
         },
         other => other.clone(),
     }
@@ -693,6 +695,7 @@ fn elision_order(
             ChatMessage::Tool {
                 tool_call_id,
                 content,
+                ..
             } if !kept.contains(tool_call_id.as_str())
                 && message_tokens(&elided(&transcript[i])) < message_tokens(&transcript[i]) =>
             {

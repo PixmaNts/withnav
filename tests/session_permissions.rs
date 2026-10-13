@@ -202,10 +202,11 @@ async fn oversized_reject_does_not_claim_the_pending_request() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn always_fetch_still_asks_for_the_second_call_on_the_same_origin() {
+async fn always_fetch_saves_the_origin_and_releases_the_second_call() {
     let env = Env::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/page", listener.local_addr().unwrap());
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let url = format!("{origin}/page");
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
@@ -227,6 +228,10 @@ async fn always_fetch_still_asks_for_the_second_call_on_the_same_origin() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "fetch the page twice").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
+    assert_eq!(
+        requested[0].payload["always_label"],
+        format!("Always (project): fetch {origin}/*")
+    );
     let (status, body) = answer(
         &router,
         id,
@@ -235,28 +240,31 @@ async fn always_fetch_still_asks_for_the_second_call_on_the_same_origin() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let requested = wait_events(&state, id, "permission.requested", 2).await;
-    assert_eq!(requested[1].payload["tool_call_id"], "f2");
-    assert_eq!(requested[0].payload["scope"], requested[1].payload["scope"]);
-    let (status, body) = answer(
-        &router,
-        id,
-        &request_id(&requested[1]),
-        json!({"decision":"reject"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
     wait_events(&state, id, "task.done", 1).await;
+    // The saved rule let the second call of the turn run without a question.
+    assert_eq!(events(&state, id, "permission.requested").await.len(), 1);
+    let posts = events(&state, id, "tool.post_call").await;
+    let approved: Vec<_> = posts
+        .iter()
+        .map(|p| p.payload["metadata"]["approved_by"].clone())
+        .collect();
+    assert_eq!(approved, [json!("captain"), json!("rule")]);
+    let rules = withnav::permission::store::PermissionStore::open(env.root.join("data"))
+        .unwrap()
+        .list(&withnav::permission::rules::RuleFilter::default())
+        .unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].resource, format!("{origin}/*"));
     state.close_session(id).await.unwrap();
     server.abort();
     let _ = server.await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn config_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
-    for decision in ["allow_once", "allow_always", "allow_config_session"] {
+async fn a_config_write_asks_the_captain_and_each_answer_runs_once() {
+    for decision in ["allow_once", "allow_config_session"] {
         let env = Env::new();
-        let target = env.root.join("cfg/models.json");
+        let target = env.root.join("cfg/config.json");
         let provider = provider(vec![
             calls(&[
                 ("w1", "write", json!({"path":target,"content":"first"})),
@@ -266,11 +274,24 @@ async fn config_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
         ])
         .await;
         let state = config(&env, &provider).state();
+        let original = std::fs::read_to_string(&target).unwrap();
         let router = app(state.clone());
         let id = state.create_session(&env.ws, None, false).await.unwrap();
         say(&state, id, "write the configuration").await;
         let requested = wait_events(&state, id, "permission.requested", 1).await;
-        assert_eq!(requested[0].payload["allow_config_session"], true);
+        // No instinct answers the protected check here: only the Captain can.
+        assert_eq!(requested[0].payload["requires_captain"], true);
+        assert!(requested[0].payload.get("always_label").is_none());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
+        // "Always" is never offered for it.
+        let (status, _) = answer(
+            &router,
+            id,
+            &request_id(&requested[0]),
+            json!({"decision":"allow_always"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
         let (status, body) = answer(
             &router,
             id,
@@ -279,15 +300,10 @@ async fn config_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        if decision == "allow_config_session" {
-            // Admission accepts the legacy grant; its review remains independent.
-            state.close_session(id).await.unwrap();
-            continue;
-        }
+        // The legacy session-wide answer is one approval too.
         let requested = wait_events(&state, id, "permission.requested", 2).await;
         assert_eq!(requested[1].payload["tool_call_id"], "w2");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
-        assert_eq!(requested[1].payload["allow_config_session"], true);
         let (status, body) = answer(
             &router,
             id,
@@ -302,70 +318,7 @@ async fn config_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn skill_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
-    for decision in ["allow_once", "allow_always", "allow_skill_machine"] {
-        let env = Env::new();
-        let skill = env.root.join("home/.agents/skills/sync");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: sync\ndescription: Sync\n---\nInstructions\n",
-        )
-        .unwrap();
-        let script = skill.join("sync.py");
-        let target = env.ws.join("runs.txt");
-        std::fs::write(
-            &script,
-            format!(
-                "with open({:?}, 'a') as f: f.write('run\\n')\n",
-                target.to_string_lossy()
-            ),
-        )
-        .unwrap();
-        let command = format!("python3 {}", script.display());
-        let provider = provider(vec![
-            calls(&[
-                ("s1", "bash", json!({"command":command})),
-                ("s2", "bash", json!({"command":command})),
-            ]),
-            done("finished"),
-        ])
-        .await;
-        let state = config(&env, &provider).state();
-        let router = app(state.clone());
-        let id = state.create_session(&env.ws, None, false).await.unwrap();
-        say(&state, id, "run the sync script").await;
-        let requested = wait_events(&state, id, "permission.requested", 1).await;
-        assert_eq!(requested[0].payload["skill_script"]["skill"], "sync");
-        let (status, body) = answer(
-            &router,
-            id,
-            &request_id(&requested[0]),
-            json!({"decision":decision}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let requested = wait_events(&state, id, "permission.requested", 2).await;
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "run\n");
-        let grants = withnav::agent::skill_grants::SkillGrants::in_dir(&env.root.join("cfg"))
-            .read()
-            .unwrap();
-        assert_eq!(grants.is_empty(), decision != "allow_skill_machine");
-        let (status, body) = answer(
-            &router,
-            id,
-            &request_id(&requested[1]),
-            json!({"decision":"reject"}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        wait_events(&state, id, "task.done", 1).await;
-        state.close_session(id).await.unwrap();
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn http_new_answers_keep_current_execution_semantics_and_legacy_answers_work() {
+async fn http_answers_and_legacy_answers_apply_to_the_held_call() {
     for decision in [
         "allow_once",
         "allow_always",
@@ -381,7 +334,10 @@ async fn http_new_answers_keep_current_execution_semantics_and_legacy_answers_wo
         let id = state.create_session(&env.ws, None, false).await.unwrap();
         say(&state, id, "write answer.txt").await;
         let requested = wait_events(&state, id, "permission.requested", 1).await;
-        assert!(requested[0].payload.get("always_label").is_none());
+        assert_eq!(
+            requested[0].payload["always_label"],
+            format!("Always (project): write {}", target.display())
+        );
         let (status, body) = answer(
             &router,
             id,
@@ -709,7 +665,7 @@ async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
 // When the first is denied
 // Then the second is still processed (it asks on its own)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn siblings_after_a_denial_are_processed() {
+async fn a_reject_settles_every_held_sibling_with_the_captains_message() {
     let env = Env::new();
     let (a, b) = (env.ws.join("a.txt"), env.ws.join("b.txt"));
     let (id_a, args_a) = write_call("w1", &a);
@@ -729,24 +685,19 @@ async fn siblings_after_a_denial_are_processed() {
         &router,
         id,
         &request_id(&first[0]),
-        json!({"decision": "deny"}),
-    )
-    .await;
-    let both = wait_events(&state, id, "permission.requested", 2).await;
-    assert_eq!(both[1].payload["tool_call_id"], "w2");
-    answer(
-        &router,
-        id,
-        &request_id(&both[1]),
-        json!({"decision": "allow_once"}),
+        json!({"decision": "reject", "message": "use the template instead"}),
     )
     .await;
     wait_events(&state, id, "task.done", 1).await;
-    assert!(!a.exists());
-    assert_eq!(std::fs::read_to_string(&b).unwrap(), "from w2");
+    assert_eq!(events(&state, id, "permission.requested").await.len(), 1);
+    assert!(!a.exists() && !b.exists());
     let last = body_of(&provider, 1);
     assert!(last.contains("\"tool_call_id\":\"w1\"") && last.contains("\"tool_call_id\":\"w2\""));
-    assert!(last.contains("permission_denied"));
+    assert_eq!(
+        last.matches("use the template instead").count(),
+        2,
+        "{last}"
+    );
 }
 
 // Given a pending request
@@ -850,6 +801,23 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "an expired request is stale");
+
+    // The decision table says the question expired.
+    let decisions = withnav::permission::store::PermissionStore::open(env.root.join("data"))
+        .unwrap()
+        .list_decisions(
+            &withnav::permission::decisions::DecisionFilter {
+                session_id: Some(id.to_string()),
+                ..Default::default()
+            },
+            10,
+        )
+        .unwrap();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(
+        decisions[0].outcome,
+        withnav::permission::decisions::Outcome::Expired
+    );
 
     say(&second, id, "carry on").await;
     wait_events(&second, id, "task.done", 1).await;
@@ -1164,11 +1132,20 @@ async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_reques
     release.notify_one();
     wait_events(&state, id, "permission.requested", 1).await;
 
-    let results = wait_events(&state, id, "command.result", 2).await;
-    let refusal = results
-        .iter()
-        .find(|e| e.payload["ok"] == false)
-        .expect("a refusal");
+    let refusal = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let results = events(&state, id, "command.result").await;
+            if let Some(refusal) = results
+                .into_iter()
+                .find(|e| e.payload["name"] == "compact" && e.payload["ok"] == false)
+            {
+                return refusal;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a refusal");
     assert_eq!(
         refusal.payload["operation_id"],
         accepted.operation_id.to_string()

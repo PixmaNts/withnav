@@ -41,6 +41,20 @@ async fn pause_lifecycle(mode: u8) {
             "---\nname: review\ndescription: Review work\n---\nReview selected work carefully.",
         )
         .unwrap();
+        let skills = withnav::agent::skills::Skills::load(
+            &withnav::agent::instructions::RulesRoots { home: None },
+            &ws,
+        );
+        let snapshot = skills.snapshot("review").unwrap();
+        withnav::permission::store::PermissionStore::open(tmp.path().join("data"))
+            .unwrap()
+            .validate(
+                withnav::permission::validation::ValidationKind::Skill,
+                &snapshot.name,
+                &snapshot.location,
+                &snapshot.hash,
+            )
+            .unwrap();
     }
     let mut provider = spawn_streaming_provider().await;
     let service = TestServerConfig::mock(tmp.path(), &provider.url)
@@ -322,6 +336,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     .await;
     let service = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(1_000_000)
+        .allow_everything()
         .state();
     std::fs::write(
         tmp.path().join("cfg/config.json"),
@@ -406,6 +421,7 @@ async fn absent_instinct_caps_at_five_hundred_and_announces_once() {
     .await;
     let service = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(1_000_000)
+        .allow_everything()
         .state();
     let id = service.create_session(&ws, None, false).await.unwrap();
     let sub = service.subscribe(id, None).await.unwrap();

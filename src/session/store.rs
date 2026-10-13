@@ -3392,6 +3392,7 @@ mod tests {
             ChatMessage::Tool {
                 tool_call_id: format!("c{n}"),
                 content: "output".repeat(50),
+                answered_by: None,
             },
             ChatMessage::Assistant {
                 content: Some("done".into()),

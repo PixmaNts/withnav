@@ -54,7 +54,7 @@ for line in sys.stdin:
     if method == "initialize":
         if len(sys.argv) > 1 and sys.argv[1] == "hang":
             if os.environ.get("HANG_STDERR"):
-                sys.stderr.write(os.environ["HANG_STDERR"] + "\n")
+                sys.stderr.write("hung-init-stderr-line\n")
                 sys.stderr.flush()
             if os.environ.get("IGNORE_SIGTERM"):
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)

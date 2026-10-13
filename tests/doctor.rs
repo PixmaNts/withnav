@@ -693,3 +693,27 @@ async fn doctor_does_not_report_a_non_database_file_as_readable() {
         "this is not a SQLite database"
     );
 }
+
+#[tokio::test]
+async fn mcp_doctor_reports_a_hung_initialisation_as_failed_with_its_stderr() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.layer = Some(DoctorLayer::Reflex);
+    let mut settings = withnav::settings::load(&config).unwrap();
+    settings.set_dotted("mcp", json!({
+        "hang":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],
+            "startup_timeout_ms":300,"env":{"HANG_STDERR":"1"}}
+    }));
+    withnav::settings::save(&config, &settings).unwrap();
+    let started = std::time::Instant::now();
+    let report = inspect(&args, &config, None, None).await;
+    let hang = check(&report, "mcp.hang");
+    assert_eq!(hang.status, Status::Failed, "{}", hang.value);
+    assert!(hang.value.contains("timed out"), "{}", hang.value);
+    assert!(
+        hang.value.contains("hung-init-stderr-line"),
+        "{}",
+        hang.value
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+}

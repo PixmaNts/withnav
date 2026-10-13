@@ -32,18 +32,8 @@ pub(super) async fn supervise(
             .unwrap_or_else(|e| e.into_inner())
             .state = "starting";
         let result = run(&server, &cancel, permit).await;
-        if let Some(ready) = server
-            .ready
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            ready.disconnected.cancel();
-        }
-        let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
-        status.state = "failed";
-        status.tool_count = 0;
-        status.error = Some(
+        publish_failure(
+            &server,
             result
                 .err()
                 .unwrap_or_else(|| "MCP transport disconnected".into()),
@@ -52,6 +42,24 @@ pub(super) async fn supervise(
             break;
         }
     }
+}
+
+/// Withdraws the server's tools and records why. Called as soon as a failure is known,
+/// before the process cleanup that may take a grace period, so a reader never sees a
+/// failed server as still starting.
+fn publish_failure(server: &Server, error: String) {
+    if let Some(ready) = server
+        .ready
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        ready.disconnected.cancel();
+    }
+    let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
+    status.state = "failed";
+    status.tool_count = 0;
+    status.error = Some(error);
 }
 
 async fn run(
@@ -101,7 +109,7 @@ async fn run(
                 .push(&[], &secrets, true);
         })
     });
-    let result = async {
+    let result: Result<(), String> = async {
         let startup = async {
             let mut client = ().serve((stdout, stdin)).await.map_err(|_| "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string())?;
             let discovery = discover(server, client.peer()).await;
@@ -134,6 +142,9 @@ async fn run(
         let _ = tokio::time::timeout(grace, &mut waiting).await;
         Ok(())
     }.await;
+    if let Err(error) = &result {
+        publish_failure(server, error.clone());
+    }
     // Initialization futures own only stdio, not the child. Dropping them closes stdin;
     // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
     let _ = tokio::time::timeout(Duration::from_millis(100), child.wait()).await;

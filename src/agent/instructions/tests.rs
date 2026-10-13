@@ -142,6 +142,8 @@ fn order_runs_from_global_to_the_closest_directory() {
     );
     let mut message = FRAMING.to_string();
     for (path, text) in expected {
+        #[cfg(windows)]
+        let path = crate::tools::canonical_path(&path).unwrap();
         message.push_str(&format!(
             "\n\nInstructions from {}:\n{text}",
             path.display()

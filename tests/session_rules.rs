@@ -107,6 +107,10 @@ fn messages(provider: &CapturingProvider, n: usize) -> Vec<(String, String)> {
 }
 
 fn rules_label(path: &Path) -> String {
+    #[cfg(windows)]
+    let canonical = withnav::tools::canonical_path(path).unwrap();
+    #[cfg(windows)]
+    let path = canonical.as_path();
     format!("Instructions from {}:", path.display())
 }
 

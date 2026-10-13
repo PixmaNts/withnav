@@ -948,6 +948,29 @@ mod tests {
     }
 
     #[test]
+    fn permission_writers_require_protected_check_under_bypass() {
+        let f = fixture();
+        for command in ["add", "revoke", "validate", "revoke-validation"] {
+            let decision = f.decide(
+                Control::Bypass,
+                &bash(&format!("nav permissions {command} flow")),
+            );
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{command}: {decision:?}"
+            );
+            assert!(proposals(&decision).is_empty());
+        }
+        for command in ["list", "history", "validations"] {
+            let decision = f.decide(
+                Control::Bypass,
+                &bash(&format!("nav permissions {command}")),
+            );
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass), "{command}");
+        }
+    }
+
+    #[test]
     fn bash_touching_protected_state_asks() {
         let f = fixture();
         f.add("bash", "nav permissions *", Effect::Allow);

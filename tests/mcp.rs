@@ -174,14 +174,22 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     let manager = McpManager::start(&settings);
     assert!(start.elapsed() < Duration::from_millis(100));
     assert!(manager.snapshot().is_empty());
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while !pidfile.exists() {
+    // The server creates the file before writing the pid into it, so wait for
+    // a parseable pid, not just for the file (seen empty on a CI runner on
+    // 2026-10-13).
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    let pid: i32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
     manager.shutdown().await;
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {

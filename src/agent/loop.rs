@@ -837,6 +837,13 @@ async fn run_skill(
         reject_call(actor, call, "skill snapshot unavailable".into(), observe);
         return One::Settled;
     };
+    actor
+        .skills
+        .validation
+        .turn_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(snapshot.id.clone());
     let validation = actor.skills.validation.clone();
     let checked = snapshot.clone();
     let mut valid = if actor.yolo {
@@ -871,6 +878,7 @@ async fn run_skill(
             // Validation proves which content the Captain trusted; the rules
             // still decide whether it may be loaded now.
             let approval = if actor.yolo {
+                authorize::record_yolo(actor, call);
                 yolo_approval()
             } else if let Some(note) = admitted {
                 note

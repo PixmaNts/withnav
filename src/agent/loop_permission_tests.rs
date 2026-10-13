@@ -924,6 +924,8 @@ async fn rejecting_a_skill_validation_settles_every_held_sibling() {
         panic!("an unvalidated skill asks");
     };
     assert_eq!(request.tool, "skill");
+    assert_eq!(actor.skills.validation.snapshots.lock().unwrap().len(), 1);
+    assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
     let outcome = resolve_permission(
         &mut actor,
         request.id,
@@ -936,6 +938,7 @@ async fn rejecting_a_skill_validation_settles_every_held_sibling() {
     .unwrap();
     assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
     assert!(!ws.join("a.txt").exists(), "the held write never ran");
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
     for id in ["s1", "w1"] {
         let text = tool_result_of(&actor, id).unwrap();
         assert!(text.contains("not that skill"), "{id}: {text}");
@@ -1058,6 +1061,68 @@ fn skill_rows(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision>
         .into_iter()
         .filter(|row| row.tool == "skill")
         .collect()
+}
+
+#[tokio::test]
+async fn rule_denied_skill_snapshot_is_released_at_turn_end() {
+    let mut actor = actor_with_skill();
+    let snapshot = actor.skills.snapshot("helper").unwrap();
+    actor.skills.validation.approve(&snapshot, true).unwrap();
+    actor.end_skill_turn();
+    add_rule(&actor, "skill", "helper", Effect::Deny);
+    script(
+        &mut actor,
+        vec![
+            owned(&[("s1".into(), "skill".into(), json!({"name":"helper"}))]),
+            done("understood"),
+        ],
+    )
+    .await;
+    assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
+    assert_eq!(skill_rows(&actor)[0].outcome, Outcome::Denied);
+    assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn yolo_skill_load_records_history() {
+    let mut actor = actor_with_skill_and_flow("deny");
+    actor.yolo = true;
+    script(
+        &mut actor,
+        vec![
+            owned(&[("s1".into(), "skill".into(), json!({"name":"helper"}))]),
+            done("ok"),
+        ],
+    )
+    .await;
+    assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
+    let rows = skill_rows(&actor);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].approved_by.as_deref(), Some("yolo"));
+}
+
+#[tokio::test]
+async fn flow_notes_reach_requests_and_model_denials() {
+    for mode in ["ask", "deny"] {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new(mode))));
+        script(
+            &mut actor,
+            vec![owned(&[bash("b1", "echo hi")]), done("ok")],
+        )
+        .await;
+        let outcome = run(&mut actor).await;
+        if mode == "ask" {
+            let RunOutcome::PermissionRequired(request) = outcome else {
+                panic!("must ask")
+            };
+            assert!(request.reason.contains("flow asks"), "{}", request.reason);
+        } else {
+            assert!(tool_result_of(&actor, "b1")
+                .unwrap()
+                .contains("flow denied"));
+        }
+    }
 }
 
 #[tokio::test]

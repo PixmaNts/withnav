@@ -312,7 +312,7 @@ struct Walk {
     /// The entry budget is spent: nothing more is read, in any root.
     exhausted: bool,
     /// Canonical directories already walked.
-    seen_dirs: HashSet<String>,
+    seen_dirs: HashSet<PathBuf>,
     found: Vec<Skill>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -457,7 +457,7 @@ impl Walk {
         // One manifest reached by several routes (a `SKILL.md` that is a link
         // to another one, a directory linked twice) is one skill, at the best
         // rank any route gave it: it must never make its own id ambiguous.
-        let mut by_manifest: BTreeMap<String, Skill> = BTreeMap::new();
+        let mut by_manifest: BTreeMap<PathBuf, Skill> = BTreeMap::new();
         for skill in found {
             match by_manifest.get(&crate::tools::path_key(&skill.path)) {
                 Some(kept) if kept.rank <= skill.rank => {}

@@ -84,7 +84,7 @@ pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError
 pub(crate) fn path_within(path: &Path, root: &Path) -> bool {
     let path = crate::tools::path_key(path);
     let root = crate::tools::path_key(root);
-    path == root || path.starts_with(&format!("{}\\", root.trim_end_matches('\\')))
+    path.starts_with(root)
 }
 
 #[cfg(test)]

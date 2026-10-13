@@ -124,7 +124,7 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
 
     // The history records a workspace as the client wrote it; fold the spellings of one
     // directory together on its canonical path.
-    let mut seen: HashMap<String, (PathBuf, u64, Option<String>)> = HashMap::new();
+    let mut seen: HashMap<PathBuf, (PathBuf, u64, Option<String>)> = HashMap::new();
     for row in stored {
         let Ok(canonical) = std::fs::canonicalize(&row.workspace) else {
             continue;

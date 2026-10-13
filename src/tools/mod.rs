@@ -344,7 +344,7 @@ pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Comparison identity; display and filesystem access keep the canonical spelling.
-pub fn path_key(path: &Path) -> String {
+pub fn path_key(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         let text = path.to_string_lossy().replace('/', "\\");
@@ -358,11 +358,11 @@ pub fn path_key(path: &Path) -> String {
                         .is_some_and(u8::is_ascii_alphabetic)
             })
             .unwrap_or(&text);
-        plain.to_lowercase()
+        PathBuf::from(plain.to_lowercase())
     }
     #[cfg(unix)]
     {
-        path.to_string_lossy().into_owned()
+        path.to_path_buf()
     }
 }
 

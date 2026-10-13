@@ -10,6 +10,27 @@ fn fixture() -> Fixture {
     Fixture::new("packages/app")
 }
 
+#[cfg(unix)]
+#[test]
+fn discovers_distinct_non_utf8_skill_directories() {
+    use std::os::unix::ffi::OsStrExt;
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(
+        &root.join(std::ffi::OsStr::from_bytes(b"skill-\xff")),
+        "first",
+        "First skill",
+    );
+    add(
+        &root.join(std::ffi::OsStr::from_bytes(b"skill-\xfe")),
+        "second",
+        "Second skill",
+    );
+    let skills = load(&fx);
+    assert!(matches!(skills.resolve("first"), Resolution::Found(_)));
+    assert!(matches!(skills.resolve("second"), Resolution::Found(_)));
+}
+
 #[cfg(windows)]
 #[test]
 fn discovers_skill_manifest_across_the_long_path_boundary() {

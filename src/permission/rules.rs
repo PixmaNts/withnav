@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, OptionalExtension, Row};
+#[cfg(unix)]
+use rusqlite::OptionalExtension;
+use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
 
 use super::store::{path_text, Error, PermissionStore};
@@ -18,6 +20,41 @@ pub enum Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn accented_project_deny_matches_without_leaking_other_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ÉLODIE").join("project");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let store = PermissionStore::open(dir.path()).unwrap();
+        add(
+            &store,
+            "write",
+            "*",
+            Effect::Allow,
+            RuleScope::Project(other),
+        );
+        assert!(store
+            .matching("write", "target", &workspace, "build")
+            .unwrap()
+            .is_none());
+        let deny = add(
+            &store,
+            "write",
+            "*",
+            Effect::Deny,
+            RuleScope::Project(workspace.clone()),
+        );
+        let matched = store
+            .matching("write", "target", &workspace, "build")
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.id, deny.id);
+        assert_eq!(matched.effect, Effect::Deny);
+    }
 
     fn add(
         store: &PermissionStore,
@@ -382,6 +419,8 @@ fn path_pattern_key(value: &str) -> String {
         // separator spelling and case change.
         let value = value.strip_prefix(&literal(r"\\?\")).unwrap_or(value);
         crate::tools::path_key(Path::new(value))
+            .to_string_lossy()
+            .into_owned()
     } else {
         value.to_owned()
     }
@@ -559,20 +598,23 @@ impl PermissionStore {
         path_text(&workspace)?;
         let workspace = crate::tools::path_key(&workspace);
         #[cfg(windows)]
-        let project_scope = "lower(replace(replace(scope_value, '/', '\\'), '\\\\?\\', ''))=?3";
+        let project_scope = "1";
         #[cfg(unix)]
         let project_scope = "scope_value=?3";
         #[cfg(windows)]
         let resource = if file_action(action) {
-            &crate::tools::path_key(Path::new(resource))
+            crate::tools::path_key(Path::new(resource))
+                .to_string_lossy()
+                .into_owned()
         } else {
-            resource
+            resource.to_owned()
         };
-        Ok(self
-            .db()
-            .query_row(
-                &format!(
-                    "SELECT {COLUMNS} FROM permission_rules WHERE revoked_at IS NULL
+        #[cfg(windows)]
+        let limit = "";
+        #[cfg(unix)]
+        let limit = "LIMIT 1";
+        let sql = &format!(
+            "SELECT {COLUMNS} FROM permission_rules WHERE revoked_at IS NULL
              AND (?1 GLOB action_glob OR ?1 GLOB action_bare_glob)
              AND (?2 GLOB resource_glob OR ?2 GLOB resource_bare_glob)
               AND (scope='global' OR (scope='project' AND {project_scope})
@@ -580,11 +622,34 @@ impl PermissionStore {
              ORDER BY precision DESC,
                 CASE scope WHEN 'agent' THEN 2 WHEN 'project' THEN 1 ELSE 0 END DESC,
                 CASE effect WHEN 'deny' THEN 2 WHEN 'ask' THEN 1 ELSE 0 END DESC,
-                created_at DESC, id DESC LIMIT 1"
-                ),
-                params![action, resource, workspace, agent],
+                 created_at DESC, id DESC {limit}"
+        );
+        let db = self.db();
+        #[cfg(unix)]
+        {
+            Ok(db
+                .query_row(
+                    sql,
+                    params![action, resource, path_text(&workspace)?, agent],
+                    read_rule,
+                )
+                .optional()?)
+        }
+        #[cfg(windows)]
+        {
+            let mut statement = db.prepare(sql)?;
+            let rows = statement.query_map(
+                params![action, resource, path_text(&workspace)?, agent],
                 read_rule,
-            )
-            .optional()?)
+            )?;
+            for row in rows {
+                let rule = row?;
+                if !matches!(&rule.scope, RuleScope::Project(path) if crate::tools::path_key(path) != workspace)
+                {
+                    return Ok(Some(rule));
+                }
+            }
+            Ok(None)
+        }
     }
 }

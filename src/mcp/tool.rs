@@ -281,12 +281,27 @@ impl McpTool {
     pub(super) fn server_id(&self) -> &str {
         &self.server.id
     }
+    /// Builds a provider-safe tool. Errors name the tool redacted. A tool whose name carries
+    /// a configured secret is refused rather than renamed: its name would be sent back to
+    /// the server on every call, and any rename would still derive from the secret.
     pub(super) fn new(server: Arc<Server>, definition: rmcp::model::Tool) -> Result<Self, String> {
         let original = definition.name.to_string();
+        let secrets = server.secrets();
+        if server.redact(&original) != original {
+            return Err(format!(
+                "{}: tool name contains a configured secret",
+                server.redact(&original)
+            ));
+        }
         let parameters = normalize(Value::Object((*definition.input_schema).clone()))
             .map_err(|e| format!("{original}: {e}"))?;
+        let parameters = super::redaction::redact_value(&parameters, &secrets);
         let wire = wire_name(&server.id, &original);
-        let schema = json!({"description": format!("[mcp:{}] {}", server.id, definition.description.as_deref().unwrap_or("")), "parameters": parameters});
+        let description = super::redaction::redact(
+            definition.description.as_deref().unwrap_or(""),
+            &secrets,
+        );
+        let schema = json!({"description": format!("[mcp:{}] {description}", server.id), "parameters": parameters});
         Ok(Self {
             wire,
             original,

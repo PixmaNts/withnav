@@ -85,7 +85,9 @@ impl Tool for GlobTool {
                 }
                 None => cx.workspace.clone(),
             };
-            if crate::agent::permission_gate::sensitive_read(&requested) {
+            // Host-owned: the loop sets it from the session's yolo setting.
+            let trusted = cx.binding.as_ref().is_some_and(|binding| binding.yolo);
+            if !trusted && crate::agent::permission_gate::sensitive_read(&requested) {
                 return Err(denied(
                     "sensitive_path",
                     "sensitive search root: use read on individual files; each read is reviewed",
@@ -99,7 +101,7 @@ impl Tool for GlobTool {
             let roots = cx.read_roots();
             let canonical = validate_path(&roots, &requested)
                 .map_err(|_| denied("outside_project", crate::tools::OUTSIDE_SEARCH))?;
-            if crate::agent::permission_gate::sensitive_read(&canonical) {
+            if !trusted && crate::agent::permission_gate::sensitive_read(&canonical) {
                 return Err(denied(
                     "sensitive_path",
                     "sensitive search root: use read on individual files; each read is reviewed",
@@ -112,6 +114,7 @@ impl Tool for GlobTool {
                 limit,
                 cancel,
                 GLOB_MAX_DURATION + GLOB_TIMEOUT_MARGIN,
+                trusted,
                 || {},
             )
             .await
@@ -128,6 +131,7 @@ const GLOB_TIMEOUT_MARGIN: Duration = Duration::from_millis(500);
 /// timeout. On expiry the worker's token is cancelled (it stops at its next
 /// check) and the result says the search stopped on its time limit.
 /// `before_walk` runs on the worker after validation; tests use it to stall.
+#[allow(clippy::too_many_arguments)]
 async fn search(
     roots: Vec<PathBuf>,
     requested: PathBuf,
@@ -135,6 +139,7 @@ async fn search(
     limit: usize,
     cancel: CancellationToken,
     outer: Duration,
+    trusted_root: bool,
     before_walk: impl FnOnce() + Send + 'static,
 ) -> Result<ToolResult, ToolError> {
     let worker_cancel = cancel.child_token();
@@ -145,7 +150,14 @@ async fn search(
             return Err(ToolError::NotFound(root));
         }
         before_walk();
-        let walked = walk(&root, &matcher, &token, GLOB_MAX_VISITED, GLOB_MAX_DURATION);
+        let walked = walk(
+            &root,
+            &matcher,
+            &token,
+            GLOB_MAX_VISITED,
+            GLOB_MAX_DURATION,
+            trusted_root,
+        );
         if walked.stop == Stop::Canceled {
             return Ok(ToolResult::interrupted());
         }
@@ -249,6 +261,7 @@ fn walk(
     cancel: &CancellationToken,
     max_visited: usize,
     max_duration: Duration,
+    trusted_root: bool,
 ) -> Walked {
     let started = Instant::now();
     let mut out = Walked {
@@ -257,7 +270,7 @@ fn walk(
         visited: 0,
         stop: Stop::Done,
     };
-    if crate::agent::permission_gate::sensitive_read(root) {
+    if !trusted_root && crate::agent::permission_gate::sensitive_read(root) {
         out.sensitive_skipped = 1;
         return out;
     }
@@ -298,7 +311,13 @@ fn walk(
             }
             let name = entry.file_name();
             let path = entry.path();
-            if crate::agent::permission_gate::sensitive_read(&path) {
+            // A trusted root is not itself judged: only what is below it.
+            let below_root = if trusted_root {
+                path.strip_prefix(root).unwrap_or(&path)
+            } else {
+                &path
+            };
+            if crate::agent::permission_gate::sensitive_read(below_root) {
                 out.sensitive_skipped += 1;
                 continue;
             }
@@ -442,6 +461,33 @@ mod tests {
             .lines()
             .filter(|line| !line.contains("sensitive files skipped") && !line.is_empty())
             .collect()
+    }
+
+    // Given a sensitive directory holding a plain file and a credential
+    // When glob is asked for it, in normal mode and with the host's yolo binding
+    // Then only yolo may list the root, and the credential is still filtered
+    #[tokio::test]
+    async fn glob_trusts_a_sensitive_root_only_with_the_hosts_yolo_binding() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), ".ssh/notes.txt");
+        touch(tmp.path(), ".ssh/id_ed25519");
+        let ssh = tmp.path().join(".ssh");
+        let args = json!({"pattern": "*", "path": ssh.to_str().unwrap()});
+        let mut cx = cx(tmp.path());
+        let refused = run(&cx, args.clone()).await.unwrap_err();
+        assert!(refused.to_string().contains("sensitive search root"));
+        cx.binding = Some(crate::tools::DispatchBinding {
+            destination: ssh.canonicalize().unwrap(),
+            scratch: None,
+            script: None,
+            yolo: false,
+        });
+        assert!(run(&cx, args.clone()).await.is_err());
+        cx.binding.as_mut().unwrap().yolo = true;
+        let res = run(&cx, args).await.unwrap();
+        assert!(res.output.contains("notes.txt"), "{}", res.output);
+        assert!(!res.output.contains("id_ed25519"));
+        assert!(res.output.contains("sensitive files skipped"));
     }
 
     // Given a tree of sources and docs
@@ -657,10 +703,10 @@ mod tests {
         }
         let m = Matcher::new("**/*.txt").unwrap();
         let cancel = CancellationToken::new();
-        let by_count = walk(tmp.path(), &m, &cancel, 10, Duration::from_secs(60));
+        let by_count = walk(tmp.path(), &m, &cancel, 10, Duration::from_secs(60), false);
         assert_eq!(by_count.stop, Stop::VisitedLimit);
         assert_eq!(by_count.visited, 10);
-        let by_time = walk(tmp.path(), &m, &cancel, 1_000, Duration::ZERO);
+        let by_time = walk(tmp.path(), &m, &cancel, 1_000, Duration::ZERO, false);
         assert_eq!(by_time.stop, Stop::Timeout);
         let rendered = render(by_count, 200);
         assert_eq!(rendered.metadata["stopped"], "visited_limit");
@@ -679,7 +725,14 @@ mod tests {
         let m = Matcher::new("**/*.txt").unwrap();
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let walked = walk(tmp.path(), &m, &cancel, 1_000, Duration::from_secs(60));
+        let walked = walk(
+            tmp.path(),
+            &m,
+            &cancel,
+            1_000,
+            Duration::from_secs(60),
+            false,
+        );
         assert_eq!(walked.stop, Stop::Canceled);
         assert!(walked.paths.is_empty());
 
@@ -689,6 +742,7 @@ mod tests {
             &CancellationToken::new(),
             1_000,
             Duration::ZERO,
+            false,
         );
         assert_eq!(walked.stop, Stop::Timeout);
         assert!(walked.visited < 200);
@@ -710,6 +764,7 @@ mod tests {
             10,
             CancellationToken::new(),
             Duration::from_millis(100),
+            false,
             || std::thread::sleep(Duration::from_millis(1500)),
         )
         .await

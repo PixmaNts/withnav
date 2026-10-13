@@ -191,6 +191,23 @@ pub async fn inspect(
         },
         Some("Edit config.json; unknown keys are retained."),
     );
+    if let Ok(settings) = &settings {
+        match settings.yolo() {
+            Ok(true) => report.add(
+                "config.yolo",
+                Status::Warning,
+                "permissions: yolo (no permission control)",
+                Some("Set \"yolo\": false in config.json to restore permission control."),
+            ),
+            Ok(false) => {}
+            Err(error) => report.add(
+                "config.yolo",
+                Status::Failed,
+                error,
+                Some("Set \"yolo\" to true or false in config.json."),
+            ),
+        }
+    }
     let settings_document = settings
         .as_ref()
         .ok()
@@ -211,6 +228,7 @@ pub async fn inspect(
                     "agent",
                     "tui",
                     "compaction",
+                    "yolo",
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),

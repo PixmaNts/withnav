@@ -28,6 +28,7 @@ export interface WorkspaceEntry {
 }
 
 export interface SessionListEntry {
+  yolo?: boolean;
   bypass?: boolean;
   bypass_seq?: number;
   incarnation?: string | null;
@@ -48,6 +49,7 @@ export interface SessionListEntry {
 }
 
 export interface SessionSummary {
+  yolo?: boolean;
   bypass?: boolean;
   bypass_seq?: number;
   incarnation?: string | null;

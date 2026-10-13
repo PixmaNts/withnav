@@ -938,6 +938,7 @@ fn child_entry(status: &str, agent: Option<&str>, title: Option<&str>) -> Sessio
 fn subagent_parent() -> State {
     let tab = Tab {
         session: Some(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -1112,6 +1113,7 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
             ClientEvent::Metadata {
                 generation: generation.clone(),
                 result: Ok(SessionMetadata {
+                    yolo: false,
                     bypass: false,
                     bypass_seq: 0,
                     incarnation: None,
@@ -1838,6 +1840,7 @@ fn steps(s: &State) -> Vec<(String, String)> {
 }
 fn with_session(s: &mut State, id: &str) {
     s.session = Some(SessionMetadata {
+        yolo: false,
         bypass: false,
         bypass_seq: 0,
         incarnation: None,
@@ -2582,6 +2585,7 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     let meta = |g: &Generation, model: &str| ClientEvent::Metadata {
         generation: g.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -3893,6 +3897,7 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     let meta = ClientEvent::Metadata {
         generation: first.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -4034,6 +4039,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     let summary = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -4170,6 +4176,7 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
     let summary = |s: &State, seq: u64, agent: &str, variant: Option<&str>| ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -5048,6 +5055,7 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
     let old = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,

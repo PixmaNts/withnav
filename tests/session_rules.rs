@@ -232,7 +232,7 @@ async fn withnav_run_sends_the_rules_too() {
     std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
     std::fs::write(
         env.root.join("config/withnav/config.json"),
-        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+        if cfg!(windows) { json!({"agents":{"build":{"model":"mock/mock-model"}}, "permissions":{"scratch_dirs":[env.root.join("scratch")]}}).to_string() } else { r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#.to_owned() },
     )
     .unwrap();
     let models = env.root.join("models.json");
@@ -260,8 +260,9 @@ async fn withnav_run_sends_the_rules_too() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert!(sent[1]
-        .1
-        .contains(&std::env::temp_dir().join("withnav").display().to_string()));
+    #[cfg(unix)]
+    assert!(sent[1].1.contains("/tmp/withnav"));
+    #[cfg(windows)]
+    assert!(sent[1].1.contains("scratch"));
     assert!(sent[2].1.contains("global rule") && sent[2].1.contains("project rule"));
 }

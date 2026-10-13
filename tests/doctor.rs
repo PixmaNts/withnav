@@ -279,11 +279,7 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
                 assert_eq!(result.status, Status::Failed, "{id}/{category}");
                 assert_eq!(
                     result.category.as_deref(),
-                    Some(if cfg!(windows) && category == "unreachable" {
-                        "timeout"
-                    } else {
-                        category
-                    }),
+                    Some(category),
                     "{id}: {}",
                     report.human()
                 );
@@ -437,12 +433,13 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
         .any(|check| check.id.contains("workspace_trust") || check.id.contains("trust_file")));
     // The editor server is nav lsp, including after migration of a legacy path.
     let home = root.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
     #[cfg(unix)]
     let settings = home.join(".config/Code/User/settings.json");
     #[cfg(windows)]
     let settings = args.workspace.join(".vscode/settings.json");
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    let nav = home.join("nav");
+    let nav = home.join(if cfg!(windows) { "nav.exe" } else { "nav" });
     std::fs::write(&nav, "synthetic existing binary").unwrap();
     for (server_path, expected) in [
         (nav.clone(), Status::Ok),
@@ -547,7 +544,7 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     std::fs::create_dir_all(&home).unwrap();
     let (config, args) = fixture(&home.join(".config"), &base);
     let legacy = home.join(".config/navai");
-    let navigator = args.workspace.join(".navigator");
+    let navigator = args.workspace.canonicalize().unwrap().join(".navigator");
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::create_dir_all(&navigator).unwrap();
     let bin = home.join("bin");

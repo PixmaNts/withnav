@@ -722,7 +722,7 @@ impl FlowStore {
         Ok(())
     }
     fn publish_builtins(&self) {
-        let snapshot = super::builtin::definitions()
+        let snapshot = super::builtin::all_definitions()
             .into_iter()
             .filter_map(|(definition, templates)| {
                 let name = definition.flow.name.clone();
@@ -900,6 +900,14 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fallback_snapshot_keeps_permission_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        store.publish_builtins();
+        assert!(store.snapshot().contains_key("permission-default"));
+    }
+
     #[test]
     fn failed_reload_drops_revoked_admissions_and_refresh_retries() {
         let temp = tempfile::tempdir().unwrap();

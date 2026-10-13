@@ -154,7 +154,10 @@ impl Skills {
                 return Err(format!("skill_disabled: skill {name} is disabled"))
             }
             Resolution::Ambiguous(_) => {
-                return Err(format!("skill_ambiguous: skill {name} is ambiguous"))
+                return Err(format!(
+                    "skill_ambiguous: skill {name} is ambiguous: {:?}",
+                    self.ambiguous.get(name)
+                ))
             }
             _ => return Err(format!("skill_unknown: no listed skill with id {name:?}")),
         };

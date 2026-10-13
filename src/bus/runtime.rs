@@ -1579,6 +1579,7 @@ async fn runtime_loop(
                 status.resolve_pending_bypass(&actor, &inbox);
             }
             Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
+                actor.end_skill_turn();
                 if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
                     done(
                         crate::provider::AssistantMessage {
@@ -1637,6 +1638,7 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Err(err) => {
+                actor.end_skill_turn();
                 if let Some(done) = &completion {
                     done(
                         crate::provider::AssistantMessage {

@@ -75,6 +75,9 @@ impl SkillValidation {
 }
 
 pub fn snapshot(skill: &Skill) -> Result<SkillSnapshot, String> {
+    if std::fs::canonicalize(&skill.base_dir).map_err(|e| e.to_string())? != skill.base_dir {
+        return Err("skill directory changed since discovery".into());
+    }
     fn walk(
         root: &Path,
         dir: &Path,
@@ -155,4 +158,78 @@ pub fn snapshot(skill: &Skill) -> Result<SkillSnapshot, String> {
         instructions: body.into(),
         output,
     })
+}
+
+/// Legacy Captain attachments and earlier-turn skill bodies are conversation
+/// history, not live authority. Storage stays intact; only the model view changes.
+pub fn project_skill_history(
+    transcript: &[crate::provider::openai::ChatMessage],
+    current_start: Option<usize>,
+) -> Vec<crate::provider::openai::ChatMessage> {
+    use crate::provider::openai::ChatMessage;
+    transcript.iter().enumerate().map(|(index, message)| {
+        let mut message = message.clone();
+        let captain = message.is_captain_message();
+        let ChatMessage::User { content, .. } = &mut message else { return message; };
+        let current = current_start.is_some_and(|start| index >= start);
+        for (open, close) in [("<captain_selected_skill encoding=\"json\">", "</captain_selected_skill>"), ("<driver_selected_skill encoding=\"json\">", "</driver_selected_skill>")] {
+            let mut from = 0;
+            while let Some(offset) = content[from..].find(open) {
+                let start = from + offset;
+                let Some(offset) = content[start + open.len()..].find(close) else { content.truncate(start); break; };
+                let end = start + open.len() + offset;
+                let value = serde_json::from_str::<serde_json::Value>(&content[start + open.len()..end]).ok();
+                let historical = captain || !current;
+                if historical {
+                    let name = value.as_ref().and_then(|v| v["name"].as_str()).unwrap_or("unknown");
+                    let note = format!("[Historical, non-authorising host context: skill {name} was used earlier]");
+                    content.replace_range(start..end + close.len(), &note);
+                    from = start + note.len();
+                } else { from = end + close.len(); }
+            }
+        }
+        message
+    }).collect()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::provider::openai::{ChatMessage, UserProvenance};
+    #[test]
+    fn resumed_legacy_and_past_turn_blocks_cannot_authorize() {
+        let block = "<captain_selected_skill encoding=\"json\">{\"name\":\"review\",\"selected_by\":\"captain\",\"content\":\"SECRET SKILL BODY\"}</captain_selected_skill>";
+        let transcript = vec![
+            ChatMessage::User {
+                content: format!("old request\n{block}"),
+                provenance: UserProvenance::Captain,
+            },
+            ChatMessage::User {
+                content: block.into(),
+                provenance: UserProvenance::Navigator,
+            },
+            ChatMessage::User {
+                content: "new request".into(),
+                provenance: UserProvenance::Captain,
+            },
+            ChatMessage::User {
+                content: block.into(),
+                provenance: UserProvenance::Navigator,
+            },
+        ];
+        let resumed: Vec<ChatMessage> =
+            serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
+        let projected = project_skill_history(&resumed, Some(2));
+        assert!(!serde_json::to_string(&projected[..2])
+            .unwrap()
+            .contains("SECRET SKILL BODY"));
+        assert!(serde_json::to_string(&projected[3])
+            .unwrap()
+            .contains("SECRET SKILL BODY"));
+        assert!(
+            !serde_json::to_string(&project_skill_history(&resumed, None))
+                .unwrap()
+                .contains("SECRET SKILL BODY")
+        );
+    }
 }

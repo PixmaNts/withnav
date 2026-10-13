@@ -111,6 +111,9 @@ pub async fn run_agent(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, AgentError> {
     let budget = actor.watchdog_steps_left.take().unwrap_or(actor.max_steps);
+    if !actor.skill_turn_open {
+        actor.begin_skill_turn();
+    }
     run_steps(actor, observe, budget).await
 }
 
@@ -131,16 +134,27 @@ async fn run_steps(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
-    let state = RunState(actor);
-    run_steps_inner(&mut *state.0, observe, budget).await
+    let mut state = RunState(actor, false);
+    let outcome = run_steps_inner(&mut *state.0, observe, budget).await;
+    state.1 = true;
+    if matches!(
+        &outcome,
+        Err(_) | Ok(RunOutcome::Done(_) | RunOutcome::Interrupted | RunOutcome::WatchdogBoundary)
+    ) {
+        state.0.end_skill_turn();
+    }
+    outcome
 }
 
 /// An early error or dropped run cannot leave an inactive actor running.
-struct RunState<'a>(&'a mut AgentActor);
+struct RunState<'a>(&'a mut AgentActor, bool);
 
 impl Drop for RunState<'_> {
     fn drop(&mut self) {
         if self.0.state == AgentState::Running {
+            if !self.1 {
+                self.0.end_skill_turn();
+            }
             self.0.state = AgentState::Idle;
         }
     }
@@ -152,8 +166,11 @@ async fn run_steps_inner(
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
-    while let Some(id) = actor.selected_skill_snapshots.first().cloned() {
+    while let Some((generation, id)) = actor.selected_skill_snapshots.first().cloned() {
         actor.selected_skill_snapshots.remove(0);
+        if generation != actor.skill_turn_generation {
+            continue;
+        }
         let snapshot = actor
             .skills
             .validation
@@ -318,7 +335,6 @@ async fn run_steps_inner(
             actor.tool_allowed(crate::agent::response::ASK_TOOL),
         ) {
             StepOutcome::Done { response } => {
-                actor.skills.validation.begin_turn();
                 actor
                     .permission_context
                     .lock()
@@ -478,6 +494,7 @@ pub async fn resolve_permission_with_origin(
                 .cloned()
         });
         if actor.cancel.is_cancelled() {
+            actor.end_skill_turn();
             append_interrupted(actor, &call.id);
             return Ok(RunOutcome::Interrupted);
         }
@@ -506,11 +523,19 @@ pub async fn resolve_permission_with_origin(
                 None => ToolResult::error("skill_not_validated", "skill snapshot expired"),
             }
         } else {
+            let reason = match &decision {
+                PermissionDecision::Reject { message } => message.as_deref(),
+                PermissionDecision::Deny { message } => Some(message.as_str()),
+                _ => None,
+            }
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("not validated");
             ToolResult::error(
                 "skill_not_validated",
                 format!(
-                    "skill {} was not loaded: not validated",
-                    call.args["name"].as_str().unwrap_or("unknown")
+                    "skill {} was not loaded: {}",
+                    call.args["name"].as_str().unwrap_or("unknown"),
+                    reason
                 ),
             )
         };

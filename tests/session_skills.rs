@@ -135,7 +135,7 @@ async fn both_skill_paths_hold_the_snapshot_until_captain_validation() {
                     "/v1/sessions/{id}/permissions/{}",
                     request.payload["request_id"].as_str().unwrap()
                 ),
-                Some(&json!({"decision":decision})),
+                Some(&json!({"decision":decision,"message":"DISTINCTIVE_CAPTAIN_REJECTION"})),
             )
             .await;
             assert_eq!(status, axum::http::StatusCode::OK, "{response}");
@@ -145,6 +145,9 @@ async fn both_skill_paths_hold_the_snapshot_until_captain_validation() {
             .await;
             let text = provider.bodies().join("\n");
             assert_eq!(text.contains("STEP ONE"), decision != "reject");
+            if decision == "reject" {
+                assert!(text.contains("DISTINCTIVE_CAPTAIN_REJECTION"));
+            }
             let store =
                 withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
             assert_eq!(

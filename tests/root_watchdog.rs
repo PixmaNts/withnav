@@ -355,7 +355,12 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "keep looking").await;
     let sub = service.subscribe(id, None).await.unwrap();
-    let first = collect_until(sub, |e| e.kind == "turn.end").await;
+    let first = common::server::collect_until_within(
+        sub,
+        |e| e.kind == "turn.end",
+        Duration::from_secs(120),
+    )
+    .await;
     assert_eq!(
         first.iter().filter(|e| e.kind == "llm.response").count(),
         500
@@ -394,9 +399,11 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
     }];
     service.send(command).await.unwrap();
     let sub = service.subscribe(id, None).await.unwrap();
-    let second = collect_until(sub, |e| {
-        e.kind == "turn.end" && e.seq > first.last().unwrap().seq
-    })
+    let second = common::server::collect_until_within(
+        sub,
+        |e| e.kind == "turn.end" && e.seq > first.last().unwrap().seq,
+        Duration::from_secs(120),
+    )
     .await;
     assert_eq!(
         second.iter().filter(|e| e.kind == "llm.response").count(),
@@ -426,7 +433,12 @@ async fn absent_instinct_caps_at_five_hundred_and_announces_once() {
     let id = service.create_session(&ws, None, false).await.unwrap();
     let sub = service.subscribe(id, None).await.unwrap();
     send_text(&service, id, "keep looking").await;
-    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    let events = common::server::collect_until_within(
+        sub,
+        |e| e.kind == "turn.end",
+        Duration::from_secs(120),
+    )
+    .await;
     assert_eq!(
         events.iter().filter(|e| e.kind == "llm.response").count(),
         500

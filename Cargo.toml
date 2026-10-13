@@ -22,7 +22,6 @@ name = "nav"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }
 instinct-flow = { path = "crates/instinct-flow" }
 tokio = { version = "1.53", features = [
     "rt-multi-thread",
@@ -117,7 +116,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
     "Win32_System_Registry",
-    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

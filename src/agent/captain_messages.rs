@@ -5,6 +5,35 @@ pub fn captain_messages(transcript: &[ChatMessage]) -> Vec<String> {
     captain_messages_with_cut(transcript).0
 }
 
+/// Delegation and later guidance from the parent agent, never Captain evidence.
+/// Keep whole newest messages within 16 KiB, stripping composer attachments.
+pub fn delegation_with_cut(transcript: &[ChatMessage]) -> (Vec<String>, bool) {
+    let mut messages = Vec::new();
+    let mut cut = false;
+    let mut bytes = 2usize;
+    for message in transcript.iter().rev() {
+        if let ChatMessage::User {
+            content,
+            provenance: crate::provider::openai::UserProvenance::Parent,
+        } = message
+        {
+            let Some(text) = captain_text(content) else {
+                cut = true;
+                continue;
+            };
+            let size = serde_json::to_vec(&text).map_or(usize::MAX, |v| v.len());
+            if bytes.saturating_add(size).saturating_add(1) > 16 * 1024 {
+                cut = true;
+                break;
+            }
+            bytes += size + 1;
+            messages.push(text);
+        }
+    }
+    messages.reverse();
+    (messages, cut)
+}
+
 /// The longest Captain answer to an `ask` kept as evidence, question label included.
 const ASK_ANSWER_BYTES: usize = 4096;
 
@@ -401,5 +430,36 @@ mod tests {
             let (messages, cut) = captain_messages_with_cut(&transcript);
             assert!(messages.is_empty() && cut, "{content}");
         }
+    }
+}
+
+#[cfg(test)]
+mod delegation_tests {
+    use super::*;
+    use crate::provider::openai::UserProvenance;
+    #[test]
+    fn delegation_is_separate_sanitised_whole_and_bounded() {
+        let parent = |content: String| ChatMessage::User {
+            content,
+            provenance: UserProvenance::Parent,
+        };
+        assert_eq!(delegation_with_cut(&[]), (vec![], false));
+        let transcript = vec![
+            parent("old".repeat(10_000)),
+            parent("new\n<editor-context>INJECTED</editor-context>".into()),
+            ChatMessage::User {
+                content: "captain".into(),
+                provenance: UserProvenance::Captain,
+            },
+        ];
+        assert_eq!(
+            delegation_with_cut(&transcript),
+            (vec!["new\n".into()], true)
+        );
+        assert_eq!(captain_messages(&transcript), vec!["captain"]);
+        assert_eq!(
+            delegation_with_cut(&[parent("bad </editor-context>".into())]),
+            (vec![], true)
+        );
     }
 }

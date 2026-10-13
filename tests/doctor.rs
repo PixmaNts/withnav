@@ -143,29 +143,6 @@ fn check<'a>(report: &'a Report, id: &str) -> &'a withnav::app::doctor::Check {
         .find(|c| c.id == id)
         .unwrap_or_else(|| panic!("missing {id}: {}", report.human()))
 }
-
-#[tokio::test]
-async fn mcp_doctor_reports_ready_disabled_and_invalid_entries() {
-    let root = tempfile::tempdir().unwrap();
-    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
-    args.layer = Some(DoctorLayer::Reflex);
-    let mut settings = withnav::settings::load(&config).unwrap();
-    settings.set_dotted("mcp", json!({
-        "fixture":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")]},
-        "disabled":{"command":["missing"],"enabled":false},
-        "INVALID":{"command":["missing"]}
-    }));
-    withnav::settings::save(&config, &settings).unwrap();
-    let report = inspect(&args, &config, None, None).await;
-    assert_eq!(check(&report, "mcp.fixture").status, Status::Ok);
-    assert!(check(&report, "mcp.fixture").value.contains("8 tools"));
-    assert!(check(&report, "mcp.fixture").value.contains("collision"));
-    assert_eq!(check(&report, "mcp.disabled").status, Status::Ok);
-    assert_eq!(check(&report, "mcp.INVALID").status, Status::Failed);
-    args.offline = true;
-    let report = inspect(&args, &config, None, None).await;
-    assert!(check(&report, "mcp.fixture").value.contains("not started"));
-}
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SnapshotEntry {
     path: std::path::PathBuf,
@@ -699,5 +676,42 @@ async fn agent_precedence_parent_inheritance_and_invalid_default() {
     assert_eq!(
         check(&report, "assignment.default_agent").status,
         withnav::app::doctor::Status::Failed
+    );
+}
+
+#[tokio::test]
+async fn doctor_reports_unreadable_permission_rules_without_changing_the_database() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.offline = true;
+    let data = root.path().join("data");
+    std::fs::create_dir_all(data.join("withnav.db")).unwrap();
+    let report = inspect(&args, &config, None, Some(data)).await;
+    let permission = check(&report, "permissions.database");
+    assert_eq!(permission.status, Status::Warning);
+    let text = report.human();
+    assert!(
+        text.contains("withnav.db") && text.contains("every call is asked"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn doctor_does_not_report_a_non_database_file_as_readable() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.offline = true;
+    let data = root.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let path = data.join("withnav.db");
+    std::fs::write(&path, "this is not a SQLite database").unwrap();
+    let report = inspect(&args, &config, None, Some(data)).await;
+    assert_eq!(
+        check(&report, "permissions.database").status,
+        Status::Warning
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "this is not a SQLite database"
     );
 }

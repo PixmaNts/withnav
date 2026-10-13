@@ -1062,3 +1062,90 @@ async fn a_deny_rule_refuses_a_validated_skill_on_both_entry_points() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn degraded_skill_requests_refuse_always_without_consuming_the_request() {
+    for validated in [false, true] {
+        let env = env();
+        let provider = spawn_capturing_provider(vec![skill_call("ask-matt"), answer("done")]).await;
+        let state = if validated {
+            state(&env, &provider, "default", false)
+        } else {
+            TestServerConfig::mock(&env.root, &provider.url)
+                .rules_home(&env.home)
+                .state()
+        };
+        // Validation remains readable, but initialising the permission history fails.
+        let path = env.root.join("data/withnav.db");
+        withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "DROP TABLE permission_decisions; CREATE TABLE permission_decisions (id INTEGER);",
+        )
+        .unwrap();
+        drop(db);
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        assert!(state
+            .session_summary(id)
+            .await
+            .unwrap()
+            .permissions_unavailable
+            .is_some());
+        let router = withnav::server::app(state.clone());
+        let sub = state.subscribe(id, None).await.unwrap();
+        state
+            .send(captain_command(id, "load ask-matt".into()))
+            .await
+            .unwrap();
+        let events = collect_until(sub, |e| e.kind == "permission.requested").await;
+        let request = events
+            .iter()
+            .find(|e| e.kind == "permission.requested")
+            .unwrap();
+        assert!(
+            request.payload.get("always_label").is_none(),
+            "{validated}: {}",
+            request.payload
+        );
+        assert_eq!(
+            request.payload["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("Validate skill"),
+            !validated
+        );
+
+        let url = format!(
+            "/v1/sessions/{id}/permissions/{}",
+            request.payload["request_id"].as_str().unwrap()
+        );
+        let (status, _) = common::server::request_json(
+            &router,
+            "POST",
+            &url,
+            Some(&json!({"decision":"allow_always"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT);
+        let resolved = common::server::stored_events(&state, id, "permission.resolved").await;
+        assert!(
+            resolved.is_empty(),
+            "a refused answer must not resolve the request"
+        );
+        let (status, body) = common::server::request_json(
+            &router,
+            "POST",
+            &url,
+            Some(&json!({"decision":"allow_once"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let sub = state.subscribe(id, None).await.unwrap();
+        collect_until(sub, |e| e.kind == "task.done").await;
+        assert!(
+            provider.bodies().join("\n").contains("STEP ONE"),
+            "Once still loads the skill"
+        );
+        state.close_session(id).await.unwrap();
+    }
+}

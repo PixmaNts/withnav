@@ -4,24 +4,27 @@ use futures::future::BoxFuture;
 use std::sync::Mutex;
 
 struct Fake {
-    requests: Mutex<Vec<JudgeInput>>,
+    requests: Mutex<Vec<PruneBatch>>,
     useful: f64,
     full: f64,
     fail: bool,
 }
-impl Judge for Fake {
-    fn judge<'a>(
+impl DecisionModel for Fake {
+    fn decide<'a>(
         &'a self,
-        input: &'a JudgeInput,
+        state: &'a str,
+        questions: &'a Questions,
         _: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Answers, String>> {
+    ) -> BoxFuture<'a, Result<Answers, crate::provider::systemone::DecisionError>> {
         Box::pin(async move {
-            self.requests.lock().unwrap().push(input.clone());
+            self.requests.lock().unwrap().push(PruneBatch {
+                state: state.into(),
+                questions: questions.clone(),
+            });
             if self.fail {
-                return Err("offline".into());
+                return Err(crate::provider::systemone::DecisionError::Unavailable);
             }
-            Ok(input
-                .questions
+            Ok(questions
                 .keys()
                 .map(|key| {
                     (
@@ -244,4 +247,27 @@ async fn mutation_heads_and_pinned_errors_skills_and_references_bypass_scoring()
     assert!(serde_json::to_string(&transcript)
         .unwrap()
         .contains(&"b".repeat(8000)));
+}
+
+#[tokio::test]
+async fn pruning_uses_the_shared_scripted_decision_model() {
+    use crate::provider::systemone::ScriptedDecisionModel;
+    let transcript = exchange(0, "read", json!({"path":"a.rs"}), &"x".repeat(12_000));
+    let answer = [
+        ("useful_t0".into(), Answer::Noul { noul: 0.0 }),
+        ("full_t0".into(), Answer::Noul { noul: 0.0 }),
+    ]
+    .into_iter()
+    .collect();
+    let model = ScriptedDecisionModel::new([Ok(answer)]);
+    let _ = prune(
+        &transcript,
+        0,
+        transcript.len(),
+        None,
+        &model,
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
 }

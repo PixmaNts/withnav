@@ -59,7 +59,7 @@ export function toolLine(call: ToolCall): ToolLine {
   const gate = m.permission_gate;
   if (gate && typeof gate === "object" && gate.policy_version === 1) {
     const source = gate.source;
-    const approval = source === "instinct" || source === "jev" ? "auto · instinct"
+    const approval = source === "instinct" ? "auto · instinct"
       : source === "metacognition" ? "auto · metacognition"
       : source === "captain" || source === "driver" ? "approved · Captain" : "";
     if (approval) meta = meta ? `${meta} · ${approval}` : approval;

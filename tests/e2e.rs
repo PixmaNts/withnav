@@ -143,6 +143,8 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
     // Every tool is the subject here, not permissions: one rule lets them run.
     actor
         .permission_store
+        .as_ref()
+        .unwrap()
         .add(
             "*",
             "*",

@@ -21,7 +21,7 @@ say what the agent may execute.
   The approved call runs once, before another model request, and its real result enters the transcript;
   a denial enters it as a denied result. Approval text is never a tool result, and nothing the model or a
   chat message says can grant. This is built: see the permission gate in `agent/permissions.rs`.
-- **Jev only evaluates the exceptions of `plan`.** The fast decision layer is asked, within a short
+- **Instinct only evaluates the exceptions of `plan`.** The fast decision layer is asked, within a short
   deadline, whether a `write`, `edit` or `bash` of the `plan` agent conforms to its role (a write of a
   `*.md` file is exempt). Only a clear "conforms" lets the call run without the driver; anything else,
   including a timeout or no answer, becomes a permission request. It is advisory, never a block and never
@@ -47,5 +47,5 @@ see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.
 - A role cannot be bypassed by prompt text, and a permission cannot be obtained by persuasion: the two
   are enforced in different places and fail separately.
 - The permission gate and the role guard have landed: `build` asks for every effect, and `plan` asks
-  Jev first about the ones its prompt does not allow.
+  Instinct first about the ones its prompt does not allow.
 - The event catalog grew by `session.agent_changed`, and then by `permission.requested` and `permission.resolved`.

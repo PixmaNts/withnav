@@ -200,6 +200,7 @@ pub fn catalogue() -> Catalogue {
         ("conversation.digest", Text),
         ("conversation.last_turns", Array),
         ("conversation.captain_messages", Array),
+        ("conversation.delegation", Array),
         ("intent.record", Text),
         ("workspace.root", Text),
         ("workspace.branch", Text),
@@ -237,7 +238,7 @@ mod tests {
         let c = catalogue();
         c.validate().unwrap();
         assert_eq!(c.triggers.len(), 7);
-        assert_eq!(c.inputs.len(), 15);
+        assert_eq!(c.inputs.len(), 16);
         assert_eq!(c.actions.len(), 8);
         assert_eq!(
             serde_json::to_value(&c).unwrap()["limits"]["flow_bytes"],

@@ -81,7 +81,9 @@ pub struct AgentActor {
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
     /// The permission rules and the decision table. A session opens the
     /// shared database; an actor built outside one keeps a private, empty one.
-    pub permission_store: Arc<crate::permission::store::PermissionStore>,
+    pub permission_store: Option<Arc<crate::permission::store::PermissionStore>>,
+    /// The open error when the shared store is unavailable, exposed to clients.
+    pub permissions_unavailable: Option<String>,
     /// WithNav's own configuration and data directories, which the fixed floor protects.
     pub permission_dirs: PermissionDirs,
     /// The session the decision table files this actor's decisions under.
@@ -101,7 +103,7 @@ pub struct AgentActor {
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
     /// The Instinct judge compaction asks which old tool outputs still matter.
-    pub compaction_judge: Option<Arc<dyn super::compaction::judge::Judge>>,
+    pub compaction_decision: Option<Arc<dyn crate::provider::systemone::DecisionModel>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
@@ -238,10 +240,11 @@ impl AgentActor {
             compaction_chunk_tokens: 64_000,
             compaction_progress: None,
             tool_flows: None,
-            permission_store: Arc::new(
+            permission_store: Some(Arc::new(
                 crate::permission::store::PermissionStore::in_memory()
                     .expect("an in-memory permission database opens"),
-            ),
+            )),
+            permissions_unavailable: None,
             permission_dirs: PermissionDirs::machine(),
             permission_session: String::new(),
             permission_turn: String::new(),
@@ -250,7 +253,7 @@ impl AgentActor {
             scratch_roots: Vec::new(),
             yolo: false,
             bypass: Arc::default(),
-            compaction_judge: None,
+            compaction_decision: None,
             transcript: Vec::new(),
             compaction: None,
             registry,
@@ -594,8 +597,8 @@ impl AgentActor {
 
     /// A question nobody answers ends as `cancelled` in the decision table.
     fn cancel_pending_decision(&self, request: &PermissionRequest) {
-        if let Some(id) = request.decision_id {
-            if let Err(error) = self.permission_store.update_outcome(
+        if let (Some(id), Some(store)) = (request.decision_id, &self.permission_store) {
+            if let Err(error) = store.update_outcome(
                 id,
                 crate::permission::decisions::Outcome::Cancelled,
                 None,

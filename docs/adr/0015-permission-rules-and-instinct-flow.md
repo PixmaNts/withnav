@@ -148,7 +148,7 @@ rule (a skill that says "push the branch" pushes without a question), never a `d
 - Any flow may allow, workspace flows included. The documentation warns that a workspace flow can
   open permissions, which is why every flow must be validated (below).
 - A failed run (timeout, provider error, invalid answer) falls back to **`apply_rule`**: the rule's
-  result applies, `allow` runs and `ask` asks. A Jev outage does not turn into a stream of
+  result applies, `allow` runs and `ask` asks. An Instinct outage does not turn into a stream of
   questions. This replaces "a blocking flow asks the Captain" as the default fallback. Each
   flow's `apply_rule` is resolved to `allow` or `ask_captain` before the strictest answer is
   chosen, and no flow verdict at all also applies the rule.
@@ -229,7 +229,7 @@ flow, Captain, bypass, yolo), and tool availability per agent.
 
 - The number of questions is driven by the Captain's rules, not by the gate's caution, and
   decreases over the life of a project.
-- A Jev outage leaves the rules in force instead of asking about every call.
+- An Instinct outage leaves the rules in force instead of asking about every call.
 - A validated workspace flow or skill can open permissions. That is the price of trusting what the
   Captain validated, and it is documented.
 - Bash remains unconfined and nothing claims otherwise.
@@ -243,9 +243,11 @@ Decisions taken while implementing this ADR that refine it:
   own messages ask for it. Otherwise the Captain is asked and can approve once. A flow on disk,
   even a copy of the built-in one, can make that answer stricter but never grant it. The check is
   asked once per call and its answer is passed to the flows.
-- **Permission database.** A session whose permission database cannot be opened does not start: a
-  missing table would silently drop every `deny` rule. Yolo sessions start anyway, since they read
-  no rule.
+- **Permission database.** If the database cannot open, the session starts in degraded mode and
+  shows the error. Calls are judged as having no rule: the fixed floor and permission flow still
+  apply, and the flow may allow. Bypass cannot answer, Always is not offered, and decisions cannot
+  be saved. This deliberately permits flow-approved actions while written deny rules are invisible.
+  Yolo remains unchecked.
 - **Skills.** Validation proves which content the Captain trusted; it does not override rules.
   Loading a validated skill is decided with action `skill` and the skill's name: a `deny` rule
   refuses it. With no matching rule it gets an effective allow, but the permission flow still runs
@@ -253,7 +255,9 @@ Decisions taken while implementing this ADR that refine it:
   rule can also be allowed by the flow. A skill the Captain selects counts as the Captain's request.
 - **Subagents.** A child's permission flow sees its parent's Captain messages, captured when the
   child is created and refreshed when the parent steers it. The delegated prompt and the steering
-  text are the parent agent's words, never the Captain's.
+  text are supplied separately as `conversation.delegation`, with attachments removed and a 16 KiB
+  whole-message budget. The ordinary permission flow may treat delegation as a request; the
+  protected check still uses only the Captain's own messages.
 - **Answers to `ask`.** The Captain's answer to an `ask` counts as the Captain's words, labelled
   with the assistant's question, after editor selections and skill blocks attached to it are
   removed.

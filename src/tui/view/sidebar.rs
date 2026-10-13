@@ -198,12 +198,23 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                 Span::styled(
                     if tab.session.as_ref().is_some_and(|m| m.yolo) {
                         "⚠ YOLO"
+                    } else if tab
+                        .session
+                        .as_ref()
+                        .is_some_and(|m| m.permissions_unavailable.is_some())
+                    {
+                        "⚠ Permission rules unavailable"
                     } else if tab.bypass {
                         "⚠ bypass"
                     } else {
                         status
                     },
-                    if tab.bypass || tab.session.as_ref().is_some_and(|m| m.yolo) {
+                    if tab.bypass
+                        || tab
+                            .session
+                            .as_ref()
+                            .is_some_and(|m| m.yolo || m.permissions_unavailable.is_some())
+                    {
                         theme.warning().add_modifier(ratatui::style::Modifier::BOLD)
                     } else {
                         status_style

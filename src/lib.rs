@@ -3,6 +3,7 @@ pub mod app;
 pub mod bus;
 pub mod error;
 pub mod flows;
+pub mod mcp;
 pub mod navigator;
 pub mod paths;
 pub mod permission;

@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ### Added
 
+- **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`;
+  ready tools appear as `mcp__server__tool` in new sessions, with permission review,
+  cancellation, deadlines and bounded results. Servers are shared, restarted after crashes
+  and cleaned up on shutdown. `nav doctor` reports configuration and startup diagnostics.
+
 - **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and
   new sessions run every tool call without asking you: no approval prompt, no Instinct or
   Metacognition review, no plan-role check, and no protected-config or credential floor. Each call

@@ -366,6 +366,18 @@ pub fn path_key(path: &Path) -> PathBuf {
     }
 }
 
+/// Resolve filesystem aliases before comparing identity; the pure key remains I/O-free.
+pub(crate) fn resolved_path_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        path_key(&canonical_path(path).unwrap_or_else(|_| path.to_path_buf()))
+    }
+    #[cfg(unix)]
+    {
+        path_key(path)
+    }
+}
+
 /// Relative file names shown by tools follow the glob/Git separator convention.
 pub(crate) fn relative_path_text(path: &Path) -> String {
     #[cfg(windows)]

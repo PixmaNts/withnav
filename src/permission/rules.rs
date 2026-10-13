@@ -644,7 +644,7 @@ impl PermissionStore {
             )?;
             for row in rows {
                 let rule = row?;
-                if !matches!(&rule.scope, RuleScope::Project(path) if crate::tools::path_key(path) != workspace)
+                if !matches!(&rule.scope, RuleScope::Project(path) if crate::tools::resolved_path_key(path) != workspace)
                 {
                     return Ok(Some(rule));
                 }

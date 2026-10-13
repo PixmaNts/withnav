@@ -929,7 +929,11 @@ mod tests {
         let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
         let directory = store.directory(Location::Global).unwrap();
         std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join("broken.toml"), "x".repeat(MAX_FLOW_BYTES + 1)).unwrap();
+        std::fs::write(
+            directory.join("broken.toml"),
+            "x".repeat(MAX_FLOW_BYTES + 1),
+        )
+        .unwrap();
         assert!(store.reload().is_err());
         assert!(store.snapshot().contains_key("permission-default"));
     }

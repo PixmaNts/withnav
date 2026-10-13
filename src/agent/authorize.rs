@@ -277,7 +277,13 @@ pub(super) async fn authorize(
         _ = actor.cancel.cancelled() => return Authorized::Interrupted,
         decision = decide::decide(&input, &flows) => decision,
     };
-    if let Some(note) = flows.reason.lock().unwrap_or_else(|e| e.into_inner()).take().filter(|note| !note.is_empty()) {
+    if let Some(note) = flows
+        .reason
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .filter(|note| !note.is_empty())
+    {
         match &mut decision.verdict {
             Verdict::Deny { message, .. } => *message = note,
             Verdict::AskCaptain { reason, .. } => *reason = note,

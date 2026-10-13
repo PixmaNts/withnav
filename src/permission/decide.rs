@@ -626,9 +626,9 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
     let any_unsavable =
         items.iter().any(|item| item.proposal.is_none()) && input.call.name == "bash";
     let mut proposals: Vec<RuleProposal> = Vec::new();
-    if !any_unsavable {
+    if !any_unsavable && items.iter().all(|item| item.rule.is_none()) {
         for item in &items {
-            if item.result != RuleResult::Allow {
+            if item.result == RuleResult::NoRule {
                 if let Some(proposal) = &item.proposal {
                     if !proposals.contains(proposal) {
                         proposals.push(proposal.clone());
@@ -935,6 +935,15 @@ mod tests {
         let decision = f.decide_full(Control::Bypass, &write, 1, &flows);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
         assert_eq!((flows.check_calls.get(), flows.flow_calls.get()), (1, 0));
+    }
+
+    #[test]
+    fn written_ask_has_no_always_proposal() {
+        let f = fixture();
+        f.add("bash", "*", Effect::Ask);
+        let decision = f.decide(Control::Normal, &bash("git push origin feature"));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        assert!(proposals(&decision).is_empty(), "{decision:?}");
     }
 
     #[test]

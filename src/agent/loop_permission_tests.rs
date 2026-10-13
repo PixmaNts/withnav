@@ -1061,6 +1061,32 @@ fn skill_rows(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision>
 }
 
 #[tokio::test]
+async fn yolo_skill_load_records_history() {
+    let mut actor = actor_with_skill_and_flow("deny");
+    actor.yolo = true;
+    script(&mut actor, vec![owned(&[("s1".into(), "skill".into(), json!({"name":"helper"}))]), done("ok")]).await;
+    assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
+    let rows = skill_rows(&actor);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].approved_by.as_deref(), Some("yolo"));
+}
+
+#[tokio::test]
+async fn flow_notes_reach_requests_and_model_denials() {
+    for mode in ["ask", "deny"] {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new(mode))));
+        script(&mut actor, vec![owned(&[bash("b1", "echo hi")]), done("ok")]).await;
+        let outcome = run(&mut actor).await;
+        if mode == "ask" {
+            let RunOutcome::PermissionRequired(request) = outcome else { panic!("must ask") };
+            assert!(request.reason.contains("flow asks"), "{}", request.reason);
+        } else {
+            assert!(tool_result_of(&actor, "b1").unwrap().contains("flow denied"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn bypass_answering_a_skill_rule_question_settles_its_pending_row() {
     let mut actor = actor_with_skill_and_flow("apply");
     let request = waiting_on_a_skill_rule(&mut actor).await;

@@ -47,6 +47,7 @@ pub(super) enum Authorized {
 /// compiled-in protected check. Without a flow runtime the rule applies and
 /// nothing can establish a protected request.
 struct SessionFlows {
+    reason: std::sync::Mutex<Option<String>>,
     hook: Option<Arc<dyn ToolCallFlows>>,
     call: ToolCall,
     agent: Option<String>,
@@ -110,8 +111,14 @@ impl PermissionFlows for SessionFlows {
                 }
                 Ok(answer) => match answer.verdict {
                     FlowVerdict::Allow => FlowAnswer::Allow,
-                    FlowVerdict::Deny { .. } => FlowAnswer::Deny,
-                    FlowVerdict::AskCaptain { .. } => FlowAnswer::AskCaptain,
+                    FlowVerdict::Deny { note } => {
+                        *self.reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
+                        FlowAnswer::Deny
+                    }
+                    FlowVerdict::AskCaptain { note, .. } => {
+                        *self.reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
+                        FlowAnswer::AskCaptain
+                    }
                 },
                 // A flow outage leaves the rules in force.
                 Err(_) => FlowAnswer::ApplyRule,
@@ -230,6 +237,7 @@ pub(super) async fn authorize(
     }
     let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
     let flows = SessionFlows {
+        reason: std::sync::Mutex::new(None),
         hook: actor.tool_flows.clone(),
         call: call.clone(),
         agent: actor.role.as_ref().map(|role| role.id.as_str().to_owned()),
@@ -264,11 +272,18 @@ pub(super) async fn authorize(
         repeats,
         validated,
     };
-    let decision = tokio::select! {
+    let mut decision = tokio::select! {
         biased;
         _ = actor.cancel.cancelled() => return Authorized::Interrupted,
         decision = decide::decide(&input, &flows) => decision,
     };
+    if let Some(note) = flows.reason.lock().unwrap_or_else(|e| e.into_inner()).take().filter(|note| !note.is_empty()) {
+        match &mut decision.verdict {
+            Verdict::Deny { message, .. } => *message = note,
+            Verdict::AskCaptain { reason, .. } => *reason = note,
+            Verdict::Run { .. } => {}
+        }
+    }
     match decision.verdict.clone() {
         Verdict::Run { approved_by } => {
             settle_row(

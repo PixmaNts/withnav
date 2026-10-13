@@ -304,6 +304,7 @@ pub(super) async fn authorize(
             request.reason = reason;
             request.requires_captain = actor.permission_store.is_none() || !bypassable(&decision);
             request.always_label = always_label(&always);
+            request.reusable_approval = !always.is_empty() && actor.permission_store.is_some();
             request.permission_gate = Some(Box::new(evidence(
                 "captain",
                 &decision,

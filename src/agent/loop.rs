@@ -437,6 +437,12 @@ pub async fn resolve_permission_with_origin(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
     let decision = decision.current();
+    if decision == PermissionDecision::AllowAlways
+        && matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. })
+            if request.id == request_id && !request.reusable_approval)
+    {
+        return Err(PermissionError::Stale.into());
+    }
     if matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.id == request_id && request.tool == "skill" && !request.skill_rule)
     {
         return resolve_skill(actor, decision, origin, observe).await;
@@ -914,6 +920,7 @@ async fn run_skill(
                     .unwrap_or("build"),
             );
             request.requires_captain = true;
+            request.reusable_approval = actor.permission_store.is_some();
             request.reason = format!(
                 "Validate skill {} at {} for this version",
                 snapshot.name, snapshot.location

@@ -296,13 +296,19 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
 
     // A loop is checked after the rules so that a `deny` is never hidden by a
     // question; bypass skips it.
-    if let Some(store) = input.store.filter(|_| input.repeats >= DOOM_LOOP_THRESHOLD) {
-        let rule = store.matching(
-            "doom_loop",
-            &input.call.name,
-            &input.cx.workspace,
-            input.agent,
-        )?;
+    if input.repeats >= DOOM_LOOP_THRESHOLD {
+        let rule = input
+            .store
+            .map(|store| {
+                store.matching(
+                    "doom_loop",
+                    &input.call.name,
+                    &input.cx.workspace,
+                    input.agent,
+                )
+            })
+            .transpose()?
+            .flatten();
         trace.doom_loop = true;
         match rule {
             Some(rule) if rule.effect == Effect::Deny => {
@@ -321,7 +327,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
                 });
             }
             Some(rule) if rule.effect == Effect::Allow => {}
-            _ if input.control == Control::Bypass => {}
+            _ if input.control == Control::Bypass && input.store.is_some() => {}
             _ => {
                 return Ok(ask(
                     format!(

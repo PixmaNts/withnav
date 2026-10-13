@@ -169,8 +169,23 @@ pub async fn inspect(
     if let Some(data) = &data {
         let path = data.join("withnav.db");
         if path.exists() || (data.exists() && !data.is_dir()) {
-            match rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
-                Ok(_) => report.add("permissions.database", Status::Ok, path.display().to_string(), None),
+            let readable = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|db| {
+                    db.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))?;
+                    for (table, columns) in [
+                        ("permission_rules", "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at,action_glob,resource_glob,action_bare_glob,resource_bare_glob,precision"),
+                        ("permission_decisions", "id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by"),
+                        ("validations", "id,kind,name,location,content_sha256,validated_at,revoked_at"),
+                    ] {
+                        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0))?;
+                        if exists {
+                            db.prepare(&format!("SELECT {columns} FROM {table} LIMIT 1"))?.query([])?.next()?;
+                        }
+                    }
+                    Ok(())
+                });
+            match readable {
+                Ok(()) => report.add("permissions.database", Status::Ok, format!("{}: readable (initialisation and writes not tested)", path.display()), None),
                 Err(error) => report.add("permissions.database", Status::Warning,
                     format!("{}: {error}", path.display()),
                     Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled.")),

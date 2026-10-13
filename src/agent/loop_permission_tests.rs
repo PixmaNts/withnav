@@ -1302,3 +1302,28 @@ async fn delegation_allows_an_ordinary_action_but_never_a_protected_write() {
         RunOutcome::PermissionRequired(_)
     ));
 }
+
+#[tokio::test]
+async fn unavailable_rules_still_stop_identical_calls_under_bypass() {
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+    actor.permission_store = None;
+    actor.bypass.lock().unwrap().enabled = true;
+    script(
+        &mut actor,
+        vec![
+            owned(&[
+                bash("b1", "echo same"),
+                bash("b2", "echo same"),
+                bash("b3", "echo same"),
+            ]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("the third call must ask")
+    };
+    assert_eq!(request.tool_call_id, "b3");
+    assert!(request.requires_captain && request.always_label.is_none());
+    assert!(request.reason.contains("3 times"));
+}

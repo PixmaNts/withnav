@@ -9,6 +9,20 @@ pub mod server;
 pub mod sse;
 pub mod watchdog;
 
+/// Explicit roots keep subprocesses away from real Known Folders on Windows.
+pub fn isolate(command: &mut std::process::Command, root: &std::path::Path) {
+    let config = root.join("config/withnav");
+    let data = root.join("data/withnav");
+    command
+        .env("WITHNAV_CONFIG_DIR", &config)
+        .env("WITHNAV_DATA_DIR", &data);
+    #[cfg(windows)]
+    {
+        assert!(config.starts_with(root));
+        assert!(data.starts_with(root));
+    }
+}
+
 /// An isolated canonical root with empty workspace and home directories.
 pub struct TestEnv {
     _tmp: tempfile::TempDir,

@@ -15,6 +15,9 @@ pub(crate) const APP_NAME: &str = "withnav";
 /// WithNav's data dir (`~/.local/share/withnav` on Linux), when the home
 /// directory can be resolved.
 pub fn data_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("WITHNAV_DATA_DIR") {
+        return Some(PathBuf::from(path));
+    }
     ProjectDirs::from("", "", APP_NAME).map(|dirs| dirs.data_dir().to_path_buf())
 }
 

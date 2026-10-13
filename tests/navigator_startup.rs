@@ -86,7 +86,9 @@ async fn startup_does_not_wait_for_model_discovery() {
     )
     .unwrap();
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(command.as_std_mut(), root.path());
+    let mut child = command
         .args(["lsp", "--stdio"])
         .arg("--models")
         .arg(&models)
@@ -150,3 +152,4 @@ async fn startup_does_not_wait_for_model_discovery() {
     );
     let _ = child.start_kill();
 }
+mod common;

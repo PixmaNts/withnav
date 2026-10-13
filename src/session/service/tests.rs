@@ -142,17 +142,7 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
         r#"{"agents":{"build":{"model":"mock/old","variant":"off"}}}"#,
     )
     .unwrap();
-    std::fs::write(
-        dir.path().join("cfg/auth.json"),
-        r#"{"mock":{"api_key":"test"}}"#,
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(
-        dir.path().join("cfg/auth.json"),
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
+    crate::provider::auth::set_key(&dir.path().join("cfg"), "mock", "test").unwrap();
     std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/old":{"provider":"mock","model":"old","context_window":128000}}}"#).unwrap();
     let barrier = Arc::new(crate::session::run_command::Barrier::default());
     *service.preparation_barrier.lock().unwrap() = Some(barrier.clone());

@@ -192,6 +192,69 @@ pub async fn inspect(
         Some("Edit config.json; unknown keys are retained."),
     );
     if let Ok(settings) = &settings {
+        let empty_settings = crate::settings::Settings::default();
+        let manager = crate::mcp::McpManager::start(if args.offline {
+            // Offline inspection must not launch configured commands.
+            &empty_settings
+        } else {
+            settings
+        });
+        if args.offline {
+            for (id, entry) in settings.mcp() {
+                report.add(
+                    format!("mcp.{id}"),
+                    if entry.is_ok() {
+                        Status::Warning
+                    } else {
+                        Status::Failed
+                    },
+                    entry
+                        .err()
+                        .unwrap_or_else(|| "configured; not started (offline)".into()),
+                    None,
+                );
+            }
+        } else {
+            let budget = settings
+                .mcp()
+                .into_iter()
+                .filter_map(|(_, c)| c.ok())
+                .filter(|c| c.enabled)
+                .map(|c| c.startup_timeout_ms)
+                .max()
+                .unwrap_or(0)
+                .min(30_000);
+            let deadline = Instant::now() + Duration::from_millis(budget + 100);
+            while manager.statuses().iter().any(|s| s.state == "starting")
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            for status in manager.statuses() {
+                report.add(
+                    format!("mcp.{}", status.server_id),
+                    match status.state {
+                        "ready" | "disabled" => Status::Ok,
+                        "starting" => Status::Warning,
+                        _ => Status::Failed,
+                    },
+                    format!(
+                        "{}; {} tools; skipped: {}; {}; stderr: {}",
+                        status.state,
+                        status.tool_count,
+                        status.skipped_tools.join(", "),
+                        status.error.as_deref().unwrap_or(""),
+                        if status.state == "failed" {
+                            &status.stderr_tail
+                        } else {
+                            ""
+                        }
+                    ),
+                    None,
+                );
+            }
+        }
+        manager.shutdown().await;
         match settings.yolo() {
             Ok(true) => report.add(
                 "config.yolo",
@@ -229,6 +292,7 @@ pub async fn inspect(
                     "tui",
                     "compaction",
                     "yolo",
+                    "mcp",
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),

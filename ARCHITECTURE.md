@@ -22,6 +22,7 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
    ├─ agent/       the coding-agent loop (the cognition runs on it)
    ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
+   ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
@@ -36,6 +37,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
+| `mcp/` | global stdio configuration (`config.rs`), shared `McpManager`, bounded discovery/process-group supervision (`connection.rs`), provider-safe schemas and cancellable bounded calls (`tool.rs`) | permission policy, session persistence, HTTP transport, live refresh |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
@@ -343,6 +345,17 @@ subagent text as untrusted and never treats it as a Captain turn.
 
 ## State on disk
 
+MCP declarations live only in the global `config.json` under `mcp`. Connections, restart
+counters, tool inventories and bounded stderr tails are memory-only. Environment references
+are resolved only for child launch, never saved to configuration, history or events; declared
+environment values and their interpolated components are redacted before output truncation
+or stderr eviction (including chunk boundaries). Application subscribers exclude rmcp events
+even under verbose user filters because dependency diagnostics can include raw wire payloads.
+Wire-name collisions are resolved across the ready inventory in server-id/original-name order,
+keeping the first and reporting skipped definitions. No workspace MCP
+configuration is loaded. Config changes require a service restart; new sessions snapshot only
+currently ready tools, and existing registries stay frozen, including across connection restarts.
+
 WithNav writes the new paths below. During 0.7, absent `.withnav/` directories
 fall back to `.navai/` then `.navigator/`; old config/data paths and `navai.db` /
 `navai.jsonl` migrate without overwriting new files. `NAVAI_*` remains a warned
@@ -539,6 +552,12 @@ sources rather than deriving assignments themselves. Configuration editors and f
 the later 0.6 scope, not this contract.
 
 ## Where new code goes
+
+- MCP configuration and environment isolation belong in `mcp/config.rs`; transport supervision
+  and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result
+  conversion in `mcp/tool.rs`. The session service owns one manager and `session/actor.rs`
+  installs its ready snapshot before role/tool filtering. Shutdown joins supervision tasks and
+  kills child process groups. MCP adds no event kind in the stdio delivery.
 
 - Workspace visibility belongs in `session/store.rs` (`hidden_workspaces`, canonical paths, cleared on session creation); its bearer-protected HTTP actions and canonical workspace matching live in `server/web.rs`. Workspace deletion uses `Service::delete`, never direct SQL session deletion.
 

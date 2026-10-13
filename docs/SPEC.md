@@ -1152,7 +1152,9 @@ output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content 
 when no text exists; resource links include URI/name; image/audio content is a placeholder.
 `isError` becomes `mcp_tool_error` with the server as `plugin_id`. MCP result text remains
 untrusted and grants no authorization. MCP uses the ordinary permission rule model without
-MCP-specific exceptions (no rule = ask). Always saves a global tool / `*` allow rule.
+MCP-specific exceptions. With no matching rule, the default is ask; the permission flow may still
+allow the call, for example when the Captain asked for it. Without a flow that answers, WithNav
+asks. Always saves a global tool / `*` allow rule.
 Yolo skips every check.
 
 Version 0.1 does not require:
@@ -2205,7 +2207,8 @@ The central success criterion is not feature count. It is that one small, owned 
 # Permission review evidence
 
 > **Status: historical.** This is the evidence of the per-call review that ADR 0015 removed. Stored
-> events written before it keep this shape and stay readable. New events write `policy_version: 3`:
+> events written before it keep this shape and stay readable. New non-yolo events write
+> `policy_version: 3`; yolo tool-event evidence still carries `policy_version: 2`. Version 3 records:
 > `source` and `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, `validation`), `reason`,
 > `rule_id`, `effect`, `flow_verdict` and `floor`.
 

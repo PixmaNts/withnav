@@ -270,7 +270,8 @@ are redacted (the flows' secret detection) before any field is bounded.
 
 A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, or
 `validation` for a validated skill no rule covers) and the
-`permission_gate` evidence (`policy_version: 3`, rule id, flow verdict, floor) on `tool.pre_call` and
+`permission_gate` evidence (normally `policy_version: 3`, rule id, flow verdict, floor; yolo
+tool-event evidence still carries `policy_version: 2`) on `tool.pre_call` and
 `tool.post_call`; a `deny` rule or a flow `deny` settles it as `permission_denied` with `denied_by`.
 Every decision is a row of `permission_decisions` in `withnav.db` (`pending`, then `allowed`,
 `denied`, `cancelled` on a stop or new message, `expired` on resume), filed under the session and the

@@ -239,16 +239,18 @@ flow, Captain, bypass, yolo), and tool availability per agent.
 Decisions taken while implementing this ADR that refine it:
 
 - **Protected writes.** A write to `config.json`, `withnav.db` or the global flows directory runs
-  only when the protected check compiled into the binary answers that the Captain's own messages
-  ask for it. A flow on disk, even a copy of the built-in one, can make that answer stricter but
-  never grant it. The check is asked once per call and its answer is passed to the flows.
+  automatically only when the protected check compiled into the binary answers that the Captain's
+  own messages ask for it. Otherwise the Captain is asked and can approve once. A flow on disk,
+  even a copy of the built-in one, can make that answer stricter but never grant it. The check is
+  asked once per call and its answer is passed to the flows.
 - **Permission database.** A session whose permission database cannot be opened does not start: a
   missing table would silently drop every `deny` rule. Yolo sessions start anyway, since they read
   no rule.
 - **Skills.** Validation proves which content the Captain trusted; it does not override rules.
   Loading a validated skill is decided with action `skill` and the skill's name: a `deny` rule
-  refuses it, an `ask` rule asks, and with no matching rule it loads, recorded as
-  `approved_by: validation`. A skill the Captain selects counts as the Captain's request.
+  refuses it. With no matching rule it gets an effective allow, but the permission flow still runs
+  and can ask or deny; `approved_by: validation` is recorded when that default applies. An `ask`
+  rule can also be allowed by the flow. A skill the Captain selects counts as the Captain's request.
 - **Subagents.** A child's permission flow sees its parent's Captain messages, captured when the
   child is created and refreshed when the parent steers it. The delegated prompt and the steering
   text are the parent agent's words, never the Captain's.
@@ -265,4 +267,3 @@ Decisions taken while implementing this ADR that refine it:
   not gated by validation.
 - **Bash.** The floor's checks on bash are best effort: literal path words, redirection targets and
   output options. Variables and globs are not expanded.
-

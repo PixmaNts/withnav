@@ -29,7 +29,8 @@ makes the list of questions shorter.
 A `bash` line is split into its commands (pipes, `&&`, `;`, subshells) and each is checked on its
 own; the strictest answer wins. A line WithNav cannot parse matches only a `deny` rule on `*`, and
 **Always** is never offered for it. MCP tools ([MCP servers](mcp-servers.md)) are decided like any
-other tool: with no rule, they ask.
+other tool: with no matching rule, the default is ask. The permission flow may still allow the
+call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
 
 ## Rules
 
@@ -82,7 +83,11 @@ What **Always** saves:
 | `write src/main.rs` | `write` / the exact file path | this project |
 | a file outside the project | the file rule, plus `external_directory` / its folder | this project |
 | `fetch https://docs.rs/serde` | `fetch` / `https://docs.rs/*` | this project |
-| an MCP tool or any other tool | the tool name / `*` | every project |
+| a skill rule question | `skill` / the exact skill name | every project |
+| an MCP tool or another tool not listed above | the tool name / `*` | every project |
+
+On a skill-validation question, **Always** stores a validation of that exact content (its hash),
+not a rule.
 
 Change or remove a saved rule with `nav permissions`. A subagent's requests are answered in its
 parent's conversation.

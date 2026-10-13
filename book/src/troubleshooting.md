@@ -98,8 +98,9 @@ The gateway has no usable key. Run `nav auth set <provider>`, or export the vari
 
 ### Permission prompts for a command you trust
 
-Answer **Always**: the rule shown on the button is saved, and the same command does not ask again
-in this project. You can also add a rule yourself, for example
+Answer **Always** to save the allow rule shown on the button. Later calls still go through the
+fixed floor, the repeated-call check and the permission flow's danger check.
+You can also add a rule yourself, for example
 `nav permissions add bash 'cargo test *' allow`. See [Permissions](permissions.md). Do not use
 bypass to avoid prompts you do not understand.
 

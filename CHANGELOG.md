@@ -12,7 +12,9 @@ Permissions chapter of the guide.
 
 - **Permission rules.** A rule says what happens to a tool call (tool, resource pattern with `*`,
   `allow` / `ask` / `deny`) in one project, every project or for one agent. The most precise rule
-  wins, a `deny` always stops the call, and there are no default rules: with no rule, a call asks.
+  wins, a `deny` always stops the call, and there are no default rules. With no matching rule,
+  the default is ask; the permission flow may still allow the call, for example when the Captain
+  asked for it. Without a flow that answers, WithNav asks.
   Rules live in `withnav.db` and are revoked, never deleted.
 - **`nav permissions`**: `list`, `add`, `revoke` and `history` for rules and decisions; `validate`,
   `validations` and `revoke-validation` for flows and skills.
@@ -40,7 +42,9 @@ Permissions chapter of the guide.
   unsafe: use it only on a machine you can afford to lose.
 - **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`; ready tools
   appear as `mcp__<server>__<tool>` in new sessions and go through your permission rules like any
-  other tool (with no rule, they ask; Always saves a global rule). Calls are cancellable, have
+  other tool. With no matching rule, the default is ask; the permission flow may still allow the
+  call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
+  Always saves a global rule. Calls are cancellable, have
   deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
   shutdown. `nav doctor` reports configuration and startup diagnostics.
 
@@ -75,7 +79,8 @@ Permissions chapter of the guide.
 - **Grants.** "Allow for this folder / site", "Allow WithNav config for this session" and
   "Allow this skill's scripts on this machine" are no longer offered. `grants.json`,
   `skill-grants.json` and `flows-trust.json` are no longer read; their content is not imported.
-  Older clients' answers still work and count as Once (`deny` as Reject).
+  Only older clients' folder and configuration-session answers count as Once. A legacy
+  skill-machine answer is refused as stale; legacy `deny` maps to Reject.
 - The `nav doctor` live checks `live.instinct.role_guard` and `live.instinct.permission`.
 
 ## [0.7.8] - 2026-10-12

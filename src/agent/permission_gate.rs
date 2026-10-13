@@ -36,44 +36,7 @@ pub struct Overrides {
     pub outside: bool,
 }
 
-/// Credential names are host facts, independent of a model's classification.
-pub const SENSITIVE_NAMES: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".netrc",
-    "auth.json",
-    "keyrings",
-    ".aws",
-    "gcloud",
-    "credentials",
-    "credentials.json",
-    "application_default_credentials.json",
-    ".env*",
-    "*id_rsa*",
-    "*id_ed25519*",
-    "*id_ecdsa*",
-    "*.pem",
-    "*.key",
-    "*.keyring",
-];
-
-pub fn sensitive_read(path: &std::path::Path) -> bool {
-    static MATCHER: std::sync::OnceLock<globset::GlobSet> = std::sync::OnceLock::new();
-    let matcher = MATCHER.get_or_init(|| {
-        let mut builder = globset::GlobSetBuilder::new();
-        for pattern in SENSITIVE_NAMES {
-            builder.add(
-                globset::GlobBuilder::new(pattern)
-                    .case_insensitive(true)
-                    .build()
-                    .expect("fixed sensitive pattern"),
-            );
-        }
-        builder.build().expect("fixed sensitive matcher")
-    });
-    path.components()
-        .any(|part| matcher.is_match(std::path::Path::new(part.as_os_str())))
-}
+pub use crate::permission::floor::{sensitive_read, SENSITIVE_NAMES};
 
 pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Overrides {
     let mut flags = Overrides::default();

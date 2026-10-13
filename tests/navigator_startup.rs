@@ -145,8 +145,11 @@ async fn startup_does_not_wait_for_model_discovery() {
         announced["params"]["port"].as_u64().is_some(),
         "{announced}"
     );
+    // Discovery is delayed 20 s, so finishing well under that proves startup did not wait for
+    // it. The bound leaves room for process start-up: a fresh `nav.exe` on the 2026-10-13
+    // GitHub Windows runner took 3.9 s to announce (passing runs before that were faster).
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(10),
         "startup waited for discovery: {:?}",
         started.elapsed()
     );

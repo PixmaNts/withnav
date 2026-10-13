@@ -26,6 +26,7 @@ pub struct SkillSnapshot {
 pub struct SkillValidation {
     pub data_dir: Option<PathBuf>,
     pub snapshots: Mutex<BTreeMap<String, SkillSnapshot>>,
+    pub turn_snapshots: Mutex<std::collections::BTreeSet<String>>,
     pub approved: Mutex<BTreeMap<String, String>>,
     pub active: Mutex<Option<(String, String)>>,
 }
@@ -66,6 +67,24 @@ impl SkillValidation {
         Ok(())
     }
     pub fn begin_turn(&self) {
+        let mut snapshots = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
+        for id in std::mem::take(
+            &mut *self
+                .turn_snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ) {
+            snapshots.remove(&id);
+        }
+        for id in self
+            .approved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            snapshots.remove(id);
+        }
+        drop(snapshots);
         self.approved
             .lock()
             .unwrap_or_else(|e| e.into_inner())

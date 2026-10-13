@@ -23,7 +23,13 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use super::judge::{Judge, JudgeInput};
+use crate::provider::systemone::DecisionModel;
+
+#[derive(Debug, Clone)]
+struct PruneBatch {
+    state: String,
+    questions: Questions,
+}
 use crate::provider::openai::{ChatMessage, UserProvenance};
 use crate::provider::systemone::{Answer, Answers, Question, Questions};
 
@@ -241,7 +247,7 @@ fn probability(answers: &Answers, key: &str) -> Option<f64> {
     }
 }
 
-fn request_bytes(input: &JudgeInput) -> usize {
+fn request_bytes(input: &PruneBatch) -> usize {
     serde_json::to_vec(
         &json!({"model":"typesafe/jev-1.13", "state":input.state,"questions":input.questions}),
     )
@@ -256,13 +262,13 @@ pub async fn prune(
     first: usize,
     end: usize,
     earlier: Option<&str>,
-    judge: &dyn Judge,
+    decision: &dyn DecisionModel,
     cancel: &CancellationToken,
 ) -> Option<Vec<ChatMessage>> {
     let pins = pinned(transcript);
     let pairs = pairs(transcript);
     let state = state(transcript, earlier)?;
-    let mut input = JudgeInput {
+    let mut input = PruneBatch {
         state,
         questions: Questions::new(),
     };
@@ -288,7 +294,7 @@ pub async fn prune(
                 },
             );
         }
-        let trial = JudgeInput {
+        let trial = PruneBatch {
             state: input.state.clone(),
             questions: next,
         };
@@ -317,7 +323,7 @@ pub async fn prune(
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => return None,
-            result = tokio::time::timeout(std::time::Duration::from_millis(2500), judge.judge(batch,cancel)) => result,
+            result = tokio::time::timeout(std::time::Duration::from_millis(2500), decision.decide(&batch.state, &batch.questions, cancel)) => result,
         };
         answers.extend(result.ok()?.ok()?);
     }

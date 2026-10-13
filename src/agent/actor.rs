@@ -103,7 +103,7 @@ pub struct AgentActor {
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
     /// The Instinct judge compaction asks which old tool outputs still matter.
-    pub compaction_judge: Option<Arc<dyn super::compaction::judge::Judge>>,
+    pub compaction_decision: Option<Arc<dyn crate::provider::systemone::DecisionModel>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
@@ -253,7 +253,7 @@ impl AgentActor {
             scratch_roots: Vec::new(),
             yolo: false,
             bypass: Arc::default(),
-            compaction_judge: None,
+            compaction_decision: None,
             transcript: Vec::new(),
             compaction: None,
             registry,

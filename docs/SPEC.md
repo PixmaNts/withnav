@@ -2228,7 +2228,7 @@ Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_ga
 }
 ```
 
-Legacy `jev` sources and metadata keys remain readable until 0.8; new events write `instinct`.
+New events write `instinct` as the layer source.
 
 `source` is `instinct`, `metacognition` or `captain`. Verdicts are validated typed Instinct answers, not
 the deterministic effective classification. Override names are fixed. Unknown model ids, verdicts

@@ -5478,7 +5478,7 @@ fn an_acceptance_of_an_unknown_operation_is_not_labelled_with_this_tabs_alias() 
 #[test]
 fn approval_evidence_survives_live_and_replay() {
     let mut script = Script::new();
-    let gate = json!({"policy_version":1,"source":"jev","verdicts":{"effect":"read_only","scope":"inside","risk":"low"}});
+    let gate = json!({"policy_version":1,"source":"instinct","verdicts":{"effect":"read_only","scope":"inside","risk":"low"}});
     script.raw("tool.pre_call",json!({"tool_call_id":"review","name":"bash","args":{"command":"ls"},"permission_gate":gate}));
     script.raw("tool.post_call",json!({"tool_call_id":"review","name":"bash","status":"ok","output":"done","metadata":{"permission_gate":gate}}));
     for _ in 0..2 {

@@ -412,7 +412,11 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
     let (status, list) = request_json(
         &app,
         "GET",
-        &format!("/v1/sessions?workspace={workspace}"),
+        &format!("/v1/sessions?{}", {
+            let mut url = reqwest::Url::parse("http://localhost").unwrap();
+            url.query_pairs_mut().append_pair("workspace", &workspace);
+            url.query().unwrap().to_owned()
+        }),
         None,
     )
     .await;

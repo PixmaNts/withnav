@@ -1019,26 +1019,26 @@ mod tests {
             Floor::Credential(_)
         ));
         assert!(matches!(
-            bash_floor(&f.cx, &format!("echo x > {root}/config/config.json")),
+            bash_floor(&f.cx, &format!("echo x > \"{root}/config/config.json\"")),
             Floor::Protected(_)
         ));
         assert!(matches!(
-            bash_floor(&f.cx, &format!("cp a {root}/data/withnav.db")),
+            bash_floor(&f.cx, &format!("cp a \"{root}/data/withnav.db\"")),
             Floor::Protected(_)
         ));
         // Reading is free.
         assert_eq!(
-            bash_floor(&f.cx, &format!("cat {root}/config/config.json")),
+            bash_floor(&f.cx, &format!("cat \"{root}/config/config.json\"")),
             Floor::None
         );
         assert_eq!(
-            bash_floor(&f.cx, &format!("sqlite3 {root}/data/other.db .tables")),
+            bash_floor(&f.cx, &format!("sqlite3 \"{root}/data/other.db\" .tables")),
             Floor::None
         );
         assert!(matches!(
             bash_floor(
                 &f.cx,
-                &format!("sqlite3 {root}/data/withnav.db 'drop table x'")
+                &format!("sqlite3 \"{root}/data/withnav.db\" 'drop table x'")
             ),
             Floor::Protected(_)
         ));
@@ -1058,7 +1058,10 @@ mod tests {
         let f = fixture();
         let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         assert!(matches!(
-            bash_floor(&f.cx, &format!("cp {root}/config/config.json x; cat .env")),
+            bash_floor(
+                &f.cx,
+                &format!("cp \"{root}/config/config.json\" x; cat .env")
+            ),
             Floor::Credential(_)
         ));
         let opaque = "if true; then cat .env; fi";
@@ -1214,7 +1217,7 @@ mod tests {
     fn output_options_and_read_write_redirections_are_writes() {
         let f = fixture();
         let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
-        let config = format!("{root}/config/config.json");
+        let config = format!("\"{root}/config/config.json\"");
         for line in [
             format!("sort -o {config} in"),
             format!("sort -uo {config} in"),
@@ -1286,7 +1289,7 @@ mod tests {
     fn attached_and_separate_output_targets_meet_every_check() {
         let f = fixture();
         let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
-        let config = format!("{root}/config/config.json");
+        let config = format!("\"{root}/config/config.json\"");
         for line in [
             "sort -o.env input".to_owned(),
             "sort -o .env input".to_owned(),

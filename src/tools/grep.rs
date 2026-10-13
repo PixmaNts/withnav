@@ -162,6 +162,15 @@ async fn rg_search(
     cancel: &CancellationToken,
 ) -> Result<ToolResult, ToolError> {
     let mut command = rg_command(pattern, root);
+    rg_search_command(pattern, root, cancel, &mut command).await
+}
+
+async fn rg_search_command(
+    pattern: &str,
+    root: &Path,
+    cancel: &CancellationToken,
+    command: &mut tokio::process::Command,
+) -> Result<ToolResult, ToolError> {
     compile_pattern(pattern)?;
     command
         .stdout(std::process::Stdio::piped())
@@ -524,15 +533,12 @@ mod tests {
     async fn rg_match_limit_reports_partial_instead_of_silently_dropping_extra_match() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("short"), "x\n".repeat(MAX_MATCHES + 1)).unwrap();
-        let result = search_with(
-            Engine::Rg,
-            "x".into(),
-            tmp.path().into(),
-            CancellationToken::new(),
-            false,
-        )
-        .await
-        .unwrap();
+        // Relative output keeps the byte cap independent of the temporary root length.
+        let mut command = rg_command("x", Path::new("short"));
+        command.current_dir(tmp.path());
+        let result = rg_search_command("x", tmp.path(), &CancellationToken::new(), &mut command)
+            .await
+            .unwrap();
         assert_eq!(result.metadata["partial"], "match limit");
         assert!(result.output.contains("partial results: match limit"));
         assert_eq!(

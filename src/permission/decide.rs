@@ -1314,7 +1314,10 @@ mod tests {
     #[test]
     fn output_options_and_read_write_redirections_ask_under_bypass_and_allow_rules() {
         let f = fixture();
-        let config = crate::tools::relative_path_text(&f.root().join("config/config.json"));
+        let config = format!(
+            "\"{}\"",
+            crate::tools::relative_path_text(&f.root().join("config/config.json"))
+        );
         f.add("bash", "*", Effect::Allow);
         f.add("bash", "sort *", Effect::Allow);
         for line in [

@@ -430,10 +430,16 @@ mod tests {
         ) -> (StatusCode, Value) {
             let request = axum::http::Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/v1/flows/{endpoint}?workspace={}",
-                    workspace.display()
-                ))
+                .uri(format!("/v1/flows/{endpoint}?workspace={}", {
+                    let mut url = reqwest::Url::parse("http://localhost").unwrap();
+                    url.query_pairs_mut()
+                        .append_pair("workspace", &workspace.to_string_lossy());
+                    url.query()
+                        .unwrap()
+                        .strip_prefix("workspace=")
+                        .unwrap()
+                        .to_owned()
+                }))
                 .header("host", "127.0.0.1:8080")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()))

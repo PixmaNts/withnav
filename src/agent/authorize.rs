@@ -424,7 +424,7 @@ pub(super) fn save_always(actor: &AgentActor, always: &[RuleProposal]) -> Result
         .ok_or("permission rules unavailable")?
         .add_all(&rules, RuleOrigin::Always)
         .map(|rules| rules.into_iter().map(|rule| rule.id).collect())
-        .map_err(|error| error.to_string())
+        .map_err(|error| decisions::bounded_error(&error.to_string()))
 }
 
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {

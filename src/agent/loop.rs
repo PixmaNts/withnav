@@ -419,6 +419,33 @@ pub async fn resolve_permission(
     .await
 }
 
+/// Saves the rules of an "Always" answer to the pending request `request_id`
+/// before its resolution is published, so that the event can say whether
+/// they were saved. The outcome is kept on the request, and
+/// [`resolve_permission_with_origin`] uses it instead of saving again.
+/// Returns the error when the rules were not saved; `None` when they were, or
+/// when the answer saves no rule (a skill validation, a stopped turn).
+pub fn save_pending_always(actor: &mut AgentActor, request_id: ulid::Ulid) -> Option<String> {
+    if actor.cancel.is_cancelled() {
+        return None;
+    }
+    let Some(PendingInteraction::Permission { request, .. }) = &actor.pending else {
+        return None;
+    };
+    if request.id != request_id
+        || request.always.is_empty()
+        || (request.tool == "skill" && !request.skill_rule)
+    {
+        return None;
+    }
+    let saved = authorize::save_always(actor, &request.always);
+    let error = saved.as_ref().err().cloned();
+    if let Some(PendingInteraction::Permission { request, .. }) = &mut actor.pending {
+        request.always_saved = Some(saved);
+    }
+    error
+}
+
 /// Whether bypass may answer the pending request: one raised by a rule `ask`
 /// or the permission flow, never the fixed floor, a loop, or a skill validation.
 pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
@@ -460,7 +487,7 @@ pub async fn resolve_permission_with_origin(
         _ => return Err(PermissionError::Stale.into()),
     }
     let Some(PendingInteraction::Permission {
-        request,
+        mut request,
         call,
         remaining_calls,
         destination,
@@ -492,11 +519,19 @@ pub async fn resolve_permission_with_origin(
         PermissionDecision::AllowOnce | PermissionDecision::AllowAlways => {
             let mut answer = answer.unwrap_or_default();
             if decision == PermissionDecision::AllowAlways {
-                match authorize::save_always(actor, &request.always) {
-                    Ok(rules) => answer["rule_ids"] = serde_json::json!(rules),
+                let saved = match request.always_saved.take() {
+                    Some(saved) => saved,
+                    None => authorize::save_always(actor, &request.always),
+                };
+                match saved {
+                    Ok(rules) => {
+                        answer["always_saved"] = serde_json::json!(true);
+                        answer["rule_ids"] = serde_json::json!(rules);
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "the Always rules were not saved; the call runs once");
-                        answer["save_error"] = serde_json::json!(error);
+                        answer["always_saved"] = serde_json::json!(false);
+                        answer["always_error"] = serde_json::json!(error);
                     }
                 }
             }

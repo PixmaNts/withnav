@@ -1255,11 +1255,24 @@ async fn runtime_loop(
                     }
                     decision => decision,
                 };
+                let mut resolution = PermissionResolution::from(&decision);
+                if decision == PermissionDecision::AllowAlways
+                    && answer.origin == crate::agent::permissions::PermissionOrigin::Captain
+                {
+                    if let Some(error) =
+                        crate::agent::run_loop::save_pending_always(&mut actor, request.id)
+                    {
+                        resolution = PermissionResolution::AllowAlways {
+                            always_saved: false,
+                            always_error: Some(error),
+                        };
+                    }
+                }
                 publish_resolved_with_origin(
                     &sequencer,
                     active_task_id,
                     &request,
-                    PermissionResolution::from(&decision),
+                    resolution,
                     answer.origin,
                 );
                 let _ = answer.reply.send(Ok(()));
@@ -2265,6 +2278,7 @@ mod tests {
                 decision_id: None,
                 repeats: 1,
                 skill_rule: false,
+                always_saved: None,
             }),
             call: crate::provider::ToolCall {
                 id: "held".into(),

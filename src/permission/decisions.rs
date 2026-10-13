@@ -418,6 +418,14 @@ fn redact_text(text: &str) -> String {
     words.concat()
 }
 
+/// An error shown to the Captain and stored with a decision: secrets
+/// redacted, then cut to a short line.
+pub fn bounded_error(text: &str) -> String {
+    let mut text = redact_text(text);
+    cut(&mut text, SHORT_TEXT_BYTES);
+    text
+}
+
 fn bound_value(value: &mut Value, limit: usize) {
     match value {
         Value::String(text) => {

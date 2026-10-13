@@ -26,6 +26,7 @@ pub(crate) fn test_prompt() -> PermissionPrompt {
         reason: "long reason".into(),
         resolution: Some("allow_once".into()),
         message: None,
+        always_saved: true,
         stale: false,
     }
 }
@@ -313,6 +314,13 @@ fn always_text(p: &PermissionPrompt) -> &'static str {
 
 fn outcome(p: &PermissionPrompt, resolution: &str, theme: &Theme) -> Line<'static> {
     let (text, style) = match resolution {
+        "allow_always" if !p.always_saved => (
+            format!(
+                "Always not saved: {}; ran once",
+                p.message.as_deref().unwrap_or("unknown error")
+            ),
+            theme.warning(),
+        ),
         "allow_always" => ("allowed always".to_string(), theme.success()),
         "allow_once" => ("allowed once".to_string(), theme.success()),
         "allow_skill_machine" => ("allowed skill on this machine".to_string(), theme.success()),
@@ -474,4 +482,19 @@ mod copy_tests {
         let text = &copy_sections(&p, Some(&args), false)[2];
         assert!(text.contains("/tmp/full-path") && text.contains("904 bytes omitted"));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn an_unsaved_always_says_it_ran_once() {
+    let mut prompt = test_prompt();
+    prompt.resolution = Some("allow_always".into());
+    prompt.always_saved = false;
+    prompt.message = Some("database is locked".into());
+    let line = outcome(&prompt, "allow_always", &Theme::default()).to_string();
+    assert_eq!(line, " Always not saved: database is locked; ran once");
+    prompt.always_saved = true;
+    prompt.message = None;
+    let line = outcome(&prompt, "allow_always", &Theme::default()).to_string();
+    assert_eq!(line, " allowed always");
 }

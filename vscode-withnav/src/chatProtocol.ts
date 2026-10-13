@@ -52,7 +52,7 @@ export type HostToWebview = { generation?: number } & (
    | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
-  | { type: "permissionState"; requestId: string; resolution: string; message?: string }
+  | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false }
   | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
   | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
   | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string; details?: string }

@@ -1324,3 +1324,63 @@ async fn unavailable_rules_still_stop_identical_calls_under_bypass() {
     assert!(request.requires_captain && request.always_label.is_none());
     assert!(request.reason.contains("3 times"));
 }
+
+/// Makes every new rule fail to save, with a secret in the database's error.
+fn refuse_rule_writes(actor: &AgentActor) {
+    actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER refuse_rules BEFORE INSERT ON permission_rules
+             BEGIN SELECT RAISE(ABORT, 'rules refused sk-abcdefghijklmnopqrstuvwxyz'); END;",
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
+    let flows = Arc::new(FakeFlows::new("apply"));
+    let mut actor = actor_with(Some(flows));
+    script(
+        &mut actor,
+        vec![owned(&[bash("p1", "git push origin x")]), done("pushed")],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("no rule asks");
+    };
+    refuse_rule_writes(&actor);
+    let mut approved = Vec::new();
+    let outcome = resolve_permission(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowAlways,
+        &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                approved.push(result.metadata["approved_by"].clone());
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "pushed"));
+    assert_eq!(approved, [json!("captain")], "the call runs once");
+    assert!(actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .list(&RuleFilter::default())
+        .unwrap()
+        .is_empty());
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+    let answer = rows[0].captain_answer.as_ref().unwrap();
+    assert_eq!(answer["decision"], "allow_always");
+    assert_eq!(answer["always_saved"], false, "{answer}");
+    let error = answer["always_error"].as_str().unwrap();
+    assert!(error.contains("rules refused"), "{error}");
+    assert!(!error.contains("sk-abcdefghij"), "{error}");
+}

@@ -112,6 +112,26 @@ fn project_claude_md_is_shadowed_by_agents_md() {
     );
 }
 
+// Given a project AGENTS.md that is a symlink, next to a CLAUDE.md
+// When the instructions load
+// Then CLAUDE.md is shadowed by the AGENTS.md path itself, not the link target
+#[cfg(unix)]
+#[test]
+fn a_symlinked_primary_shadows_by_its_own_path() {
+    let fx = fixture();
+    let target = fx.home.join("shared-agents.md");
+    write(&target, "shared agents");
+    std::os::unix::fs::symlink(&target, fx.root.join("AGENTS.md")).unwrap();
+    write(&fx.root.join("CLAUDE.md"), "project claude");
+    let rules = load(&fx, &fx.root);
+    assert_eq!(
+        status_of(&rules, &fx.root.join("CLAUDE.md")),
+        &SourceStatus::Shadowed {
+            by: fx.root.join("AGENTS.md")
+        }
+    );
+}
+
 // Given global, root and nested rules, each with a rules.md supplement
 // When the instructions load from the nested directory
 // Then the order is global, global rules.md, root, root rules.md, nested,

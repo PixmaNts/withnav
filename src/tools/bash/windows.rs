@@ -26,8 +26,8 @@ fn discover(
 ) -> Option<PathBuf> {
     registry
         .into_iter()
-        .map(|p| p.join("bin/bash.exe"))
-        .chain(program_files.map(|p| p.join("Git/bin/bash.exe")))
+        .map(|p| p.join("bin").join("bash.exe"))
+        .chain(program_files.map(|p| p.join("Git").join("bin").join("bash.exe")))
         .chain(path.into_iter().map(|p| p.join("bash.exe")))
         .find(|p| !wsl_launcher(p, system_root.as_deref()) && exists(p))
 }
@@ -137,8 +137,8 @@ mod tests {
         let program = PathBuf::from(r"C:\Program Files");
         let path = PathBuf::from(r"D:\PathGit");
         for expected in [
-            registry.join("bin/bash.exe"),
-            program.join("Git/bin/bash.exe"),
+            registry.join("bin").join("bash.exe"),
+            program.join("Git").join("bin").join("bash.exe"),
             path.join("bash.exe"),
         ] {
             let found = discover(
@@ -158,7 +158,7 @@ mod tests {
                 None,
                 |_| true
             ),
-            Some(registry.join("bin/bash.exe"))
+            Some(registry.join("bin").join("bash.exe"))
         );
     }
     #[test]

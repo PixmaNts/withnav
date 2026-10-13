@@ -219,8 +219,14 @@ impl Loader {
                 self.push(
                     fallback,
                     SourceStatus::Shadowed {
+                        // Windows reports the same display form as the loaded source;
+                        // Unix keeps the path as found, so a symlinked primary is
+                        // named by its own path, not its target.
+                        #[cfg(windows)]
                         by: crate::tools::canonical_path(primary)
                             .unwrap_or_else(|_| primary.to_path_buf()),
+                        #[cfg(unix)]
+                        by: primary.to_path_buf(),
                     },
                     0,
                 );

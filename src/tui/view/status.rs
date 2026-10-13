@@ -47,9 +47,9 @@ pub fn shorten(path: &str, width: usize) -> String {
     super::text::fit_start(&path, width)
 }
 
-/// The home folder shown as `~`.
+/// The home folder shown as `~`; a home that is not valid Unicode is not shortened.
 fn home() -> Option<String> {
-    crate::paths::home_dir().map(|home| home.to_string_lossy().into_owned())
+    crate::paths::home_dir().and_then(|home| home.into_os_string().into_string().ok())
 }
 
 /// The status line: what the conversation is doing (connection, activity, a notice), then what

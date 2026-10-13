@@ -43,8 +43,13 @@ pub fn context_gauge(state: &State) -> (String, String, Option<String>) {
 
 /// `path` with the home folder as `~`, cut from its start to `width` columns.
 pub fn shorten(path: &str, width: usize) -> String {
-    let path = path.replace(std::env::var("HOME").as_deref().unwrap_or("\0"), "~");
+    let path = path.replace(home().as_deref().unwrap_or("\0"), "~");
     super::text::fit_start(&path, width)
+}
+
+/// The home folder shown as `~`; a home that is not valid Unicode is not shortened.
+fn home() -> Option<String> {
+    crate::paths::home_dir().and_then(|home| home.into_os_string().into_string().ok())
 }
 
 /// The status line: what the conversation is doing (connection, activity, a notice), then what

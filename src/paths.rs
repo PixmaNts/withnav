@@ -12,6 +12,16 @@ use directories::ProjectDirs;
 /// The application name every dir is derived from.
 pub(crate) const APP_NAME: &str = "withnav";
 
+/// The user's home folder: `HOME`, and on Windows, where it is usually unset, the
+/// profile folder from the Known Folder API.
+pub fn home_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    #[cfg(windows)]
+    let home =
+        home.or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()));
+    home
+}
+
 /// WithNav's data dir (`~/.local/share/withnav` on Linux), when the home
 /// directory can be resolved.
 pub fn data_dir() -> Option<PathBuf> {

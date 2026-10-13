@@ -1253,6 +1253,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_below_the_flows_directory_needs_the_protected_check() {
         let f = fixture();
@@ -1272,6 +1273,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_path_that_cannot_be_resolved_asks_and_is_never_saved() {
         let f = fixture();

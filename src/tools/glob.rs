@@ -569,6 +569,7 @@ mod tests {
     // Given links to a file, a directory outside, and back to the root
     // When the walk runs
     // Then none is listed or followed
+    #[cfg(unix)]
     #[tokio::test]
     async fn links_are_not_followed() {
         let tmp = tempfile::tempdir().unwrap();

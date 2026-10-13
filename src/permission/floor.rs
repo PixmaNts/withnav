@@ -154,7 +154,33 @@ fn protected_targets(cx: &FloorContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
 
 fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
     let (files, roots) = protected_targets(cx);
-    files.iter().any(|file| path == file) || roots.iter().any(|root| path.starts_with(root))
+    #[cfg(windows)]
+    {
+        let key = windows_spelling(&path.to_string_lossy()).to_lowercase();
+        files
+            .iter()
+            .any(|file| key == windows_spelling(&file.to_string_lossy()).to_lowercase())
+            || roots.iter().any(|root| {
+                let root = windows_spelling(&root.to_string_lossy()).to_lowercase();
+                key == root || key.starts_with(&format!("{}/", root.trim_end_matches('/')))
+            })
+    }
+    #[cfg(unix)]
+    {
+        files.iter().any(|file| path == file) || roots.iter().any(|root| path.starts_with(root))
+    }
+}
+
+#[cfg(windows)]
+fn windows_spelling(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = path.strip_prefix("//?/").unwrap_or(&path);
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
+        format!("{}:{}", &path[1..2], &path[2..])
+    } else {
+        path.to_owned()
+    }
 }
 
 /// Links followed before a path counts as a loop, as the kernel does.
@@ -172,10 +198,29 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
 
 /// [`resolve_path`], optionally leaving a link in the final component alone.
 fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let normalized = windows_spelling(path);
+    #[cfg(windows)]
+    let path = normalized.as_str();
     if path.is_empty() || path.contains('\0') {
         return None;
     }
-    let joined = if path == "~" {
+    #[cfg(windows)]
+    let expanded = if path.to_ascii_uppercase() == "%USERPROFILE%" {
+        Some(cx.home.clone()?)
+    } else if path
+        .get(..14)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("%USERPROFILE%/"))
+    {
+        Some(cx.home.as_ref()?.join(&path[14..]))
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let expanded: Option<PathBuf> = None;
+    let joined = if let Some(expanded) = expanded {
+        expanded
+    } else if path == "~" {
         cx.home.clone()?
     } else if let Some(rest) = path.strip_prefix("~/") {
         cx.home.as_ref()?.join(rest)
@@ -221,7 +266,10 @@ fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> 
                     Err(_) => return None,
                 }
             }
-            Component::RootDir | Component::Prefix(_) => {
+            Component::RootDir => {
+                resolved.push(&part);
+            }
+            Component::Prefix(_) => {
                 resolved = PathBuf::from(&part);
             }
         }
@@ -269,6 +317,10 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
 /// The spelling and the resolved target are both checked: a link named
 /// innocently can point at a key.
 fn names_credential(word: &str, cx: &FloorContext) -> bool {
+    #[cfg(windows)]
+    let normalized = windows_spelling(word);
+    #[cfg(windows)]
+    let word = normalized.as_str();
     let plain: String = word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
     credential(Path::new(&plain)) || resolve_path(word, cx).is_some_and(|path| credential(&path))
 }
@@ -341,7 +393,14 @@ fn output_targets<'a>(program: Option<&str>, words: &'a [String], opaque: bool) 
 }
 
 fn basename(word: &str) -> &str {
-    word.rsplit('/').next().unwrap_or(word)
+    #[cfg(windows)]
+    {
+        word.rsplit(['/', '\\']).next().unwrap_or(word)
+    }
+    #[cfg(unix)]
+    {
+        word.rsplit('/').next().unwrap_or(word)
+    }
 }
 
 fn is_assignment(word: &str) -> bool {
@@ -511,6 +570,56 @@ mod tests {
     use crate::permission::shell::split;
     use serde_json::json;
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_literal_floor_spellings() {
+        let cx = FloorContext {
+            workspace: PathBuf::from(r"C:\Users\Captain\project"),
+            config_dir: Some(PathBuf::from(r"C:\Users\Captain\config")),
+            data_dir: Some(PathBuf::from(r"C:\Users\Captain\data")),
+            home: Some(PathBuf::from(r"C:\Users\Captain")),
+            ..Default::default()
+        };
+        for path in [
+            r"C:\Users\Captain\config\config.json",
+            "c:/users/captain/CONFIG/CONFIG.JSON",
+            r"\\?\C:\Users\Captain\config\config.json",
+            "/c/Users/Captain/config/config.json",
+            r"~\config\config.json",
+            r"%USERPROFILE%\config\config.json",
+            "C:/Users/Captain/data/withnav.db-wal",
+            "C:/Users/Captain/data/withnav.db",
+            "C:/Users/Captain/data/withnav.db-shm",
+            "C:/Users/Captain/config/flows/custom.toml",
+        ] {
+            assert!(protected_word(path, &cx).unwrap(), "{path}");
+            for line in [
+                format!("echo x > '{path}'"),
+                format!("sort --output='{path}' in"),
+                format!("if true; then cp a '{path}'; fi"),
+            ] {
+                assert!(
+                    matches!(bash_floor(&cx, &line), Floor::Protected(_)),
+                    "{line}"
+                );
+            }
+        }
+        for path in [
+            r"C:\Users\Captain\AUTH.JSON",
+            r"~\.ssh\id_custom",
+            r"%USERPROFILE%\.ssh\id_custom",
+            "/c/Users/Captain/.env",
+            r"\\?\C:\Users\Captain\secret.KEY",
+        ] {
+            assert!(names_credential(path, &cx), "{path}");
+            assert!(matches!(
+                bash_floor(&cx, &format!("cat '{path}'")),
+                Floor::Credential(_)
+            ));
+        }
+        assert_eq!(basename(r"C:\bin\cat"), "cat");
+    }
+
     struct Fixture {
         _dir: tempfile::TempDir,
         cx: FloorContext,
@@ -607,6 +716,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_cannot_hide_a_protected_file_or_a_key() {
         let f = fixture();
@@ -719,10 +829,12 @@ mod tests {
         assert!(matches!(bash_floor(&f.cx, opaque), Floor::Credential(_)));
     }
 
+    #[cfg(unix)]
     fn link(target: &Path, at: &Path) {
         std::os::unix::fs::symlink(target, at).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn dot_dot_after_a_symlink_climbs_out_of_the_target() {
         let f = fixture();
@@ -749,6 +861,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_workspace_resolves_to_the_real_directory() {
         let f = fixture();
@@ -772,6 +885,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolution_errors_fail_closed() {
         let f = fixture();
@@ -805,6 +919,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinked_config_database_and_flows_keep_their_protection() {
         let dir = tempfile::tempdir().unwrap();
@@ -966,19 +1081,22 @@ mod tests {
                 "{line}"
             );
         }
-        // An output that cannot be resolved fails closed, attached or not.
-        let project = &f.cx.workspace;
-        link(&project.join("b"), &project.join("a"));
-        link(&project.join("a"), &project.join("b"));
-        for line in [
-            "sort -oa/x input",
-            "sort -o a/x input",
-            "if true; then sort -oa/x i; fi",
-        ] {
-            assert!(
-                matches!(bash_floor(&f.cx, line), Floor::Unresolved(_)),
-                "{line}"
-            );
+        #[cfg(unix)]
+        {
+            // An output that cannot be resolved fails closed, attached or not.
+            let project = &f.cx.workspace;
+            link(&project.join("b"), &project.join("a"));
+            link(&project.join("a"), &project.join("b"));
+            for line in [
+                "sort -oa/x input",
+                "sort -o a/x input",
+                "if true; then sort -oa/x i; fi",
+            ] {
+                assert!(
+                    matches!(bash_floor(&f.cx, line), Floor::Unresolved(_)),
+                    "{line}"
+                );
+            }
         }
         // Reading and an ordinary output stay free.
         assert_eq!(bash_floor(&f.cx, "sort -o out.txt input"), Floor::None);
@@ -988,6 +1106,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_below_the_flows_directory_stays_a_flows_file() {
         let f = fixture();

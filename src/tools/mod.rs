@@ -308,6 +308,8 @@ impl Registry {
 }
 
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    #[cfg(windows)]
+    nofollow::validate_target(candidate)?;
     let anchored;
     let candidate = if candidate.is_relative() {
         let root = roots
@@ -322,6 +324,8 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     let canon_existing = existing
         .canonicalize()
         .map_err(|_| ToolError::PathTraversal(candidate.to_path_buf()))?;
+    #[cfg(windows)]
+    nofollow::validate_target(&canon_existing)?;
 
     let tail = candidate
         .strip_prefix(&existing)
@@ -474,6 +478,7 @@ mod tests {
         assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_reuses_symlink_root_ancestor_for_new_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -496,6 +501,7 @@ mod tests {
         assert!(matches!(err, ToolError::PathTraversal(_)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_rejects_symlink_escaping_root() {
         let tmp = tempfile::tempdir().unwrap();

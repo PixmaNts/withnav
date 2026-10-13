@@ -1481,6 +1481,7 @@ mod permission_tests;
 mod tests {
     use super::*;
     use crate::agent::actor::AgentActor;
+    #[cfg(unix)]
     use crate::agent::permissions::Scope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
     use crate::provider::test_support::{http_sse, sse_body};
@@ -2724,6 +2725,7 @@ mod tests {
         assert!(tool_result_of(&actor, "w1").is_none());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_answer_writes_the_file_it_was_shown_even_if_a_link_moves() {
         let mut actor = make_actor(
@@ -3153,6 +3155,7 @@ mod tests {
 
     #[tokio::test]
     async fn yolo_ignores_scratch_identity_and_mode() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let mut actor = plan_actor("http://unused");
         actor.yolo = true;
@@ -3176,8 +3179,11 @@ mod tests {
             args_valid: true,
         };
         // Widened mode: the identity would refuse it.
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!actor.scratch_roots[0].valid());
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(!actor.scratch_roots[0].valid());
+        }
         for call in [write("a"), edit("a")] {
             assert_eq!(
                 yolo_run(&mut actor, &call).await,
@@ -3304,6 +3310,7 @@ mod tests {
         ]
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_approved_write_swapped_for_a_link_after_the_final_check_asks_again() {
         let mut actor = make_actor(

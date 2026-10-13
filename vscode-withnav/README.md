@@ -53,11 +53,9 @@ diagnostics and user feedback, and hosts the Cognition chat view.
   binary on `PATH`, or set `withnav.serverPath` to its absolute path. The extension appends `lsp`;
   do not put the subcommand in the setting. Old `withnav-lsp` and `navai-lsp` paths use `nav` in
   the same directory, with a one-time notice to update the setting.
-- **Windows x64:** native packaging is prepared as `withnav-win32-x64-<version>.vsix`, with
-  `bin/nav.exe`. Until a release includes it and the Rust port is validated, use WSL or a Remote
-  window with the Linux package. Explicit paths with spaces need no shell quotes; the LSP starts
-  directly. See the [Windows install/support notes](https://withnav.dev/docs/install.html#native-windows-x64)
-  for runtime prerequisites and shell limitations.
+- **Windows x64:** `withnav-win32-x64-<version>.vsix` bundles `bin/nav.exe`. Explicit paths with
+  spaces need no shell quotes; the LSP starts directly. The `bash` tool needs Git for Windows. See
+  the [Windows install notes](https://withnav.dev/docs/install.html#native-windows-x64).
 - The "WithNav" output channel starts with the line `Using nav binary (...)`: setting, bundled or
   path.
 - Node.js 18+ to build.

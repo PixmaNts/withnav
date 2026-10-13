@@ -21,7 +21,8 @@ use crate::tools::{DEFAULT_BASH_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES};
 const READER_JOIN_DEADLINE_MS: u64 = 500;
 
 #[cfg(windows)]
-pub(crate) mod job;
+#[path = "process_job.rs"]
+pub(crate) mod process_job;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -88,8 +89,11 @@ async fn run_bash(
     grace_ms: u64,
 ) -> Result<ToolResult, ToolError> {
     let mut launcher = bash_command()?;
+    #[cfg(unix)]
+    launcher.arg(command);
+    #[cfg(windows)]
+    launcher.env("WITHNAV_BASH_COMMAND", command);
     launcher
-        .arg(command)
         .current_dir(&cx.workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -99,7 +103,7 @@ async fn run_bash(
     #[cfg(unix)]
     let mut child = launcher.spawn()?;
     #[cfg(windows)]
-    let (mut child, job) = job::Job::spawn(&mut launcher, None)?;
+    let (mut child, job) = process_job::Job::spawn(&mut launcher, None)?;
 
     #[cfg(unix)]
     let pid = child.id().ok_or_else(|| ToolError::Denied {

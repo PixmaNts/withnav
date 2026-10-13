@@ -1165,7 +1165,9 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
             // Match the extension's migration of the former server executable.
             let configured = Path::new(server);
             let migrated = match configured.file_name().and_then(|s| s.to_str()) {
-                Some("withnav-lsp" | "navai-lsp" | "withnav-lsp.exe" | "navai-lsp.exe") => {
+                Some("withnav-lsp" | "navai-lsp") => configured.with_file_name(nav_filename()),
+                #[cfg(windows)]
+                Some("withnav-lsp.exe" | "navai-lsp.exe") => {
                     configured.with_file_name(nav_filename())
                 }
                 _ => configured.to_path_buf(),

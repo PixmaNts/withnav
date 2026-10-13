@@ -172,15 +172,19 @@ async fn cancellation_kills_the_converter() {
     panic!("the converter {pid} is still running");
 }
 
-// Given the executable shared by the CLI/server and editor host, started
-// the way `fetch` starts its converter child, under the same
-// memory limit
-// When it receives a small page on stdin
-// Then it converts it itself: the default converter is the running
-//      executable, so it must answer without spending the limit on an
-//      async runtime before reading the page
+// The default converter is the running executable, without an async runtime.
+#[test]
+fn nav_converts_and_rejects_malformed_arguments() {
+    check_nav_conversion(false);
+}
+
+#[cfg(unix)]
 #[test]
 fn nav_converts_under_the_child_memory_limit() {
+    check_nav_conversion(true);
+}
+
+fn check_nav_conversion(limited: bool) {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
@@ -194,13 +198,17 @@ fn nav_converts_under_the_child_memory_limit() {
         .stderr(Stdio::null());
     // SAFETY: setrlimit is async-signal-safe and allocates nothing.
     #[cfg(unix)]
-    unsafe {
-        cmd.pre_exec(|| {
-            let limit = 512 * 1024 * 1024;
-            nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_AS, limit, limit)
-                .map_err(std::io::Error::from)
-        });
+    if limited {
+        unsafe {
+            cmd.pre_exec(|| {
+                let limit = 512 * 1024 * 1024;
+                nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_AS, limit, limit)
+                    .map_err(std::io::Error::from)
+            });
+        }
     }
+    #[cfg(windows)]
+    let _ = limited;
     let mut child = cmd.spawn().expect("spawn");
     child
         .stdin

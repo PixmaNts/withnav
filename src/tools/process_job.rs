@@ -83,6 +83,42 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn memory_limit_probe() {
+        if std::env::var_os("WITHNAV_TEST_JOB_MEMORY").is_some() {
+            let mut allocation = Vec::<u8>::new();
+            assert!(
+                allocation.try_reserve_exact(128 * 1024 * 1024).is_err(),
+                "the job must reject allocations exceeding its committed-memory limit"
+            );
+            println!("job memory limit enforced");
+        }
+    }
+
+    #[tokio::test]
+    async fn job_enforces_converter_memory_limit() {
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "tools::bash::process_job::tests::memory_limit_probe",
+                "--nocapture",
+            ])
+            .env("WITHNAV_TEST_JOB_MEMORY", "1")
+            .stdout(std::process::Stdio::piped());
+        let (child, _job) = Job::spawn(&mut command, Some((64 * 1024 * 1024, 10))).unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "memory-limit probe must run successfully: {:?}",
+            output.status
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("job memory limit enforced"));
+    }
+
     #[tokio::test]
     async fn dropping_job_kills_launcher_and_ping_grandchild() {
         let mut command = tokio::process::Command::new("cmd.exe");

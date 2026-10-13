@@ -66,11 +66,12 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 fn open_browser(url: &str) -> std::io::Result<()> {
     use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let target: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
     // ShellExecute treats the URL as a target, never as shell command text.
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
-            std::ptr::null(),
+            verb.as_ptr(),
             target.as_ptr(),
             std::ptr::null(),
             std::ptr::null(),

@@ -80,7 +80,7 @@ async fn run(
         .spawn()
         .map_err(|_| "cannot spawn MCP command (details omitted)".to_string())?;
     #[cfg(windows)]
-    let (mut child, group) = crate::tools::bash::job::Job::spawn(&mut command, None)
+    let (mut child, group) = crate::tools::bash::process_job::Job::spawn(&mut command, None)
         .map_err(|_| "cannot set up MCP process job (details omitted)".to_string())?;
     #[cfg(unix)]
     let pid = child

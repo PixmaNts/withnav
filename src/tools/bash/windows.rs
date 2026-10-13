@@ -242,6 +242,35 @@ mod tests {
                 .unwrap();
             assert_eq!(result.output, output, "{command}");
             assert_eq!(result.metadata["exit_code"], exit, "{command}");
+            for mode in [None, Some("noglob")] {
+                let mut launcher = bash_command().unwrap();
+                set_command(&mut launcher, command);
+                match mode {
+                    None => {
+                        launcher.env_remove("MSYS");
+                    }
+                    Some(value) => {
+                        launcher.env("MSYS", value);
+                    }
+                }
+                launcher
+                    .current_dir(root.path())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let (child, _job) =
+                    crate::tools::process_job::Job::spawn(&mut launcher, None).unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    String::from_utf8(result.stdout).unwrap(),
+                    output,
+                    "MSYS={mode:?}: {command}"
+                );
+                assert_eq!(result.status.code(), Some(exit), "MSYS={mode:?}: {command}");
+            }
         }
     }
 }

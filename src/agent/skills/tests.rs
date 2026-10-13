@@ -52,7 +52,8 @@ fn validates_short_directory_with_verbatim_manifest() {
         .unwrap()
         .to_string_lossy()
         .starts_with(r"\\?\"));
-    assert!(load(&fx).snapshot("boundary").is_ok());
+    let result = load(&fx).snapshot("boundary");
+    assert!(result.is_ok(), "{:?}", result.err());
 }
 
 #[test]

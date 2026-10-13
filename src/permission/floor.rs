@@ -927,13 +927,20 @@ mod tests {
             let full = root.join(path);
             assert!(protected_write(&full, &f.cx), "{path}");
             let name = full.to_string_lossy().into_owned();
+            #[cfg(windows)]
+            let protected_name = crate::tools::canonical_path(&full)
+                .unwrap()
+                .display()
+                .to_string();
+            #[cfg(unix)]
+            let protected_name = name.clone();
             assert_eq!(
                 check(&native_call("write", &name), &[], &f.cx),
-                Floor::Protected(name.clone())
+                Floor::Protected(protected_name.clone())
             );
             assert_eq!(
                 check(&native_call("edit", &name), &[], &f.cx),
-                Floor::Protected(name.clone())
+                Floor::Protected(protected_name)
             );
             assert_eq!(check(&native_call("read", &name), &[], &f.cx), Floor::None);
         }

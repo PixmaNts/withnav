@@ -392,7 +392,16 @@ fn project_roots(cx: &FloorContext) -> Vec<PathBuf> {
 }
 
 fn inside(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
+    #[cfg(windows)]
+    {
+        roots
+            .iter()
+            .any(|root| crate::tools::nofollow::path_within(path, root))
+    }
+    #[cfg(unix)]
+    {
+        roots.iter().any(|root| path.starts_with(root))
+    }
 }
 
 fn path_argument(call: &ToolCall) -> Option<&str> {
@@ -968,6 +977,34 @@ mod tests {
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_project_aliases_are_inside_and_free_to_read() {
+        let f = fixture();
+        let target = f.cx.workspace.join("file.txt");
+        std::fs::write(&target, "content").unwrap();
+        let mut spellings = vec![
+            target.display().to_string().to_uppercase(),
+            format!("{}.", target.display()),
+            f.cx.workspace.join("file.txt ").display().to_string(),
+        ];
+        if let Some(alias) = crate::tools::nofollow::short_alias(&f.cx.workspace) {
+            spellings.push(alias.join("file.txt").display().to_string());
+        }
+        for path in spellings {
+            let resolved = resolve_path(&path, &f.cx).unwrap();
+            assert!(inside(&resolved, &project_roots(&f.cx)), "{path}");
+            let (decision, asked) = f.decide_with(
+                Control::Normal,
+                &file("read", &path),
+                1,
+                allow(FlowAnswer::Deny),
+            );
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{path}");
+            assert_eq!(asked, 0);
+        }
+    }
+
     #[test]
     fn deny_comes_before_bypass_and_flow() {
         let f = fixture();
@@ -1253,6 +1290,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_below_the_flows_directory_needs_the_protected_check() {
         let f = fixture();
@@ -1272,6 +1310,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_path_that_cannot_be_resolved_asks_and_is_never_saved() {
         let f = fixture();

@@ -745,6 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_sensitive_rule_generates_rg_exclusions_before_unreadable_files_are_opened() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("ordinary"), "needle").unwrap();
@@ -753,6 +754,7 @@ mod tests {
             assert!(sensitive_read(Path::new(&name)), "{rule}");
             let file = tmp.path().join(&name);
             std::fs::write(&file, "needle").unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o0)).unwrap();
         }
         for name in [
@@ -764,6 +766,7 @@ mod tests {
             let file = tmp.path().join(name);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, "needle").unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o0)).unwrap();
         }
         let mut command = rg_command_with_hidden("needle", tmp.path(), true);

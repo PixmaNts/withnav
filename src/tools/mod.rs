@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
@@ -309,7 +311,30 @@ impl Registry {
     }
 }
 
+#[cfg(windows)]
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    let anchored = if candidate.is_relative() {
+        roots
+            .first()
+            .ok_or_else(|| ToolError::PathTraversal(candidate.to_path_buf()))?
+            .join(candidate)
+    } else {
+        candidate.to_path_buf()
+    };
+    let resolved = nofollow::path_identity(&anchored)?;
+    if roots.iter().any(|root| {
+        nofollow::path_identity(root).is_ok_and(|root| nofollow::path_within(&resolved, &root))
+    }) {
+        Ok(resolved)
+    } else {
+        Err(ToolError::PathTraversal(candidate.to_path_buf()))
+    }
+}
+
+#[cfg(unix)]
+pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    #[cfg(windows)]
+    nofollow::validate_target(candidate)?;
     let anchored;
     let candidate = if candidate.is_relative() {
         let root = roots
@@ -324,6 +349,8 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     let canon_existing = existing
         .canonicalize()
         .map_err(|_| ToolError::PathTraversal(candidate.to_path_buf()))?;
+    #[cfg(windows)]
+    nofollow::validate_target(&canon_existing)?;
 
     let tail = candidate
         .strip_prefix(&existing)
@@ -353,6 +380,7 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     Ok(resolved)
 }
 
+#[cfg(unix)]
 fn nearest_existing_ancestor(candidate: &Path) -> PathBuf {
     let mut existing = candidate.to_path_buf();
     while !existing.exists() {
@@ -450,6 +478,12 @@ mod tests {
         let f = root.join("file.txt");
         std::fs::write(&f, "x").unwrap();
         let ok = validate_path(std::slice::from_ref(&root), &f).unwrap();
+        #[cfg(windows)]
+        assert!(nofollow::path_within(
+            &ok,
+            &nofollow::path_identity(&root).unwrap()
+        ));
+        #[cfg(unix)]
         assert!(ok.starts_with(root.canonicalize().unwrap()));
     }
 
@@ -459,6 +493,12 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let target = root.join("new/deep/file.txt");
         let resolved = validate_path(std::slice::from_ref(&root), &target).unwrap();
+        #[cfg(windows)]
+        assert!(nofollow::path_within(
+            &resolved,
+            &nofollow::path_identity(&root).unwrap()
+        ));
+        #[cfg(unix)]
         assert!(resolved.starts_with(root.canonicalize().unwrap()));
         assert!(resolved.ends_with("new/deep/file.txt"));
     }
@@ -468,14 +508,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let roots = vec![tmp.path().to_path_buf()];
         let relative = Path::new("new_dir/sub_dir/file.txt");
-        assert_eq!(
-            validate_path(&roots, relative).unwrap(),
-            tmp.path().canonicalize().unwrap().join(relative)
-        );
+        #[cfg(windows)]
+        let expected = nofollow::path_identity(tmp.path()).unwrap().join(relative);
+        #[cfg(unix)]
+        let expected = tmp.path().canonicalize().unwrap().join(relative);
+        assert_eq!(validate_path(&roots, relative).unwrap(), expected);
         assert!(validate_path(&[], relative).is_err());
         assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_reuses_symlink_root_ancestor_for_new_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -498,6 +540,7 @@ mod tests {
         assert!(matches!(err, ToolError::PathTraversal(_)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_rejects_symlink_escaping_root() {
         let tmp = tempfile::tempdir().unwrap();

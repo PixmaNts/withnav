@@ -178,8 +178,42 @@ fn inside_project(call: &ToolCall, cx: &FloorContext) -> Option<bool> {
         std::iter::once(&cx.workspace)
             .chain(&cx.writable_roots)
             .filter_map(|root| resolve_path(&root.to_string_lossy(), cx))
-            .any(|root| target.starts_with(root)),
+            .any(|root| {
+                #[cfg(windows)]
+                {
+                    crate::tools::nofollow::path_within(&target, &root)
+                }
+                #[cfg(unix)]
+                {
+                    target.starts_with(root)
+                }
+            }),
     )
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn flow_inside_project_accepts_mixed_case_missing_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("scratch");
+    let cx = FloorContext {
+        workspace: dir.path().to_path_buf(),
+        writable_roots: vec![root.clone()],
+        ..Default::default()
+    };
+    let call = ToolCall {
+        id: "case".into(),
+        name: "write".into(),
+        args: serde_json::json!({"path":root.parent().unwrap().join("SCRATCH/new.txt")}),
+        args_valid: true,
+    };
+    assert_eq!(inside_project(&call, &cx), Some(true));
+    // The target must be within the writable root, not merely the workspace.
+    let cx = FloorContext {
+        workspace: dir.path().join("project"),
+        ..cx
+    };
+    assert_eq!(inside_project(&call, &cx), Some(true));
 }
 
 /// Decide `call` once. `previous` is the pending decision row a bypass answer

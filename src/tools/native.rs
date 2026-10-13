@@ -85,7 +85,20 @@ impl Tool for ReadTool {
             let bytes = {
                 use std::io::Read;
                 let mut bytes = Vec::new();
-                nofollow::open_read(&resolved)?.read_to_end(&mut bytes)?;
+                let file = nofollow::open_read(&resolved)?;
+                #[cfg(windows)]
+                let mut file = file.take(16 * 1024 * 1024 + 1);
+                #[cfg(unix)]
+                let mut file = file;
+                file.read_to_end(&mut bytes)?;
+                #[cfg(windows)]
+                if bytes.len() > 16 * 1024 * 1024 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "read target exceeds 16 MiB",
+                    )
+                    .into());
+                }
                 bytes
             };
             let original_bytes = bytes.len();
@@ -278,10 +291,17 @@ impl Tool for EditTool {
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            let content = tokio::fs::read_to_string(&resolved).await?;
-            let (updated, report) = change(content)?;
-            atomic_write(&resolved, updated.as_bytes())?;
-            Ok(ToolResult::ok(report))
+            #[cfg(windows)]
+            {
+                Ok(ToolResult::ok(nofollow::edit_atomic(&resolved, change)?))
+            }
+            #[cfg(unix)]
+            {
+                let content = tokio::fs::read_to_string(&resolved).await?;
+                let (updated, report) = change(content)?;
+                atomic_write(&resolved, updated.as_bytes())?;
+                Ok(ToolResult::ok(report))
+            }
         })
     }
 }
@@ -358,6 +378,24 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn unbound_edit_over_limit_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        let content = "x".repeat(16 * 1024 * 1024 + 1);
+        std::fs::write(&path, &content).unwrap();
+        let result = EditTool
+            .call(
+                json!({"path":path,"old_string":"x","new_string":"y","replace_all":true}),
+                CancellationToken::new(),
+                &ctx(dir.path()),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+    }
+    #[cfg(unix)]
     #[tokio::test]
     async fn unbound_relative_reads_preserve_sensitive_workspace_spelling() {
         let tmp = tempfile::tempdir().unwrap();
@@ -382,6 +420,7 @@ mod tests {
             assert!(error.to_string().contains("sensitive"));
         }
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn unbound_native_read_and_search_reject_sensitive_alias_spellings() {
         let tmp = tempfile::tempdir().unwrap();
@@ -761,6 +800,7 @@ mod tests {
     //       it, and a link back to an ancestor
     // When the built-in search runs
     // Then only the real files are searched and the search ends
+    #[cfg(unix)]
     #[test]
     fn grep_builtin_does_not_follow_links() {
         let tmp = tempfile::tempdir().unwrap();
@@ -786,6 +826,7 @@ mod tests {
     //       escaping link, and a link cycle
     // When it searches the root
     // Then it ends without reading what the links lead to
+    #[cfg(unix)]
     #[tokio::test]
     async fn grep_tool_with_the_builtin_engine_ignores_links() {
         let tmp = tempfile::tempdir().unwrap();
@@ -813,6 +854,7 @@ mod tests {
     // Given a search root that is itself a link to a directory
     // When the built-in search runs on the validated, canonical root
     // Then its files are searched
+    #[cfg(unix)]
     #[tokio::test]
     async fn grep_builtin_searches_a_linked_root_through_validation() {
         let tmp = tempfile::tempdir().unwrap();

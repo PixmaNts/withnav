@@ -48,6 +48,7 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
     std::env::set_var("WITHNAV_MCP_TEST_TOKEN", sentinel);
     let mut settings = Settings::default();
     settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"COMPOSITE":"Bearer {env:WITHNAV_MCP_TEST_TOKEN}"}}}));
+    common::prepare_mcp(&mut settings);
     let manager = McpManager::start(&settings);
     tokio::time::timeout(Duration::from_secs(5), async {
         while manager.snapshot().is_empty() {

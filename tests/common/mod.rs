@@ -7,6 +7,25 @@ pub mod deadline;
 mod python;
 #[allow(unused_imports)]
 pub use python::python;
+
+/// Python on Windows needs the OS installation root even in an isolated MCP child.
+pub fn prepare_mcp(settings: &mut withnav::settings::Settings) {
+    #[cfg(windows)]
+    if let Some(servers) = settings
+        .get_dotted("mcp")
+        .and_then(serde_json::Value::as_object)
+    {
+        let ids: Vec<_> = servers.keys().cloned().collect();
+        for id in ids {
+            settings.set_dotted(
+                &format!("mcp.{id}.env.SystemRoot"),
+                serde_json::json!(std::env::var("SystemRoot").expect("Windows SystemRoot")),
+            );
+        }
+    }
+    #[cfg(unix)]
+    let _ = settings;
+}
 pub mod navigator;
 pub mod server;
 pub mod sse;

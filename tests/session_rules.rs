@@ -248,6 +248,7 @@ async fn withnav_run_sends_the_rules_too() {
             .args(["--prompt", "go"])
             .env("WITHNAV_TEST_KEY", "test-key")
             .env("HOME", root.join("home"))
+            .env("USERPROFILE", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .output()

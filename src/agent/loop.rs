@@ -871,6 +871,7 @@ async fn run_skill(
             // Validation proves which content the Captain trusted; the rules
             // still decide whether it may be loaded now.
             let approval = if actor.yolo {
+                authorize::record_yolo(actor, call);
                 yolo_approval()
             } else if let Some(note) = admitted {
                 note

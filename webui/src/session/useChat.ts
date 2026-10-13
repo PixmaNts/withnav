@@ -240,10 +240,10 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   }, [agentEntry, sessionId, selection.model, command]);
 
   const answerPermission = useCallback(
-    async (requestId: string, decision: "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny") => {
+    async (requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) => {
       if (!sessionId) return;
       try {
-        await api.answerPermission(sessionId, requestId, decision);
+        await api.answerPermission(sessionId, requestId, decision, message);
       } catch (e) {
         if (e instanceof HttpError && e.reason === "permission_stale") throw new Error("This request is no longer waiting: it was answered, cancelled or expired.");
         throw e;

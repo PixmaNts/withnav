@@ -48,7 +48,7 @@ export function permissionCall(tool: string, argumentsText: string): string {
 }
 
 export function evidenceLabel(evidence: PermissionEvidence, context: "tool" | "permission", resolution?: string): string {
-  if ((evidence.source === "driver" || evidence.source === "captain")) return context === "tool" || resolution === "allow_once" || resolution === "allow_folder"
+  if ((evidence.source === "driver" || evidence.source === "captain")) return context === "tool" || resolution === "allow_always" || resolution === "allow_once" || resolution === "allow_folder"
     ? "approved · Captain" : "Captain review required";
   return (evidence.source === "instinct" || evidence.source === "jev") ? "auto · instinct" : "auto · metacognition";
 }
@@ -122,6 +122,7 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         reason: String(p.reason ?? ""), call: permissionCall(tool,
           (!p.child_session_id ? calls?.argumentsFor(p) : undefined) ?? String(p.arguments ?? "")),
         arguments: String(p.arguments ?? ""),
+        alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
         allowFolder: agent !== "plan" && tool === "fetch",
         allowConfigSession: p.allow_config_session === true,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
@@ -175,10 +176,12 @@ export class ConversationControls {
 
 export function permissionOutcome(resolution: string, message?: string): string {
   switch (resolution) {
+    case "allow_always": return "Allowed always";
     case "allow_once": return "Allowed once";
     case "allow_folder": return "Allowed for this scope";
     case "allow_config_session": return "Allowed WithNav config for this session";
     case "allow_skill_machine": return "Allowed this user skill's script on this machine";
+    case "reject": return message ? `Rejected: ${message}` : "Rejected";
     case "deny": return message ? `Denied: ${message}` : "Denied";
     case "expired": return "Expired: the session restarted";
     case "cancelled": return "Cancelled";

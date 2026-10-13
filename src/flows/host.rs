@@ -214,7 +214,7 @@ mod tests {
         let doc = store
             .save("guard", Location::Global, None, content("deny"))
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
         store.validate_test_documents();
         store.reload().unwrap();
         assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
@@ -241,7 +241,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
         assert!(!b.diagnostics(temp.path()).is_empty());
         store.reload().unwrap();
         let dir =
@@ -294,7 +294,7 @@ mod tests {
             permissions.revoke_validation(approval.id).unwrap();
         }
         store.reload().unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::NoObjection);
+        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
         assert!(!runtime.store.reload_diagnostics().is_empty());
     }
     #[test]

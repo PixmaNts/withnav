@@ -396,6 +396,16 @@ pub async fn resolve_permission_with_origin(
     origin: super::permissions::PermissionOrigin,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
+    // Until rule-based execution takes over, new answers retain single-call semantics.
+    let decision = match decision {
+        PermissionDecision::AllowAlways => PermissionDecision::AllowOnce,
+        PermissionDecision::Reject { message } => PermissionDecision::Deny {
+            message: message
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| "the user denied this tool call".into()),
+        },
+        decision => decision,
+    };
     match &actor.pending {
         Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {
             if origin == super::permissions::PermissionOrigin::Bypass
@@ -569,6 +579,9 @@ pub async fn resolve_permission_with_origin(
                     return Ok(RunOutcome::Interrupted);
                 }
             }
+        }
+        PermissionDecision::AllowAlways | PermissionDecision::Reject { .. } => {
+            unreachable!("new permission answers were mapped to the current execution path")
         }
         PermissionDecision::Deny { message } => {
             let result = ToolResult::permission_denied(message)

@@ -8,8 +8,9 @@ export const CHAT_VIEW_ID = "withnav.chat";
 /** Who wrote a message shown in the chat. */
 export type Author = "captain" | "nav" | "driver" | "cognition" | "navigator" | "subagent";
 
-export type PermissionDecision = "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny";
+export type PermissionDecision = "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny" | "allow_always" | "reject";
 export interface PermissionCard {
+  alwaysLabel?: string;
   requestId: string;
   callId: string;
   tool: string;

@@ -163,7 +163,7 @@ export function registerChatView(
             break;
           case "answerPermission":
             if (typeof message.sessionId === "string" && typeof message.requestId === "string" &&
-                ["allow_once", "allow_folder", "allow_config_session", "allow_skill_machine", "deny"].includes(message.decision) &&
+                ["allow_once", "allow_always", "reject"].includes(message.decision) &&
                 (message.message === undefined || typeof message.message === "string")) {
               void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message, message.generation).catch(showError);
             }

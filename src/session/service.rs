@@ -1590,6 +1590,9 @@ impl Service {
         request_id: Ulid,
         decision: crate::agent::permissions::PermissionDecision,
     ) -> Result<(), ServerError> {
+        decision
+            .validate_message()
+            .map_err(|message| ServerError::MalformedBody(message.into()))?;
         let handle = self.routable_handle(session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);

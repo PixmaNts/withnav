@@ -31,7 +31,13 @@ test("permission card preserves full reason, command, scope and ids", () => {
   assert.equal(card.allowFolder, false);
 });
 
-for (const resolution of ["allow_once", "deny", "expired", "cancelled", "stale"]) {
+test("Always uses only the server label", () => {
+  assert.equal(eventView(request({ tool: "fetch" })).card.alwaysLabel, undefined);
+  assert.equal(eventView(request({ always_label: "Always (project): bash git push *" })).card.alwaysLabel, "Always (project): bash git push *");
+  assert.equal(eventView(request({ always_label: 123 })).card.alwaysLabel, undefined);
+});
+
+for (const resolution of ["allow_once", "allow_always", "reject", "deny", "expired", "cancelled", "stale"]) {
   test(`permission requested → ${resolution} closes the matching card`, () => {
     const controls = new ConversationControls();
     controls.apply(eventView(request()));
@@ -41,6 +47,7 @@ for (const resolution of ["allow_once", "deny", "expired", "cancelled", "stale"]
     controls.apply(result);
     assert.equal(controls.permissions.size, 0);
     if (resolution === "deny") assert.equal(permissionOutcome(resolution, result.message), "Denied: Do not run");
+    if (resolution === "reject") assert.equal(permissionOutcome(resolution, result.message), "Rejected: Do not run");
     if (resolution === "expired") assert.match(permissionOutcome(resolution), /session restarted/);
     if (resolution === "stale") assert.match(permissionOutcome(resolution), /No longer waiting/);
   });

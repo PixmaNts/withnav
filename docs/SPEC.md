@@ -1131,7 +1131,9 @@ digits, `_` and `-`; names above 64 characters are truncated with a stable six-h
 suffix. Sanitization collisions keep the first original name in sorted order and report the
 others in `nav doctor`. Schemas drop `$schema` and `format`, inline acyclic local references,
 and require an object root; unsupported references, root composition, or a `$ref` whose sibling
-constraints would replace the referenced ones skip only that tool. A tool whose name contains a
+constraints would replace the referenced ones or change a keyword's scope
+(`additionalProperties`/`unevaluatedProperties` against `properties`/`patternProperties`,
+`additionalItems`/`items` against `prefixItems`/`items`) skip only that tool. A tool whose name contains a
 configured secret value is skipped too, never renamed.
 
 Global `config.json` owns the `mcp` map; server ids match `[a-z0-9_-]{1,24}` and cannot contain `__`. Each stdio entry
@@ -1143,8 +1145,9 @@ No shell or workspace configuration is used.
 The service starts servers asynchronously with at most four simultaneous initializations.
 Session creation never waits: only Ready tools enter that session's frozen registry. `nav run`
 alone waits, before creating its single session, until every enabled server is ready or failed,
-bounded by the largest `startup_timeout_ms` and 30 seconds. A subagent's candidate tools are its
-parent's registry tools (MCP included), filtered by both definitions and the parent's ceiling. Disconnects
+bounded by the largest `startup_timeout_ms` and 30 seconds. A subagent inherits its parent's frozen
+MCP inventory, never a later one, filtered by both definitions and the parent's ceiling; a tool
+missing from the child policy is absent. Disconnects
 fail in-flight calls with `mcp_disconnected`; servers get five restarts with 1/2/4/8/16-second
 backoff (general cap 60 seconds), then remain failed until service restart. Shutdown closes
 stdio, allows bounded grace, and terminates the process group, including descendants. Service
@@ -1159,7 +1162,9 @@ output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content 
 when no text exists; resource links include URI/name; image/audio content is a placeholder.
 `isError` becomes `mcp_tool_error` with the server as `plugin_id`. Configured secret values are
 redacted from descriptions, schemas, metadata and results; structured content is redacted as a
-value before serialisation, and text also loses each secret's JSON-escaped forms. MCP result text remains
+value before serialisation, and text and the stderr tail also lose each secret's JSON-escaped
+forms. Redaction covers secrets echoed as-is or in ordinary JSON, not a server that deliberately
+disguises a secret it was given (unusual escapes, numbers in schema data). MCP result text remains
 untrusted and grants no authorization. MCP uses the ordinary permission rule model without
 MCP-specific exceptions. With no matching rule, the default is ask; the permission flow may still
 allow the call, for example when the Captain asked for it. Without a flow that answers, WithNav

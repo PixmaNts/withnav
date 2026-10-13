@@ -31,12 +31,23 @@ not every provider credential in Nav's environment. Resolved values are never sa
 
 Tools are exposed as `mcp__github__get_issue`, with provider-safe names at most 64 characters.
 The optional `tools` map hides original tool names matching any `false` glob. An agent's
-existing exact-name `tools:` frontmatter can hide the exposed name too. Subagents receive the
-MCP tools ready when they are spawned, unless their own definition or their parent's hides them.
+existing exact-name `tools:` frontmatter can hide the exposed name too. A subagent receives
+its parent session's MCP tools, unless its own definition or its parent's hides them; a server
+that became ready after the parent session started is absent from both.
 A tool whose name contains a configured secret value is skipped (see `nav doctor`), and so is a
 tool whose schema combines a `$ref` with sibling constraints that would replace the referenced
-ones. Descriptions, schemas and results are redacted of configured secret values. MCP schemas count
-toward the ordinary context budget; hide tools you do not need.
+ones, or whose `$ref` merge would change what `additionalProperties`, `unevaluatedProperties`,
+`additionalItems` or `items` applies to. Descriptions, schemas, results and the stderr tail are
+redacted of configured secret values.
+
+Redaction catches secrets echoed as-is or in ordinary JSON; it is not a guarantee against a
+server that deliberately disguises a secret it was given. Known gaps: a secret spelled with
+unusual JSON escapes (a `\u` escape of an ASCII character, `\/`, mixed hexadecimal case), and a
+secret that is a number inside a schema `default`, `examples` or `enum`. A server that re-encodes
+its own secret already holds it and could send it anywhere: installing it is a decision to
+trust it.
+
+MCP schemas count toward the ordinary context budget; hide tools you do not need.
 
 Servers start in the background. A slow or failed server does not prevent session creation;
 its tools are absent from that session. `nav run` is the exception: before creating its single

@@ -260,6 +260,8 @@ async fn withnav_run_sends_the_rules_too() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert!(sent[1].1.contains("/tmp/withnav"));
+    assert!(sent[1]
+        .1
+        .contains(&std::env::temp_dir().join("withnav").display().to_string()));
     assert!(sent[2].1.contains("global rule") && sent[2].1.contains("project rule"));
 }

@@ -17,7 +17,7 @@ async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() 
         tools::Registry,
     };
     let mut settings = Settings::default();
-    settings.set_dotted("mcp", json!({"fake":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"MALFORMED_SCHEMA":"1"}}}));
+    settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"MALFORMED_SCHEMA":"1"}}}));
     let manager = McpManager::start(&settings);
     tokio::time::timeout(Duration::from_secs(5), async {
         while manager.snapshot().is_empty() {

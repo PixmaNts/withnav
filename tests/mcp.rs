@@ -10,7 +10,7 @@ use withnav::{
 
 fn settings(timeout: u64) -> Settings {
     let mut settings = Settings::default();
-    settings.set_dotted("mcp", json!({"fixture": {"command": ["python3", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")], "call_timeout_ms": timeout}}));
+    settings.set_dotted("mcp", json!({"fixture": {"command": [common::python(), concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")], "call_timeout_ms": timeout}}));
     settings
 }
 
@@ -40,7 +40,7 @@ async fn startup_cancel_and_timeout_allow_sigterm_cleanup() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("cleanup");
         let mut settings = Settings::default();
-        settings.set_dotted("mcp", json!({"hang":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":200,"env":{"CLEANUP_MARKER":marker.to_string_lossy()}}}));
+        settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":200,"env":{"CLEANUP_MARKER":marker.to_string_lossy()}}}));
         let manager = McpManager::start(&settings);
         tokio::time::sleep(Duration::from_millis(100)).await;
         if cancel {
@@ -183,7 +183,7 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     let script = format!("import subprocess,time,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); open({:?},'w').write(str(p.pid)); time.sleep(60)", pidfile.to_string_lossy());
     settings.set_dotted(
         "mcp",
-        json!({"hang": {"command":["python3", "-c", script], "startup_timeout_ms":10000}}),
+        json!({"hang": {"command":[common::python(), "-c", script], "startup_timeout_ms":10000}}),
     );
     let start = std::time::Instant::now();
     let manager = McpManager::start(&settings);
@@ -239,7 +239,7 @@ async fn service_session_creation_does_not_wait_for_initialization() {
     let (tmp, workspace) = common::server::temp_workspace();
     let config = common::server::TestServerConfig::unreachable(tmp.path()).config();
     let mut settings = withnav::settings::load(&config.config_dir).unwrap();
-    settings.set_dotted("mcp", json!({"hang":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":10000}}));
+    settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":10000}}));
     withnav::settings::save(&config.config_dir, &settings).unwrap();
     let state = withnav::server::AppState::new(config).unwrap();
     tokio::time::timeout(
@@ -261,7 +261,7 @@ async fn filters_disabled_servers_and_stderr_redaction() {
         json!({"command":["no-such-command"],"enabled":false}),
     );
     settings.set_dotted("mcp.bad.id", json!({"command":["no-such-command"]}));
-    settings.set_dotted("mcp.noisy", json!({"command":["python3","-c","import os,sys; sys.stderr.write(os.environ['SECRET']+' '+('x'*100000)); sys.stderr.flush()"],"env":{"SECRET":"mcp-secret-sentinel"},"startup_timeout_ms":1000}));
+    settings.set_dotted("mcp.noisy", json!({"command":[common::python(),"-c","import os,sys; sys.stderr.write(os.environ['SECRET']+' '+('x'*100000)); sys.stderr.flush()"],"env":{"SECRET":"mcp-secret-sentinel"},"startup_timeout_ms":1000}));
     let manager = McpManager::start(&settings);
     ready(&manager).await;
     assert!(!registry(&manager)
@@ -305,11 +305,11 @@ async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
     let launcher_pid = dir.path().join("launcher-pid");
     let descendant = format!("import signal,time,sys;\ndef cleanup(*_):\n time.sleep(0.15)\n open({:?},'w').write('cleanup')\n sys.exit(0)\nsignal.signal(signal.SIGTERM,cleanup)\nopen({:?},'w').write('ready')\ntime.sleep(60)",marker.to_string_lossy(),started.to_string_lossy());
     // The launcher exits after its child installs the handler, leaving the group alive.
-    let launcher = format!("import subprocess,time,os; open({:?},'w').write(str(os.getpid())); subprocess.Popen(['python3','-c',{:?}]);\nwhile not os.path.exists({:?}): time.sleep(0.01)",launcher_pid.to_string_lossy(), descendant,started.to_string_lossy());
+    let launcher = format!("import subprocess,time,os,sys; open({:?},'w').write(str(os.getpid())); subprocess.Popen([sys.executable,'-c',{:?}]);\nwhile not os.path.exists({:?}): time.sleep(0.01)",launcher_pid.to_string_lossy(), descendant,started.to_string_lossy());
     let mut settings = Settings::default();
     settings.set_dotted(
         "mcp",
-        json!({"launcher":{"command":["python3","-c",launcher],"startup_timeout_ms":300}}),
+        json!({"launcher":{"command":[common::python(),"-c",launcher],"startup_timeout_ms":300}}),
     );
     let manager = McpManager::start(&settings);
     tokio::time::timeout(Duration::from_secs(3), async {

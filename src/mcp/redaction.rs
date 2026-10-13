@@ -65,7 +65,9 @@ pub(super) fn redact(text: &str, secrets: &[String]) -> String {
 pub(super) fn redact_value(value: &Value, secrets: &[String]) -> Value {
     match value {
         Value::String(text) => Value::String(redact(text, secrets)),
-        Value::Array(items) => Value::Array(items.iter().map(|v| redact_value(v, secrets)).collect()),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|v| redact_value(v, secrets)).collect())
+        }
         Value::Object(object) => Value::Object(
             object
                 .iter()
@@ -144,7 +146,12 @@ mod tests {
 
     #[test]
     fn json_escaped_and_structured_forms_are_redacted() {
-        for secret in ["multi\nline-sentinel", "quote\"sentinel", "back\\slash-sentinel", "unicodé-sentinel"] {
+        for secret in [
+            "multi\nline-sentinel",
+            "quote\"sentinel",
+            "back\\slash-sentinel",
+            "unicodé-sentinel",
+        ] {
             let secrets = vec![secret.to_string()];
             let structured = json!({"k": secret, secret: [secret]});
             let redacted = serde_json::to_string(&redact_value(&structured, &secrets)).unwrap();

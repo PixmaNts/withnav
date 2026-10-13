@@ -35,7 +35,10 @@ pub(crate) struct Server {
 
 impl Server {
     pub(crate) fn secrets(&self) -> Vec<String> {
-        self.secrets.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     pub(crate) fn redact(&self, text: &str) -> String {
         redaction::redact(

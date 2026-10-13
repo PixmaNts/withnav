@@ -70,10 +70,26 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     let normalized = visit(&Value::Object(siblings), root, refs, depth + 1)?;
+                    // A sibling keyword the target also sets would replace it: the provider
+                    // would see fewer constraints than the server checks. Annotations may
+                    // replace; constraints only merge when they are new or identical.
                     for (key, value) in
                         normalized.as_object().ok_or("invalid reference siblings")?
                     {
-                        output.insert(key.clone(), value.clone());
+                        let annotation = matches!(
+                            key.as_str(),
+                            "description" | "title" | "default" | "examples"
+                        );
+                        match output.get(key) {
+                            Some(existing) if !annotation && existing != value => {
+                                return Err(format!(
+                                    "$ref sibling `{key}` conflicts with the referenced schema"
+                                ));
+                            }
+                            _ => {
+                                output.insert(key.clone(), value.clone());
+                            }
+                        }
                     }
                     return Ok(resolved);
                 }
@@ -297,10 +313,8 @@ impl McpTool {
             .map_err(|e| format!("{original}: {e}"))?;
         let parameters = super::redaction::redact_value(&parameters, &secrets);
         let wire = wire_name(&server.id, &original);
-        let description = super::redaction::redact(
-            definition.description.as_deref().unwrap_or(""),
-            &secrets,
-        );
+        let description =
+            super::redaction::redact(definition.description.as_deref().unwrap_or(""), &secrets);
         let schema = json!({"description": format!("[mcp:{}] {description}", server.id), "parameters": parameters});
         Ok(Self {
             wire,
@@ -432,6 +446,28 @@ mod tests {
         assert!(normalize(json!({"oneOf":[]})).is_err());
     }
     #[test]
+    fn reference_siblings_that_would_replace_constraints_skip_the_tool() {
+        let schema = json!({
+            "$defs": {"args": {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}},
+            "properties": {"x": {"$ref": "#/$defs/args", "properties": {"b": {"type": "string"}}, "required": ["b"]}}
+        });
+        let error = normalize(schema).unwrap_err();
+        assert!(
+            error.contains("required") || error.contains("properties"),
+            "{error}"
+        );
+        let merged = normalize(json!({
+            "$defs": {"s": {"type": "string"}},
+            "properties": {"x": {"$ref": "#/$defs/s", "minLength": 1, "description": "x"}}
+        }))
+        .unwrap();
+        assert_eq!(
+            merged["properties"]["x"],
+            json!({"type":"string","minLength":1,"description":"x"})
+        );
+    }
+
+    #[test]
     fn results_are_bounded_including_error_messages() {
         let result = convert(
             &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
@@ -484,7 +520,11 @@ mod tests {
 
     #[test]
     fn structured_content_secrets_are_redacted_before_serialisation() {
-        for secret in ["multi\nline-sentinel", "quote\"sentinel", "back\\slash-sentinel"] {
+        for secret in [
+            "multi\nline-sentinel",
+            "quote\"sentinel",
+            "back\\slash-sentinel",
+        ] {
             let result = convert(
                 &json!({"content":[], "structuredContent":{"token":secret,"list":[secret]}}),
                 "fake",

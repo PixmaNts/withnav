@@ -152,6 +152,263 @@ fn body_of(provider: &CapturingProvider, n: usize) -> String {
     provider.bodies()[n].clone()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_reject_does_not_claim_the_pending_request() {
+    for exact in ["a".repeat(2048), "é".repeat(1024)] {
+        let env = Env::new();
+        let target = env.ws.join("rejected.txt");
+        let provider = provider(vec![one_write("w1", &target), done("finished")]).await;
+        let state = config(&env, &provider).state();
+        let router = app(state.clone());
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, id, "write rejected.txt").await;
+        let requested = wait_events(&state, id, "permission.requested", 1).await;
+        let request = request_id(&requested[0]);
+        for message in [format!("{exact}a"), format!("{}é", "a".repeat(2047))] {
+            let (status, body) = answer(
+                &router,
+                id,
+                &request,
+                json!({"decision":"reject","message":message}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(body["error"].as_str().unwrap().contains("2048 UTF-8 bytes"));
+            let error = state
+                .answer_permission(
+                    id,
+                    request.parse().unwrap(),
+                    withnav::agent::permissions::PermissionDecision::Reject {
+                        message: Some(message),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("2048 UTF-8 bytes"));
+            assert!(events(&state, id, "permission.resolved").await.is_empty());
+        }
+        let (status, body) = answer(
+            &router,
+            id,
+            &request,
+            json!({"decision":"reject","message":exact}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_events(&state, id, "task.done", 1).await;
+        assert!(!target.exists());
+        state.close_session(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn always_fetch_still_asks_for_the_second_call_on_the_same_origin() {
+    let env = Env::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/page", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().route("/page", axum::routing::get(|| async { "page" })),
+        )
+        .await
+        .unwrap();
+    });
+    let provider = provider(vec![
+        calls(&[
+            ("f1", "fetch", json!({"url":url})),
+            ("f2", "fetch", json!({"url":url})),
+        ]),
+        done("finished"),
+    ])
+    .await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "fetch the page twice").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    let (status, body) = answer(
+        &router,
+        id,
+        &request_id(&requested[0]),
+        json!({"decision":"allow_always"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let requested = wait_events(&state, id, "permission.requested", 2).await;
+    assert_eq!(requested[1].payload["tool_call_id"], "f2");
+    assert_eq!(requested[0].payload["scope"], requested[1].payload["scope"]);
+    let (status, body) = answer(
+        &router,
+        id,
+        &request_id(&requested[1]),
+        json!({"decision":"reject"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_events(&state, id, "task.done", 1).await;
+    state.close_session(id).await.unwrap();
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
+    for decision in ["allow_once", "allow_always", "allow_config_session"] {
+        let env = Env::new();
+        let target = env.root.join("cfg/models.json");
+        let provider = provider(vec![
+            calls(&[
+                ("w1", "write", json!({"path":target,"content":"first"})),
+                ("w2", "write", json!({"path":target,"content":"second"})),
+            ]),
+            done("finished"),
+        ])
+        .await;
+        let state = config(&env, &provider).state();
+        let router = app(state.clone());
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, id, "write the configuration").await;
+        let requested = wait_events(&state, id, "permission.requested", 1).await;
+        assert_eq!(requested[0].payload["allow_config_session"], true);
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[0]),
+            json!({"decision":decision}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if decision == "allow_config_session" {
+            // Admission accepts the legacy grant; its review remains independent.
+            state.close_session(id).await.unwrap();
+            continue;
+        }
+        let requested = wait_events(&state, id, "permission.requested", 2).await;
+        assert_eq!(requested[1].payload["tool_call_id"], "w2");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
+        assert_eq!(requested[1].payload["allow_config_session"], true);
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[1]),
+            json!({"decision":"reject"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_events(&state, id, "task.done", 1).await;
+        state.close_session(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_answers_preserve_legacy_grants_but_new_answers_only_run_once() {
+    for decision in ["allow_once", "allow_always", "allow_skill_machine"] {
+        let env = Env::new();
+        let skill = env.root.join("home/.agents/skills/sync");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: sync\ndescription: Sync\n---\nInstructions\n",
+        )
+        .unwrap();
+        let script = skill.join("sync.py");
+        let target = env.ws.join("runs.txt");
+        std::fs::write(
+            &script,
+            format!(
+                "with open({:?}, 'a') as f: f.write('run\\n')\n",
+                target.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let command = format!("python3 {}", script.display());
+        let provider = provider(vec![
+            calls(&[
+                ("s1", "bash", json!({"command":command})),
+                ("s2", "bash", json!({"command":command})),
+            ]),
+            done("finished"),
+        ])
+        .await;
+        let state = config(&env, &provider).state();
+        let router = app(state.clone());
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, id, "run the sync script").await;
+        let requested = wait_events(&state, id, "permission.requested", 1).await;
+        assert_eq!(requested[0].payload["skill_script"]["skill"], "sync");
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[0]),
+            json!({"decision":decision}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let requested = wait_events(&state, id, "permission.requested", 2).await;
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "run\n");
+        let grants = withnav::agent::skill_grants::SkillGrants::in_dir(&env.root.join("cfg"))
+            .read()
+            .unwrap();
+        assert_eq!(grants.is_empty(), decision != "allow_skill_machine");
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[1]),
+            json!({"decision":"reject"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_events(&state, id, "task.done", 1).await;
+        state.close_session(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_new_answers_keep_current_execution_semantics_and_legacy_answers_work() {
+    for decision in [
+        "allow_once",
+        "allow_always",
+        "reject",
+        "allow_folder",
+        "deny",
+    ] {
+        let env = Env::new();
+        let target = env.ws.join("answer.txt");
+        let provider = provider(vec![one_write("w1", &target), done("finished")]).await;
+        let state = config(&env, &provider).state();
+        let router = app(state.clone());
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, id, "write answer.txt").await;
+        let requested = wait_events(&state, id, "permission.requested", 1).await;
+        assert!(requested[0].payload.get("always_label").is_none());
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[0]),
+            json!({"decision":decision,"message":"Choose another approach"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_events(&state, id, "task.done", 1).await;
+        let rejected = matches!(decision, "reject" | "deny");
+        assert_eq!(target.exists(), !rejected);
+        if rejected {
+            assert!(body_of(&provider, 1).contains("Choose another approach"));
+        }
+        let resolved = events(&state, id, "permission.resolved").await;
+        assert_eq!(
+            resolved[0].payload["resolution"],
+            if decision == "allow_folder" {
+                "allow_once"
+            } else {
+                decision
+            }
+        );
+        state.close_session(id).await.unwrap();
+    }
+}
+
 // Given a write, when the Captain allows it once
 // Then the call runs once, its real result is what the next model request
 //      carries, and the request is stored with its resolution

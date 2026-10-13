@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { HttpError } from "../../api/http";
 import { createMockApi } from "./server";
 
 const WS = "/repo";
 
 describe("mock flows API", () => {
+  it("activates only approved versions and excludes mutation and revocation", async () => {
+    const api = createMockApi(WS);
+    const doc = await api.get("guard-mutations", "workspace");
+    expect(doc.saved_since_reload).toBe(true);
+    expect((await api.reload()).errors.some((error) => error.code === "validation")).toBe(true);
+    await api.setTrust(doc);
+    await api.reload();
+    expect((await api.get(doc.name, doc.location)).saved_since_reload).toBe(false);
+    api.revokeApproval(doc);
+    await api.reload();
+    expect((await api.get(doc.name, doc.location)).saved_since_reload).toBe(true);
+    await api.setTrust(doc);
+    const changed = await api.save(doc.name, { location: doc.location, revision: doc.revision,
+      content: { format: "toml", toml: `${doc.toml}\n# change`, templates: doc.templates } });
+    await api.reload();
+    expect((await api.get(changed.name, changed.location)).saved_since_reload).toBe(true);
+  });
   it("exposes host diagnostics, health warnings, reload propagation and a suppressed live wake", async () => {
     const api = createMockApi(WS);
     expect((await api.list()).errors?.[0]?.message).toContain("Instinct unavailable");
@@ -36,7 +52,7 @@ describe("mock flows API", () => {
     expect(doc.errors).toEqual([]);
     expect(doc.definition?.node).toHaveLength(9);
     expect(doc.path).toBe("/repo/.withnav/flows/guard-mutations.toml");
-    expect(doc.saved_since_reload).toBe(false);
+    expect(doc.saved_since_reload).toBe(true);
   });
 
   it("saves with the revision, marks the flow saved since reload, refuses a stale save", async () => {
@@ -49,26 +65,21 @@ describe("mock flows API", () => {
     await expect(api.save("guard-mutations", { location: "workspace", revision: doc.revision, content: { format: "graph", definition: def, templates: {} } })).rejects.toMatchObject({ status: 409, reason: "stale" });
   });
 
-  it("keeps an invalid TOML save, then refuses the reload with its errors", async () => {
+  it("keeps invalid TOML saves inactive and refuses stale validation", async () => {
     const api = createMockApi(WS);
-    await api.setTrust(true);
     const doc = await api.get("guard-mutations", "workspace");
     const bad = await api.save("guard-mutations", { location: "workspace", revision: doc.revision, content: { format: "toml", toml: "[flow\n", templates: {} } });
     expect(bad.definition).toBeNull();
     expect(bad.errors[0]?.code).toBe("parse");
-    const error = await api.reload().catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(HttpError);
-    expect((error as HttpError).status).toBe(422);
-    expect((error as HttpError).body.errors.length).toBeGreaterThan(0);
-    expect((await api.list()).errors?.some((diagnostic) => diagnostic.code === "parse")).toBe(true);
+    await expect(api.setTrust({ name: bad.name, location: bad.location, revision: doc.revision })).rejects.toMatchObject({ reason: "stale" });
+    await expect(api.reload()).resolves.toMatchObject({ reloaded: true });
   });
 
-  it("refuses sample and replay of workspace flows until trusted", async () => {
+  it("validates the exact workspace flow version and permits explicit samples", async () => {
     const api = createMockApi(WS);
     const doc = await api.get("guard-mutations", "workspace");
     const source = { saved: { name: doc.name, location: doc.location, revision: doc.revision } };
-    await expect(api.sample({ source, payload: {}, session_id: null })).rejects.toMatchObject({ status: 403, reason: "untrusted" });
-    await api.setTrust(true);
+    await api.setTrust({ name: doc.name, location: doc.location, revision: doc.revision });
     const run = await api.sample({ source, payload: { tool: "write", args: { path: "x" }, call_id: "s" }, session_id: null });
     expect(run.mode).toBe("sample");
     expect(run.nodes.find((n) => n.id === "effect")?.status).toBe("completed");
@@ -78,7 +89,6 @@ describe("mock flows API", () => {
 
   it("replays the recorded run without new answers", async () => {
     const api = createMockApi(WS);
-    await api.setTrust(true);
     const doc = await api.get("guard-mutations", "workspace");
     const { runs } = await api.runs("guard-mutations");
     const live = runs.find((r) => r.mode === "live")!;

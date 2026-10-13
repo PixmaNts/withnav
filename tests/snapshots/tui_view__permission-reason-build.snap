@@ -19,7 +19,7 @@ expression: snapshot
                      │ │ PERMISSION · build wants to run bash in /ws                                
                      │ │  it changes files                                                          
                      │ │  $ ls                                                                      
-                     │ │  y allow once · n deny                                                     
+                     │ │  o once · r reject                                                         
                      │ │                                                                            
                      │                                                                              
                      │                                                                              
@@ -31,4 +31,4 @@ expression: snapshot
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ y allow once · n deny · esc stop · ctrl+p palette
+ alt+b hide bar      │ o once · r reject · esc stop · ctrl+p palette

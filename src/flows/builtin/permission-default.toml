@@ -1,0 +1,139 @@
+[flow]
+version = 1
+name = "permission-default"
+on = "tool.pre_call"
+enabled = false
+blocking = true
+budget_ms = 2000
+start = ["protected"]
+
+[constants]
+PROTECTED_MIN = 0.9
+REQUESTED_MIN = 0.6
+SAFE_MIN = 0.7
+DANGER_MIN = 0.5
+
+[fallback]
+on_failure = { action = "apply_rule", params = {} }
+
+[[node]]
+id = "protected"
+type = "expression"
+condition = "is_set(protected) && protected"
+[node.inputs]
+protected = "event.protected"
+[node.next]
+true = ["protected_requested"]
+false = ["rule_effect"]
+
+[[node]]
+id = "protected_requested"
+type = "noul"
+instructions = "Do the Captain's own messages explicitly ask to change WithNav's configuration, permission rules or database?"
+threshold = "constant.PROTECTED_MIN"
+state_template = "protected-state.md"
+[node.inputs]
+captain_messages = "conversation.captain_messages"
+tool = "event.tool"
+args = "event.args"
+[node.next]
+yes = ["protected_allow"]
+no = ["protected_ask"]
+
+[[node]]
+id = "rule_effect"
+type = "expression"
+condition = 'is_set(effect) && effect == "allow"'
+[node.inputs]
+effect = "event.rule_effect"
+[node.next]
+true = ["danger"]
+false = ["requested"]
+
+[[node]]
+id = "requested"
+type = "noul"
+instructions = "Did the Captain, or the validated skill active this turn, ask for this action?"
+threshold = "constant.REQUESTED_MIN"
+state_template = "state.md"
+[node.inputs]
+captain_messages = "conversation.captain_messages"
+skill = "event.skill"
+tool = "event.tool"
+args = "event.args"
+commands = "event.commands"
+inside_project = "event.inside_project"
+rule = "event.rule"
+[node.next]
+yes = ["allow"]
+no = ["safe"]
+
+[[node]]
+id = "safe"
+type = "noul"
+instructions = "Is this a read, or a recoverable change inside the project?"
+threshold = "constant.SAFE_MIN"
+state_template = "state.md"
+[node.inputs]
+captain_messages = "conversation.captain_messages"
+skill = "event.skill"
+tool = "event.tool"
+args = "event.args"
+commands = "event.commands"
+inside_project = "event.inside_project"
+rule = "event.rule"
+[node.next]
+yes = ["allow"]
+no = ["unrequested_ask"]
+
+[[node]]
+id = "danger"
+type = "noul"
+instructions = "Is this exact call destructive, irreversible, does it publish something, or does it touch credentials?"
+threshold = "constant.DANGER_MIN"
+state_template = "state.md"
+[node.inputs]
+captain_messages = "conversation.captain_messages"
+skill = "event.skill"
+tool = "event.tool"
+args = "event.args"
+commands = "event.commands"
+inside_project = "event.inside_project"
+rule = "event.rule"
+[node.next]
+yes = ["danger_ask"]
+no = ["allow"]
+
+[[node]]
+id = "protected_allow"
+type = "action"
+action = "allow"
+[node.params]
+protected_ok = true
+
+[[node]]
+id = "allow"
+type = "action"
+action = "allow"
+[node.params]
+
+[[node]]
+id = "protected_ask"
+type = "action"
+action = "ask_captain"
+[node.params]
+note = "The Captain's own messages do not explicitly request this protected WithNav change."
+
+[[node]]
+id = "unrequested_ask"
+type = "action"
+action = "ask_captain"
+[node.params]
+note = "This action was not requested and is not a read or recoverable project change."
+
+[[node]]
+id = "danger_ask"
+type = "action"
+action = "ask_captain"
+[node.params]
+note = "This exact call is destructive, irreversible, publishes something or touches credentials."

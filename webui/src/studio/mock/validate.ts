@@ -79,7 +79,7 @@ export function validateDefinition(def: Definition, catalogue: Catalogue): Diagn
     if (spec.kind === "verdict" && !f.blocking) out.push(d("action_not_allowed", `${name} is a verdict: only a blocking flow can use it.`, `${path}.action`, nodeId));
     for (const p of spec.params) {
       const v = params[p.name];
-      if (v === undefined || (p.required && v === "")) out.push(d("invalid_parameter", `${name} needs "${p.name}".`, `${path}.params.${p.name}`, nodeId));
+      if (p.required && (v === undefined || v === "")) out.push(d("invalid_parameter", `${name} needs "${p.name}".`, `${path}.params.${p.name}`, nodeId));
       else if (typeof v === "object" && !aliases.has(v.ref)) out.push(d("invalid_parameter", `"${v.ref}" is not an input of this node.`, `${path}.params.${p.name}`, nodeId));
     }
     for (const k of Object.keys(params)) if (!spec.params.some((p) => p.name === k)) out.push(d("invalid_parameter", `${name} has no parameter "${k}".`, `${path}.params.${k}`, nodeId));

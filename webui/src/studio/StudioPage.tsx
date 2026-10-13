@@ -110,7 +110,6 @@ function Studio({ api, route, navigate, flowsDrawer, inspectorDrawer }: { api: S
   const list = useQuery({ queryKey: k("list"), queryFn: () => api.list() });
   const catalogue = useQuery({ queryKey: k("catalogue"), queryFn: () => api.catalogue(), staleTime: Infinity });
   const health = useQuery({ queryKey: k("health"), queryFn: () => api.health(), refetchInterval: 60_000 });
-  const trust = useQuery({ queryKey: k("trust"), queryFn: () => api.trust() });
 
   // The open flow: the route's, else the first one listed.
   const flows = list.data?.flows ?? [];
@@ -190,8 +189,8 @@ function Studio({ api, route, navigate, flowsDrawer, inspectorDrawer }: { api: S
   const readOnly = !!doc?.read_only;
   const edit = readOnly || state.tomlPending ? null : editor.editGraph;
   const dirty = state.origin !== null;
-  const untrusted = trust.data && trust.data.has_workspace_flows && !trust.data.trusted;
-  const blockedReason = doc?.location === "workspace" && trust.data && !trust.data.trusted ? "Trust this workspace's flows to run a sample or a replay." : null;
+  const untrusted = doc && doc.location !== "builtin";
+  const blockedReason = null;
 
   const refreshList = useCallback(() => qc.invalidateQueries({ queryKey: ["studio", ws, api.mocked] }), [qc, ws, api.mocked]);
 
@@ -216,7 +215,7 @@ function Studio({ api, route, navigate, flowsDrawer, inspectorDrawer }: { api: S
     setReload({ busy: true, ok: null, message: "", errors: [] });
     try {
       const r = await api.reload();
-      setReload({ busy: false, ok: true, message: `Reloaded ${r.flows.length} flow${r.flows.length === 1 ? "" : "s"}. Saved flows run in this process from now on.`, propagation: r.propagation, errors: [] });
+      setReload({ busy: false, ok: true, message: `Reloaded ${r.flows.length} flow${r.flows.length === 1 ? "" : "s"}. Saved flows run in this process from now on.`, propagation: r.propagation, errors: r.errors });
     } catch (e) {
       const env = envelopeOf(e);
       setReload({ busy: false, ok: false, message: env?.error ?? errorMessage(e), errors: env?.errors ?? [] });
@@ -313,10 +312,10 @@ function Studio({ api, route, navigate, flowsDrawer, inspectorDrawer }: { api: S
         <div className="sf-trust" role="status">
           <ShieldWarning size={15} aria-hidden />
           <span>
-            This workspace has its own flows. They are not loaded, sampled or replayed until you trust them. Trust lets them read the context they declare; it grants no tool permission.
+            Validate this saved flow version before reloading it. A validated flow, including a workspace flow, can allow tool calls.
           </span>
-          <button type="button" className="sf-btn accent" onClick={async () => { await api.setTrust(true); void refreshList(); }}>
-            Trust this workspace's flows
+          <button type="button" className="sf-btn accent" disabled={dirty || !!doc.errors.length} onClick={async () => { try { await api.setTrust({ name: doc.name, location: doc.location, revision: doc.revision }); setNotice("Flow version validated. Reload to activate."); void refreshList(); } catch (e) { setNotice(errorMessage(e)); } }}>
+            Validate this flow version
           </button>
         </div>
       )}
@@ -716,7 +715,7 @@ function NewFlowDialog({ api, flows, catalogue, onClose, onCreated }: { api: Stu
               </button>
             ))}
           </div>
-          <span className="sf-note">{location === "workspace" ? "Under version control; runs once the workspace is trusted. Replaces a global flow of the same name." : "Runs in every workspace."}</span>
+          <span className="sf-note">{location === "workspace" ? "Under version control; runs once this flow version is validated. Replaces a global flow of the same name." : "Runs in every workspace."}</span>
         </div>
         <label className="sf-field">
           <span className="sf-sec-label">Event it listens to</span>

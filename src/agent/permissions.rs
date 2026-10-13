@@ -35,6 +35,13 @@ pub enum PermissionOrigin {
 pub enum PermissionDecision {
     /// Run this one call.
     AllowOnce,
+    /// Run this call and save an allow rule after the permission-rule cutover.
+    AllowAlways,
+    /// Do not run the call; the optional message is the Captain's reason.
+    Reject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     /// Run this call and every later call of the same capability inside the
     /// same scope, for this agent, until the session ends.
     AllowFolder,
@@ -45,6 +52,25 @@ pub enum PermissionDecision {
     Deny {
         message: String,
     },
+}
+
+/// Maximum Captain-provided refusal reason, measured on the UTF-8 wire.
+pub const REJECT_MESSAGE_MAX_BYTES: usize = 2048;
+pub const REJECT_MESSAGE_LIMIT_ERROR: &str = "Reject message must be at most 2048 UTF-8 bytes";
+
+impl PermissionDecision {
+    pub fn validate_message(&self) -> Result<(), &'static str> {
+        let message = match self {
+            Self::Reject { message } => message.as_deref(),
+            Self::Deny { message } => Some(message.as_str()),
+            _ => None,
+        };
+        if message.is_some_and(|message| message.len() > REJECT_MESSAGE_MAX_BYTES) {
+            Err(REJECT_MESSAGE_LIMIT_ERROR)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// What a gated call touches.

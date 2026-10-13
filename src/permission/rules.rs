@@ -321,7 +321,10 @@ impl RuleScope {
     pub(crate) fn storage(&self) -> Result<(&'static str, String), Error> {
         Ok(match self {
             Self::Global => ("global", String::new()),
-            Self::Project(path) => ("project", path_text(&path.canonicalize()?)?.into()),
+            Self::Project(path) => (
+                "project",
+                path_text(&crate::tools::canonical_path(&path)?)?.into(),
+            ),
             Self::Agent(name) if !name.is_empty() => ("agent", name.clone()),
             Self::Agent(_) => return Err(Error::Invalid("agent name must not be empty".into())),
         })
@@ -515,7 +518,7 @@ impl PermissionStore {
                 "permission values cannot contain NUL".into(),
             ));
         }
-        let workspace = workspace.canonicalize()?;
+        let workspace = crate::tools::canonical_path(&workspace)?;
         Ok(self
             .db()
             .query_row(

@@ -423,7 +423,10 @@ async fn http_answers_and_legacy_answers_apply_to_the_held_call() {
         let requested = wait_events(&state, id, "permission.requested", 1).await;
         assert_eq!(
             requested[0].payload["always_label"],
-            format!("Always (project): write {}", target.display())
+            format!(
+                "Always (project): write {}",
+                withnav::permission::rules::literal(&target.display().to_string())
+            )
         );
         let (status, body) = answer(
             &router,

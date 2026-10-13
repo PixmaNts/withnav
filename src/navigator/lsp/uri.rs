@@ -114,6 +114,10 @@ mod tests {
     #[cfg(windows)]
     fn uri_paths_decode() {
         assert_eq!(
+            uri_to_path_str("file:///c%3A/Users/a%20b/main.rs").as_deref(),
+            Some("c:\\Users\\a b\\main.rs")
+        );
+        assert_eq!(
             uri_to_path_str("file:///C:/a%20b/c%C3%A9.rs").as_deref(),
             Some("C:\\a b\\cé.rs")
         );

@@ -211,7 +211,7 @@ impl Skills {
     /// blocking context.
     pub fn load(roots: &RulesRoots, workspace: &Path) -> Self {
         let workspace =
-            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            crate::tools::canonical_path(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         let mut walk = Walk::default();
         let candidates = candidate_roots(roots, &workspace);
         for (dir, root) in &candidates {
@@ -309,7 +309,7 @@ impl Walk {
     fn add_root(&mut self, dir: PathBuf, rank: Rank) {
         // An absent root is normal; one reached twice (a link, a home that is
         // the worktree) keeps its best rank.
-        if let Ok(canonical) = std::fs::canonicalize(&dir) {
+        if let Ok(canonical) = crate::tools::canonical_path(&dir) {
             if canonical.is_dir() && !self.roots.iter().any(|(r, _)| *r == canonical) {
                 self.roots.push((canonical, rank));
             }
@@ -379,7 +379,7 @@ impl Walk {
             if !std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
                 continue;
             }
-            let Ok(canonical) = std::fs::canonicalize(&path) else {
+            let Ok(canonical) = crate::tools::canonical_path(&path) else {
                 continue;
             };
             if !self.inside_roots(&canonical) {
@@ -397,7 +397,7 @@ impl Walk {
     }
 
     fn manifest(&mut self, manifest: &Path, rank: Rank) {
-        let Ok(path) = std::fs::canonicalize(manifest) else {
+        let Ok(path) = crate::tools::canonical_path(manifest) else {
             return;
         };
         if !self.inside_roots(&path) {

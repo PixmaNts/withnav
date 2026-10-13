@@ -236,11 +236,14 @@ impl AgentDefinition {
         };
         let resolved = crate::tools::validate_path(&[workspace.to_path_buf()], &candidate)
             .map_err(|e| e.to_string())?;
-        let root = workspace
-            .canonicalize()
+        let root = crate::tools::canonical_path(workspace)
             .map_err(|e| e.to_string())?
             .join(".withnav/charts");
-        if !resolved.starts_with(&root)
+        #[cfg(windows)]
+        let inside = crate::tools::nofollow::path_within(&resolved, &root);
+        #[cfg(unix)]
+        let inside = resolved.starts_with(&root);
+        if !inside
             || !resolved
                 .extension()
                 .is_some_and(|e| e == "mmd" || e == "mermaid")

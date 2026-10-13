@@ -649,7 +649,7 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
 /// A `deny` rule whose resource is exactly `*` is the only rule an opaque
 /// command can match, because it has no rule text to match anything narrower.
 fn opaque_deny(input: &Input<'_>) -> Result<Option<Rule>, Error> {
-    let workspace = input.cx.workspace.canonicalize()?;
+    let workspace = crate::tools::canonical_path(&input.cx.workspace)?;
     Ok(input
         .store
         .list(&RuleFilter::default())?
@@ -714,7 +714,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = crate::tools::canonical_path(&dir.path()).unwrap();
         for sub in ["project", "config/flows", "data", "home/.ssh", "outside"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
@@ -732,7 +732,7 @@ mod tests {
 
     impl Fixture {
         fn root(&self) -> PathBuf {
-            self.dir.path().canonicalize().unwrap()
+            crate::tools::canonical_path(&self.dir.path()).unwrap()
         }
 
         fn add(&self, action: &str, resource: &str, effect: Effect) -> Rule {

@@ -1,4 +1,6 @@
 //! Process startup admission uses synthetic config and never the Captain's credentials.
+#[path = "common/uri.rs"]
+mod uri;
 
 use std::path::Path;
 use std::process::Stdio;
@@ -284,7 +286,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":format!("file://{}",workspace.display())}}).to_string();
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":uri::file_uri(&workspace)}}).to_string();
         let initialized = json!({"jsonrpc":"2.0","method":"initialized","params":{}}).to_string();
         // The `initialize` frame and the header of the next frame go out in one write, so
         // bytes after the first frame must survive the startup reader. The `initialized`
@@ -403,7 +405,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
         let frame = if malformed {
             "Content-Length: 1048577\r\n\r\n".to_string()
         } else {
-            let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":format!("file://{}",workspace.display())}}).to_string();
+            let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":uri::file_uri(&workspace)}}).to_string();
             format!("Content-Length: {}\r\n\r\n{body}", body.len())
         };
         child
@@ -486,7 +488,7 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
             .unwrap();
         }
         let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "processId":null,"rootUri":format!("file://{}", workspace.display()),"capabilities":{}
+            "processId":null,"rootUri":uri::file_uri(&workspace),"capabilities":{}
         }})
         .to_string();
         let mut child = command(dir.path(), true)
@@ -588,8 +590,7 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
             params[key] = value.clone();
         }
         if params["workspaceFolders"][0]["uri"] == "LOCAL" {
-            params["workspaceFolders"][0]["uri"] =
-                json!(format!("file://{}", dir.path().display()));
+            params["workspaceFolders"][0]["uri"] = json!(uri::file_uri(dir.path()));
         }
         let body =
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":params}).to_string();

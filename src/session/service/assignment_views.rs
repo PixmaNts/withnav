@@ -921,7 +921,20 @@ mod tests {
         route: &str,
         extra: &str,
     ) -> (StatusCode, Value) {
-        let uri = format!("/v1/{route}?workspace={}{}", root.display(), extra);
+        let uri = format!(
+            "/v1/{route}?workspace={}{}",
+            {
+                let mut url = reqwest::Url::parse("http://localhost").unwrap();
+                url.query_pairs_mut()
+                    .append_pair("workspace", &root.to_string_lossy());
+                url.query()
+                    .unwrap()
+                    .strip_prefix("workspace=")
+                    .unwrap()
+                    .to_owned()
+            },
+            extra
+        );
         let response = crate::server::routes::app(state.clone())
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await

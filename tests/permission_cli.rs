@@ -136,7 +136,10 @@ fn permissions_cli_round_trip() {
     let rules: serde_json::Value = serde_json::from_str(&run(&["list", "--json"])).unwrap();
     assert_eq!(
         rules[0]["scope"]["project"],
-        workspace.path().to_str().unwrap()
+        withnav::tools::canonical_path(workspace.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
     );
     let id = rules[0]["id"].as_i64().unwrap().to_string();
     run(&["revoke", &id]);
@@ -149,7 +152,13 @@ fn permissions_cli_round_trip() {
     for scope in [
         vec!["--global"],
         vec!["--agent", "plan"],
-        vec!["--project", workspace.path().to_str().unwrap()],
+        vec![
+            "--project",
+            withnav::tools::canonical_path(workspace.path())
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        ],
     ] {
         let mut args = vec!["list", "--all", "--json"];
         args.extend(scope);

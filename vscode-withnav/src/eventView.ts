@@ -123,8 +123,6 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
           (!p.child_session_id ? calls?.argumentsFor(p) : undefined) ?? String(p.arguments ?? "")),
         arguments: String(p.arguments ?? ""),
         alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
-        allowFolder: agent !== "plan" && tool === "fetch",
-        allowConfigSession: p.allow_config_session === true,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
         evidence: permissionEvidence(p.permission_gate),
       } };

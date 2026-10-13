@@ -743,11 +743,9 @@ export class CognitionBackend implements ChatBackend {
     const card = this.state.controls.permissions.get(requestId);
     const owner = this.state.controlOwners.get(`permission:${requestId}`);
     if (sessionId !== this.state.session || owner?.session !== sessionId || owner.generation !== generation || !card ||
-        !["allow_once", "allow_always", "reject", "allow_folder", "allow_config_session", "allow_skill_machine", "deny"].includes(decision) ||
+        !["allow_once", "allow_always", "reject", "allow_skill_machine", "deny"].includes(decision) ||
         (decision === "allow_always" && card.alwaysLabel === undefined) ||
-        (decision === "allow_config_session" && !card.allowConfigSession) ||
         (decision === "allow_skill_machine" && !card.skillName) ||
-        (decision === "allow_folder" && !card.allowFolder) ||
         (message !== undefined && typeof message !== "string")) {
       throw new Error("This permission request does not belong to the open conversation.");
     }

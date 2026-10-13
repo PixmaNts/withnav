@@ -214,7 +214,7 @@ pub struct AgentDefinition {
 
 impl AgentDefinition {
     /// Cartographe's write exception is confined to Mermaid chart files.
-    /// Call before permission review and again at dispatch: approval must not broaden it.
+    /// Checked before the permission decision and again at dispatch: an approval must not broaden it.
     pub fn validate_write_scope(
         &self,
         tool: &str,

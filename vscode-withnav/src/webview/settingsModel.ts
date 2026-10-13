@@ -293,21 +293,12 @@ function agentSection(s: SettingsSnapshot, a: AgentRow): Section {
 }
 
 function permissionsSection(s: SettingsSnapshot): Section {
-  const review = field(s, "permissions.automatic_review");
   const dirs = field(s, "permissions.scratch_dirs");
   const list = effectiveValue(dirs);
   const items = Array.isArray(list) ? list.map(String) : [];
   return {
-    id: "permissions", label: "Permissions", level: 0, title: "Permissions", description: "config.json → permissions",
+    id: "permissions", label: "Permissions", level: 0, title: "Permissions", description: "config.json → permissions. Each call is decided by your rules (nav permissions), the permission flow, then you.",
     rows: [
-      {
-        id: "permissions.automatic_review", key: "permissions.automatic_review", category: "Permissions:", title: "Automatic Review",
-        description: "Before a bash, write or edit runs, the instinct classifies effects, scope and risk; risky or outside-project changes need the metacognition's approval; any doubt or failure asks you. fetch keeps its origin grants.",
-        applies: review ? appliesText(review.applies) : undefined,
-        control: { kind: "checkbox", checked: effectiveValue(review) !== false, label: "Review calls automatically. When off, every bash, write and edit call is asked." },
-        modified: isModified(review), resettable: !!review?.set, error: review?.error, terms: "permissions.automatic_review approval review",
-        write: (input) => input === true,
-      },
       {
         id: "permissions.scratch_dirs", key: "permissions.scratch_dirs", category: "Permissions:", title: "Scratch Dirs",
         description: "Absolute paths agents may write to without asking. An empty list turns scratch space off.",

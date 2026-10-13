@@ -57,7 +57,6 @@ export interface Turn {
 
 export interface Permission {
   alwaysLabel?: string;
-  allowConfigSession?: boolean;
   skillName?: string;
   requestId: string;
   toolCallId: string;
@@ -301,7 +300,6 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
           scope: { kind: str(p.scope?.kind), value: str(p.scope?.value) },
           arguments: str(p.arguments),
           alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
-          allowConfigSession: p.allow_config_session === true,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
           childSessionId: typeof p.child_session_id === "string" ? p.child_session_id : undefined,
         },

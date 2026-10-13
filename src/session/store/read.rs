@@ -14,14 +14,6 @@ use crate::bus::event::EventEnvelope;
 use crate::provider::openai::ChatMessage;
 
 impl HistoryStore {
-    pub async fn permission_context_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
-        let path = Arc::clone(&self.path);
-        blocking(move || with_read_tx(&path, |tx| {
-            let mut stmt = tx.prepare("SELECT envelope FROM events WHERE session_id=?1 AND kind IN ('message.received','command.result','permission.resolved','tool.pre_call','tool.post_call','llm.response') ORDER BY seq").map_err(|e| e.to_string())?;
-            let rows = stmt.query_map(params![id.to_string()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
-            rows.map(|row| serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())).collect()
-        })).await
-    }
     pub async fn agent_overrides(&self, id: Ulid) -> Result<Option<super::AgentOverrides>, String> {
         Ok(self.meta(id).await?.map(|meta| meta.agent_overrides))
     }

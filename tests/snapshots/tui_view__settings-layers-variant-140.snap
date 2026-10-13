@@ -17,7 +17,7 @@ expression: snapshot
  build               │                                                                                  │ saved   low                       
                      │  Metacognition · Beacon  chat · fast model                                       │ applies to new sessions and       
  4 Permissions       │    model          omniroute/combo/deepseek-v4-flash                              │ subagents                         
- automatic review on │▌   variant        low                                                  ←→ cycle  │                                   
+ 2 scratch dirs      │▌   variant        low                                                  ←→ cycle  │                                   
                      │                                                                                  │ PENDING · 0                       
  5 Subagents         │  Cognition · Nav and the crew  chat · 1 agents                                   │ No changes. config.json is up to  
  max 4 per session   │    default_agent  build                                                          │ date.                             

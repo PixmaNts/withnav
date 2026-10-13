@@ -101,9 +101,5 @@ name = "instinct_probe"
 path = "tools/instinct_probe.rs"
 
 [[example]]
-name = "permission_corpus_probe"
-path = "tools/permission_corpus_probe.rs"
-
-[[example]]
 name = "reflex_latency_probe"
 path = "tools/reflex_latency_probe.rs"

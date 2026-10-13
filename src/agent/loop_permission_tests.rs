@@ -14,7 +14,7 @@ use super::tests::{
 use super::*;
 use crate::agent::flow_hook::{
     FlowVerdict, PermissionCallContext, PermissionVerdict, ProtectedCheck, RuleResult,
-    ToolCallContext, ToolCallFlows,
+    ToolCallFlows,
 };
 use crate::agent::permissions::PermissionOrigin;
 use crate::permission::decisions::{DecisionFilter, Outcome};
@@ -28,7 +28,6 @@ pub(super) struct FakeFlows {
     check: ProtectedCheck,
     asked: AtomicUsize,
     checked: AtomicUsize,
-    legacy: AtomicUsize,
 }
 
 impl FakeFlows {
@@ -42,7 +41,6 @@ impl FakeFlows {
             check,
             asked: AtomicUsize::new(0),
             checked: AtomicUsize::new(0),
-            legacy: AtomicUsize::new(0),
         }
     }
 
@@ -101,15 +99,6 @@ impl ToolCallFlows for FakeFlows {
     ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
         self.checked.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move { self.check })
-    }
-
-    fn pre_call<'a>(
-        &'a self,
-        _: &'a ToolCallContext,
-        _: &'a CancellationToken,
-    ) -> futures::future::BoxFuture<'a, FlowVerdict> {
-        self.legacy.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { FlowVerdict::Allow })
     }
 }
 
@@ -221,11 +210,6 @@ async fn no_rule_and_a_flow_allow_runs_once_with_flow_provenance() {
     assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
     assert_eq!(approved, [json!("flow")]);
     assert_eq!(flows.asked(), 1, "one decision, one flow run");
-    assert_eq!(
-        flows.legacy.load(Ordering::SeqCst),
-        0,
-        "the old hook is gone"
-    );
     let rows = decisions(&actor);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].outcome, Outcome::Allowed);
@@ -827,13 +811,6 @@ impl ToolCallFlows for RuntimeFlows {
         cancel: &'a CancellationToken,
     ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
         Box::pin(self.0.permission_protected_check(ctx, cancel.clone()))
-    }
-    fn pre_call<'a>(
-        &'a self,
-        _: &'a ToolCallContext,
-        _: &'a CancellationToken,
-    ) -> futures::future::BoxFuture<'a, FlowVerdict> {
-        Box::pin(async { FlowVerdict::Allow })
     }
 }
 

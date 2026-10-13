@@ -17,7 +17,7 @@ expression: snapshot
  build               │    connect_timeout_ms  5000                                                      │ PENDING · 0                       
                      │    request_timeout_ms  600000                                                    │ No changes. config.json is up to  
  4 Permissions       │                                                                                  │ date.                             
- automatic review on │                                                                                  │                                   
+ 2 scratch dirs      │                                                                                  │                                   
                      │                                                                                  │ ▌ Written for every client: TUI,  
  5 Subagents         │                                                                                  │ WebUI and VS Code. A /models      
  max 4 per session   │                                                                                  │ pick in a session stays in that   

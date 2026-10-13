@@ -17,7 +17,7 @@ expression: snapshot
  build               │    connect_timeout_ms  5000                                                      │ PENDING · 1                       
                      │    request_timeout_ms  600000                                                    │ tui.theme                         
  4 Permissions       │                                                                                  │ - ayu-dark                        
- automatic review on │                                                                                  │ + nord-dark                       
+ 2 scratch dirs      │                                                                                  │ + nord-dark                       
                      │               ┌ Leave Settings ────────────────────────────────────────────────┐ │ [ctrl+s] write  [ctrl+z] revert   
  5 Subagents         │               │                                                                │ │                                   
  max 4 per session   │               │  1 unsaved changes. Leave Settings?                            │ │ ▌ Written for every client: TUI,  

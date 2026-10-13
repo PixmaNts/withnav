@@ -8,9 +8,6 @@
     }
   },
   "default_agent": "build",
-  "permissions": {
-    "review_timeout_secs": 40
-  },
   "agents": {
     "build": {
       "model": "omniroute/cc/claude-opus-5-5"

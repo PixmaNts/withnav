@@ -66,8 +66,8 @@ impl Tool for ReadTool {
                     let target =
                         crate::agent::permissions::resolve_read_target(Path::new(path), cx)?;
                     let target = validate_path(&cx.read_roots(), &target)?;
-                    if crate::agent::permission_gate::sensitive_read(&target)
-                        || crate::agent::permission_gate::sensitive_read(
+                    if crate::permission::floor::sensitive_read(&target)
+                        || crate::permission::floor::sensitive_read(
                             &crate::agent::permissions::requested_path(Path::new(path), cx)?,
                         )
                     {
@@ -333,9 +333,9 @@ impl Tool for GrepTool {
             // Host-owned: the loop sets it from the session's yolo setting.
             let trusted = cx.binding.as_ref().is_some_and(|binding| binding.yolo);
             if !trusted
-                && (crate::agent::permission_gate::sensitive_read(
+                && (crate::permission::floor::sensitive_read(
                     &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
-                ) || crate::agent::permission_gate::sensitive_read(&search_root))
+                ) || crate::permission::floor::sensitive_read(&search_root))
             {
                 return Err(ToolError::Denied {
                     code: "sensitive_path".into(),
@@ -724,7 +724,6 @@ mod tests {
         cx.binding = Some(crate::tools::DispatchBinding {
             destination,
             scratch: None,
-            script: None,
             yolo: false,
         });
         assert!(GrepTool

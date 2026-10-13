@@ -6,9 +6,8 @@ use crate::agent::compaction::{
     effective_history, project_reasoning, validate as validate_compaction, Compaction, Components,
 };
 use crate::agent::definitions::{AgentAccess, AgentDefinition};
-use crate::agent::guard::RoleGuard;
 use crate::agent::instructions::Instructions;
-use crate::agent::permissions::{Grants, PermissionRequest};
+use crate::agent::permissions::PermissionRequest;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::ChatMessage;
@@ -96,20 +95,13 @@ pub struct AgentActor {
     /// delegated prompt or the parent's steering text.
     pub parent_captain: ParentCaptain,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
-    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
-    pub permission_context: Arc<std::sync::Mutex<super::permission_gate::context::ReviewContext>>,
-    pub captain_request_inherited: bool,
-    pub protected_config_spelling: Option<std::path::PathBuf>,
-    pub protected_config_unresolved: bool,
+    /// Private temporary storage offered to the model; a write there is bound
+    /// to the directory's identity (inode and mode).
     pub scratch_roots: Vec<super::scratch::Identity>,
-    pub protected_config_root: Option<std::path::PathBuf>,
-    pub permission_reviewer_unavailable: &'static str,
-    pub automatic_permission_review: bool,
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
-    pub permission_review_timeout_secs: u64,
-    pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
-    pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
+    /// The Instinct judge compaction asks which old tool outputs still matter.
+    pub compaction_judge: Option<Arc<dyn super::compaction::judge::Judge>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
@@ -162,7 +154,6 @@ pub struct AgentActor {
     pub pending: Option<PendingInteraction>,
     /// The folder and origin approvals: given in this session, or kept for
     /// its workspace when the session service loads them.
-    pub grants: Grants,
     pub selected_skill_snapshots: Vec<(u64, String)>,
     pub skill_turn_generation: u64,
     pub skill_turn_start: usize,
@@ -170,15 +161,10 @@ pub struct AgentActor {
     /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// captain (a human ingress identity), never from a navigator wake, delegated
-    /// text or a subagent result. The role guard and the permission review judge
-    /// calls against it. Not stored on its own: a resumed session rebuilds it
+    /// text or a subagent result. The watchdog judges progress against it. Not stored on its own: a resumed session rebuilds it
     /// from the stored `message.received` events (the newest from the Captain),
     /// so it is `None` only when the Captain never spoke.
     pub captain_task: Option<String>,
-    /// The second opinion a guarded agent's exceptions go through before the
-    /// captain. `None` when the session has no guard: every exception then goes
-    /// to the Captain.
-    pub guard: Option<Arc<dyn RoleGuard>>,
 }
 
 impl AgentActor {
@@ -263,20 +249,10 @@ impl AgentActor {
             permission_turn: String::new(),
             doom: Default::default(),
             parent_captain: Arc::default(),
-            captain_request_inherited: false,
-            protected_config_spelling: None,
-            protected_config_unresolved: false,
             scratch_roots: Vec::new(),
-            protected_config_root: None,
-            permission_reviewer_unavailable: "no alias",
-            automatic_permission_review: true,
             yolo: false,
-            permission_review_timeout_secs: 40,
             bypass: Arc::default(),
-            config_session_grant: Arc::default(),
-            permission_context: Arc::default(),
-            permission_judge: None,
-            permission_reviewer: None,
+            compaction_judge: None,
             transcript: Vec::new(),
             compaction: None,
             registry,
@@ -299,13 +275,11 @@ impl AgentActor {
             cancel,
             state: AgentState::Idle,
             pending: None,
-            grants: Grants::default(),
             selected_skill_snapshots: vec![],
             skill_turn_generation: 0,
             skill_turn_start: 0,
             skill_turn_open: false,
             captain_task: None,
-            guard: None,
         }
     }
 

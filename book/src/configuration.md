@@ -35,7 +35,7 @@ On Linux, the configuration directory is `~/.config/withnav/` and the data direc
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | Your rules and skills. `~/.claude/` is read too. See [Rules and skills](rules-and-skills.md). |
 | `~/.local/share/withnav/withnav.db` | Conversation history. |
 | `~/.local/share/withnav/withnav.jsonl` | Decision log. |
-| `~/.local/share/withnav/grants.json` | Folder approvals you saved for `fetch`. See [Permissions](permissions.md). |
+| `~/.local/share/withnav/withnav.db` permission tables | Your permission rules, validated skills and flows, and the history of decisions (`nav permissions`). See [Permissions](permissions.md). |
 | `~/.local/share/withnav/tui.log` | Log of the terminal client. |
 | `~/.local/share/withnav/model-catalog/` | Cache of the model lists reported by your gateways. |
 
@@ -56,10 +56,8 @@ versions and clients can share the file. The Settings screens write the same fil
 | `agents.<id>.model`, `agents.<id>.variant` | none | Model and variant of an agent. See [Agents](agents.md). |
 | `compaction.writer` | `metacognition` | Who writes compaction summaries: `metacognition`, or `session` for the session's own model. If Metacognition is unavailable, the session model is used. |
 | `compaction.chunk_tokens` | `64000` | Size of one rolling summary chunk, capped at half of the writer's input budget. A positive integer. |
-| `permissions.automatic_review` | `true` | `false` asks you for every `bash`, `write` and `edit` call. See [Permissions](permissions.md). |
-| `permissions.review_timeout_secs` | `40` | Deadline of one Metacognition permission review, in seconds. An integer from 5 to 300. It applies to new sessions and is inherited by their children. |
 | `permissions.scratch_dirs` | private runtime directory, then a shared temp one | Absolute paths where the agent may write temporary files without asking. `[]` turns it off. See [Permissions](permissions.md#scratch-folders). |
-| `yolo` | `false` | **Unsafe.** `true` turns off all permission control for new sessions and their subagents: nothing is asked or reviewed. See [Permissions](permissions.md#yolo). |
+| `yolo` | `false` | **Unsafe.** `true` turns off all permission control for new sessions and their subagents: nothing is asked or checked. See [Permissions](permissions.md#yolo). |
 | `subagents.max_concurrent` | `4` | How many subagents one session may run at once. An integer from 1 to 64. |
 | `subagents.watchdog_interval_secs` | `300` | How often Instinct checks that a background subagent makes progress. `0` turns it off. |
 | `agent.watchdog_interval_secs` | `300` | How often Instinct checks that the main conversation makes progress. `0` turns it off. See [Long turns](permissions.md#long-turns-and-the-watchdog). |

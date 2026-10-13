@@ -7,7 +7,7 @@ const { SettingsHost } = require('../out/tests/settingsHost');
 const { settingsHtml } = require('../out/tests/settingsHtml');
 const { buildSections } = require('../out/tests/webview/settingsModel');
 const field = (key,value) => ({key,value,default:null,set:true,error:null,applies:'new_sessions'});
-const settings = (revision='one') => ({revision,paths:{config:'/work/config.json',models:'/work/models.json',agents:[]},fields:[field('layers.reflex',{model:'gw/fim'}),field('agents.build',{model:'gw/chat'}),field('permissions.automatic_review',true),field('permissions.scratch_dirs',[]),field('subagents.max_concurrent',4)],gateways:[]});
+const settings = (revision='one') => ({revision,paths:{config:'/work/config.json',models:'/work/models.json',agents:[]},fields:[field('layers.reflex',{model:'gw/fim'}),field('agents.build',{model:'gw/chat'}),field('permissions.scratch_dirs',[]),field('subagents.max_concurrent',4)],gateways:[]});
 const json = (body,status=200) => new Response(JSON.stringify(body),{status});
 function setup(request,options={workspace:'/work'}) {
   const messages=[],calls=[];
@@ -30,7 +30,7 @@ test('host sanitizes gateway URLs in loaded and saved snapshots',async()=>{
 });
 test('host rejects each invalid per-key wire shape before HTTP and permits null',async()=>{
   const {host,messages,calls}=setup(()=>json(settings()));
-  const bad=[['permissions.automatic_review',1],['subagents.max_concurrent',1.5],['subagents.watchdog_interval_secs',Infinity],['agent.watchdog_interval_secs','5'],['permissions.scratch_dirs',['/tmp',42]],['layers.reflex','gw/fim'],['layers.instinct',[]],['agents.build',{model:'gw/chat',variant:1}],['agents.plan',{variant:null}],['default_agent',false],['tui.theme',{}]];
+  const bad=[['permissions.scratch_dirs','/tmp'],['subagents.max_concurrent',1.5],['subagents.watchdog_interval_secs',Infinity],['agent.watchdog_interval_secs','5'],['permissions.scratch_dirs',['/tmp',42]],['layers.reflex','gw/fim'],['layers.instinct',[]],['agents.build',{model:'gw/chat',variant:1}],['agents.plan',{variant:null}],['default_agent',false],['tui.theme',{}]];
   for(const [key,value] of bad)await host.handle({type:'save',key,value});
   assert.equal(calls.length,0);assert.equal(messages.filter(m=>m.type==='invalid').length,bad.length);
   await host.handle({type:'ready'});for(const [key] of bad)await host.handle({type:'save',key,value:null});
@@ -126,15 +126,15 @@ test('409 authoritative reload replaces an in-progress Add Item draft',async()=>
     v.deliver(structuredClone(m));
   },{workspace:'/work'});
   await host.handle({type:'ready'});v.document.querySelector('.list button').click();v.document.querySelector('.list-edit input').value='/srv/scratch';
-  await host.handle({type:'save',key:'permissions.automatic_review',value:false});
+  await host.handle({type:'save',key:'subagents.max_concurrent',value:5});
   assert.equal(replaced,true);assert.equal(v.document.querySelector('.list-edit'),null);assert.match(v.document.querySelector('.list').textContent,/\/external/);assert.match(v.document.querySelector('.banner').textContent,/changed elsewhere/);v.dom.window.close();
 });
 test('busy navigation and search re-renders keep all controls disabled',()=>{
-  const v=view({settings:settings(),models:[],agents:[],layers:[]});v.deliver({type:'saving',key:'permissions.automatic_review'});
+  const v=view({settings:settings(),models:[],agents:[],layers:[]});v.deliver({type:'saving',key:'subagents.max_concurrent'});
   assert.ok([...v.document.querySelectorAll('#rows input, #rows select, #rows button')].every(c=>c.disabled));
   v.document.querySelector('[data-section="subagents"]').click();assert.ok([...v.document.querySelectorAll('#rows input')].every(c=>c.disabled));
   const search=v.document.querySelector('#search');search.value='model';search.dispatchEvent(new v.dom.window.Event('input'));assert.ok([...v.document.querySelectorAll('#rows select')].every(c=>c.disabled));
-  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok([...v.document.querySelectorAll('#rows select')].some(c=>!c.disabled));v.dom.window.close();
+  v.deliver({type:'saved',key:'subagents.max_concurrent'});assert.ok([...v.document.querySelectorAll('#rows select')].some(c=>!c.disabled));v.dom.window.close();
 });
 test('a second agent edit is impossible until the first save replies, so model A never returns',()=>{
   const models=['gw/A','gw/B'].map(name=>({name,api:'chat',gateway:'gw',enabled:true,variants:['low','high'],default_variant:'low'}));
@@ -155,13 +155,14 @@ test('a second agent edit is impossible until the first save replies, so model A
 test('a key with two outstanding saves stays disabled until both replies arrive',()=>{
   const v=view({settings:settings(),models:[],agents:[],layers:[]});
   const controls=()=>[...v.document.querySelectorAll('#rows input, #rows select, #rows button')];
-  v.deliver({type:'saving',key:'permissions.automatic_review'});v.deliver({type:'saving',key:'permissions.automatic_review'});
-  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok(controls().every(c=>c.disabled));
-  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok(controls().some(c=>!c.disabled));
+  v.deliver({type:'saving',key:'subagents.max_concurrent'});v.deliver({type:'saving',key:'subagents.max_concurrent'});
+  v.deliver({type:'saved',key:'subagents.max_concurrent'});assert.ok(controls().every(c=>c.disabled));
+  v.deliver({type:'saved',key:'subagents.max_concurrent'});assert.ok(controls().some(c=>!c.disabled));
   // Locally posted saves are counted once even though the host echoes each with `saving`.
-  const box=v.document.querySelector('input[type="checkbox"]');box.checked=false;box.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));
-  assert.ok(controls().every(c=>c.disabled));v.deliver({type:'saving',key:'permissions.automatic_review'});
-  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok(controls().some(c=>!c.disabled));v.dom.window.close();
+  v.document.querySelector('[data-section="subagents"]').click();
+  const box=v.document.querySelector('#rows input[type="number"]');box.value='7';box.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));
+  assert.ok(controls().every(c=>c.disabled));v.deliver({type:'saving',key:'subagents.max_concurrent'});
+  v.deliver({type:'saved',key:'subagents.max_concurrent'});assert.ok(controls().some(c=>!c.disabled));v.dom.window.close();
 });
 test('agents refresh after assignment and default-agent saves with non-fatal failures',async()=>{
   let generation=0;const {host}=setup((p,i)=>{if(p.startsWith('/v1/settings')){if(i.method==='PUT')generation++;return json(settings());}if(p.startsWith('/v1/agents'))return generation===2?json({error:'offline'},500):json({agents:[{id:'build',effective:{model:`gw/${generation}`,source:'config'}}]});return json({});});

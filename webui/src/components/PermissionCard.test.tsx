@@ -23,7 +23,7 @@ for (const [label, decision] of [["Once", "allow_once"], ["Always (project): bas
 it("hides Always without a label, even for legacy offers", async () => {
   const host = document.createElement("div");
   const root = createRoot(host);
-  await act(async () => root.render(<PermissionCard perm={{ ...perm, tool: "fetch", skillName: "sync", allowConfigSession: true }} onAnswer={async () => {}} />));
+  await act(async () => root.render(<PermissionCard perm={{ ...perm, tool: "fetch", skillName: "sync" }} onAnswer={async () => {}} />));
   expect([...host.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Once", "Reject"]);
   await act(async () => root.unmount());
 });

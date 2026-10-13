@@ -19,12 +19,6 @@ pub enum FlowVerdict {
     },
 }
 
-impl FlowVerdict {
-    /// Compatibility for the existing agent loop until permission cutover.
-    #[allow(non_upper_case_globals)]
-    pub const NoObjection: Self = Self::Allow;
-}
-
 /// A rule reaching the flow cannot be a deny: written denies stop beforehand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,9 +127,4 @@ pub trait ToolCallFlows: Send + Sync + std::fmt::Debug {
         let _ = (ctx, cancel);
         Box::pin(async { ProtectedCheck::Unavailable })
     }
-    fn pre_call<'a>(
-        &'a self,
-        call: &'a ToolCallContext,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = FlowVerdict> + Send + 'a>>;
 }

@@ -484,7 +484,10 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(payload["tool"], "write");
     assert_eq!(payload["tool_call_id"], "w1");
     assert_eq!(payload["agent"], "build");
-    assert_eq!(payload["scope"], json!({"kind": "folder", "value": env.ws}));
+    assert_eq!(
+        payload["scope"],
+        json!({"kind": "folder", "value": withnav::tools::canonical_path(&env.ws).unwrap()})
+    );
     assert!(payload["arguments"].as_str().unwrap().len() <= 4096);
     assert!(!target.exists(), "the call has not run");
     wait_events(&state, id, "turn.end", 1).await;

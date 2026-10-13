@@ -757,6 +757,29 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn bash_mount_spellings_protect_real_temp_targets() {
+        let f = fixture();
+        let target = f.cx.config_dir.as_ref().unwrap().join("config.json");
+        std::fs::write(&target, "{}").unwrap();
+        let plain =
+            crate::tools::relative_path_text(&crate::tools::canonical_path(&target).unwrap());
+        let mounted = format!("/{}{}", plain[..1].to_ascii_lowercase(), &plain[2..]);
+        for spelling in [plain, mounted] {
+            for line in [
+                format!("echo x > '{spelling}'"),
+                format!("sort -o'{spelling}' in"),
+                format!("if true; then cp a '{spelling}'; fi"),
+            ] {
+                assert!(
+                    matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                    "{line}"
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn native_root_relative_paths_match_dispatch_not_bash_drive_mapping() {
         let f = fixture();
         let target = f.cx.config_dir.as_ref().unwrap().join("config.json");

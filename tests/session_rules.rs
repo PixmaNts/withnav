@@ -265,5 +265,10 @@ async fn withnav_run_sends_the_rules_too() {
     assert!(sent[1].1.contains("/tmp/withnav"));
     #[cfg(windows)]
     assert!(sent[1].1.contains("scratch"));
+    #[cfg(unix)]
     assert!(sent[2].1.contains("global rule") && sent[2].1.contains("project rule"));
+    // Windows Known Folders ignore HOME/USERPROFILE overrides; the injected-root
+    // service tests above cover global instructions without reading a real profile.
+    #[cfg(windows)]
+    assert!(sent[2].1.contains("project rule"));
 }

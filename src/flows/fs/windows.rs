@@ -113,9 +113,6 @@ impl Directory {
             if let Some(name) = entry.file_name().to_str() {
                 names.push(name.to_owned());
             }
-            if names.len() > 4096 {
-                return Err(std::io::Error::other("too many directory entries"));
-            }
         }
         names.sort();
         Ok(names)

@@ -47,13 +47,9 @@ pub fn shorten(path: &str, width: usize) -> String {
     super::text::fit_start(&path, width)
 }
 
-/// The home folder shown as `~`: `HOME`, and on Windows, where it is usually unset,
-/// `USERPROFILE`.
+/// The home folder shown as `~`.
 fn home() -> Option<String> {
-    let home = std::env::var("HOME").ok();
-    #[cfg(windows)]
-    let home = home.or_else(|| std::env::var("USERPROFILE").ok());
-    home
+    crate::paths::home_dir().map(|home| home.to_string_lossy().into_owned())
 }
 
 /// The status line: what the conversation is doing (connection, activity, a notice), then what

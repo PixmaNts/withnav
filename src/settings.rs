@@ -119,14 +119,15 @@ impl Settings {
         {
             None => {
                 let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default();
+                let home = crate::paths::home_dir().unwrap_or_default();
                 let private = private_scratch_root(runtime.as_deref(), &home);
-                Ok(unique_roots(vec![
-                    private,
-                    std::env::temp_dir().join("withnav"),
-                ]))
+                #[allow(unused_mut)]
+                let mut roots = vec![private, std::env::temp_dir().join("withnav")];
+                // Without a home folder the private root would be relative, and so resolved
+                // against whatever directory nav was started from.
+                #[cfg(windows)]
+                roots.retain(|root| root.is_absolute());
+                Ok(unique_roots(roots))
             }
             Some(Value::Array(values)) => values
                 .iter()

@@ -128,9 +128,7 @@ pub async fn command(args: super::DoctorArgs) -> anyhow::Result<i32> {
         inspect(
             &args,
             &config,
-            std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .as_deref(),
+            crate::paths::home_dir().as_deref(),
             crate::paths::data_dir(),
         )
         .await

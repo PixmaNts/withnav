@@ -56,7 +56,7 @@ pub enum ContentBlock {
     Skill {
         name: String,
     },
-    /// Only admission can supply loaded content; a client cannot impersonate a tool result.
+    /// Host-only selection marker: content is an opaque snapshot id, never the body.
     #[serde(skip)]
     LoadedSkill {
         name: String,

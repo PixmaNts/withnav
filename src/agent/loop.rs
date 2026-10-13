@@ -152,6 +152,53 @@ async fn run_steps_inner(
     budget: usize,
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
+    while let Some(id) = actor.selected_skill_snapshots.first().cloned() {
+        actor.selected_skill_snapshots.remove(0);
+        let snapshot = actor
+            .skills
+            .validation
+            .snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned();
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        let call = ToolCall {
+            id: ulid::Ulid::generate().to_string(),
+            name: "skill".into(),
+            args: serde_json::json!({"name":snapshot.name,"location":snapshot.location,"snapshot_id":id,"captain_selected":true}),
+            args_valid: true,
+        };
+        actor.transcript.push(ChatMessage::Assistant {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![crate::provider::openai::RequestToolCall {
+                id: call.id.clone(),
+                kind: "function".into(),
+                function: crate::provider::openai::RequestFunction {
+                    name: call.name.clone(),
+                    arguments: call.args.to_string(),
+                },
+            }],
+        });
+        match run_skill(actor, &call, observe).await {
+            One::Ask(request, destination) => {
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: request.clone(),
+                    call,
+                    remaining_calls: vec![],
+                    destination,
+                    steps_left: budget,
+                });
+                actor.state = AgentState::Yielded;
+                return Ok(RunOutcome::PermissionRequired(*request));
+            }
+            One::Interrupted => return Ok(RunOutcome::Interrupted),
+            One::Settled => {}
+        }
+    }
 
     // One client (one connection pool) for every step of this run.
     let client = ModelClient::new(
@@ -271,6 +318,7 @@ async fn run_steps_inner(
             actor.tool_allowed(crate::agent::response::ASK_TOOL),
         ) {
             StepOutcome::Done { response } => {
+                actor.skills.validation.begin_turn();
                 actor
                     .permission_context
                     .lock()
@@ -396,6 +444,101 @@ pub async fn resolve_permission_with_origin(
     origin: super::permissions::PermissionOrigin,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
+    if matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.id == request_id && request.tool == "skill")
+    {
+        if origin != super::permissions::PermissionOrigin::Captain {
+            return Err(PermissionError::Stale.into());
+        }
+        if !matches!(
+            decision,
+            PermissionDecision::AllowOnce
+                | PermissionDecision::AllowAlways
+                | PermissionDecision::Reject { .. }
+                | PermissionDecision::Deny { .. }
+        ) {
+            return Err(PermissionError::Stale.into());
+        }
+        let Some(PendingInteraction::Permission {
+            call,
+            remaining_calls,
+            steps_left,
+            ..
+        }) = actor.pending.take()
+        else {
+            unreachable!()
+        };
+        let snapshot = call.args["snapshot_id"].as_str().and_then(|id| {
+            actor
+                .skills
+                .validation
+                .snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id)
+                .cloned()
+        });
+        if actor.cancel.is_cancelled() {
+            append_interrupted(actor, &call.id);
+            return Ok(RunOutcome::Interrupted);
+        }
+        let result = if matches!(
+            decision,
+            PermissionDecision::AllowOnce | PermissionDecision::AllowAlways
+        ) {
+            match snapshot {
+                Some(snapshot) => {
+                    let validation = actor.skills.validation.clone();
+                    let always = decision == PermissionDecision::AllowAlways;
+                    let approved = tokio::task::spawn_blocking(move || {
+                        validation
+                            .approve(&snapshot, always)
+                            .map(|_| snapshot.output)
+                    })
+                    .await;
+                    match approved {
+                        Ok(Ok(output)) => output,
+                        other => ToolResult::error(
+                            "skill_not_validated",
+                            format!("cannot validate skill: {other:?}"),
+                        ),
+                    }
+                }
+                None => ToolResult::error("skill_not_validated", "skill snapshot expired"),
+            }
+        } else {
+            ToolResult::error(
+                "skill_not_validated",
+                format!(
+                    "skill {} was not loaded: not validated",
+                    call.args["name"].as_str().unwrap_or("unknown")
+                ),
+            )
+        };
+        observe(AgentEvent::PreCall {
+            permission_gate: None,
+            tool_call_id: &call.id,
+            name: &call.name,
+            args: &call.args,
+        });
+        observe(AgentEvent::PostCall {
+            tool_call_id: &call.id,
+            name: &call.name,
+            result: &result,
+        });
+        append_tool_result(actor, &call.id, &result);
+        if call.args["captain_selected"] == true {
+            actor.push_user_with_provenance(
+                skill_host_block(&call, &result),
+                crate::provider::openai::UserProvenance::Navigator,
+            );
+        }
+        match run_calls(actor, remaining_calls, steps_left, observe).await {
+            Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(*request)),
+            Calls::Interrupted => return Ok(RunOutcome::Interrupted),
+            Calls::Finished => {}
+        }
+        return Ok(run_steps(actor, observe, steps_left).await?);
+    }
     // Until rule-based execution takes over, new answers retain single-call semantics.
     let decision = match decision {
         PermissionDecision::AllowAlways => PermissionDecision::AllowOnce,
@@ -406,6 +549,9 @@ pub async fn resolve_permission_with_origin(
         },
         decision => decision,
     };
+    if decision == PermissionDecision::AllowSkillMachine {
+        return Err(PermissionError::Stale.into());
+    }
     match &actor.pending {
         Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {
             if origin == super::permissions::PermissionOrigin::Bypass
@@ -429,25 +575,7 @@ pub async fn resolve_permission_with_origin(
     {
         return Err(PermissionError::Stale.into());
     }
-    if decision == PermissionDecision::AllowSkillMachine {
-        let Some(PendingInteraction::Permission { request, call, .. }) = &actor.pending else {
-            return Err(PermissionError::Stale.into());
-        };
-        let current = super::permission_gate::script::skill_script(actor, call);
-        if origin != super::permissions::PermissionOrigin::Captain
-            || request.skill_script.is_none()
-            || current.as_ref() != request.skill_script.as_deref()
-        {
-            return Err(PermissionError::Stale.into());
-        }
-        if actor.skill_grants.as_ref().is_none_or(|store| {
-            store
-                .grant(current.as_ref().expect("checked skill script"))
-                .is_err()
-        }) {
-            return Err(PermissionError::Stale.into());
-        }
-    }
+
     let Some(PendingInteraction::Permission {
         request,
         call,
@@ -500,8 +628,7 @@ pub async fn resolve_permission_with_origin(
     match decision {
         PermissionDecision::AllowOnce
         | PermissionDecision::AllowFolder
-        | PermissionDecision::AllowConfigSession
-        | PermissionDecision::AllowSkillMachine => {
+        | PermissionDecision::AllowConfigSession => {
             let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
             let bypass = origin == super::permissions::PermissionOrigin::Bypass;
             evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "captain" });
@@ -509,11 +636,7 @@ pub async fn resolve_permission_with_origin(
             if bypass {
                 approval["approved_by"] = serde_json::json!("bypass");
             }
-            if decision == PermissionDecision::AllowSkillMachine {
-                approval["approved_by"] = serde_json::json!("skill_grant");
-                approval["permission_gate"]["approved_by"] = serde_json::json!("skill_grant");
-                approval["skill_script"] = serde_json::json!(request.skill_script);
-            }
+
             let approval_note = Some(approval);
             // The approval is for the destination the Captain reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
@@ -580,7 +703,9 @@ pub async fn resolve_permission_with_origin(
                 }
             }
         }
-        PermissionDecision::AllowAlways | PermissionDecision::Reject { .. } => {
+        PermissionDecision::AllowAlways
+        | PermissionDecision::Reject { .. }
+        | PermissionDecision::AllowSkillMachine => {
             unreachable!("new permission answers were mapped to the current execution path")
         }
         PermissionDecision::Deny { message } => {
@@ -611,6 +736,118 @@ enum Calls {
     Permission(Box<PermissionRequest>),
 }
 
+fn skill_host_block(call: &ToolCall, result: &ToolResult) -> String {
+    let encoded = serde_json::json!({"name":call.args["name"],"selected_by":"captain","content":result.output})
+        .to_string()
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+    format!("<captain_selected_skill encoding=\"json\">\n{encoded}\n</captain_selected_skill>")
+}
+
+async fn run_skill(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> One {
+    if let Err(error) = preflight(actor, call) {
+        reject_call(actor, call, error, observe);
+        return One::Settled;
+    }
+    let snapshot = call.args["snapshot_id"].as_str().and_then(|id| {
+        actor
+            .skills
+            .validation
+            .snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    });
+    let Some(snapshot) = snapshot else {
+        reject_call(actor, call, "skill snapshot unavailable".into(), observe);
+        return One::Settled;
+    };
+    let validation = actor.skills.validation.clone();
+    let checked = snapshot.clone();
+    let mut valid = tokio::task::spawn_blocking(move || validation.validated(&checked)).await;
+    let turn_approved = actor
+        .skills
+        .validation
+        .approved
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&snapshot.name)
+        .cloned()
+        .and_then(|id| {
+            actor
+                .skills
+                .validation
+                .snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .map(|s| s.hash == snapshot.hash && s.location == snapshot.location)
+        })
+        .unwrap_or(false);
+    if turn_approved && matches!(valid, Ok(Ok(false))) {
+        valid = Ok(Ok(true));
+    }
+    match valid {
+        Ok(Ok(true)) => {
+            if let Err(error) = actor.skills.validation.approve(&snapshot, false) {
+                reject_call(actor, call, error, observe);
+                return One::Settled;
+            }
+            observe(AgentEvent::PreCall {
+                permission_gate: None,
+                tool_call_id: &call.id,
+                name: &call.name,
+                args: &call.args,
+            });
+            observe(AgentEvent::PostCall {
+                tool_call_id: &call.id,
+                name: &call.name,
+                result: &snapshot.output,
+            });
+            append_tool_result(actor, &call.id, &snapshot.output);
+            if call.args["captain_selected"] == true {
+                actor.push_user_with_provenance(
+                    skill_host_block(call, &snapshot.output),
+                    crate::provider::openai::UserProvenance::Navigator,
+                );
+            }
+            One::Settled
+        }
+        Ok(Ok(false)) => {
+            let mut request = PermissionRequest::new(
+                call,
+                Scope::Folder(PathBuf::from(&snapshot.location)),
+                actor
+                    .role
+                    .as_ref()
+                    .map(|r| r.id.as_str())
+                    .unwrap_or("build"),
+            );
+            request.requires_captain = true;
+            request.reason = format!(
+                "Validate skill {} at {} for this version",
+                snapshot.name, snapshot.location
+            );
+            One::Ask(Box::new(request), None)
+        }
+        other => {
+            reject_call(
+                actor,
+                call,
+                format!("cannot inspect skill validation: {other:?}"),
+                observe,
+            );
+            One::Settled
+        }
+    }
+}
+
 /// Runs `calls` in order. A call that needs approval and has none stops the
 /// pass BEFORE it executes: it and the calls behind it are kept in the
 /// actor's pending interaction, with the `steps_left` of the turn.
@@ -621,7 +858,30 @@ async fn run_calls(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Calls {
     let mut calls = std::collections::VecDeque::from(calls);
-    while let Some(call) = calls.pop_front() {
+    while let Some(mut call) = calls.pop_front() {
+        if call.name == "skill" {
+            // Provider arguments never choose host snapshots or claim human selection.
+            if call.args.get("snapshot_id").is_some() || call.args.get("captain_selected").is_some()
+            {
+                reject_call(actor, &call, "reserved skill argument".into(), observe);
+                continue;
+            }
+            let skills = actor.skills.clone();
+            let name = call.args["name"].as_str().unwrap_or("").to_owned();
+            let snapshot = tokio::task::spawn_blocking(move || skills.snapshot(&name))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            match snapshot {
+                Ok(snapshot) => {
+                    call.args["snapshot_id"] = serde_json::json!(snapshot.id);
+                    call.args["location"] = serde_json::json!(snapshot.location);
+                }
+                Err(error) => {
+                    reject_call(actor, &call, error, observe);
+                    continue;
+                }
+            }
+        }
         if actor.cancel.is_cancelled() {
             append_interrupted(actor, &call.id);
             for rest in &calls {
@@ -964,6 +1224,9 @@ async fn run_gated(
     call: &ToolCall,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
+    if call.name == "skill" {
+        return run_skill(actor, call, observe).await;
+    }
     for _ in 0..REGATE_LIMIT {
         let (destination, mut note, request) = match gate(actor, call) {
             Gated::Rejected(message) => {
@@ -1068,33 +1331,7 @@ async fn run_gated(
             request.allow_config_session =
                 super::permission_gate::protected_config_call(actor, call, &needed)
                     && super::permission_gate::config_grant_eligible(actor, call, &needed);
-            if !request.requires_captain {
-                request.skill_script =
-                    super::permission_gate::script::skill_script(actor, call).map(Box::new);
-                if let Some(script) = &request.skill_script {
-                    if let Some(input) =
-                        super::permission_gate::describe(actor, call, &needed, &Default::default())
-                    {
-                        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&input.state) {
-                            request.permission_gate.as_mut().unwrap()["script_binding"] =
-                                state["host_facts"]["script_binding"].clone();
-                        }
-                    }
-                    if actor
-                        .skill_grants
-                        .as_ref()
-                        .is_some_and(|store| store.changed(script))
-                    {
-                        request.requires_captain = true;
-                        request.reason = format!(
-                            "{} changed since you allowed skill {}; {}",
-                            script.relative_path.display(),
-                            script.skill,
-                            request.reason
-                        );
-                    }
-                }
-            }
+
             if request.requires_captain
                 || !actor
                     .bypass
@@ -3307,238 +3544,6 @@ mod tests {
     }
     struct ReadJudge;
 
-    struct UnsureScriptReviewer;
-    struct RejectScriptReviewer;
-    impl super::super::permission_gate::PermissionReviewer for RejectScriptReviewer {
-        fn review<'a>(
-            &'a self,
-            _: &'a super::super::permission_gate::PermissionReviewInput,
-            _: &'a CancellationToken,
-        ) -> futures::future::BoxFuture<
-            'a,
-            Result<
-                super::super::permission_gate::PermissionReview,
-                super::super::permission_gate::ReviewError,
-            >,
-        > {
-            Box::pin(async {
-                Ok(super::super::permission_gate::PermissionReview {
-                    decision: super::super::permission_gate::ReviewDecision::Reject,
-                    reason: "unacceptable effects".into(),
-                })
-            })
-        }
-    }
-    impl super::super::permission_gate::PermissionReviewer for UnsureScriptReviewer {
-        fn review<'a>(
-            &'a self,
-            _: &'a super::super::permission_gate::PermissionReviewInput,
-            _: &'a CancellationToken,
-        ) -> futures::future::BoxFuture<
-            'a,
-            Result<
-                super::super::permission_gate::PermissionReview,
-                super::super::permission_gate::ReviewError,
-            >,
-        > {
-            Box::pin(async {
-                Ok(super::super::permission_gate::PermissionReview {
-                    decision: super::super::permission_gate::ReviewDecision::Unsure,
-                    reason: "unknown supporting effects".into(),
-                })
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn user_skill_machine_grant_keeps_review_and_rejects_changes_and_chaining() {
-        let home = tempfile::tempdir().unwrap();
-        let skill = home.path().join(".agents/skills/sync");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: sync\ndescription: Sync models\n---\nInstructions\n",
-        )
-        .unwrap();
-        let path = skill.join("sync.py");
-        std::fs::write(&path, "print('hello')\n").unwrap();
-        let mut actor = script_actor();
-        actor.set_skills(super::super::skills::Skills::load(
-            &super::super::instructions::RulesRoots {
-                home: Some(home.path().to_path_buf()),
-            },
-            &actor.tool_context.workspace,
-        ));
-        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
-            file: home.path().join("config/skill-grants.json"),
-        });
-        actor.permission_reviewer = Some(Arc::new(UnsureScriptReviewer));
-        let call = script_call(&path, "python3");
-        let script = super::super::permission_gate::script::skill_script(&actor, &call).unwrap();
-        actor.skill_grants.as_ref().unwrap().grant(&script).unwrap();
-        let needed = Needed {
-            scope: Scope::Folder(actor.tool_context.workspace.clone()),
-            destination: None,
-        };
-        assert!(
-            matches!(super::super::permission_gate::consult(&actor, &call, &needed).await,
-            super::super::permission_gate::Judged::Run(note) if note["approved_by"] == "skill_grant" && note["permission_gate"]["metacognition"]["decision"] == "unsure")
-        );
-        actor.permission_reviewer = Some(Arc::new(RejectScriptReviewer));
-        assert!(matches!(
-            super::super::permission_gate::consult(&actor, &call, &needed).await,
-            super::super::permission_gate::Judged::AskWithEvidence(_, _)
-        ));
-        actor.permission_reviewer = Some(Arc::new(UnsureScriptReviewer));
-        actor.skill_grants.as_ref().unwrap().revoke("sync").unwrap();
-        let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await else {
-            panic!("ungranted skill must ask");
-        };
-        assert_eq!(request.skill_script.as_deref(), Some(&script));
-        actor.pending = Some(PendingInteraction::Permission {
-            request: request.clone(),
-            call: call.clone(),
-            remaining_calls: vec![],
-            destination,
-            steps_left: 0,
-        });
-        assert!(resolve_permission_with_origin(
-            &mut actor,
-            request.id,
-            PermissionDecision::AllowSkillMachine,
-            super::super::permissions::PermissionOrigin::Bypass,
-            &mut |_| {}
-        )
-        .await
-        .is_err());
-        assert!(!actor.skill_grants.as_ref().unwrap().covers(&script));
-        resolve_permission_with_origin(
-            &mut actor,
-            request.id,
-            PermissionDecision::AllowSkillMachine,
-            super::super::permissions::PermissionOrigin::Captain,
-            &mut |_| {},
-        )
-        .await
-        .unwrap();
-        assert!(actor.skill_grants.as_ref().unwrap().covers(&script));
-        for suffix in [
-            "; true",
-            " && true",
-            " | cat",
-            " > /tmp/output",
-            " &",
-            " $(true)",
-        ] {
-            let mut chained = call.clone();
-            chained.args["command"] =
-                serde_json::json!(format!("python3 {}{suffix}", path.display()));
-            assert!(
-                super::super::permission_gate::script::skill_script(&actor, &chained).is_none()
-            );
-        }
-        std::fs::write(&path, "print('changed')\n").unwrap();
-        assert!(matches!(
-            super::super::permission_gate::consult(&actor, &call, &needed).await,
-            super::super::permission_gate::Judged::AskWithEvidence(_, _)
-        ));
-        let project = actor.tool_context.workspace.join(".agents/skills/sync");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(
-            project.join("SKILL.md"),
-            "---\nname: sync\ndescription: Project sync\n---\nInstructions\n",
-        )
-        .unwrap();
-        std::fs::write(project.join("sync.py"), "print('hello')\n").unwrap();
-        actor.set_skills(super::super::skills::Skills::load(
-            &super::super::instructions::RulesRoots {
-                home: Some(home.path().to_path_buf()),
-            },
-            &actor.tool_context.workspace,
-        ));
-        assert!(super::super::permission_gate::script::skill_script(&actor, &call).is_none());
-        assert!(super::super::permission_gate::script::skill_script(
-            &actor,
-            &script_call(&project.join("sync.py"), "python3")
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn user_skill_machine_grant_rejects_user_root_symlinked_into_workspace() {
-        let home = tempfile::tempdir().unwrap();
-        let mut actor = script_actor();
-        let root = actor.tool_context.workspace.join("user-skills");
-        let skill = root.join("sync");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: sync\ndescription: Sync models\n---\nInstructions\n",
-        )
-        .unwrap();
-        let script = skill.join("sync.py");
-        std::fs::write(&script, "print('hello')\n").unwrap();
-        std::fs::create_dir_all(home.path().join(".agents")).unwrap();
-        std::os::unix::fs::symlink(&root, home.path().join(".agents/skills")).unwrap();
-        actor.set_skills(super::super::skills::Skills::load(
-            &super::super::instructions::RulesRoots {
-                home: Some(home.path().to_path_buf()),
-            },
-            &actor.tool_context.workspace,
-        ));
-        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
-            file: home.path().join("config/skill-grants.json"),
-        });
-        assert!(actor.skills.listed().iter().any(|skill| skill.is_user()));
-        assert!(super::super::permission_gate::script::skill_script(
-            &actor,
-            &script_call(&script, "python3")
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn user_skill_machine_grant_rejects_user_alias_to_project_skill() {
-        let home = tempfile::tempdir().unwrap();
-        let mut actor = script_actor();
-        let project_root = actor.tool_context.workspace.join(".agents/skills");
-        let skill = project_root.join("sync");
-        std::fs::create_dir_all(&skill).unwrap();
-        // A manifest at the root stops discovery before the nested skill;
-        // the user alias therefore wins with user provenance, not project rank.
-        for (dir, name) in [(&project_root, "container"), (&skill, "sync")] {
-            std::fs::write(
-                dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: Test skill\n---\nInstructions\n"),
-            )
-            .unwrap();
-        }
-        let script = skill.join("sync.py");
-        std::fs::write(&script, "print('hello')\n").unwrap();
-        let user_root = home.path().join(".agents/skills");
-        std::fs::create_dir_all(&user_root).unwrap();
-        std::os::unix::fs::symlink(&skill, user_root.join("alias")).unwrap();
-        actor.set_skills(super::super::skills::Skills::load(
-            &super::super::instructions::RulesRoots {
-                home: Some(home.path().to_path_buf()),
-            },
-            &actor.tool_context.workspace,
-        ));
-        actor.skill_grants = Some(super::super::skill_grants::SkillGrants {
-            file: home.path().join("config/skill-grants.json"),
-        });
-        assert!(actor
-            .skills
-            .listed()
-            .iter()
-            .any(|skill| skill.name == "sync" && skill.is_user()));
-        assert!(super::super::permission_gate::script::skill_script(
-            &actor,
-            &script_call(&script, "python3")
-        )
-        .is_none());
-    }
-
     fn script_actor() -> AgentActor {
         let mut actor = plan_actor(
             Some(FakeInstinct::new(Ok(Verdict::Conforms))),
@@ -4216,7 +4221,7 @@ mod tests {
             .config_session_grant
             .store(true, std::sync::atomic::Ordering::Release);
         actor.bypass.lock().unwrap().enabled = true;
-        for file in ["skill-grants.json", "grants.json"] {
+        for file in ["grants.json"] {
             let path = tmp.path().join(file);
             std::fs::write(&path, "{}").unwrap();
             for (name, args) in [

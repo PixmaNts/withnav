@@ -10,6 +10,63 @@ fn fixture() -> Fixture {
     Fixture::new("packages/app")
 }
 
+#[test]
+fn validation_hash_covers_every_file_and_admits_the_same_snapshot() {
+    let fx = fixture();
+    let directory = fx.home.join(".agents/skills/validated");
+    add(&directory, "validated", "A complete skill");
+    fs::write(directory.join("script.sh"), "first bytes").unwrap();
+    let mut skills = load(&fx);
+    skills.validation = Arc::new(validation::SkillValidation {
+        data_dir: Some(fx.home.join("data")),
+        ..Default::default()
+    });
+    let first = skills.snapshot("validated").unwrap();
+    assert!(!skills.validation.validated(&first).unwrap());
+    skills.validation.approve(&first, false).unwrap();
+    assert!(!skills.validation.validated(&first).unwrap());
+    skills.validation.begin_turn();
+    assert!(skills.active_validated_skill().is_none());
+    assert!(skills.validation.approved.lock().unwrap().is_empty());
+    skills.validation.approve(&first, true).unwrap();
+    assert!(skills
+        .validation
+        .validated(&skills.snapshot("validated").unwrap())
+        .unwrap());
+    fs::write(directory.join("script.sh"), "changed bytes").unwrap();
+    let changed = skills.snapshot("validated").unwrap();
+    assert_ne!(first.hash, changed.hash);
+    assert!(!skills.validation.validated(&changed).unwrap());
+    fs::write(
+        directory.join("SKILL.md"),
+        skill_text("validated", "Changed body").replace("Body of validated.", "NEW BODY"),
+    )
+    .unwrap();
+    assert!(!first.output.output.contains("NEW BODY"));
+    let store = crate::permission::store::PermissionStore::open(fx.home.join("data")).unwrap();
+    store
+        .revoke_validation(store.list_validations().unwrap()[0].id)
+        .unwrap();
+    assert!(!skills.validation.validated(&first).unwrap());
+}
+
+#[test]
+fn validation_never_hashes_a_truncated_inventory() {
+    let fx = fixture();
+    let directory = fx.home.join(".agents/skills/large");
+    add(&directory, "large", "Large skill");
+    let skills = load(&fx);
+    for i in 0..256 {
+        fs::write(directory.join(format!("file-{i}")), "x").unwrap();
+    }
+    assert!(skills.snapshot("large").unwrap_err().contains("256 files"));
+    for i in 0..256 {
+        fs::remove_file(directory.join(format!("file-{i}"))).unwrap();
+    }
+    fs::write(directory.join("large.bin"), vec![0; 8 * 1024 * 1024]).unwrap();
+    assert!(skills.snapshot("large").unwrap_err().contains("8 MiB"));
+}
+
 fn skill_text(name: &str, description: &str) -> String {
     format!("---\nname: {name}\ndescription: {description}\n---\n\nBody of {name}.\n")
 }
@@ -637,18 +694,16 @@ fn context(fx: &Fixture) -> (Registry, ToolContext) {
     )
 }
 
-async fn call(skills: &Skills, name: &str, cx: &ToolContext) -> crate::tools::ToolResult {
-    let mut registry = Registry::new();
-    registry.register(Box::new(SkillTool::new(Arc::new(skills.clone()))));
-    registry
-        .dispatch(
-            "skill",
-            json!({ "name": name }),
-            CancellationToken::new(),
-            cx,
-        )
-        .await
-        .expect("dispatch")
+async fn call(skills: &Skills, name: &str, _cx: &ToolContext) -> crate::tools::ToolResult {
+    match skills.resolve(name) {
+        Resolution::Found(skill) => tool::load(skill, skills.readable_roots()),
+        Resolution::Unknown => crate::tools::ToolResult::error("skill_unknown", "unknown skill"),
+        Resolution::Disabled => crate::tools::ToolResult::error("skill_disabled", "disabled skill"),
+        Resolution::Ambiguous(paths) => crate::tools::ToolResult::error(
+            "skill_ambiguous",
+            format!("ambiguous skill: {paths:?}"),
+        ),
+    }
 }
 
 #[tokio::test]

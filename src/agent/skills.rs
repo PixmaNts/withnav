@@ -35,6 +35,7 @@ use crate::agent::instructions::{directories_from_root, RulesRoots};
 mod catalog;
 pub(crate) mod frontmatter;
 mod tool;
+pub mod validation;
 
 pub use catalog::{MAX_DESCRIPTION_CHARS, MAX_TOKENS};
 pub use tool::{SkillTool, MAX_BODY_BYTES, MAX_RESOURCES};
@@ -70,12 +71,6 @@ pub struct Skill {
     pub base_dir: PathBuf,
     pub disabled: bool,
     rank: Rank,
-}
-
-impl Skill {
-    pub(crate) fn is_user(&self) -> bool {
-        self.rank.user
-    }
 }
 
 /// What went wrong, or was set aside, for one file.
@@ -138,14 +133,13 @@ pub(crate) enum Resolution<'a> {
 /// The snapshot taken when a session is created or resumed.
 #[derive(Debug, Clone, Default)]
 pub struct Skills {
+    pub validation: std::sync::Arc<validation::SkillValidation>,
     /// The winning skill of each id.
     winners: BTreeMap<String, Skill>,
     ambiguous: BTreeMap<String, Vec<PathBuf>>,
     diagnostics: Vec<Diagnostic>,
     roots: Vec<PathBuf>,
     /// Discovery spellings retained so machine grants recheck canonical location.
-    grant_user_roots: Vec<PathBuf>,
-    grant_project_roots: Vec<PathBuf>,
     catalog: Option<String>,
     /// How many skills the catalog lists and how many fell out of its bound.
     catalog_listed: usize,
@@ -153,6 +147,32 @@ pub struct Skills {
 }
 
 impl Skills {
+    pub fn snapshot(&self, name: &str) -> Result<validation::SkillSnapshot, String> {
+        let skill = match self.resolve(name) {
+            Resolution::Found(skill) if self.listed().iter().any(|s| s.name == name) => skill,
+            Resolution::Disabled => {
+                return Err(format!("skill_disabled: skill {name} is disabled"))
+            }
+            Resolution::Ambiguous(_) => {
+                return Err(format!("skill_ambiguous: skill {name} is ambiguous"))
+            }
+            _ => return Err(format!("skill_unknown: no listed skill with id {name:?}")),
+        };
+        let snapshot = validation::snapshot(skill)?;
+        self.validation
+            .snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(snapshot.id.clone(), snapshot.clone());
+        Ok(snapshot)
+    }
+    pub fn active_validated_skill(&self) -> Option<(String, String)> {
+        self.validation
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     /// The same ranked, bounded prefix offered in the model's catalog.
     pub fn listed(&self) -> Vec<&Skill> {
         let mut skills: Vec<_> = self
@@ -167,23 +187,21 @@ impl Skills {
 
     /// Loads with the same provenance, resource listing and bounds as the skill tool.
     pub async fn load_listed(&self, name: &str) -> crate::tools::ToolResult {
-        let Some(skill) = self
-            .listed()
-            .into_iter()
-            .find(|skill| skill.name == name)
-            .cloned()
-        else {
-            return crate::tools::ToolResult::error(
-                "skill_unknown",
-                format!("no listed skill with the id {name:?}"),
-            );
-        };
-        let roots = self.roots.clone();
-        tokio::task::spawn_blocking(move || tool::load(&skill, &roots))
-            .await
-            .unwrap_or_else(|error| {
-                crate::tools::ToolResult::error("skill_unreadable", error.to_string())
-            })
+        let skills = self.clone();
+        let name = name.to_owned();
+        tokio::task::spawn_blocking(move || match skills.snapshot(&name) {
+            Ok(snapshot) => match skills.validation.validated(&snapshot) {
+                Ok(true) => snapshot.output,
+                Ok(false) => crate::tools::ToolResult::error(
+                    "skill_not_validated",
+                    "skill was not loaded: not validated",
+                ),
+                Err(error) => crate::tools::ToolResult::error("skill_unreadable", error),
+            },
+            Err(error) => crate::tools::ToolResult::error("skill_unreadable", error),
+        })
+        .await
+        .unwrap_or_else(|e| crate::tools::ToolResult::error("skill_unreadable", e.to_string()))
     }
 
     /// Discovers the skills of `workspace`. Blocking file I/O: call it from a
@@ -197,35 +215,7 @@ impl Skills {
             walk.add_root(dir.clone(), *root);
         }
         walk.run();
-        let mut skills = walk.finish();
-        for (dir, rank) in candidates {
-            if rank.user {
-                skills.grant_user_roots.push(dir);
-            } else {
-                skills.grant_project_roots.push(dir);
-            }
-        }
-        skills
-    }
-
-    /// Discovery provenance alone does not make project content machine-trusted.
-    pub(crate) fn machine_grant_location(&self, base_dir: &Path, script: &Path) -> bool {
-        let inside_user = self.grant_user_roots.iter().any(|root| {
-            root.canonicalize()
-                .is_ok_and(|root| base_dir.starts_with(&root) && script.starts_with(&root))
-        });
-        inside_user
-            && self
-                .grant_project_roots
-                .iter()
-                .all(|root| match root.canonicalize() {
-                    Ok(root) => {
-                        !base_dir.starts_with(&root)
-                            && !root.starts_with(base_dir)
-                            && !script.starts_with(&root)
-                    }
-                    Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-                })
+        walk.finish()
     }
 
     /// The catalog message; `None` when no skill is offered.
@@ -502,6 +492,7 @@ impl Walk {
         };
         let catalog_omitted = offered.len() - catalog_listed;
         Skills {
+            validation: Default::default(),
             catalog_listed,
             catalog_omitted,
             winners,
@@ -509,8 +500,6 @@ impl Walk {
             diagnostics,
             roots,
             catalog,
-            grant_user_roots: Vec::new(),
-            grant_project_roots: Vec::new(),
         }
     }
 }

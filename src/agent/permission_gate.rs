@@ -694,10 +694,7 @@ pub fn config_grant_eligible(
     let Some(path) = needed.destination.as_deref() else {
         return false;
     };
-    if path
-        .file_name()
-        .is_some_and(|name| name == super::skill_grants::FILE_NAME || name == "grants.json")
-    {
+    if path.file_name().is_some_and(|name| name == "grants.json") {
         return false;
     }
     if path.file_name().is_none_or(|name| name != "config.json") {
@@ -1305,15 +1302,6 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
                 evidence["metacognition"] =
                     json!({"decision":review.decision,"reason":review.reason});
             }
-            if let Some(script) = script::skill_script(actor, call).filter(|script| {
-                actor
-                    .skill_grants
-                    .as_ref()
-                    .is_some_and(|store| store.changed(script))
-            }) {
-                return ask_evidence(format!("{} changed since you allowed skill {}; approve once or renew the machine grant",
-                    script.relative_path.display(), script.skill), evidence);
-            }
             if (review.is_err()
                 || matches!(&review, Ok(Ok(review)) if review.decision == ReviewDecision::Unsure))
                 && !request_incomplete
@@ -1324,29 +1312,6 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
                 && (!input.questions.contains_key("role_conformance")
                     || choice(&answers, "role_conformance") == Some("conforms"))
             {
-                if !protected_config_call(actor, call, needed) {
-                    if let Some(script) = script::skill_script(actor, call).filter(|script| {
-                        actor
-                            .skill_grants
-                            .as_ref()
-                            .is_some_and(|store| store.covers(script))
-                    }) {
-                        evidence["approved_by"] = json!("skill_grant");
-                        evidence["skill_script"] = json!(script);
-                        let mut note = match allowed_evidence(
-                            &review_input,
-                            "skill_grant",
-                            "Captain machine grant for this user skill and script digest",
-                            evidence,
-                        ) {
-                            Judged::Run(note) => note,
-                            _ => unreachable!(),
-                        };
-                        note["approved_by"] = json!("skill_grant");
-                        note["skill_script"] = json!(script);
-                        return Judged::Run(note);
-                    }
-                }
                 if let Some(precedent) = signature.as_ref().and_then(|signature| {
                     actor
                         .permission_context

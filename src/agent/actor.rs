@@ -123,7 +123,7 @@ pub struct AgentActor {
     /// The folder and origin approvals: given in this session, or kept for
     /// its workspace when the session service loads them.
     pub grants: Grants,
-    pub skill_grants: Option<super::skill_grants::SkillGrants>,
+    pub selected_skill_snapshots: Vec<String>,
     /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// captain (a human ingress identity), never from a navigator wake, delegated
@@ -247,7 +247,7 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
-            skill_grants: None,
+            selected_skill_snapshots: vec![],
             captain_task: None,
             guard: None,
         }
@@ -299,6 +299,11 @@ impl AgentActor {
         }
         self.tool_context.readable_roots = skills.readable_roots().to_vec();
         self.skills = skills;
+    }
+
+    /// The most recently admitted skill in this turn; new Captain input clears it.
+    pub fn active_validated_skill(&self) -> Option<(String, String)> {
+        self.skills.active_validated_skill()
     }
 
     /// The parts of the request besides the history. `role` is
@@ -479,6 +484,9 @@ impl AgentActor {
         provenance: crate::provider::openai::UserProvenance,
     ) {
         let text = text.into();
+        if provenance == crate::provider::openai::UserProvenance::Captain {
+            self.skills.validation.begin_turn();
+        }
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
                 self.transcript.push(ChatMessage::Tool {

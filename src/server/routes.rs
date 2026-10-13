@@ -160,11 +160,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models", get(list_models))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
-        .route("/v1/skill-grants", get(list_skill_grants))
-        .route(
-            "/v1/skill-grants/{skill}",
-            axum::routing::delete(revoke_skill_grant),
-        )
         .route(
             "/v1/settings",
             get(super::settings::get).put(super::settings::put),
@@ -982,30 +977,6 @@ pub enum DecisionKind {
 /// The message a denial carries when the Captain gave none.
 const DEFAULT_DENIAL: &str = "the user denied this tool call";
 
-async fn list_skill_grants(State(state): State<AppState>) -> Response {
-    let store = crate::agent::skill_grants::SkillGrants::in_dir(&state.config.config_dir);
-    match store.read() {
-        Ok(grants) => Json(json!({"grants": grants})).into_response(),
-        Err(error) => grants_error(error),
-    }
-}
-
-async fn revoke_skill_grant(State(state): State<AppState>, Path(skill): Path<String>) -> Response {
-    let store = crate::agent::skill_grants::SkillGrants::in_dir(&state.config.config_dir);
-    match store.revoke(&skill) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => grants_error(error),
-    }
-}
-
-fn grants_error(error: String) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": error})),
-    )
-        .into_response()
-}
-
 async fn answer_permission(
     State(state): State<AppState>,
     Path((id, request_id)): Path<(String, String)>,
@@ -1040,7 +1011,7 @@ async fn answer_permission(
         },
         DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
         DecisionKind::AllowConfigSession => PermissionDecision::AllowConfigSession,
-        DecisionKind::AllowSkillMachine => PermissionDecision::AllowSkillMachine,
+        DecisionKind::AllowSkillMachine => return error_response(ServerError::PermissionStale),
         DecisionKind::Deny => PermissionDecision::Deny {
             message: body
                 .message

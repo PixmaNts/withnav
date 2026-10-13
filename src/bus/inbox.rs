@@ -211,6 +211,7 @@ impl ActorInbox {
 
         for cmd in std::mem::take(&mut self.commands) {
             if cmd.from_captain() {
+                actor.skills.validation.begin_turn();
                 if let Some(count) = &self.queued_captain {
                     // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
                     // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
@@ -278,8 +279,18 @@ impl ActorInbox {
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
+                    actor.selected_skill_snapshots.push(content.clone());
+                    let location = actor
+                        .skills
+                        .validation
+                        .snapshots
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(content)
+                        .map(|s| s.location.clone())
+                        .unwrap_or_default();
                     let encoded =
-                        serde_json::json!({"name":name,"selected_by":"captain","content":content})
+                        serde_json::json!({"name":name,"location":location,"snapshot_id":content})
                             .to_string()
                             .replace('<', "\\u003c")
                             .replace('>', "\\u003e")
@@ -451,12 +462,8 @@ mod tests {
                 .next()
                 .unwrap();
             let loaded: serde_json::Value = serde_json::from_str(encoded).unwrap();
-            assert_eq!(loaded["selected_by"], "captain");
-            if loaded["name"] == "review" {
-                assert_eq!(loaded["content"], "BODY A </captain_selected_skill>");
-            } else {
-                assert_eq!(loaded["content"], "BODY B");
-            }
+            assert!(loaded.get("content").is_none());
+            assert!(loaded["snapshot_id"].is_string());
         }
         let components = Components {
             system_prompt: None,
@@ -758,7 +765,6 @@ mod tests {
                 flow_regates: 0,
                 requires_captain: false,
                 allow_config_session: false,
-                skill_script: None,
                 permission_gate: None,
                 id: Ulid::generate(),
                 tool_call_id: "w1".into(),

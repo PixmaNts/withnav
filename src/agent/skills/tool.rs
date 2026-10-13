@@ -8,7 +8,9 @@
 //! and `skill_oversized`.
 
 use std::future::Future;
+#[cfg(test)]
 use std::io::Read;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,7 +18,11 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use super::{frontmatter, Resolution, Skill, Skills, MAX_DEPTH, SKIPPED_DIRS};
+#[cfg(test)]
+use super::{frontmatter, Skill};
+use super::{Resolution, Skills};
+#[cfg(test)]
+use super::{MAX_DEPTH, SKIPPED_DIRS};
 use crate::error::ToolError;
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -25,6 +31,7 @@ pub const MAX_BODY_BYTES: usize = 32 * 1024;
 /// The most resource paths listed.
 pub const MAX_RESOURCES: usize = 64;
 /// The most directory entries looked at to list resources.
+#[cfg(test)]
 pub(super) const MAX_RESOURCE_ENTRIES: usize = 5_000;
 
 pub struct SkillTool {
@@ -66,35 +73,45 @@ impl Tool for SkillTool {
                     message: "missing string argument: name".into(),
                 });
             };
-            let skill = match self.skills.resolve(name) {
-                Resolution::Found(skill) => skill.clone(),
+            match self.skills.resolve(name) {
                 Resolution::Unknown => {
-                    return Ok(ToolResult::error(
-                        "skill_unknown",
-                        format!("no skill with the id {name:?}; use an id from the catalog"),
-                    ))
+                    return Ok(ToolResult::error("skill_unknown", "unknown skill"))
                 }
                 Resolution::Disabled => {
-                    return Ok(ToolResult::error(
-                        "skill_disabled",
-                        format!("the skill {name:?} may not be loaded by the model"),
-                    ))
+                    return Ok(ToolResult::error("skill_disabled", "disabled skill"))
                 }
                 Resolution::Ambiguous(paths) => {
-                    let listed: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
                     return Ok(ToolResult::error(
                         "skill_ambiguous",
-                        format!(
-                            "several skills share the id {name:?} at the same priority: {}",
-                            listed.join(", ")
-                        ),
-                    ));
+                        format!("ambiguous skill: {paths:?}"),
+                    ))
                 }
-            };
-            let roots = self.skills.readable_roots().to_vec();
-            Ok(tokio::task::spawn_blocking(move || load(&skill, &roots))
-                .await
-                .unwrap_or_else(|e| ToolResult::error("skill_unreadable", e.to_string())))
+                Resolution::Found(_) => {}
+            }
+            let admitted = self
+                .skills
+                .validation
+                .approved
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(name)
+                .cloned();
+            if let Some(id) = admitted {
+                if let Some(snapshot) = self
+                    .skills
+                    .validation
+                    .snapshots
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&id)
+                {
+                    return Ok(snapshot.output.clone());
+                }
+            }
+            Ok(ToolResult::error(
+                "skill_not_validated",
+                format!("skill {name} was not loaded: not validated"),
+            ))
         })
     }
 }
@@ -103,6 +120,7 @@ impl Tool for SkillTool {
 /// skill `roots` the snapshot was taken from, and has the wanted kind. The
 /// paths cached at discovery are not trusted: a file, a directory or any
 /// ancestor may have been replaced by a link since.
+#[cfg(test)]
 fn still_in_place(
     path: &Path,
     expected: &Path,
@@ -136,6 +154,7 @@ fn still_in_place(
 /// a check on the path followed by a second resolution at open time would let
 /// a concurrent writer swap `SKILL.md` for a link in between. The body is read
 /// from the returned descriptor only.
+#[cfg(test)]
 pub(super) fn open_in_place(path: &Path, roots: &[PathBuf]) -> Result<std::fs::File, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
@@ -160,6 +179,7 @@ pub(super) fn open_in_place(path: &Path, roots: &[PathBuf]) -> Result<std::fs::F
 /// happened to the path since. Elsewhere the path is resolved again and the
 /// file identity (device and inode) compared, which narrows the window to the
 /// resolution itself.
+#[cfg(test)]
 fn opened_path(file: &std::fs::File, path: &Path) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     {
@@ -182,6 +202,7 @@ fn opened_path(file: &std::fs::File, path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
     let unreadable = |why: String| {
         ToolResult::error(
@@ -256,6 +277,7 @@ pub(super) fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
 
 /// The files below `dir`, relative and sorted, without `SKILL.md`, links,
 /// nor the directories no skill walk enters. Stops at the entry bound.
+#[cfg(test)]
 pub(super) fn list_resources(
     dir: &Path,
     prefix: &str,

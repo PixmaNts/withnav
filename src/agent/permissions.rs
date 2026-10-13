@@ -116,8 +116,6 @@ pub struct PermissionRequest {
     #[serde(default)]
     pub allow_config_session: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_script: Option<Box<super::skill_grants::SkillScript>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_gate: Option<Box<Value>>,
     pub id: Ulid,
     pub tool_call_id: String,
@@ -145,7 +143,7 @@ impl PermissionRequest {
             flow_regates: 0,
             requires_captain: false,
             allow_config_session: false,
-            skill_script: None,
+
             permission_gate: None,
             id: Ulid::generate(),
             tool_call_id: call.id.clone(),

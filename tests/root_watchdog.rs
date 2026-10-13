@@ -41,6 +41,20 @@ async fn pause_lifecycle(mode: u8) {
             "---\nname: review\ndescription: Review work\n---\nReview selected work carefully.",
         )
         .unwrap();
+        let skills = withnav::agent::skills::Skills::load(
+            &withnav::agent::instructions::RulesRoots { home: None },
+            &ws,
+        );
+        let snapshot = skills.snapshot("review").unwrap();
+        withnav::permission::store::PermissionStore::open(tmp.path().join("data"))
+            .unwrap()
+            .validate(
+                withnav::permission::validation::ValidationKind::Skill,
+                &snapshot.name,
+                &snapshot.location,
+                &snapshot.hash,
+            )
+            .unwrap();
     }
     let mut provider = spawn_streaming_provider().await;
     let service = TestServerConfig::mock(tmp.path(), &provider.url)

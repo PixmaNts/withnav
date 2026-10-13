@@ -557,6 +557,7 @@ fn no_skills_means_no_message() {
 // Given a link looping back to an ancestor, and a link out of the roots
 // When discovered
 // Then the loop is cut once, the escape is rejected, nothing hangs
+#[cfg(unix)]
 #[test]
 fn cycles_and_escaping_links_are_rejected() {
     let fx = fixture();
@@ -587,6 +588,7 @@ fn cycles_and_escaping_links_are_rejected() {
 // Given a link to a directory inside another skill root, and a root reached
 //       twice
 // Then the skill counts once
+#[cfg(unix)]
 #[test]
 fn a_second_path_to_the_same_skill_counts_once() {
     let fx = fixture();
@@ -614,6 +616,7 @@ fn a_second_path_to_the_same_skill_counts_once() {
 // Given a SKILL.md that is a link to another SKILL.md in the same root
 // When discovered
 // Then it is one skill, not an ambiguous id
+#[cfg(unix)]
 #[test]
 fn a_manifest_linked_to_another_manifest_is_one_skill() {
     let fx = fixture();
@@ -634,6 +637,7 @@ fn a_manifest_linked_to_another_manifest_is_one_skill() {
 // Given the same manifest reached from a project root and, through a link,
 //       from a user root
 // Then it is one skill at the better rank, shadowing nothing
+#[cfg(unix)]
 #[test]
 fn a_manifest_reached_from_two_roots_is_one_skill() {
     let fx = fixture();
@@ -722,6 +726,7 @@ fn descriptions_are_flattened_and_capped() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn the_catalog_is_bounded_and_counts_what_it_omits() {
     let fx = fixture();
@@ -930,6 +935,7 @@ async fn a_file_that_vanished_or_broke_is_unreadable() {
 //       file outside the skill roots
 // When the tool loads it
 // Then it is unreadable and nothing of the outside file is returned
+#[cfg(unix)]
 #[tokio::test]
 async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
     let fx = fixture();
@@ -953,6 +959,7 @@ async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
 //       a link to a place outside the skill roots
 // When the tool loads it
 // Then it is refused
+#[cfg(unix)]
 #[tokio::test]
 async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
     let fx = fixture();
@@ -982,6 +989,7 @@ async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
 //       inside the roots
 // When the tool loads it
 // Then it is refused too: the file is no longer the one that was found
+#[cfg(unix)]
 #[tokio::test]
 async fn a_directory_swapped_for_another_one_in_the_roots_is_refused() {
     let fx = fixture();
@@ -1156,6 +1164,7 @@ fn without_skills_nothing_is_registered() {
 //       to a file outside the skill roots before it is opened
 // When the manifest is opened for reading
 // Then the opened file itself is checked and refused, so nothing outside is read
+#[cfg(unix)]
 #[test]
 fn a_manifest_swapped_between_check_and_open_is_refused() {
     let fx = fixture();

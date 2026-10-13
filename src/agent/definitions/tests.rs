@@ -91,6 +91,7 @@ fn builtins_have_crew_modes_and_permissions() {
     assert!(build.description.contains("verifies"));
 }
 
+#[cfg(unix)]
 #[test]
 fn cartographe_write_scope_rejects_other_files_and_escapes() {
     let workspace = tempfile::tempdir().unwrap();
@@ -435,6 +436,7 @@ fn ids_are_validated() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn no_directories_means_only_the_builtins() {
     let tmp = tempfile::tempdir().unwrap();

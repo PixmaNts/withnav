@@ -1027,6 +1027,7 @@ mod tests {
         }
         assert_eq!(store.snapshot().len(), builtins);
     }
+    #[cfg(unix)]
     #[test]
     fn concurrent_markers_advance_monotonically_and_reject_unsafe_files() {
         use std::os::unix::fs::{symlink, PermissionsExt};

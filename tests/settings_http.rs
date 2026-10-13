@@ -117,7 +117,6 @@ async fn settings_edit_validation_removal_and_stale_revision() {
     assert!(!path.exists(), "malformed JSON must not write settings");
     for (key, value) in [
         ("subagents.max_concurrent", json!(12)),
-        ("permissions.automatic_review", json!(false)),
         ("permissions.scratch_dirs", json!(["/tmp/custom"])),
         ("subagents.watchdog_interval_secs", json!(0)),
         ("agent.watchdog_interval_secs", json!(42)),
@@ -147,7 +146,9 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         ("unknown", Value::Null),
         ("subagents.max_concurrent", json!(65)),
         ("subagents.max_concurrent", json!(1.5)),
-        ("permissions.automatic_review", json!(1)),
+        // Removed with the per-call review: an unknown key now.
+        ("permissions.automatic_review", json!(false)),
+        ("permissions.review_timeout_secs", json!(40)),
         ("permissions.scratch_dirs", json!(["relative"])),
         ("agent.watchdog_interval_secs", json!(31536001)),
         ("tui.theme", json!("bad")),

@@ -77,7 +77,6 @@ pub struct QuestionPrompt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
     pub always_label: Option<String>,
-    pub allow_config_session: bool,
     pub skill_script: Option<Box<SkillScript>>,
     pub child_session_id: Option<String>,
     pub request_id: String,

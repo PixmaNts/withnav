@@ -102,8 +102,6 @@ pub struct RuntimeStatus {
     pub(crate) question_gate: tokio::sync::Mutex<()>,
     pending_question: Mutex<Option<crate::agent::response::HumanRequest>>,
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
-    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
-    pub permission_context: Arc<Mutex<crate::agent::permission_gate::context::ReviewContext>>,
     /// Serializes bypass changes and child starts below this root, so a
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
@@ -914,8 +912,6 @@ pub fn spawn_with_completion(
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
     actor.parent_captain = status.parent_captain.clone();
-    actor.config_session_grant = status.config_session_grant.clone();
-    actor.permission_context = status.permission_context.clone();
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -1249,11 +1245,15 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 }
-                let decision = crate::agent::permissions::offered_decision(
-                    &request.agent,
-                    &request.tool,
-                    answer.decision,
-                );
+                // Folder and session-wide configuration answers no longer
+                // exist: they count as one approval, and say so.
+                let decision = match answer.decision {
+                    crate::agent::permissions::PermissionDecision::AllowFolder
+                    | crate::agent::permissions::PermissionDecision::AllowConfigSession => {
+                        crate::agent::permissions::PermissionDecision::AllowOnce
+                    }
+                    decision => decision,
+                };
                 publish_resolved_with_origin(
                     &sequencer,
                     active_task_id,
@@ -1834,13 +1834,6 @@ fn publish_resolved_with_origin(
         Some("allow_once" | "allow_always" | "allow_folder" | "reject" | "deny")
     ) {
         candidate.payload["approved_by"] = serde_json::json!("captain");
-        if let Some(signature) = request
-            .permission_gate
-            .as_ref()
-            .and_then(|gate| gate.get("signature"))
-        {
-            candidate.payload["captain_precedent"] = serde_json::json!({"request_id": request.id, "tool": request.tool, "signature": signature, "scope": request.scope, "decision": candidate.payload["resolution"], "when": request.id.to_string()});
-        }
     }
     if let Some(task) = task_id {
         candidate = candidate.with_correlation_id(task);
@@ -1910,7 +1903,6 @@ fn permission_requested(
         reason: request.reason.clone(),
     });
     payload["requires_captain"] = serde_json::json!(request.requires_captain);
-    payload["allow_config_session"] = serde_json::json!(request.allow_config_session);
     if request.tool == "skill" {
         let args: serde_json::Value = serde_json::from_str(&request.arguments).unwrap_or_default();
         payload["action"] = serde_json::json!("skill");
@@ -2256,10 +2248,7 @@ mod tests {
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
-                origin: Default::default(),
-                flow_regates: 0,
                 requires_captain: false,
-                allow_config_session: false,
 
                 permission_gate: None,
                 id: request_id,

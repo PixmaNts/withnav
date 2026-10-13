@@ -217,7 +217,11 @@ export function createMockApi(workspace: string): StudioApi & { revokeApproval(f
         if (!diagnostics.length) loaded.set(key(s.name, s.location), revisionOf(s));
       }
       reloadErrors = [...errors, ...exclusions];
-      if (errors.length) fail(422, "reload_invalid", `Nothing reloaded: ${errors.length} error${errors.length === 1 ? "" : "s"}. The previous flows keep running.`, errors);
+      // As the server does: an invalid reload leaves only the built-in flows running.
+      if (errors.length) {
+        loaded = new Map([...files.values()].filter((s) => s.location === "builtin").map((s) => [key(s.name, s.location), revisionOf(s)]));
+        fail(422, "reload_invalid", `Reload failed: ${errors.length} error${errors.length === 1 ? "" : "s"}. Only the built-in flows are running until a reload succeeds.`, errors);
+      }
       return { reloaded: true, errors: exclusions, flows: sorted(), propagation: RELOAD_PROPAGATION };
     },
     async health() {

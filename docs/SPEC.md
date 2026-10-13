@@ -569,7 +569,7 @@ A plain-text assistant question may still result in `Done`, but personas SHOULD 
 
 ## 9. Tools
 
-> **Status: built, and larger than first specified.** The registry holds eight tools (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`), and a ninth, `skill`, is added per session. The permission gate and the plan role guard (9.4, 9.5) were not in the first design. Code: `src/tools/`, `src/agent/permissions.rs`, `src/agent/guard.rs`.
+> **Status: built, and larger than first specified.** The registry holds eight tools (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`), and a ninth, `skill`, is added per session. The permission decision (9.4) was not in the first design. Code: `src/tools/`, `src/agent/authorize.rs`, `src/permission/`.
 
 ### 9.1 Registry Tools
 
@@ -605,18 +605,16 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 - A `write` or `edit` whose destination was reviewed is opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the check is refused and the call is checked again.
 - Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
 
-### 9.4 Permission Gate
+### 9.4 Permission Decision
 
-A session that runs as an agent asks the Captain before it runs `write`, `edit`, `bash` or `fetch`. `read`, `grep`, `glob`, `skill` and `ask` never ask.
+Every tool call is decided before it runs, in a fixed order: yolo, the fixed floor (credentials, WithNav's own configuration and database), free reads inside the project, the Captain's rules (a `deny` stops the call), bypass, the permission flow, then the Captain. See ADR 0015.
 
-- The call does not run. The turn yields and the server publishes a durable `permission.requested`. The scope is the canonical parent folder for `write` and `edit`, the workspace for `bash` (what the Captain approves, not a confinement) and the URL origin for `fetch`.
-- The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_folder` or `deny` with a message. `allow_folder` is remembered in memory, per agent, capability and scope, until the session ends. Chat text never approves a request: a message sent while a request waits cancels it.
-- `permission.resolved` ends every request: `allow_once`, `allow_folder`, `deny`, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
+- A call that needs the Captain does not run. The turn yields and the server publishes a durable `permission.requested`, with `always_label` when an "Always" answer can save a rule.
+- The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_always` or `reject` with an optional message. Older answers still parse: `allow_folder` and `allow_config_session` count as `allow_once`, `deny` as `reject`. Chat text never approves a request: a message sent while a request waits cancels it.
+- `permission.resolved` ends every request: the answer, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
 - `nav run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` turns on the session's bypass before the first prompt, so ordinary requests run once without asking; a request that still arrives (protected configuration, credentials or keys, for the session or a subagent) is printed with its tool, scope and reason and exits 3 (unsafe).
 
-### 9.5 Plan Role Guard
-
-The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Instinct (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the Captain. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
+An agent's limits are rules with `agent` scope; WithNav seeds none (ADR 0015 replaces the plan role guard of ADR 0008).
 
 ## 10. Event Bus
 
@@ -691,7 +689,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 | `command.result` | A session command (`/help`, `/model`, `/compact`, ...) has run | `{operation_id, name, ok, data?, error?}`; `data` bounded to 16 KiB |
 | `session.agent_changed` | The session's primary agent was changed (`/agent`) | `{agent, previous}` |
 | `permission.requested` | A gated tool call (`write`, `edit`, `bash`, `fetch`) waits for a decision; it has not run | `{request_id, tool_call_id, tool, arguments, scope{kind, value}, agent, reason}`; `arguments` is JSON text cut to 4 KiB |
-| `permission.resolved` | A permission request ended | `{request_id, tool_call_id, resolution, message?}`; `resolution` is `allow_once`, `allow_folder`, `deny` (with `message`), `cancelled` (stop, or a message sent meanwhile) or `expired` (restart) |
+| `permission.resolved` | A permission request ended | `{request_id, tool_call_id, resolution, message?}`; `resolution` is `allow_once`, `allow_always`, `reject` (optional `message`), `cancelled` (stop, or a message sent meanwhile) or `expired` (restart); events written before ADR 0015 may also say `allow_folder`, `allow_config_session` or `deny` |
 | `model.changed` | The model selection of the session was committed: its first selection at start, then each `/model <alias>` switch, variant change, or resume refresh of the variant | `{operation_id?, revision, reason, previous?{alias, provider, model}, new{alias, provider, model}, variant, window, input_budget, from_message}`; `reason` is `initial`, `switch`, `variant` or `resume-refresh`; `from_message` is the transcript index where the new selection starts |
 | `context.updated` | The estimated size of the next request changed (after a provider response, after a step's tool results, at turn start and end) | The context snapshot: `{alias, variant?, window, window_source, estimate_total, breakdown{system, rules, skills_catalog, tools, messages}, output_reserve, margin, input_budget, percent, estimated, skills{listed, omitted}, rule_files, last_usage?{alias, prompt_tokens, completion_tokens, step}, incarnation, revision}`. `revision` counts within one runtime `incarnation` (a stopped and resumed session starts a new one). Incarnation ids carry no order, so a client retires the incarnation it moves past and ignores later snapshots of it. Live-only (not stored or replayed); also readable from `GET /v1/sessions/{id}/context`. |
 | `context.compacted` | A compaction was saved (`/compact`): a summary now stands for the start of the conversation | `{generation, through_message, pruned, estimate_before, estimate_after}`; explanatory only (the stored checkpoint is what a resume restores) |
@@ -1639,7 +1637,7 @@ Other bodies:
 - `POST /v1/sessions/{id}/stop` gives `{accepted: true, actor_state: "stopped"}`.
 - `GET /v1/models` lists the chat aliases with their resolved window, `enabled`, `disabled_reason` and, when known, where the window came from, its staleness, and the variants on offer.
 - `GET /v1/commands` lists the session commands; `POST .../commands` with `{name, arguments?}` runs one and answers `{operation_id, ok, data?, error?}`. The commands are `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`, `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. A command that cannot run is 200 with `ok: false`. The outcome is also published as a `command.result` event.
-- `POST .../permissions/{request_id}` takes `{decision: "allow_once" | "allow_folder" | "deny", message?}` and answers `{accepted: true}`; 409 `permission_stale` when the request is not waiting.
+- `POST .../permissions/{request_id}` takes `{decision: "allow_once" | "allow_always" | "reject", message?}` (older `allow_folder`, `allow_config_session` and `deny` still parse) and answers `{accepted: true}`; 409 `permission_stale` when the request is not waiting.
 - `GET .../context` returns the context snapshot (section 10.3, `context.updated`).
 
 All errors share the `{"error": ...}` shape.
@@ -1703,7 +1701,7 @@ The core supports OpenAI-compatible chat completions for the agent:
 POST <base_url>/chat/completions        ("stream": true)
 ```
 
-OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A model alias may also name another `api`: `fim` (the reflex, fill-in-the-middle) or `systemone` (the instinct and the plan role guard, typed decisions). These serve the navigator layers only; the agent loop speaks `chat`.
+OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A model alias may also name another `api`: `fim` (the reflex, fill-in-the-middle) or `systemone` (the instinct: typed decisions, including the permission flow's). These serve the navigator layers only; the agent loop speaks `chat`.
 
 ### 21.2 `models.json`
 

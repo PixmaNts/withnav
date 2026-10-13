@@ -188,8 +188,6 @@ async fn successful_live_layers_and_offline_zero_calls_read_only() {
         "live.reflex.plain",
         "live.reflex.context",
         "live.instinct.editor",
-        "live.instinct.role_guard",
-        "live.instinct.permission",
         "live.metacognition.chat",
     ] {
         assert_eq!(
@@ -200,7 +198,7 @@ async fn successful_live_layers_and_offline_zero_calls_read_only() {
         );
     }
     assert_eq!(report.exit_code(), 0, "{}", report.human());
-    assert_eq!(calls.load(Ordering::SeqCst), 6);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     assert_eq!(snapshot(root.path()), before);
     calls.store(0, Ordering::SeqCst);
     args.offline = true;
@@ -232,14 +230,7 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
                 DoctorLayer::Reflex,
                 &["live.reflex.plain", "live.reflex.context"][..],
             ),
-            (
-                DoctorLayer::Instinct,
-                &[
-                    "live.instinct.editor",
-                    "live.instinct.role_guard",
-                    "live.instinct.permission",
-                ][..],
-            ),
+            (DoctorLayer::Instinct, &["live.instinct.editor"][..]),
             (DoctorLayer::Metacognition, &["live.metacognition.chat"][..]),
         ] {
             args.layer = Some(layer);
@@ -282,15 +273,10 @@ async fn systemone_two_second_deadline() {
     args.layer = Some(withnav::app::doctor::DoctorLayer::Instinct);
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(report.exit_code(), 1);
-    for id in [
-        "live.instinct.editor",
-        "live.instinct.role_guard",
-        "live.instinct.permission",
-    ] {
-        assert_eq!(check(&report, id).status, Status::Failed);
-        assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
-        assert!((1900..2900).contains(&check(&report, id).elapsed_ms.unwrap()));
-    }
+    let id = "live.instinct.editor";
+    assert_eq!(check(&report, id).status, Status::Failed);
+    assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
+    assert!((1900..2900).contains(&check(&report, id).elapsed_ms.unwrap()));
     task.abort();
 }
 

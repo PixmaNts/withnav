@@ -9,8 +9,8 @@ use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use super::{ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
-use crate::agent::permission_gate::{sensitive_read, SENSITIVE_NAMES};
 use crate::error::ToolError;
+use crate::permission::floor::{sensitive_read, SENSITIVE_NAMES};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 const MAX_ENTRIES: usize = 100_000;

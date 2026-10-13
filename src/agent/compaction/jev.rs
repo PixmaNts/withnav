@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::permission_gate::{PermissionJudge, PermissionReviewInput};
+use super::judge::{Judge, JudgeInput};
 use crate::provider::openai::{ChatMessage, UserProvenance};
 use crate::provider::systemone::{Answer, Answers, Question, Questions};
 
@@ -241,7 +241,7 @@ fn probability(answers: &Answers, key: &str) -> Option<f64> {
     }
 }
 
-fn request_bytes(input: &PermissionReviewInput) -> usize {
+fn request_bytes(input: &JudgeInput) -> usize {
     serde_json::to_vec(
         &json!({"model":"typesafe/jev-1.13", "state":input.state,"questions":input.questions}),
     )
@@ -256,13 +256,13 @@ pub async fn prune(
     first: usize,
     end: usize,
     earlier: Option<&str>,
-    judge: &dyn PermissionJudge,
+    judge: &dyn Judge,
     cancel: &CancellationToken,
 ) -> Option<Vec<ChatMessage>> {
     let pins = pinned(transcript);
     let pairs = pairs(transcript);
     let state = state(transcript, earlier)?;
-    let mut input = PermissionReviewInput {
+    let mut input = JudgeInput {
         state,
         questions: Questions::new(),
     };
@@ -288,7 +288,7 @@ pub async fn prune(
                 },
             );
         }
-        let trial = PermissionReviewInput {
+        let trial = JudgeInput {
             state: input.state.clone(),
             questions: next,
         };

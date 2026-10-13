@@ -87,7 +87,7 @@ impl Tool for GlobTool {
             };
             // Host-owned: the loop sets it from the session's yolo setting.
             let trusted = cx.binding.as_ref().is_some_and(|binding| binding.yolo);
-            if !trusted && crate::agent::permission_gate::sensitive_read(&requested) {
+            if !trusted && crate::permission::floor::sensitive_read(&requested) {
                 return Err(denied(
                     "sensitive_path",
                     "sensitive search root: use read on individual files; each read is reviewed",
@@ -101,7 +101,7 @@ impl Tool for GlobTool {
             let roots = cx.read_roots();
             let canonical = validate_path(&roots, &requested)
                 .map_err(|_| denied("outside_project", crate::tools::OUTSIDE_SEARCH))?;
-            if !trusted && crate::agent::permission_gate::sensitive_read(&canonical) {
+            if !trusted && crate::permission::floor::sensitive_read(&canonical) {
                 return Err(denied(
                     "sensitive_path",
                     "sensitive search root: use read on individual files; each read is reviewed",
@@ -270,7 +270,7 @@ fn walk(
         visited: 0,
         stop: Stop::Done,
     };
-    if !trusted_root && crate::agent::permission_gate::sensitive_read(root) {
+    if !trusted_root && crate::permission::floor::sensitive_read(root) {
         out.sensitive_skipped = 1;
         return out;
     }
@@ -317,7 +317,7 @@ fn walk(
             } else {
                 &path
             };
-            if crate::agent::permission_gate::sensitive_read(below_root) {
+            if crate::permission::floor::sensitive_read(below_root) {
                 out.sensitive_skipped += 1;
                 continue;
             }
@@ -479,7 +479,6 @@ mod tests {
         cx.binding = Some(crate::tools::DispatchBinding {
             destination: ssh.canonicalize().unwrap(),
             scratch: None,
-            script: None,
             yolo: false,
         });
         assert!(run(&cx, args.clone()).await.is_err());

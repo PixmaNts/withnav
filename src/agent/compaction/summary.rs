@@ -78,7 +78,7 @@ pub struct PrepareInput<'a> {
     pub focus: Option<&'a str>,
     pub chunk_tokens: u64,
     pub progress: Option<&'a (dyn Fn(u64, u64) + Send + Sync)>,
-    pub jev: Option<&'a dyn crate::agent::permission_gate::PermissionJudge>,
+    pub jev: Option<&'a dyn crate::agent::compaction::judge::Judge>,
     pub catalog: Option<&'a crate::provider::catalog::ModelCatalog>,
     pub max_message_tokens: Option<u64>,
 }

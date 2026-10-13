@@ -1084,7 +1084,6 @@ mod tests {
             )
             .unwrap();
         store.validate_test_documents();
-        store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
         let runtime = FlowRuntime::new(
@@ -1131,7 +1130,6 @@ mod tests {
         for (name, toml) in [("deny", text("deny", "deny")), ("async", "[flow]\nversion=1\nname='async'\non='tool.pre_call'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='note'\n".into())] {
             store.save(name, Location::Global, None, super::super::store::Content::Toml { toml, templates: BTreeMap::new() }).unwrap();
         }
-        store.validate_test_documents();
         store.validate_test_documents();
         store.reload().unwrap();
         let runtime = FlowRuntime::new(
@@ -1274,7 +1272,6 @@ mod tests {
                 .unwrap();
         }
         store.validate_test_documents();
-        store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
         let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), effects.clone());
@@ -1307,7 +1304,6 @@ mod tests {
                 },
             )
             .unwrap();
-        store.validate_test_documents();
         store.validate_test_documents();
         store.reload().unwrap();
         for _ in 0..2 {
@@ -1446,9 +1442,9 @@ impl InputSource for ContextSnapshot {
                         {
                             return None;
                         }
-                        let sensitive = crate::agent::permission_gate::sensitive_read(&path)
+                        let sensitive = crate::permission::floor::sensitive_read(&path)
                             || std::fs::canonicalize(&path)
-                                .is_ok_and(|p| crate::agent::permission_gate::sensitive_read(&p));
+                                .is_ok_and(|p| crate::permission::floor::sensitive_read(&p));
                         crate::navigator::intent::read_intent(&workspace)
                             .ok()
                             .flatten()
@@ -2119,59 +2115,6 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ProtectedCheck> {
         Box::pin(self.runtime.permission_protected_check(ctx, cancel.clone()))
-    }
-    fn pre_call<'a>(
-        &'a self,
-        call: &'a crate::agent::flow_hook::ToolCallContext,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, crate::agent::flow_hook::FlowVerdict> {
-        Box::pin(async move {
-            let selected = self
-                .selected
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            let mut context = ContextSnapshot {
-                workspace: Some(call.workspace.clone()),
-                ..Default::default()
-            };
-            for (name, value) in [
-                ("session.id", json!(self.session_id)),
-                ("session.agent", json!(selected.agent)),
-                ("session.model", json!(selected.alias)),
-                ("session.workspace", json!(call.workspace)),
-            ] {
-                context.values.insert(
-                    name.into(),
-                    InputValue {
-                        value: Some(value),
-                        cut: false,
-                        redacted: false,
-                    },
-                );
-            }
-            let verdict = self
-                .runtime
-                .evaluate_with_effects(
-                    Event {
-                        trigger: "tool.pre_call".into(),
-                        payload: json!({"tool":call.tool,"args":call.args,"call_id":call.call_id}),
-                    },
-                    context,
-                    cancel.clone(),
-                    self.effects.clone(),
-                )
-                .await
-                .0;
-            use crate::agent::flow_hook::FlowVerdict;
-            match verdict {
-                VerdictLike::Allow => FlowVerdict::Allow,
-                VerdictLike::Deny { note } => FlowVerdict::Deny { note },
-                VerdictLike::AskCaptain { note, flow, run_id } => {
-                    FlowVerdict::AskCaptain { note, flow, run_id }
-                }
-            }
-        })
     }
 }
 

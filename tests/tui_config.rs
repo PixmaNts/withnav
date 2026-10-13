@@ -15,7 +15,6 @@ use withnav::tui::{
 fn body(revision: &str) -> SettingsBody {
     serde_json::from_value(json!({"revision": revision, "paths": {"config":"/cfg/config.json","models":null,"agents":[]}, "gateways":[], "fields": [
         {"key":"layers.reflex","value":null,"default":null,"set":false,"error":null,"applies":"restart"},
-        {"key":"permissions.automatic_review","value":true,"default":true,"set":true,"error":null,"applies":"new_sessions"},
         {"key":"permissions.scratch_dirs","value":[],"default":[],"set":true,"error":null,"applies":"new_sessions"},
         {"key":"subagents.max_concurrent","value":4,"default":4,"set":true,"error":null,"applies":"new_sessions"},
         {"key":"tui.theme","value":"ayu-dark","default":"ayu-dark","set":true,"error":null,"applies":"live"}
@@ -54,7 +53,10 @@ fn navigate_jump_stage_revert() {
     reducer::handle_action(&mut s, &mut ui, a);
     assert_eq!(s.config.section, Section::Permissions);
     action(&mut s, &mut ui, ConfigAction::Move(1));
-    assert_eq!(s.config.row, 1);
+    assert_eq!(
+        s.config.row, 0,
+        "scratch directories is the only permissions row"
+    );
     action(&mut s, &mut ui, ConfigAction::CycleSection(1));
     assert_eq!(s.config.section, Section::Subagents);
     action(&mut s, &mut ui, ConfigAction::Step(1));
@@ -134,8 +136,7 @@ async fn write_carries_revision_and_theme_applies_live() {
     .await;
     let client = Client::new(server.url.trim_end_matches("/v1"), None);
     let (mut s, mut ui) = setup();
-    s.config
-        .stage("permissions.automatic_review".into(), json!(false));
+    s.config.stage("subagents.max_concurrent".into(), json!(5));
     s.config.stage("tui.theme".into(), json!("nord-dark"));
     let mut editor = Editor::default();
     let a = route_key(

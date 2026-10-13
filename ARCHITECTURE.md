@@ -142,8 +142,8 @@ parsed `.withnav/intent.md`.
 
 Scratch roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback `~/.cache/withnav/scratch`) and
 shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Every component is opened
-descriptor-relatively without following links. Native execution carries the reviewed root identity,
-opens it again without creation and writes relative to that descriptor. Validation is read-only.
+descriptor-relatively without following links. A write into one carries the root's identity (inode,
+mode), opens it again without creation and writes relative to that descriptor. Validation is read-only.
 
 The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
 flows directory: a write there needs the compiled-in protected check, asked once by the host and
@@ -151,10 +151,11 @@ passed to the flows, which never ask it again; anything else asks the Captain. L
 bash are checked too, best effort; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
 
-Permission review includes outside-project write/edit destinations, binding approvals to one canonical
-file without expanding writable roots. Sessions install private scratch storage from
-`permissions.scratch_dirs` (ordered absolute paths, private runtime/cache first, shared temp second; `[]` disables); the owned, non-symlink
-0700 directory is a writable root and counts as project-local in review, including child sessions.
+An allowed write or edit is bound to the canonical file the decision was made for, without
+expanding writable roots. Sessions install private scratch storage from `permissions.scratch_dirs`
+(ordered absolute paths, private runtime/cache first, shared temp second; `[]` disables); the owned,
+non-symlink 0700 directory is a writable root and counts as part of the project, including in child
+sessions. A scratch directory that contains, or sits inside, the configuration directory is refused.
 
 **Key to screen (terminal client).** A key reaches `runtime.rs`, which calls `input::route_key`: it
 edits the editor or returns an `Action`. `reducer::handle_action` changes the state and returns
@@ -286,9 +287,8 @@ sibling goes through the whole decision again, floor included, so a saved rule r
 answers still parse: "allow folder" and "allow configuration for the session" count as Once, `deny`
 as Reject. A file the Captain was shown is bound at dispatch; one that moved in between is decided
 again. A stop or a chat message cancels the request; a resume expires every request that has no
-`permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`. The old
-per-call review (`permission_gate`, the role guard, folder grants) is still in the tree but no longer
-called.
+`permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`. The per-call review it replaced (the review gate, the role guard, folder
+and session grants, Captain precedents) is gone (ADR 0015).
 
 **Bypass.** `BypassState {enabled, seq}` is the actor's ephemeral setting, shared with `RuntimeStatus`;
 only `Control::Bypass` changes it, after the `session.bypass` event is durable (`commit_acked`), in the
@@ -305,8 +305,7 @@ same gate from registration to the child's first prompt and commits the inherite
 
 **Yolo.** `"yolo": true` in the user settings is the lowest of three control levels: yolo (nothing
 checked) < bypass < normal. `Settings::yolo` is read at session start into
-`EffectiveExecution.yolo` (children inherit their parent's value, like `automatic_review`; a model
-switch keeps it) and from there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_decided`
+`EffectiveExecution.yolo` (children inherit their parent's value; a model switch keeps it) and from there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_decided`
 checks it right after `preflight`, so no rule, floor or `tool.pre_call` flow is consulted: `run_yolo`
 dispatches the call with `approved_by: yolo` (recorded as such in `permission_decisions`), and no
 Instinct request is made. Skill validation is skipped too. The role's write scope
@@ -318,8 +317,8 @@ entries below it and bounding output. What stays is `preflight` (reserved and ma
 tool availability for the session and role) and cancellation; a call `preflight` refuses still
 carries the `approved_by: yolo` evidence, with an error status.
 
-**Agent limits.** The role guard no longer runs: an agent's limits are rules with `agent` scope
-that the Captain adds (ADR 0015). Tool availability per agent (`tool_allowed_for_role`) and the
+**Agent limits.** An agent's limits are rules with `agent` scope that the Captain adds (ADR 0015);
+WithNav seeds none. Tool availability per agent (`tool_allowed_for_role`) and the
 Cartographe write scope (`validate_write_scope`) still apply before the decision.
 
 **Keystroke to suggestion (reflex).** The extension asks `withnav/inlineCompletion` after 150 ms
@@ -376,7 +375,7 @@ boundary, and pending interactions cannot be answered by a result. Stopped paren
 resume drains durable notices. Child deletion keeps unconsumed notices and their result text.
 
 Child permission events are mirrored by `PersistingEmitter` onto the parent stream with optional
-`child_session_id`; the child's typed interaction and grants remain authoritative. Owner-scoped
+`child_session_id`; the child's typed interaction remains authoritative. Owner-scoped
 answers claim and use the child's existing permission channel. A foreign parent cannot answer,
 and child `ask` stays unavailable. Startup terminalizes persisted starting/running children through
 the same CAS with reason `restart`, queues their notices, then seeds capacity; no tool is replayed.

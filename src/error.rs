@@ -69,8 +69,6 @@ pub enum ToolError {
     /// call is checked again.
     #[error("the destination changed since it was checked: {0}")]
     DestinationChanged(PathBuf),
-    #[error("script changed since it was reviewed")]
-    ScriptChanged,
     #[error("tool I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -202,7 +202,6 @@ pub struct ToolContext {
 pub struct DispatchBinding {
     pub(crate) destination: PathBuf,
     pub(crate) scratch: Option<crate::agent::scratch::Identity>,
-    pub(crate) script: Option<Value>,
     /// Set by the host in yolo, never from arguments: the call's root is
     /// trusted, so the tools skip their root-level sensitive-path denial.
     pub(crate) yolo: bool,

@@ -1036,9 +1036,9 @@ mod tests {
 
     #[test]
     fn old_import_path_still_resolves() {
-        assert!(crate::agent::permission_gate::sensitive_read(Path::new(
+        assert!(crate::permission::floor::sensitive_read(Path::new(
             "/x/auth.json"
         )));
-        assert!(!crate::agent::permission_gate::SENSITIVE_NAMES.is_empty());
+        assert!(!crate::permission::floor::SENSITIVE_NAMES.is_empty());
     }
 }

@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -232,10 +232,7 @@ pub async fn inspect(
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),
-            (
-                "permissions",
-                &["automatic_review", "scratch_dirs", "review_timeout_secs"],
-            ),
+            ("permissions", &["scratch_dirs"]),
             ("subagents", &["max_concurrent", "watchdog_interval_secs"]),
             ("agent", &["watchdog_interval_secs"]),
             ("compaction", &["writer", "chunk_tokens"]),
@@ -1383,31 +1380,6 @@ async fn live_layer(
                 ),
             )
             .await;
-            let input = role_input();
-            measured(
-                report,
-                "live.instinct.role_guard",
-                decision_check(&client, &input.state, &input.questions()),
-            )
-            .await;
-            let state = serde_json::json!({
-                "rules": crate::agent::permission_gate::TRUST_RULE,
-                "host_facts": {"workspace": "/workspace", "writable_roots": ["/workspace"]},
-                "captain_request": "Inspect git status in this repository",
-                "captain_request_complete": true,
-                "untrusted_evidence": {"arguments": {"command": "git status --short"}}
-            })
-            .to_string();
-            measured(
-                report,
-                "live.instinct.permission",
-                decision_check(
-                    &client,
-                    &state,
-                    &crate::agent::permission_gate::permission_questions(),
-                ),
-            )
-            .await;
         }
         Layer::Metacognition => {
             measured(report, "live.metacognition.chat", async {
@@ -1459,23 +1431,6 @@ fn timeout_error() -> ProviderError {
         message: "deadline exceeded".into(),
         partial: None,
     }
-}
-
-pub fn role_input() -> crate::agent::guard::GuardInput {
-    crate::agent::guard::GuardInput::describe(&crate::agent::guard::CallFacts {
-        role_id: "plan",
-        role_prompt:
-            "The plan agent researches and produces markdown plans. It never modifies source code.",
-        task: Some("Plan the compiler restructuring"),
-        workspace: Path::new("/workspace"),
-        tool: "write",
-        target: Some(Path::new("/workspace/src/compiler.rs")),
-        arguments: &json!({"path":"/workspace/src/compiler.rs","content":"pub fn compile() {}"}),
-    })
-    .unwrap_or_else(|| crate::agent::guard::GuardInput {
-        instructions: "Judge role conformance".into(),
-        state: "plan role source edit".into(),
-    })
 }
 
 #[cfg(test)]

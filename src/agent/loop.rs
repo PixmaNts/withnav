@@ -1,9 +1,7 @@
 use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::authorize::{self, Authorized};
 use crate::agent::context::Breakdown;
-use crate::agent::permissions::{
-    still_resolves, PermissionDecision, PermissionError, PermissionRequest, Scope,
-};
+use crate::agent::permissions::{PermissionDecision, PermissionError, PermissionRequest, Scope};
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError, ToolError};
@@ -338,11 +336,6 @@ async fn run_steps_inner(
             actor.tool_allowed(crate::agent::response::ASK_TOOL),
         ) {
             StepOutcome::Done { response } => {
-                actor
-                    .permission_context
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .assistant(response.text.clone());
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));
             }
@@ -576,11 +569,6 @@ fn settle_rejected(
     for held in std::iter::once(call).chain(remaining_calls) {
         let result = ToolResult::permission_denied(message.clone())
             .with_metadata(serde_json::json!({"approved_by":"denied","denied_by":"captain"}));
-        actor
-            .permission_context
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .tool(held, &result);
         append_tool_result(actor, &held.id, &result);
     }
 }
@@ -1236,7 +1224,7 @@ fn yolo_approval() -> serde_json::Value {
 }
 
 /// The Captain turned permission control off (`yolo`): the call is dispatched
-/// without the gate, the review, the role guard or the hard floor. What stays
+/// without rules, flows or the fixed floor. What stays
 /// is what is not an approval: the session's tool availability and the call's
 /// own arguments (`preflight`: malformed or missing arguments), and
 /// cancellation.
@@ -1315,32 +1303,8 @@ async fn execute_and_settle(
             append_tool_result(actor, &call.id, &result);
             Some(One::Settled)
         }
-        DispatchOutcome::ScriptChanged => Some(script_changed_request(
-            actor,
-            call,
-            destination.map(Path::to_path_buf),
-        )),
         DispatchOutcome::DestinationChanged => None,
     }
-}
-
-fn script_changed_request(
-    actor: &AgentActor,
-    call: &ToolCall,
-    destination: Option<PathBuf>,
-) -> One {
-    let mut request = PermissionRequest::new(
-        call,
-        Scope::Folder(actor.tool_context.workspace.clone()),
-        actor
-            .role
-            .as_ref()
-            .map(|role| role.id.as_str())
-            .unwrap_or("build"),
-    );
-    request.reason = "script changed since it was reviewed; approve this call once or deny".into();
-    request.requires_captain = true;
-    One::Ask(Box::new(request), destination)
 }
 
 /// Settles a call the gate refused: it is never dispatched, and the model
@@ -1370,31 +1334,23 @@ fn reject_call(
         name: &call.name,
         result: &result,
     });
-    actor
-        .permission_context
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .tool(call, &result);
     append_tool_result(actor, &call.id, &result);
 }
 
-/// Dispatches `call`. With a `destination` (the canonical file a `write` or
-/// `edit` was checked or approved for) the tool is handed that path, so the
-/// file written is the one reviewed, and only if the call's own path still
-/// resolves there and the file is not a link now. A changed native destination
-/// can be gated again; a script validation failure goes directly to the Captain
-/// as `ScriptChanged`, without another read to decide escalation.
+/// Dispatches `call`. With a `destination` (the canonical file the decision
+/// was made for) the tool opens exactly that file without following links;
+/// one replaced by a link or another kind of file is `DestinationChanged`,
+/// and the call is decided again.
 enum DispatchOutcome {
     Settled(ToolResult),
     DestinationChanged,
-    ScriptChanged,
 }
 
 async fn execute_call(
     actor: &AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
-    guard_note: Option<serde_json::Value>,
+    note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> DispatchOutcome {
     // The seam tests use to move a file between the check and the dispatch.
@@ -1407,19 +1363,11 @@ async fn execute_call(
             return DispatchOutcome::Settled(ToolResult::error("agent_write_scope", message));
         }
     }
-    if !still_resolves(&call.args, destination, &actor.tool_context) {
-        return DispatchOutcome::DestinationChanged;
-    }
     if actor.cancel.is_cancelled() {
         return DispatchOutcome::Settled(ToolResult::interrupted());
     }
-    if !super::permission_gate::script::still_matches(guard_note.as_ref()) {
-        return DispatchOutcome::ScriptChanged;
-    }
     observe(AgentEvent::PreCall {
-        permission_gate: guard_note
-            .as_ref()
-            .and_then(|note| note.get("permission_gate")),
+        permission_gate: note.as_ref().and_then(|note| note.get("permission_gate")),
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
@@ -1446,22 +1394,8 @@ async fn execute_call(
                 .find(|root| destination.starts_with(&root.path))
                 .cloned()
         },
-        script: None,
         yolo: actor.yolo,
     });
-    if let Some(binding) = guard_note.as_ref().and_then(|note| {
-        note.get("script_binding").or_else(|| {
-            note.get("permission_gate")
-                .and_then(|gate| gate.get("script_binding"))
-        })
-    }) {
-        cx.binding = Some(crate::tools::DispatchBinding {
-            destination: PathBuf::from(binding["path"].as_str().unwrap_or("")),
-            scratch: None,
-            script: Some(binding.clone()),
-            yolo: actor.yolo,
-        });
-    }
     let dispatched = actor
         .registry
         .dispatch(&call.name, args, actor.cancel.child_token(), &cx)
@@ -1475,7 +1409,7 @@ async fn execute_call(
                 "destination_changed",
                 format!("{} changed after it was checked; nothing was written, the call is checked again", path.display()),
             );
-            if let Some(note) = &guard_note {
+            if let Some(note) = &note {
                 merge_approval_metadata(&mut result.metadata, note);
             }
             observe(AgentEvent::PostCall {
@@ -1485,23 +1419,11 @@ async fn execute_call(
             });
             return DispatchOutcome::DestinationChanged;
         }
-        Err(ToolError::ScriptChanged) => {
-            let result = ToolResult::error(
-                "script_changed",
-                "script changed since it was reviewed; nothing was executed",
-            );
-            observe(AgentEvent::PostCall {
-                tool_call_id: &call.id,
-                name: &call.name,
-                result: &result,
-            });
-            return DispatchOutcome::ScriptChanged;
-        }
         Ok(result) => result,
         Err(e) => ToolResult::error("tool_error", e.to_string()),
     };
-    // The role guard let this call run: the durable `tool.post_call` says so.
-    if let Some(note) = guard_note {
+    // How the call was allowed: the durable `tool.post_call` says so.
+    if let Some(note) = note {
         merge_approval_metadata(&mut result.metadata, &note);
     }
     observe(AgentEvent::PostCall {
@@ -2803,7 +2725,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_symlink_retargeted_while_approval_waits_needs_a_fresh_approval() {
+    async fn an_answer_writes_the_file_it_was_shown_even_if_a_link_moves() {
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),
             registry_gated(),
@@ -2843,39 +2765,19 @@ mod tests {
         let outcome = resolve_permission(
             &mut actor,
             first.id,
-            PermissionDecision::AllowFolder,
-            &mut noop,
-        )
-        .await
-        .unwrap();
-        let RunOutcome::PermissionRequired(second) = outcome else {
-            panic!("a retargeted destination must ask again");
-        };
-        assert_ne!(second.id, first.id);
-        assert_eq!(second.scope, Scope::Folder(config.clone()));
-        assert!(!config.join("f.txt").exists());
-        assert!(!reviewed.join("f.txt").exists());
-        assert_eq!(tool_result_of(&actor, "w1"), None);
-        assert!(
-            !actor.grants.covers(
-                "build",
-                "write",
-                &Scope::Folder(reviewed.clone()),
-                &actor.tool_context
-            ),
-            "a request that did not run leaves no grant"
-        );
-
-        // Approving the fresh request runs it, on the destination it names.
-        resolve_permission(
-            &mut actor,
-            second.id,
             PermissionDecision::AllowOnce,
             &mut noop,
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read_to_string(config.join("f.txt")).unwrap(), "x");
+        // The answer is bound to the file the Captain was shown, opened without
+        // following links: the moved link cannot carry the write elsewhere.
+        assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+        assert_eq!(
+            std::fs::read_to_string(reviewed.join("f.txt")).unwrap(),
+            "x"
+        );
+        assert!(!config.join("f.txt").exists());
     }
 
     #[tokio::test]

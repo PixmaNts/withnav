@@ -65,9 +65,9 @@ impl LlmCommenter {
                     return "error: read target is outside the workspace".into();
                 }
                 if target.is_some_and(|path| {
-                    crate::agent::permission_gate::sensitive_read(path)
+                    crate::permission::floor::sensitive_read(path)
                         || crate::agent::permissions::resolve_read_target(path, &cx).is_ok_and(
-                            |resolved| crate::agent::permission_gate::sensitive_read(&resolved),
+                            |resolved| crate::permission::floor::sensitive_read(&resolved),
                         )
                 }) {
                     return "error: sensitive file requires captain review".into();

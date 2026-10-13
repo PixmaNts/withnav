@@ -31,7 +31,7 @@ const body: SettingsBody = {
     field("default_agent", "build", { default: "build" }),
     field("agents.build", { model: "omniroute/cc/claude-opus-5-5", variant: "high" }),
     field("agents.vigie", null),
-    field("permissions.automatic_review", null, { default: true }),
+    field("permissions.scratch_dirs", null, { default: ["/run/user/1000/withnav", "/tmp/withnav"] }),
     field("subagents.max_concurrent", 6, { default: 4 }),
     field("tui.theme", "nord-light", { applies: "live" }),
   ],
@@ -84,13 +84,13 @@ describe("sidebar summaries", () => {
     expect(summaries(body)).toEqual({
       gateways: "omniroute · inception",
       layers: "reflex · meta · cognition",
-      permissions: "automatic review on",
+      permissions: "2 scratch dirs",
       subagents: "max 6 per session",
       appearance: "Nord Light",
     });
   });
-  it("say when the review is off", () => {
-    expect(summaries({ ...body, fields: [field("permissions.automatic_review", false)] }).permissions).toBe("ask for every call");
+  it("say when there is no scratch directory", () => {
+    expect(summaries({ ...body, fields: [field("permissions.scratch_dirs", [])] }).permissions).toBe("no scratch dir");
   });
   it("show one folder for files that share it", () => {
     expect(fileLines(body.paths)).toEqual(["~/.config/withnav/", "config.json · models.json"]);

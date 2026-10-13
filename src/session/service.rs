@@ -47,7 +47,6 @@ use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
 use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::instructions::Instructions;
-use crate::agent::permissions::Grants;
 use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
 use crate::bus::command::Command;
@@ -61,9 +60,6 @@ use crate::bus::SessionBus;
 use crate::error::ServerError;
 use crate::provider::config::{load_models, ApiKind, ModelConfig};
 use crate::provider::openai::ChatMessage;
-
-/// The file in the data dir that keeps the "allow folder" grants of every workspace.
-const GRANTS_FILE: &str = "grants.json";
 
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
@@ -156,9 +152,7 @@ pub struct SelectedModel {
 
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
-    pub(crate) automatic_permission_review: bool,
     pub(crate) yolo: bool,
-    pub(crate) permission_review_timeout_secs: u64,
     pub(crate) scratch_choice: Vec<PathBuf>,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
@@ -166,7 +160,6 @@ pub(crate) struct EffectiveExecution {
 
 type ChildPolicy = (
     BTreeMap<String, bool>,
-    bool,
     bool,
     Option<String>,
     Vec<PathBuf>,
@@ -917,10 +910,9 @@ impl Service {
         }
         let mut allowed = BTreeMap::new();
         // A plan-owned child inherits plan's no-write capability ceiling even
-        // when its definition is full-access. We use the stricter capability
-        // ceiling rather than duplicating the advisory parent role guard: the
-        // child has no write/edit/bash dispatch path, so it cannot launder
-        // writes past the plan parent's restriction.
+        // when its definition is full-access: the child has no write/edit/bash
+        // dispatch path, so it cannot launder writes past the plan parent's
+        // restriction.
         for tool in [
             "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
         ] {
@@ -948,10 +940,6 @@ impl Service {
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
-                    inherited
-                        .execution
-                        .as_ref()
-                        .is_some_and(|execution| execution.automatic_permission_review),
                     self.history
                         .latest_captain_message(parent)
                         .await
@@ -2514,17 +2502,8 @@ impl Service {
         })?;
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
-            permission_review_timeout_secs: match inherited
-                .as_ref()
-                .and_then(|parent| parent.execution.as_ref())
-            {
-                Some(execution) => execution.permission_review_timeout_secs,
-                None => settings
-                    .permissions_review_timeout_secs()
-                    .map_err(ServerError::MalformedBody)?,
-            },
             scratch_choice: match &child_policy {
-                Some((_, _, _, _, choice, _)) => choice.clone(),
+                Some((_, _, _, choice, _)) => choice.clone(),
                 None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
@@ -2533,18 +2512,8 @@ impl Service {
                     }
                 },
             },
-            automatic_permission_review: match &child_policy {
-                Some((_, _, enabled, _, _, _)) => *enabled,
-                None => match settings.permissions_automatic_review() {
-                    Ok(enabled) => enabled,
-                    Err(error) => {
-                        tracing::warn!("automatic permission review disabled: {error}");
-                        false
-                    }
-                },
-            },
             yolo: match &child_policy {
-                Some((_, _, _, _, _, yolo)) => *yolo,
+                Some((_, _, _, _, yolo)) => *yolo,
                 None => match settings.yolo() {
                     Ok(yolo) => yolo,
                     Err(error) => {
@@ -2558,7 +2527,7 @@ impl Service {
         });
         let root_tools_enabled = child_policy.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
-            Some((allowed, read_only, _, _, _, _)) => build_child_actor(
+            Some((allowed, read_only, _, _, _)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
@@ -2575,11 +2544,6 @@ impl Service {
                 session_cancel.child_token(),
             ),
         };
-        // "Allow folder" answers are kept per workspace, across sessions. A
-        // subagent keeps its own in memory, as its parent's policy decides.
-        if child_policy.is_none() {
-            actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);
-        }
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
@@ -2607,23 +2571,13 @@ impl Service {
                 .reasoning_floor
                 .map_or(0, |floor| usize::try_from(floor).unwrap_or(usize::MAX))
                 .min(actor.transcript.len());
-            // The task the role guard judges against: the Captain's latest
-            // stored words, not a navigator wake.
+            // The task the watchdog judges progress against: the Captain's
+            // latest stored words, not a navigator wake.
             actor.captain_task = self
                 .history
                 .latest_captain_message(session_id)
                 .await
                 .map_err(ServerError::History)?;
-            let events = self
-                .history
-                .permission_context_events(session_id)
-                .await
-                .map_err(ServerError::History)?;
-            actor
-                .permission_context
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .restore(&events);
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
@@ -2641,18 +2595,12 @@ impl Service {
             data: Some(self.config.data_dir.clone()),
         };
         actor.permission_session = session_id.to_string();
-        actor.guard = super::guard::instinct_guard(
-            self.config.models_path.as_deref(),
-            &workspace,
-            &self.config.config_dir,
-        );
-        actor.permission_judge = super::guard::permission_judge(
+        actor.compaction_judge = compaction_judge(
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,
         );
         actor.compaction_catalog = Some(self.catalog.clone());
-        actor.automatic_permission_review = execution.automatic_permission_review;
         actor.yolo = execution.yolo;
         // Rules and decisions live in the shared database. Without it a deny
         // rule would silently vanish, so only yolo, which reads no rule, starts.
@@ -2670,21 +2618,14 @@ impl Service {
             }
             Err(error) => return Err(ServerError::PermissionDatabase(error.to_string())),
         }
-        actor.permission_review_timeout_secs = execution.permission_review_timeout_secs;
-        actor.protected_config_spelling = Some(self.config.config_dir.clone());
-        actor.protected_config_root =
-            crate::agent::permissions::resolve_protected_root(&self.config.config_dir).ok();
-        actor.protected_config_unresolved = actor.protected_config_root.is_none();
-        if actor.protected_config_unresolved {
-            crate::agent::scratch::warn_once(
-                "config root unresolved; native writes require captain approval",
-            );
-        }
+        // A scratch directory that contains, or sits inside, WithNav's own
+        // configuration would make it writable without the protected check.
+        let config_root =
+            crate::tools::validate_path(&[PathBuf::from("/")], &self.config.config_dir).ok();
         for path in &execution.scratch_choice {
-            if actor
-                .protected_config_root
+            if config_root
                 .as_ref()
-                .is_some_and(|root| root.starts_with(path) || path.starts_with(root))
+                .is_none_or(|root| root.starts_with(path) || path.starts_with(root))
             {
                 crate::agent::scratch::warn_once("scratch overlaps protected config directory");
                 continue;
@@ -2700,8 +2641,7 @@ impl Service {
                 Err(error) => crate::agent::scratch::warn_once(&error),
             }
         }
-        if let Some((_, _, _, captain_task, _, _)) = &child_policy {
-            actor.captain_request_inherited = true;
+        if let Some((_, _, captain_task, _, _)) = &child_policy {
             actor.captain_task = captain_task.clone();
         }
         if let Ok((models, _)) = crate::provider::config::load_models(
@@ -2761,35 +2701,12 @@ impl Service {
                 }
                 .await;
             }
-            let reviewer_present = crate::provider::layers::assigned(
-                &models,
-                &self.config.config_dir,
-                crate::provider::assignments::Layer::Metacognition,
-            )
-            .is_ok();
-            actor.permission_reviewer_unavailable = if reviewer_present {
-                "no key"
-            } else {
-                "metacognition layer unavailable"
-            };
-            actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
-                &models,
-                "metacognition",
-                &self.config.config_dir,
-                &self.catalog,
-                Arc::new(crate::provider::openai::ClientCache::new()),
-                self.config.data_dir.join("withnav.jsonl"),
-            )
-            .ok()
-            .map(|reviewer| {
-                Arc::new(reviewer) as Arc<dyn crate::agent::permission_gate::PermissionReviewer>
-            });
         }
         self.hooks.configure_actor(editor, &mut actor);
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
-        if let Some((allowed, _, _, _, _, _)) = &child_policy {
+        if let Some((allowed, _, _, _, _)) = &child_policy {
             actor
                 .registry
                 .retain(|name| allowed.get(name).copied().unwrap_or(false));
@@ -3061,16 +2978,8 @@ impl Service {
             } else {
                 None
             };
-        let mut runtime_status =
+        let runtime_status =
             runtime::RuntimeStatus::with_selection(AgentSelection::new(agents, role));
-        runtime_status.permission_context = actor.permission_context.clone();
-        // Share only live memory: a resumed root constructs a fresh grant.
-        if let Some(parent) = child_parent {
-            if let Some(handle) = self.handle(parent) {
-                runtime_status.config_session_grant = handle.status.config_session_grant.clone();
-                runtime_status.permission_context = handle.status.permission_context.clone();
-            }
-        }
         if let Some(parent) = child_parent.and_then(|parent| self.handle(parent)) {
             let captain = parent
                 .status
@@ -3457,3 +3366,23 @@ pub use resolve::CLEAR_WORD;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The session's Instinct layer as the judge compaction asks which old tool
+/// outputs still matter; `None` when Instinct is unavailable.
+fn compaction_judge(
+    models_path: Option<&std::path::Path>,
+    workspace: &std::path::Path,
+    config_dir: &std::path::Path,
+) -> Option<Arc<dyn crate::agent::compaction::judge::Judge>> {
+    let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
+        .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
+        .ok()?;
+    let client = crate::provider::layers::available_instinct(
+        &models,
+        config_dir,
+        Arc::new(crate::provider::openai::ClientCache::new()),
+    )?;
+    Some(Arc::new(crate::agent::compaction::judge::InstinctJudge(
+        client,
+    )))
+}

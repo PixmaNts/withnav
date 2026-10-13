@@ -4,15 +4,15 @@ use futures::future::BoxFuture;
 use std::sync::Mutex;
 
 struct Fake {
-    requests: Mutex<Vec<PermissionReviewInput>>,
+    requests: Mutex<Vec<JudgeInput>>,
     useful: f64,
     full: f64,
     fail: bool,
 }
-impl PermissionJudge for Fake {
+impl Judge for Fake {
     fn judge<'a>(
         &'a self,
-        input: &'a PermissionReviewInput,
+        input: &'a JudgeInput,
         _: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Answers, String>> {
         Box::pin(async move {

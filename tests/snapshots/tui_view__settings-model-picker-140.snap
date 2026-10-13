@@ -17,7 +17,7 @@ expression: snapshot
  build               │                                                                                  │ saved   omniroute/combo/deepsee…  
                      │  Metacognition · Beacon  chat · fast model                                       │ applies to new sessions and       
  4 Permissions       │▌   model          omniroute/combo/deepseek-v4-flash                  enter pick  │ subagents                         
- automatic review on │    varian┌────────── model for layers.metacognition · writes config.json ───────────┐                                
+ 2 scratch dirs      │    varian┌────────── model for layers.metacognition · writes config.json ───────────┐                                
                      │          │ ❯ filter models…                                                         │NDING · 0                       
  5 Subagents         │  Cognitio│ stages this assignment · writes config.json with ctrl+s                  │ changes. config.json is up to  
  max 4 per session   │    defaul│▌▾ omniroute                                                              │te.                             

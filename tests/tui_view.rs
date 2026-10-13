@@ -501,7 +501,6 @@ fn settings_view_state() -> (State, UiState) {
             "agents.build",
             json!({"model":"omniroute/combo/deepseek-v4-flash","variant":"high"}),
         ),
-        ("permissions.automatic_review", json!(true)),
         (
             "permissions.scratch_dirs",
             json!(["/run/user/1000/withnav", "/tmp/withnav"]),
@@ -573,12 +572,12 @@ fn settings_pending_two_changes() {
     let (mut s, ui) = settings_view_state();
     s.config.section = withnav::tui::config::Section::Subagents;
     s.config
-        .stage("permissions.automatic_review".into(), json!(false));
+        .stage("subagents.watchdog_interval_secs".into(), json!(60));
     s.config.stage("subagents.max_concurrent".into(), json!(5));
     let text = render("settings-pending-140", (140, 40), &s, &ui, &Editor::new());
     assert!(text.contains("● 2 unsaved"));
-    assert!(text.contains("- true"));
-    assert!(text.contains("+ false"));
+    assert!(text.contains("- 300"));
+    assert!(text.contains("+ 60"));
 }
 
 #[test]
@@ -2313,7 +2312,6 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
         id: "permission:R1".into(),
         kind: BlockKind::Permission(withnav::tui::state::PermissionPrompt {
             always_label: None,
-            allow_config_session: false,
             skill_script: None,
             child_session_id: None,
             request_id: "R1".into(),

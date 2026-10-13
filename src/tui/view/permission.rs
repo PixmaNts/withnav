@@ -13,7 +13,6 @@ const PREVIEW_LINES: usize = 6;
 pub(crate) fn test_prompt() -> PermissionPrompt {
     PermissionPrompt {
         always_label: None,
-        allow_config_session: false,
         skill_script: None,
         child_session_id: None,
         request_id: "R".into(),

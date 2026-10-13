@@ -20,6 +20,7 @@ use crate::agent::context::{estimate, message_tokens, Breakdown};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
 pub mod jev;
+pub mod judge;
 mod summary;
 
 pub use summary::{build_summary_request, prepare, validate_summary, PrepareInput, Prepared};

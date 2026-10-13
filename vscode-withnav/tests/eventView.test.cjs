@@ -9,9 +9,12 @@ const request = (extra = {}) => envelope("permission.requested", {
   scope: { kind: "folder", value: "/workspace" }, reason: "Full reason\nSecond line", ...extra,
 });
 
-test("config session answer is offered only by the protected request", () => {
-  assert.equal(eventView(request()).card.allowConfigSession, false);
-  assert.equal(eventView(request({ allow_config_session: true })).card.allowConfigSession, true);
+test("removed folder and session-wide answers are never offered", () => {
+  for (const extra of [{}, { allow_config_session: true }, { tool: "fetch" }]) {
+    const { card } = eventView(request(extra));
+    assert.equal("allowFolder" in card, false);
+    assert.equal("allowConfigSession" in card, false);
+  }
 });
 
 test("machine skill answer uses only the host skill binding", () => {
@@ -28,7 +31,6 @@ test("permission card preserves full reason, command, scope and ids", () => {
   assert.equal(card.reason, "Full reason\nSecond line");
   assert.equal(card.call, "echo first\nprintf second");
   assert.deepEqual(card.scope, { kind: "folder", value: "/workspace" });
-  assert.equal(card.allowFolder, false);
 });
 
 test("Always uses only the server label", () => {
@@ -78,12 +80,6 @@ test("durable replay reconstructs closed and still-open child permissions on the
   assert.equal(replay().open[0].childSessionId, "child");
 });
 
-  for (const tool of ["bash", "write", "edit", "read", "grep", "glob", "fetch"]) {
-  test(`reusable ${tool} grant follows server offer`, () => {
-    assert.equal(eventView(request({ tool })).card.allowFolder, tool === "fetch");
-    assert.equal(eventView(request({ tool, agent: "plan" })).card.allowFolder, false);
-  });
-}
 
 test("write and edit previews bound content independently with exact UTF-8 omissions", () => {
   const content = "é".repeat(2500);

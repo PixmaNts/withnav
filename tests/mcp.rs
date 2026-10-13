@@ -21,7 +21,7 @@ async fn ready(manager: &McpManager) {
         }
     })
     .await
-    .expect("fixture must initialize");
+    .unwrap_or_else(|_| panic!("fixture must initialize: {:?}", manager.statuses()));
 }
 
 fn registry(manager: &McpManager) -> Registry {

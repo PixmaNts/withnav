@@ -440,6 +440,12 @@ pub struct Service {
 }
 
 impl Service {
+    /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
+        self.mcp.statuses()
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_delivery_commit(&self, ordinal: usize) {

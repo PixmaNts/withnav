@@ -1153,9 +1153,9 @@ Calls have cancellation notifications and configured deadlines (`mcp_timeout`), 
 output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content is pretty JSON
 when no text exists; resource links include URI/name; image/audio content is a placeholder.
 `isError` becomes `mcp_tool_error` with the server as `plugin_id`. MCP result text remains
-untrusted and grants no authorization. Merge this delivery only after permission cutover:
-until then MCP tools bypass the old gate. After cutover the ordinary rule model applies
-without MCP-specific exceptions (no rule = ask). Yolo skips review.
+untrusted and grants no authorization. MCP uses the ordinary permission rule model without
+MCP-specific exceptions (no rule = ask). Always saves a global tool / `*` allow rule.
+Yolo skips review.
 
 Version 0.1 does not require:
 

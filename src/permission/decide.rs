@@ -220,31 +220,11 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
     // 2. The fixed floor. A credential, or a path that cannot be resolved the
     // way execution would resolve it, asks and nothing can allow it.
     let floor = floor::check(input.call, input.commands, input.cx);
-    match &floor {
-        Floor::Credential(target) => {
-            trace.floor = Some(format!("credential: {target}"));
-            return Ok(ask(
-                format!("{target} is a credential; WithNav always asks before touching one"),
-                Vec::new(),
-                trace,
-            ));
-        }
-        Floor::Unresolved(target) => {
-            trace.floor = Some(format!("unresolved: {target}"));
-            return Ok(ask(
-                format!("{target} cannot be resolved, so WithNav cannot tell what it names"),
-                Vec::new(),
-                trace,
-            ));
-        }
-        Floor::Protected(target) => trace.floor = Some(format!("protected: {target}")),
-        Floor::None => {}
-    }
 
     // 3. Reads inside the readable roots need no rule and no flow. They still
     // go through the loop check below, so a model re-reading the same file
     // forever is stopped.
-    let free_read = input.store.is_some() && reads_inside_roots(input);
+    let free_read = input.store.is_some() && floor == Floor::None && reads_inside_roots(input);
 
     // 4. Rules.
     let rules = if free_read {
@@ -271,6 +251,27 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
             },
             trace,
         });
+    }
+
+    match &floor {
+        Floor::Credential(target) => {
+            trace.floor = Some(format!("credential: {target}"));
+            return Ok(ask(
+                format!("{target} is a credential; WithNav always asks before touching one"),
+                Vec::new(),
+                trace,
+            ));
+        }
+        Floor::Unresolved(target) => {
+            trace.floor = Some(format!("unresolved: {target}"));
+            return Ok(ask(
+                format!("{target} cannot be resolved, so WithNav cannot tell what it names"),
+                Vec::new(),
+                trace,
+            ));
+        }
+        Floor::Protected(target) => trace.floor = Some(format!("protected: {target}")),
+        Floor::None => {}
     }
 
     // A protected write needs the protected check, and only it: rules, bypass
@@ -934,6 +935,20 @@ mod tests {
         let decision = f.decide_full(Control::Bypass, &write, 1, &flows);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
         assert_eq!((flows.check_calls.get(), flows.flow_calls.get()), (1, 0));
+    }
+
+    #[test]
+    fn credential_deny_precedes_floor_question() {
+        let f = fixture();
+        f.add("read", "*", Effect::Deny);
+        let target = f.root().join("home/.ssh/id_ed25519").display().to_string();
+        for control in [Control::Normal, Control::Bypass] {
+            let decision = f.decide(control, &file("read", &target));
+            assert!(
+                matches!(decision.verdict, Verdict::Deny { .. }),
+                "{decision:?}"
+            );
+        }
     }
 
     #[test]

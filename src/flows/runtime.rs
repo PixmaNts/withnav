@@ -261,6 +261,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checked_protected_call_keeps_its_protected_identity() {
+        let mut call = permission_call(PathBuf::from("/project"), true);
+        call.protected_check = Some(ProtectedCheck::Passed);
+        let (event, _, _) =
+            FlowRuntime::permission_event(call, RuleResult::None, ContextSnapshot::default());
+        assert_eq!(event.payload["protected"], json!(true));
+        assert_eq!(event.payload["protected_checked"], json!(true));
+    }
+
+    #[tokio::test]
     async fn permission_aggregation_is_separate_from_legacy_hook() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
@@ -1603,7 +1613,16 @@ impl FlowRuntime {
         Vec<tokio::task::JoinHandle<RunOutcome>>,
         Vec<PermissionFlowAnswer>,
     ) {
-        self.store.refresh();
+        // A pending reload reads flow validations from the permission
+        // database and may wait on the reload marker held by another thread:
+        // on the blocking pool, never on a runtime thread.
+        let store = self.store.clone();
+        if tokio::task::spawn_blocking(move || store.refresh())
+            .await
+            .is_err()
+        {
+            tracing::warn!("flow refresh task failed; evaluating the current snapshot");
+        }
         let snapshot = self.store.snapshot();
         let started = Instant::now();
         let mut blocking = futures_util::stream::FuturesUnordered::new();
@@ -1910,10 +1929,7 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.delegation".into(), delegation);
-        // With the host's answer in hand the flows judge the ordinary
-        // question; the protected branch is not walked a second time.
-        let walk_protected = ctx.protected && ctx.protected_check.is_none();
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":walk_protected});
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),
@@ -2191,5 +2207,108 @@ mod application_status_tests {
             application_status(&Err(ApplyError("session stopped".into()))).0,
             "failed"
         );
+    }
+
+    /// A reload marker newer than the store's view makes an evaluation reload,
+    /// and that reload reads flow validations from the permission database.
+    /// With the database locked and the reload failing, and with a second
+    /// refresh running at the same time, an unrelated task on the same
+    /// single thread must keep running.
+    #[test]
+    fn a_reload_on_a_locked_database_does_not_stall_the_runtime() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (config, data) = (dir.path().join("config"), dir.path().join("data"));
+            let writer = FlowStore::with_data(dir.path().into(), config.clone(), data.clone());
+            let store = Arc::new(FlowStore::with_data(
+                dir.path().into(),
+                config.clone(),
+                data.clone(),
+            ));
+            // A saved global flow forces the reload to read its validation.
+            writer
+                .save(
+                    "guard",
+                    crate::flows::store::Location::Global,
+                    None,
+                    super::super::store::Content::Toml {
+                        toml: "[flow]\nversion=1\nname='guard'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='no_objection'\n[node.params]\n".into(),
+                        templates: BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+            // Validation reads fail on a broken table: every reload fails.
+            writer.reload().unwrap();
+            crate::permission::store::PermissionStore::open(&data)
+                .unwrap()
+                .db()
+                .execute_batch("DROP TABLE validations; CREATE TABLE validations (invalid TEXT)")
+                .unwrap();
+            writer.reload().unwrap_err();
+            let runtime = Arc::new(FlowRuntime::new(
+                store.clone(),
+                Arc::new(crate::flows::client::UnavailableClient),
+                Arc::new(NoEffects),
+            ));
+            let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let ticker = tokio::spawn({
+                let ticks = ticks.clone();
+                async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        ticks.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            });
+            let (locked, is_locked) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn({
+                let (ticks, data) = (ticks.clone(), data.clone());
+                move || {
+                    // Out of WAL, an exclusive lock blocks readers too, and
+                    // every store open waits to switch the journal back.
+                    let db = rusqlite::Connection::open(data.join("withnav.db")).unwrap();
+                    db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+                    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+                    locked.send(()).unwrap();
+                    let before = ticks.load(Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(600));
+                    let during = ticks.load(Ordering::SeqCst) - before;
+                    db.execute_batch("COMMIT").unwrap();
+                    during
+                }
+            });
+            is_locked.recv().unwrap();
+            // A concurrent refresh on another thread holds the marker while
+            // it waits on the database.
+            let concurrent = std::thread::spawn({
+                let store = store.clone();
+                move || store.refresh()
+            });
+            let event = || Event {
+                trigger: "tool.pre_call".into(),
+                payload: json!({}),
+            };
+            for _ in 0..2 {
+                runtime
+                    .evaluate(event(), ContextSnapshot::default(), CancellationToken::new())
+                    .await;
+            }
+            let during = tokio::task::spawn_blocking(move || holder.join().unwrap())
+                .await
+                .unwrap();
+            tokio::task::spawn_blocking(move || concurrent.join().unwrap())
+                .await
+                .unwrap();
+            ticker.abort();
+            assert!(during >= 40, "the runtime stalled: {during} ticks");
+            assert!(store
+                .snapshot()
+                .values()
+                .all(|flow| flow.location == crate::flows::store::Location::Builtin));
+        });
     }
 }

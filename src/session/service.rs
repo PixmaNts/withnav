@@ -122,6 +122,9 @@ pub struct SessionHandle {
     pub status: Arc<runtime::RuntimeStatus>,
     /// Owner of this session when it is a background child.
     pub parent_session_id: Option<SessionId>,
+    /// The MCP tools frozen into this session's registry when it was built; a child
+    /// inherits exactly this inventory.
+    pub(crate) mcp_tools: Arc<Vec<crate::mcp::McpTool>>,
 }
 
 pub use crate::bus::event::{SkillEntry, SkillsBody};
@@ -164,6 +167,7 @@ type ChildPolicy = (
     Option<String>,
     Vec<PathBuf>,
     bool,
+    Arc<Vec<crate::mcp::McpTool>>,
 );
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -316,6 +320,7 @@ struct PreparedSession {
     expired: Vec<(Ulid, String)>,
     save_late: bool,
     child_parent: Option<SessionId>,
+    mcp_tools: Arc<Vec<crate::mcp::McpTool>>,
 }
 
 /// Frozen `GET /v1/sessions/:id` body.
@@ -439,6 +444,12 @@ impl Service {
     #[doc(hidden)]
     pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
         self.mcp.statuses()
+    }
+
+    /// See [`crate::mcp::McpManager::wait_until_settled`]. Only `nav run` waits:
+    /// session creation in `nav serve` never blocks on MCP servers.
+    pub async fn wait_for_mcp(&self) {
+        self.mcp.wait_until_settled().await;
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -924,12 +935,13 @@ impl Service {
         // when its definition is full-access: the child has no write/edit/bash
         // dispatch path, so it cannot launder writes past the plan parent's
         // restriction.
-        for tool in [
-            "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
-        ] {
-            let enabled = child_tool_allowed(tool, &definition, &parent_role);
-            policy.insert(tool.to_string(), enabled);
-            allowed.insert(tool.to_string(), enabled);
+        // Every tool the registry offers, MCP tools included, under the same
+        // child and parent restrictions as the native ones.
+        let inherited_mcp = parent_handle.mcp_tools.clone();
+        for tool in super::actor::admissible_tools(&inherited_mcp) {
+            let enabled = child_tool_allowed(&tool, &definition, &parent_role);
+            policy.insert(tool.clone(), enabled);
+            allowed.insert(tool, enabled);
         }
         let incarnation = parent_handle.incarnation;
         drop(_spawn_lock);
@@ -964,6 +976,7 @@ impl Service {
                         .execution
                         .as_ref()
                         .is_some_and(|execution| execution.yolo),
+                    inherited_mcp,
                 )),
                 Some(parent),
                 Some(inherited),
@@ -2516,7 +2529,7 @@ impl Service {
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
             scratch_choice: match &child_policy {
-                Some((_, _, _, choice, _)) => choice.clone(),
+                Some((_, _, _, choice, _, _)) => choice.clone(),
                 None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
@@ -2526,7 +2539,7 @@ impl Service {
                 },
             },
             yolo: match &child_policy {
-                Some((_, _, _, _, yolo)) => *yolo,
+                Some((_, _, _, _, yolo, _)) => *yolo,
                 None => match settings.yolo() {
                     Ok(yolo) => yolo,
                     Err(error) => {
@@ -2539,8 +2552,14 @@ impl Service {
             api_key: api_key.clone(),
         });
         let root_tools_enabled = child_policy.is_none() && role.mode.is_primary();
+        // One frozen MCP inventory per session: a child's is its parent's, and a
+        // fresh root session's is what is ready now.
+        let mcp_tools = match &child_policy {
+            Some((_, _, _, _, _, inherited)) => inherited.clone(),
+            None => Arc::new(self.mcp.snapshot()),
+        };
         let mut actor = match &child_policy {
-            Some((allowed, read_only, _, _, _)) => build_child_actor(
+            Some((allowed, read_only, _, _, _, _)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
@@ -2548,7 +2567,7 @@ impl Service {
                 session_cancel.child_token(),
                 allowed.clone(),
                 *read_only,
-                &self.mcp,
+                &mcp_tools,
             ),
             None => build_actor(
                 &workspace,
@@ -2556,7 +2575,7 @@ impl Service {
                 resolved,
                 api_key,
                 session_cancel.child_token(),
-                &self.mcp,
+                &mcp_tools,
             ),
         };
         if root_tools_enabled && role.mode.is_primary() {
@@ -2619,13 +2638,27 @@ impl Service {
         actor.yolo = execution.yolo;
         // An unavailable database is an explicit degraded mode: no rules can
         // be read or saved, but the floor and permission flows still apply.
-        match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
-            Ok(store) => {
-                if resumed.is_some() {
-                    if let Err(error) = store.expire_pending(&session_id.to_string()) {
+        // Opened on the blocking pool: the database may wait on another
+        // connection's write for its busy timeout.
+        let opened = {
+            let data_dir = self.config.data_dir.clone();
+            let expire = resumed.is_some().then(|| session_id.to_string());
+            tokio::task::spawn_blocking(move || {
+                let store = crate::permission::store::PermissionStore::open(&data_dir)?;
+                if let Some(session) = expire {
+                    if let Err(error) = store.expire_pending(&session) {
                         tracing::warn!(%error, "pending permission decisions not expired");
                     }
                 }
+                Ok(store)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(crate::permission::store::Error::Invalid(error.to_string()))
+            })
+        };
+        match opened {
+            Ok(store) => {
                 actor.permission_store = Some(Arc::new(store));
             }
             Err(error) => {
@@ -2661,7 +2694,7 @@ impl Service {
                 Err(error) => crate::agent::scratch::warn_once(&error),
             }
         }
-        if let Some((_, _, captain_task, _, _)) = &child_policy {
+        if let Some((_, _, captain_task, _, _, _)) = &child_policy {
             actor.captain_task = captain_task.clone();
         }
         if let Ok((models, _)) = crate::provider::config::load_models(
@@ -2726,7 +2759,7 @@ impl Service {
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
-        if let Some((allowed, _, _, _, _)) = &child_policy {
+        if let Some((allowed, _, _, _, _, _)) = &child_policy {
             actor
                 .registry
                 .retain(|name| allowed.get(name).copied().unwrap_or(false));
@@ -2763,6 +2796,7 @@ impl Service {
             expired,
             save_late,
             child_parent,
+            mcp_tools,
         })
     }
 
@@ -2815,6 +2849,7 @@ impl Service {
             expired,
             save_late: _,
             child_parent,
+            mcp_tools,
         } = prepared;
         let next_seq = resumed
             .as_ref()
@@ -3175,10 +3210,16 @@ impl Service {
             variant: selected,
             offer: Arc::new(offered),
         }));
-        let flows = child_parent
-            .is_none()
-            .then(|| self.flows.runtime(&workspace))
-            .flatten();
+        // A new workspace entry loads its flows and reads their validations
+        // from the permission database: built on the blocking pool.
+        let runtime = {
+            let (host, workspace) = (self.flows.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || host.runtime(&workspace))
+                .await
+                .ok()
+                .flatten()
+        };
+        let flows = child_parent.is_none().then(|| runtime.clone()).flatten();
         actor.tool_flows = match &flows {
             Some(runtime) => Some(super::flows::hook(
                 runtime,
@@ -3189,7 +3230,7 @@ impl Service {
             )),
             // A subagent's calls are judged by the same permission flows as
             // its parent's; flow effects stay with the root session.
-            None => self.flows.runtime(&workspace).map(|runtime| {
+            None => runtime.map(|runtime| {
                 runtime.tool_hook_with_effects(
                     session_id.to_string(),
                     selected_model.clone(),
@@ -3241,6 +3282,7 @@ impl Service {
             selected: selected_model,
             status,
             parent_session_id: child_parent,
+            mcp_tools,
         };
         let sender = SessionSender::new(session_id, handle.clone());
         super::flows::settled(handle.clone(), session_id.to_string()).await;

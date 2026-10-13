@@ -34,6 +34,12 @@ pub(crate) struct Server {
 }
 
 impl Server {
+    pub(crate) fn secrets(&self) -> Vec<String> {
+        self.secrets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub(crate) fn redact(&self, text: &str) -> String {
         redaction::redact(
             text,
@@ -173,6 +179,29 @@ impl McpManager {
             status
         }));
         statuses
+    }
+
+    /// Waits until every enabled server is ready or failed, at most the largest configured
+    /// startup timeout (capped at 30 s). For one-shot callers whose single session would
+    /// otherwise freeze an inventory missing a server that is about to be ready.
+    pub async fn wait_until_settled(&self) {
+        let budget = self
+            .servers
+            .iter()
+            .filter(|s| s.config.enabled)
+            .map(|s| s.config.startup_timeout_ms)
+            .max()
+            .unwrap_or(0)
+            .min(30_000);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(budget);
+        while self
+            .servers
+            .iter()
+            .any(|s| s.status.lock().unwrap_or_else(|e| e.into_inner()).state == "starting")
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     pub async fn shutdown(&self) {

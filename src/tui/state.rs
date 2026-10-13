@@ -92,8 +92,10 @@ pub struct PermissionPrompt {
     pub reason: String,
     /// `None` while open; then `allow_once`, `allow_folder`, `deny`, `cancelled` or `expired`.
     pub resolution: Option<String>,
-    /// What a denial told the model.
+    /// What a denial told the model, or why an "Always" answer was not saved.
     pub message: Option<String>,
+    /// False when an "Always" answer could not save its rules: the call ran once.
+    pub always_saved: bool,
     /// The server said the request was no longer waiting (409) before its `permission.resolved`
     /// arrived: it takes no answer, and how it ended is not known yet.
     pub stale: bool,

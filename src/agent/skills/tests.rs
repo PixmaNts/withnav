@@ -27,6 +27,7 @@ fn skill_authority_and_selection_queue_follow_the_logical_turn() {
     // Permission and compaction continuations leave the logical generation intact.
     assert_eq!(actor.skill_turn_generation, generation);
     actor.end_skill_turn();
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
     assert!(actor.active_validated_skill().is_none());
     assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
     actor.push_user_with_provenance("wake", crate::provider::openai::UserProvenance::Navigator);
@@ -502,16 +503,10 @@ async fn equal_priority_duplicates_are_ambiguous() {
         .count();
     assert_eq!(ambiguous, 2);
 
-    let (_, cx) = context(&fx);
-    let res = call(&skills, "twin", &cx).await;
-    let err = res.error.expect("error");
-    assert_eq!(err.code, "skill_ambiguous");
-    assert!(err
-        .message
-        .contains(&a.canonicalize().unwrap().display().to_string()));
-    assert!(err
-        .message
-        .contains(&b.canonicalize().unwrap().display().to_string()));
+    let err = skills.snapshot("twin").unwrap_err();
+    assert!(err.contains("skill_ambiguous"));
+    assert!(err.contains(&a.canonicalize().unwrap().display().to_string()));
+    assert!(err.contains(&b.canonicalize().unwrap().display().to_string()));
 }
 
 // Given a skill with disable-model-invocation: true
@@ -530,10 +525,10 @@ async fn disabled_skills_stay_out_of_the_catalog() {
     let skills = load(&fx);
     assert_eq!(catalog_lines(&skills), ["on — Visible."]);
     let (_, cx) = context(&fx);
-    assert_eq!(
-        call(&skills, "off", &cx).await.error.unwrap().code,
-        "skill_disabled"
-    );
+    assert!(skills
+        .snapshot("off")
+        .unwrap_err()
+        .contains("skill_disabled"));
     assert_eq!(call(&skills, "on", &cx).await.status, ToolStatus::Ok);
 }
 
@@ -785,20 +780,7 @@ async fn call(skills: &Skills, name: &str, cx: &ToolContext) -> crate::tools::To
         Ok(snapshot) => {
             skills.validation.approve(&snapshot, false).unwrap();
         }
-        Err(error) => {
-            let code = if error.contains("skill_unknown") {
-                "skill_unknown"
-            } else if error.contains("skill_disabled") {
-                "skill_disabled"
-            } else if error.contains("skill_ambiguous") {
-                "skill_ambiguous"
-            } else if error.contains("exceeds 32 KiB") {
-                "skill_oversized"
-            } else {
-                "skill_unreadable"
-            };
-            return crate::tools::ToolResult::error(code, error);
-        }
+        Err(_) => return skills.load_listed(name).await,
     }
     let mut registry = Registry::new();
     registry.register(Box::new(SkillTool::new(Arc::new(skills.clone()))));
@@ -852,8 +834,13 @@ async fn the_tool_takes_the_exact_id_only() {
     let skills = load(&fx);
     let (_, cx) = context(&fx);
     for wrong in ["ask", "ASK-MATT", "ask-matt ", "", "../a", "ask-*"] {
-        let res = call(&skills, wrong, &cx).await;
-        assert_eq!(res.error.expect("error").code, "skill_unknown", "{wrong:?}");
+        assert!(
+            skills
+                .snapshot(wrong)
+                .unwrap_err()
+                .contains("skill_unknown"),
+            "{wrong:?}"
+        );
     }
     let mut registry = Registry::new();
     registry.register(Box::new(SkillTool::new(Arc::new(skills))));
@@ -885,9 +872,10 @@ async fn the_body_cap_is_an_explicit_error_not_a_cut() {
     let skills = load(&fx);
     let (_, cx) = context(&fx);
     assert_eq!(call(&skills, "big", &cx).await.status, ToolStatus::Ok);
-    let res = call(&skills, "bigger", &cx).await;
-    assert_eq!(res.error.expect("error").code, "skill_oversized");
-    assert!(!res.output.is_empty());
+    assert!(skills
+        .snapshot("bigger")
+        .unwrap_err()
+        .contains("exceeds 32 KiB"));
 }
 
 #[tokio::test]

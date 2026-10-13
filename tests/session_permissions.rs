@@ -1397,3 +1397,39 @@ async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again(
         bodies[2]
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_always_that_cannot_be_saved_says_so_and_runs_once() {
+    let env = Env::new();
+    let target = env.ws.join("once.txt");
+    let provider = provider(vec![one_write("w1", &target), done("finished")]).await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write once.txt").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    rusqlite::Connection::open(env.root.join("data/withnav.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse_rules BEFORE INSERT ON permission_rules
+             BEGIN SELECT RAISE(ABORT, 'rules refused' || char(10) || 'token=acme_live_Zq81kPw2 at /home/user/.secret'); END;",
+        )
+        .unwrap();
+    let (status, body) = answer(
+        &router,
+        id,
+        &request_id(&requested[0]),
+        json!({"decision":"allow_always"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_events(&state, id, "task.done", 1).await;
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w1");
+    let resolved = events(&state, id, "permission.resolved").await;
+    let payload = &resolved[0].payload;
+    assert_eq!(payload["resolution"], "allow_always");
+    assert_eq!(payload["always_saved"], false, "{payload}");
+    let error = payload["always_error"].as_str().unwrap();
+    assert_eq!(error, "rule write rejected");
+    state.close_session(id).await.unwrap();
+}

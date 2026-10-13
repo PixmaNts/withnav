@@ -297,10 +297,7 @@ async fn a_credential_read_asks_under_bypass_and_bypass_cannot_answer_it() {
     .is_err());
     assert!(actor.has_pending());
     assert_eq!(flows.asked(), 0);
-    assert!(decisions(&actor)[0]
-        .command_matches
-        .as_array()
-        .is_none_or(|m| m.is_empty()));
+    assert!(decisions(&actor)[0].command_matches.is_array());
 }
 
 #[tokio::test]
@@ -690,6 +687,13 @@ async fn a_stop_cancels_the_pending_decision() {
         RunOutcome::PermissionRequired(_)
     ));
     actor.interrupt_pending_permission();
+    // The cancel is written off the runtime thread.
+    for _ in 0..200 {
+        if decisions(&actor)[0].outcome == Outcome::Cancelled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     assert_eq!(decisions(&actor)[0].outcome, Outcome::Cancelled);
 }
 
@@ -927,6 +931,8 @@ async fn rejecting_a_skill_validation_settles_every_held_sibling() {
         panic!("an unvalidated skill asks");
     };
     assert_eq!(request.tool, "skill");
+    assert_eq!(actor.skills.validation.snapshots.lock().unwrap().len(), 1);
+    assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
     let outcome = resolve_permission(
         &mut actor,
         request.id,
@@ -939,6 +945,7 @@ async fn rejecting_a_skill_validation_settles_every_held_sibling() {
     .unwrap();
     assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
     assert!(!ws.join("a.txt").exists(), "the held write never ran");
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
     for id in ["s1", "w1"] {
         let text = tool_result_of(&actor, id).unwrap();
         assert!(text.contains("not that skill"), "{id}: {text}");
@@ -1061,6 +1068,68 @@ fn skill_rows(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision>
         .into_iter()
         .filter(|row| row.tool == "skill")
         .collect()
+}
+
+#[tokio::test]
+async fn rule_denied_skill_snapshot_is_released_at_turn_end() {
+    let mut actor = actor_with_skill();
+    let snapshot = actor.skills.snapshot("helper").unwrap();
+    actor.skills.validation.approve(&snapshot, true).unwrap();
+    actor.end_skill_turn();
+    add_rule(&actor, "skill", "helper", Effect::Deny);
+    script(
+        &mut actor,
+        vec![
+            owned(&[("s1".into(), "skill".into(), json!({"name":"helper"}))]),
+            done("understood"),
+        ],
+    )
+    .await;
+    assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
+    assert_eq!(skill_rows(&actor)[0].outcome, Outcome::Denied);
+    assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn yolo_skill_load_records_history() {
+    let mut actor = actor_with_skill_and_flow("deny");
+    actor.yolo = true;
+    script(
+        &mut actor,
+        vec![
+            owned(&[("s1".into(), "skill".into(), json!({"name":"helper"}))]),
+            done("ok"),
+        ],
+    )
+    .await;
+    assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
+    let rows = skill_rows(&actor);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].approved_by.as_deref(), Some("yolo"));
+}
+
+#[tokio::test]
+async fn flow_notes_reach_requests_and_model_denials() {
+    for mode in ["ask", "deny"] {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new(mode))));
+        script(
+            &mut actor,
+            vec![owned(&[bash("b1", "echo hi")]), done("ok")],
+        )
+        .await;
+        let outcome = run(&mut actor).await;
+        if mode == "ask" {
+            let RunOutcome::PermissionRequired(request) = outcome else {
+                panic!("must ask")
+            };
+            assert!(request.reason.contains("flow asks"), "{}", request.reason);
+        } else {
+            assert!(tool_result_of(&actor, "b1")
+                .unwrap()
+                .contains("flow denied"));
+        }
+    }
 }
 
 #[tokio::test]
@@ -1326,4 +1395,116 @@ async fn unavailable_rules_still_stop_identical_calls_under_bypass() {
     assert_eq!(request.tool_call_id, "b3");
     assert!(request.requires_captain && request.always_label.is_none());
     assert!(request.reason.contains("3 times"));
+}
+
+/// Makes every new rule fail to save, with a secret in the database's error.
+fn refuse_rule_writes(actor: &AgentActor) {
+    actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .db()
+        .execute_batch(
+            "CREATE TRIGGER refuse_rules BEFORE INSERT ON permission_rules
+             BEGIN SELECT RAISE(ABORT, 'rules refused' || char(10) || 'token=acme_live_Zq81kPw2 at /home/user/.secret'); END;",
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
+    let flows = Arc::new(FakeFlows::new("apply"));
+    let mut actor = actor_with(Some(flows));
+    script(
+        &mut actor,
+        vec![owned(&[bash("p1", "git push origin x")]), done("pushed")],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("no rule asks");
+    };
+    refuse_rule_writes(&actor);
+    let mut approved = Vec::new();
+    let outcome = resolve_permission(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowAlways,
+        &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                approved.push(result.metadata["approved_by"].clone());
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "pushed"));
+    assert_eq!(approved, [json!("captain")], "the call runs once");
+    assert!(actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .list(&RuleFilter::default())
+        .unwrap()
+        .is_empty());
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+    let answer = rows[0].captain_answer.as_ref().unwrap();
+    assert_eq!(answer["decision"], "allow_always");
+    assert_eq!(answer["always_saved"], false, "{answer}");
+    let error = answer["always_error"].as_str().unwrap();
+    assert_eq!(error, "rule write rejected");
+}
+
+/// A decision that waits on a locked `withnav.db` must not stall the runtime:
+/// on one thread, an unrelated task keeps running while the decision waits.
+#[test]
+fn a_locked_permission_database_does_not_stall_the_runtime() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new("apply"))));
+        let data = actor.permission_dirs.data.clone().unwrap();
+        actor.permission_store = Some(Arc::new(
+            crate::permission::store::PermissionStore::open(&data).unwrap(),
+        ));
+        script(&mut actor, vec![owned(&[bash("b1", "echo hi")])]).await;
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = tokio::spawn({
+            let ticks = ticks.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+        let (locked, is_locked) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn({
+            let ticks = ticks.clone();
+            move || {
+                let connection = rusqlite::Connection::open(data.join("withnav.db")).unwrap();
+                connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+                locked.send(()).unwrap();
+                let before = ticks.load(Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                let during = ticks.load(Ordering::SeqCst) - before;
+                connection.execute_batch("COMMIT").unwrap();
+                during
+            }
+        });
+        is_locked.recv().unwrap();
+        let outcome = run(&mut actor).await;
+        assert!(
+            matches!(outcome, RunOutcome::PermissionRequired(_)),
+            "{outcome:?}"
+        );
+        let during = holder.join().unwrap();
+        ticker.abort();
+        // About 120 ticks fit in the hold; a blocked runtime shows almost none.
+        assert!(during >= 40, "the runtime stalled: {during} ticks");
+        assert_eq!(decisions(&actor)[0].outcome, Outcome::Pending);
+    });
 }

@@ -223,3 +223,14 @@ test("Captain and Nav provenance retain human and wake rendering for new session
   }
   assert.equal(eventView(envelope("message.received", { source: "nav", content: "wake" })).author, "navigator");
 });
+
+test("an Always answer that saved nothing says it ran once", () => {
+  const failed = eventView(envelope("permission.resolved", { request_id: "R", resolution: "allow_always", always_saved: false, always_error: "database is locked" }));
+  assert.equal(failed.resolution, "allow_always");
+  assert.equal(failed.message, "database is locked");
+  assert.equal(failed.alwaysSaved, false);
+  assert.equal(permissionOutcome(failed.resolution, failed.message, failed.alwaysSaved), "Always not saved: database is locked; ran once");
+  const saved = eventView(envelope("permission.resolved", { request_id: "R", resolution: "allow_always" }));
+  assert.equal(saved.alwaysSaved, undefined);
+  assert.equal(permissionOutcome(saved.resolution, saved.message, saved.alwaysSaved), "Allowed always");
+});

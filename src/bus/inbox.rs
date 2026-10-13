@@ -760,6 +760,7 @@ mod tests {
                 decision_id: None,
                 repeats: 1,
                 skill_rule: false,
+                always_saved: None,
             }),
             call: crate::provider::ToolCall {
                 id: "w1".into(),

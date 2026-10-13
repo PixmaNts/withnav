@@ -135,7 +135,7 @@ nav permissions revoke-validation <id>
 | `history` | The last permission decisions: call, rule, flow verdict, your answer, outcome. |
 | `validate flow` | Validate the current content of a global or workspace flow, so it can run. Reload flows to apply. Skills are validated from the conversation, when they are first loaded. |
 | `validations` | Every validation of a flow or a skill, with its content hash. |
-| `revoke-validation` | Revoke a validation; the flow or skill asks again at its next use. |
+| `revoke-validation` | Revoke a validation. For a flow, revocation takes effect at the next flow reload; skills require validation again at their next use. |
 
 See [Permissions](permissions.md).
 

@@ -129,7 +129,9 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
     }
     case "permission.resolved":
       return typeof p.request_id === "string" ? { type: "permissionState", requestId: p.request_id,
-        resolution: String(p.resolution ?? "expired"), message: typeof p.message === "string" ? p.message : undefined } : undefined;
+        resolution: String(p.resolution ?? "expired"),
+        message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
+        ...(p.always_saved === false ? { alwaysSaved: false as const } : {}) } : undefined;
     case "agent.yield": {
       const id = `pause:${envelope.seq}`;
       const token = pauseToken(p.details?.pause_token);
@@ -172,9 +174,9 @@ export class ConversationControls {
   reset(): void { this.permissions.clear(); this.pauses.clear(); this.calls = new PermissionCallReplay(); }
 }
 
-export function permissionOutcome(resolution: string, message?: string): string {
+export function permissionOutcome(resolution: string, message?: string, alwaysSaved?: false): string {
   switch (resolution) {
-    case "allow_always": return "Allowed always";
+    case "allow_always": return alwaysSaved === false ? `Always not saved: ${message ?? "unknown error"}; ran once` : "Allowed always";
     case "allow_once": return "Allowed once";
     case "allow_folder": return "Allowed for this scope";
     case "allow_config_session": return "Allowed WithNav config for this session";

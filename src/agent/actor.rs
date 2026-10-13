@@ -598,14 +598,17 @@ impl AgentActor {
     /// A question nobody answers ends as `cancelled` in the decision table.
     fn cancel_pending_decision(&self, request: &PermissionRequest) {
         if let (Some(id), Some(store)) = (request.decision_id, &self.permission_store) {
-            if let Err(error) = store.update_outcome(
-                id,
-                crate::permission::decisions::Outcome::Cancelled,
-                None,
-                None,
-            ) {
-                tracing::warn!(%error, "permission decision outcome not recorded");
-            }
+            // Off the runtime thread: nothing waits on this write.
+            store.detach(move |store| {
+                if let Err(error) = store.update_outcome(
+                    id,
+                    crate::permission::decisions::Outcome::Cancelled,
+                    None,
+                    None,
+                ) {
+                    tracing::warn!(%error, "permission decision outcome not recorded");
+                }
+            });
         }
     }
 

@@ -37,6 +37,40 @@ pub(super) fn wire_name(server: &str, original: &str) -> String {
     name
 }
 
+/// Keywords whose meaning depends on sibling keywords of the same schema object: merging a
+/// `$ref` target with its siblings would change what `additionalProperties: false` or
+/// `additionalItems` applies to, so the merged schema would not be the one the server
+/// checks.
+fn scope_conflict(target: &Value, siblings: &serde_json::Map<String, Value>) -> Result<(), String> {
+    const GROUPS: [(&[&str], &[&str]); 2] = [
+        (
+            &["additionalProperties", "unevaluatedProperties"],
+            &["properties", "patternProperties"],
+        ),
+        (
+            &["additionalItems", "unevaluatedItems", "items"],
+            &["items", "prefixItems"],
+        ),
+    ];
+    let Some(target) = target.as_object() else {
+        return Ok(());
+    };
+    for (closing, scoped) in GROUPS {
+        for (a, b) in [(target, siblings), (siblings, target)] {
+            for close in closing {
+                for scope in scoped {
+                    if close != scope && a.contains_key(*close) && b.contains_key(*scope) {
+                        return Err(format!(
+                            "$ref merge would change the scope of `{close}` (with `{scope}` on the other side)"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     fn visit(
         value: &Value,
@@ -58,22 +92,45 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                     let target = root
                         .pointer(&reference[1..])
                         .ok_or("unresolved local schema reference")?;
+                    scope_conflict(target, object)?;
                     refs.push(reference.into());
                     let mut resolved = visit(target, root, refs, depth + 1)?;
                     refs.pop();
-                    let output = resolved
-                        .as_object_mut()
-                        .ok_or("reference target is not an object schema")?;
                     let siblings: serde_json::Map<_, _> = object
                         .iter()
                         .filter(|(k, _)| k.as_str() != "$ref")
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     let normalized = visit(&Value::Object(siblings), root, refs, depth + 1)?;
+                    // The target may itself be a `$ref` chain: check the keywords it
+                    // resolves to, not only the ones written at the first hop.
+                    scope_conflict(
+                        &resolved,
+                        normalized.as_object().ok_or("invalid reference siblings")?,
+                    )?;
+                    let output = resolved
+                        .as_object_mut()
+                        .ok_or("reference target is not an object schema")?;
+                    // A sibling keyword the target also sets would replace it: the provider
+                    // would see fewer constraints than the server checks. Annotations may
+                    // replace; constraints only merge when they are new or identical.
                     for (key, value) in
                         normalized.as_object().ok_or("invalid reference siblings")?
                     {
-                        output.insert(key.clone(), value.clone());
+                        let annotation = matches!(
+                            key.as_str(),
+                            "description" | "title" | "default" | "examples"
+                        );
+                        match output.get(key) {
+                            Some(existing) if !annotation && existing != value => {
+                                return Err(format!(
+                                    "$ref sibling `{key}` conflicts with the referenced schema"
+                                ));
+                            }
+                            _ => {
+                                output.insert(key.clone(), value.clone());
+                            }
+                        }
                     }
                     return Ok(resolved);
                 }
@@ -217,12 +274,16 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     Ok(output)
 }
 
+/// Converts a `tools/call` result to a bounded tool result. Structured content is redacted
+/// as a value before it is serialised: serialisation escapes newlines, quotes and
+/// backslashes, so a raw-value text replacement afterwards would miss such a secret.
 pub(super) fn convert(
     value: &Value,
     server: &str,
     original: &str,
-    redact: impl FnOnce(&str) -> String,
+    secrets: &[String],
 ) -> ToolResult {
+    let redact = |text: &str| super::redaction::redact(text, secrets);
     let content = value["content"].as_array();
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
@@ -252,7 +313,8 @@ pub(super) fn convert(
     }
     if !has_text {
         if let Some(structured) = value.get("structuredContent") {
-            parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+            let structured = super::redaction::redact_value(structured, secrets);
+            parts.push(serde_json::to_string_pretty(&structured).unwrap_or_default());
         }
     }
     let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
@@ -268,7 +330,7 @@ pub(super) fn convert(
             },
         });
     }
-    result.metadata = json!({"mcp_server": server, "mcp_tool": original});
+    result.metadata = json!({"mcp_server": server, "mcp_tool": redact(original)});
     result
 }
 
@@ -276,12 +338,25 @@ impl McpTool {
     pub(super) fn server_id(&self) -> &str {
         &self.server.id
     }
+    /// Builds a provider-safe tool. Errors name the tool redacted. A tool whose name carries
+    /// a configured secret is refused rather than renamed: its name would be sent back to
+    /// the server on every call, and any rename would still derive from the secret.
     pub(super) fn new(server: Arc<Server>, definition: rmcp::model::Tool) -> Result<Self, String> {
         let original = definition.name.to_string();
+        let secrets = server.secrets();
+        if server.redact(&original) != original {
+            return Err(format!(
+                "{}: tool name contains a configured secret",
+                server.redact(&original)
+            ));
+        }
         let parameters = normalize(Value::Object((*definition.input_schema).clone()))
             .map_err(|e| format!("{original}: {e}"))?;
+        let parameters = super::redaction::redact_value(&parameters, &secrets);
         let wire = wire_name(&server.id, &original);
-        let schema = json!({"description": format!("[mcp:{}] {}", server.id, definition.description.as_deref().unwrap_or("")), "parameters": parameters});
+        let description =
+            super::redaction::redact(definition.description.as_deref().unwrap_or(""), &secrets);
+        let schema = json!({"description": format!("[mcp:{}] {description}", server.id), "parameters": parameters});
         Ok(Self {
             wire,
             original,
@@ -299,7 +374,12 @@ impl McpTool {
             plugin_id: Some(self.server.id.clone()),
             message: result.output.clone(),
         });
-        result.with_metadata(json!({"mcp_server": self.server.id, "mcp_tool": self.original}))
+        result.with_metadata(self.metadata())
+    }
+
+    /// Published with every result; the name is redacted like any other server text.
+    fn metadata(&self) -> Value {
+        json!({"mcp_server": self.server.id, "mcp_tool": self.server.redact(&self.original)})
     }
 }
 
@@ -357,7 +437,7 @@ impl Tool for McpTool {
                     return Ok(match response {
                         Ok(Ok(response)) => match serde_json::to_value(response) {
                             Ok(value) => {
-                                convert(&value, &self.server.id, &self.original, |text| self.server.redact(text))
+                                convert(&value, &self.server.id, &self.original, &self.server.secrets())
                             },
                             Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
                         },
@@ -372,8 +452,7 @@ impl Tool for McpTool {
                 handle.cancel(Some("WithNav call cancelled".into())),
             )
             .await;
-            Ok(result
-                .with_metadata(json!({"mcp_server": self.server.id, "mcp_tool": self.original})))
+            Ok(result.with_metadata(self.metadata()))
         })
     }
 }
@@ -408,12 +487,87 @@ mod tests {
         assert!(normalize(json!({"oneOf":[]})).is_err());
     }
     #[test]
+    fn reference_siblings_that_would_replace_constraints_skip_the_tool() {
+        let schema = json!({
+            "$defs": {"args": {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}},
+            "properties": {"x": {"$ref": "#/$defs/args", "properties": {"b": {"type": "string"}}, "required": ["b"]}}
+        });
+        let error = normalize(schema).unwrap_err();
+        assert!(
+            error.contains("required") || error.contains("properties"),
+            "{error}"
+        );
+        let merged = normalize(json!({
+            "$defs": {"s": {"type": "string"}},
+            "properties": {"x": {"$ref": "#/$defs/s", "minLength": 1, "description": "x"}}
+        }))
+        .unwrap();
+        assert_eq!(
+            merged["properties"]["x"],
+            json!({"type":"string","minLength":1,"description":"x"})
+        );
+    }
+
+    #[test]
+    fn reference_merges_that_change_keyword_scope_skip_the_tool() {
+        let reference = |target: Value, sibling: Value| {
+            let mut x = sibling;
+            x["$ref"] = json!("#/$defs/t");
+            normalize(json!({"$defs": {"t": target}, "properties": {"x": x}}))
+        };
+        let closed = json!({"type":"object","additionalProperties":false});
+        let error = reference(
+            closed.clone(),
+            json!({"properties":{"b":{"type":"string"}}}),
+        )
+        .unwrap_err();
+        assert!(error.contains("additionalProperties"), "{error}");
+        for (target, sibling) in [
+            (
+                json!({"properties":{"a":{}}}),
+                json!({"additionalProperties":false}),
+            ),
+            (
+                json!({"unevaluatedProperties":false}),
+                json!({"patternProperties":{"^a":{}}}),
+            ),
+            (
+                json!({"patternProperties":{"^a":{}}}),
+                json!({"unevaluatedProperties":false}),
+            ),
+            (json!({"prefixItems":[{}]}), json!({"items":false})),
+            (json!({"items":[{}]}), json!({"additionalItems":false})),
+            (
+                json!({"additionalItems":false}),
+                json!({"prefixItems":[{}]}),
+            ),
+        ] {
+            assert!(
+                reference(target.clone(), sibling.clone()).is_err(),
+                "{target} {sibling}"
+            );
+        }
+        // A chained reference reaches `additionalProperties` only after resolution.
+        let chained = normalize(json!({
+            "$defs": {
+                "closed": {"type":"object","additionalProperties":false},
+                "alias": {"$ref":"#/$defs/closed"}
+            },
+            "properties": {"x": {"$ref":"#/$defs/alias","properties":{"b":{}}}}
+        }))
+        .unwrap_err();
+        assert!(chained.contains("additionalProperties"), "{chained}");
+        assert!(reference(closed, json!({"description":"d"})).is_ok());
+        assert!(reference(json!({"items":{"type":"string"}}), json!({"maxItems":2})).is_ok());
+    }
+
+    #[test]
     fn results_are_bounded_including_error_messages() {
         let result = convert(
             &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
             "test",
             "big",
-            str::to_owned,
+            &[],
         );
         assert_eq!(result.status, ToolStatus::Error);
         assert_eq!(result.truncated.unwrap().original_bytes, 100000);
@@ -422,14 +576,14 @@ mod tests {
             &json!({"content":[], "structuredContent":{"a":1}}),
             "test",
             "echo",
-            str::to_owned,
+            &[],
         );
         assert_eq!(structured.output, "{\n  \"a\": 1\n}");
         let mixed = convert(
             &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
             "test",
             "echo",
-            str::to_owned,
+            &[],
         );
         assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
     }
@@ -442,7 +596,7 @@ mod tests {
             &json!({"isError":true,"content":[{"type":"text","text":text}]}),
             "fake",
             "echo",
-            |text| text.replace(secret, "[redacted]"),
+            &[secret.to_string()],
         );
         assert!(!result.output.contains("TOK"));
         assert_eq!(result.error.as_ref().unwrap().message, result.output);
@@ -451,11 +605,37 @@ mod tests {
             &json!({"isError":true,"content":[{"type":"text","text":"s".repeat(8000)}]}),
             "fake",
             "echo",
-            |text| text.replace('s', "[redacted]"),
+            &["s".to_string()],
         );
         assert_eq!(expanded.truncated.unwrap().original_bytes, 80000);
         assert_eq!(expanded.error.unwrap().message, expanded.output);
         assert!(expanded.output.len() <= 65536);
+    }
+
+    #[test]
+    fn structured_content_secrets_are_redacted_before_serialisation() {
+        for secret in [
+            "multi\nline-sentinel",
+            "quote\"sentinel",
+            "back\\slash-sentinel",
+        ] {
+            let result = convert(
+                &json!({"content":[], "structuredContent":{"token":secret,"list":[secret]}}),
+                "fake",
+                secret,
+                &[secret.to_string()],
+            );
+            assert!(!result.output.contains("sentinel"), "{}", result.output);
+            assert!(!result.metadata.to_string().contains("sentinel"));
+            let text = serde_json::to_string(&json!({"token": secret})).unwrap();
+            let result = convert(
+                &json!({"content":[{"type":"text","text":text}]}),
+                "fake",
+                "echo",
+                &[secret.to_string()],
+            );
+            assert!(!result.output.contains("sentinel"), "{}", result.output);
+        }
     }
 
     #[test]

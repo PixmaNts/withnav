@@ -532,6 +532,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 }),
                 resolution: None,
                 message: None,
+                always_saved: true,
                 stale: false,
             };
             // A fresh request for the call just approved (it now lands
@@ -602,7 +603,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 ..
             }) = s.conversation.blocks.iter_mut().find(|b| b.id == id)
             {
-                prompt.message = v["message"].as_str().map(strip_controls);
+                prompt.always_saved = v["always_saved"].as_bool() != Some(false);
+                prompt.message = v["message"]
+                    .as_str()
+                    .or(v["always_error"].as_str())
+                    .map(strip_controls);
                 prompt.resolution = Some(resolution.clone());
             }
             let call_id = strip_controls(v["tool_call_id"].as_str().unwrap_or_default());

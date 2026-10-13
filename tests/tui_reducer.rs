@@ -5510,3 +5510,52 @@ fn approval_evidence_survives_live_and_replay() {
         }
     }
 }
+
+#[test]
+fn an_unsaved_always_says_it_ran_once() {
+    let mut script = permission_script(88);
+    resolved(
+        &mut script,
+        88,
+        PermissionResolution::AllowAlways {
+            always_saved: false,
+            always_error: Some("database is locked".into()),
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let prompt = s
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some(p.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(prompt.resolution.as_deref(), Some("allow_always"));
+    assert_eq!(prompt.message.as_deref(), Some("database is locked"));
+    assert!(!prompt.always_saved);
+    let mut script = permission_script(89);
+    resolved(
+        &mut script,
+        89,
+        PermissionResolution::AllowAlways {
+            always_saved: true,
+            always_error: None,
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let prompt = s
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some(p.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(prompt.always_saved);
+    assert_eq!(prompt.message, None);
+}

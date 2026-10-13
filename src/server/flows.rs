@@ -101,6 +101,15 @@ async fn dispatch(
         Err(e) => error(e),
     }
 }
+/// Runs flow-store work that reads or writes the permission database on the
+/// blocking pool: a locked database waits there for its busy timeout.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
+) -> Result<T, StoreError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| StoreError::reason("io"))?
+}
 fn invalid() -> StoreError {
     StoreError::reason("invalid")
 }
@@ -189,7 +198,13 @@ async fn handle(
 ) -> Result<(StatusCode, Value), StoreError> {
     network(state, headers, peer)?;
     let workspace = workspace(state, query).await?;
-    let store = state.flows.store(workspace.clone());
+    // A new workspace entry loads its flows and reads their validations from
+    // the permission database: built on the blocking pool.
+    let store = blocking({
+        let (host, workspace) = (state.flows.clone(), workspace.clone());
+        move || Ok(host.store(workspace))
+    })
+    .await?;
     let records = state.flows.records(&workspace);
     let data: Value = if body.is_empty() {
         json!({})
@@ -202,9 +217,16 @@ async fn handle(
             serde_json::to_value(crate::flows::catalogue::catalogue()).map_err(|_| invalid())?
         ),
         ("GET", "") => {
-            store.refresh();
+            let flows = blocking({
+                let store = store.clone();
+                move || {
+                    store.refresh();
+                    store.list()
+                }
+            })
+            .await?;
             ok(
-                json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace),"propagation":"other WithNav processes reload on their next event"}),
+                json!({"flows":flows,"errors":state.flows.diagnostics(&workspace),"propagation":"other WithNav processes reload on their next event"}),
             )
         }
         ("POST", "") => {
@@ -218,17 +240,29 @@ async fn handle(
         }
         ("POST", "validate") => ok(json!(validate(parse::<Content>(data["content"].clone())?))),
         ("POST", "reload") => {
-            store.reload()?;
+            let flows = blocking({
+                let store = store.clone();
+                move || {
+                    store.reload()?;
+                    store.list()
+                }
+            })
+            .await?;
             ok(
-                json!({"reloaded":true,"errors":store.reload_diagnostics(),"flows":store.list()?,"propagation":"other WithNav processes reload on their next event"}),
+                json!({"reloaded":true,"errors":store.reload_diagnostics(),"flows":flows,"propagation":"other WithNav processes reload on their next event"}),
             )
         }
         ("POST", "trust") => {
-            let approval = store.validate_version(
-                required(&data, "name")?,
+            let (name, location, revision) = (
+                required(&data, "name")?.to_owned(),
                 location(&data["location"])?,
-                required(&data, "revision")?,
-            )?;
+                required(&data, "revision")?.to_owned(),
+            );
+            let approval = blocking({
+                let store = store.clone();
+                move || store.validate_version(&name, location, &revision)
+            })
+            .await?;
             ok(json!(approval))
         }
         ("POST", "sample") => {

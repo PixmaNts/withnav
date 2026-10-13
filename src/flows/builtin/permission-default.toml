@@ -19,9 +19,10 @@ on_failure = { action = "apply_rule", params = {} }
 [[node]]
 id = "protected"
 type = "expression"
-condition = "is_set(protected) && protected"
+condition = "is_set(protected) && protected && !(is_set(protected_checked) && protected_checked)"
 [node.inputs]
 protected = "event.protected"
+protected_checked = "event.protected_checked"
 [node.next]
 true = ["protected_requested"]
 false = ["rule_effect"]

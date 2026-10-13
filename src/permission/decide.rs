@@ -721,7 +721,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let root = crate::tools::canonical_path(&dir.path()).unwrap();
+        let root = crate::tools::canonical_path(dir.path()).unwrap();
         for sub in ["project", "config/flows", "data", "home/.ssh", "outside"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
@@ -739,7 +739,7 @@ mod tests {
 
     impl Fixture {
         fn root(&self) -> PathBuf {
-            crate::tools::canonical_path(&self.dir.path()).unwrap()
+            crate::tools::canonical_path(self.dir.path()).unwrap()
         }
 
         fn add(&self, action: &str, resource: &str, effect: Effect) -> Rule {
@@ -1194,7 +1194,10 @@ mod tests {
             literal(&f.cx.workspace.join("aXb.txt").display().to_string())
         );
         // A relative path and `..` fold to the same resource.
-        let decision = f.decide(Control::Normal, &file("write", "src/../a*b.txt"));
+        let decision = f.decide(
+            Control::Normal,
+            &file("write", &format!("src/../{filename}")),
+        );
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
     }
 
@@ -1273,7 +1276,7 @@ mod tests {
     #[test]
     fn output_options_and_read_write_redirections_ask_under_bypass_and_allow_rules() {
         let f = fixture();
-        let config = f.root().join("config/config.json").display().to_string();
+        let config = crate::tools::relative_path_text(&f.root().join("config/config.json"));
         f.add("bash", "*", Effect::Allow);
         f.add("bash", "sort *", Effect::Allow);
         for line in [

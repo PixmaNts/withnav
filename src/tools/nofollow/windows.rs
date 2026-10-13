@@ -39,16 +39,19 @@ pub(crate) fn resolve_target(
 pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError> {
     validate_target(path)?;
     let spelling = path.to_string_lossy().replace('/', "\\");
-    let spelling = spelling.strip_prefix("\\\\?\\").unwrap_or(&spelling);
-    let mut ancestor = std::path::PathBuf::from(spelling);
+    let mut ancestor = std::path::PathBuf::from(&spelling);
     let mut suffix = Vec::new();
     loop {
         match ancestor.canonicalize() {
             Ok(canonical) => {
                 validate_target(&canonical)?;
                 let text = canonical.to_string_lossy();
-                let mut result =
-                    std::path::PathBuf::from(text.strip_prefix("\\\\?\\").unwrap_or(&text));
+                let plain = text.strip_prefix("\\\\?\\").unwrap_or(&text);
+                // Verbatim paths can name entries ordinary Win32 syntax would
+                // trim or reinterpret. Simplify only an equivalent spelling.
+                let ordinary = plain.encode_utf16().count() < 260
+                    && plain.split('\\').all(|part| !part.ends_with(['.', ' ']));
+                let mut result = std::path::PathBuf::from(if ordinary { plain } else { &text });
                 for part in suffix.into_iter().rev() {
                     result.push(part);
                 }

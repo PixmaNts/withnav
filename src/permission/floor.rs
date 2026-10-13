@@ -813,7 +813,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let root = crate::tools::canonical_path(&dir.path()).unwrap();
+        let root = crate::tools::canonical_path(dir.path()).unwrap();
         for sub in ["project", "config/flows", "data", "home/.ssh"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
@@ -1109,7 +1109,7 @@ mod tests {
     #[test]
     fn symlinked_config_database_and_flows_keep_their_protection() {
         let dir = tempfile::tempdir().unwrap();
-        let root = crate::tools::canonical_path(&dir.path()).unwrap();
+        let root = crate::tools::canonical_path(dir.path()).unwrap();
         for sub in ["project", "config", "data", "elsewhere/flows", "home"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }

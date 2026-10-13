@@ -126,7 +126,7 @@ mod tests {
             );
             let mut expected = decision;
             expected.id = id;
-            expected.workspace = crate::tools::canonical_path(&dir.path()).unwrap();
+            expected.workspace = crate::tools::canonical_path(dir.path()).unwrap();
             assert_eq!(
                 store
                     .list_decisions(&DecisionFilter::default(), 100)
@@ -348,7 +348,7 @@ fn history_query(
     if let Some(workspace) = &filter.workspace {
         clauses.push("workspace = ?");
         values.push(
-            path_text(&crate::tools::canonical_path(&workspace)?)?
+            path_text(&crate::tools::canonical_path(workspace)?)?
                 .to_owned()
                 .into(),
         );

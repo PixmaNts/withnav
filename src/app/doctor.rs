@@ -166,10 +166,8 @@ pub async fn inspect(
         schema_version: 1,
         ..Default::default()
     };
-    let workspace = args
-        .workspace
-        .canonicalize()
-        .unwrap_or_else(|_| args.workspace.clone());
+    let workspace =
+        crate::tools::canonical_path(&args.workspace).unwrap_or_else(|_| args.workspace.clone());
     report.add(
         "config.location",
         Status::Ok,

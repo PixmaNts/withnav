@@ -45,26 +45,31 @@ pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError
         match ancestor.canonicalize() {
             Ok(canonical) => {
                 validate_target(&canonical)?;
-                let text = canonical.to_string_lossy();
+                let mut result = canonical;
+                for part in suffix.into_iter().rev() {
+                    result.push(part);
+                }
+                let text = result.to_string_lossy();
                 let plain = text.strip_prefix("\\\\?\\").unwrap_or(&text);
                 // Verbatim paths can name entries ordinary Win32 syntax would
                 // trim or reinterpret. Simplify only an equivalent spelling.
                 let ordinary = plain.encode_utf16().count() < 260
                     && plain.split('\\').all(|part| !part.ends_with(['.', ' ']));
-                let mut result = std::path::PathBuf::from(if ordinary { plain } else { &text });
-                for part in suffix.into_iter().rev() {
-                    result.push(part);
-                }
-                return Ok(result);
+                return Ok(std::path::PathBuf::from(if ordinary {
+                    plain
+                } else {
+                    &text
+                }));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let name = ancestor.file_name().ok_or(ToolError::Io(error))?;
-                // Ordinary Win32 creation trims these characters too. Keep the
-                // returned suffix ordinary rather than changing it with a verbatim prefix.
-                let name = name
-                    .to_string_lossy()
-                    .trim_end_matches(['.', ' '])
-                    .to_owned();
+                let name = name.to_string_lossy().into_owned();
+                if name != "." && name != ".." && name.ends_with(['.', ' ']) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "creating Windows path components ending in a dot or space is not supported",
+                    ).into());
+                }
                 if name.is_empty() {
                     return Err(ToolError::PathTraversal(path.to_path_buf()));
                 }
@@ -77,10 +82,16 @@ pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError
 }
 
 pub(crate) fn path_within(path: &Path, root: &Path) -> bool {
-    let key = |path: &Path| path.to_string_lossy().replace('\\', "/").to_lowercase();
-    let path = key(path);
-    let root = key(root);
-    path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
+    let key = |path: &Path| {
+        let text = path.to_string_lossy().replace('/', "\\");
+        text.strip_prefix("\\\\?\\")
+            .unwrap_or(&text)
+            .split('\\')
+            .filter(|part| !part.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    key(path).starts_with(&key(root))
 }
 
 #[cfg(test)]
@@ -241,6 +252,77 @@ pub fn edit_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_target_identity_is_stable_and_deny_rules_ignore_display_prefix() {
+        use crate::permission::rules::{literal, Effect, RuleOrigin, RuleScope};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir
+            .path()
+            .join("a".repeat(110))
+            .join("b".repeat(110))
+            .join("file.txt");
+        let before = resolve_target(&target, dir.path(), None).unwrap();
+        assert!(before.to_string_lossy().starts_with(r"\\?\"));
+        assert!(path_within(&before, dir.path()));
+        let store = crate::permission::store::PermissionStore::open(dir.path()).unwrap();
+        let rule = store
+            .add(
+                "write",
+                &literal(&before.to_string_lossy()),
+                Effect::Deny,
+                RuleScope::Global,
+                RuleOrigin::Manual,
+            )
+            .unwrap();
+        write_atomic(&before, b"long").unwrap();
+        let after = resolve_target(&target, dir.path(), None).unwrap();
+        assert_eq!(before, after);
+        for spelling in [
+            after.to_string_lossy().into_owned(),
+            after
+                .to_string_lossy()
+                .strip_prefix(r"\\?\")
+                .unwrap()
+                .to_owned(),
+        ] {
+            assert_eq!(
+                store
+                    .matching("write", &spelling, dir.path(), "build")
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                rule.id
+            );
+        }
+        assert_eq!(
+            crate::tools::validate_path(&[dir.path().to_path_buf()], &target).unwrap(),
+            after
+        );
+    }
+
+    #[test]
+    fn missing_verbatim_dot_and_space_names_are_refused_without_touching_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let ordinary = dir.path().join("note");
+        std::fs::write(&ordinary, "unchanged").unwrap();
+        for name in ["note.", "note "] {
+            let target = dir.path().canonicalize().unwrap().join(name);
+            assert!(matches!(resolve_target(&target, dir.path(), None),
+                Err(ToolError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidInput));
+            assert_eq!(std::fs::read_to_string(&ordinary).unwrap(), "unchanged");
+            assert!(!target.exists());
+            std::fs::write(&target, "existing").unwrap();
+            let resolved = resolve_target(&target, dir.path(), None).unwrap();
+            let mut text = String::new();
+            open_read(&resolved)
+                .unwrap()
+                .read_to_string(&mut text)
+                .unwrap();
+            assert_eq!(text, "existing");
+            assert_eq!(std::fs::read_to_string(&ordinary).unwrap(), "unchanged");
+        }
+    }
 
     #[test]
     fn roots_follow_the_targets_drive() {

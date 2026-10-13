@@ -339,6 +339,12 @@ impl Walk {
     }
 
     fn inside_roots(&self, path: &Path) -> bool {
+        #[cfg(windows)]
+        return self
+            .roots
+            .iter()
+            .any(|(root, _)| crate::tools::nofollow::path_within(path, root));
+        #[cfg(unix)]
         self.roots.iter().any(|(root, _)| path.starts_with(root))
     }
 

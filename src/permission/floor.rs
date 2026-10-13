@@ -344,7 +344,9 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
     }
     match (resolve_path(path, cx), writes) {
         (None, _) => Floor::Unresolved(path.to_owned()),
-        (Some(_), true) if protected_word(path, cx) == Some(true) => {
+        (Some(_resolved), true) if protected_word(path, cx) == Some(true) => {
+            #[cfg(windows)]
+            let path = _resolved.display().to_string();
             Floor::Protected(path.to_owned())
         }
         _ => Floor::None,
@@ -696,6 +698,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_descendant_of_global_flows_is_protected() {
+        let f = fixture();
+        let root = f.cx.config_dir.as_ref().unwrap().join("flows");
+        let target = root
+            .join("a".repeat(110))
+            .join("b".repeat(110))
+            .join("file.toml");
+        let resolved = crate::tools::canonical_path(&target).unwrap();
+        assert!(resolved.to_string_lossy().starts_with(r"\\?\"));
+        crate::tools::nofollow::write_atomic(&resolved, b"flow").unwrap();
+        assert!(protected_resolved(&resolved, &f.cx));
+        assert!(
+            matches!(check(&native_call("write", &target.to_string_lossy()), &[], &f.cx),
+            Floor::Protected(path) if path == resolved.display().to_string())
+        );
     }
 
     #[cfg(windows)]

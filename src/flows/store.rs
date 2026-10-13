@@ -475,7 +475,7 @@ impl FlowStore {
                 None,
             ));
         }
-        let path = self.directory(location)?.canonicalize().map_err(missing)?;
+        let path = crate::tools::canonical_path(&self.directory(location)?).map_err(missing)?;
         let dir = Directory::open(&path, false).map_err(missing)?;
         let toml = dir
             .read(

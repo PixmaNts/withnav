@@ -514,7 +514,11 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
             let mut items = vec![classify(find(tool, &text)?, Some(proposal), text.clone())];
             if !inside(&resolved, &project_roots(input.cx)) {
                 let parent = resolved.parent().map_or(String::new(), |p| {
-                    p.to_string_lossy().trim_end_matches(['/', '\\']).to_owned()
+                    #[cfg(windows)]
+                    let separators: &[_] = &['/', '\\'];
+                    #[cfg(unix)]
+                    let separators: &[_] = &['/'];
+                    p.to_string_lossy().trim_end_matches(separators).to_owned()
                 });
                 #[cfg(windows)]
                 let separator = "\\";
@@ -1169,6 +1173,28 @@ mod tests {
         );
         let decision = f.decide(Control::Normal, &write);
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_directory_proposal_preserves_a_trailing_backslash() {
+        let f = fixture();
+        let directory = f.root().join("outside\\");
+        std::fs::create_dir(&directory).unwrap();
+        let target = directory.join("note.txt");
+        let decision = f.decide(Control::Normal, &file("write", &target.to_string_lossy()));
+        let always = proposals(&decision);
+        assert_eq!(always[1].action, "external_directory");
+        assert_eq!(
+            always[1].resource,
+            format!("{}*", literal(&format!("{}/", directory.display())))
+        );
+        f.add("write", &literal(&target.to_string_lossy()), Effect::Allow);
+        f.add("external_directory", &always[1].resource, Effect::Allow);
+        assert_eq!(
+            run_by(&f.decide(Control::Normal, &file("write", &target.to_string_lossy()))),
+            Some(ApprovedBy::Rule)
+        );
     }
 
     #[test]

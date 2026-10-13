@@ -10,6 +10,32 @@ fn fixture() -> Fixture {
     Fixture::new("packages/app")
 }
 
+#[cfg(windows)]
+#[test]
+fn discovers_skill_manifest_across_the_long_path_boundary() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let directory = root.join("a".repeat(110)).join("b".repeat(110));
+    let manifest = add(&directory, "long-skill", "Long path skill");
+    assert!(
+        crate::tools::canonical_path(&root)
+            .unwrap()
+            .to_string_lossy()
+            .len()
+            < 260
+    );
+    assert!(crate::tools::canonical_path(&manifest)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    let skills = load(&fx);
+    assert!(
+        skills.snapshot("long-skill").is_ok(),
+        "{:?}",
+        skills.diagnostics()
+    );
+}
+
 #[test]
 fn skill_authority_and_selection_queue_follow_the_logical_turn() {
     let fx = fixture();

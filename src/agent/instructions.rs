@@ -138,7 +138,7 @@ impl Instructions {
     /// it from a blocking context.
     pub fn load(roots: &RulesRoots, workspace: &Path) -> Self {
         let workspace =
-            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            crate::tools::canonical_path(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         let mut loader = Loader::default();
         if let Some(home) = &roots.home {
             loader.slot(
@@ -238,7 +238,7 @@ impl Loader {
     }
 
     fn take(&mut self, path: &Path) {
-        let canonical = match std::fs::canonicalize(path) {
+        let canonical = match crate::tools::canonical_path(path) {
             Ok(canonical) => canonical,
             Err(e) => return self.push(path, SourceStatus::ReadError(e.to_string()), 0),
         };

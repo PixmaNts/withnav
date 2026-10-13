@@ -388,9 +388,7 @@ fn scope(call: &ToolCall, cx: &FloorContext) -> Scope {
         _ => {}
     }
     Scope::Folder(
-        cx.workspace
-            .canonicalize()
-            .unwrap_or_else(|_| cx.workspace.clone()),
+        crate::tools::canonical_path(&cx.workspace).unwrap_or_else(|_| cx.workspace.clone()),
     )
 }
 

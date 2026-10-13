@@ -364,6 +364,19 @@ fn bare_glob(pattern: &str) -> Option<String> {
     pattern.strip_suffix(" *").map(|bare| glob(bare).0)
 }
 
+#[cfg(windows)]
+fn path_rule_key(value: &str) -> &str {
+    value.strip_prefix(r"\\?\").unwrap_or(value)
+}
+
+#[cfg(windows)]
+fn file_action(action: &str) -> bool {
+    matches!(
+        action,
+        "read" | "write" | "edit" | "grep" | "glob" | "external_directory"
+    )
+}
+
 const COLUMNS: &str = "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at";
 
 fn read_rule(row: &Row<'_>) -> rusqlite::Result<Rule> {
@@ -407,7 +420,17 @@ fn add_rule(
     }
     let (scope_kind, scope_value) = scope.storage()?;
     let (action_glob, action_precision) = glob(action);
-    let (resource_glob, resource_precision) = glob(resource);
+    #[cfg(windows)]
+    let resource_match = if file_action(action) {
+        resource
+            .strip_prefix(&literal(r"\\?\"))
+            .unwrap_or_else(|| path_rule_key(resource))
+    } else {
+        resource
+    };
+    #[cfg(unix)]
+    let resource_match = resource;
+    let (resource_glob, resource_precision) = glob(resource_match);
     let origin = match origin {
         RuleOrigin::Always => "always",
         RuleOrigin::Manual => "manual",
@@ -424,7 +447,7 @@ fn add_rule(
             action_glob,
             resource_glob,
             bare_glob(action),
-            bare_glob(resource),
+            bare_glob(resource_match),
             (action_precision + resource_precision) as i64,
             effect.as_str(),
             scope_kind,
@@ -519,6 +542,12 @@ impl PermissionStore {
             ));
         }
         let workspace = crate::tools::canonical_path(workspace)?;
+        #[cfg(windows)]
+        let resource = if file_action(action) {
+            path_rule_key(resource)
+        } else {
+            resource
+        };
         Ok(self
             .db()
             .query_row(

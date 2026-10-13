@@ -363,7 +363,9 @@ impl Agents {
                 path: dir.to_path_buf(),
                 message: format!(
                     "links outside {}: the directory is not read",
-                    boundary.display()
+                    crate::tools::canonical_path(&boundary)
+                        .unwrap_or_else(|_| boundary.clone())
+                        .display()
                 ),
             });
             return;
@@ -404,7 +406,9 @@ impl Agents {
                         path,
                         message: format!(
                             "links outside {}: the file is not read",
-                            boundary.display()
+                            crate::tools::canonical_path(&boundary)
+                                .unwrap_or_else(|_| boundary.clone())
+                                .display()
                         ),
                     });
                     continue;

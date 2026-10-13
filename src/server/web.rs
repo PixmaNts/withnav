@@ -162,7 +162,10 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
                     || path.to_string_lossy().into_owned(),
                     |n| n.to_string_lossy().into_owned(),
                 ),
-                path: path.to_string_lossy().into_owned(),
+                path: crate::tools::canonical_path(&path)
+                    .unwrap_or_else(|_| path.clone())
+                    .to_string_lossy()
+                    .into_owned(),
                 launched,
                 session_count,
                 updated_at,

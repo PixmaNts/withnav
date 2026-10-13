@@ -337,11 +337,16 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
         return Floor::None;
     };
     if names_credential(path, cx) {
+        #[cfg(windows)]
+        let path =
+            resolve_path(path, cx).map_or(path.to_owned(), |path| path.display().to_string());
         return Floor::Credential(path.to_owned());
     }
     match (resolve_path(path, cx), writes) {
         (None, _) => Floor::Unresolved(path.to_owned()),
-        (Some(_), true) if protected_word(path, cx) == Some(true) => {
+        (Some(_resolved), true) if protected_word(path, cx) == Some(true) => {
+            #[cfg(windows)]
+            let path = _resolved.display().to_string();
             Floor::Protected(path.to_owned())
         }
         _ => Floor::None,
@@ -586,6 +591,23 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
         candidates.extend(operands.iter().map(String::as_str));
     }
     for word in candidates {
+        // Shell operands also include URLs, header values and arbitrary text.
+        // An invalid Win32 filename cannot name a protected file; native paths
+        // still fail closed through their own resolver.
+        #[cfg(windows)]
+        if let Ok(path) = crate::tools::nofollow::requested_path(
+            Path::new(word),
+            &cx.workspace,
+            cx.home.as_deref(),
+        ) {
+            if matches!(crate::tools::nofollow::path_identity(&path), Err(crate::error::ToolError::Io(ref error)) if matches!(error.raw_os_error(), Some(123 | 206)))
+            {
+                continue;
+            }
+            if word.contains(':') && !Path::new(word).is_absolute() {
+                continue;
+            }
+        }
         match protected_word(word, cx) {
             None => return Floor::Unresolved(word.to_owned()),
             Some(true) => return Floor::Protected(word.to_owned()),
@@ -680,6 +702,25 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn long_descendant_of_global_flows_is_protected() {
+        let f = fixture();
+        let root = f.cx.config_dir.as_ref().unwrap().join("flows");
+        let target = root
+            .join("a".repeat(110))
+            .join("b".repeat(110))
+            .join("file.toml");
+        let resolved = crate::tools::canonical_path(&target).unwrap();
+        assert!(resolved.to_string_lossy().starts_with(r"\\?\"));
+        crate::tools::nofollow::write_atomic(&resolved, b"flow").unwrap();
+        assert!(protected_resolved(&resolved, &f.cx));
+        assert!(
+            matches!(check(&native_call("write", &target.to_string_lossy()), &[], &f.cx),
+            Floor::Protected(path) if path == resolved.display().to_string())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_literal_floor_spellings() {
         let cx = FloorContext {
             workspace: PathBuf::from(r"C:\Users\Captain\project"),
@@ -733,6 +774,29 @@ mod tests {
             ));
         }
         assert_eq!(basename(r"C:\bin\cat"), "cat");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bash_mount_spellings_protect_real_temp_targets() {
+        let f = fixture();
+        let target = f.cx.config_dir.as_ref().unwrap().join("config.json");
+        std::fs::write(&target, "{}").unwrap();
+        let plain =
+            crate::tools::relative_path_text(&crate::tools::canonical_path(&target).unwrap());
+        let mounted = format!("/{}{}", plain[..1].to_ascii_lowercase(), &plain[2..]);
+        for spelling in [plain, mounted] {
+            for line in [
+                format!("echo x > '{spelling}'"),
+                format!("sort -o'{spelling}' in"),
+                format!("if true; then cp a '{spelling}'; fi"),
+            ] {
+                assert!(
+                    matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                    "{line}"
+                );
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -793,7 +857,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = crate::tools::canonical_path(dir.path()).unwrap();
         for sub in ["project", "config/flows", "data", "home/.ssh"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
@@ -863,13 +927,20 @@ mod tests {
             let full = root.join(path);
             assert!(protected_write(&full, &f.cx), "{path}");
             let name = full.to_string_lossy().into_owned();
+            #[cfg(windows)]
+            let protected_name = crate::tools::canonical_path(&full)
+                .unwrap()
+                .display()
+                .to_string();
+            #[cfg(unix)]
+            let protected_name = name.clone();
             assert_eq!(
                 check(&native_call("write", &name), &[], &f.cx),
-                Floor::Protected(name.clone())
+                Floor::Protected(protected_name.clone())
             );
             assert_eq!(
                 check(&native_call("edit", &name), &[], &f.cx),
-                Floor::Protected(name.clone())
+                Floor::Protected(protected_name)
             );
             assert_eq!(check(&native_call("read", &name), &[], &f.cx), Floor::None);
         }
@@ -933,7 +1004,7 @@ mod tests {
     #[test]
     fn bash_looks_at_path_words_and_redirections() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         assert_eq!(bash_floor(&f.cx, "ls -la && cargo test"), Floor::None);
         assert!(matches!(
             bash_floor(&f.cx, "cat .env"),
@@ -985,7 +1056,7 @@ mod tests {
     #[test]
     fn credentials_win_over_protected_and_opaque_lines_are_scanned() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         assert!(matches!(
             bash_floor(&f.cx, &format!("cp {root}/config/config.json x; cat .env")),
             Floor::Credential(_)
@@ -1089,7 +1160,7 @@ mod tests {
     #[test]
     fn symlinked_config_database_and_flows_keep_their_protection() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = crate::tools::canonical_path(dir.path()).unwrap();
         for sub in ["project", "config", "data", "elsewhere/flows", "home"] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
@@ -1142,7 +1213,7 @@ mod tests {
     #[test]
     fn output_options_and_read_write_redirections_are_writes() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         let config = format!("{root}/config/config.json");
         for line in [
             format!("sort -o {config} in"),
@@ -1214,7 +1285,7 @@ mod tests {
     #[test]
     fn attached_and_separate_output_targets_meet_every_check() {
         let f = fixture();
-        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         let config = format!("{root}/config/config.json");
         for line in [
             "sort -o.env input".to_owned(),

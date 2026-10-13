@@ -32,8 +32,8 @@ fn child_resolves_isolated_roots() {
         .find(|check| check["id"] == "config.location")
         .unwrap();
     assert_eq!(
-        location["value"],
-        root.path().join("config/withnav").to_str().unwrap()
+        std::path::PathBuf::from(location["value"].as_str().unwrap()),
+        root.path().join("config").join("withnav")
     );
 }
 
@@ -61,7 +61,7 @@ fn relative_roots_remain_protected_in_another_workspace() {
         .unwrap();
     assert_eq!(
         location["value"],
-        root.path().join("config/withnav").to_str().unwrap()
+        root.path().join("config").join("withnav").to_str().unwrap()
     );
 
     // Probe the public floor in a fresh process with the same roots and cwd as nav.

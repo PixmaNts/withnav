@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, OptionalExtension, Row};
+#[cfg(unix)]
+use rusqlite::OptionalExtension;
+use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
 
 use super::store::{path_text, Error, PermissionStore};
@@ -18,6 +20,41 @@ pub enum Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn accented_project_deny_matches_without_leaking_other_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ÉLODIE").join("project");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let store = PermissionStore::open(dir.path()).unwrap();
+        add(
+            &store,
+            "write",
+            "*",
+            Effect::Allow,
+            RuleScope::Project(other),
+        );
+        assert!(store
+            .matching("write", "target", &workspace, "build")
+            .unwrap()
+            .is_none());
+        let deny = add(
+            &store,
+            "write",
+            "*",
+            Effect::Deny,
+            RuleScope::Project(workspace.clone()),
+        );
+        let matched = store
+            .matching("write", "target", &workspace, "build")
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.id, deny.id);
+        assert_eq!(matched.effect, Effect::Deny);
+    }
 
     fn add(
         store: &PermissionStore,
@@ -321,7 +358,11 @@ impl RuleScope {
     pub(crate) fn storage(&self) -> Result<(&'static str, String), Error> {
         Ok(match self {
             Self::Global => ("global", String::new()),
-            Self::Project(path) => ("project", path_text(&path.canonicalize()?)?.into()),
+            Self::Project(path) => ("project", {
+                let canonical = crate::tools::canonical_path(path)?;
+                path_text(&canonical)?;
+                path_text(&canonical)?.into()
+            }),
             Self::Agent(name) if !name.is_empty() => ("agent", name.clone()),
             Self::Agent(_) => return Err(Error::Invalid("agent name must not be empty".into())),
         })
@@ -359,6 +400,38 @@ fn glob(pattern: &str) -> (String, usize) {
 
 fn bare_glob(pattern: &str) -> Option<String> {
     pattern.strip_suffix(" *").map(|bare| glob(bare).0)
+}
+
+#[cfg(windows)]
+fn path_pattern_key(value: &str) -> String {
+    let mut unescaped = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && matches!(chars.peek(), Some('\\')) {
+            chars.next();
+        }
+        unescaped.push(ch);
+    }
+    if Path::new(&unescaped).is_absolute()
+        && matches!(Path::new(&unescaped).components().next(), Some(std::path::Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+    {
+        // Keep pattern quoting and wildcards intact; only the identity prefix,
+        // separator spelling and case change.
+        let value = value.strip_prefix(&literal(r"\\?\")).unwrap_or(value);
+        crate::tools::path_key(Path::new(value))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+#[cfg(windows)]
+fn file_action(action: &str) -> bool {
+    matches!(
+        action,
+        "read" | "write" | "edit" | "grep" | "glob" | "external_directory"
+    )
 }
 
 const COLUMNS: &str = "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at";
@@ -404,7 +477,13 @@ fn add_rule(
     }
     let (scope_kind, scope_value) = scope.storage()?;
     let (action_glob, action_precision) = glob(action);
-    let (resource_glob, resource_precision) = glob(resource);
+    #[cfg(windows)]
+    let resource_match = path_pattern_key(resource);
+    #[cfg(windows)]
+    let resource_match = resource_match.as_str();
+    #[cfg(unix)]
+    let resource_match = resource;
+    let (resource_glob, resource_precision) = glob(resource_match);
     let origin = match origin {
         RuleOrigin::Always => "always",
         RuleOrigin::Manual => "manual",
@@ -421,7 +500,7 @@ fn add_rule(
             action_glob,
             resource_glob,
             bare_glob(action),
-            bare_glob(resource),
+            bare_glob(resource_match),
             (action_precision + resource_precision) as i64,
             effect.as_str(),
             scope_kind,
@@ -515,24 +594,62 @@ impl PermissionStore {
                 "permission values cannot contain NUL".into(),
             ));
         }
-        let workspace = workspace.canonicalize()?;
-        Ok(self
-            .db()
-            .query_row(
-                &format!(
-                    "SELECT {COLUMNS} FROM permission_rules WHERE revoked_at IS NULL
+        let workspace = crate::tools::canonical_path(workspace)?;
+        path_text(&workspace)?;
+        let workspace = crate::tools::path_key(&workspace);
+        #[cfg(windows)]
+        let project_scope = "1";
+        #[cfg(unix)]
+        let project_scope = "scope_value=?3";
+        #[cfg(windows)]
+        let resource = if file_action(action) {
+            crate::tools::path_key(Path::new(resource))
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            resource.to_owned()
+        };
+        #[cfg(windows)]
+        let limit = "";
+        #[cfg(unix)]
+        let limit = "LIMIT 1";
+        let sql = &format!(
+            "SELECT {COLUMNS} FROM permission_rules WHERE revoked_at IS NULL
              AND (?1 GLOB action_glob OR ?1 GLOB action_bare_glob)
              AND (?2 GLOB resource_glob OR ?2 GLOB resource_bare_glob)
-             AND (scope='global' OR (scope='project' AND scope_value=?3)
+              AND (scope='global' OR (scope='project' AND {project_scope})
                   OR (scope='agent' AND scope_value=?4))
              ORDER BY precision DESC,
                 CASE scope WHEN 'agent' THEN 2 WHEN 'project' THEN 1 ELSE 0 END DESC,
                 CASE effect WHEN 'deny' THEN 2 WHEN 'ask' THEN 1 ELSE 0 END DESC,
-                created_at DESC, id DESC LIMIT 1"
-                ),
+                 created_at DESC, id DESC {limit}"
+        );
+        let db = self.db();
+        #[cfg(unix)]
+        {
+            Ok(db
+                .query_row(
+                    sql,
+                    params![action, resource, path_text(&workspace)?, agent],
+                    read_rule,
+                )
+                .optional()?)
+        }
+        #[cfg(windows)]
+        {
+            let mut statement = db.prepare(sql)?;
+            let rows = statement.query_map(
                 params![action, resource, path_text(&workspace)?, agent],
                 read_rule,
-            )
-            .optional()?)
+            )?;
+            for row in rows {
+                let rule = row?;
+                if !matches!(&rule.scope, RuleScope::Project(path) if crate::tools::path_key(path) != workspace)
+                {
+                    return Ok(Some(rule));
+                }
+            }
+            Ok(None)
+        }
     }
 }

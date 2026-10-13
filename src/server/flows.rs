@@ -640,7 +640,10 @@ mod tests {
             .reason,
             "forbidden"
         );
-        let unknown = HashMap::from([("workspace".into(), "/unknown-workspace".into())]);
+        let unknown = HashMap::from([(
+            "workspace".into(),
+            dir.path().join("unknown-workspace").display().to_string(),
+        )]);
         assert_eq!(
             handle(
                 &state,

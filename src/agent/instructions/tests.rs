@@ -17,7 +17,7 @@ fn fixture_with_prefix(prefix: &str) -> Fixture {
         .prefix(prefix)
         .tempdir()
         .expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).expect("canonical");
+    let base = crate::tools::canonical_path(tmp.path()).expect("canonical");
     let home = base.join("home");
     let root = base.join("repo");
     fs::create_dir_all(home.join(".agents")).unwrap();
@@ -112,6 +112,26 @@ fn project_claude_md_is_shadowed_by_agents_md() {
     );
 }
 
+// Given a project AGENTS.md that is a symlink, next to a CLAUDE.md
+// When the instructions load
+// Then CLAUDE.md is shadowed by the AGENTS.md path itself, not the link target
+#[cfg(unix)]
+#[test]
+fn a_symlinked_primary_shadows_by_its_own_path() {
+    let fx = fixture();
+    let target = fx.home.join("shared-agents.md");
+    write(&target, "shared agents");
+    std::os::unix::fs::symlink(&target, fx.root.join("AGENTS.md")).unwrap();
+    write(&fx.root.join("CLAUDE.md"), "project claude");
+    let rules = load(&fx, &fx.root);
+    assert_eq!(
+        status_of(&rules, &fx.root.join("CLAUDE.md")),
+        &SourceStatus::Shadowed {
+            by: fx.root.join("AGENTS.md")
+        }
+    );
+}
+
 // Given global, root and nested rules, each with a rules.md supplement
 // When the instructions load from the nested directory
 // Then the order is global, global rules.md, root, root rules.md, nested,
@@ -142,6 +162,8 @@ fn order_runs_from_global_to_the_closest_directory() {
     );
     let mut message = FRAMING.to_string();
     for (path, text) in expected {
+        #[cfg(windows)]
+        let path = crate::tools::canonical_path(&path).unwrap();
         message.push_str(&format!(
             "\n\nInstructions from {}:\n{text}",
             path.display()
@@ -187,7 +209,7 @@ fn a_git_file_marks_the_worktree_root() {
 #[test]
 fn without_git_only_the_workspace_is_read() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let base = fs::canonicalize(tmp.path()).unwrap();
+    let base = crate::tools::canonical_path(tmp.path()).unwrap();
     write(&base.join("AGENTS.md"), "parent");
     write(&base.join("ws/AGENTS.md"), "workspace");
     let rules = Instructions::load(&RulesRoots::default(), &base.join("ws"));

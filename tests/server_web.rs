@@ -188,7 +188,7 @@ async fn an_ordinary_server_serves_no_files() {
 #[tokio::test]
 async fn workspaces_list_launched_first_then_history_and_skip_missing() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical root");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical root");
     let launched_b = root.join("beta");
     let launched_a = root.join("alpha");
     let history = root.join("history-only");
@@ -234,12 +234,30 @@ async fn workspaces_list_launched_first_then_history_and_skip_missing() {
 }
 
 // Given a server that was not started by `nav web`
+#[cfg(windows)]
+#[tokio::test]
+async fn plain_launched_workspace_and_verbatim_history_are_one_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = withnav::tools::canonical_path(tmp.path()).unwrap();
+    let history = std::fs::canonicalize(tmp.path()).unwrap();
+    let state = web_state(tmp.path(), vec![workspace.clone()]);
+    create_session(&state, &history).await;
+    let (status, body) = get_json(&state, "/v1/workspaces").await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body["workspaces"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["session_count"], 1);
+    assert_eq!(entries[0]["launched"], true);
+    assert_eq!(entries[0]["path"], workspace.to_string_lossy().as_ref());
+}
+
+// Given a server that was not started by `nav web`
 // When /v1/workspaces is read
 // Then only the history's workspaces are listed, none launched
 #[tokio::test]
 async fn workspaces_without_launch_list_history_only() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical root");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical root");
     let ws = root.join("proj");
     std::fs::create_dir_all(&ws).expect("workspace dir");
     let state = TestServerConfig::unreachable(&root)

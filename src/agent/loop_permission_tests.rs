@@ -116,7 +116,7 @@ fn actor_with(flows: Option<Arc<FakeFlows>>) -> AgentActor {
             .unwrap()
             .clone(),
     );
-    let ws = actor.tool_context.workspace.canonicalize().unwrap();
+    let ws = crate::tools::canonical_path(&actor.tool_context.workspace).unwrap();
     actor.tool_context.workspace = ws.clone();
     actor.tool_context.writable_roots = vec![ws.clone()];
     let home = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();

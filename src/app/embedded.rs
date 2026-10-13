@@ -17,6 +17,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) fn resolve_workspace(path: &Path) -> anyhow::Result<PathBuf> {
     let resolved = std::fs::canonicalize(path)
         .with_context(|| format!("workspace {} is not accessible", path.display()))?;
+    let resolved = crate::tools::canonical_path(&resolved)?;
     anyhow::ensure!(
         resolved.is_dir(),
         "workspace {} is not a directory",

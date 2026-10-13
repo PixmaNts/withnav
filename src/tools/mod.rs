@@ -331,6 +331,53 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     }
 }
 
+/// A filesystem identity suitable for roots, rules and user-visible paths.
+pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        nofollow::path_identity(path).map_err(std::io::Error::other)
+    }
+    #[cfg(unix)]
+    {
+        path.canonicalize()
+    }
+}
+
+/// Comparison identity; display and filesystem access keep the canonical spelling.
+pub fn path_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy().replace('/', "\\");
+        let plain = text
+            .strip_prefix(r"\\?\")
+            .filter(|plain| {
+                plain.as_bytes().get(1) == Some(&b':')
+                    && plain
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphabetic)
+            })
+            .unwrap_or(&text);
+        PathBuf::from(plain.to_lowercase())
+    }
+    #[cfg(unix)]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// Relative file names shown by tools follow the glob/Git separator convention.
+pub(crate) fn relative_path_text(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.to_string_lossy().replace('\\', "/")
+    }
+    #[cfg(unix)]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
 #[cfg(unix)]
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
     #[cfg(windows)]

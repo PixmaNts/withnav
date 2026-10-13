@@ -23,7 +23,8 @@ Connect external tools through stdio MCP servers in `~/.config/withnav/config.js
 3. Run `nav doctor` to inspect startup, tool counts, skipped schemas/names and failure stderr.
 4. Create a new session once the server is ready.
 
-Server ids use lowercase letters, digits, `_` or `-`, at most 24 characters. Commands are
+Server ids use lowercase letters, digits, `_` or `-`, at most 24 characters, with no `__`.
+Commands are
 argv arrays, never shell commands. Only `env` expands `{env:NAME}`; missing variables fail
 that server. Children inherit PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared values,
 not every provider credential in Nav's environment. Resolved values are never saved.
@@ -39,7 +40,8 @@ ready later requires a new session. Calls fail clearly on connection loss, have 
 cancel notifications, and results are limited to 64 KiB. Crashed servers receive five bounded
 restart attempts. Shutdown cleans up process groups, including launcher descendants.
 
-MCP tools go through permission review like outside actions; yolo runs them unchecked.
+This delivery must merge after the permission cutover: until then MCP tools bypass the old
+gate. After cutover they use ordinary permission rules (no rule = ask); yolo runs them unchecked.
 Installed servers run arbitrary programs with your account's privileges: WithNav is not a
 sandbox. Server descriptions/results are untrusted text, not authorization.
 

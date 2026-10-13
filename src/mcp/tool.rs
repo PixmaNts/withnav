@@ -48,6 +48,7 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
             return Err("schema nesting exceeds 64 levels".into());
         }
         match value {
+            Value::Bool(_) => Ok(value.clone()),
             Value::Object(object) => {
                 if let Some(reference) = object.get("$ref") {
                     let reference = reference.as_str().ok_or("non-string schema reference")?;
@@ -63,19 +64,31 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                     let output = resolved
                         .as_object_mut()
                         .ok_or("reference target is not an object schema")?;
-                    for (key, value) in object.iter().filter(|(k, _)| k.as_str() != "$ref") {
-                        output.insert(key.clone(), visit(value, root, refs, depth + 1)?);
+                    let siblings: serde_json::Map<_, _> = object
+                        .iter()
+                        .filter(|(k, _)| k.as_str() != "$ref")
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let normalized = visit(&Value::Object(siblings), root, refs, depth + 1)?;
+                    for (key, value) in
+                        normalized.as_object().ok_or("invalid reference siblings")?
+                    {
+                        output.insert(key.clone(), value.clone());
                     }
                     return Ok(resolved);
                 }
                 let mut output = serde_json::Map::new();
                 for (key, value) in object {
-                    if matches!(key.as_str(), "$schema" | "$defs" | "definitions" | "format") {
+                    if matches!(key.as_str(), "$schema" | "format") {
                         continue;
                     }
                     if matches!(
                         key.as_str(),
-                        "properties" | "patternProperties" | "dependentSchemas"
+                        "properties"
+                            | "patternProperties"
+                            | "dependentSchemas"
+                            | "$defs"
+                            | "definitions"
                     ) {
                         let entries = value
                             .as_object()
@@ -84,19 +97,77 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                         for (name, schema) in entries {
                             properties.insert(name.clone(), visit(schema, root, refs, depth + 1)?);
                         }
-                        output.insert(key.clone(), Value::Object(properties));
+                        if !matches!(key.as_str(), "$defs" | "definitions") {
+                            output.insert(key.clone(), Value::Object(properties));
+                        }
                         continue;
                     }
-                    output.insert(key.clone(), visit(value, root, refs, depth + 1)?);
+                    let normalized = match key.as_str() {
+                        "items"
+                        | "additionalProperties"
+                        | "not"
+                        | "contains"
+                        | "propertyNames"
+                        | "if"
+                        | "then"
+                        | "else" => visit(value, root, refs, depth + 1)?,
+                        "prefixItems" | "allOf" | "anyOf" | "oneOf" => {
+                            let entries = value
+                                .as_array()
+                                .ok_or("schema composition must be an array")?;
+                            Value::Array(
+                                entries
+                                    .iter()
+                                    .map(|entry| visit(entry, root, refs, depth + 1))
+                                    .collect::<Result<_, _>>()?,
+                            )
+                        }
+                        "required" => {
+                            if !value
+                                .as_array()
+                                .is_some_and(|entries| entries.iter().all(Value::is_string))
+                            {
+                                return Err("required must be an array of strings".into());
+                            }
+                            value.clone()
+                        }
+                        "type" => {
+                            let valid = |v: &Value| {
+                                v.as_str().is_some_and(|t| {
+                                    matches!(
+                                        t,
+                                        "object"
+                                            | "array"
+                                            | "string"
+                                            | "number"
+                                            | "integer"
+                                            | "boolean"
+                                            | "null"
+                                    )
+                                })
+                            };
+                            if !valid(value)
+                                && !value.as_array().is_some_and(|entries| {
+                                    !entries.is_empty() && entries.iter().all(valid)
+                                })
+                            {
+                                return Err("invalid schema type".into());
+                            }
+                            value.clone()
+                        }
+                        // These are instance data, never schemas; preserve even a literal $ref.
+                        "default" | "const" | "enum" | "examples" | "title" | "description"
+                        | "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum"
+                        | "multipleOf" | "minLength" | "maxLength" | "pattern" | "minItems"
+                        | "maxItems" | "uniqueItems" | "minProperties" | "maxProperties"
+                        | "deprecated" | "readOnly" | "writeOnly" => value.clone(),
+                        _ => return Err(format!("unsupported schema keyword: {key}")),
+                    };
+                    output.insert(key.clone(), normalized);
                 }
                 Ok(Value::Object(output))
             }
-            Value::Array(values) => values
-                .iter()
-                .map(|v| visit(v, root, refs, depth + 1))
-                .collect::<Result<Vec<_>, _>>()
-                .map(Value::Array),
-            _ => Ok(value.clone()),
+            _ => Err("schema must be an object or boolean".into()),
         }
     }
     let mut output = visit(&schema, &schema, &mut vec![], 0)?;
@@ -114,7 +185,12 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     Ok(output)
 }
 
-pub(super) fn convert(value: &Value, server: &str, original: &str) -> ToolResult {
+pub(super) fn convert(
+    value: &Value,
+    server: &str,
+    original: &str,
+    redact: impl FnOnce(&str) -> String,
+) -> ToolResult {
     let content = value["content"].as_array();
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
@@ -147,7 +223,7 @@ pub(super) fn convert(value: &Value, server: &str, original: &str) -> ToolResult
             parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
         }
     }
-    let mut result = ToolResult::bounded_ok(&parts.join("\n"), DEFAULT_MAX_OUTPUT_BYTES);
+    let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
     if value["isError"] == true {
         result.status = ToolStatus::Error;
         result.error = Some(ToolErrorObj {
@@ -165,6 +241,9 @@ pub(super) fn convert(value: &Value, server: &str, original: &str) -> ToolResult
 }
 
 impl McpTool {
+    pub(super) fn server_id(&self) -> &str {
+        &self.server.id
+    }
     pub(super) fn new(server: Arc<Server>, definition: rmcp::model::Tool) -> Result<Self, String> {
         let original = definition.name.to_string();
         let parameters = normalize(Value::Object((*definition.input_schema).clone()))
@@ -246,10 +325,7 @@ impl Tool for McpTool {
                     return Ok(match response {
                         Ok(Ok(response)) => match serde_json::to_value(response) {
                             Ok(value) => {
-                                let mut result = convert(&value, &self.server.id, &self.original);
-                                result.output = ToolResult::bounded_ok(&self.server.redact(&result.output), DEFAULT_MAX_OUTPUT_BYTES).output;
-                                if let Some(error) = &mut result.error { error.message = self.server.redact(&error.message); }
-                                result
+                                convert(&value, &self.server.id, &self.original, |text| self.server.redact(text))
                             },
                             Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
                         },
@@ -305,6 +381,7 @@ mod tests {
             &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
             "test",
             "big",
+            str::to_owned,
         );
         assert_eq!(result.status, ToolStatus::Error);
         assert_eq!(result.truncated.unwrap().original_bytes, 100000);
@@ -313,13 +390,56 @@ mod tests {
             &json!({"content":[], "structuredContent":{"a":1}}),
             "test",
             "echo",
+            str::to_owned,
         );
         assert_eq!(structured.output, "{\n  \"a\": 1\n}");
         let mixed = convert(
             &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
             "test",
             "echo",
+            str::to_owned,
         );
         assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
+    }
+
+    #[test]
+    fn redact_before_bounding_and_derive_one_consistent_error_result() {
+        let secret = "TOKEN";
+        let text = format!("{}{} retained tail", "x".repeat(65534), secret);
+        let result = convert(
+            &json!({"isError":true,"content":[{"type":"text","text":text}]}),
+            "fake",
+            "echo",
+            |text| text.replace(secret, "[redacted]"),
+        );
+        assert!(!result.output.contains("TOK"));
+        assert_eq!(result.error.as_ref().unwrap().message, result.output);
+        assert_eq!(result.truncated.unwrap().original_bytes, 65534 + 10 + 14);
+        let expanded = convert(
+            &json!({"isError":true,"content":[{"type":"text","text":"s".repeat(8000)}]}),
+            "fake",
+            "echo",
+            |text| text.replace('s', "[redacted]"),
+        );
+        assert_eq!(expanded.truncated.unwrap().original_bytes, 80000);
+        assert_eq!(expanded.error.unwrap().message, expanded.output);
+        assert!(expanded.output.len() <= 65536);
+    }
+
+    #[test]
+    fn schema_instance_data_is_not_rewritten_and_malformed_shapes_fail() {
+        let data = json!({"$ref":"literal", "$schema":"literal", "format":"literal"});
+        let schema = normalize(json!({"properties":{"x":{"type":"object","default":data,"const":data,"enum":[data],"examples":[data]}}})).unwrap();
+        assert_eq!(schema["properties"]["x"]["default"], data);
+        assert_eq!(schema["properties"]["x"]["enum"][0], data);
+        for schema in [
+            json!({"properties":[]}),
+            json!({"properties":{"x":42}}),
+            json!({"required":[42]}),
+            json!({"type":"string"}),
+            json!({"unknownKeyword":{}}),
+        ] {
+            assert!(normalize(schema).is_err());
+        }
     }
 }

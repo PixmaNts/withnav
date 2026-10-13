@@ -25,11 +25,36 @@ async fn ready(manager: &McpManager) {
 }
 
 fn registry(manager: &McpManager) -> Registry {
+    // Permission-cutover integration tests can use this same fixture with server id `fake`:
+    // register manager.snapshot(), then dispatch `mcp__fake__echo` through the ordinary gate.
     let mut registry = Registry::new();
     for tool in manager.snapshot() {
         registry.register(Box::new(tool));
     }
     registry
+}
+
+#[tokio::test]
+async fn startup_cancel_and_timeout_allow_sigterm_cleanup() {
+    for cancel in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("cleanup");
+        let mut settings = Settings::default();
+        settings.set_dotted("mcp", json!({"hang":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":200,"env":{"CLEANUP_MARKER":marker.to_string_lossy()}}}));
+        let manager = McpManager::start(&settings);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if cancel {
+            manager.shutdown().await;
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("hanging initialization must get graceful cleanup");
+        manager.shutdown().await;
+    }
 }
 
 fn context() -> ToolContext {

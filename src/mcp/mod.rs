@@ -1,6 +1,7 @@
 //! Shared stdio MCP connections, snapshotted into each session's tool registry.
 pub mod config;
 mod connection;
+mod redaction;
 mod tool;
 pub use tool::McpTool;
 
@@ -28,23 +29,16 @@ pub(crate) struct Server {
     config: config::ServerConfig,
     ready: Mutex<Option<Ready>>,
     status: Mutex<ServerStatus>,
-    stderr: Mutex<std::collections::VecDeque<u8>>,
+    stderr: Mutex<redaction::StderrTail>,
     secrets: Mutex<Vec<String>>,
 }
 
 impl Server {
     pub(crate) fn redact(&self, text: &str) -> String {
-        let mut text = text.to_string();
-        for secret in self
-            .secrets
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|s| !s.is_empty())
-        {
-            text = text.replace(secret, "[redacted]");
-        }
-        text
+        redaction::redact(
+            text,
+            &self.secrets.lock().unwrap_or_else(|e| e.into_inner()),
+        )
     }
 }
 
@@ -120,7 +114,8 @@ impl McpManager {
     }
 
     pub fn snapshot(&self) -> Vec<McpTool> {
-        self.servers
+        let inventory: Vec<_> = self
+            .servers
             .iter()
             .flat_map(|s| {
                 s.ready
@@ -130,21 +125,46 @@ impl McpManager {
                     .map(|r| r.tools.clone())
                     .unwrap_or_default()
             })
-            .collect()
+            .collect();
+        let (tools, skipped) = resolve_collisions(inventory);
+        for (id, reason) in skipped {
+            if let Some(server) = self.servers.iter().find(|s| s.id == id) {
+                tracing::warn!(server = %id, reason = %server.redact(&reason), "MCP tool skipped");
+            }
+        }
+        tools
     }
 
     pub fn statuses(&self) -> Vec<ServerStatus> {
+        let inventory = self
+            .servers
+            .iter()
+            .flat_map(|s| {
+                s.ready
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|r| r.tools.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let (tools, collisions) = resolve_collisions(inventory);
+        for (id, reason) in &collisions {
+            if let Some(server) = self.servers.iter().find(|s| &s.id == id) {
+                tracing::warn!(server = %id, reason = %server.redact(reason), "MCP tool skipped");
+            }
+        }
         let mut statuses = self.invalid.clone();
         statuses.extend(self.servers.iter().map(|s| {
             let mut status = s.status.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let bytes: Vec<_> = s
-                .stderr
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .copied()
-                .collect();
-            status.stderr_tail = s.redact(&String::from_utf8_lossy(&bytes));
+            status.stderr_tail = s.stderr.lock().unwrap_or_else(|e| e.into_inner()).text();
+            status.tool_count = tools.iter().filter(|t| t.server_id() == s.id).count();
+            status.skipped_tools.extend(
+                collisions
+                    .iter()
+                    .filter(|(id, _)| id == &s.id)
+                    .map(|(_, reason)| reason.clone()),
+            );
             status.skipped_tools = status
                 .skipped_tools
                 .iter()
@@ -164,8 +184,111 @@ impl McpManager {
     }
 }
 
+fn resolve_collisions(mut tools: Vec<McpTool>) -> (Vec<McpTool>, Vec<(String, String)>) {
+    tools.sort_by(|a, b| (a.server_id(), &a.original).cmp(&(b.server_id(), &b.original)));
+    let mut names = std::collections::HashSet::new();
+    let mut skipped = vec![];
+    tools.retain(|tool| {
+        if names.insert(tool.wire.clone()) {
+            true
+        } else {
+            skipped.push((
+                tool.server_id().to_owned(),
+                format!(
+                    "{}: cross-server wire-name collision ({})",
+                    tool.original, tool.wire
+                ),
+            ));
+            false
+        }
+    });
+    (tools, skipped)
+}
+
 impl Drop for McpManager {
     fn drop(&mut self) {
         self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn legacy_cross_server_collision_is_sorted_reported_and_dispatches_first() {
+        // Bypass id parsing to cover inventories created by older configurations; current
+        // declarations reject __ in ids, but the manager still owns collision resolution.
+        let cancel = CancellationToken::new();
+        let mut servers = vec![];
+        let mut tasks = vec![];
+        for (id, name, retained) in [("a__b", "c", "wrong"), ("a", "b__c", "retained")] {
+            let config: config::ServerConfig = serde_json::from_value(json!({"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"TOOL_NAMES":json!([name]).to_string(),"RETAINED":retained}})).unwrap();
+            let server = Arc::new(Server {
+                id: id.into(),
+                config,
+                ready: Mutex::new(None),
+                status: Mutex::new(ServerStatus {
+                    server_id: id.into(),
+                    state: "starting",
+                    tool_count: 0,
+                    skipped_tools: vec![],
+                    error: None,
+                    stderr_tail: String::new(),
+                }),
+                stderr: Mutex::new(Default::default()),
+                secrets: Mutex::new(vec![]),
+            });
+            let s = server.clone();
+            let c = cancel.clone();
+            tasks.push(tokio::spawn(async move {
+                connection::supervise(s, c, Arc::new(tokio::sync::Semaphore::new(4))).await;
+            }));
+            servers.push(server);
+        }
+        let manager = McpManager {
+            servers,
+            invalid: vec![],
+            cancel,
+            tasks: Mutex::new(tasks),
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while manager.statuses().iter().any(|s| s.state != "ready") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let tools = manager.snapshot();
+        assert_eq!(tools.len(), 1);
+        let skipped = manager
+            .statuses()
+            .into_iter()
+            .find(|s| s.server_id == "a__b")
+            .unwrap();
+        assert_eq!(skipped.skipped_tools.len(), 1);
+        assert_eq!(skipped.tool_count, 0);
+        let mut registry = crate::tools::Registry::new();
+        for tool in tools {
+            registry.register(Box::new(tool));
+        }
+        let cx = crate::tools::ToolContext {
+            binding: None,
+            workspace: "/tmp/opencode".into(),
+            writable_roots: vec![],
+            readable_roots: vec![],
+        };
+        assert_eq!(
+            registry
+                .dispatch("mcp__a__b__c", json!({}), Default::default(), &cx)
+                .await
+                .unwrap()
+                .metadata["mcp_server"],
+            "a"
+        );
+        manager.shutdown().await;
+        assert!(config::parse(Some(&json!({"a__b":{"command":["x"]}})))[0]
+            .1
+            .is_err());
     }
 }

@@ -642,10 +642,6 @@ pub fn needs_permission(
                 destination: None,
             })
         }
-        name if name.starts_with("mcp__") => Gate::Needs(Needed {
-            scope: Scope::Origin(format!("mcp:{name}")),
-            destination: None,
-        }),
         _ => Gate::Ungated,
     }
 }
@@ -689,15 +685,6 @@ mod tests {
 
     fn gate(f: &Fixture, tool: &str, args: Value) -> Gate {
         needs_permission(Some(&f.role), tool, &args, &f.cx)
-    }
-
-    #[test]
-    fn mcp_tools_are_reviewed_by_the_current_gate() {
-        let f = fixture();
-        assert!(matches!(
-            gate(&f, "mcp__github__get_issue", json!({})),
-            Gate::Needs(_)
-        ));
     }
 
     /// The scope of a call that needs approval, `None` for any other gate.

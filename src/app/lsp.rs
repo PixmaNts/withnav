@@ -34,14 +34,18 @@ pub enum LspCommand {
 }
 
 pub fn init_tracing_stderr() {
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     // stdout carries LSP frames; tracing must never write into that channel.
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .with_writer(std::io::stderr)
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(super::logging::mcp_safe_filter())
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+                .with_writer(std::io::stderr),
+        )
         .try_init();
 }
 

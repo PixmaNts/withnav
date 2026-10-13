@@ -4,7 +4,7 @@ use nix::{
     sys::signal::{killpg, Signal},
     unistd::Pid,
 };
-use rmcp::{transport::TokioChildProcess, ServiceExt};
+use rmcp::ServiceExt;
 use std::{collections::HashSet, process::Stdio, sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -59,29 +59,30 @@ async fn run(
     cancel: &CancellationToken,
     permit: tokio::sync::SemaphorePermit<'_>,
 ) -> Result<(), String> {
-    let env = super::config::child_env(&server.config)?;
-    *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = server
-        .config
-        .env
-        .keys()
-        .filter_map(|key| env.get(key).cloned())
-        .collect();
+    let (env, secrets) = super::config::child_env(&server.config)?;
+    *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = secrets.clone();
     let mut command = tokio::process::Command::new(&server.config.command[0]);
     command
         .args(&server.config.command[1..])
         .env_clear()
         .envs(env)
-        .process_group(0);
-    let (transport, stderr) = TokioChildProcess::builder(command)
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
         .spawn()
         .map_err(|_| "cannot spawn MCP command (details omitted)".to_string())?;
-    let pid = transport
+    let pid = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
         .filter(|id| *id > 0)
         .ok_or("MCP child has no process id")?;
     let group = Group(Pid::from_raw(pid));
+    let stdin = child.stdin.take().ok_or("MCP stdin unavailable")?;
+    let stdout = child.stdout.take().ok_or("MCP stdout unavailable")?;
+    let stderr = child.stderr.take();
     let drain = stderr.map(|mut stderr| {
         let server = server.clone();
         tokio::spawn(async move {
@@ -91,22 +92,18 @@ async fn run(
                     break;
                 }
                 let mut ring = server.stderr.lock().unwrap_or_else(|e| e.into_inner());
-                ring.extend(&bytes[..n]);
-                while ring.len() > 64 * 1024 {
-                    ring.pop_front();
-                }
-                let mut lines = ring.iter().filter(|b| **b == b'\n').count();
-                while lines > 200 {
-                    if ring.pop_front() == Some(b'\n') {
-                        lines -= 1;
-                    }
-                }
+                ring.push(&bytes[..n], &secrets, false);
             }
+            server
+                .stderr
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(&[], &secrets, true);
         })
     });
     let result = async {
         let startup = async {
-            let mut client = ().serve(transport).await.map_err(|_| "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string())?;
+            let mut client = ().serve((stdout, stdin)).await.map_err(|_| "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string())?;
             let discovery = discover(server, client.peer()).await;
             match discovery {
                 Ok(tools) => Ok((client, tools)),
@@ -138,7 +135,21 @@ async fn run(
         let _ = killpg(group.0, Signal::SIGTERM);
         Ok(())
     }.await;
+    // Initialization futures own only stdio, not the child. Dropping them closes stdin;
+    // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
+    if tokio::time::timeout(Duration::from_millis(100), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = killpg(group.0, Signal::SIGTERM);
+        let _ = tokio::time::timeout(
+            Duration::from_millis(crate::tools::bash_grace_ms()),
+            child.wait(),
+        )
+        .await;
+    }
     drop(group);
+    let _ = child.wait().await;
     if let Some(drain) = drain {
         let _ = tokio::time::timeout(Duration::from_secs(1), drain).await;
     }
@@ -195,5 +206,8 @@ async fn discover(
     let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
     status.tool_count = tools.len();
     status.skipped_tools = skipped;
+    for reason in &status.skipped_tools {
+        tracing::warn!(server = %server.id, reason = %server.redact(reason), "MCP tool skipped");
+    }
     Ok(tools)
 }

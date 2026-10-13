@@ -1134,7 +1134,7 @@ suffix. Sanitization collisions keep the first original name in sorted order and
 others in `nav doctor`. Schemas drop `$schema` and `format`, inline acyclic local references,
 and require an object root; unsupported references or root composition skip only that tool.
 
-Global `config.json` owns the `mcp` map; server ids match `[a-z0-9_-]{1,24}`. Each stdio entry
+Global `config.json` owns the `mcp` map; server ids match `[a-z0-9_-]{1,24}` and cannot contain `__`. Each stdio entry
 has a `command` argv array, optional `env`, `enabled` (true), `startup_timeout_ms` (10000),
 `call_timeout_ms` (60000), and `tools` glob deny filters. `{env:NAME}` expands only in `env`.
 Children inherit only PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared environment.
@@ -1153,8 +1153,9 @@ Calls have cancellation notifications and configured deadlines (`mcp_timeout`), 
 output and `mcp_server`/`mcp_tool` metadata. Text is joined; structured content is pretty JSON
 when no text exists; resource links include URI/name; image/audio content is a placeholder.
 `isError` becomes `mcp_tool_error` with the server as `plugin_id`. MCP result text remains
-untrusted and grants no authorization. The current gate reviews MCP calls; after permission
-cutover the ordinary rule model applies without MCP-specific exceptions. Yolo skips review.
+untrusted and grants no authorization. Merge this delivery only after permission cutover:
+until then MCP tools bypass the old gate. After cutover the ordinary rule model applies
+without MCP-specific exceptions (no rule = ask). Yolo skips review.
 
 Version 0.1 does not require:
 
@@ -1809,7 +1810,7 @@ The parser MUST NOT assume that one HTTP byte chunk equals one SSE event.
 
 ## 22. Stack
 
-> **Status: built, with a different set of crates.** `rmcp` and `notify` are not dependencies, because MCP and hot reload are not built. See `Cargo.toml` for the exact versions.
+> **Status: built, with a different set of crates.** `rmcp` supports stdio MCP; `notify` is not a dependency. See `Cargo.toml` for exact versions.
 
 | Concern | Choice |
 |---|---|

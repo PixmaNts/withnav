@@ -355,7 +355,11 @@ subagent text as untrusted and never treats it as a Captain turn.
 MCP declarations live only in the global `config.json` under `mcp`. Connections, restart
 counters, tool inventories and bounded stderr tails are memory-only. Environment references
 are resolved only for child launch, never saved to configuration, history or events; declared
-environment values are redacted from diagnostic tails and tool output. No workspace MCP
+environment values and their interpolated components are redacted before output truncation
+or stderr eviction (including chunk boundaries). Application subscribers exclude rmcp events
+even under verbose user filters because dependency diagnostics can include raw wire payloads.
+Wire-name collisions are resolved across the ready inventory in server-id/original-name order,
+keeping the first and reporting skipped definitions. No workspace MCP
 configuration is loaded. Config changes require a service restart; new sessions snapshot only
 currently ready tools, and existing registries stay frozen, including across connection restarts.
 

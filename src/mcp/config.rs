@@ -43,12 +43,13 @@ pub fn parse(value: Option<&Value>) -> Vec<(String, Result<ServerConfig, String>
         .map(|(id, value)| {
             let config = (|| {
                 if id.is_empty()
+                    || id.contains("__")
                     || id.len() > 24
                     || !id
                         .bytes()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_-".contains(&c))
                 {
-                    return Err("server id must match [a-z0-9_-]{1,24}".into());
+                    return Err("server id must match [a-z0-9_-]{1,24} and contain no __".into());
                 }
                 let config: ServerConfig = serde_json::from_value(value.clone()).map_err(|_| {
                     "invalid stdio server configuration (values omitted)".to_string()
@@ -109,7 +110,7 @@ pub fn interpolate(value: &str, lookup: impl Fn(&str) -> Option<String>) -> Resu
     Ok(result)
 }
 
-pub fn child_env(config: &ServerConfig) -> Result<BTreeMap<String, String>, String> {
+pub fn child_env(config: &ServerConfig) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
     let mut env: BTreeMap<_, _> = std::env::vars()
         .filter(|(key, _)| {
             matches!(key.as_str(), "PATH" | "HOME" | "LANG" | "TMPDIR")
@@ -117,13 +118,22 @@ pub fn child_env(config: &ServerConfig) -> Result<BTreeMap<String, String>, Stri
                 || key.starts_with("XDG_")
         })
         .collect();
+    let mut secrets = vec![];
     for (key, value) in &config.env {
-        env.insert(
-            key.clone(),
-            interpolate(value, |name| std::env::var(name).ok())?,
-        );
+        let parts = std::cell::RefCell::new(vec![]);
+        let resolved = interpolate(value, |name| {
+            let value = std::env::var(name).ok()?;
+            parts.borrow_mut().push(value.clone());
+            Some(value)
+        })?;
+        secrets.extend(parts.into_inner());
+        secrets.push(resolved.clone());
+        env.insert(key.clone(), resolved);
     }
-    Ok(env)
+    secrets.retain(|value| !value.is_empty());
+    secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    secrets.dedup();
+    Ok((env, secrets))
 }
 
 #[cfg(test)]

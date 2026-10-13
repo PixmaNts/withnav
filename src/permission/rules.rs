@@ -254,7 +254,7 @@ mod tests {
             .unwrap()
             .is_none());
         store
-            .connection
+            .db()
             .execute_batch("DROP TABLE permission_rules")
             .unwrap();
         assert!(matches!(
@@ -389,6 +389,54 @@ fn read_rule(row: &Row<'_>) -> rusqlite::Result<Rule> {
     })
 }
 
+fn add_rule(
+    db: &rusqlite::Connection,
+    action: &str,
+    resource: &str,
+    effect: Effect,
+    scope: RuleScope,
+    origin: RuleOrigin,
+) -> Result<Rule, Error> {
+    if action.is_empty() || action.contains('\0') || resource.contains('\0') {
+        return Err(Error::Invalid(
+            "rule action must not be empty; patterns cannot contain NUL".into(),
+        ));
+    }
+    let (scope_kind, scope_value) = scope.storage()?;
+    let (action_glob, action_precision) = glob(action);
+    let (resource_glob, resource_precision) = glob(resource);
+    let origin = match origin {
+        RuleOrigin::Always => "always",
+        RuleOrigin::Manual => "manual",
+        RuleOrigin::Flow => "flow",
+    };
+    db.execute(
+        "INSERT INTO permission_rules
+            (action,resource,action_glob,resource_glob,action_bare_glob,resource_bare_glob,
+             precision,effect,scope,scope_value,origin,created_at)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        params![
+            action,
+            resource,
+            action_glob,
+            resource_glob,
+            bare_glob(action),
+            bare_glob(resource),
+            (action_precision + resource_precision) as i64,
+            effect.as_str(),
+            scope_kind,
+            scope_value,
+            origin,
+            crate::bus::event::now_rfc3339()
+        ],
+    )?;
+    Ok(db.query_row(
+        &format!("SELECT {COLUMNS} FROM permission_rules WHERE id=?1"),
+        [db.last_insert_rowid()],
+        read_rule,
+    )?)
+}
+
 impl PermissionStore {
     pub fn add(
         &self,
@@ -398,49 +446,39 @@ impl PermissionStore {
         scope: RuleScope,
         origin: RuleOrigin,
     ) -> Result<Rule, Error> {
-        if action.is_empty() || action.contains('\0') || resource.contains('\0') {
-            return Err(Error::Invalid(
-                "rule action must not be empty; patterns cannot contain NUL".into(),
-            ));
+        add_rule(&self.db(), action, resource, effect, scope, origin)
+    }
+
+    /// Adds every rule or none: an "Always" answer covering several commands
+    /// must not leave half of them saved.
+    pub fn add_all(
+        &self,
+        rules: &[(String, String, Effect, RuleScope)],
+        origin: RuleOrigin,
+    ) -> Result<Vec<Rule>, Error> {
+        let db = self.db();
+        db.execute_batch("BEGIN IMMEDIATE")?;
+        let saved: Result<Vec<Rule>, Error> = rules
+            .iter()
+            .map(|(action, resource, effect, scope)| {
+                add_rule(&db, action, resource, *effect, scope.clone(), origin)
+            })
+            .collect();
+        match saved {
+            Ok(saved) => {
+                db.execute_batch("COMMIT")?;
+                Ok(saved)
+            }
+            Err(error) => {
+                let _ = db.execute_batch("ROLLBACK");
+                Err(error)
+            }
         }
-        let (scope_kind, scope_value) = scope.storage()?;
-        let (action_glob, action_precision) = glob(action);
-        let (resource_glob, resource_precision) = glob(resource);
-        let origin = match origin {
-            RuleOrigin::Always => "always",
-            RuleOrigin::Manual => "manual",
-            RuleOrigin::Flow => "flow",
-        };
-        self.connection.execute(
-            "INSERT INTO permission_rules
-            (action,resource,action_glob,resource_glob,action_bare_glob,resource_bare_glob,
-             precision,effect,scope,scope_value,origin,created_at)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-            params![
-                action,
-                resource,
-                action_glob,
-                resource_glob,
-                bare_glob(action),
-                bare_glob(resource),
-                (action_precision + resource_precision) as i64,
-                effect.as_str(),
-                scope_kind,
-                scope_value,
-                origin,
-                crate::bus::event::now_rfc3339()
-            ],
-        )?;
-        Ok(self.connection.query_row(
-            &format!("SELECT {COLUMNS} FROM permission_rules WHERE id=?1"),
-            [self.connection.last_insert_rowid()],
-            read_rule,
-        )?)
     }
 
     /// Returns false for an unknown or already revoked rule.
     pub fn revoke(&self, id: i64) -> Result<bool, Error> {
-        Ok(self.connection.execute(
+        Ok(self.db().execute(
             "UPDATE permission_rules SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL",
             params![crate::bus::event::now_rfc3339(), id],
         )? != 0)
@@ -448,7 +486,8 @@ impl PermissionStore {
 
     pub fn list(&self, filter: &RuleFilter) -> Result<Vec<Rule>, Error> {
         let scope = filter.scope.as_ref().map(RuleScope::storage).transpose()?;
-        let mut statement = self.connection.prepare(&format!(
+        let db = self.db();
+        let mut statement = db.prepare(&format!(
             "SELECT {COLUMNS} FROM permission_rules
              WHERE (?1 OR revoked_at IS NULL)
              AND (?2 IS NULL OR (scope=?2 AND scope_value=?3)) ORDER BY id DESC"
@@ -478,7 +517,7 @@ impl PermissionStore {
         }
         let workspace = workspace.canonicalize()?;
         Ok(self
-            .connection
+            .db()
             .query_row(
                 &format!(
                     "SELECT {COLUMNS} FROM permission_rules WHERE revoked_at IS NULL

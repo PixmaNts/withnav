@@ -775,6 +775,10 @@ mod tests {
                 scope: Scope::Folder("/w".into()),
                 agent: "build".into(),
                 reason: "r".into(),
+                always_label: None,
+                always: Vec::new(),
+                decision_id: None,
+                repeats: 1,
             }),
             call: crate::provider::ToolCall {
                 id: "w1".into(),

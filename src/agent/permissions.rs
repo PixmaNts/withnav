@@ -35,7 +35,7 @@ pub enum PermissionOrigin {
 pub enum PermissionDecision {
     /// Run this one call.
     AllowOnce,
-    /// Run this call and save an allow rule after the permission-rule cutover.
+    /// Save the proposed allow rules, then run this call.
     AllowAlways,
     /// Do not run the call; the optional message is the Captain's reason.
     Reject {
@@ -128,6 +128,18 @@ pub struct PermissionRequest {
     pub agent: String,
     /// Why approval is needed, in a sentence a captain can show.
     pub reason: String,
+    /// The text of the "Always" button; absent when "Always" is not offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_label: Option<String>,
+    /// The rules an "Always" answer saves; empty when it is not offered.
+    #[serde(skip)]
+    pub always: Vec<crate::permission::decide::RuleProposal>,
+    /// The pending row of the decision table this request settles.
+    #[serde(skip)]
+    pub decision_id: Option<i64>,
+    /// Identical consecutive calls of the turn when the call was decided.
+    #[serde(skip)]
+    pub repeats: usize,
 }
 
 impl PermissionRequest {
@@ -152,6 +164,10 @@ impl PermissionRequest {
             scope,
             agent: agent.to_string(),
             reason,
+            always_label: None,
+            always: Vec::new(),
+            decision_id: None,
+            repeats: 1,
         }
     }
 }
@@ -380,6 +396,21 @@ pub struct Needed {
 /// runs under the ordinary permission gate alone.
 pub fn is_guarded(role: &AgentDefinition) -> bool {
     role.id.as_str() == crate::agent::definitions::PLAN
+}
+
+impl PermissionDecision {
+    /// The answer as the rule-based model applies it. "Allow folder" and
+    /// "allow configuration for the session" belong to the per-call review and
+    /// count as one approval; a legacy `deny` is a reject with its message.
+    pub fn current(self) -> Self {
+        match self {
+            Self::AllowFolder | Self::AllowConfigSession => Self::AllowOnce,
+            Self::Deny { message } => Self::Reject {
+                message: Some(message),
+            },
+            other => other,
+        }
+    }
 }
 
 /// The decision that is applied for `agent`: a guarded agent's exceptions are

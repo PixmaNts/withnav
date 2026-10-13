@@ -41,10 +41,8 @@ mod tests {
             ),
         ] {
             let (sql, values) = history_query(&filter, 100).unwrap();
-            let mut statement = store
-                .connection
-                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-                .unwrap();
+            let db = store.db();
+            let mut statement = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
             let plan = statement
                 .query_map(rusqlite::params_from_iter(values), |row| {
                     row.get::<_, String>(3)
@@ -385,7 +383,8 @@ impl PermissionStore {
             snapshot.truncated = true;
         }
         let workspace = decision.workspace.canonicalize()?;
-        self.connection.execute(
+        let db = self.db();
+        db.execute(
             "INSERT INTO permission_decisions
              (time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,
               command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by)
@@ -413,7 +412,7 @@ impl PermissionStore {
                 decision.approved_by
             ],
         )?;
-        Ok(self.connection.last_insert_rowid())
+        Ok(db.last_insert_rowid())
     }
 
     pub fn update_outcome(
@@ -423,7 +422,7 @@ impl PermissionStore {
         captain_answer: Option<&Value>,
         approved_by: Option<&str>,
     ) -> Result<bool, Error> {
-        Ok(self.connection.execute(
+        Ok(self.db().execute(
             "UPDATE permission_decisions SET outcome=?1,
              captain_answer=COALESCE(?2,captain_answer), approved_by=COALESCE(?3,approved_by)
              WHERE id=?4",
@@ -436,13 +435,24 @@ impl PermissionStore {
         )? != 0)
     }
 
+    /// A session that restarts cannot answer the questions its previous
+    /// process asked: they end as `expired`. Returns how many rows changed.
+    pub fn expire_pending(&self, session_id: &str) -> Result<usize, Error> {
+        Ok(self.db().execute(
+            "UPDATE permission_decisions SET outcome='expired'
+             WHERE session_id=?1 AND outcome='pending'",
+            params![session_id],
+        )?)
+    }
+
     pub fn list_decisions(
         &self,
         filter: &DecisionFilter,
         limit: usize,
     ) -> Result<Vec<Decision>, Error> {
         let (sql, values) = history_query(filter, limit)?;
-        let mut statement = self.connection.prepare(&sql)?;
+        let db = self.db();
+        let mut statement = db.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(values), read_decision)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }

@@ -61,6 +61,17 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
         Some(256),
         CancellationToken::new(),
     );
+    // The wire is the subject here, not permissions: every call may run.
+    actor
+        .permission_store
+        .add(
+            "*",
+            "*",
+            withnav::permission::rules::Effect::Allow,
+            withnav::permission::rules::RuleScope::Global,
+            withnav::permission::rules::RuleOrigin::Manual,
+        )
+        .unwrap();
     TestActor { actor, _tmp: tmp }
 }
 

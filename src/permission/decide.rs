@@ -1390,7 +1390,7 @@ mod tests {
     fn a_rule_database_error_asks_the_captain() {
         let f = fixture();
         f.store
-            .connection
+            .db()
             .execute_batch("DROP TABLE permission_rules")
             .unwrap();
         let decision = f.decide(Control::Bypass, &bash("ls"));

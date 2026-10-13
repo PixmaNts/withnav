@@ -44,6 +44,23 @@ pub enum PendingInteraction {
     },
 }
 
+/// Where the configuration and the database the fixed floor protects live.
+#[derive(Debug, Clone, Default)]
+pub struct PermissionDirs {
+    pub config: Option<std::path::PathBuf>,
+    pub data: Option<std::path::PathBuf>,
+}
+
+impl PermissionDirs {
+    /// This machine's configured directories.
+    pub fn machine() -> Self {
+        Self {
+            config: crate::provider::auth::default_config_dir(),
+            data: crate::paths::data_dir(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BypassState {
     pub enabled: bool,
@@ -57,6 +74,17 @@ pub struct AgentActor {
     pub compaction_chunk_tokens: u64,
     pub compaction_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
+    /// The permission rules and the decision table. A session opens the
+    /// shared database; an actor built outside one keeps a private, empty one.
+    pub permission_store: Arc<crate::permission::store::PermissionStore>,
+    /// WithNav's own configuration and data directories, which the fixed floor protects.
+    pub permission_dirs: PermissionDirs,
+    /// The session the decision table files this actor's decisions under.
+    pub permission_session: String,
+    /// The turn the decision table files decisions under; renewed with each run.
+    pub permission_turn: String,
+    /// Identical consecutive calls in this turn.
+    pub doom: crate::permission::decide::DoomTracker,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
     pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
     pub permission_context: Arc<std::sync::Mutex<super::permission_gate::context::ReviewContext>>,
@@ -216,6 +244,14 @@ impl AgentActor {
             compaction_chunk_tokens: 64_000,
             compaction_progress: None,
             tool_flows: None,
+            permission_store: Arc::new(
+                crate::permission::store::PermissionStore::in_memory()
+                    .expect("an in-memory permission database opens"),
+            ),
+            permission_dirs: PermissionDirs::machine(),
+            permission_session: String::new(),
+            permission_turn: String::new(),
+            doom: Default::default(),
             captain_request_inherited: false,
             protected_config_spelling: None,
             protected_config_unresolved: false,
@@ -534,10 +570,12 @@ impl AgentActor {
                 });
             }
             Some(PendingInteraction::Permission {
+                request,
                 call,
                 remaining_calls,
                 ..
             }) => {
+                self.cancel_pending_decision(&request);
                 self.settle_interrupted(&call, &remaining_calls);
                 self.transcript.push(ChatMessage::User {
                     provenance,
@@ -556,6 +594,7 @@ impl AgentActor {
     pub fn interrupt_pending_permission(&mut self) {
         self.end_skill_turn();
         if let Some(PendingInteraction::Permission {
+            request,
             call,
             remaining_calls,
             ..
@@ -563,7 +602,22 @@ impl AgentActor {
             .pending
             .take_if(|p| matches!(p, PendingInteraction::Permission { .. }))
         {
+            self.cancel_pending_decision(&request);
             self.settle_interrupted(&call, &remaining_calls);
+        }
+    }
+
+    /// A question nobody answers ends as `cancelled` in the decision table.
+    fn cancel_pending_decision(&self, request: &PermissionRequest) {
+        if let Some(id) = request.decision_id {
+            if let Err(error) = self.permission_store.update_outcome(
+                id,
+                crate::permission::decisions::Outcome::Cancelled,
+                None,
+                None,
+            ) {
+                tracing::warn!(%error, "permission decision outcome not recorded");
+            }
         }
     }
 

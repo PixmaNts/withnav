@@ -947,7 +947,7 @@ mod tests {
         writer
             .permission_store()
             .unwrap()
-            .connection
+            .db()
             .execute_batch("DROP TABLE validations; CREATE TABLE validations (invalid TEXT)")
             .unwrap();
         assert!(reader.reload().is_err());

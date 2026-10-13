@@ -1050,6 +1050,7 @@ impl Fixture {
         std::fs::create_dir(&ws).unwrap();
         let service = TestServerConfig::mock(tmp.path(), &provider.url)
             .chat_tools(128000)
+            .allow_everything()
             .state();
         let (tx, sleeps) = mpsc::unbounded_channel();
         let clock = Arc::new(FakeClock {

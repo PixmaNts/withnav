@@ -142,6 +142,35 @@ impl TestServerConfig {
         self
     }
 
+    /// Saves a global permission rule in the server's data dir, as `nav
+    /// permissions add` would. Tests that are not about permissions use it to
+    /// let their tool calls run.
+    pub fn rule(
+        self,
+        action: &str,
+        resource: &str,
+        effect: withnav::permission::rules::Effect,
+    ) -> Self {
+        withnav::permission::store::PermissionStore::open(self.root.join("data"))
+            .expect("permission database")
+            .add(
+                action,
+                resource,
+                effect,
+                withnav::permission::rules::RuleScope::Global,
+                withnav::permission::rules::RuleOrigin::Manual,
+            )
+            .expect("permission rule");
+        self
+    }
+
+    /// Lets every call run, a loop of identical calls included: for tests
+    /// about something else than permissions.
+    pub fn allow_everything(self) -> Self {
+        use withnav::permission::rules::Effect::Allow;
+        self.rule("*", "*", Allow).rule("doom_loop", "*", Allow)
+    }
+
     /// Path of the `models.json` [`Self::config`] writes.
     pub fn models_path(&self) -> PathBuf {
         self.root.join("models.json")

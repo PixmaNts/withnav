@@ -2623,6 +2623,26 @@ impl Service {
             ..Default::default()
         });
         actor.set_skills(skills);
+        // Rules and decisions live in the shared database. One that cannot be
+        // opened leaves an empty private table: no rule, so every call asks.
+        match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
+            Ok(store) => {
+                if resumed.is_some() {
+                    if let Err(error) = store.expire_pending(&session_id.to_string()) {
+                        tracing::warn!(%error, "pending permission decisions not expired");
+                    }
+                }
+                actor.permission_store = Arc::new(store);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "permission database unavailable; every call asks")
+            }
+        }
+        actor.permission_dirs = crate::agent::actor::PermissionDirs {
+            config: Some(self.config.config_dir.clone()),
+            data: Some(self.config.data_dir.clone()),
+        };
+        actor.permission_session = session_id.to_string();
         actor.guard = super::guard::instinct_guard(
             self.config.models_path.as_deref(),
             &workspace,
@@ -3203,15 +3223,24 @@ impl Service {
             .is_none()
             .then(|| self.flows.runtime(&workspace))
             .flatten();
-        actor.tool_flows = flows.as_ref().map(|runtime| {
-            super::flows::hook(
+        actor.tool_flows = match &flows {
+            Some(runtime) => Some(super::flows::hook(
                 runtime,
                 session_id.to_string(),
                 selected_model.clone(),
                 status.clone(),
                 sequencer.clone(),
-            )
-        });
+            )),
+            // A subagent's calls are judged by the same permission flows as
+            // its parent's; flow effects stay with the root session.
+            None => self.flows.runtime(&workspace).map(|runtime| {
+                runtime.tool_hook_with_effects(
+                    session_id.to_string(),
+                    selected_model.clone(),
+                    Arc::new(crate::flows::runtime::NoEffects),
+                )
+            }),
+        };
         status.install_model_switcher(self.model_switcher(
             session_id,
             workspace.clone(),

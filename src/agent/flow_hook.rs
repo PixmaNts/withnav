@@ -120,6 +120,16 @@ pub trait ToolCallFlows: Send + Sync + std::fmt::Debug {
             }
         })
     }
+    /// The compiled-in protected check alone; without a flow runtime nothing
+    /// can establish the Captain's request.
+    fn protected_check<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = ProtectedCheck> + Send + 'a>> {
+        let _ = (ctx, cancel);
+        Box::pin(async { ProtectedCheck::Unavailable })
+    }
     fn pre_call<'a>(
         &'a self,
         call: &'a ToolCallContext,

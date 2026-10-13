@@ -159,6 +159,8 @@ pub struct FlowStore {
     loaded: RwLock<Arc<Snapshot>>,
     revisions: RwLock<BTreeMap<(Location, String), String>>,
     write: std::sync::Mutex<()>,
+    #[cfg(test)]
+    reload_gate: std::sync::Mutex<Option<Arc<std::sync::Barrier>>>,
     reload_marker: Option<ReloadMarker>,
     reload_errors: RwLock<Vec<Diagnostic>>,
     migration_errors: Vec<(Location, Diagnostic)>,
@@ -351,6 +353,8 @@ impl FlowStore {
             loaded: RwLock::new(Arc::new(BTreeMap::new())),
             revisions: RwLock::new(BTreeMap::new()),
             write: std::sync::Mutex::new(()),
+            #[cfg(test)]
+            reload_gate: std::sync::Mutex::new(None),
             reload_marker,
             reload_errors: RwLock::new(vec![]),
             migration_errors,
@@ -631,6 +635,7 @@ impl FlowStore {
         match marker.read(&mut state) {
             Ok(generation) if generation > state.observed => {
                 if let Err(e) = self.reload_local() {
+                    self.publish_builtins();
                     self.record_reload_error(&e);
                 } else {
                     state.observed = generation;
@@ -644,9 +649,13 @@ impl FlowStore {
         }
     }
     fn reload_local(&self) -> Result<(), StoreError> {
-        // Never retain a custom admission from a previous attempt on an early
-        // filesystem or database error. Existing evaluations own their Arc.
-        self.publish_builtins();
+        // Build privately; evaluations keep the previous immutable snapshot until
+        // the complete candidate (or the failure fallback) is published.
+        #[cfg(test)]
+        if let Some(gate) = self.reload_gate.lock().unwrap().clone() {
+            gate.wait();
+            gate.wait();
+        }
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let documents = self.documents_with_compiled(true)?;
         let mut candidate = BTreeMap::new();
@@ -707,14 +716,14 @@ impl FlowStore {
         if candidate.len() > 64 {
             errors.push(Diagnostic::new("limit", "more than 64 loaded flows", ""));
         }
-        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(candidate);
-        *self.revisions.write().unwrap_or_else(|e| e.into_inner()) = revisions;
         if !errors.is_empty() {
             return Err(StoreError {
                 reason: "reload_invalid",
                 errors,
             });
         }
+        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(candidate);
+        *self.revisions.write().unwrap_or_else(|e| e.into_inner()) = revisions;
         *self
             .reload_errors
             .write()
@@ -722,7 +731,7 @@ impl FlowStore {
         Ok(())
     }
     fn publish_builtins(&self) {
-        let snapshot = super::builtin::definitions()
+        let snapshot = super::builtin::all_definitions()
             .into_iter()
             .filter_map(|(definition, templates)| {
                 let name = definition.flow.name.clone();
@@ -900,6 +909,48 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reload_keeps_old_snapshot_until_complete() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        let before = store.snapshot();
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        *store.reload_gate.lock().unwrap() = Some(gate.clone());
+        std::thread::scope(|scope| {
+            let reload = scope.spawn(|| store.reload().unwrap());
+            gate.wait();
+            let during = store.snapshot();
+            assert!(during.contains_key("permission-default"));
+            let unchanged = Arc::ptr_eq(&before, &during);
+            gate.wait();
+            reload.join().unwrap();
+            assert!(unchanged, "reload published an intermediate snapshot");
+        });
+        assert!(store.snapshot().contains_key("permission-default"));
+    }
+
+    #[test]
+    fn failed_reload_keeps_permission_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        let directory = store.directory(Location::Global).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("broken.toml"),
+            "x".repeat(MAX_FLOW_BYTES + 1),
+        )
+        .unwrap();
+        assert!(store.reload().is_err());
+        assert!(store.snapshot().contains_key("permission-default"));
+    }
+    #[test]
+    fn fallback_snapshot_keeps_permission_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        store.publish_builtins();
+        assert!(store.snapshot().contains_key("permission-default"));
+    }
+
     #[test]
     fn failed_reload_drops_revoked_admissions_and_refresh_retries() {
         let temp = tempfile::tempdir().unwrap();

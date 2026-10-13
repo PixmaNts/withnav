@@ -2325,6 +2325,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
             reason: "it changes files".into(),
             resolution: None,
             message: None,
+            always_saved: true,
             stale: false,
         }),
     }

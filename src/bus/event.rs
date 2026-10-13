@@ -611,7 +611,15 @@ pub struct PermissionRequested {
 #[serde(tag = "resolution", rename_all = "snake_case")]
 pub enum PermissionResolution {
     AllowOnce,
-    AllowAlways,
+    /// The call ran. `always_saved` is false when its rules could not be
+    /// saved: the call then ran once, and `always_error` says why. Events
+    /// written before the field existed count as saved.
+    AllowAlways {
+        #[serde(default = "saved")]
+        always_saved: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        always_error: Option<String>,
+    },
     Reject {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
@@ -635,7 +643,10 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
         use crate::agent::permissions::PermissionDecision as Decision;
         match decision {
             Decision::AllowOnce => Self::AllowOnce,
-            Decision::AllowAlways => Self::AllowAlways,
+            Decision::AllowAlways => Self::AllowAlways {
+                always_saved: true,
+                always_error: None,
+            },
             Decision::Reject { message } => Self::Reject {
                 message: message.clone(),
             },
@@ -647,6 +658,10 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
             },
         }
     }
+}
+
+fn saved() -> bool {
+    true
 }
 
 /// A permission request ended, by a decision, a stop or a restart. Published

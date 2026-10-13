@@ -11,8 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::actor::AgentActor;
 use crate::agent::flow_hook::{
-    captain_messages_with_cut, FlowVerdict, PermissionCallContext, PermissionCommand,
-    ProtectedCheck, RuleResult as FlowRule, ToolCallContext, ToolCallFlows, ValidatedSkill,
+    captain_messages_with_cut, delegation_with_cut, FlowVerdict, PermissionCallContext,
+    PermissionCommand, ProtectedCheck, RuleResult as FlowRule, ToolCallContext, ToolCallFlows,
+    ValidatedSkill,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
@@ -55,6 +56,8 @@ struct SessionFlows {
     skill: Option<ValidatedSkill>,
     captain_messages: Vec<String>,
     captain_messages_cut: bool,
+    delegation: Vec<String>,
+    delegation_cut: bool,
     cancel: CancellationToken,
 }
 
@@ -77,6 +80,8 @@ impl SessionFlows {
             skill: self.skill.clone(),
             captain_messages: self.captain_messages.clone(),
             captain_messages_cut: self.captain_messages_cut,
+            delegation: self.delegation.clone(),
+            delegation_cut: self.delegation_cut,
             protected_check: query.protected_check,
         }
     }
@@ -257,6 +262,7 @@ pub(super) async fn authorize(
             call.args["name"].as_str().unwrap_or_default()
         ));
     }
+    let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
     let flows = SessionFlows {
         hook: actor.tool_flows.clone(),
         call: call.clone(),
@@ -278,6 +284,8 @@ pub(super) async fn authorize(
             .map(|(name, instructions)| ValidatedSkill { name, instructions }),
         captain_messages,
         captain_messages_cut,
+        delegation,
+        delegation_cut,
         cancel: actor.cancel.clone(),
     };
     let input = Input {
@@ -285,7 +293,7 @@ pub(super) async fn authorize(
         call,
         commands: &commands,
         cx: &cx,
-        store: &actor.permission_store,
+        store: actor.permission_store.as_deref(),
         agent: &agent,
         repeats,
         validated,
@@ -328,8 +336,9 @@ pub(super) async fn authorize(
             }
             let mut request = PermissionRequest::new(call, scope(call, &cx), &agent);
             request.reason = reason;
-            request.requires_captain = !bypassable(&decision);
+            request.requires_captain = actor.permission_store.is_none() || !bypassable(&decision);
             request.always_label = always_label(&always);
+            request.reusable_approval = !always.is_empty() && actor.permission_store.is_some();
             request.permission_gate = Some(Box::new(evidence(
                 "captain",
                 &decision,
@@ -443,6 +452,8 @@ pub(super) fn save_always(actor: &AgentActor, always: &[RuleProposal]) -> Result
         .collect();
     actor
         .permission_store
+        .as_ref()
+        .ok_or("permission rules unavailable")?
         .add_all(&rules, RuleOrigin::Always)
         .map(|rules| rules.into_iter().map(|rule| rule.id).collect())
         .map_err(|error| error.to_string())
@@ -487,6 +498,7 @@ fn record(
     approved_by: Option<&str>,
     request_id: Option<ulid::Ulid>,
 ) -> Option<i64> {
+    let store = actor.permission_store.as_ref()?;
     let row = decisions::Decision {
         id: 0,
         time: crate::bus::event::now_rfc3339(),
@@ -509,8 +521,7 @@ fn record(
         outcome,
         approved_by: approved_by.map(str::to_owned),
     };
-    actor
-        .permission_store
+    store
         .record(&row)
         .inspect_err(|error| tracing::warn!(%error, "permission decision not recorded"))
         .ok()
@@ -547,10 +558,10 @@ pub(super) fn update(
     answer: Option<&Value>,
     approved_by: Option<&str>,
 ) {
-    if let Err(error) = actor
-        .permission_store
-        .update_outcome(id, outcome, answer, approved_by)
-    {
+    let Some(store) = &actor.permission_store else {
+        return;
+    };
+    if let Err(error) = store.update_outcome(id, outcome, answer, approved_by) {
         tracing::warn!(%error, "permission decision outcome not recorded");
     }
 }

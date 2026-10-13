@@ -5,7 +5,7 @@ export interface WireEnvelope { seq: number; kind: string; payload: any }
 
 export function permissionEvidence(value: any): PermissionEvidence | undefined {
   if (!value || typeof value.policy_version !== "number" ||
-      !["instinct", "jev", "metacognition", "driver", "captain"].includes(value.source)) return undefined;
+      !["instinct", "metacognition", "driver", "captain"].includes(value.source)) return undefined;
   const result: PermissionEvidence = { policy_version: value.policy_version, source: value.source };
   if (typeof value.reason === "string") result.reason = value.reason;
   for (const key of ["verdicts", "overrides", "models"] as const) {
@@ -50,7 +50,7 @@ export function permissionCall(tool: string, argumentsText: string): string {
 export function evidenceLabel(evidence: PermissionEvidence, context: "tool" | "permission", resolution?: string): string {
   if ((evidence.source === "driver" || evidence.source === "captain")) return context === "tool" || resolution === "allow_always" || resolution === "allow_once" || resolution === "allow_folder"
     ? "approved · Captain" : "Captain review required";
-  return (evidence.source === "instinct" || evidence.source === "jev") ? "auto · instinct" : "auto · metacognition";
+  return (evidence.source === "instinct") ? "auto · instinct" : "auto · metacognition";
 }
 
 /** Select from the latest response only: provider call ids may be reused. */

@@ -28,6 +28,7 @@ const RECONNECT_DELAY_MS = 500;
  */
 class ConversationState {
   yolo = false;
+  permissionsUnavailable?: string;
   bypass = false;
   bypassSeq = -1;
   bypassEvents: { seq: number; enabled: boolean }[] = [];
@@ -88,9 +89,10 @@ export class CognitionBackend implements ChatBackend {
   private bypassConfirmations = new Set<string>();
   publishBypass(): void {
     this.emit({ type: "bypass", enabled: this.state.bypass, pending: this.state.bypassPending,
-      disabled: this.state.readOnly || this.state.starting, yolo: this.state.yolo });
+      disabled: this.state.readOnly || this.state.starting, yolo: this.state.yolo, permissionsUnavailable: this.state.permissionsUnavailable });
   }
   private acceptBypassSnapshot(summary: any): void {
+    this.state.permissionsUnavailable = typeof summary?.permissions_unavailable === "string" ? summary.permissions_unavailable : undefined;
     if (typeof summary?.yolo === "boolean") this.state.yolo = summary.yolo;
     if (typeof summary?.bypass !== "boolean" || !Number.isSafeInteger(summary.bypass_seq) || summary.bypass_seq < 0 ||
         !(typeof summary.incarnation === "string" || summary.incarnation === null)) return;

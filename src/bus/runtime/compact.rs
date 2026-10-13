@@ -391,7 +391,7 @@ pub(super) async fn summarize_written_by(
             source_budget: goal.source_budget,
             focus: goal.focus,
             chunk_tokens: actor.compaction_chunk_tokens,
-            jev: actor.compaction_judge.as_deref(),
+            decision: actor.compaction_decision.as_deref(),
             catalog: actor.compaction_catalog.as_ref(),
             max_message_tokens: match actor.compaction_writer.as_ref().filter(|meta| {
                 meta.model == writer.model && meta.provider.base_url == writer.provider.base_url

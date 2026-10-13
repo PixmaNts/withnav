@@ -793,6 +793,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
                     yolo: false,
+                    permissions_unavailable: None,
                     bypass: false,
                     bypass_seq: 0,
                     incarnation: None,

@@ -22,7 +22,6 @@ name = "nav"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }
 instinct-flow = { path = "crates/instinct-flow" }
 tokio = { version = "1.53", features = [
     "rt-multi-thread",

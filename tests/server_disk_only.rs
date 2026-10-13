@@ -184,6 +184,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "gateway",
             "incarnation",
             "model",
+            "permissions_unavailable",
             "read_only",
             "resume_disabled_reason",
             "session_id",

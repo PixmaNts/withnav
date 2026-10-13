@@ -487,3 +487,12 @@ test('answer file references post openFile but code fences and URLs do not', () 
   assert.equal(d.querySelector('.message-body pre .file-link'), null);
   dom.window.close();
 });
+
+test('unavailable permission rules reuse the warning control with error detail', () => {
+  const { dom, d, receive } = keyboardPage();
+  receive({ type: 'bypass', enabled: false, pending: false, disabled: false, permissionsUnavailable: 'withnav.db: open failed' });
+  const badge = d.querySelector('.bypass-toggle');
+  assert.match(badge.textContent, /Permission rules unavailable/);
+  assert.equal(badge.title, 'withnav.db: open failed');
+  dom.window.close();
+});

@@ -166,8 +166,36 @@ pub async fn inspect(
         schema_version: 1,
         ..Default::default()
     };
+    if let Some(data) = &data {
+        let path = data.join("withnav.db");
+        if path.exists() || (data.exists() && !data.is_dir()) {
+            let readable = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|db| {
+                    db.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))?;
+                    for (table, columns) in [
+                        ("permission_rules", "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at,action_glob,resource_glob,action_bare_glob,resource_bare_glob,precision"),
+                        ("permission_decisions", "id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by"),
+                        ("validations", "id,kind,name,location,content_sha256,validated_at,revoked_at"),
+                    ] {
+                        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0))?;
+                        if exists {
+                            db.prepare(&format!("SELECT {columns} FROM {table} LIMIT 1"))?.query([])?.next()?;
+                        }
+                    }
+                    Ok(())
+                });
+            match readable {
+                Ok(()) => report.add("permissions.database", Status::Ok, format!("{}: readable (initialisation and writes not tested)", path.display()), None),
+                Err(error) => report.add("permissions.database", Status::Warning,
+                    format!("{}: {error}", path.display()),
+                    Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled.")),
+            }
+        }
+    }
+
     let workspace =
         crate::tools::canonical_path(&args.workspace).unwrap_or_else(|_| args.workspace.clone());
+
     report.add(
         "config.location",
         Status::Ok,
@@ -190,69 +218,6 @@ pub async fn inspect(
         Some("Edit config.json; unknown keys are retained."),
     );
     if let Ok(settings) = &settings {
-        let empty_settings = crate::settings::Settings::default();
-        let manager = crate::mcp::McpManager::start(if args.offline {
-            // Offline inspection must not launch configured commands.
-            &empty_settings
-        } else {
-            settings
-        });
-        if args.offline {
-            for (id, entry) in settings.mcp() {
-                report.add(
-                    format!("mcp.{id}"),
-                    if entry.is_ok() {
-                        Status::Warning
-                    } else {
-                        Status::Failed
-                    },
-                    entry
-                        .err()
-                        .unwrap_or_else(|| "configured; not started (offline)".into()),
-                    None,
-                );
-            }
-        } else {
-            let budget = settings
-                .mcp()
-                .into_iter()
-                .filter_map(|(_, c)| c.ok())
-                .filter(|c| c.enabled)
-                .map(|c| c.startup_timeout_ms)
-                .max()
-                .unwrap_or(0)
-                .min(30_000);
-            let deadline = Instant::now() + Duration::from_millis(budget + 100);
-            while manager.statuses().iter().any(|s| s.state == "starting")
-                && Instant::now() < deadline
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            for status in manager.statuses() {
-                report.add(
-                    format!("mcp.{}", status.server_id),
-                    match status.state {
-                        "ready" | "disabled" => Status::Ok,
-                        "starting" => Status::Warning,
-                        _ => Status::Failed,
-                    },
-                    format!(
-                        "{}; {} tools; skipped: {}; {}; stderr: {}",
-                        status.state,
-                        status.tool_count,
-                        status.skipped_tools.join(", "),
-                        status.error.as_deref().unwrap_or(""),
-                        if status.state == "failed" {
-                            &status.stderr_tail
-                        } else {
-                            ""
-                        }
-                    ),
-                    None,
-                );
-            }
-        }
-        manager.shutdown().await;
         match settings.yolo() {
             Ok(true) => report.add(
                 "config.yolo",
@@ -290,7 +255,6 @@ pub async fn inspect(
                     "tui",
                     "compaction",
                     "yolo",
-                    "mcp",
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),

@@ -111,6 +111,10 @@ pub struct PermissionRequest {
     /// The text of the "Always" button; absent when "Always" is not offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub always_label: Option<String>,
+    /// Whether this request can persist a reusable rule or skill validation.
+    /// Explicitly false when the session's permission store is unavailable.
+    #[serde(default)]
+    pub reusable_approval: bool,
     /// The rules an "Always" answer saves; empty when it is not offered.
     #[serde(skip)]
     pub always: Vec<crate::permission::decide::RuleProposal>,
@@ -146,6 +150,7 @@ impl PermissionRequest {
             agent: agent.to_string(),
             reason,
             always_label: None,
+            reusable_approval: false,
             always: Vec::new(),
             decision_id: None,
             repeats: 1,
@@ -211,11 +216,6 @@ pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolErro
         // Native tools do not perform shell expansion: only a bare `~` component
         // names HOME; `~name` remains a literal workspace-relative filename.
         let path = if path.starts_with("~") {
-            #[cfg(windows)]
-            let home = directories::BaseDirs::new()
-                .map(|dirs| dirs.home_dir().to_path_buf())
-                .ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
-            #[cfg(unix)]
             let home = std::env::var_os("HOME")
                 .ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
             PathBuf::from(home).join(

@@ -166,6 +166,8 @@ async fn run_observed(actor: &mut AgentActor) -> (RunOutcome, Vec<serde_json::Va
 fn decisions(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision> {
     let mut rows = actor
         .permission_store
+        .as_ref()
+        .unwrap()
         .list_decisions(&DecisionFilter::default(), 100)
         .unwrap();
     rows.reverse();
@@ -175,6 +177,8 @@ fn decisions(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision> 
 fn add_rule(actor: &AgentActor, action: &str, resource: &str, effect: Effect) {
     actor
         .permission_store
+        .as_ref()
+        .unwrap()
         .add(
             action,
             resource,
@@ -375,7 +379,12 @@ async fn always_on_a_push_saves_the_prefix_and_releases_the_held_sibling() {
     assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "pushed"));
     // The rule exists before the call runs, and the sibling runs under it.
     assert_eq!(approved, [json!("captain"), json!("rule")]);
-    let rules = actor.permission_store.list(&RuleFilter::default()).unwrap();
+    let rules = actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .list(&RuleFilter::default())
+        .unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(
         (rules[0].action.as_str(), rules[0].resource.as_str()),
@@ -512,7 +521,12 @@ async fn an_unknown_tool_asks_and_always_saves_a_global_rule() {
     .unwrap();
     assert!(matches!(outcome, RunOutcome::Done(_)));
     assert!(tool_result_of(&actor, "e1").unwrap().contains("hi"));
-    let rules = actor.permission_store.list(&RuleFilter::default()).unwrap();
+    let rules = actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .list(&RuleFilter::default())
+        .unwrap();
     assert_eq!(rules[0].scope, RuleScope::Global);
     // The next turn runs it under the saved rule.
     let (outcome, approved) = run_observed(&mut actor).await;
@@ -995,7 +1009,7 @@ async fn the_decision_history_keeps_no_secret_and_stays_bounded() {
     )
     .await
     .unwrap();
-    let db = actor.permission_store.db();
+    let db = actor.permission_store.as_ref().unwrap().db();
     let mut statement = db
         .prepare(
             "SELECT call_snapshot, command_matches, captain_answer, flow_verdict
@@ -1099,4 +1113,218 @@ async fn a_deny_rule_written_while_a_skill_question_waits_settles_it_as_denied()
     let rows = skill_rows(&actor);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].outcome, Outcome::Denied);
+}
+
+#[tokio::test]
+async fn unavailable_rules_disable_bypass_always_and_history_but_allow_flows() {
+    for (mode, bypass, yolo, runs) in [
+        ("apply", false, false, false),
+        ("apply", true, false, false),
+        ("allow", true, false, true),
+        ("deny", false, true, true),
+    ] {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new(mode))));
+        let original = actor.permission_store.take().unwrap();
+        actor.permissions_unavailable = Some("database unavailable".into());
+        actor.yolo = yolo;
+        actor.bypass.lock().unwrap().enabled = bypass;
+        script(
+            &mut actor,
+            vec![owned(&[bash("b1", "echo hi")]), done("ok")],
+        )
+        .await;
+        let outcome = run(&mut actor).await;
+        if runs {
+            assert!(
+                matches!(outcome, RunOutcome::Done(_)),
+                "{mode}: {outcome:?}"
+            );
+        } else {
+            let RunOutcome::PermissionRequired(request) = outcome else {
+                panic!("must ask")
+            };
+            assert!(request.requires_captain);
+            assert!(request.always.is_empty() && request.always_label.is_none());
+            assert!(!pending_bypass_eligible(&actor));
+            assert!(resolve_permission(
+                &mut actor,
+                request.id,
+                PermissionDecision::AllowAlways,
+                &mut |_| {}
+            )
+            .await
+            .is_err());
+            assert!(resolve_permission_with_origin(
+                &mut actor,
+                request.id,
+                PermissionDecision::AllowOnce,
+                PermissionOrigin::Bypass,
+                &mut |_| {}
+            )
+            .await
+            .is_err());
+        }
+        assert!(original
+            .list_decisions(&DecisionFilter::default(), 10)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn unavailable_rules_keep_the_fixed_floor() {
+    for tool in ["read", "write"] {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+        actor.permission_store = None;
+        actor.bypass.lock().unwrap().enabled = true;
+        let path = if tool == "read" {
+            actor.tool_context.workspace.join(".env")
+        } else {
+            actor
+                .permission_dirs
+                .config
+                .as_ref()
+                .unwrap()
+                .join("config.json")
+        };
+        script(
+            &mut actor,
+            vec![owned(&[(
+                "c1".into(),
+                tool.into(),
+                json!({"path":path,"content":"{}"}),
+            )])],
+        )
+        .await;
+        let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+            panic!("floor asks")
+        };
+        assert!(request.requires_captain && request.always_label.is_none());
+    }
+}
+
+struct DelegationClient;
+impl instinct_flow::DecisionClient for DelegationClient {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "fake/delegation".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        request: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: std::time::Instant,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        Box::pin(async move {
+            if request.questions.contains_key("protected_requested") {
+                assert!(
+                    !request.state.contains("DELEGATED_ACTION"),
+                    "{}",
+                    request.state
+                );
+            } else {
+                assert!(
+                    request.state.contains("DELEGATED_ACTION"),
+                    "{}",
+                    request.state
+                );
+                assert!(request.state.contains("Delegation from the parent agent"));
+            }
+            Ok(instinct_flow::protocol::DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            instinct_flow::protocol::Answer::Noul {
+                                noul: if id == "protected_requested" {
+                                    0.0
+                                } else {
+                                    1.0
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn delegation_allows_an_ordinary_action_but_never_a_protected_write() {
+    let mut actor = actor_with(None);
+    let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+        Arc::new(crate::flows::store::FlowStore::new(
+            actor.tool_context.workspace.clone(),
+            actor.permission_dirs.config.clone().unwrap(),
+        )),
+        Arc::new(DelegationClient),
+        Arc::new(crate::flows::runtime::NoEffects),
+    ));
+    actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+    actor.push_user_with_provenance(
+        "DELEGATED_ACTION run echo",
+        crate::provider::openai::UserProvenance::Parent,
+    );
+    script(
+        &mut actor,
+        vec![owned(&[bash("b1", "echo hi")]), done("ok")],
+    )
+    .await;
+    assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
+    let path = actor
+        .permission_dirs
+        .config
+        .as_ref()
+        .unwrap()
+        .join("config.json");
+    script(
+        &mut actor,
+        vec![owned(&[(
+            "w1".into(),
+            "write".into(),
+            json!({"path":path,"content":"{}"}),
+        )])],
+    )
+    .await;
+    assert!(matches!(
+        run(&mut actor).await,
+        RunOutcome::PermissionRequired(_)
+    ));
+}
+
+#[tokio::test]
+async fn unavailable_rules_still_stop_identical_calls_under_bypass() {
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+    actor.permission_store = None;
+    actor.bypass.lock().unwrap().enabled = true;
+    script(
+        &mut actor,
+        vec![
+            owned(&[
+                bash("b1", "echo same"),
+                bash("b2", "echo same"),
+                bash("b3", "echo same"),
+            ]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("the third call must ask")
+    };
+    assert_eq!(request.tool_call_id, "b3");
+    assert!(request.requires_captain && request.always_label.is_none());
+    assert!(request.reason.contains("3 times"));
 }

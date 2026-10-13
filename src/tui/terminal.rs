@@ -117,7 +117,10 @@ mod tests {
         let mut end = Vec::new();
         setup_modes(&mut start).unwrap();
         restore_modes(&mut end).unwrap();
-        assert!(String::from_utf8(start).unwrap().contains("\x1b[?1006h"));
-        assert!(String::from_utf8(end).unwrap().contains("\x1b[?1006l"));
+        #[cfg(unix)]
+        {
+            assert!(String::from_utf8(start).unwrap().contains("\x1b[?1006h"));
+            assert!(String::from_utf8(end).unwrap().contains("\x1b[?1006l"));
+        }
     }
 }

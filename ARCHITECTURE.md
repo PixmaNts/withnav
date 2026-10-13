@@ -22,7 +22,6 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
    ├─ agent/       the coding-agent loop (the cognition runs on it)
    ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
-   ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
@@ -37,7 +36,6 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and process-group supervision (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`) | permission policy (an MCP tool is decided like any other), session persistence, HTTP transport, live refresh |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
@@ -262,10 +260,16 @@ The built-in `permission-default` flow is enabled. The Captain's evidence is the
 Captain messages, the Captain's answers to `ask` (tool results marked `answered_by: captain`,
 labelled with their question, never sent to the model) and, for a child, a snapshot of the parent's
 Captain messages taken at creation and refreshed when the parent steers it; a delegated prompt or
-steering text never counts. A skill is decided after its validation, with action `skill` and its
+steering text never counts as Captain evidence. It is supplied separately as
+`conversation.delegation` (Parent-provenance transcript messages, stripped of attachments, newest
+whole messages within 16 KiB, with a cut flag). The ordinary flow may accept the parent's request;
+the protected check never reads delegation. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it
 (`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
-whose permission database cannot be opened does not start, unless it runs in yolo. Stored decisions
+whose permission database cannot be opened starts with `permissions_unavailable` in its status,
+shown beside yolo by every client. `Input::store` is explicitly absent: every call, reads included,
+gets no rule, the floor applies, and the flow may allow. Bypass is disabled, proposals are empty,
+and no decision is recorded (one warning at session creation). Yolo is unchanged. Stored decisions
 are redacted (the flows' secret detection) before any field is bounded.
 
 A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, or
@@ -357,17 +361,6 @@ Empty overrides are also unset. Relative overrides resolve to absolute paths
 against the nav process working directory, not a tool's workspace; storage and
 the protected floor therefore refer to the same files.
 
-MCP declarations live only in the global `config.json` under `mcp`. Connections, restart
-counters, tool inventories and bounded stderr tails are memory-only. Environment references
-are resolved only for child launch, never saved to configuration, history or events; declared
-environment values and their interpolated components are redacted before output truncation
-or stderr eviction (including chunk boundaries). Application subscribers exclude rmcp events
-even under verbose user filters because dependency diagnostics can include raw wire payloads.
-Wire-name collisions are resolved across the ready inventory in server-id/original-name order,
-keeping the first and reporting skipped definitions. No workspace MCP
-configuration is loaded. Config changes require a service restart; new sessions snapshot only
-currently ready tools, and existing registries stay frozen, including across connection restarts.
-
 WithNav writes the new paths below. During 0.7, absent `.withnav/` directories
 fall back to `.navai/` then `.navigator/`; old config/data paths and `navai.db` /
 `navai.jsonl` migrate without overwriting new files. `NAVAI_*` remains a warned
@@ -458,7 +451,8 @@ or disabled supervision installs a visible renewable 500-step fallback cap. Chil
 50-step budget. The root supervisor starts only after publication; runtime exit cancels and joins
 it outside admission and registry locks.
 
-**Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
+**Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock seam and progress evidence/question/verdict conversion, using
+`provider/systemone.rs::DecisionModel` for the decision model,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
 `supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal
 completion. It sleeps a full configured interval between checks, never replays missed ticks,
@@ -489,7 +483,6 @@ as before; no supervision state is restored. The event catalog has 24 kinds.
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
-| `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
 
 Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
 (`paths/migrate.rs`) moves what the former names left behind to the WithNav dirs: `~/.local/share/navigator/*`
@@ -570,12 +563,6 @@ sources rather than deriving assignments themselves. Configuration editors and f
 the later 0.6 scope, not this contract.
 
 ## Where new code goes
-
-- MCP configuration and environment isolation belong in `mcp/config.rs`; transport supervision
-  and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result
-  conversion in `mcp/tool.rs`. The session service owns one manager and `session/actor.rs`
-  installs its ready snapshot before role/tool filtering. Shutdown joins supervision tasks and
-  kills child process groups. MCP adds no event kind in the stdio delivery.
 
 - Workspace visibility belongs in `session/store.rs` (`hidden_workspaces`, canonical paths, cleared on session creation); its bearer-protected HTTP actions and canonical workspace matching live in `server/web.rs`. Workspace deletion uses `Service::delete`, never direct SQL session deletion.
 
@@ -665,6 +652,10 @@ the later 0.6 scope, not this contract.
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and
   numbered excerpts), `tools/mod.rs` (`validate_path`).
+- A decision model is exposed by `provider/systemone.rs::DecisionModel` (implemented by
+  `SystemOneClient`). Compaction pruning (`agent/compaction/prune.rs`) and both watchdogs use
+  this same seam; questions and answer interpretation stay with the caller. The standalone
+  `instinct-flow` crate remains independent and owns its own protocol client.
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
@@ -677,8 +668,6 @@ the later 0.6 scope, not this contract.
   `validation.rs`. The agent loop reaches it only through `agent/authorize.rs`. A judgement a
   Captain may want to tune goes in the permission flow (`src/flows/builtin/permission-default.toml`),
   not in Rust. Never add a per-tool bypass: an unknown tool, MCP included, is decided like any other.
-- A new MCP capability goes in `src/mcp/`; its tools reach the agent as ordinary registry tools named
-  `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `tui`.

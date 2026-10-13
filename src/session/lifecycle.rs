@@ -159,7 +159,6 @@ impl Service {
     /// Graceful shutdown: stop every active session (each one's fence emits
     /// its `session.end`), then return so axum finishes draining.
     pub async fn close_all(&self) {
-        self.mcp.shutdown().await;
         let _gate = self.lifecycle_gate().await;
         loop {
             let admission = self.admission_gate.lock().await;

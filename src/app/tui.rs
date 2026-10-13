@@ -26,20 +26,16 @@ pub fn log_path() -> Option<PathBuf> {
 /// screen belongs to the UI. If the file cannot be opened, logging is off.
 /// The token and request headers are never logged by this crate.
 pub fn init_logging() {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{fmt, EnvFilter};
     let Some(file) = log_path().and_then(|path| open_log(&path).ok()) else {
         return;
     };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::registry()
-        .with(filter)
-        .with(super::logging::mcp_safe_filter())
-        .with(
-            fmt::layer()
-                .with_target(false)
-                .with_ansi(false)
-                .with_writer(Mutex::new(file)),
-        )
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(Mutex::new(file))
         .try_init();
 }
 

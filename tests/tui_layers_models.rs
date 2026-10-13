@@ -401,7 +401,7 @@ async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries
         }))
         .route("/v1/layers",get(|| async { Json(json!({"layers":[
             {"layer":"reflex","status":"usable","model":"inception/mercury","variant":null,"reason":null},
-            {"layer":"instinct","status":"disabled","model":"gateway/jev","variant":null,"reason":"wrong API kind"},
+            {"layer":"instinct","status":"disabled","model":"gateway/instinct","variant":null,"reason":"wrong API kind"},
             {"layer":"metacognition","status":"usable","model":"omniroute/combo/astra","variant":"low","reason":null}
         ]})) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -433,7 +433,7 @@ fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
     s.tabs[0].model_source = "override".into();
     s.layers=serde_json::from_value::<LayersBody>(json!({"layers":[
         {"layer":"reflex","status":"usable","model":"inception/mercury","variant":null,"reason":null},
-        {"layer":"instinct","status":"disabled","model":"gateway/jev","variant":null,"reason":"wrong API kind"}
+        {"layer":"instinct","status":"disabled","model":"gateway/instinct","variant":null,"reason":"wrong API kind"}
     ]})).unwrap().layers;
     let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
     let mut cache = withnav::tui::view::RenderCache::default();

@@ -87,7 +87,9 @@ pub struct Input<'a> {
     /// The split commands of a `bash` call; empty for other tools.
     pub commands: &'a [ShellCommand],
     pub cx: &'a FloorContext,
-    pub store: &'a PermissionStore,
+    /// None when the session cannot open its permission database. No rule is
+    /// consulted, bypass is disabled, and no reusable approval is proposed.
+    pub store: Option<&'a PermissionStore>,
     pub agent: &'a str,
     /// Identical consecutive calls in this turn, this one included; see [`DoomTracker`].
     pub repeats: usize,
@@ -242,7 +244,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
     // 3. Reads inside the readable roots need no rule and no flow. They still
     // go through the loop check below, so a model re-reading the same file
     // forever is stopped.
-    let free_read = reads_inside_roots(input);
+    let free_read = input.store.is_some() && reads_inside_roots(input);
 
     // 4. Rules.
     let rules = if free_read {
@@ -295,12 +297,18 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
     // A loop is checked after the rules so that a `deny` is never hidden by a
     // question; bypass skips it.
     if input.repeats >= DOOM_LOOP_THRESHOLD {
-        let rule = input.store.matching(
-            "doom_loop",
-            &input.call.name,
-            &input.cx.workspace,
-            input.agent,
-        )?;
+        let rule = input
+            .store
+            .map(|store| {
+                store.matching(
+                    "doom_loop",
+                    &input.call.name,
+                    &input.cx.workspace,
+                    input.agent,
+                )
+            })
+            .transpose()?
+            .flatten();
         trace.doom_loop = true;
         match rule {
             Some(rule) if rule.effect == Effect::Deny => {
@@ -319,7 +327,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
                 });
             }
             Some(rule) if rule.effect == Effect::Allow => {}
-            _ if input.control == Control::Bypass => {}
+            _ if input.control == Control::Bypass && input.store.is_some() => {}
             _ => {
                 return Ok(ask(
                     format!(
@@ -338,7 +346,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
     }
 
     // 5. Bypass.
-    if input.control == Control::Bypass {
+    if input.control == Control::Bypass && input.store.is_some() {
         return Ok(run(ApprovedBy::Bypass, trace));
     }
 
@@ -352,7 +360,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
         })
         .await;
     trace.flow_verdict = Some(answer.as_str());
-    let proposals = if matches!(floor, Floor::Protected(_)) {
+    let proposals = if input.store.is_none() || matches!(floor, Floor::Protected(_)) {
         Vec::new()
     } else {
         rules.proposals
@@ -462,9 +470,9 @@ fn classify(rule: Option<Rule>, proposal: Option<RuleProposal>, label: String) -
 fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
     let call = input.call;
     let find = |action: &str, resource: &str| {
-        input
-            .store
-            .matching(action, resource, &input.cx.workspace, input.agent)
+        input.store.map_or(Ok(None), |store| {
+            store.matching(action, resource, &input.cx.workspace, input.agent)
+        })
     };
     let project = |action: &str, resource: String| RuleProposal {
         action: action.to_owned(),
@@ -623,7 +631,7 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
     let strictest = |wanted| items.iter().find(|item| item.result == wanted);
     let (result, rule) = if let Some(item) = strictest(RuleResult::Ask) {
         (RuleResult::Ask, item.rule.clone())
-    } else if strictest(RuleResult::NoRule).is_some() && input.validated {
+    } else if strictest(RuleResult::NoRule).is_some() && input.validated && input.store.is_some() {
         (RuleResult::Allow, None)
     } else if strictest(RuleResult::NoRule).is_some() {
         (RuleResult::NoRule, None)
@@ -660,16 +668,20 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
 /// A `deny` rule whose resource is exactly `*` is the only rule an opaque
 /// command can match, because it has no rule text to match anything narrower.
 fn opaque_deny(input: &Input<'_>) -> Result<Option<Rule>, Error> {
+    let Some(store) = input.store else {
+        return Ok(None);
+    };
     let workspace = crate::tools::canonical_path(&input.cx.workspace)?;
-    Ok(input
-        .store
+    Ok(store
         .list(&RuleFilter::default())?
         .into_iter()
         .filter(|rule| rule.effect == Effect::Deny && rule.resource == "*")
         .filter(|rule| pattern_matches(&rule.action, "bash"))
         .find(|rule| match &rule.scope {
             RuleScope::Global => true,
-            RuleScope::Project(path) => *path == workspace,
+            RuleScope::Project(path) => {
+                crate::tools::path_key(path) == crate::tools::path_key(&workspace)
+            }
             RuleScope::Agent(name) => name == input.agent,
         }))
 }
@@ -774,7 +786,7 @@ mod tests {
                 call,
                 commands: &commands,
                 cx: &self.cx,
-                store: &self.store,
+                store: Some(&self.store),
                 agent: "build",
                 repeats,
                 validated: false,

@@ -64,6 +64,8 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
     // The wire is the subject here, not permissions: every call may run.
     actor
         .permission_store
+        .as_ref()
+        .unwrap()
         .add(
             "*",
             "*",

@@ -212,6 +212,8 @@ pub struct CreateSessionResponse {
 pub struct SessionMetadata {
     #[serde(default, skip_serializing_if = "is_false")]
     pub yolo: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions_unavailable: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub bypass: bool,
     #[serde(default, skip_serializing_if = "is_zero")]

@@ -78,7 +78,7 @@ pub struct PrepareInput<'a> {
     pub focus: Option<&'a str>,
     pub chunk_tokens: u64,
     pub progress: Option<&'a (dyn Fn(u64, u64) + Send + Sync)>,
-    pub jev: Option<&'a dyn crate::agent::compaction::judge::Judge>,
+    pub decision: Option<&'a dyn crate::provider::systemone::DecisionModel>,
     pub catalog: Option<&'a crate::provider::catalog::ModelCatalog>,
     pub max_message_tokens: Option<u64>,
 }
@@ -117,8 +117,8 @@ pub async fn prepare(
     let first = input
         .current
         .map_or(0, |c| c.checkpoint.through_message + 1);
-    let projection = if let Some(judge) = input.jev {
-        super::jev::prune(
+    let projection = if let Some(judge) = input.decision {
+        super::prune::prune(
             input.transcript,
             first,
             planned.through_message + 1,
@@ -131,7 +131,7 @@ pub async fn prepare(
         None
     };
     if projection.is_some() {
-        // Jev's decisions and deterministic pins supersede size-only elision.
+        // The decision model's answers and deterministic pins supersede size-only elision.
         planned.prefix_elidable.clear();
     }
     let input = PrepareInput {

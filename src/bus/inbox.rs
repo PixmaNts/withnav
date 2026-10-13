@@ -755,6 +755,7 @@ mod tests {
                 agent: "build".into(),
                 reason: "r".into(),
                 always_label: None,
+                reusable_approval: false,
                 always: Vec::new(),
                 decision_id: None,
                 repeats: 1,

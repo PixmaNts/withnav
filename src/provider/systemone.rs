@@ -22,6 +22,84 @@ pub use instinct_flow::protocol::{
     Answer, Answers, DecisionRequest, DecisionResponse, DecisionUsage, Question, Questions,
 };
 
+/// The shared seam for a decision model, independent of the caller's domain.
+pub trait DecisionModel: Send + Sync {
+    fn decide<'a>(
+        &'a self,
+        state: &'a str,
+        questions: &'a Questions,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<Answers, DecisionError>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DecisionError {
+    #[error("decision model unavailable")]
+    Unavailable,
+    #[error("invalid decision answer")]
+    Invalid,
+    #[error("cancelled")]
+    Cancelled,
+}
+
+impl DecisionModel for SystemOneClient {
+    fn decide<'a>(
+        &'a self,
+        state: &'a str,
+        questions: &'a Questions,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<Answers, DecisionError>> {
+        Box::pin(async move {
+            SystemOneClient::decide(self, &DecisionRequest { state, questions }, cancel)
+                .await
+                .map(|response| response.answers)
+                .map_err(|error| match error {
+                    ProviderError::Canceled { .. } => DecisionError::Cancelled,
+                    ProviderError::MalformedResponse(_) => DecisionError::Invalid,
+                    _ => DecisionError::Unavailable,
+                })
+        })
+    }
+}
+
+/// Deterministic decision model used by tests of multiple callers. Each call
+/// consumes one scripted answer and captures its state and questions.
+#[cfg(debug_assertions)]
+pub struct ScriptedDecisionModel {
+    pub answers: std::sync::Mutex<std::collections::VecDeque<Result<Answers, DecisionError>>>,
+    pub requests: std::sync::Mutex<Vec<(String, Questions)>>,
+}
+#[cfg(debug_assertions)]
+impl ScriptedDecisionModel {
+    pub fn new(answers: impl IntoIterator<Item = Result<Answers, DecisionError>>) -> Self {
+        Self {
+            answers: std::sync::Mutex::new(answers.into_iter().collect()),
+            requests: Default::default(),
+        }
+    }
+}
+#[cfg(debug_assertions)]
+impl DecisionModel for ScriptedDecisionModel {
+    fn decide<'a>(
+        &'a self,
+        state: &'a str,
+        questions: &'a Questions,
+        _: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<Answers, DecisionError>> {
+        Box::pin(async move {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((state.to_owned(), questions.clone()));
+            self.answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted decision answer")
+        })
+    }
+}
+
 /// The outgoing System One request body.
 #[derive(Debug, Serialize)]
 struct SystemOneRequest<'a> {

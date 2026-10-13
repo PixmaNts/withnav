@@ -142,29 +142,6 @@ fn check<'a>(report: &'a Report, id: &str) -> &'a withnav::app::doctor::Check {
         .find(|c| c.id == id)
         .unwrap_or_else(|| panic!("missing {id}: {}", report.human()))
 }
-
-#[tokio::test]
-async fn mcp_doctor_reports_ready_disabled_and_invalid_entries() {
-    let root = tempfile::tempdir().unwrap();
-    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
-    args.layer = Some(DoctorLayer::Reflex);
-    let mut settings = withnav::settings::load(&config).unwrap();
-    settings.set_dotted("mcp", json!({
-        "fixture":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")]},
-        "disabled":{"command":["missing"],"enabled":false},
-        "INVALID":{"command":["missing"]}
-    }));
-    withnav::settings::save(&config, &settings).unwrap();
-    let report = inspect(&args, &config, None, None).await;
-    assert_eq!(check(&report, "mcp.fixture").status, Status::Ok);
-    assert!(check(&report, "mcp.fixture").value.contains("8 tools"));
-    assert!(check(&report, "mcp.fixture").value.contains("collision"));
-    assert_eq!(check(&report, "mcp.disabled").status, Status::Ok);
-    assert_eq!(check(&report, "mcp.INVALID").status, Status::Failed);
-    args.offline = true;
-    let report = inspect(&args, &config, None, None).await;
-    assert!(check(&report, "mcp.fixture").value.contains("not started"));
-}
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SnapshotEntry {
     path: std::path::PathBuf,

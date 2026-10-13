@@ -44,10 +44,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Global MCP server declarations, preserving invalid entries for diagnostics.
-    pub fn mcp(&self) -> Vec<(String, Result<crate::mcp::config::ServerConfig, String>)> {
-        crate::mcp::config::parse(self.root.get("mcp"))
-    }
     /// The parsed settings snapshot, including unknown keys.
     pub(crate) fn as_object(&self) -> &Map<String, Value> {
         &self.root

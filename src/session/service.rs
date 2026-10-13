@@ -359,7 +359,6 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
-    pub(crate) mcp: Arc<crate::mcp::McpManager>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
     #[cfg(debug_assertions)]
     skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -434,12 +433,6 @@ pub struct Service {
 }
 
 impl Service {
-    /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
-        self.mcp.statuses()
-    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_delivery_commit(&self, ordinal: usize) {
@@ -708,9 +701,6 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
-            mcp: crate::mcp::McpManager::start(
-                &crate::settings::load(&config.config_dir).unwrap_or_default(),
-            ),
             flows: Arc::new(crate::flows::host::Host::new(
                 config.config_dir.clone(),
                 config.data_dir.clone(),
@@ -2548,7 +2538,6 @@ impl Service {
                 session_cancel.child_token(),
                 allowed.clone(),
                 *read_only,
-                &self.mcp,
             ),
             None => build_actor(
                 &workspace,
@@ -2556,7 +2545,6 @@ impl Service {
                 resolved,
                 api_key,
                 session_cancel.child_token(),
-                &self.mcp,
             ),
         };
         if root_tools_enabled && role.mode.is_primary() {

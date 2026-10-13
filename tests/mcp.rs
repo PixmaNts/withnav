@@ -14,6 +14,33 @@ fn settings(timeout: u64) -> Settings {
     settings
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn extensionless_command_resolves_cmd_shim_from_child_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let python = common::python();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp_server.py");
+    std::fs::write(
+        directory.path().join("fake-mcp.cmd"),
+        format!("@echo off\r\n\"{python}\" \"{}\" %*\r\n", fixture.display()),
+    )
+    .unwrap();
+    let mut settings = Settings::default();
+    settings.set_dotted(
+        "mcp",
+        json!({"fixture": {
+            "command": ["fake-mcp"],
+            "env": {"Path": directory.path(), "PATHEXT": ".EXE;.CMD;.BAT"}
+        }}),
+    );
+    let manager = McpManager::start(&settings);
+    ready(&manager).await;
+    assert!(registry(&manager)
+        .names()
+        .contains(&"mcp__fixture__echo".into()));
+    manager.shutdown().await;
+}
+
 async fn ready(manager: &McpManager) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while !manager.statuses().iter().any(|s| s.state == "ready") {
@@ -41,7 +68,6 @@ async fn startup_cancel_and_timeout_allow_sigterm_cleanup() {
         let marker = dir.path().join("cleanup");
         let mut settings = Settings::default();
         settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":200,"env":{"CLEANUP_MARKER":marker.to_string_lossy()}}}));
-        common::prepare_mcp(&mut settings);
         let manager = McpManager::start(&settings);
         tokio::time::sleep(Duration::from_millis(100)).await;
         if cancel {
@@ -84,8 +110,7 @@ fn context() -> ToolContext {
 
 #[tokio::test]
 async fn registry_call_pagination_conversion_cancel_crash_and_restart() {
-    let mut settings = settings(2000);
-    common::prepare_mcp(&mut settings);
+    let settings = settings(2000);
     let manager = McpManager::start(&settings);
     ready(&manager).await;
     let registry = registry(&manager);
@@ -151,8 +176,7 @@ async fn registry_call_pagination_conversion_cancel_crash_and_restart() {
 
 #[tokio::test]
 async fn timeout_sends_cancellation_and_keeps_connection() {
-    let mut settings = settings(80);
-    common::prepare_mcp(&mut settings);
+    let settings = settings(80);
     let manager = McpManager::start(&settings);
     ready(&manager).await;
     let registry = registry(&manager);
@@ -191,7 +215,6 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
         json!({"hang": {"command":[common::python(), "-c", script], "startup_timeout_ms":10000}}),
     );
     let start = std::time::Instant::now();
-    common::prepare_mcp(&mut settings);
     let manager = McpManager::start(&settings);
     assert!(start.elapsed() < Duration::from_millis(100));
     assert!(manager.snapshot().is_empty());
@@ -246,7 +269,6 @@ async fn service_session_creation_does_not_wait_for_initialization() {
     let config = common::server::TestServerConfig::unreachable(tmp.path()).config();
     let mut settings = withnav::settings::load(&config.config_dir).unwrap();
     settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":10000}}));
-    common::prepare_mcp(&mut settings);
     withnav::settings::save(&config.config_dir, &settings).unwrap();
     let state = withnav::server::AppState::new(config).unwrap();
     tokio::time::timeout(
@@ -269,7 +291,6 @@ async fn filters_disabled_servers_and_stderr_redaction() {
     );
     settings.set_dotted("mcp.bad.id", json!({"command":["no-such-command"]}));
     settings.set_dotted("mcp.noisy", json!({"command":[common::python(),"-c","import os,sys; sys.stderr.write(os.environ['SECRET']+' '+('x'*100000)); sys.stderr.flush()"],"env":{"SECRET":"mcp-secret-sentinel"},"startup_timeout_ms":1000}));
-    common::prepare_mcp(&mut settings);
     let manager = McpManager::start(&settings);
     ready(&manager).await;
     assert!(!registry(&manager)
@@ -319,7 +340,6 @@ async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
         "mcp",
         json!({"launcher":{"command":[common::python(),"-c",launcher],"startup_timeout_ms":300}}),
     );
-    common::prepare_mcp(&mut settings);
     let manager = McpManager::start(&settings);
     tokio::time::timeout(Duration::from_secs(3), async {
         while !started.exists() {

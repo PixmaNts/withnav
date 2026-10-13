@@ -111,12 +111,17 @@ pub fn interpolate(value: &str, lookup: impl Fn(&str) -> Option<String>) -> Resu
 }
 
 pub fn child_env(config: &ServerConfig) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
+    #[cfg(unix)]
     let mut env: BTreeMap<_, _> = std::env::vars()
         .filter(|(key, _)| {
             matches!(key.as_str(), "PATH" | "HOME" | "LANG" | "TMPDIR")
                 || key.starts_with("LC_")
                 || key.starts_with("XDG_")
         })
+        .collect();
+    #[cfg(windows)]
+    let mut env: BTreeMap<_, _> = std::env::vars()
+        .filter(|(key, _)| windows_child_variable(key))
         .collect();
     let mut secrets = vec![];
     for (key, value) in &config.env {
@@ -128,6 +133,8 @@ pub fn child_env(config: &ServerConfig) -> Result<(BTreeMap<String, String>, Vec
         })?;
         secrets.extend(parts.into_inner());
         secrets.push(resolved.clone());
+        #[cfg(windows)]
+        env.retain(|existing, _| !existing.eq_ignore_ascii_case(key));
         env.insert(key.clone(), resolved);
     }
     secrets.retain(|value| !value.is_empty());
@@ -136,10 +143,77 @@ pub fn child_env(config: &ServerConfig) -> Result<(BTreeMap<String, String>, Vec
     Ok((env, secrets))
 }
 
+#[cfg(windows)]
+fn windows_child_variable(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    matches!(
+        key.as_str(),
+        "PATH"
+            | "PATHEXT"
+            | "SYSTEMROOT"
+            | "SYSTEMDRIVE"
+            | "WINDIR"
+            | "COMSPEC"
+            | "TEMP"
+            | "TMP"
+            | "USERPROFILE"
+            | "APPDATA"
+            | "LOCALAPPDATA"
+            | "PROGRAMDATA"
+            | "PROGRAMFILES"
+            | "PROGRAMFILES(X86)"
+            | "PROGRAMW6432"
+            | "COMMONPROGRAMFILES"
+            | "NUMBER_OF_PROCESSORS"
+            | "PROCESSOR_ARCHITECTURE"
+            | "HOME"
+            | "LANG"
+            | "TMPDIR"
+    ) || key.starts_with("LC_")
+        || key.starts_with("XDG_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(windows)]
+    #[test]
+    fn windows_environment_names_are_case_insensitive_and_secrets_are_excluded() {
+        for key in [
+            "Path",
+            "pAtHeXt",
+            "SystemRoot",
+            "windir",
+            "ComSpec",
+            "USERPROFILE",
+            "AppData",
+            "lc_messages",
+            "xdg_cache_home",
+        ] {
+            assert!(windows_child_variable(key), "{key}");
+        }
+        for key in ["OMNIROUTE_API_KEY", "TOKEN", "SECRET", "SYSTEMROOT_SECRET"] {
+            assert!(!windows_child_variable(key), "{key}");
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn configured_windows_environment_replaces_inherited_names_case_insensitively() {
+        let config = ServerConfig {
+            env: BTreeMap::from([("pAtH".into(), "fixture-path-sentinel".into())]),
+            ..ServerConfig::default()
+        };
+        let (env, _) = child_env(&config).unwrap();
+        assert_eq!(
+            env.keys()
+                .filter(|key| key.eq_ignore_ascii_case("PATH"))
+                .count(),
+            1
+        );
+        assert_eq!(env.get("pAtH").unwrap(), "fixture-path-sentinel");
+        assert!(env.keys().any(|key| key.eq_ignore_ascii_case("SystemRoot")));
+    }
     #[test]
     fn interpolation_is_explicit_and_missing_values_fail() {
         assert_eq!(

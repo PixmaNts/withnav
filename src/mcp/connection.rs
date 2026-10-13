@@ -1,4 +1,38 @@
 //! Bounded discovery and process-group supervision for one stdio server.
+#[cfg(windows)]
+fn resolve_windows_command(
+    command: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::path::Path;
+    let path = Path::new(command);
+    if path.extension().is_some() || command.contains(['/', '\\', ':']) {
+        return Ok(path.to_path_buf());
+    }
+    let lookup = |name: &str| {
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    };
+    let extensions = lookup("PATHEXT").unwrap_or(".COM;.EXE;.BAT;.CMD");
+    for dir in std::env::split_paths(lookup("PATH").unwrap_or("")) {
+        for extension in extensions
+            .split(';')
+            .filter(|ext| ext.starts_with('.') && !ext.contains(['/', '\\', ':']))
+        {
+            let candidate = dir.join(format!("{command}{extension}"));
+            if candidate.is_file() {
+                // Absolute targets keep std's .cmd/.bat escaping and avoid a second PATH lookup.
+                return std::path::absolute(candidate);
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("MCP command {command:?} not found in child Path/PATHEXT"),
+    ))
+}
+
 use super::{tool::McpTool, Ready, Server};
 #[cfg(unix)]
 use nix::{
@@ -64,7 +98,12 @@ async fn run(
 ) -> Result<(), String> {
     let (env, secrets) = super::config::child_env(&server.config)?;
     *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = secrets.clone();
-    let mut command = tokio::process::Command::new(&server.config.command[0]);
+    #[cfg(unix)]
+    let program = std::path::PathBuf::from(&server.config.command[0]);
+    #[cfg(windows)]
+    let program = resolve_windows_command(&server.config.command[0], &env)
+        .map_err(|error| server.redact(&error.to_string()))?;
+    let mut command = tokio::process::Command::new(program);
     command
         .args(&server.config.command[1..])
         .env_clear()
@@ -80,8 +119,10 @@ async fn run(
         .spawn()
         .map_err(|_| "cannot spawn MCP command (details omitted)".to_string())?;
     #[cfg(windows)]
-    let (mut child, group) = crate::tools::process_job::Job::spawn(&mut command, None)
-        .map_err(|_| "cannot set up MCP process job (details omitted)".to_string())?;
+    let (mut child, group) =
+        crate::tools::process_job::Job::spawn(&mut command, None).map_err(|error| {
+            server.redact(&format!("cannot spawn MCP command in process job: {error}"))
+        })?;
     #[cfg(unix)]
     let pid = child
         .id()

@@ -155,7 +155,6 @@ async fn mcp_doctor_reports_ready_disabled_and_invalid_entries() {
         "disabled":{"command":["missing"],"enabled":false},
         "INVALID":{"command":["missing"]}
     }));
-    common::prepare_mcp(&mut settings);
     withnav::settings::save(&config, &settings).unwrap();
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(check(&report, "mcp.fixture").status, Status::Ok);

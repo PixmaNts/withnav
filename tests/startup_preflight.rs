@@ -161,6 +161,7 @@ async fn missing_or_malformed_auth_is_explicit_and_secret_safe() {
 
 fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(cmd.as_std_mut(), dir);
     if lsp {
         cmd.args(["lsp", "--stdio"]);
     }
@@ -699,3 +700,4 @@ async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
         .iter()
         .all(|r| r.method == "GET"));
 }
+mod common;

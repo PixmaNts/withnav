@@ -186,11 +186,13 @@ fn nav_converts_under_the_child_memory_limit() {
     use std::process::{Command, Stdio};
     let exe = env!("CARGO_BIN_EXE_nav");
     let mut cmd = Command::new(exe);
+    let root = tempfile::tempdir().unwrap();
     cmd.args(["internal-html-convert", "--format", "markdown"])
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    common::isolate(&mut cmd, root.path());
     // SAFETY: setrlimit is async-signal-safe and allocates nothing.
     unsafe {
         cmd.pre_exec(|| {
@@ -216,9 +218,11 @@ fn nav_converts_under_the_child_memory_limit() {
         vec!["internal-html-convert", "--format"],
         vec!["internal-html-convert", "--format", "markdown", "extra"],
     ] {
-        let out = Command::new(exe)
+        let mut command = Command::new(exe);
+        command.env_clear();
+        common::isolate(&mut command, root.path());
+        let out = command
             .args(&args)
-            .env_clear()
             .stdin(Stdio::null())
             .output()
             .expect("run malformed conversion child");
@@ -226,3 +230,4 @@ fn nav_converts_under_the_child_memory_limit() {
         assert!(out.stdout.is_empty(), "{args:?}");
     }
 }
+mod common;

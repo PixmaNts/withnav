@@ -314,29 +314,52 @@ pub async fn inspect(
         unknown_keys(&mut report, Some(document), "auth", &sections);
     }
     let auth_path = config.join("auth.json");
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(&auth_path)
-        .ok()
-        .map(|m| m.permissions().mode() & 0o777);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&auth_path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777);
+        report.add(
+            "config.auth",
+            if auth_ok && mode.is_none_or(|m| m == 0o600) {
+                if mode.is_some() {
+                    Status::Ok
+                } else {
+                    Status::Warning
+                }
+            } else {
+                Status::Failed
+            },
+            match mode {
+                Some(mode) => format!(
+                    "auth.json mode {mode:04o}; parse {}",
+                    if auth_ok { "valid" } else { "invalid" }
+                ),
+                None => "auth.json absent; environment credentials may be used".into(),
+            },
+            Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        );
+    }
+    #[cfg(windows)]
     report.add(
         "config.auth",
-        if auth_ok && mode.is_none_or(|m| m == 0o600) {
-            if mode.is_some() {
-                Status::Ok
-            } else {
-                Status::Warning
-            }
-        } else {
+        if !auth_ok {
             Status::Failed
+        } else if auth_path.exists() {
+            Status::Ok
+        } else {
+            Status::Warning
         },
-        match mode {
-            Some(mode) => format!(
-                "auth.json mode {mode:04o}; parse {}",
+        if auth_path.exists() {
+            format!(
+                "auth.json private DACL and parse {}",
                 if auth_ok { "valid" } else { "invalid" }
-            ),
-            None => "auth.json absent; environment credentials may be used".into(),
+            )
+        } else {
+            "auth.json absent; environment credentials may be used".into()
         },
-        Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        Some("Use nav auth set <provider> to create a private auth.json."),
     );
     let models = crate::provider::config::load_models_with_document(&workspace, config);
     if let Ok((_, path, document)) = &models {

@@ -598,7 +598,16 @@ pub async fn collect_until(
     sub: withnav::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    collect_until_within(sub, pred, Duration::from_secs(20)).await
+}
+
+/// Explicit budget for high-volume fixtures; ordinary event waits retain 20 seconds.
+pub async fn collect_until_within(
+    sub: withnav::session::Subscription,
+    pred: impl Fn(&EventEnvelope) -> bool,
+    budget: Duration,
+) -> Vec<EventEnvelope> {
+    let deadline = tokio::time::Instant::now() + budget;
     let mut out = Vec::new();
     if let withnav::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
@@ -609,7 +618,7 @@ pub async fn collect_until(
             let env = tokio::time::timeout(remaining, live.recv())
                 .await
                 .unwrap_or_else(|_| {
-                    panic!("timed out waiting for matching server event; seen: {out:?}")
+                    panic!("timed out waiting for matching server event after {budget:?}; count={}; last kinds={:?}", out.len(), out.iter().rev().take(20).map(|event| event.kind.as_str()).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>())
                 });
             let Some(env) = env else { break };
             let matched = pred(&env);
@@ -625,7 +634,16 @@ pub async fn collect_until(
     }
     assert!(
         out.iter().any(&pred),
-        "stream closed before the matching server event; seen: {out:?}"
+        "stream closed before the matching server event; count={}; last kinds={:?}",
+        out.len(),
+        out.iter()
+            .rev()
+            .take(20)
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
     );
     out
 }

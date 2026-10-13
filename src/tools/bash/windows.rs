@@ -118,11 +118,13 @@ pub(super) fn bash_command() -> Result<Command, ToolError> {
 }
 
 pub(super) fn set_command(launcher: &mut Command, command: &str) {
-    // Expansion is one word (empty IFS, no globbing); eval restores shell defaults
-    // and removes the transport variable before executing the Captain's command.
+    // Expansion is one word (empty IFS, no globbing); eval restores the state plain
+    // `bash -c` starts with (IFS set to space, tab, newline; globbing on) and removes
+    // the transport variable before executing the Captain's command. The prefix sits
+    // on its own line, so $LINENO and trap line numbers are one higher than with -c.
     launcher.env(
         "WITHNAV_BASH_COMMAND",
-        format!("unset WITHNAV_BASH_COMMAND IFS;set +f;\n{command}"),
+        format!("unset WITHNAV_BASH_COMMAND;IFS=$' \\t\\n';set +f;\n{command}"),
     );
 }
 
@@ -236,6 +238,12 @@ mod tests {
             ),
             ("printf '%s' 'é日本語🧭'", "é日本語🧭", 0),
             ("printf '%s' \"${WITHNAV_BASH_COMMAND-unset}\"", "unset", 0),
+            (
+                "saved=$IFS; IFS=:; IFS=$saved\nvalue='a b'; set -- $value; printf '%s' \"$#\"",
+                "2",
+                0,
+            ),
+            ("touch glob-probe; printf '%s' glob-pro*", "glob-probe", 0),
         ] {
             let result = run_bash(command, &cx, CancellationToken::new(), 5000, 200)
                 .await

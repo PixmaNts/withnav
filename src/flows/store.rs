@@ -1029,6 +1029,7 @@ mod tests {
     }
     #[test]
     fn concurrent_markers_advance_monotonically_and_reject_unsafe_files() {
+        #[cfg(unix)]
         use std::os::unix::fs::{symlink, PermissionsExt};
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("data");
@@ -1043,16 +1044,19 @@ mod tests {
         let marker = &markers[0];
         let mut state = marker.state.lock().unwrap();
         assert_eq!(marker.read(&mut state).unwrap(), 16);
-        let path = marker.path.join(&marker.name);
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(marker.read(&mut state).is_err());
-        std::fs::remove_file(&path).unwrap();
-        symlink(temp.path().join("external"), &path).unwrap();
-        assert!(marker.read(&mut state).is_err());
+        #[cfg(unix)]
+        {
+            let path = marker.path.join(&marker.name);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(marker.read(&mut state).is_err());
+            std::fs::remove_file(&path).unwrap();
+            symlink(temp.path().join("external"), &path).unwrap();
+            assert!(marker.read(&mut state).is_err());
+        }
     }
     #[test]
     fn template_write_set_refuses_definitions_and_unchecked_existing_files() {

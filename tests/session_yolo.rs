@@ -216,3 +216,22 @@ async fn await_transcript(state: &AppState, id: ulid::Ulid) {
     .await
     .expect("the transcript is stored");
 }
+
+// Given a permission database that cannot be opened
+// Then a normal session refuses to start (its rules would silently vanish),
+//      and a yolo session, which checks nothing, starts
+#[tokio::test]
+async fn an_unavailable_permission_database_refuses_all_but_yolo_sessions() {
+    let env = Env::new();
+    let state = state(&env);
+    settings(&env, None, plain_agents());
+    // A directory where the database file should be: it cannot be opened.
+    std::fs::create_dir_all(env.root.join("data/withnav.db")).unwrap();
+    let refused = state.create_session(&env.ws, None, false).await;
+    let error = refused.expect_err("the session must not start without its rules");
+    assert!(error.to_string().contains("permission database"), "{error}");
+    settings(&env, Some(true), plain_agents());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    assert!(yolo_of(&state, id).await);
+    state.close_session(id).await.unwrap();
+}

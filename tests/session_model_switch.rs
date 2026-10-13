@@ -498,6 +498,7 @@ fn rich_history() -> Vec<ChatMessage> {
         ChatMessage::Tool {
             tool_call_id: "call_1".into(),
             content: "file contents".into(),
+            answered_by: None,
         },
         ChatMessage::Assistant {
             content: Some("read it".into()),

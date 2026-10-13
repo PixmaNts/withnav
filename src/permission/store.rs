@@ -16,10 +16,11 @@ pub enum Error {
     Invalid(String),
 }
 
-/// An independent connection to the shared database. Async callers must move
-/// database operations to `tokio::task::spawn_blocking`.
+/// An independent connection to the shared database. The connection sits
+/// behind a lock so that the agent loop can hold the store across the awaits of
+/// one decision; each call is a short local query.
 pub struct PermissionStore {
-    pub(crate) connection: Connection,
+    pub(crate) connection: std::sync::Mutex<Connection>,
 }
 
 impl PermissionStore {
@@ -28,6 +29,16 @@ impl PermissionStore {
         let connection = Connection::open(data_dir.as_ref().join("withnav.db"))?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        Self::init(connection)
+    }
+
+    /// A private database that lives as long as the store: an actor built
+    /// outside a session starts with no rule and keeps what it learns to itself.
+    pub fn in_memory() -> Result<Self, Error> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(connection: Connection) -> Result<Self, Error> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS permission_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +81,13 @@ impl PermissionStore {
             CREATE INDEX IF NOT EXISTS validations_current
                 ON validations(kind, location, content_sha256) WHERE revoked_at IS NULL;",
         )?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection: std::sync::Mutex::new(connection),
+        })
+    }
+
+    pub(crate) fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -90,11 +107,11 @@ mod tests {
         let first = PermissionStore::open(&data).unwrap();
         let second = PermissionStore::open(&data).unwrap();
         let journal: String = first
-            .connection
+            .db()
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .unwrap();
         let timeout: i64 = first
-            .connection
+            .db()
             .pragma_query_value(None, "busy_timeout", |row| row.get(0))
             .unwrap();
         assert_eq!(journal, "wal");

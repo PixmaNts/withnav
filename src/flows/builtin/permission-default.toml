@@ -2,7 +2,7 @@
 version = 1
 name = "permission-default"
 on = "tool.pre_call"
-enabled = false
+enabled = true
 blocking = true
 budget_ms = 2000
 start = ["protected"]

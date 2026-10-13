@@ -118,6 +118,12 @@ pub struct RuntimeStatus {
     arrival_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
     pub watchdog_goal: Mutex<String>,
+    /// The Captain's own messages of this session's transcript, as permission
+    /// evidence (`captain_messages_with_cut`), refreshed at each turn start.
+    pub captain_messages: Mutex<crate::agent::actor::CaptainEvidence>,
+    /// For a child: the snapshot of its parent's Captain messages, taken when it
+    /// was created and refreshed when the parent steers it.
+    pub parent_captain: crate::agent::actor::ParentCaptain,
     pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
     pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub awaiting_fresh_captain: std::sync::atomic::AtomicBool,
@@ -907,6 +913,7 @@ pub fn spawn_with_completion(
     status.init_ask(&actor);
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
+    actor.parent_captain = status.parent_captain.clone();
     actor.config_session_grant = status.config_session_grant.clone();
     actor.permission_context = status.permission_context.clone();
     tokio::spawn(runtime_loop(
@@ -1219,10 +1226,11 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
-                if answer.decision
-                    == crate::agent::permissions::PermissionDecision::AllowConfigSession
-                    && (!request.allow_config_session
-                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain)
+                // "Always" is offered only with rules to save, or for a skill.
+                if answer.decision.clone().current()
+                    == crate::agent::permissions::PermissionDecision::AllowAlways
+                    && request.always.is_empty()
+                    && request.tool != "skill"
                 {
                     status.release_pin(&actor);
                     status.release_permission(answer.request_id);
@@ -1261,6 +1269,11 @@ async fn runtime_loop(
             .watchdog_goal
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = actor.captain_task.clone().unwrap_or_default();
+        *status
+            .captain_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            crate::agent::flow_hook::captain_messages_with_cut(&actor.transcript);
         actor.variant = status.consume_turn().map(|(_, variant)| variant);
         // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
@@ -1876,14 +1889,16 @@ fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
     let mut payload = to_value(&crate::bus::event::PermissionRequested {
-        always_label: (request.tool == "skill").then(|| {
-            format!(
-                "Always (global): validate skill {} at this version",
-                serde_json::from_str::<serde_json::Value>(&request.arguments)
-                    .ok()
-                    .and_then(|v| v["name"].as_str().map(str::to_owned))
-                    .unwrap_or_default()
-            )
+        always_label: request.always_label.clone().or_else(|| {
+            (request.tool == "skill").then(|| {
+                format!(
+                    "Always (global): validate skill {} at this version",
+                    serde_json::from_str::<serde_json::Value>(&request.arguments)
+                        .ok()
+                        .and_then(|v| v["name"].as_str().map(str::to_owned))
+                        .unwrap_or_default()
+                )
+            })
         }),
         child_session_id: None,
         request_id: request.id,
@@ -1906,9 +1921,10 @@ fn permission_requested(
         ));
     }
 
-    if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
-        payload["permission_gate"] =
-            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
+    if let Some(gate) = request.permission_gate.as_deref() {
+        payload["permission_gate"] = gate.clone();
+    } else if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
+        payload["permission_gate"] = serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false});
     }
     payload
 }
@@ -2253,6 +2269,11 @@ mod tests {
                 scope: Scope::Folder("/workspace".into()),
                 agent: "build".into(),
                 reason: "approval".into(),
+                always_label: None,
+                always: Vec::new(),
+                decision_id: None,
+                repeats: 1,
+                skill_rule: false,
             }),
             call: crate::provider::ToolCall {
                 id: "held".into(),
@@ -3000,6 +3021,19 @@ mod tests {
         r
     }
 
+    fn allow_everything(actor: &AgentActor) {
+        actor
+            .permission_store
+            .add(
+                "*",
+                "*",
+                crate::permission::rules::Effect::Allow,
+                crate::permission::rules::RuleScope::Global,
+                crate::permission::rules::RuleOrigin::Manual,
+            )
+            .unwrap();
+    }
+
     fn make_actor(base_url: String, cancel: CancellationToken) -> AgentActor {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
@@ -3063,6 +3097,8 @@ mod tests {
         let (inbox_tx, inbox) = ActorInbox::channel();
         let session_cancel = CancellationToken::new();
         let mut actor = make_actor(server_url, CancellationToken::new());
+        // These runs are about the bus, not about permissions.
+        allow_everything(&actor);
         if let Some(n) = max_steps {
             actor.max_steps = n;
         }
@@ -3525,6 +3561,7 @@ mod tests {
         ])
         .await;
         let mut actor = make_actor(server_direct.url.clone(), CancellationToken::new());
+        allow_everything(&actor);
         actor.push_user("run echo hi");
         let mut noop = |_e: AgentEvent<'_>| {};
         let direct = run_agent(&mut actor, &mut noop).await.unwrap();

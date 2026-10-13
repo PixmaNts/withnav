@@ -38,6 +38,7 @@ async fn several_automatic_compactions_do_not_renew_the_step_budget() {
     .await;
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(20_000)
+        .allow_everything()
         .state();
     let id = state.create_session(&ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();

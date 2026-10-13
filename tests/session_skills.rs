@@ -998,3 +998,67 @@ async fn the_context_snapshot_counts_the_rule_files_and_listed_skills() {
     assert!(snap["breakdown"]["rules"].as_u64().unwrap() > 0);
     assert!(snap["breakdown"]["skills_catalog"].as_u64().unwrap() > 0);
 }
+
+// Given a validated skill and a written `deny` rule for it, global or for the agent
+// When the model calls it or the Captain selects it
+// Then it is refused: validation proves which content was trusted, it never
+//      overrides a deny; the body never reaches the model and the refusal is recorded
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deny_rule_refuses_a_validated_skill_on_both_entry_points() {
+    use withnav::permission::rules::{Effect, RuleOrigin, RuleScope};
+    for scope in [RuleScope::Global, RuleScope::Agent("build".into())] {
+        for selected in [false, true] {
+            let env = env();
+            let responses = if selected {
+                vec![answer("done")]
+            } else {
+                vec![skill_call("ask-matt"), answer("done")]
+            };
+            let provider = spawn_capturing_provider(responses).await;
+            let state = state(&env, &provider, "default", false);
+            withnav::permission::store::PermissionStore::open(env.root.join("data"))
+                .unwrap()
+                .add(
+                    "skill",
+                    "ask-matt",
+                    Effect::Deny,
+                    scope.clone(),
+                    RuleOrigin::Manual,
+                )
+                .unwrap();
+            let id = state.create_session(&env.ws, None, false).await.unwrap();
+            let router = withnav::server::app(state.clone());
+            let sub = state.subscribe(id, None).await.unwrap();
+            if selected {
+                let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({"target_actor_id":"agent:main","content":[{"type":"text","text":"Review this"},{"type":"skill","name":"ask-matt"}]}))).await;
+                assert_eq!(status, axum::http::StatusCode::OK);
+            } else {
+                state
+                    .send(captain_command(id, "use ask-matt".into()))
+                    .await
+                    .unwrap();
+            }
+            let events = collect_until(sub, |e| {
+                e.kind == "turn.end" && e.payload["outcome"] == "done"
+            })
+            .await;
+            assert!(
+                !events.iter().any(|e| e.kind == "permission.requested"),
+                "{scope:?} {selected}"
+            );
+            let text = provider.bodies().join("\n");
+            assert!(!text.contains("STEP ONE"), "{scope:?} {selected}: {text}");
+            assert!(text.contains("permission rule"), "{scope:?} {selected}");
+            let rows = withnav::permission::store::PermissionStore::open(env.root.join("data"))
+                .unwrap()
+                .list_decisions(&Default::default(), 10)
+                .unwrap();
+            assert!(
+                rows.iter().any(|row| row.tool == "skill"
+                    && row.outcome == withnav::permission::decisions::Outcome::Denied),
+                "{rows:?}"
+            );
+            state.close_session(id).await.unwrap();
+        }
+    }
+}

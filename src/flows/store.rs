@@ -159,6 +159,8 @@ pub struct FlowStore {
     loaded: RwLock<Arc<Snapshot>>,
     revisions: RwLock<BTreeMap<(Location, String), String>>,
     write: std::sync::Mutex<()>,
+    #[cfg(test)]
+    reload_gate: std::sync::Mutex<Option<Arc<std::sync::Barrier>>>,
     reload_marker: Option<ReloadMarker>,
     reload_errors: RwLock<Vec<Diagnostic>>,
     migration_errors: Vec<(Location, Diagnostic)>,
@@ -351,6 +353,8 @@ impl FlowStore {
             loaded: RwLock::new(Arc::new(BTreeMap::new())),
             revisions: RwLock::new(BTreeMap::new()),
             write: std::sync::Mutex::new(()),
+            #[cfg(test)]
+            reload_gate: std::sync::Mutex::new(None),
             reload_marker,
             reload_errors: RwLock::new(vec![]),
             migration_errors,
@@ -647,6 +651,11 @@ impl FlowStore {
     fn reload_local(&self) -> Result<(), StoreError> {
         // Build privately; evaluations keep the previous immutable snapshot until
         // the complete candidate (or the failure fallback) is published.
+        #[cfg(test)]
+        if let Some(gate) = self.reload_gate.lock().unwrap().clone() {
+            gate.wait();
+            gate.wait();
+        }
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let documents = self.documents_with_compiled(true)?;
         let mut candidate = BTreeMap::new();
@@ -905,15 +914,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
         let before = store.snapshot();
-        let guard = store.write.lock().unwrap();
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        *store.reload_gate.lock().unwrap() = Some(gate.clone());
         std::thread::scope(|scope| {
             let reload = scope.spawn(|| store.reload().unwrap());
-            // The reloader must reach the write gate before building its candidate.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            gate.wait();
             let during = store.snapshot();
             assert!(during.contains_key("permission-default"));
             let unchanged = Arc::ptr_eq(&before, &during);
-            drop(guard);
+            gate.wait();
             reload.join().unwrap();
             assert!(unchanged, "reload published an intermediate snapshot");
         });

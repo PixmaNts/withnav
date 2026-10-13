@@ -92,3 +92,12 @@ describe("workspace expansion", () => {
     expect(readExpandedWorkspaces(ws.path, localStorage)).toEqual(new Set([ws.path]));
   });
 });
+
+it("shows unavailable permission rules with the shared warning badge and error detail", () => {
+  const row = { id: "degraded", title: "degraded", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", message_count: 1, agent: "build", model: "m", live: true, permissions_unavailable: "database open error" };
+  vi.mocked(useSessions).mockReturnValue({ data: [row] } as never);
+  act(() => root.render(<WorkspaceRow ws={ws} route={route} navigate={navigate} expanded setOpen={vi.fn()} />));
+  const badge = container.querySelector(".bypass-badge");
+  expect(badge?.textContent).toContain("Permission rules unavailable");
+  expect(badge?.getAttribute("title")).toBe("database open error");
+});

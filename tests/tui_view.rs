@@ -336,6 +336,7 @@ fn state() -> State {
         context_window: Some(200_000),
         session: Some(SessionMetadata {
             yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -3715,4 +3716,24 @@ fn auto_approval_notes_render_narrow_with_optional_evidence() {
             }
         }
     }
+}
+
+#[test]
+fn unavailable_permission_rules_are_visible_in_the_header_with_the_open_error() {
+    let mut s = state();
+    s.session.as_mut().unwrap().permissions_unavailable = Some("withnav.db: open failed".into());
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut cache = RenderCache::default();
+    terminal
+        .draw(|frame| view::draw(frame, &s, &UiState::default(), &Editor::new(), &mut cache))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Permission rules unavailable"), "{text}");
+    assert!(text.contains("withnav.db: open failed"), "{text}");
 }

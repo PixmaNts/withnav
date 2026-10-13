@@ -254,6 +254,8 @@ mod tests {
             skill: None,
             captain_messages: vec!["Change the configuration".into()],
             captain_messages_cut: false,
+            delegation: vec![],
+            delegation_cut: false,
             protected_check: None,
         }
     }
@@ -801,7 +803,7 @@ mod tests {
                 call: &call,
                 commands: &[],
                 cx: &cx,
-                store: &store,
+                store: Some(&store),
                 agent: "build",
                 repeats: 1,
                 validated: false,
@@ -1903,6 +1905,11 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.captain_messages".into(), captain_evidence);
+        let mut delegation = bounded_captain_messages(ctx.delegation);
+        delegation.cut |= ctx.delegation_cut;
+        context
+            .values
+            .insert("conversation.delegation".into(), delegation);
         // With the host's answer in hand the flows judge the ordinary
         // question; the protected branch is not walked a second time.
         let walk_protected = ctx.protected && ctx.protected_check.is_none();

@@ -2403,9 +2403,13 @@ async fn a_childs_permission_flow_sees_the_parents_captain_messages_only() {
     assert!(seen.contains("GENUINE_PARENT_INSTRUCTION"), "{seen}");
     // The delegated prompt never reaches the state as the Captain's words.
     let captain_part: Vec<&str> = seen
-        .split("Captain messages, newest last:")
+        .split("Captain's messages, newest last:")
         .skip(1)
-        .map(|rest| rest.split("Validated skill").next().unwrap_or_default())
+        .map(|rest| {
+            rest.split("Delegation from the parent agent")
+                .next()
+                .unwrap_or_default()
+        })
         .collect();
     assert!(!captain_part.is_empty(), "{seen}");
     for part in captain_part {

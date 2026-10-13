@@ -99,6 +99,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub permissions_unavailable: Option<String>,
     pub(crate) question_gate: tokio::sync::Mutex<()>,
     pending_question: Mutex<Option<crate::agent::response::HumanRequest>>,
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
@@ -3013,6 +3014,8 @@ mod tests {
     fn allow_everything(actor: &AgentActor) {
         actor
             .permission_store
+            .as_ref()
+            .unwrap()
             .add(
                 "*",
                 "*",

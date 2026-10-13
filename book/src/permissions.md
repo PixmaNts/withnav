@@ -19,7 +19,8 @@ Every tool call goes through the same steps, in this order:
 4. **Your rules**: a `deny` rule stops the call, whatever comes after.
 5. **Bypass** (if on for this session): the call runs.
 6. **The permission flow**: Instinct judges whether you, or a skill you validated, asked for the
-   call, or whether it is a read or a recoverable change inside the project. It can let the call
+   call (including a parent agent's delegation to a subagent), or whether it is a read or a
+   recoverable change inside the project. It can let the call
    run, or ask you.
 7. **You**: Once, Always or Reject.
 
@@ -60,8 +61,11 @@ nav permissions add write '*' ask --agent plan
 the outcome (`allowed`, `denied`, `pending`, `cancelled`, `expired`). Arguments are stored with
 secrets redacted and size-limited.
 
-Rules and history live in `~/.local/share/withnav/withnav.db`. A session refuses to start if that
-database cannot be opened, so that no `deny` rule is silently skipped; a yolo session starts anyway.
+Rules and history live in `~/.local/share/withnav/withnav.db`. If it cannot open, the session starts
+with **Permission rules unavailable** and the error. Every call is judged without a rule: the floor
+still applies and the permission flow may allow it, otherwise you are asked. Bypass cannot answer
+and Always is unavailable; decisions cannot be recorded. **Written deny rules are invisible in
+this mode.** Fix the database and start a new session to restore them. Yolo remains unchecked.
 
 ## Answering a prompt
 
@@ -91,6 +95,10 @@ not a rule.
 
 Change or remove a saved rule with `nav permissions`. A subagent's requests are answered in its
 parent's conversation.
+
+A subagent receives your genuine messages and, separately, the task and guidance its parent agent
+gave it. Delegation may request ordinary actions; only your own words can request changes to
+WithNav's configuration or database.
 
 ## Validated skills and flows
 

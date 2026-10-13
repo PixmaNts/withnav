@@ -166,6 +166,18 @@ pub async fn inspect(
         schema_version: 1,
         ..Default::default()
     };
+    if let Some(data) = &data {
+        let path = data.join("withnav.db");
+        if path.exists() || (data.exists() && !data.is_dir()) {
+            match rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+                Ok(_) => report.add("permissions.database", Status::Ok, path.display().to_string(), None),
+                Err(error) => report.add("permissions.database", Status::Warning,
+                    format!("{}: {error}", path.display()),
+                    Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled.")),
+            }
+        }
+    }
+
     let workspace = args
         .workspace
         .canonicalize()

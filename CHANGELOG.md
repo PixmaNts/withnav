@@ -59,11 +59,14 @@ Permissions chapter of the guide.
 - **An agent's limits are rules** with that agent's scope. WithNav seeds none: `plan` writes are
   decided like any other call, and its prompt still tells it to write Markdown only.
 - A subagent's permission flow sees your messages in the parent conversation; text the parent
-  agent wrote, in the delegation or in steering, never counts as your request. Your answers to an
+  agent wrote, in the delegation or in steering, is a separate request source for ordinary calls,
+  never for protected configuration writes. Your answers to an
   `ask` count as your words.
 - An allowed file write is bound to the path you were shown: if a link is put in its place before
   it runs, nothing is written and the call is decided again.
-- A session refuses to start if the permission database cannot be opened (yolo sessions start).
+- If the permission database cannot open, the session starts with a visible warning. Every call
+  gets no rule; the floor and flow still apply, and the flow may allow even though deny rules are
+  invisible. Bypass and Always are disabled and decision history is unavailable.
 - The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with
   install, configuration, permissions and troubleshooting rewritten for clarity.
 

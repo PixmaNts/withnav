@@ -1053,11 +1053,10 @@ mod tests {
         );
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
         assert_eq!(asked, 1);
-        // One command without a rule: the line asks and proposes only that command.
+        // A partially matched line asks without proposing reusable approval.
         let decision = f.decide(Control::Normal, &bash("git status && rm -rf x"));
         let always = proposals(&decision);
-        assert_eq!(always.len(), 1);
-        assert_eq!(always[0].resource, "rm *");
+        assert!(always.is_empty());
         // One denied command denies the line.
         f.add("bash", "rm *", Effect::Deny);
         let decision = f.decide(Control::Bypass, &bash("git status && rm -rf x"));
@@ -1141,7 +1140,7 @@ mod tests {
         f.add("write", &literal(&target), Effect::Allow);
         let decision = f.decide(Control::Normal, &write);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
-        assert_eq!(proposals(&decision)[0].action, "external_directory");
+        assert!(proposals(&decision).is_empty());
         // Both together allow it.
         f.add(
             "external_directory",

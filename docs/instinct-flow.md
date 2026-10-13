@@ -241,7 +241,7 @@ Action groups: **common** = `wake`, `inject_note`, `log`; **editor** = common pl
 
 | Trigger | Payload fields | Can block | Allowed actions |
 | --- | --- | --- | --- |
-| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s`, `rule_effect?:s`, `rule?:s`, `commands?:a`, `inside_project?:boolean`, `protected?:boolean`, `skill?:o` | yes | tool |
+| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s`, `rule_effect?:s`, `rule?:s`, `commands?:a`, `inside_project?:boolean`, `protected?:boolean`, `protected_checked?:boolean`, `skill?:o` | yes | tool |
 | `message.received` | `command_id:s`, `author:s`, `text:s`, `selected_skill?:o` | yes | common |
 | `turn.end` | `turn_id:s`, `text:s`, `status:s` | no | common |
 | `save` | `uri:s`, `language_id:s`, `version:i`, `diff:s`; editor extras below | no | editor |
@@ -323,6 +323,10 @@ with a cut flag; it is empty for a root session. The ordinary permission flow ma
 as a request, but the compiled protected check never reads it. Editor attachments are
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
+
+Protected calls always carry `protected = true`. `protected_checked = true` means
+the host already answered its compiled check; the built-in skips that node, while
+custom flows may still ask or deny. The strictest verdict wins.
 
 The built-in first checks protected calls using only Captain messages and the
 call, never the skill. Its dedicated `protected_requested` question must answer

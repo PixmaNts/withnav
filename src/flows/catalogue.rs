@@ -119,6 +119,7 @@ pub fn catalogue() -> Catalogue {
                 ("commands", Array, false),
                 ("inside_project", Boolean, false),
                 ("protected", Boolean, false),
+                ("protected_checked", Boolean, false),
                 ("skill", Object, false),
             ],
             json!({"tool":"write","args":{"path":"src/lib.rs","content":""},"call_id":"sample"}),

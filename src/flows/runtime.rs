@@ -261,6 +261,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checked_protected_call_keeps_its_protected_identity() {
+        let mut call = permission_call(PathBuf::from("/project"), true);
+        call.protected_check = Some(ProtectedCheck::Passed);
+        let (event, _, _) =
+            FlowRuntime::permission_event(call, RuleResult::None, ContextSnapshot::default());
+        assert_eq!(event.payload["protected"], json!(true));
+        assert_eq!(event.payload["protected_checked"], json!(true));
+    }
+
+    #[tokio::test]
     async fn permission_aggregation_is_separate_from_legacy_hook() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
@@ -1910,10 +1920,7 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.delegation".into(), delegation);
-        // With the host's answer in hand the flows judge the ordinary
-        // question; the protected branch is not walked a second time.
-        let walk_protected = ctx.protected && ctx.protected_check.is_none();
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":walk_protected});
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),

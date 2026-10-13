@@ -129,7 +129,7 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
         let Ok(canonical) = std::fs::canonicalize(&row.workspace) else {
             continue;
         };
-        let key = crate::tools::path_key(&canonical);
+        let key = crate::tools::resolved_path_key(&canonical);
         let entry = seen.entry(key).or_insert((canonical, 0, None));
         entry.1 += row.session_count;
         if entry.2.as_deref() < Some(row.updated_at.as_str()) {
@@ -140,21 +140,20 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
     let mut rows: Vec<(PathBuf, bool, u64, Option<String>)> = Vec::new();
     for path in &launch {
         let (_, count, updated) = seen
-            .remove(&crate::tools::path_key(path))
+            .remove(&crate::tools::resolved_path_key(path))
             .unwrap_or_default();
-        if !rows
-            .iter()
-            .any(|row| crate::tools::path_key(&row.0) == crate::tools::path_key(path))
-        {
+        if !rows.iter().any(|row| {
+            crate::tools::resolved_path_key(&row.0) == crate::tools::resolved_path_key(path)
+        }) {
             rows.push((path.clone(), true, count, updated));
         }
     }
     let mut others: Vec<_> = seen
         .into_iter()
         .filter(|(_, (path, _, _))| {
-            !hidden
-                .iter()
-                .any(|h| crate::tools::path_key(h) == crate::tools::path_key(path))
+            !hidden.iter().any(|h| {
+                crate::tools::resolved_path_key(h) == crate::tools::resolved_path_key(path)
+            })
         })
         .map(|(_, (path, count, updated))| (path, false, count, updated))
         .collect();
@@ -235,7 +234,7 @@ pub(super) async fn hide_workspace(
     if state.http.web.as_ref().is_some_and(|web| {
         web.launch_workspaces.iter().any(|launch| {
             std::fs::canonicalize(launch).is_ok_and(|launch| {
-                crate::tools::path_key(&launch) == crate::tools::path_key(&path)
+                crate::tools::resolved_path_key(&launch) == crate::tools::resolved_path_key(&path)
             })
         })
     }) {

@@ -680,7 +680,7 @@ fn opaque_deny(input: &Input<'_>) -> Result<Option<Rule>, Error> {
         .find(|rule| match &rule.scope {
             RuleScope::Global => true,
             RuleScope::Project(path) => {
-                crate::tools::path_key(path) == crate::tools::path_key(&workspace)
+                crate::tools::resolved_path_key(path) == crate::tools::resolved_path_key(&workspace)
             }
             RuleScope::Agent(name) => name == input.agent,
         }))

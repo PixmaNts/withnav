@@ -82,8 +82,8 @@ pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError
 }
 
 pub(crate) fn path_within(path: &Path, root: &Path) -> bool {
-    let path = crate::tools::path_key(path);
-    let root = crate::tools::path_key(root);
+    let path = crate::tools::resolved_path_key(path);
+    let root = crate::tools::resolved_path_key(root);
     path.starts_with(root)
 }
 
@@ -247,7 +247,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn confirms_unresolved_short_root_misses_resolved_target() {
+    fn short_root_contains_resolved_targets_and_allows_scratch_writes() {
         let dir = tempfile::Builder::new()
             .prefix("withnav long directory name ")
             .tempdir()
@@ -261,7 +261,34 @@ mod tests {
             short.display(),
             target.display()
         );
-        assert!(!path_within(&target, &short));
+        assert!(path_within(&target, &short));
+        let cx = crate::tools::ToolContext {
+            workspace: short.clone(),
+            writable_roots: vec![short.clone()],
+            readable_roots: vec![],
+            binding: None,
+        };
+        assert_eq!(
+            crate::tools::validate_path(&cx.writable_roots, &target).unwrap(),
+            target
+        );
+        let identity = crate::agent::scratch::Identity {
+            path: short.clone(),
+        };
+        write_scratch(&target, b"scratch", &identity).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"scratch");
+        let floor = crate::permission::floor::FloorContext {
+            workspace: short.clone(),
+            config_dir: Some(short.clone()),
+            data_dir: Some(short.clone()),
+            ..Default::default()
+        };
+        for name in ["config.json", "withnav.db"] {
+            let protected = resolve_target(&short.join(name), &short, None).unwrap();
+            assert!(crate::permission::floor::protected_write(
+                &protected, &floor
+            ));
+        }
     }
 
     #[test]
@@ -275,7 +302,10 @@ mod tests {
             .join("file.txt");
         let before = resolve_target(&target, dir.path(), None).unwrap();
         assert!(before.to_string_lossy().starts_with(r"\\?\"));
-        assert!(path_within(&before, dir.path()));
+        assert!(path_within(
+            &before,
+            &crate::tools::canonical_path(dir.path()).unwrap()
+        ));
         let store = crate::permission::store::PermissionStore::open(dir.path()).unwrap();
         let rule = store
             .add(

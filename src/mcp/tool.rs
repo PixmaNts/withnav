@@ -96,15 +96,21 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
                     refs.push(reference.into());
                     let mut resolved = visit(target, root, refs, depth + 1)?;
                     refs.pop();
-                    let output = resolved
-                        .as_object_mut()
-                        .ok_or("reference target is not an object schema")?;
                     let siblings: serde_json::Map<_, _> = object
                         .iter()
                         .filter(|(k, _)| k.as_str() != "$ref")
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     let normalized = visit(&Value::Object(siblings), root, refs, depth + 1)?;
+                    // The target may itself be a `$ref` chain: check the keywords it
+                    // resolves to, not only the ones written at the first hop.
+                    scope_conflict(
+                        &resolved,
+                        normalized.as_object().ok_or("invalid reference siblings")?,
+                    )?;
+                    let output = resolved
+                        .as_object_mut()
+                        .ok_or("reference target is not an object schema")?;
                     // A sibling keyword the target also sets would replace it: the provider
                     // would see fewer constraints than the server checks. Annotations may
                     // replace; constraints only merge when they are new or identical.
@@ -541,6 +547,16 @@ mod tests {
                 "{target} {sibling}"
             );
         }
+        // A chained reference reaches `additionalProperties` only after resolution.
+        let chained = normalize(json!({
+            "$defs": {
+                "closed": {"type":"object","additionalProperties":false},
+                "alias": {"$ref":"#/$defs/closed"}
+            },
+            "properties": {"x": {"$ref":"#/$defs/alias","properties":{"b":{}}}}
+        }))
+        .unwrap_err();
+        assert!(chained.contains("additionalProperties"), "{chained}");
         assert!(reference(closed, json!({"description":"d"})).is_ok());
         assert!(reference(json!({"items":{"type":"string"}}), json!({"maxItems":2})).is_ok());
     }

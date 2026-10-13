@@ -256,10 +256,16 @@ mod tests {
     #[test]
     fn remove_key_test() {
         let tmp = tempfile::tempdir().unwrap();
-        set_key(tmp.path(), "omniroute", "super-secret-value").unwrap();
-        assert!(remove_key(tmp.path(), "omniroute").is_ok());
-        let e = resolve_key(tmp.path(), "omniroute", None).unwrap_err();
-        assert!(matches!(e, ProviderError::MissingApiKey));
+        set_key(tmp.path(), "withnav-test-remove", "super-secret-value").unwrap();
+        assert!(remove_key(tmp.path(), "withnav-test-remove").is_ok());
+        assert!(matches!(
+            resolve_key(
+                tmp.path(),
+                "withnav-test-remove",
+                Some("WITHNAV_TEST_REMOVED_KEY")
+            ),
+            Err(ProviderError::MissingApiKey)
+        ));
     }
 
     #[test]

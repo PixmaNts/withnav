@@ -55,7 +55,10 @@ mod tests {
         let (Some(dir), Some(db), Some(log)) = (data_dir(), history_db(), decision_log()) else {
             return; // no home directory in this environment
         };
+        #[cfg(unix)]
         assert!(dir.ends_with("withnav"));
+        #[cfg(windows)]
+        assert!(dir.ends_with(std::path::Path::new("withnav").join("data")));
         assert_eq!(db, dir.join("withnav.db"));
         assert_eq!(log, dir.join("withnav.jsonl"));
     }

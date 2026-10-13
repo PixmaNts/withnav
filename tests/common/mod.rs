@@ -4,6 +4,10 @@
 #![allow(dead_code)]
 
 pub mod deadline;
+mod python;
+#[allow(unused_imports)]
+pub use python::python;
+
 pub mod navigator;
 pub mod server;
 pub mod sse;

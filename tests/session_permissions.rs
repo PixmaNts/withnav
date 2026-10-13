@@ -166,7 +166,7 @@ async fn mcp_unknown_tool_asks_always_saves_global_rule_and_yolo_runs_directly()
         .await;
         let cfg = config(&env, &provider).config();
         let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
-        settings.set_dotted("mcp", json!({"fake":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")]}}));
+        settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")]}}));
         settings.set_dotted("yolo", json!(yolo));
         withnav::settings::save(&cfg.config_dir, &settings).unwrap();
         // The mock has no instinct assignment: the built-in permission flow applies the

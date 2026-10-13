@@ -117,7 +117,10 @@ async fn settings_edit_validation_removal_and_stale_revision() {
     assert!(!path.exists(), "malformed JSON must not write settings");
     for (key, value) in [
         ("subagents.max_concurrent", json!(12)),
-        ("permissions.scratch_dirs", json!(["/tmp/custom"])),
+        (
+            "permissions.scratch_dirs",
+            json!([dir.path().join("custom")]),
+        ),
         ("subagents.watchdog_interval_secs", json!(0)),
         ("agent.watchdog_interval_secs", json!(42)),
         ("tui.theme", json!("nord-light")),

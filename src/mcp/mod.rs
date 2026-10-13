@@ -212,7 +212,12 @@ impl Drop for McpManager {
 }
 
 #[cfg(test)]
+#[path = "../../tests/common/python.rs"]
+mod test_python;
+
+#[cfg(test)]
 mod tests {
+
     use super::*;
     use serde_json::json;
     #[tokio::test]
@@ -223,7 +228,7 @@ mod tests {
         let mut servers = vec![];
         let mut tasks = vec![];
         for (id, name, retained) in [("a__b", "c", "wrong"), ("a", "b__c", "retained")] {
-            let config: config::ServerConfig = serde_json::from_value(json!({"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"TOOL_NAMES":json!([name]).to_string(),"RETAINED":retained}})).unwrap();
+            let config: config::ServerConfig = serde_json::from_value(json!({"command":[super::test_python::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"TOOL_NAMES":json!([name]).to_string(),"RETAINED":retained}})).unwrap();
             let server = Arc::new(Server {
                 id: id.into(),
                 config,

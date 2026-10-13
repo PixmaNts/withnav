@@ -194,3 +194,40 @@ async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
     let tools = tool_names(&provider, 0).await;
     assert!(tools.iter().any(|t| t == "mcp__fake__echo"), "{tools:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
+    let env = common::TestEnv::new();
+    install_agents(&env.ws);
+    let provider = spawn_capturing_provider(vec![text_response("child done")]).await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url)
+        .chat_tools(128_000)
+        .rules_home(&env.home)
+        .config();
+    with_mcp(
+        &cfg,
+        json!({"command":["python3",FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"}}),
+        false,
+    );
+    let state = AppState::new(cfg).unwrap();
+    // The parent freezes its inventory before the server is ready.
+    let parent = state.create_session(&env.ws, None, false).await.unwrap();
+    ready(&state).await;
+    let child = state
+        .create_child_session(parent, "mcpchild", "inspect")
+        .await
+        .unwrap();
+    let policy: Value = serde_json::from_str(
+        &state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .policy_snapshot,
+    )
+    .unwrap();
+    assert!(policy.get("mcp__fake__echo").is_none(), "{policy}");
+    let tools = tool_names(&provider, 0).await;
+    assert!(!tools.iter().any(|t| t.starts_with("mcp__")), "{tools:?}");
+    state.service().close_all().await;
+}

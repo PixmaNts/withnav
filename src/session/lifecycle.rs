@@ -392,6 +392,7 @@ mod tests {
                 #[allow(unreachable_code)]
                 idle_actor()
             })))),
+            mcp_tools: Arc::default(),
             actor_id: ROOT_ACTOR_ID.to_string(),
             lifecycle: Lifecycle::Active,
             actor_state: "idle".to_string(),

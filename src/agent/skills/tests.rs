@@ -41,7 +41,14 @@ fn discovers_skill_manifest_across_the_long_path_boundary() {
 fn validates_short_directory_with_verbatim_manifest() {
     let fx = fixture();
     let root = fx.home.join(".agents/skills");
-    let length = 254 - root.to_string_lossy().encode_utf16().count() - 1;
+    std::fs::create_dir_all(&root).unwrap();
+    let length = 254
+        - crate::tools::canonical_path(&root)
+            .unwrap()
+            .to_string_lossy()
+            .encode_utf16()
+            .count()
+        - 1;
     let directory = root.join("a".repeat(length));
     let manifest = add(&directory, "boundary", "Boundary skill");
     assert!(!crate::tools::canonical_path(&directory)

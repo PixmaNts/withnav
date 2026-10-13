@@ -2969,6 +2969,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     pub(super) fn on_next_dispatch(hook: impl FnOnce() + 'static) {
         BEFORE_DISPATCH.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
     }
@@ -3299,6 +3300,7 @@ mod tests {
         actor
     }
 
+    #[cfg(unix)]
     fn write_script(path: &Path) -> Vec<Vec<u8>> {
         vec![
             http_sse(&sse_body(&[&calls_chunk(&[(

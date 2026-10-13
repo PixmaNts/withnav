@@ -478,6 +478,12 @@ mod tests {
         let f = root.join("file.txt");
         std::fs::write(&f, "x").unwrap();
         let ok = validate_path(std::slice::from_ref(&root), &f).unwrap();
+        #[cfg(windows)]
+        assert!(nofollow::path_within(
+            &ok,
+            &nofollow::path_identity(&root).unwrap()
+        ));
+        #[cfg(unix)]
         assert!(ok.starts_with(root.canonicalize().unwrap()));
     }
 
@@ -487,6 +493,12 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let target = root.join("new/deep/file.txt");
         let resolved = validate_path(std::slice::from_ref(&root), &target).unwrap();
+        #[cfg(windows)]
+        assert!(nofollow::path_within(
+            &resolved,
+            &nofollow::path_identity(&root).unwrap()
+        ));
+        #[cfg(unix)]
         assert!(resolved.starts_with(root.canonicalize().unwrap()));
         assert!(resolved.ends_with("new/deep/file.txt"));
     }
@@ -496,10 +508,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let roots = vec![tmp.path().to_path_buf()];
         let relative = Path::new("new_dir/sub_dir/file.txt");
-        assert_eq!(
-            validate_path(&roots, relative).unwrap(),
-            tmp.path().canonicalize().unwrap().join(relative)
-        );
+        #[cfg(windows)]
+        let expected = nofollow::path_identity(tmp.path()).unwrap().join(relative);
+        #[cfg(unix)]
+        let expected = tmp.path().canonicalize().unwrap().join(relative);
+        assert_eq!(validate_path(&roots, relative).unwrap(), expected);
         assert!(validate_path(&[], relative).is_err());
         assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
     }

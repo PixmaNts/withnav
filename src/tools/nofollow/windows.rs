@@ -55,7 +55,7 @@ pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError
                 return Ok(result);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let name = ancestor.file_name().ok_or_else(|| ToolError::Io(error))?;
+                let name = ancestor.file_name().ok_or(ToolError::Io(error))?;
                 // Ordinary Win32 creation trims these characters too. Keep the
                 // returned suffix ordinary rather than changing it with a verbatim prefix.
                 let name = name
@@ -80,6 +80,7 @@ pub(crate) fn path_within(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
 }
 
+#[cfg(test)]
 pub(crate) fn drive_root(path: &Path) -> Result<std::path::PathBuf, ToolError> {
     validate_target(path)?;
     let mut parts = path.components();
@@ -116,24 +117,6 @@ pub(crate) fn short_alias(path: &Path) -> Option<std::path::PathBuf> {
         None
     } else {
         Some(alias)
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    static BEFORE_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn on_next_open(hook: impl FnOnce() + 'static) {
-    BEFORE_OPEN.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
-}
-
-fn before_open() {
-    #[cfg(test)]
-    if let Some(hook) = BEFORE_OPEN.with(|h| h.borrow_mut().take()) {
-        hook();
     }
 }
 
@@ -176,7 +159,6 @@ pub(crate) fn validate_target(path: &Path) -> Result<(), ToolError> {
 }
 
 pub fn open_read(destination: &Path) -> Result<std::fs::File, ToolError> {
-    before_open();
     validate_target(destination)?;
     let file = std::fs::File::open(destination)?;
     if !file.metadata()?.is_file() {
@@ -186,7 +168,6 @@ pub fn open_read(destination: &Path) -> Result<std::fs::File, ToolError> {
 }
 
 pub fn write_atomic(destination: &Path, content: &[u8]) -> Result<(), ToolError> {
-    before_open();
     validate_target(destination)?;
     let parent = destination
         .parent()

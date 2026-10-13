@@ -43,8 +43,17 @@ pub fn context_gauge(state: &State) -> (String, String, Option<String>) {
 
 /// `path` with the home folder as `~`, cut from its start to `width` columns.
 pub fn shorten(path: &str, width: usize) -> String {
-    let path = path.replace(std::env::var("HOME").as_deref().unwrap_or("\0"), "~");
+    let path = path.replace(home().as_deref().unwrap_or("\0"), "~");
     super::text::fit_start(&path, width)
+}
+
+/// The home folder shown as `~`: `HOME`, and on Windows, where it is usually unset,
+/// `USERPROFILE`.
+fn home() -> Option<String> {
+    let home = std::env::var("HOME").ok();
+    #[cfg(windows)]
+    let home = home.or_else(|| std::env::var("USERPROFILE").ok());
+    home
 }
 
 /// The status line: what the conversation is doing (connection, activity, a notice), then what

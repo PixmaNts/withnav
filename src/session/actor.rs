@@ -30,12 +30,14 @@ pub(super) fn build_actor(
     resolved: ResolvedModel,
     api_key: String,
     cancel: CancellationToken,
+    mcp: &crate::mcp::McpManager,
 ) -> AgentActor {
     build_actor_with_policy(
-        workspace, config_dir, resolved, api_key, cancel, None, false,
+        workspace, config_dir, resolved, api_key, cancel, None, false, mcp,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_child_actor(
     workspace: &Path,
     config_dir: &Path,
@@ -44,6 +46,7 @@ pub(super) fn build_child_actor(
     cancel: CancellationToken,
     allowed_tools: std::collections::BTreeMap<String, bool>,
     read_only: bool,
+    mcp: &crate::mcp::McpManager,
 ) -> AgentActor {
     build_actor_with_policy(
         workspace,
@@ -53,9 +56,11 @@ pub(super) fn build_child_actor(
         cancel,
         Some(allowed_tools),
         read_only,
+        mcp,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_actor_with_policy(
     workspace: &Path,
     config_dir: &Path,
@@ -64,6 +69,7 @@ fn build_actor_with_policy(
     cancel: CancellationToken,
     allowed_tools: Option<std::collections::BTreeMap<String, bool>>,
     read_only: bool,
+    mcp: &crate::mcp::McpManager,
 ) -> AgentActor {
     let tool_context = ToolContext {
         binding: None,
@@ -73,7 +79,7 @@ fn build_actor_with_policy(
     };
     let max_message_tokens = resolved.model.max_message_tokens;
     let mut actor = AgentActor::new(
-        build_registry(allowed_tools, read_only),
+        build_registry(allowed_tools, read_only, mcp),
         tool_context,
         resolved.provider,
         api_key,
@@ -89,6 +95,7 @@ fn build_actor_with_policy(
 fn build_registry(
     allowed_tools: Option<std::collections::BTreeMap<String, bool>>,
     read_only: bool,
+    mcp: &crate::mcp::McpManager,
 ) -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(crate::tools::native::ReadTool));
@@ -98,6 +105,9 @@ fn build_registry(
     registry.register(Box::new(crate::tools::native::GrepTool));
     registry.register(Box::new(crate::tools::glob::GlobTool));
     registry.register(Box::new(crate::tools::fetch::FetchTool::new()));
+    for tool in mcp.snapshot() {
+        registry.register(Box::new(tool));
+    }
     if !read_only {
         registry.register(Box::new(crate::tools::control::AskTool));
     }

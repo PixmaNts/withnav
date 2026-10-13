@@ -1325,7 +1325,7 @@ async fn an_always_that_cannot_be_saved_says_so_and_runs_once() {
         .unwrap()
         .execute_batch(
             "CREATE TRIGGER refuse_rules BEFORE INSERT ON permission_rules
-             BEGIN SELECT RAISE(ABORT, 'rules refused sk-abcdefghijklmnopqrstuvwxyz'); END;",
+             BEGIN SELECT RAISE(ABORT, 'rules refused' || char(10) || 'token=acme_live_Zq81kPw2 at /home/user/.secret'); END;",
         )
         .unwrap();
     let (status, body) = answer(
@@ -1343,7 +1343,6 @@ async fn an_always_that_cannot_be_saved_says_so_and_runs_once() {
     assert_eq!(payload["resolution"], "allow_always");
     assert_eq!(payload["always_saved"], false, "{payload}");
     let error = payload["always_error"].as_str().unwrap();
-    assert!(error.contains("rules refused"), "{error}");
-    assert!(!error.contains("sk-abcdefghij"), "{error}");
+    assert_eq!(error, "rule write rejected");
     state.close_session(id).await.unwrap();
 }

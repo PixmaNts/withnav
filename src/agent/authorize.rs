@@ -482,7 +482,10 @@ pub(super) async fn save_always(
         .run(move |store| store.add_all(&rules, RuleOrigin::Always))
         .await
         .map(|rules| rules.into_iter().map(|rule| rule.id).collect())
-        .map_err(|error| decisions::bounded_error(&error.to_string()))
+        .map_err(|error| {
+            tracing::warn!(%error, "the Always rules were not saved");
+            decisions::public_reason(&error).to_owned()
+        })
 }
 
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {

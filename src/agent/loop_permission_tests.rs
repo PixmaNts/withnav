@@ -1406,7 +1406,7 @@ fn refuse_rule_writes(actor: &AgentActor) {
         .db()
         .execute_batch(
             "CREATE TRIGGER refuse_rules BEFORE INSERT ON permission_rules
-             BEGIN SELECT RAISE(ABORT, 'rules refused sk-abcdefghijklmnopqrstuvwxyz'); END;",
+             BEGIN SELECT RAISE(ABORT, 'rules refused' || char(10) || 'token=acme_live_Zq81kPw2 at /home/user/.secret'); END;",
         )
         .unwrap();
 }
@@ -1453,8 +1453,7 @@ async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
     assert_eq!(answer["decision"], "allow_always");
     assert_eq!(answer["always_saved"], false, "{answer}");
     let error = answer["always_error"].as_str().unwrap();
-    assert!(error.contains("rules refused"), "{error}");
-    assert!(!error.contains("sk-abcdefghij"), "{error}");
+    assert_eq!(error, "rule write rejected");
 }
 
 /// A decision that waits on a locked `withnav.db` must not stall the runtime:

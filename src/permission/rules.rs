@@ -321,10 +321,11 @@ impl RuleScope {
     pub(crate) fn storage(&self) -> Result<(&'static str, String), Error> {
         Ok(match self {
             Self::Global => ("global", String::new()),
-            Self::Project(path) => (
-                "project",
-                path_text(&crate::tools::canonical_path(path)?)?.into(),
-            ),
+            Self::Project(path) => ("project", {
+                let canonical = crate::tools::canonical_path(path)?;
+                path_text(&canonical)?;
+                crate::tools::path_key(&canonical)
+            }),
             Self::Agent(name) if !name.is_empty() => ("agent", name.clone()),
             Self::Agent(_) => return Err(Error::Invalid("agent name must not be empty".into())),
         })
@@ -555,6 +556,8 @@ impl PermissionStore {
             ));
         }
         let workspace = crate::tools::canonical_path(workspace)?;
+        path_text(&workspace)?;
+        let workspace = crate::tools::path_key(&workspace);
         #[cfg(windows)]
         let resource = if file_action(action) {
             &crate::tools::path_key(Path::new(resource))
@@ -575,7 +578,7 @@ impl PermissionStore {
                 CASE effect WHEN 'deny' THEN 2 WHEN 'ask' THEN 1 ELSE 0 END DESC,
                 created_at DESC, id DESC LIMIT 1"
                 ),
-                params![action, resource, path_text(&workspace)?, agent],
+                params![action, resource, workspace, agent],
                 read_rule,
             )
             .optional()?)

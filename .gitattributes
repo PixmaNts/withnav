@@ -1,0 +1,4 @@
+# Golden fixtures are compared byte for byte (SHA-256 manifest, wire bodies): never
+# convert their line endings on checkout, whatever core.autocrlf says (it is true on
+# the GitHub Windows runner and in a default Git for Windows install).
+tests/fixtures/** -text

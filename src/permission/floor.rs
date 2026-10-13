@@ -1216,6 +1216,11 @@ mod tests {
     #[test]
     fn output_options_and_read_write_redirections_are_writes() {
         let f = fixture();
+        // The relative operand is space-free even when TEMP contains spaces.
+        assert!(matches!(
+            bash_floor(&f.cx, "sort -o ../config/config.json in"),
+            Floor::Protected(_)
+        ));
         let root = crate::tools::relative_path_text(f.cx.workspace.parent().unwrap());
         let config = format!("\"{root}/config/config.json\"");
         for line in [

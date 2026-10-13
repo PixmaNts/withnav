@@ -66,6 +66,10 @@ impl SkillValidation {
         Ok(())
     }
     pub fn begin_turn(&self) {
+        self.snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.approved
             .lock()
             .unwrap_or_else(|e| e.into_inner())

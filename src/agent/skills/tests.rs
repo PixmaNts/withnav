@@ -27,6 +27,7 @@ fn skill_authority_and_selection_queue_follow_the_logical_turn() {
     // Permission and compaction continuations leave the logical generation intact.
     assert_eq!(actor.skill_turn_generation, generation);
     actor.end_skill_turn();
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
     assert!(actor.active_validated_skill().is_none());
     assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
     actor.push_user_with_provenance("wake", crate::provider::openai::UserProvenance::Navigator);

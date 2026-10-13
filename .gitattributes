@@ -1,4 +1,10 @@
+# Text files are LF in the repository and in every checkout, whatever core.autocrlf says
+# (it is true on the GitHub Windows runner and in a default Git for Windows install).
+# The binary embeds prompts, flow definitions and templates with include_str!, and tests
+# compare snapshots and recorded bodies byte for byte: a CRLF checkout would change what
+# nav.exe sends to a model and break those comparisons.
+* text=auto eol=lf
+
 # Golden fixtures are compared byte for byte (SHA-256 manifest, wire bodies): never
-# convert their line endings on checkout, whatever core.autocrlf says (it is true on
-# the GitHub Windows runner and in a default Git for Windows install).
+# convert them, even on commit.
 tests/fixtures/** -text

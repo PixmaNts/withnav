@@ -9,30 +9,8 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     os::fd::{AsFd, AsRawFd, OwnedFd},
-    path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    path::{Component, Path},
 };
-
-/// Atomic replacement changes data inodes; lock a stable sibling inode instead.
-pub fn resource_lock(path: &Path) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<std::collections::BTreeMap<PathBuf, Weak<Mutex<()>>>>> =
-        OnceLock::new();
-    let key = path
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| path.file_name().map(|n| p.join(n)))
-        .unwrap_or_else(|| path.to_path_buf());
-    let mut locks = LOCKS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(Mutex::new(()));
-    locks.insert(key, Arc::downgrade(&lock));
-    lock
-}
 
 pub struct Directory(OwnedFd);
 fn io(error: nix::errno::Errno) -> std::io::Error {

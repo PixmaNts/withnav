@@ -726,7 +726,6 @@ fn descriptions_are_flattened_and_capped() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn the_catalog_is_bounded_and_counts_what_it_omits() {
     let fx = fixture();

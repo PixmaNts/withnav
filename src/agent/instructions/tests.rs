@@ -213,7 +213,6 @@ fn nothing_above_the_root_is_read() {
 // When the instructions load from the nested directory
 // Then the text appears once and the second path is reported as a duplicate
 #[cfg(unix)]
-#[cfg(unix)]
 #[test]
 fn a_linked_file_is_read_once() {
     let fx = fixture();
@@ -232,7 +231,6 @@ fn a_linked_file_is_read_once() {
 // Given a workspace reached through a link
 // When the instructions load
 // Then discovery uses the canonical path (the root is found behind the link)
-#[cfg(unix)]
 #[cfg(unix)]
 #[test]
 fn a_linked_workspace_is_resolved_first() {

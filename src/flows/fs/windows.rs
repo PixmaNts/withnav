@@ -2,27 +2,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
 };
-pub fn resource_lock(path: &Path) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<std::collections::BTreeMap<PathBuf, Weak<Mutex<()>>>>> =
-        OnceLock::new();
-    let key = path
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| path.file_name().map(|n| p.join(n)))
-        .unwrap_or_else(|| path.to_path_buf());
-    let mut locks = LOCKS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(Mutex::new(()));
-    locks.insert(key, Arc::downgrade(&lock));
-    lock
-}
 pub struct Directory(PathBuf);
 impl Directory {
     pub fn open(path: &Path, create: bool) -> std::io::Result<Self> {
@@ -32,7 +12,7 @@ impl Directory {
         if create {
             std::fs::create_dir_all(path)?;
         }
-        if !path.is_dir() {
+        if !std::fs::metadata(path)?.is_dir() {
             return Err(std::io::Error::other("not a directory"));
         }
         Ok(Self(path.to_path_buf()))
@@ -86,11 +66,19 @@ impl Directory {
         self.read(name, max, true)
     }
     pub(crate) fn append(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.append_with(name, |file| file.write_all(bytes))
+    }
+    fn append_with(
+        &self,
+        name: &str,
+        write: impl FnOnce(&mut File) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         valid_name(name)?;
         let mut file = OpenOptions::new()
             .read(true)
-            .append(true)
+            .write(true)
             .create(true)
+            .truncate(false)
             .open(self.0.join(name))?;
         if !file.metadata()?.is_file() {
             return Err(std::io::Error::other("unsafe capture file"));
@@ -105,7 +93,8 @@ impl Directory {
                     file.write_all(b"\n")?;
                 }
             }
-            file.write_all(bytes)?;
+            file.seek(SeekFrom::End(0))?;
+            write(&mut file)?;
             file.sync_all()
         })();
         if result.is_err() {
@@ -116,8 +105,12 @@ impl Directory {
     }
     pub fn names(&self) -> std::io::Result<Vec<String>> {
         let mut names = Vec::new();
-        for entry in std::fs::read_dir(&self.0)? {
-            if let Some(name) = entry?.file_name().to_str() {
+        for (index, entry) in std::fs::read_dir(&self.0)?.enumerate() {
+            let entry = entry?;
+            if index >= 4096 {
+                return Err(std::io::Error::other("too many directory entries"));
+            }
+            if let Some(name) = entry.file_name().to_str() {
                 names.push(name.to_owned());
             }
             if names.len() > 4096 {
@@ -182,6 +175,41 @@ fn valid_name(name: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn partial_append_failure_restores_original_bytes_and_length() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Directory::open(temp.path(), false).unwrap();
+        dir.write("runs", b"original").unwrap();
+        assert!(dir
+            .append_with("runs", |file| {
+                file.write_all(b"partial")?;
+                Err(std::io::Error::other("injected write failure"))
+            })
+            .is_err());
+        assert_eq!(
+            std::fs::read(temp.path().join("runs")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::metadata(temp.path().join("runs")).unwrap().len(),
+            8
+        );
+    }
+    #[test]
+    fn enumeration_counts_non_unicode_entries() {
+        use std::os::windows::ffi::OsStringExt;
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Directory::open(temp.path(), false).unwrap();
+        for index in 0..4096 {
+            File::create(temp.path().join(index.to_string())).unwrap();
+        }
+        let name = std::ffi::OsString::from_wide(&[0xd800]);
+        File::create(temp.path().join(name)).unwrap();
+        assert_eq!(
+            dir.names().unwrap_err().to_string(),
+            "too many directory entries"
+        );
+    }
     #[test]
     fn sibling_names_reject_windows_aliases() {
         for name in [

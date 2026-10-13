@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use serde_json::Value;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Lines of a file or a command shown before the rest is summed up.
 const PREVIEW_LINES: usize = 6;
@@ -88,7 +89,10 @@ pub(crate) fn copy_sections(p: &PermissionPrompt, call: Option<&Value>, sent: bo
             p.tool,
             scope_text(p)
         ),
-        p.reason.clone(),
+        match &p.always_label {
+            Some(label) => format!("{}\n{label}", p.reason),
+            None => p.reason.clone(),
+        },
         payload,
         outcome,
     ]
@@ -119,7 +123,7 @@ pub enum Keys<'a> {
     Inactive,
 }
 
-/// The prompt's lines, each cut to `width` columns so it takes exactly one row. `call` is the
+/// The prompt's lines, with complete proposed rules wrapped to `width`. `call` is the
 /// tool call's own arguments, from the transcript, when they are known.
 pub fn lines(
     p: &PermissionPrompt,
@@ -128,10 +132,27 @@ pub fn lines(
     theme: &Theme,
     width: usize,
 ) -> Vec<Line<'static>> {
-    build(p, call, keys, theme)
+    let mut rendered: Vec<_> = build(p, call, keys, theme)
         .into_iter()
         .map(|line| cut(line, width))
-        .collect()
+        .collect();
+    if let Some(label) = &p.always_label {
+        let mut row = String::new();
+        let mut rules = Vec::new();
+        for grapheme in label.graphemes(true) {
+            if width > 0 && !row.is_empty() && Line::raw(format!("{row}{grapheme}")).width() > width
+            {
+                rules.push(Line::styled(std::mem::take(&mut row), theme.muted()));
+            }
+            row.push_str(grapheme);
+        }
+        if !row.is_empty() {
+            rules.push(Line::styled(row, theme.muted()));
+        }
+        let before_outcome = rendered.len().saturating_sub(1);
+        rendered.splice(before_outcome..before_outcome, rules);
+    }
+    rendered
 }
 
 /// `line` cut to `width` columns, ending with `…` when cut.
@@ -232,10 +253,7 @@ fn build(
             Span::styled(" o", theme.strong()),
             Span::styled(" once   ", theme.muted()),
             Span::styled("a", theme.strong()),
-            Span::styled(
-                format!(" {}   ", p.always_label.as_deref().unwrap_or("Always")),
-                theme.muted(),
-            ),
+            Span::styled(" Always   ", theme.muted()),
             Span::styled("r", theme.strong()),
             Span::styled(" reject", theme.muted()),
         ])),
@@ -272,7 +290,7 @@ fn always_answer_requires_the_server_label() {
         .iter()
         .any(|line| line
             .to_string()
-            .contains("a Always (project): bash git push *")));
+            .contains("Always (project): bash git push *")));
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.
@@ -408,6 +426,31 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod copy_tests {
     use super::*;
+    #[test]
+    fn complete_always_rules_are_wrapped_and_copied() {
+        let mut p = test_prompt();
+        p.resolution = None;
+        let label = "Always (project): bash git push *; bash cargo test *; external_directory /a/very/long/path/*";
+        p.always_label = Some(label.into());
+        let rendered = lines(&p, None, Keys::Ready, &Theme::default(), 24);
+        let joined = rendered
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<String>();
+        assert!(joined.contains(label));
+        assert!(rendered.iter().all(|line| line.width() <= 24));
+        assert!(copy_sections(&p, None, false).join("\n").contains(label));
+        insta::assert_snapshot!(rendered.iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n"), @r"
+        PERMISSION · build want…
+         long reason
+         $ echo long command
+        Always (project): bash g
+        it push *; bash cargo te
+        st *; external_directory
+         /a/very/long/path/*
+         o once   a Always   r …
+        ");
+    }
     #[test]
     fn outcomes_and_write_content_are_explicit_and_bounded() {
         let mut p = test_prompt();

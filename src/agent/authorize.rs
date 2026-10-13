@@ -77,6 +77,7 @@ impl SessionFlows {
             skill: self.skill.clone(),
             captain_messages: self.captain_messages.clone(),
             captain_messages_cut: self.captain_messages_cut,
+            protected_check: query.protected_check,
         }
     }
 }
@@ -188,6 +189,7 @@ pub(super) async fn authorize(
     call: &ToolCall,
     repeats: usize,
     previous: Option<i64>,
+    validated: bool,
 ) -> Authorized {
     let commands = if call.name == "bash" {
         shell::split(
@@ -201,7 +203,26 @@ pub(super) async fn authorize(
     };
     let cx = floor_context(actor);
     let agent = agent_name(actor);
-    let (captain_messages, captain_messages_cut) = captain_messages_with_cut(&actor.transcript);
+    let (mut captain_messages, mut captain_messages_cut) =
+        captain_messages_with_cut(&actor.transcript);
+    if let Some((parent, cut)) = actor
+        .parent_captain
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        // The parent's words come first: they are older than the child.
+        captain_messages = parent.into_iter().chain(captain_messages).collect();
+        captain_messages_cut |= cut;
+    }
+    // The host set this flag from the Captain's own selection, never from
+    // model arguments (`run_calls` refuses it there).
+    if call.name == "skill" && call.args["captain_selected"] == true {
+        captain_messages.push(format!(
+            "Load the skill {}.",
+            call.args["name"].as_str().unwrap_or_default()
+        ));
+    }
     let flows = SessionFlows {
         hook: actor.tool_flows.clone(),
         call: call.clone(),
@@ -233,6 +254,7 @@ pub(super) async fn authorize(
         store: &actor.permission_store,
         agent: &agent,
         repeats,
+        validated,
     };
     let decision = tokio::select! {
         biased;

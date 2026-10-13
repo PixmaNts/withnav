@@ -1081,6 +1081,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::PermissionDatabase(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ChildNotParked

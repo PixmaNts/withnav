@@ -203,7 +203,7 @@ async fn run_steps_inner(
                 },
             }],
         });
-        match run_skill(actor, &call, observe).await {
+        match run_skill(actor, &call, observe, None).await {
             One::Ask(request, destination) => {
                 actor.pending = Some(PendingInteraction::Permission {
                     request: request.clone(),
@@ -432,7 +432,7 @@ pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
     matches!(
         &actor.pending,
         Some(PendingInteraction::Permission { request, .. })
-            if !request.requires_captain && request.tool != "skill"
+            if !request.requires_captain && (request.tool != "skill" || request.skill_rule)
     )
 }
 
@@ -444,7 +444,7 @@ pub async fn resolve_permission_with_origin(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
     let decision = decision.current();
-    if matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.id == request_id && request.tool == "skill")
+    if matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.id == request_id && request.tool == "skill" && !request.skill_rule)
     {
         return resolve_skill(actor, decision, origin, observe).await;
     }
@@ -505,35 +505,25 @@ pub async fn resolve_permission_with_origin(
                 authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"));
             }
             let note = authorize::answered_approval(&request, "captain");
-            run_approved(
-                actor,
-                &call,
-                destination.as_deref(),
-                note,
-                request.repeats,
-                observe,
-            )
-            .await
+            if call.name == "skill" {
+                run_skill(actor, &call, observe, Some(note)).await
+            } else {
+                run_approved(
+                    actor,
+                    &call,
+                    destination.as_deref(),
+                    note,
+                    request.repeats,
+                    observe,
+                )
+                .await
+            }
         }
         PermissionDecision::Reject { message } => {
             if let Some(id) = request.decision_id {
                 authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None);
             }
-            let message = message
-                .filter(|m| !m.trim().is_empty())
-                .unwrap_or_else(|| "the Captain rejected this tool call".into());
-            // Every call of the turn still held is rejected with the same words.
-            for held in std::iter::once(&call).chain(&remaining_calls) {
-                let result = ToolResult::permission_denied(message.clone()).with_metadata(
-                    serde_json::json!({"approved_by":"denied","denied_by":"captain"}),
-                );
-                actor
-                    .permission_context
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .tool(held, &result);
-                append_tool_result(actor, &held.id, &result);
-            }
+            settle_rejected(actor, &call, &remaining_calls, message);
             return Ok(run_steps(actor, observe, steps_left).await?);
         }
         PermissionDecision::AllowFolder
@@ -571,6 +561,28 @@ pub async fn resolve_permission_with_origin(
         Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(*request)),
     }
     Ok(run_steps(actor, observe, steps_left).await?)
+}
+
+/// Rejects the held call and every call held behind it with the Captain's words.
+fn settle_rejected(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    remaining_calls: &[ToolCall],
+    message: Option<String>,
+) {
+    let message = message
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "the Captain rejected this tool call".into());
+    for held in std::iter::once(call).chain(remaining_calls) {
+        let result = ToolResult::permission_denied(message.clone())
+            .with_metadata(serde_json::json!({"approved_by":"denied","denied_by":"captain"}));
+        actor
+            .permission_context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tool(held, &result);
+        append_tool_result(actor, &held.id, &result);
+    }
 }
 
 /// The Captain's answer to a skill validation: only the Captain answers it.
@@ -612,7 +624,50 @@ async fn resolve_skill(
     if actor.cancel.is_cancelled() {
         actor.end_skill_turn();
         append_interrupted(actor, &call.id);
+        for rest in &remaining_calls {
+            append_interrupted(actor, &rest.id);
+        }
         return Ok(RunOutcome::Interrupted);
+    }
+    if let PermissionDecision::Reject { message } = decision {
+        // Not validated: nothing of the turn that waited on it runs.
+        settle_rejected(actor, &call, &remaining_calls, message);
+        if call.args["captain_selected"] == true {
+            let name = call.args["name"].as_str().unwrap_or_default();
+            actor.push_user_with_provenance(
+                skill_host_block(
+                    &call,
+                    &ToolResult::error(
+                        "skill_not_validated",
+                        format!("skill {name} was not loaded"),
+                    ),
+                ),
+                crate::provider::openai::UserProvenance::Navigator,
+            );
+        }
+        return Ok(run_steps(actor, observe, steps_left).await?);
+    }
+    let mut gate = None;
+    if matches!(
+        decision,
+        PermissionDecision::AllowOnce | PermissionDecision::AllowAlways
+    ) && snapshot.is_some()
+    {
+        match skill_admission(actor, &call, observe, true).await {
+            Admission::Run(note) => gate = Some(note),
+            Admission::Done(One::Interrupted) => {
+                actor.end_skill_turn();
+                append_interrupted(actor, &call.id);
+                for rest in &remaining_calls {
+                    append_interrupted(actor, &rest.id);
+                }
+                return Ok(RunOutcome::Interrupted);
+            }
+            // Refused by a rule: the refusal is in the transcript.
+            Admission::Done(_) => {
+                return Ok(continue_after(actor, remaining_calls, steps_left, observe).await?)
+            }
+        }
     }
     let result = if matches!(
         decision,
@@ -654,8 +709,12 @@ async fn resolve_skill(
             ),
         )
     };
+    let mut result = result;
+    if let Some(note) = &gate {
+        merge_approval_metadata(&mut result.metadata, note);
+    }
     observe(AgentEvent::PreCall {
-        permission_gate: None,
+        permission_gate: gate.as_ref().and_then(|note| note.get("permission_gate")),
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
@@ -672,12 +731,69 @@ async fn resolve_skill(
             crate::provider::openai::UserProvenance::Navigator,
         );
     }
+    Ok(continue_after(actor, remaining_calls, steps_left, observe).await?)
+}
+
+/// Runs the calls still held, then carries the turn on.
+async fn continue_after(
+    actor: &mut AgentActor,
+    remaining_calls: Vec<ToolCall>,
+    steps_left: usize,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Result<RunOutcome, AgentError> {
     match run_calls(actor, remaining_calls, steps_left, observe).await {
         Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(*request)),
         Calls::Interrupted => return Ok(RunOutcome::Interrupted),
         Calls::Finished => {}
     }
-    Ok(run_steps(actor, observe, steps_left).await?)
+    run_steps(actor, observe, steps_left).await
+}
+
+/// What the permission rules say about loading a validated skill.
+enum Admission {
+    /// Load it; the note goes on its tool events.
+    Run(serde_json::Value),
+    /// Refused, waiting for the Captain, or interrupted.
+    Done(One),
+}
+
+/// Decides the loading of a skill whose content is validated, with action
+/// `skill` and the skill's name: a `deny` rule refuses it whoever selected
+/// it. `answered` is true right after the Captain validated it in this turn:
+/// a rule `ask` is then already answered.
+async fn skill_admission(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    answered: bool,
+) -> Admission {
+    match authorize::authorize(actor, call, 1, None, true).await {
+        Authorized::Run(note) => Admission::Run(note),
+        Authorized::Denied { message, note } => {
+            deny_call(actor, call, message, note, observe);
+            Admission::Done(One::Settled)
+        }
+        Authorized::Ask(request) if answered => {
+            if let Some(id) = request.decision_id {
+                authorize::update(
+                    actor,
+                    id,
+                    Outcome::Allowed,
+                    Some(&serde_json::json!({"answer":"skill validation"})),
+                    Some("captain"),
+                );
+            }
+            Admission::Run(authorize::answered_approval(&request, "captain"))
+        }
+        Authorized::Ask(mut request) => {
+            // A rule question about a validated skill, not a validation:
+            // bypass and "Always" follow the ordinary path.
+            request.reason = format!("{} (skill {})", request.reason, call.args["name"]);
+            request.skill_rule = true;
+            Admission::Done(One::Ask(request, None))
+        }
+        Authorized::Interrupted => Admission::Done(One::Interrupted),
+    }
 }
 
 /// How a pass over a message's tool calls ended.
@@ -698,10 +814,13 @@ fn skill_host_block(call: &ToolCall, result: &ToolResult) -> String {
     format!("<captain_selected_skill encoding=\"json\">\n{encoded}\n</captain_selected_skill>")
 }
 
+/// Loads a skill: its content must be validated, then the permission rules
+/// decide. `admitted` is the note of a rule question the Captain already answered.
 async fn run_skill(
     actor: &mut AgentActor,
     call: &ToolCall,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    admitted: Option<serde_json::Value>,
 ) -> One {
     if let Err(error) = preflight(actor, call) {
         reject_call(actor, call, error, observe);
@@ -752,12 +871,24 @@ async fn run_skill(
     }
     match valid {
         Ok(Ok(true)) => {
+            // Validation proves which content the Captain trusted; the rules
+            // still decide whether it may be loaded now.
+            let approval = if actor.yolo {
+                yolo_approval()
+            } else if let Some(note) = admitted {
+                note
+            } else {
+                match skill_admission(actor, call, observe, false).await {
+                    Admission::Run(note) => note,
+                    Admission::Done(one) => return one,
+                }
+            };
             if let Err(error) = actor.skills.validation.approve(&snapshot, false) {
                 reject_call(actor, call, error, observe);
                 return One::Settled;
             }
             let mut result = snapshot.output.clone();
-            let approval = actor.yolo.then(yolo_approval);
+            let approval = Some(approval);
             if let Some(note) = &approval {
                 merge_approval_metadata(&mut result.metadata, note);
             }
@@ -953,7 +1084,7 @@ async fn run_decided(
     previous: Option<i64>,
 ) -> One {
     if call.name == "skill" {
-        return run_skill(actor, call, observe).await;
+        return run_skill(actor, call, observe, None).await;
     }
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);
@@ -976,7 +1107,7 @@ async fn run_decided(
     }
     let mut previous = previous;
     for _ in 0..REGATE_LIMIT {
-        let note = match authorize::authorize(actor, call, repeats, previous.take()).await {
+        let note = match authorize::authorize(actor, call, repeats, previous.take(), false).await {
             Authorized::Run(note) => note,
             Authorized::Denied { message, note } => {
                 deny_call(actor, call, message, note, observe);
@@ -1104,7 +1235,7 @@ async fn run_yolo(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
     if call.name == "skill" {
-        return run_skill(actor, call, observe).await;
+        return run_skill(actor, call, observe, None).await;
     }
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);
@@ -1401,6 +1532,7 @@ fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolR
     actor.transcript.push(ChatMessage::Tool {
         tool_call_id: tool_call_id.to_string(),
         content,
+        answered_by: None,
     });
 }
 
@@ -1849,7 +1981,7 @@ mod tests {
         ));
         assert!(!actor.has_pending());
         for id in ["ask-denied", "skill-denied"] {
-            assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::Tool {tool_call_id, content} if tool_call_id == id && content.contains("disabled by this session's policy"))));
+            assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::Tool {tool_call_id, content, .. } if tool_call_id == id && content.contains("disabled by this session's policy"))));
         }
         let requests = server.requests.lock().await;
         for request in requests.iter() {
@@ -2308,6 +2440,7 @@ mod tests {
             ChatMessage::Tool {
                 tool_call_id,
                 content,
+                ..
             } if tool_call_id == id => Some(content.clone()),
             _ => None,
         })
@@ -2802,6 +2935,7 @@ mod tests {
             t.push(ChatMessage::Tool {
                 tool_call_id: format!("c{n}"),
                 content: "output ".repeat(200),
+                answered_by: None,
             });
             t.push(ChatMessage::Assistant {
                 content: Some(format!("done {n}")),

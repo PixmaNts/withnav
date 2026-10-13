@@ -58,6 +58,9 @@ pub struct PermissionCallContext {
     pub skill: Option<ValidatedSkill>,
     pub captain_messages: Vec<String>,
     pub captain_messages_cut: bool,
+    /// The host already ran the compiled protected check for this call: its
+    /// answer is the only authority, and the flows do not ask it again.
+    pub protected_check: Option<ProtectedCheck>,
 }
 
 /// The answer of the compiled-in protected check alone, the only authority

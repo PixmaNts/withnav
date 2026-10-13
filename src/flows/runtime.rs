@@ -69,6 +69,7 @@ fn resolve_permissions(
     rule: RuleResult,
     protected: bool,
     protected_runs: &std::collections::BTreeSet<String>,
+    host_passed: bool,
 ) -> (VerdictLike, Vec<PermissionFlowAnswer>) {
     let rule_action = if rule == RuleResult::Allow {
         "allow"
@@ -77,7 +78,7 @@ fn resolve_permissions(
     };
     let mut answers = vec![];
     let mut candidates = vec![];
-    let mut protected_ok = false;
+    let mut protected_ok = host_passed;
     for outcome in outcomes {
         let actions = match &outcome.result {
             RunResult::Success { actions } => actions,
@@ -253,6 +254,7 @@ mod tests {
             skill: None,
             captain_messages: vec!["Change the configuration".into()],
             captain_messages_cut: false,
+            protected_check: None,
         }
     }
 
@@ -802,6 +804,7 @@ mod tests {
                 store: &store,
                 agent: "build",
                 repeats: 1,
+                validated: false,
             };
             let decision = decide(&input, &flows).await;
             match (&decision.verdict, runs, control) {
@@ -1584,7 +1587,7 @@ impl FlowRuntime {
         effects: Arc<dyn FlowEffects>,
     ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         let (verdict, handles, _) = self
-            .evaluate_inner(event, context, cancel, effects, None)
+            .evaluate_inner(event, context, cancel, effects, None, None)
             .await;
         (verdict, handles)
     }
@@ -1596,6 +1599,7 @@ impl FlowRuntime {
         cancel: CancellationToken,
         effects: Arc<dyn FlowEffects>,
         permission: Option<(RuleResult, bool)>,
+        host_check: Option<ProtectedCheck>,
     ) -> (
         VerdictLike,
         Vec<tokio::task::JoinHandle<RunOutcome>>,
@@ -1742,7 +1746,7 @@ impl FlowRuntime {
             outcomes.push(outcome);
         }
         if let Some(compiled) = permission
-            .filter(|(_, protected)| *protected)
+            .filter(|(_, protected)| *protected && host_check.is_none())
             .and_then(|_| compiled_protected_check())
         {
             // Overrides can tighten this verdict but never supply protected authority.
@@ -1773,8 +1777,13 @@ impl FlowRuntime {
         outcomes.sort_by(|a, b| a.trace.flow_name.cmp(&b.trace.flow_name));
         let (permission_verdict, answers) = permission
             .map(|(rule, protected)| {
-                let (verdict, answers) =
-                    resolve_permissions(&outcomes, rule, protected, &protected_runs);
+                let (verdict, answers) = resolve_permissions(
+                    &outcomes,
+                    rule,
+                    protected,
+                    &protected_runs,
+                    host_check == Some(ProtectedCheck::Passed),
+                );
                 (Some(verdict), answers)
             })
             .unwrap_or((None, vec![]));
@@ -1880,7 +1889,7 @@ impl FlowRuntime {
         ctx: PermissionCallContext,
         rule_result: RuleResult,
         mut context: ContextSnapshot,
-    ) -> (Event, ContextSnapshot, bool) {
+    ) -> (Event, ContextSnapshot, (bool, Option<ProtectedCheck>)) {
         context.workspace = Some(ctx.call.workspace.clone());
         for (name, value) in [
             ("session.agent", json!(ctx.call.agent)),
@@ -1898,7 +1907,10 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.captain_messages".into(), captain_evidence);
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected});
+        // With the host's answer in hand the flows judge the ordinary
+        // question; the protected branch is not walked a second time.
+        let walk_protected = ctx.protected && ctx.protected_check.is_none();
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":walk_protected});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),
@@ -1915,7 +1927,7 @@ impl FlowRuntime {
                 payload,
             },
             context,
-            ctx.protected,
+            (ctx.protected, ctx.protected_check),
         )
     }
 
@@ -1927,7 +1939,8 @@ impl FlowRuntime {
         context: ContextSnapshot,
         effects: Arc<dyn FlowEffects>,
     ) -> PermissionVerdict {
-        let (event, context, protected) = Self::permission_event(ctx, rule_result, context);
+        let (event, context, (protected, host_check)) =
+            Self::permission_event(ctx, rule_result, context);
         let (verdict, _, flows) = self
             .evaluate_inner(
                 event,
@@ -1935,6 +1948,7 @@ impl FlowRuntime {
                 cancel,
                 effects,
                 Some((rule_result, protected)),
+                host_check,
             )
             .await;
         PermissionVerdict {
@@ -1964,8 +1978,14 @@ impl FlowRuntime {
         let Some(compiled) = compiled else {
             return ProtectedCheck::Unavailable;
         };
-        let (event, context, _) =
-            Self::permission_event(ctx, RuleResult::None, ContextSnapshot::default());
+        let (event, context, _) = Self::permission_event(
+            PermissionCallContext {
+                protected_check: None,
+                ..ctx
+            },
+            RuleResult::None,
+            ContextSnapshot::default(),
+        );
         // Captain evidence that was cut or is missing cannot establish a request.
         if context
             .values

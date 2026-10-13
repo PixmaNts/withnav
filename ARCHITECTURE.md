@@ -40,7 +40,7 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
-| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Instinct from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
@@ -145,9 +145,10 @@ shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Every co
 descriptor-relatively without following links. Native execution carries the reviewed root identity,
 opens it again without creation and writes relative to that descriptor. Validation is read-only.
 
-The actor carries an explicit protected config root. Resolved native write/edit targets inside it
-ask the Captain before instinct, metacognition or scratch exemptions. Literal config references in
-bash ask too; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
+The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
+flows directory: a write there needs the compiled-in protected check, asked once by the host and
+passed to the flows, which never ask it again; anything else asks the Captain. Literal references in
+bash are checked too, best effort; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
 
 Permission review includes outside-project write/edit destinations, binding approvals to one canonical
@@ -241,7 +242,9 @@ means ask; there are no default rules, and a tool the decision does not know (an
 actor's call) is judged like any other: no rule, ask. `bash` lines are split into commands
 (`permission/shell.rs`) and each command's `rule_text` is matched; an opaque command matches no
 `allow` or `ask` rule and offers no "Always". WithNav's own conversation controls (`task`,
-`steer_subagent`, `decide_subagent`, `intent`) act on the session, not on files, and are not decided.
+`steer_subagent`, `decide_subagent`) act on the session and its children, whose own calls are decided,
+and `intent` only rewrites the sections of `.withnav/intent.md` it owns (no path argument): they are
+not decided.
 
 The flows are reached through `PermissionFlows`, implemented by `authorize::SessionFlows` over the
 session's `ToolCallFlows`: `flow` is `FlowRuntime::permission_pre_call` with the payload
@@ -250,7 +253,15 @@ active validated skill and `conversation.captain_messages` (`captain_messages_wi
 gave no verdict of their own apply the rule. `protected_check` is
 `FlowRuntime::permission_protected_check`, the compiled-in node alone. Without a flow runtime the rule
 applies and the protected check is `Unavailable`. Children get the same flows without their effects.
-The built-in `permission-default` flow is enabled.
+The built-in `permission-default` flow is enabled. The Captain's evidence is the session's own
+Captain messages, the Captain's answers to `ask` (tool results marked `answered_by: captain`,
+labelled with their question, never sent to the model) and, for a child, a snapshot of the parent's
+Captain messages taken at creation and refreshed when the parent steers it; a delegated prompt or
+steering text never counts. A skill is decided after its validation, with action `skill` and its
+name as resource: a `deny` rule refuses it on both entry points, no rule loads it
+(`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
+whose permission database cannot be opened does not start, unless it runs in yolo. Stored decisions
+are redacted (the flows' secret detection) before any field is bounded.
 
 A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`) and the
 `permission_gate` evidence (`policy_version: 3`, rule id, flow verdict, floor) on `tool.pre_call` and
@@ -306,17 +317,6 @@ attached, and `grep`/`glob` do not refuse a sensitive search root, while still f
 entries below it and bounding output. What stays is `preflight` (reserved and malformed arguments,
 tool availability for the session and role) and cancellation; a call `preflight` refuses still
 carries the `approved_by: yolo` evidence, with an error status.
-
-A call that needs approval is not run: it, and the calls behind it, become
-`PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
-The runtime publishes `permission.requested` and the turn ends `yielded`. `POST
-/v1/sessions/{id}/permissions/{request_id}` reaches `Service::answer_permission`, which checks the
-request id against the runtime's status, then sends a typed `PermissionAnswer` on a channel of its own
-(never a `Command`). The runtime publishes `permission.resolved` and calls `resolve_permission`:
-the held call runs once (or is denied) after fresh validation, a changed destination is reviewed
-again, the siblings go through the gate again, and the turn goes on. For `bash`, `write` and `edit`
-an "allow folder" answer counts as allow once. A stop or a chat message cancels the request; a
-resume expires every request that has no `permission.resolved` and settles its calls as interrupted.
 
 **Agent limits.** The role guard no longer runs: an agent's limits are rules with `agent` scope
 that the Captain adds (ADR 0015). Tool availability per agent (`tool_allowed_for_role`) and the

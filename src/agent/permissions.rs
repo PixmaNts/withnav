@@ -140,6 +140,10 @@ pub struct PermissionRequest {
     /// Identical consecutive calls of the turn when the call was decided.
     #[serde(skip)]
     pub repeats: usize,
+    /// A permission rule asks about a skill whose content is already
+    /// validated: an ordinary question, not a validation.
+    #[serde(skip)]
+    pub skill_rule: bool,
 }
 
 impl PermissionRequest {
@@ -168,6 +172,7 @@ impl PermissionRequest {
             always: Vec::new(),
             decision_id: None,
             repeats: 1,
+            skill_rule: false,
         }
     }
 }

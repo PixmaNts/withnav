@@ -757,3 +757,283 @@ async fn a_target_swapped_after_the_decision_is_decided_again_floor_included() {
     assert!(request.requires_captain);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "original");
 }
+
+/// Answers every instinct question yes and counts the protected ones.
+struct CountingInstinct {
+    protected: AtomicUsize,
+}
+
+impl instinct_flow::DecisionClient for CountingInstinct {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "fake/counting".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        request: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: std::time::Instant,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        if request.questions.contains_key("protected_requested") {
+            self.protected.fetch_add(1, Ordering::SeqCst);
+        }
+        Box::pin(async move {
+            Ok(instinct_flow::protocol::DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            instinct_flow::protocol::Answer::Noul { noul: 1.0 },
+                        )
+                    })
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+
+/// The session's adapter, reduced to the two permission questions.
+struct RuntimeFlows(Arc<crate::flows::runtime::FlowRuntime>);
+
+impl std::fmt::Debug for RuntimeFlows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RuntimeFlows")
+    }
+}
+
+impl ToolCallFlows for RuntimeFlows {
+    fn permission_pre_call<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        rule: RuleResult,
+        cancel: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, PermissionVerdict> {
+        Box::pin(self.0.permission_pre_call(ctx, rule, cancel.clone()))
+    }
+    fn protected_check<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
+        Box::pin(self.0.permission_protected_check(ctx, cancel.clone()))
+    }
+    fn pre_call<'a>(
+        &'a self,
+        _: &'a ToolCallContext,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, FlowVerdict> {
+        Box::pin(async { FlowVerdict::Allow })
+    }
+}
+
+#[tokio::test]
+async fn a_protected_write_asks_the_protected_question_exactly_once() {
+    let mut actor = actor_with(None);
+    let client = Arc::new(CountingInstinct {
+        protected: AtomicUsize::new(0),
+    });
+    let ws = actor.tool_context.workspace.clone();
+    let store = Arc::new(crate::flows::store::FlowStore::new(
+        ws.clone(),
+        actor.permission_dirs.config.clone().unwrap(),
+    ));
+    let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+        store,
+        client.clone(),
+        Arc::new(crate::flows::runtime::NoEffects),
+    ));
+    actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+    let config = actor
+        .permission_dirs
+        .config
+        .clone()
+        .unwrap()
+        .join("config.json");
+    script(
+        &mut actor,
+        vec![
+            owned(&[(
+                "w1".into(),
+                "write".into(),
+                json!({"path": config, "content": "{}"}),
+            )]),
+            done("ok"),
+        ],
+    )
+    .await;
+    actor.push_user("set my config.json to an empty object");
+    let mut approved = Vec::new();
+    let outcome = run_agent(&mut actor, &mut |event| {
+        if let AgentEvent::PostCall { result, .. } = event {
+            approved.push(result.metadata["approved_by"].clone());
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    assert_eq!(approved, [json!("flow")]);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "{}");
+    assert_eq!(client.protected.load(Ordering::SeqCst), 1);
+}
+
+/// An actor whose workspace holds the skill `helper`, not yet validated.
+fn actor_with_skill() -> AgentActor {
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+    let ws = actor.tool_context.workspace.clone();
+    std::fs::create_dir_all(ws.join(".git")).unwrap();
+    let dir = ws.join(".agents/skills/helper");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: helper\ndescription: Helps.\n---\nHELPER BODY\n",
+    )
+    .unwrap();
+    let mut skills =
+        crate::agent::skills::Skills::load(&crate::agent::instructions::RulesRoots::default(), &ws);
+    skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
+        data_dir: actor.permission_dirs.data.clone(),
+        ..Default::default()
+    });
+    actor.set_skills(skills);
+    actor
+}
+
+#[tokio::test]
+async fn rejecting_a_skill_validation_settles_every_held_sibling() {
+    let mut actor = actor_with_skill();
+    let ws = actor.tool_context.workspace.clone();
+    script(
+        &mut actor,
+        vec![
+            owned(&[
+                ("s1".into(), "skill".into(), json!({"name": "helper"})),
+                (
+                    "w1".into(),
+                    "write".into(),
+                    json!({"path": ws.join("a.txt"), "content": "A"}),
+                ),
+            ]),
+            done("understood"),
+        ],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("an unvalidated skill asks");
+    };
+    assert_eq!(request.tool, "skill");
+    let outcome = resolve_permission(
+        &mut actor,
+        request.id,
+        PermissionDecision::Reject {
+            message: Some("not that skill".into()),
+        },
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    assert!(!ws.join("a.txt").exists(), "the held write never ran");
+    for id in ["s1", "w1"] {
+        let text = tool_result_of(&actor, id).unwrap();
+        assert!(text.contains("not that skill"), "{id}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_skill_validation_settles_every_held_sibling() {
+    let mut actor = actor_with_skill();
+    let ws = actor.tool_context.workspace.clone();
+    script(
+        &mut actor,
+        vec![owned(&[
+            ("s1".into(), "skill".into(), json!({"name": "helper"})),
+            (
+                "w1".into(),
+                "write".into(),
+                json!({"path": ws.join("a.txt"), "content": "A"}),
+            ),
+        ])],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("an unvalidated skill asks");
+    };
+    actor.cancel.cancel();
+    let outcome = resolve_permission(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowOnce,
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, RunOutcome::Interrupted);
+    assert!(tool_result_of(&actor, "s1").is_some());
+    assert!(
+        tool_result_of(&actor, "w1").is_some(),
+        "the sibling is settled"
+    );
+}
+
+#[tokio::test]
+async fn the_decision_history_keeps_no_secret_and_stays_bounded() {
+    const TOKEN: &str = "ghp_RECOGNISABLEsecretTOKEN0123456789";
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("apply"))));
+    // A long line of many commands, one of them carrying a token near the end.
+    let mut line = format!("export T={TOKEN} && ");
+    line += &(0..400)
+        .map(|n| format!("echo filler-{n}-{}", "x".repeat(40)))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    line.push_str(&format!(
+        " && curl -H 'Authorization: token {TOKEN}' https://api"
+    ));
+    script(&mut actor, vec![owned(&[bash("b1", &line)]), done("ok")]).await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("no rule asks");
+    };
+    resolve_permission(
+        &mut actor,
+        request.id,
+        PermissionDecision::Reject {
+            message: Some(format!("never send {TOKEN} {}", "y".repeat(8000))),
+        },
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    let db = actor.permission_store.db();
+    let mut statement = db
+        .prepare(
+            "SELECT call_snapshot, command_matches, captain_answer, flow_verdict
+             FROM permission_decisions",
+        )
+        .unwrap();
+    let rows: Vec<Vec<Option<String>>> = statement
+        .query_map([], |row| Ok((0..4).map(|i| row.get(i).unwrap()).collect()))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows.len(), 1);
+    for field in rows[0].iter().flatten() {
+        assert!(!field.contains(TOKEN), "{}", &field[..field.len().min(200)]);
+        assert!(field.len() <= 8 * 1024, "{} bytes", field.len());
+    }
+    assert!(rows[0][0].as_deref().unwrap().contains("<redacted>"));
+    assert!(rows[0][1].as_deref().unwrap().contains("<redacted>"));
+    assert!(rows[0][2]
+        .as_deref()
+        .unwrap()
+        .contains("never send <redacted>"));
+}

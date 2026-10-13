@@ -118,6 +118,12 @@ pub struct RuntimeStatus {
     arrival_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
     pub watchdog_goal: Mutex<String>,
+    /// The Captain's own messages of this session's transcript, as permission
+    /// evidence (`captain_messages_with_cut`), refreshed at each turn start.
+    pub captain_messages: Mutex<crate::agent::actor::CaptainEvidence>,
+    /// For a child: the snapshot of its parent's Captain messages, taken when it
+    /// was created and refreshed when the parent steers it.
+    pub parent_captain: crate::agent::actor::ParentCaptain,
     pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
     pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub awaiting_fresh_captain: std::sync::atomic::AtomicBool,
@@ -907,6 +913,7 @@ pub fn spawn_with_completion(
     status.init_ask(&actor);
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
+    actor.parent_captain = status.parent_captain.clone();
     actor.config_session_grant = status.config_session_grant.clone();
     actor.permission_context = status.permission_context.clone();
     tokio::spawn(runtime_loop(
@@ -1262,6 +1269,11 @@ async fn runtime_loop(
             .watchdog_goal
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = actor.captain_task.clone().unwrap_or_default();
+        *status
+            .captain_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            crate::agent::flow_hook::captain_messages_with_cut(&actor.transcript);
         actor.variant = status.consume_turn().map(|(_, variant)| variant);
         // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
@@ -2261,6 +2273,7 @@ mod tests {
                 always: Vec::new(),
                 decision_id: None,
                 repeats: 1,
+                skill_rule: false,
             }),
             call: crate::provider::ToolCall {
                 id: "held".into(),

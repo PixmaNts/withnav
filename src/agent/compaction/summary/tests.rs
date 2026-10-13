@@ -121,6 +121,7 @@ fn result(id: &str, bytes: usize) -> ChatMessage {
     ChatMessage::Tool {
         tool_call_id: id.into(),
         content: "x".repeat(bytes),
+        answered_by: None,
     }
 }
 

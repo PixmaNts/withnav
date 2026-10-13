@@ -45,6 +45,8 @@ pub struct FlowQuery<'a> {
     pub matched: Option<&'a Rule>,
     /// `Protected` when the call writes WithNav's own configuration or database.
     pub floor: &'a Floor,
+    /// The protected check's answer once it was asked; the flow never asks it again.
+    pub protected_check: Option<ProtectedCheck>,
 }
 
 /// The aggregate answer of the permission flows on the `tool.pre_call` trigger.
@@ -89,6 +91,9 @@ pub struct Input<'a> {
     pub agent: &'a str,
     /// Identical consecutive calls in this turn, this one included; see [`DoomTracker`].
     pub repeats: usize,
+    /// The Captain validated the exact content this call admits (a skill):
+    /// with no rule it counts as allowed; `deny` and `ask` rules still apply.
+    pub validated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +102,8 @@ pub enum ApprovedBy {
     Rule,
     Bypass,
     Flow,
+    /// The Captain validated this exact content and no rule applies to it.
+    Validation,
 }
 
 impl ApprovedBy {
@@ -106,6 +113,7 @@ impl ApprovedBy {
             Self::Rule => "rule",
             Self::Bypass => "bypass",
             Self::Flow => "flow",
+            Self::Validation => "validation",
         }
     }
 }
@@ -271,6 +279,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
             rule: rules.result,
             matched: rules.rule.as_ref(),
             floor: &floor,
+            protected_check: None,
         };
         let check = flows.protected_check(&query).await;
         trace.protected_check = Some(check);
@@ -339,6 +348,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
             rule: rules.result,
             matched: rules.rule.as_ref(),
             floor: &floor,
+            protected_check: trace.protected_check,
         })
         .await;
     trace.flow_verdict = Some(answer.as_str());
@@ -366,6 +376,9 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
             trace,
         ),
         // 7. The Captain.
+        FlowAnswer::ApplyRule if rules.result == RuleResult::Allow && rules.rule.is_none() => {
+            run(ApprovedBy::Validation, trace)
+        }
         FlowAnswer::ApplyRule if rules.result == RuleResult::Allow => run(ApprovedBy::Rule, trace),
         FlowAnswer::ApplyRule => ask(reason(), proposals, trace),
     })
@@ -503,6 +516,20 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
             }
             Ok(items)
         }
+        "skill" => {
+            let name = call.args.get("name").and_then(Value::as_str).unwrap_or("*");
+            let resource = literal(name);
+            let proposal = RuleProposal {
+                action: "skill".into(),
+                resource: resource.clone(),
+                scope: RuleScope::Global,
+            };
+            Ok(vec![classify(
+                find("skill", name)?,
+                Some(proposal),
+                name.to_owned(),
+            )])
+        }
         "fetch" => {
             let raw = call.args.get("url").and_then(Value::as_str).unwrap_or("*");
             // The rule lookup and the proposal use one representation, the one
@@ -576,6 +603,8 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
     let strictest = |wanted| items.iter().find(|item| item.result == wanted);
     let (result, rule) = if let Some(item) = strictest(RuleResult::Ask) {
         (RuleResult::Ask, item.rule.clone())
+    } else if strictest(RuleResult::NoRule).is_some() && input.validated {
+        (RuleResult::Allow, None)
     } else if strictest(RuleResult::NoRule).is_some() {
         (RuleResult::NoRule, None)
     } else {
@@ -728,6 +757,7 @@ mod tests {
                 store: &self.store,
                 agent: "build",
                 repeats,
+                validated: false,
             };
             futures::executor::block_on(decide(&input, flows))
         }

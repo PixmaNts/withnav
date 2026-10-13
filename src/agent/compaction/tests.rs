@@ -35,6 +35,7 @@ fn result(id: &str, bytes: usize) -> ChatMessage {
     ChatMessage::Tool {
         tool_call_id: id.into(),
         content: "x".repeat(bytes),
+        answered_by: None,
     }
 }
 
@@ -224,7 +225,7 @@ fn effective_history_is_the_summary_then_the_tail_with_markers() {
     assert!(matches!(&h[2], ChatMessage::User { content, .. } if content == "request 1"));
     // Message 6 sits at index 6 - 4 + 2 = 4, id kept, output elided.
     assert!(
-        matches!(&h[4], ChatMessage::Tool { tool_call_id, content } if tool_call_id == "c1" && content == &elision_marker(300))
+        matches!(&h[4], ChatMessage::Tool { tool_call_id, content, .. } if tool_call_id == "c1" && content == &elision_marker(300))
     );
     assert!(size(&components(), &t, Some(&k)) < size(&components(), &t, None));
 }

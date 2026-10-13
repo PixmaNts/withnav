@@ -44,6 +44,12 @@ pub enum PendingInteraction {
     },
 }
 
+/// Captain messages as permission evidence, and whether any were cut.
+pub type CaptainEvidence = (Vec<String>, bool);
+
+/// A child's shared snapshot of its parent's Captain evidence.
+pub type ParentCaptain = Arc<std::sync::Mutex<Option<CaptainEvidence>>>;
+
 /// Where the configuration and the database the fixed floor protects live.
 #[derive(Debug, Clone, Default)]
 pub struct PermissionDirs {
@@ -85,6 +91,10 @@ pub struct AgentActor {
     pub permission_turn: String,
     /// Identical consecutive calls in this turn.
     pub doom: crate::permission::decide::DoomTracker,
+    /// A child's snapshot of its parent's Captain messages: the Captain's
+    /// request reaches a delegated call only through it, never through the
+    /// delegated prompt or the parent's steering text.
+    pub parent_captain: ParentCaptain,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
     pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
     pub permission_context: Arc<std::sync::Mutex<super::permission_gate::context::ReviewContext>>,
@@ -252,6 +262,7 @@ impl AgentActor {
             permission_session: String::new(),
             permission_turn: String::new(),
             doom: Default::default(),
+            parent_captain: Arc::default(),
             captain_request_inherited: false,
             protected_config_spelling: None,
             protected_config_unresolved: false,
@@ -536,6 +547,7 @@ impl AgentActor {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: id.clone(),
                 content: String::new(),
+                answered_by: None,
             });
         }
         unanswered.len()
@@ -567,6 +579,7 @@ impl AgentActor {
                 self.transcript.push(ChatMessage::Tool {
                     tool_call_id,
                     content: text,
+                    answered_by: Some(provenance),
                 });
             }
             Some(PendingInteraction::Permission {
@@ -626,6 +639,7 @@ impl AgentActor {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: call.id.clone(),
                 content: String::new(),
+                answered_by: None,
             });
         }
     }

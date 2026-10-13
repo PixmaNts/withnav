@@ -657,7 +657,7 @@ mod tests {
         // First command completed the ask via the EXISTING push_user branch:
         assert!(matches!(
             actor.transcript.first(),
-            Some(ChatMessage::Tool { tool_call_id, content })
+            Some(ChatMessage::Tool { tool_call_id, content, .. })
                 if tool_call_id == "call_ask" && content == "insert the card"
         ));
         // Rest are user messages, FIFO:
@@ -779,6 +779,7 @@ mod tests {
                 always: Vec::new(),
                 decision_id: None,
                 repeats: 1,
+                skill_rule: false,
             }),
             call: crate::provider::ToolCall {
                 id: "w1".into(),

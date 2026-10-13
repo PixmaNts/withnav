@@ -1548,6 +1548,19 @@ impl Service {
                 "steering message must be nonempty and at most 16 KiB".into(),
             ));
         }
+        // The steering text is the parent's, not the Captain's: only the
+        // parent's current Captain messages are refreshed.
+        let captain = owner
+            .status
+            .captain_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        *handle
+            .status
+            .parent_captain
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(captain);
         if !handle.status.steer(message.to_string(), interrupt) {
             return Err(ServerError::ChildNotParked);
         }
@@ -2623,21 +2636,6 @@ impl Service {
             ..Default::default()
         });
         actor.set_skills(skills);
-        // Rules and decisions live in the shared database. One that cannot be
-        // opened leaves an empty private table: no rule, so every call asks.
-        match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
-            Ok(store) => {
-                if resumed.is_some() {
-                    if let Err(error) = store.expire_pending(&session_id.to_string()) {
-                        tracing::warn!(%error, "pending permission decisions not expired");
-                    }
-                }
-                actor.permission_store = Arc::new(store);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "permission database unavailable; every call asks")
-            }
-        }
         actor.permission_dirs = crate::agent::actor::PermissionDirs {
             config: Some(self.config.config_dir.clone()),
             data: Some(self.config.data_dir.clone()),
@@ -2656,6 +2654,22 @@ impl Service {
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.automatic_permission_review = execution.automatic_permission_review;
         actor.yolo = execution.yolo;
+        // Rules and decisions live in the shared database. Without it a deny
+        // rule would silently vanish, so only yolo, which reads no rule, starts.
+        match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
+            Ok(store) => {
+                if resumed.is_some() {
+                    if let Err(error) = store.expire_pending(&session_id.to_string()) {
+                        tracing::warn!(%error, "pending permission decisions not expired");
+                    }
+                }
+                actor.permission_store = Arc::new(store);
+            }
+            Err(error) if actor.yolo => {
+                tracing::warn!(%error, "permission database unavailable; yolo reads no rule")
+            }
+            Err(error) => return Err(ServerError::PermissionDatabase(error.to_string())),
+        }
         actor.permission_review_timeout_secs = execution.permission_review_timeout_secs;
         actor.protected_config_spelling = Some(self.config.config_dir.clone());
         actor.protected_config_root =
@@ -3056,6 +3070,18 @@ impl Service {
                 runtime_status.config_session_grant = handle.status.config_session_grant.clone();
                 runtime_status.permission_context = handle.status.permission_context.clone();
             }
+        }
+        if let Some(parent) = child_parent.and_then(|parent| self.handle(parent)) {
+            let captain = parent
+                .status
+                .captain_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            *runtime_status
+                .parent_captain
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(captain);
         }
         let status = Arc::new(runtime_status);
         status.init_variant(selected.clone());

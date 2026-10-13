@@ -437,6 +437,12 @@ pub async fn resolve_permission_with_origin(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
     let decision = decision.current();
+    if decision == PermissionDecision::AllowAlways
+        && matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. })
+            if request.id == request_id && !request.reusable_approval)
+    {
+        return Err(PermissionError::Stale.into());
+    }
     if matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.id == request_id && request.tool == "skill" && !request.skill_rule)
     {
         return resolve_skill(actor, decision, origin, observe).await;
@@ -914,6 +920,7 @@ async fn run_skill(
                     .unwrap_or("build"),
             );
             request.requires_captain = true;
+            request.reusable_approval = actor.permission_store.is_some();
             request.reason = format!(
                 "Validate skill {} at {} for this version",
                 snapshot.name, snapshot.location
@@ -1078,8 +1085,8 @@ async fn run_decided(
         let one = run_skill(actor, call, observe, None, previous).await;
         // A skill refused before its admission (snapshot gone, validation
         // revoked) never settles the question bypass answered: end it here.
-        if let Some(id) = previous {
-            if let Err(error) = actor.permission_store.cancel_if_pending(id) {
+        if let (Some(id), Some(store)) = (previous, &actor.permission_store) {
+            if let Err(error) = store.cancel_if_pending(id) {
                 tracing::warn!(%error, "permission decision outcome not recorded");
             }
         }
@@ -1096,10 +1103,12 @@ async fn run_decided(
     // WithNav's own conversation controls act on this session and its
     // children, never on files, commands or the network: no rule covers them.
     // Each child's own calls go through the decision.
-    if matches!(
-        call.name.as_str(),
-        "task" | "steer_subagent" | "decide_subagent" | "intent"
-    ) {
+    if actor.permission_store.is_some()
+        && matches!(
+            call.name.as_str(),
+            "task" | "steer_subagent" | "decide_subagent" | "intent"
+        )
+    {
         return execute_and_settle(actor, call, None, None, observe)
             .await
             .unwrap_or(One::Settled);
@@ -1684,6 +1693,8 @@ mod tests {
     pub(super) fn allow_everything(actor: &AgentActor) {
         actor
             .permission_store
+            .as_ref()
+            .unwrap()
             .add(
                 "*",
                 "*",

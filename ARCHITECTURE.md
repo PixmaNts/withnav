@@ -262,10 +262,16 @@ The built-in `permission-default` flow is enabled. The Captain's evidence is the
 Captain messages, the Captain's answers to `ask` (tool results marked `answered_by: captain`,
 labelled with their question, never sent to the model) and, for a child, a snapshot of the parent's
 Captain messages taken at creation and refreshed when the parent steers it; a delegated prompt or
-steering text never counts. A skill is decided after its validation, with action `skill` and its
+steering text never counts as Captain evidence. It is supplied separately as
+`conversation.delegation` (Parent-provenance transcript messages, stripped of attachments, newest
+whole messages within 16 KiB, with a cut flag). The ordinary flow may accept the parent's request;
+the protected check never reads delegation. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it
 (`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
-whose permission database cannot be opened does not start, unless it runs in yolo. Stored decisions
+whose permission database cannot be opened starts with `permissions_unavailable` in its status,
+shown beside yolo by every client. `Input::store` is explicitly absent: every call, reads included,
+gets no rule, the floor applies, and the flow may allow. Bypass is disabled, proposals are empty,
+and no decision is recorded (one warning at session creation). Yolo is unchanged. Stored decisions
 are redacted (the flows' secret detection) before any field is bounded.
 
 A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, or

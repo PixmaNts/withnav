@@ -131,8 +131,6 @@ pub enum ServerError {
     SubagentCapacity { capacity: usize },
     #[error("subagent settings unavailable: {0}")]
     SubagentSettings(String),
-    #[error("the permission database cannot be opened ({0}); without it the permission rules cannot be read, so the session does not start. Fix the data directory, or turn on yolo in config.json.")]
-    PermissionDatabase(String),
     #[error("server bind error: {0}")]
     Bind(#[from] std::io::Error),
     #[error("session not found: {0}")]

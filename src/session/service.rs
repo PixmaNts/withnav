@@ -323,6 +323,7 @@ struct PreparedSession {
 pub struct SessionSummary {
     /// Captain setting `yolo`: the session runs with no permission control.
     pub yolo: bool,
+    pub permissions_unavailable: Option<String>,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -1878,6 +1879,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         Ok(SessionSummary {
+            permissions_unavailable: handle.status.permissions_unavailable.clone(),
             yolo: selected
                 .execution
                 .as_ref()
@@ -1937,6 +1939,7 @@ impl Service {
         );
         Ok(SessionSummary {
             yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: meta.last_seq,
             incarnation: None,
@@ -2614,8 +2617,8 @@ impl Service {
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.yolo = execution.yolo;
-        // Rules and decisions live in the shared database. Without it a deny
-        // rule would silently vanish, so only yolo, which reads no rule, starts.
+        // An unavailable database is an explicit degraded mode: no rules can
+        // be read or saved, but the floor and permission flows still apply.
         match crate::permission::store::PermissionStore::open(&self.config.data_dir) {
             Ok(store) => {
                 if resumed.is_some() {
@@ -2623,12 +2626,17 @@ impl Service {
                         tracing::warn!(%error, "pending permission decisions not expired");
                     }
                 }
-                actor.permission_store = Arc::new(store);
+                actor.permission_store = Some(Arc::new(store));
             }
-            Err(error) if actor.yolo => {
-                tracing::warn!(%error, "permission database unavailable; yolo reads no rule")
+            Err(error) => {
+                let reason = format!(
+                    "{}: {error}",
+                    self.config.data_dir.join("withnav.db").display()
+                );
+                tracing::warn!(%reason, "permission rules unavailable; decisions will not be recorded");
+                actor.permission_store = None;
+                actor.permissions_unavailable = Some(reason);
             }
-            Err(error) => return Err(ServerError::PermissionDatabase(error.to_string())),
         }
         // A scratch directory that contains, or sits inside, WithNav's own
         // configuration would make it writable without the protected check.
@@ -2990,8 +2998,9 @@ impl Service {
             } else {
                 None
             };
-        let runtime_status =
+        let mut runtime_status =
             runtime::RuntimeStatus::with_selection(AgentSelection::new(agents, role));
+        runtime_status.permissions_unavailable = actor.permissions_unavailable.clone();
         if let Some(parent) = child_parent.and_then(|parent| self.handle(parent)) {
             let captain = parent
                 .status

@@ -317,8 +317,10 @@ cannot fit, it is absent and marked cut. The agent loop obtains messages through
 `agent::flow_hook::captain_messages_with_cut`, passing both returned messages
 and the completeness flag into `PermissionCallContext`. They also include the
 Captain's answers to `ask`, labelled with the assistant's question, and, in a
-subagent, the parent's Captain messages; delegated prompts and steering text
-never count. Editor attachments are
+subagent, the parent's Captain messages. `conversation.delegation` contains the parent's
+delegation and steering separately, attachments stripped, whole newest messages within 16 KiB
+with a cut flag; it is empty for a root session. The ordinary permission flow may accept delegation
+as a request, but the compiled protected check never reads it. Editor attachments are
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 

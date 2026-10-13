@@ -218,18 +218,22 @@ async fn await_transcript(state: &AppState, id: ulid::Ulid) {
 }
 
 // Given a permission database that cannot be opened
-// Then a normal session refuses to start (its rules would silently vanish),
-//      and a yolo session, which checks nothing, starts
+// Then normal sessions start with a visible warning, and yolo remains unchecked.
 #[tokio::test]
-async fn an_unavailable_permission_database_refuses_all_but_yolo_sessions() {
+async fn an_unavailable_permission_database_starts_with_a_warning_and_yolo_is_unchanged() {
     let env = Env::new();
     let state = state(&env);
     settings(&env, None, plain_agents());
     // A directory where the database file should be: it cannot be opened.
     std::fs::create_dir_all(env.root.join("data/withnav.db")).unwrap();
-    let refused = state.create_session(&env.ws, None, false).await;
-    let error = refused.expect_err("the session must not start without its rules");
-    assert!(error.to_string().contains("permission database"), "{error}");
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    let summary = state.session_summary(id).await.unwrap();
+    assert!(summary
+        .permissions_unavailable
+        .as_deref()
+        .unwrap()
+        .contains("withnav.db"));
+    state.close_session(id).await.unwrap();
     settings(&env, Some(true), plain_agents());
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     assert!(yolo_of(&state, id).await);

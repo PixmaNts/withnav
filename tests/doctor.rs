@@ -656,3 +656,40 @@ async fn agent_precedence_parent_inheritance_and_invalid_default() {
         withnav::app::doctor::Status::Failed
     );
 }
+
+#[tokio::test]
+async fn doctor_reports_unreadable_permission_rules_without_changing_the_database() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.offline = true;
+    let data = root.path().join("data");
+    std::fs::create_dir_all(data.join("withnav.db")).unwrap();
+    let report = inspect(&args, &config, None, Some(data)).await;
+    let permission = check(&report, "permissions.database");
+    assert_eq!(permission.status, Status::Warning);
+    let text = report.human();
+    assert!(
+        text.contains("withnav.db") && text.contains("every call is asked"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn doctor_does_not_report_a_non_database_file_as_readable() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.offline = true;
+    let data = root.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let path = data.join("withnav.db");
+    std::fs::write(&path, "this is not a SQLite database").unwrap();
+    let report = inspect(&args, &config, None, Some(data)).await;
+    assert_eq!(
+        check(&report, "permissions.database").status,
+        Status::Warning
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "this is not a SQLite database"
+    );
+}

@@ -522,7 +522,7 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
                 let separator = "/";
                 let proposal = project(
                     "external_directory",
-                    format!("{}{separator}*", literal(&parent)),
+                    format!("{}*", literal(&format!("{parent}{separator}"))),
                 );
                 items.push(classify(
                     find("external_directory", &text)?,
@@ -1126,9 +1126,12 @@ mod tests {
         assert_eq!(
             always[1].resource,
             format!(
-                "{}{}*",
-                literal(&f.root().join("outside").display().to_string()),
-                std::path::MAIN_SEPARATOR
+                "{}*",
+                literal(&format!(
+                    "{}{}",
+                    f.root().join("outside").display(),
+                    std::path::MAIN_SEPARATOR
+                ))
             )
         );
         // The file rule alone is not enough.
@@ -1140,9 +1143,12 @@ mod tests {
         f.add(
             "external_directory",
             &format!(
-                "{}{}*",
-                literal(&f.root().join("outside").display().to_string()),
-                std::path::MAIN_SEPARATOR
+                "{}*",
+                literal(&format!(
+                    "{}{}",
+                    f.root().join("outside").display(),
+                    std::path::MAIN_SEPARATOR
+                ))
             ),
             Effect::Allow,
         );
@@ -1152,9 +1158,12 @@ mod tests {
         f.add(
             "external_directory",
             &format!(
-                "{}{}*",
-                literal(&f.root().join("outside").display().to_string()),
-                std::path::MAIN_SEPARATOR
+                "{}*",
+                literal(&format!(
+                    "{}{}",
+                    f.root().join("outside").display(),
+                    std::path::MAIN_SEPARATOR
+                ))
             ),
             Effect::Deny,
         );
@@ -1173,7 +1182,7 @@ mod tests {
         let resource = literal(&target.display().to_string());
         f.add("write", &resource, Effect::Allow);
         let decision = f.decide(Control::Normal, &file("write", filename));
-        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{decision:?}");
         // A star in the name is not a wildcard.
         let decision = f.decide(Control::Normal, &file("write", "aXb.txt"));
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));

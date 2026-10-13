@@ -425,7 +425,18 @@ async fn http_answers_and_legacy_answers_apply_to_the_held_call() {
             requested[0].payload["always_label"],
             format!(
                 "Always (project): write {}",
-                withnav::permission::rules::literal(&target.display().to_string())
+                withnav::permission::rules::literal(
+                    &withnav::permission::floor::resolve_path(
+                        &target.display().to_string(),
+                        &withnav::permission::floor::FloorContext {
+                            workspace: env.ws.clone(),
+                            ..Default::default()
+                        }
+                    )
+                    .unwrap()
+                    .display()
+                    .to_string()
+                )
             )
         );
         let (status, body) = answer(

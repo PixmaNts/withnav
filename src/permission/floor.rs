@@ -7,7 +7,10 @@
 //! redirection targets and WithNav's own rule-changing commands. It does not
 //! expand globs or variables, and it is not a sandbox.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::VecDeque,
+    path::{Component, Path, PathBuf},
+};
 
 use serde_json::Value;
 
@@ -92,6 +95,9 @@ pub enum Floor {
     Credential(String),
     /// WithNav's own configuration or database is written; the string names the target.
     Protected(String),
+    /// A path could not be resolved the way execution would resolve it, so what
+    /// it names is unknown. Nothing but yolo allows it.
+    Unresolved(String),
 }
 
 /// Whether the path names a credential: keys, `auth.json`, `.env` files and the
@@ -101,32 +107,53 @@ pub fn credential(path: &Path) -> bool {
 }
 
 /// Whether writing the path changes `config.json`, the database or the global
-/// flows directory. The path is resolved first; reading these files is free.
+/// flows directory. The path is resolved like execution resolves it; a path that
+/// cannot be resolved counts as protected. Reading these files is free.
 pub fn protected_write(path: &Path, cx: &FloorContext) -> bool {
-    let path = resolve_path(&path.to_string_lossy(), cx);
-    path.is_some_and(|path| protected_resolved(&path, cx))
+    resolve_path(&path.to_string_lossy(), cx).is_none_or(|path| protected_resolved(&path, cx))
+}
+
+/// Every spelling under which a protected file or the flows root can be
+/// reached: the configured path resolved like any candidate (so a link at the
+/// final component is followed) and the resolved directory plus the file name
+/// (so a link that cannot be followed keeps its place).
+fn protected_targets(cx: &FloorContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut files = Vec::new();
+    let mut roots = Vec::new();
+    let mut add = |dir: &Option<PathBuf>, name: &str, into_roots: bool| {
+        let Some(dir) = dir else { return };
+        let configured = dir.join(name);
+        let spellings = [
+            resolve_path(&configured.to_string_lossy(), cx),
+            resolve_path(&dir.to_string_lossy(), cx).map(|dir| dir.join(name)),
+            Some(configured),
+        ];
+        for spelling in spellings.into_iter().flatten() {
+            if into_roots { &mut roots } else { &mut files }.push(spelling);
+        }
+    };
+    add(&cx.config_dir, "config.json", false);
+    add(&cx.config_dir, "flows", true);
+    for name in ["withnav.db", "withnav.db-wal", "withnav.db-shm"] {
+        add(&cx.data_dir, name, false);
+    }
+    (files, roots)
 }
 
 fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
-    let canonical = |dir: &Path| resolve_path(&dir.to_string_lossy(), cx);
-    if let Some(data) = cx.data_dir.as_deref().and_then(canonical) {
-        for name in ["withnav.db", "withnav.db-wal", "withnav.db-shm"] {
-            if path == data.join(name) {
-                return true;
-            }
-        }
-    }
-    if let Some(config) = cx.config_dir.as_deref().and_then(canonical) {
-        if path == config.join("config.json") || path.starts_with(config.join("flows")) {
-            return true;
-        }
-    }
-    false
+    let (files, roots) = protected_targets(cx);
+    files.iter().any(|file| path == file) || roots.iter().any(|root| path.starts_with(root))
 }
 
-/// Resolve a path the way a tool would: `~` is the home directory, a relative
-/// path is anchored in the workspace, `.` and `..` are folded, and the nearest
-/// existing ancestor is canonicalised so symlinks cannot hide a target.
+/// Links followed before a path counts as a loop, as the kernel does.
+const MAX_LINKS: usize = 40;
+
+/// Resolve a path the way execution does: `~` is the home directory, a
+/// relative path is anchored in the workspace, and links are followed one
+/// component at a time, so a `..` after a symlink climbs out of the link's
+/// target, not out of its spelling. A dangling link is followed to where a
+/// write would create the file. `None` when resolution fails (a link loop, an
+/// unreadable directory, a NUL byte); callers fail closed.
 pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\0') {
         return None;
@@ -140,29 +167,46 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
     } else {
         cx.workspace.join(path)
     };
-    let mut folded = PathBuf::new();
-    for part in joined.components() {
-        match part {
-            Component::ParentDir => {
-                folded.pop();
-            }
+    let mut queue: VecDeque<std::ffi::OsString> = VecDeque::new();
+    let mut resolved = PathBuf::new();
+    let push_all = |queue: &mut VecDeque<_>, path: &Path| {
+        for part in path.components().rev() {
+            queue.push_front(part.as_os_str().to_owned());
+        }
+    };
+    push_all(&mut queue, &joined);
+    let (mut links, mut missing) = (0, false);
+    while let Some(part) = queue.pop_front() {
+        match Path::new(&part).components().next()? {
             Component::CurDir => {}
-            other => folded.push(other),
-        }
-    }
-    let mut existing = folded.clone();
-    let mut tail = Vec::new();
-    while !existing.exists() {
-        match existing.file_name() {
-            Some(name) => {
-                tail.push(name.to_owned());
-                existing.pop();
+            Component::ParentDir => {
+                resolved.pop();
             }
-            None => break,
+            Component::Normal(name) => {
+                resolved.push(name);
+                if missing {
+                    continue;
+                }
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        links += 1;
+                        if links > MAX_LINKS {
+                            return None;
+                        }
+                        let target = std::fs::read_link(&resolved).ok()?;
+                        resolved.pop();
+                        push_all(&mut queue, &target);
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing = true,
+                    Err(_) => return None,
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                resolved = PathBuf::from(&part);
+            }
         }
     }
-    let mut resolved = existing.canonicalize().unwrap_or(existing);
-    resolved.extend(tail.into_iter().rev());
     Some(resolved)
 }
 
@@ -178,8 +222,9 @@ pub fn check(call: &ToolCall, commands: &[ShellCommand], cx: &FloorContext) -> F
             .map(|command| bash(command, cx))
             .min_by_key(|floor| match floor {
                 Floor::Credential(_) => 0,
-                Floor::Protected(_) => 1,
-                Floor::None => 2,
+                Floor::Unresolved(_) => 1,
+                Floor::Protected(_) => 2,
+                Floor::None => 3,
             })
             .unwrap_or(Floor::None),
         _ => Floor::None,
@@ -193,10 +238,13 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
     if names_credential(path, cx) {
         return Floor::Credential(path.to_owned());
     }
-    if writes && names_protected(path, cx) {
-        return Floor::Protected(path.to_owned());
+    match resolve_path(path, cx) {
+        None => Floor::Unresolved(path.to_owned()),
+        Some(resolved) if writes && protected_resolved(&resolved, cx) => {
+            Floor::Protected(path.to_owned())
+        }
+        Some(_) => Floor::None,
     }
-    Floor::None
 }
 
 /// The spelling and the resolved target are both checked: a link named
@@ -206,11 +254,9 @@ fn names_credential(word: &str, cx: &FloorContext) -> bool {
     credential(Path::new(&plain)) || resolve_path(word, cx).is_some_and(|path| credential(&path))
 }
 
-fn names_protected(word: &str, cx: &FloorContext) -> bool {
-    resolve_path(word, cx).is_some_and(|path| protected_resolved(&path, cx))
-}
-
 /// Programs that only read their operands, so naming a protected file is free.
+/// A program with an output option is a reader only without it, see
+/// [`writes_output`].
 const READERS: &[&str] = &[
     "cat",
     "head",
@@ -233,6 +279,29 @@ const READERS: &[&str] = &[
     "echo",
 ];
 
+/// Whether a reader is told to write a file: `sort -o`/`--output`, and the
+/// `less` log file options. Short options may be clustered or carry the file
+/// name (`-uo out`, `-oout`).
+fn writes_output(program: &str, words: &[String]) -> bool {
+    let (short, long): (&[char], &[&str]) = match program {
+        "sort" => (&['o'], &["--output"]),
+        "less" => (&['o', 'O'], &["--log-file", "--LOG-FILE"]),
+        _ => return false,
+    };
+    words
+        .iter()
+        .take_while(|word| *word != "--")
+        .any(|word| match word.strip_prefix("--") {
+            Some(_) => long.iter().any(|long| {
+                word == long
+                    || word
+                        .strip_prefix(long)
+                        .is_some_and(|rest| rest.starts_with('='))
+            }),
+            None => word.starts_with('-') && word.chars().skip(1).any(|c| short.contains(&c)),
+        })
+}
+
 fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
@@ -245,23 +314,71 @@ fn is_assignment(word: &str) -> bool {
     })
 }
 
-/// Words that may name a file: everything after the program, with options
-/// dropped and `--option=value` reduced to its value. An opaque command has no
-/// parsed words, so its raw text is scanned token by token instead.
+/// The words of an opaque command, split like a shell would without
+/// understanding it: separators and redirection characters end a word outside
+/// quotes, quoted text and escaped characters stay inside it with their
+/// quotes removed, and nothing is expanded. A quoted path with spaces is one
+/// word. The command stays opaque for rules and "Always".
+fn scan_words(raw: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => match chars.next() {
+                Some(next @ ('"' | '\\' | '$' | '`')) => word.push(next),
+                Some(next) => {
+                    word.push('\\');
+                    word.push(next);
+                }
+                None => word.push('\\'),
+            },
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, '\\') => {
+                started = true;
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+            }
+            (None, c) if c.is_whitespace() || ";|&()<>`".contains(c) => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
 fn source_words(command: &ShellCommand) -> Vec<String> {
     if command.opaque {
-        command
-            .raw
-            .split(|c: char| c.is_whitespace() || "'\"`;|&()<>".contains(c))
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned)
-            .collect()
+        scan_words(&command.raw)
     } else {
         command.words.clone()
     }
 }
 
-fn operands(command: &ShellCommand, words: Vec<String>) -> (Option<String>, Vec<String>) {
+/// Words that may name a file: everything after the program, with options
+/// dropped and `--option=value` reduced to its value.
+fn operands(
+    command: &ShellCommand,
+    words: &[String],
+) -> (Option<String>, Vec<String>, Vec<String>) {
     let start = if command.opaque {
         0
     } else {
@@ -271,23 +388,31 @@ fn operands(command: &ShellCommand, words: Vec<String>) -> (Option<String>, Vec<
         .then(|| words.get(start).cloned())
         .flatten();
     let skip = start + usize::from(program.is_some());
-    let operands = words
-        .into_iter()
-        .skip(skip)
+    let rest = words[skip.min(words.len())..].to_vec();
+    let operands = rest
+        .iter()
         .filter_map(
             |word| match word.strip_prefix("--").and_then(|w| w.split_once('=')) {
                 Some((_, value)) => Some(value.to_owned()),
                 None if word.starts_with('-') => None,
-                None => Some(word),
+                None => Some(word.clone()),
             },
         )
         .collect();
-    (program, operands)
+    (program, rest, operands)
+}
+
+/// Redirections that only read their target. `<>` opens it for writing too.
+fn reads_only_redirection(op: &str) -> bool {
+    matches!(
+        op.trim_start_matches(|c: char| c.is_ascii_digit()),
+        "<" | "<<" | "<<<" | "<<-" | "<&"
+    )
 }
 
 fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     let all = source_words(command);
-    let (program, operands) = operands(command, all.clone());
+    let (program, rest, operands) = operands(command, &all);
     let program = program.as_deref().map(basename);
     let targets = || {
         command
@@ -303,28 +428,34 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     {
         return Floor::Credential(word.to_owned());
     }
-    // A redirection writes unless it only reads its target.
     let written = command
         .redirections
         .iter()
-        .filter(|redirection| {
-            !redirection
-                .op
-                .trim_start_matches(|c: char| c.is_ascii_digit())
-                .starts_with('<')
-        })
+        .filter(|redirection| !reads_only_redirection(&redirection.op))
         .map(|redirection| redirection.target.as_str());
-    let reads_only = program.is_some_and(|program| READERS.contains(&program));
-    let candidates: Vec<&str> = if reads_only {
-        written.collect()
-    } else {
-        operands.iter().map(String::as_str).chain(written).collect()
-    };
-    if let Some(word) = candidates
-        .into_iter()
-        .find(|word| names_protected(word, cx))
-    {
-        return Floor::Protected(word.to_owned());
+    let reads_only =
+        program.is_some_and(|program| READERS.contains(&program) && !writes_output(program, &rest));
+    let mut candidates: Vec<&str> = written.collect();
+    if !reads_only {
+        candidates.extend(operands.iter().map(String::as_str));
+        // `sort -oFILE`: the output option carries its value in the same word.
+        if matches!(program, Some("sort" | "less")) {
+            candidates.extend(
+                rest.iter()
+                    .filter(|word| word.starts_with('-') && !word.starts_with("--"))
+                    .filter_map(|word| word.split_once(['o', 'O']).map(|(_, value)| value))
+                    .filter(|value| !value.is_empty()),
+            );
+        }
+    }
+    for word in candidates {
+        match resolve_path(word, cx) {
+            None => return Floor::Unresolved(word.to_owned()),
+            Some(path) if protected_resolved(&path, cx) => {
+                return Floor::Protected(word.to_owned())
+            }
+            Some(_) => {}
+        }
     }
     let words = || all.iter().map(|word| basename(word));
     if (command.opaque || words().any(|word| matches!(word, "sqlite3" | "sqlite")))
@@ -557,6 +688,217 @@ mod tests {
         let opaque = "if true; then cat .env; fi";
         assert!(split(opaque)[0].opaque);
         assert!(matches!(bash_floor(&f.cx, opaque), Floor::Credential(_)));
+    }
+
+    fn link(target: &Path, at: &Path) {
+        std::os::unix::fs::symlink(target, at).unwrap();
+    }
+
+    #[test]
+    fn dot_dot_after_a_symlink_climbs_out_of_the_target() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(root.join("config/subdir")).unwrap();
+        link(&root.join("config/subdir"), &f.cx.workspace.join("link"));
+        // Spelled `project/config.json` once folded, but written to config/config.json.
+        assert_eq!(
+            resolve_path("link/../config.json", &f.cx),
+            Some(root.join("config/config.json"))
+        );
+        assert!(matches!(
+            check(&native_call("write", "link/../config.json"), &[], &f.cx),
+            Floor::Protected(_)
+        ));
+        assert!(matches!(
+            bash_floor(&f.cx, "echo x > link/../config.json"),
+            Floor::Protected(_)
+        ));
+        // A `..` after plain directories still folds.
+        assert_eq!(
+            check(&native_call("write", "a/../b.txt"), &[], &f.cx),
+            Floor::None
+        );
+    }
+
+    #[test]
+    fn a_symlinked_workspace_resolves_to_the_real_directory() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().to_path_buf();
+        link(&f.cx.workspace, &root.join("work"));
+        let cx = FloorContext {
+            workspace: root.join("work"),
+            ..f.cx.clone()
+        };
+        assert_eq!(
+            resolve_path("src/a.rs", &cx),
+            Some(root.join("project/src/a.rs"))
+        );
+        assert_eq!(
+            resolve_path("../config/config.json", &cx),
+            Some(root.join("config/config.json"))
+        );
+        assert!(matches!(
+            check(&native_call("write", "../config/config.json"), &[], &cx),
+            Floor::Protected(_)
+        ));
+    }
+
+    #[test]
+    fn resolution_errors_fail_closed() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().to_path_buf();
+        link(&root.join("project/loop-b"), &root.join("project/loop-a"));
+        link(&root.join("project/loop-a"), &root.join("project/loop-b"));
+        assert_eq!(resolve_path("loop-a/x", &f.cx), None);
+        assert_eq!(resolve_path("a\0b", &f.cx), None);
+        for tool in ["read", "write"] {
+            assert!(
+                matches!(
+                    check(&native_call(tool, "loop-a/x"), &[], &f.cx),
+                    Floor::Unresolved(_)
+                ),
+                "{tool}"
+            );
+        }
+        assert!(matches!(
+            bash_floor(&f.cx, "touch loop-a/x"),
+            Floor::Unresolved(_)
+        ));
+        assert!(protected_write(Path::new("loop-a/x"), &f.cx));
+        // A dangling link is followed to where a write would create the file.
+        link(
+            &root.join("config/config.json"),
+            &root.join("project/dangling"),
+        );
+        assert!(matches!(
+            check(&native_call("write", "dangling"), &[], &f.cx),
+            Floor::Protected(_)
+        ));
+    }
+
+    #[test]
+    fn symlinked_config_database_and_flows_keep_their_protection() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for sub in ["project", "config", "data", "elsewhere/flows", "home"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        std::fs::write(root.join("elsewhere/config.json"), "{}").unwrap();
+        std::fs::write(root.join("elsewhere/withnav.db"), "").unwrap();
+        link(
+            &root.join("elsewhere/config.json"),
+            &root.join("config/config.json"),
+        );
+        link(
+            &root.join("elsewhere/withnav.db"),
+            &root.join("data/withnav.db"),
+        );
+        link(&root.join("elsewhere/flows"), &root.join("config/flows"));
+        let cx = FloorContext {
+            workspace: root.join("project"),
+            config_dir: Some(root.join("config")),
+            data_dir: Some(root.join("data")),
+            home: Some(root.join("home")),
+            ..Default::default()
+        };
+        for path in [
+            // The configured spellings.
+            root.join("config/config.json"),
+            root.join("data/withnav.db"),
+            root.join("config/flows/mine.toml"),
+            // Where the links lead.
+            root.join("elsewhere/config.json"),
+            root.join("elsewhere/withnav.db"),
+            root.join("elsewhere/flows/mine.toml"),
+        ] {
+            let name = path.display().to_string();
+            assert!(
+                matches!(
+                    check(&native_call("write", &name), &[], &cx),
+                    Floor::Protected(_)
+                ),
+                "{name}"
+            );
+        }
+        // A link in the workspace to the real file is caught too.
+        link(&root.join("elsewhere/config.json"), &root.join("project/c"));
+        assert!(matches!(
+            check(&native_call("edit", "c"), &[], &cx),
+            Floor::Protected(_)
+        ));
+        assert_eq!(check(&native_call("read", "c"), &[], &cx), Floor::None);
+    }
+
+    #[test]
+    fn output_options_and_read_write_redirections_are_writes() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().display().to_string();
+        let config = format!("{root}/config/config.json");
+        for line in [
+            format!("sort -o {config} in"),
+            format!("sort -uo {config} in"),
+            format!("sort -o{config} in"),
+            format!("sort --output {config} in"),
+            format!("sort --output={config} in"),
+            format!("echo '{{}}' 1<> {config}"),
+            format!("echo '{{}}' <> {config}"),
+            format!("cat in > {config}"),
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                "{line}"
+            );
+        }
+        for line in [
+            format!("sort {config}"),
+            format!("sort -u {config} -t,"),
+            format!("cat < {config}"),
+            format!("cat 0< {config}"),
+            format!("grep x <<< {config}"),
+        ] {
+            assert_eq!(bash_floor(&f.cx, &line), Floor::None, "{line}");
+        }
+    }
+
+    #[test]
+    fn opaque_lines_keep_quoted_paths_whole() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().to_path_buf();
+        let spaced = root.join("home/my keys");
+        std::fs::create_dir_all(&spaced).unwrap();
+        let cx = FloorContext {
+            home: Some(root.join("home")),
+            config_dir: Some(spaced.clone()),
+            ..f.cx.clone()
+        };
+        for (line, credential_expected) in [
+            ("if true; then cat \"my keys/.env\"; fi", true),
+            ("if true; then cat 'a b/.ssh/id_ed25519'; fi", true),
+            ("if true; then cat my\\ keys/.env; fi", true),
+            ("if true; then cat \"a b\"/.env; fi", true),
+        ] {
+            assert!(split(line)[0].opaque, "{line}");
+            assert_eq!(
+                matches!(bash_floor(&cx, line), Floor::Credential(_)),
+                credential_expected,
+                "{line}"
+            );
+        }
+        let line = format!(
+            "if true; then echo x > \"{}/config.json\"; fi",
+            spaced.display()
+        );
+        assert!(split(&line)[0].opaque);
+        assert!(matches!(bash_floor(&cx, &line), Floor::Protected(_)));
+        let line = format!(
+            "for i in 1; do cp a '{}/config.json'; done",
+            spaced.display()
+        );
+        assert!(matches!(bash_floor(&cx, &line), Floor::Protected(_)));
+        assert_eq!(
+            scan_words("a 'b c'\"d e\"f x\\ y;z"),
+            ["a", "b cd ef", "x y", "z"]
+        );
     }
 
     #[test]

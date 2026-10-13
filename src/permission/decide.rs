@@ -1,12 +1,13 @@
 //! The order in which yolo, the fixed floor, rules, bypass and the permission flow decide a tool call.
 //!
-//! [`decide`] is pure apart from reading rules: it runs no tool and writes no
-//! decision. The permission flow is a callback, called at most once and only
-//! when its answer can matter, so the caller can wire in the real flow later
-//! without this module knowing about flows.
+//! [`decide`] reads rules and asks the permission flows through
+//! [`PermissionFlows`]; it runs no tool and writes no decision. The flows are
+//! a trait so that the caller wires in the real flow runtime and this module
+//! knows nothing about flows.
 
 use std::path::{Path, PathBuf};
 
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 use super::{
@@ -15,6 +16,7 @@ use super::{
     shell::ShellCommand,
     store::{Error, PermissionStore},
 };
+pub use crate::agent::flow_hook::ProtectedCheck;
 use crate::provider::ToolCall;
 
 /// Identical consecutive calls in one turn that count as a loop.
@@ -36,41 +38,26 @@ pub enum RuleResult {
     NoRule,
 }
 
-/// What the permission flow is asked about.
+/// What the permission flows are asked about.
 #[derive(Debug)]
 pub struct FlowQuery<'a> {
     pub rule: RuleResult,
     pub matched: Option<&'a Rule>,
-    /// `Protected` when the flow must also answer the protected check.
+    /// `Protected` when the call writes WithNav's own configuration or database.
     pub floor: &'a Floor,
 }
 
+/// The aggregate answer of the permission flows on the `tool.pre_call` trigger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlowVerdict {
+pub enum FlowAnswer {
     Allow,
     AskCaptain,
     Deny,
-    /// The flow failed or had nothing to say: the rule's result applies.
+    /// The flows failed or had nothing to say: the rule's result applies.
     ApplyRule,
 }
 
-/// The flow's answer. `protected_ok` is a separate signal that only the
-/// compiled-in protected check can give; a plain `Allow` never carries it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FlowAnswer {
-    pub verdict: FlowVerdict,
-    pub protected_ok: bool,
-}
-
 impl FlowAnswer {
-    /// No flow ran: the rule's result applies and no protected write is covered.
-    pub const NONE: Self = Self {
-        verdict: FlowVerdict::ApplyRule,
-        protected_ok: false,
-    };
-}
-
-impl FlowVerdict {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Allow => "allow",
@@ -79,6 +66,17 @@ impl FlowVerdict {
             Self::ApplyRule => "apply_rule",
         }
     }
+}
+
+/// The two questions the decision path puts to the flow side. They are kept
+/// apart: a flow's `Allow` never stands in for the protected check, which only
+/// the compiled-in node of the built-in flow can answer.
+pub trait PermissionFlows: Send + Sync {
+    /// The aggregate verdict of the permission flows (`permission_pre_call`).
+    fn flow<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, FlowAnswer>;
+    /// Whether the Captain's own messages ask for a protected write. `Unavailable`
+    /// when the built-in flow is disabled or the check failed.
+    fn protected_check<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, ProtectedCheck>;
 }
 
 pub struct Input<'a> {
@@ -143,6 +141,7 @@ pub struct Trace {
     pub rule_id: Option<i64>,
     pub effect: Option<Effect>,
     pub flow_verdict: Option<&'static str>,
+    pub protected_check: Option<ProtectedCheck>,
     pub command_matches: Value,
     pub floor: Option<String>,
     pub doom_loop: bool,
@@ -182,8 +181,8 @@ impl DoomTracker {
 
 /// Decide one tool call. The permission rules are read; nothing else is touched.
 /// A rule lookup that fails asks the Captain, whatever the control level but yolo.
-pub fn decide(input: &Input<'_>, flow: &mut dyn FnMut(&FlowQuery<'_>) -> FlowAnswer) -> Decision {
-    run(input, flow).unwrap_or_else(|error| Decision {
+pub async fn decide(input: &Input<'_>, flows: &dyn PermissionFlows) -> Decision {
+    run(input, flows).await.unwrap_or_else(|error| Decision {
         verdict: Verdict::AskCaptain {
             reason: format!("the permission rules could not be read: {error}"),
             always: Vec::new(),
@@ -192,10 +191,7 @@ pub fn decide(input: &Input<'_>, flow: &mut dyn FnMut(&FlowQuery<'_>) -> FlowAns
     })
 }
 
-fn run(
-    input: &Input<'_>,
-    flow: &mut dyn FnMut(&FlowQuery<'_>) -> FlowAnswer,
-) -> Result<Decision, Error> {
+async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision, Error> {
     let mut trace = Trace::default();
     let run = |approved_by, trace| Decision {
         verdict: Verdict::Run { approved_by },
@@ -211,13 +207,22 @@ fn run(
         return Ok(run(ApprovedBy::Yolo, trace));
     }
 
-    // 2. The fixed floor. A credential asks and nothing can allow it.
+    // 2. The fixed floor. A credential, or a path that cannot be resolved the
+    // way execution would resolve it, asks and nothing can allow it.
     let floor = floor::check(input.call, input.commands, input.cx);
     match &floor {
         Floor::Credential(target) => {
             trace.floor = Some(format!("credential: {target}"));
             return Ok(ask(
                 format!("{target} is a credential; WithNav always asks before touching one"),
+                Vec::new(),
+                trace,
+            ));
+        }
+        Floor::Unresolved(target) => {
+            trace.floor = Some(format!("unresolved: {target}"));
+            return Ok(ask(
+                format!("{target} cannot be resolved, so WithNav cannot tell what it names"),
                 Vec::new(),
                 trace,
             ));
@@ -258,24 +263,24 @@ fn run(
         });
     }
 
-    // A protected write needs the flow's protected check. Rules, bypass and a
-    // generic allow never stand in for it, and it is never saved as a rule.
-    let mut answer = None;
+    // A protected write needs the protected check, and only it: rules, bypass
+    // and a generic flow allow never stand in for it, and it is never saved as
+    // a rule. It is asked after the deny above and before anything can run it.
     if let Floor::Protected(target) = &floor {
-        let given = flow(&FlowQuery {
+        let query = FlowQuery {
             rule: rules.result,
             matched: rules.rule.as_ref(),
             floor: &floor,
-        });
-        trace.flow_verdict = Some(given.verdict.as_str());
-        if !given.protected_ok {
+        };
+        let check = flows.protected_check(&query).await;
+        trace.protected_check = Some(check);
+        if check != ProtectedCheck::Passed {
             return Ok(ask(
                 format!("{target} is WithNav's own configuration; only your explicit request can change it"),
                 Vec::new(),
                 trace,
             ));
         }
-        answer = Some(given);
     }
 
     // A loop is checked after the rules so that a `deny` is never hidden by a
@@ -329,14 +334,14 @@ fn run(
     }
 
     // 6. The permission flow, with the rules' result.
-    let answer = answer.unwrap_or_else(|| {
-        flow(&FlowQuery {
+    let answer = flows
+        .flow(&FlowQuery {
             rule: rules.result,
             matched: rules.rule.as_ref(),
             floor: &floor,
         })
-    });
-    trace.flow_verdict = Some(answer.verdict.as_str());
+        .await;
+    trace.flow_verdict = Some(answer.as_str());
     let proposals = if matches!(floor, Floor::Protected(_)) {
         Vec::new()
     } else {
@@ -346,23 +351,23 @@ fn run(
         RuleResult::Ask => "a permission rule asks for this call".to_owned(),
         _ => "no permission rule covers this call".to_owned(),
     };
-    Ok(match answer.verdict {
-        FlowVerdict::Allow => run(ApprovedBy::Flow, trace),
-        FlowVerdict::Deny => Decision {
+    Ok(match answer {
+        FlowAnswer::Allow => run(ApprovedBy::Flow, trace),
+        FlowAnswer::Deny => Decision {
             verdict: Verdict::Deny {
                 rule: None,
                 message: "denied by the permission flow".into(),
             },
             trace,
         },
-        FlowVerdict::AskCaptain => ask(
+        FlowAnswer::AskCaptain => ask(
             "the permission flow wants your decision".into(),
             proposals,
             trace,
         ),
         // 7. The Captain.
-        FlowVerdict::ApplyRule if rules.result == RuleResult::Allow => run(ApprovedBy::Rule, trace),
-        FlowVerdict::ApplyRule => ask(reason(), proposals, trace),
+        FlowAnswer::ApplyRule if rules.result == RuleResult::Allow => run(ApprovedBy::Rule, trace),
+        FlowAnswer::ApplyRule => ask(reason(), proposals, trace),
     })
 }
 
@@ -499,21 +504,24 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
             Ok(items)
         }
         "fetch" => {
-            let url = call.args.get("url").and_then(Value::as_str).unwrap_or("*");
-            let proposal = reqwest::Url::parse(url)
-                .ok()
-                .map(|url| url.origin())
-                .filter(|origin| origin.is_tuple())
-                .map(|origin| {
-                    project(
-                        "fetch",
-                        format!("{}/*", literal(&origin.ascii_serialization())),
+            let raw = call.args.get("url").and_then(Value::as_str).unwrap_or("*");
+            // The rule lookup and the proposal use one representation, the one
+            // the fetch tool would request. A URL the tool refuses gets no
+            // proposal: "Always" must not save a rule for a call that cannot run.
+            let (resource, proposal) = match fetch_url(raw) {
+                Some(url) => {
+                    let origin = literal(&url.origin().ascii_serialization());
+                    (
+                        canonical_url(&url),
+                        Some(project("fetch", format!("{origin}/*"))),
                     )
-                });
+                }
+                None => (raw.trim().to_owned(), None),
+            };
             Ok(vec![classify(
-                find("fetch", url)?,
+                find("fetch", &resource)?,
                 proposal,
-                url.to_owned(),
+                resource.clone(),
             )])
         }
         _ => {
@@ -525,6 +533,25 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
             Ok(vec![classify(find(tool, "*")?, Some(proposal), "*".into())])
         }
     }
+}
+
+/// The URL as the fetch tool validates it: http or https, a host, no
+/// credentials.
+fn fetch_url(raw: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some_and(|host| !host.is_empty())
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then_some(url)
+}
+
+/// Lowercase scheme and host, punycode host, default port dropped, `/` for an
+/// empty path, no fragment (it is never sent).
+fn canonical_url(url: &reqwest::Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    url.to_string()
 }
 
 fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
@@ -682,18 +709,17 @@ mod tests {
                 .unwrap()
         }
 
-        fn decide_with(
+        fn decide_full(
             &self,
             control: Control,
             call: &ToolCall,
             repeats: usize,
-            answer: FlowAnswer,
-        ) -> (Decision, usize) {
+            flows: &Script,
+        ) -> Decision {
             let commands = match call.name.as_str() {
                 "bash" => split(call.args["command"].as_str().unwrap()),
                 _ => Vec::new(),
             };
-            let mut asked = 0;
             let input = Input {
                 control,
                 call,
@@ -703,15 +729,62 @@ mod tests {
                 agent: "build",
                 repeats,
             };
-            let decision = decide(&input, &mut |_| {
-                asked += 1;
-                answer
-            });
-            (decision, asked)
+            futures::executor::block_on(decide(&input, flows))
+        }
+
+        /// The flow answers `answer`; the protected check is unavailable.
+        fn decide_with(
+            &self,
+            control: Control,
+            call: &ToolCall,
+            repeats: usize,
+            answer: FlowAnswer,
+        ) -> (Decision, usize) {
+            let flows = Script::new(answer, ProtectedCheck::Unavailable);
+            let decision = self.decide_full(control, call, repeats, &flows);
+            (decision, flows.flow_calls.get())
         }
 
         fn decide(&self, control: Control, call: &ToolCall) -> Decision {
-            self.decide_with(control, call, 1, FlowAnswer::NONE).0
+            self.decide_with(control, call, 1, FlowAnswer::ApplyRule).0
+        }
+    }
+
+    /// A scripted flow side that counts what it is asked.
+    struct Script {
+        answer: FlowAnswer,
+        check: ProtectedCheck,
+        flow_calls: std::cell::Cell<usize>,
+        check_calls: std::cell::Cell<usize>,
+        seen: std::cell::Cell<Option<(RuleResult, Option<i64>)>>,
+    }
+
+    // The scripted side is only used from one thread inside `block_on`.
+    unsafe impl Sync for Script {}
+
+    impl Script {
+        fn new(answer: FlowAnswer, check: ProtectedCheck) -> Self {
+            Self {
+                answer,
+                check,
+                flow_calls: Default::default(),
+                check_calls: Default::default(),
+                seen: Default::default(),
+            }
+        }
+    }
+
+    impl PermissionFlows for Script {
+        fn flow<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, FlowAnswer> {
+            self.seen
+                .set(Some((query.rule, query.matched.map(|rule| rule.id))));
+            self.flow_calls.set(self.flow_calls.get() + 1);
+            Box::pin(async move { self.answer })
+        }
+
+        fn protected_check<'a>(&'a self, _: &'a FlowQuery<'a>) -> BoxFuture<'a, ProtectedCheck> {
+            self.check_calls.set(self.check_calls.get() + 1);
+            Box::pin(async move { self.check })
         }
     }
 
@@ -732,11 +805,8 @@ mod tests {
         call(name, json!({"path": path}))
     }
 
-    fn allow(verdict: FlowVerdict) -> FlowAnswer {
-        FlowAnswer {
-            verdict,
-            protected_ok: false,
-        }
+    fn allow(verdict: FlowAnswer) -> FlowAnswer {
+        verdict
     }
 
     fn run_by(decision: &Decision) -> Option<ApprovedBy> {
@@ -758,8 +828,7 @@ mod tests {
         let f = fixture();
         f.add("*", "*", Effect::Deny);
         for call in [bash("rm -rf /"), file("write", ".env")] {
-            let (decision, asked) =
-                f.decide_with(Control::Yolo, &call, 9, allow(FlowVerdict::Deny));
+            let (decision, asked) = f.decide_with(Control::Yolo, &call, 9, allow(FlowAnswer::Deny));
             assert_eq!(run_by(&decision), Some(ApprovedBy::Yolo));
             assert_eq!(asked, 0);
         }
@@ -775,7 +844,7 @@ mod tests {
                 file("write", "~/.ssh/id_ed25519"),
                 bash("cat .env"),
             ] {
-                let (decision, asked) = f.decide_with(control, &call, 1, allow(FlowVerdict::Allow));
+                let (decision, asked) = f.decide_with(control, &call, 1, allow(FlowAnswer::Allow));
                 assert!(
                     matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
                     "{call:?} {decision:?}"
@@ -792,38 +861,39 @@ mod tests {
     }
 
     #[test]
-    fn protected_write_needs_the_protected_ok_signal() {
+    fn protected_write_needs_a_passed_protected_check() {
         let f = fixture();
         let target = f.root().join("config/config.json").display().to_string();
         let write = file("write", &target);
         f.add("write", "*", Effect::Allow);
         // A generic flow allow, an allow rule and bypass do not satisfy it.
-        for control in [Control::Normal, Control::Bypass] {
-            let (decision, _) = f.decide_with(control, &write, 1, allow(FlowVerdict::Allow));
-            assert!(
-                matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
-                "{decision:?}"
-            );
+        for check in [ProtectedCheck::Failed, ProtectedCheck::Unavailable] {
+            for control in [Control::Normal, Control::Bypass] {
+                let flows = Script::new(FlowAnswer::Allow, check);
+                let decision = f.decide_full(control, &write, 1, &flows);
+                assert!(
+                    matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
+                    "{check:?} {decision:?}"
+                );
+                assert_eq!(flows.flow_calls.get(), 0);
+                assert_eq!(flows.check_calls.get(), 1);
+                assert_eq!(decision.trace.protected_check, Some(check));
+            }
         }
-        let (decision, _) = f.decide_with(Control::Normal, &write, 1, FlowAnswer::NONE);
-        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
-        // With the signal and the flow's allow it runs; reads are free anyway.
-        let ok = FlowAnswer {
-            verdict: FlowVerdict::Allow,
-            protected_ok: true,
-        };
-        let (decision, _) = f.decide_with(Control::Normal, &write, 1, ok);
+        // Passed plus the flow's allow runs.
+        let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Passed);
+        let decision = f.decide_full(Control::Normal, &write, 1, &flows);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Flow));
-        // Even with the signal, a question about it never saves a rule.
-        let ask = FlowAnswer {
-            verdict: FlowVerdict::AskCaptain,
-            protected_ok: true,
-        };
-        let (decision, _) = f.decide_with(Control::Normal, &write, 1, ask);
+        // Passed does not replace the flow: its question still applies and
+        // never saves a rule for the protected file.
+        let flows = Script::new(FlowAnswer::AskCaptain, ProtectedCheck::Passed);
+        let decision = f.decide_full(Control::Normal, &write, 1, &flows);
         assert!(proposals(&decision).is_empty());
-        // Bypass with the signal still runs only because the Captain asked.
-        let (decision, _) = f.decide_with(Control::Bypass, &write, 1, ok);
+        // Under bypass only the protected check runs, never the flow.
+        let flows = Script::new(FlowAnswer::Deny, ProtectedCheck::Passed);
+        let decision = f.decide_full(Control::Bypass, &write, 1, &flows);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
+        assert_eq!((flows.check_calls.get(), flows.flow_calls.get()), (1, 0));
     }
 
     #[test]
@@ -831,12 +901,10 @@ mod tests {
         let f = fixture();
         let target = f.root().join("data/withnav.db").display().to_string();
         f.add("write", "*", Effect::Deny);
-        let ok = FlowAnswer {
-            verdict: FlowVerdict::Allow,
-            protected_ok: true,
-        };
-        let (decision, _) = f.decide_with(Control::Normal, &file("write", &target), 1, ok);
+        let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Passed);
+        let decision = f.decide_full(Control::Normal, &file("write", &target), 1, &flows);
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+        assert_eq!(flows.check_calls.get(), 0);
     }
 
     #[test]
@@ -860,7 +928,7 @@ mod tests {
             file("read", &skill),
         ] {
             let (decision, asked) =
-                f.decide_with(Control::Normal, &call, 1, allow(FlowVerdict::Deny));
+                f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::Deny));
             assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
             assert_eq!(asked, 0);
         }
@@ -876,7 +944,7 @@ mod tests {
         let rule = f.add("bash", "rm *", Effect::Deny);
         for control in [Control::Normal, Control::Bypass] {
             let (decision, asked) =
-                f.decide_with(control, &bash("rm -rf build"), 1, allow(FlowVerdict::Allow));
+                f.decide_with(control, &bash("rm -rf build"), 1, allow(FlowAnswer::Allow));
             assert!(
                 matches!(&decision.verdict, Verdict::Deny { rule: Some(r), .. } if r.id == rule.id)
             );
@@ -894,7 +962,7 @@ mod tests {
             Control::Normal,
             &bash("git status && cargo test -p a"),
             1,
-            FlowAnswer::NONE,
+            FlowAnswer::ApplyRule,
         );
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
         assert_eq!(asked, 1);
@@ -932,7 +1000,8 @@ mod tests {
         f.add("bash", "*", Effect::Allow);
         f.add("bash", "if *", Effect::Allow);
         f.add("bash", "if *", Effect::Deny);
-        let (decision, asked) = f.decide_with(Control::Normal, &bash(line), 1, FlowAnswer::NONE);
+        let (decision, asked) =
+            f.decide_with(Control::Normal, &bash(line), 1, FlowAnswer::ApplyRule);
         assert!(proposals(&decision).is_empty());
         assert_eq!(asked, 1);
         // Even with a flow allow, "Always" is not offered for the question the flow raises.
@@ -940,10 +1009,10 @@ mod tests {
             Control::Normal,
             &bash(line),
             1,
-            allow(FlowVerdict::AskCaptain),
+            allow(FlowAnswer::AskCaptain),
         );
         assert!(proposals(&decision).is_empty());
-        let (decision, _) = f.decide_with(Control::Bypass, &bash(line), 1, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Bypass, &bash(line), 1, FlowAnswer::ApplyRule);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
         let star = f.add("bash", "*", Effect::Deny);
         let decision = f.decide(Control::Bypass, &bash(line));
@@ -1033,29 +1102,129 @@ mod tests {
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
     }
 
+    fn fetch(url: &str) -> ToolCall {
+        call("fetch", json!({ "url": url }))
+    }
+
     #[test]
     fn fetch_uses_the_url_and_proposes_the_origin() {
         let f = fixture();
-        let decision = f.decide(
-            Control::Normal,
-            &call("fetch", json!({"url": "https://docs.rs/x/y?q=1"})),
-        );
+        let decision = f.decide(Control::Normal, &fetch("https://docs.rs/x/y?q=1"));
         let always = proposals(&decision);
         assert_eq!(always.len(), 1);
         assert_eq!(always[0].action, "fetch");
         assert_eq!(always[0].resource, "https://docs.rs/*");
         assert_eq!(always[0].scope, RuleScope::Project(f.cx.workspace.clone()));
         f.add("fetch", "https://docs.rs/*", Effect::Allow);
-        let decision = f.decide(
-            Control::Normal,
-            &call("fetch", json!({"url": "https://docs.rs/x"})),
-        );
+        let decision = f.decide(Control::Normal, &fetch("https://docs.rs/x"));
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
-        let decision = f.decide(
-            Control::Normal,
-            &call("fetch", json!({"url": "https://evil.example/x"})),
-        );
+        let decision = f.decide(Control::Normal, &fetch("https://evil.example/x"));
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn fetch_urls_have_one_canonical_form_for_lookup_and_proposal() {
+        let f = fixture();
+        // Whatever the spelling, "Always" saves a rule the same call then matches.
+        for (url, origin) in [
+            ("https://docs.rs", "https://docs.rs"),
+            ("HTTPS://Docs.RS/A?b#frag", "https://docs.rs"),
+            ("https://docs.rs:443/x", "https://docs.rs"),
+            ("http://docs.rs:80/x", "http://docs.rs"),
+            ("https://docs.rs:8443/x", "https://docs.rs:8443"),
+            ("http://localhost:3000/", "http://localhost:3000"),
+            ("https://bücher.example/x", "https://xn--bcher-kva.example"),
+            ("http://[::1]:8080/x", "http://[::1]:8080"),
+            ("https://[2001:DB8::1]/", "https://[2001:db8::1]"),
+            ("  https://docs.rs/x  ", "https://docs.rs"),
+        ] {
+            let always = proposals(&f.decide(Control::Normal, &fetch(url)));
+            assert_eq!(always.len(), 1, "{url}");
+            assert_eq!(always[0].resource, format!("{origin}/*"), "{url}");
+            let rule = f.add("fetch", &always[0].resource, Effect::Allow);
+            let decision = f.decide(Control::Normal, &fetch(url));
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{url}");
+            f.store.revoke(rule.id).unwrap();
+        }
+        // A rule on the exact canonical URL matches the other spellings of it.
+        f.add("fetch", "https://docs.rs/a", Effect::Deny);
+        for url in ["HTTPS://DOCS.rs:443/a", "https://docs.rs/a#top"] {
+            let decision = f.decide(Control::Bypass, &fetch(url));
+            assert!(matches!(decision.verdict, Verdict::Deny { .. }), "{url}");
+        }
+    }
+
+    #[test]
+    fn fetch_urls_the_tool_refuses_get_no_proposal() {
+        let f = fixture();
+        for url in [
+            "https://user@docs.rs/x",
+            "https://user:pw@docs.rs/x",
+            "ftp://docs.rs/x",
+            "file:///etc/passwd",
+            "not a url",
+            "https://",
+        ] {
+            let decision = f.decide(Control::Normal, &fetch(url));
+            assert!(proposals(&decision).is_empty(), "{url}");
+        }
+        // A rule on the origin does not cover credentials in the URL.
+        f.add("fetch", "https://docs.rs/*", Effect::Allow);
+        let decision = f.decide(Control::Normal, &fetch("https://user@docs.rs/x"));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn output_options_and_read_write_redirections_ask_under_bypass_and_allow_rules() {
+        let f = fixture();
+        let config = f.root().join("config/config.json").display().to_string();
+        f.add("bash", "*", Effect::Allow);
+        f.add("bash", "sort *", Effect::Allow);
+        for line in [
+            format!("sort -o {config} in"),
+            format!("sort --output={config} in"),
+            format!("echo '{{}}' 1<> {config}"),
+        ] {
+            for control in [Control::Normal, Control::Bypass] {
+                let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Failed);
+                let decision = f.decide_full(control, &bash(&line), 1, &flows);
+                assert!(
+                    matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
+                    "{line} {decision:?}"
+                );
+                assert_eq!(flows.flow_calls.get(), 0, "{line}");
+            }
+        }
+        // A plain read of it stays free of the floor.
+        let decision = f.decide(Control::Bypass, &bash(&format!("sort {config}")));
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_resolved_asks_and_is_never_saved() {
+        let f = fixture();
+        let project = &f.cx.workspace;
+        std::os::unix::fs::symlink(project.join("b"), project.join("a")).unwrap();
+        std::os::unix::fs::symlink(project.join("a"), project.join("b")).unwrap();
+        f.add("*", "*", Effect::Allow);
+        for control in [Control::Normal, Control::Bypass] {
+            for call in [file("write", "a/x"), file("read", "a/x"), bash("touch a/x")] {
+                let decision = f.decide(control, &call);
+                assert!(
+                    matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
+                    "{call:?}"
+                );
+                assert!(decision
+                    .trace
+                    .floor
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("unresolved"));
+            }
+        }
+        // Yolo skips the floor.
+        let decision = f.decide(Control::Yolo, &file("write", "a/x"));
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Yolo));
     }
 
     #[test]
@@ -1086,7 +1255,7 @@ mod tests {
             Control::Bypass,
             &bash("git push origin main"),
             1,
-            allow(FlowVerdict::Deny),
+            allow(FlowAnswer::Deny),
         );
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
         assert_eq!(asked, 0);
@@ -1096,26 +1265,25 @@ mod tests {
     fn flow_verdicts_and_the_rule_fallback() {
         let f = fixture();
         let call = bash("make check");
-        let (decision, _) = f.decide_with(Control::Normal, &call, 1, allow(FlowVerdict::Allow));
+        let (decision, _) = f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::Allow));
         assert_eq!(run_by(&decision), Some(ApprovedBy::Flow));
         assert_eq!(decision.trace.flow_verdict, Some("allow"));
-        let (decision, _) =
-            f.decide_with(Control::Normal, &call, 1, allow(FlowVerdict::AskCaptain));
+        let (decision, _) = f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::AskCaptain));
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
-        let (decision, _) = f.decide_with(Control::Normal, &call, 1, allow(FlowVerdict::Deny));
+        let (decision, _) = f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::Deny));
         assert!(matches!(
             &decision.verdict,
             Verdict::Deny { rule: None, .. }
         ));
         // No verdict: no rule asks, an ask rule asks, an allow rule runs.
-        let (decision, _) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
         let ask = f.add("bash", "make *", Effect::Ask);
-        let (decision, _) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
         assert_eq!(decision.trace.rule_id, Some(ask.id));
         let allow_rule = f.add("bash", "make check *", Effect::Allow);
-        let (decision, _) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::ApplyRule);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
         assert_eq!(decision.trace.rule_id, Some(allow_rule.id));
         assert_eq!(decision.trace.effect, Some(Effect::Allow));
@@ -1124,24 +1292,10 @@ mod tests {
     #[test]
     fn the_flow_sees_the_rule_result() {
         let f = fixture();
-        f.add("bash", "make *", Effect::Allow);
-        let call = bash("make all");
-        let commands = split("make all");
-        let mut seen = None;
-        let input = Input {
-            control: Control::Normal,
-            call: &call,
-            commands: &commands,
-            cx: &f.cx,
-            store: &f.store,
-            agent: "build",
-            repeats: 1,
-        };
-        decide(&input, &mut |query| {
-            seen = Some((query.rule, query.matched.map(|rule| rule.id)));
-            allow(FlowVerdict::AskCaptain)
-        });
-        assert_eq!(seen.unwrap().0, RuleResult::Allow);
+        let rule = f.add("bash", "make *", Effect::Allow);
+        let flows = Script::new(FlowAnswer::AskCaptain, ProtectedCheck::Unavailable);
+        f.decide_full(Control::Normal, &bash("make all"), 1, &flows);
+        assert_eq!(flows.seen.get(), Some((RuleResult::Allow, Some(rule.id))));
     }
 
     #[test]
@@ -1149,23 +1303,23 @@ mod tests {
         let f = fixture();
         f.add("bash", "ls *", Effect::Allow);
         let call = bash("ls -la");
-        let (decision, _) = f.decide_with(Control::Normal, &call, 2, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &call, 2, FlowAnswer::ApplyRule);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
-        let (decision, _) = f.decide_with(Control::Normal, &call, 3, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &call, 3, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
         assert!(decision.trace.doom_loop);
-        let (decision, _) = f.decide_with(Control::Bypass, &call, 3, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Bypass, &call, 3, FlowAnswer::ApplyRule);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
         // A free read is stopped too.
         let read = file("read", "a.rs");
-        let (decision, _) = f.decide_with(Control::Normal, &read, 3, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &read, 3, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
         // A rule on the loop decides it.
         f.add("doom_loop", "bash", Effect::Allow);
-        let (decision, _) = f.decide_with(Control::Normal, &call, 5, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Normal, &call, 5, FlowAnswer::ApplyRule);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
         f.add("doom_loop", "bash", Effect::Deny);
-        let (decision, _) = f.decide_with(Control::Bypass, &call, 5, FlowAnswer::NONE);
+        let (decision, _) = f.decide_with(Control::Bypass, &call, 5, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
     }
 

@@ -60,6 +60,19 @@ pub struct PermissionCallContext {
     pub captain_messages_cut: bool,
 }
 
+/// The answer of the compiled-in protected check alone, the only authority
+/// for a write to WithNav's own configuration or database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectedCheck {
+    /// The Captain's own messages explicitly ask for the change.
+    Passed,
+    /// The check ran and the messages do not ask for it.
+    Failed,
+    /// The built-in flow is disabled, or the check failed or could not rely on
+    /// its evidence: nothing is established.
+    Unavailable,
+}
+
 #[derive(Debug)]
 pub struct PermissionVerdict {
     pub verdict: FlowVerdict,

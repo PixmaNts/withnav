@@ -859,7 +859,11 @@ pub fn with_min_changed_lines(
     lines: usize,
 ) -> NavigatorDeps {
     let config = workspace.join("config");
-    let store = withnav::flows::store::FlowStore::new(workspace.to_path_buf(), config);
+    let store = withnav::flows::store::FlowStore::with_data(
+        workspace.to_path_buf(),
+        config,
+        workspace.join("data"),
+    );
     for (mut definition, mut templates) in withnav::flows::builtin::definitions() {
         let state_name = format!("{}-state.md", definition.flow.name);
         let state = templates.remove("state.md").unwrap();
@@ -879,9 +883,10 @@ pub fn with_min_changed_lines(
                 .when
                 .map(|w| w.replace("changed_lines >= 1", &format!("changed_lines >= {lines}")));
         }
+        let definition_name = definition.flow.name.clone();
         store
             .save(
-                &definition.flow.name.clone(),
+                &definition_name,
                 withnav::flows::store::Location::Global,
                 None,
                 withnav::flows::store::Content::Graph {
@@ -889,6 +894,12 @@ pub fn with_min_changed_lines(
                     templates,
                 },
             )
+            .unwrap();
+        let document = store
+            .get(&definition_name, withnav::flows::store::Location::Global)
+            .unwrap();
+        store
+            .validate_version(&document.name, document.location, &document.revision)
             .unwrap();
     }
     deps.with_dirs(Some(workspace.to_path_buf()), None)
@@ -995,9 +1006,10 @@ impl EditorFlowsExt for NavigatorDeps {
             .workspace
             .clone()
             .unwrap_or_else(|| self.log_path.parent().unwrap().to_path_buf());
-        let store = Arc::new(withnav::flows::store::FlowStore::new(
+        let store = Arc::new(withnav::flows::store::FlowStore::with_data(
             workspace.clone(),
             workspace.join("config"),
+            workspace.join("data"),
         ));
         let model = Arc::new(FlowDecision(model));
         self.with_flows(Arc::new(move |effects| {

@@ -60,7 +60,16 @@ impl PermissionStore {
             CREATE INDEX IF NOT EXISTS permission_decisions_session_time
                 ON permission_decisions(session_id, time DESC, id DESC);",
         )?;
-        // Validation schema belongs here when content-bound approvals are added.
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS validations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL CHECK(kind IN ('skill','flow')),
+                name TEXT NOT NULL, location TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+                validated_at TEXT NOT NULL, revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS validations_current
+                ON validations(kind, location, content_sha256) WHERE revoked_at IS NULL;",
+        )?;
         Ok(Self { connection })
     }
 }

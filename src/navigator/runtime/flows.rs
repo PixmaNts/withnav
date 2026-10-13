@@ -113,12 +113,9 @@ impl FlowEffects for EditorEffects {
 fn owns_trigger(store: &crate::flows::store::FlowStore, event: TriggerKind) -> bool {
     // Reload before eligibility: a newly enabled flow must own its very next editor event.
     store.refresh();
-    let trusted = store.trusted();
     store.snapshot().values().any(|f| {
         let header = &f.compiled.definition().flow;
-        header.enabled
-            && header.on == event.as_str()
-            && (f.location != crate::flows::store::Location::Workspace || trusted)
+        header.enabled && header.on == event.as_str()
     })
 }
 
@@ -341,6 +338,7 @@ mod tests {
                 },
             )
             .unwrap();
+        writer.validate_test_documents();
         writer.reload().unwrap();
         assert!(!editor.snapshot().contains_key("editor-diagnostics"));
         // No intervening evaluation or other editor event refreshes B's snapshot.
@@ -609,9 +607,7 @@ mod tests {
         let owns = |trigger: &str| {
             store.snapshot().values().any(|f| {
                 let h = &f.compiled.definition().flow;
-                h.enabled
-                    && h.on == trigger
-                    && (f.location != Location::Workspace || store.trusted())
+                h.enabled && h.on == trigger
             })
         };
         assert!(owns("save"));
@@ -632,6 +628,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(!owns("save"));
         assert!(!owns_trigger(&store, TriggerKind::Save));
@@ -647,10 +644,21 @@ mod tests {
                 },
             )
             .unwrap();
-        store.set_trust(true).unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(owns("save"));
-        store.set_trust(false).unwrap();
+        let doc = store.get("custom-save", Location::Workspace).unwrap();
+        let permissions =
+            crate::permission::store::PermissionStore::open(root.path().join("config/test-data"))
+                .unwrap();
+        for approval in permissions.list_validations().unwrap() {
+            if approval.location == doc.path {
+                permissions.revoke_validation(approval.id).unwrap();
+            }
+        }
+        store.reload().unwrap();
         assert!(!owns("save"));
     }
 }

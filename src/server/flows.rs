@@ -220,21 +220,18 @@ async fn handle(
         ("POST", "reload") => {
             store.reload()?;
             ok(
-                json!({"reloaded":true,"errors":[],"flows":store.list()?,"propagation":"other WithNav processes reload on their next event"}),
+                json!({"reloaded":true,"errors":store.reload_diagnostics(),"flows":store.list()?,"propagation":"other WithNav processes reload on their next event"}),
             )
         }
-        ("GET", "trust") | ("POST", "trust") => {
-            if method == Method::POST {
-                store.set_trust(data["trusted"].as_bool().ok_or_else(invalid)?)?;
-            }
-            ok(
-                json!({"workspace":workspace,"has_workspace_flows":store.list()?.iter().any(|s|s.location==Location::Workspace),"trusted":store.trusted(),"propagation":"other WithNav processes reload on their next event"}),
-            )
+        ("POST", "trust") => {
+            let approval = store.validate_version(
+                required(&data, "name")?,
+                location(&data["location"])?,
+                required(&data, "revision")?,
+            )?;
+            ok(json!(approval))
         }
         ("POST", "sample") => {
-            if !store.trusted() {
-                return Err(StoreError::reason("untrusted"));
-            }
             let compiled = source(&store, &data["source"])?;
             let runtime = state
                 .flows
@@ -280,9 +277,6 @@ async fn handle(
             ok(json!(outcome.trace))
         }
         ("POST", "replay") => {
-            if !store.trusted() {
-                return Err(StoreError::reason("untrusted"));
-            }
             let compiled = source(&store, &data["source"])?;
             let id = required(&data, "run_id")?;
             let record = records
@@ -426,11 +420,7 @@ mod tests {
         state
             .flows
             .inject_client(&workspace, std::sync::Arc::new(FakeClient));
-        state
-            .flows
-            .store(workspace.clone())
-            .set_trust(true)
-            .unwrap();
+
         let app = super::super::routes::app(state.clone());
         async fn post(
             app: Router,
@@ -635,10 +625,6 @@ mod tests {
             listed["propagation"],
             "other WithNav processes reload on their next event"
         );
-        let (_, trust) = handle(&state, &query, &headers, peer, Method::GET, "trust", b"")
-            .await
-            .unwrap();
-        assert_eq!(trust["trusted"], false);
         assert_eq!(
             handle(
                 &state,
@@ -698,7 +684,10 @@ mod tests {
             peer,
             Method::POST,
             "trust",
-            br#"{"trusted":true}"#,
+            &serde_json::to_vec(
+                &json!({"name":"test","location":"workspace","revision":document["revision"]}),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -720,21 +709,18 @@ mod tests {
         );
         let (_,saved)=handle(&state,&query,&headers,peer,Method::PUT,"test",&serde_json::to_vec(&json!({"location":"workspace","revision":document["revision"],"content":{"format":"toml","toml":"broken","templates":{}}})).unwrap()).await.unwrap();
         assert!(!saved["errors"].as_array().unwrap().is_empty());
-        assert_eq!(
-            handle(
-                &state,
-                &query,
-                &headers,
-                peer,
-                Method::POST,
-                "reload",
-                b"{}"
-            )
-            .await
-            .unwrap_err()
-            .reason,
-            "reload_invalid"
-        );
+        let (_, reloaded) = handle(
+            &state,
+            &query,
+            &headers,
+            peer,
+            Method::POST,
+            "reload",
+            b"{}",
+        )
+        .await
+        .unwrap();
+        assert!(!reloaded["errors"].as_array().unwrap().is_empty());
         headers.insert("origin", "http://foreign.example".parse().unwrap());
         assert_eq!(
             handle(

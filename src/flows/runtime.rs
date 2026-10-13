@@ -1,8 +1,5 @@
 //! Per-workspace evaluation; asynchronous effects never change an admitted event.
-use super::{
-    catalogue::catalogue,
-    store::{FlowStore, Location},
-};
+use super::{catalogue::catalogue, store::FlowStore};
 pub use crate::agent::flow_hook::{
     PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, RuleResult,
 };
@@ -202,6 +199,7 @@ pub struct ToolCallContextLike {
 mod tests {
     use super::*;
     use crate::agent::flow_hook::{FlowVerdict, ToolCallContext};
+    use crate::flows::store::Location;
 
     fn permission_call(workspace: PathBuf, protected: bool) -> PermissionCallContext {
         PermissionCallContext {
@@ -265,6 +263,7 @@ mod tests {
         for (name, toml) in [("allow", "[flow]\nversion=1\nname='allow'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='no_objection'\n[node.params]\n".into()), ("failed", "[flow]\nversion=1\nname='failed'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n".into())] {
             store.save(name, Location::Global, None, super::super::store::Content::Toml { toml, templates: BTreeMap::new() }).unwrap();
         }
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(!matches!(
             runtime
@@ -318,6 +317,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         assert!(matches!(
             runtime
@@ -489,6 +489,7 @@ mod tests {
                     },
                 )
                 .unwrap();
+            store.validate_test_documents();
             store.reload().unwrap();
             let runtime = FlowRuntime::new(store, Arc::new(EvidenceClient), Arc::new(NoEffects));
             let mut call = permission_call(dir.path().into(), true);
@@ -537,6 +538,7 @@ mod tests {
                     },
                 )
                 .unwrap();
+            store.validate_test_documents();
             store.reload().unwrap();
             let client = Arc::new(BranchClient(
                 answers.into_iter().map(|(n, p)| (n.into(), p)).collect(),
@@ -592,6 +594,7 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
         store.reload().unwrap();
         let runtime = FlowRuntime::new(store, Arc::new(Fake), Arc::new(NoEffects));
         let result = runtime
@@ -760,6 +763,8 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
+        store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
         let runtime = FlowRuntime::new(
@@ -806,6 +811,8 @@ mod tests {
         for (name, toml) in [("deny", text("deny", "deny")), ("async", "[flow]\nversion=1\nname='async'\non='tool.pre_call'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='note'\n".into())] {
             store.save(name, Location::Global, None, super::super::store::Content::Toml { toml, templates: BTreeMap::new() }).unwrap();
         }
+        store.validate_test_documents();
+        store.validate_test_documents();
         store.reload().unwrap();
         let runtime = FlowRuntime::new(
             store,
@@ -946,6 +953,8 @@ mod tests {
                 )
                 .unwrap();
         }
+        store.validate_test_documents();
+        store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
         let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), effects.clone());
@@ -978,6 +987,8 @@ mod tests {
                 },
             )
             .unwrap();
+        store.validate_test_documents();
+        store.validate_test_documents();
         store.reload().unwrap();
         for _ in 0..2 {
             assert!(matches!(
@@ -1275,17 +1286,13 @@ impl FlowRuntime {
     ) {
         self.store.refresh();
         let snapshot = self.store.snapshot();
-        let trusted = self.store.trusted();
         let started = Instant::now();
         let mut blocking = futures_util::stream::FuturesUnordered::new();
         let mut handles = vec![];
         let mut protected_runs = std::collections::BTreeSet::new();
         for (name, flow) in snapshot.iter() {
             let header = &flow.compiled.definition().flow;
-            if !header.enabled
-                || header.on != event.trigger
-                || (flow.location == Location::Workspace && !trusted)
-            {
+            if !header.enabled || header.on != event.trigger {
                 continue;
             }
             let budget = if header.blocking {

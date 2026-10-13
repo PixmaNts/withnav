@@ -89,6 +89,20 @@ impl PermissionScopeArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PermissionCommand {
+    Validate {
+        #[arg(value_enum)]
+        kind: crate::permission::validation::ValidationKind,
+        name: String,
+        #[arg(long, value_enum)]
+        location: Option<crate::flows::store::Location>,
+    },
+    Validations {
+        #[arg(long)]
+        json: bool,
+    },
+    RevokeValidation {
+        id: i64,
+    },
     List {
         /// Include revoked rules.
         #[arg(long)]
@@ -126,8 +140,78 @@ fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
     };
     let data_dir = crate::paths::data_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
-    let store = PermissionStore::open(data_dir)?;
+    let store = PermissionStore::open(&data_dir)?;
     match command {
+        PermissionCommand::Validate {
+            kind,
+            name,
+            location,
+        } => {
+            if kind != crate::permission::validation::ValidationKind::Flow {
+                anyhow::bail!("skill admission is not available yet");
+            }
+            let flows = crate::flows::store::FlowStore::with_data(
+                std::env::current_dir()?,
+                config_dir()?,
+                data_dir,
+            );
+            let location = match location {
+                Some(location) => location,
+                None => {
+                    let matches: Vec<_> = flows
+                        .list()
+                        .map_err(|e| anyhow::anyhow!("{}", e.reason))?
+                        .into_iter()
+                        .filter(|flow| {
+                            flow.name == name
+                                && flow.location != crate::flows::store::Location::Builtin
+                        })
+                        .collect();
+                    if matches.len() != 1 {
+                        anyhow::bail!("select --location global or workspace for an ambiguous or missing flow");
+                    }
+                    matches[0].location
+                }
+            };
+            let document = flows
+                .get(&name, location)
+                .map_err(|e| anyhow::anyhow!("{}", e.reason))?;
+            let approval = flows
+                .validate_version(&name, location, &document.revision)
+                .map_err(|e| anyhow::anyhow!("{}", e.reason))?;
+            println!(
+                "validated flow {} at {} ({}) as {}",
+                name, approval.location, approval.content_sha256, approval.id
+            );
+        }
+        PermissionCommand::Validations { json } => {
+            let validations = store.list_validations()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&validations)?);
+            } else {
+                for validation in validations {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}{}",
+                        validation.id,
+                        validation.kind.as_str(),
+                        validation.name,
+                        validation.location,
+                        validation.content_sha256,
+                        if validation.revoked_at.is_some() {
+                            "\trevoked"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        PermissionCommand::RevokeValidation { id } => {
+            if !store.revoke_validation(id)? {
+                anyhow::bail!("validation {id} not found or already revoked");
+            }
+            println!("revoked validation {id}; reload flows to apply");
+        }
         PermissionCommand::List { all, scope, json } => {
             let rules = store.list(&RuleFilter {
                 include_revoked: all,

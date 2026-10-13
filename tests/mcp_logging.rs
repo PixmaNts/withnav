@@ -1,4 +1,5 @@
 //! Separate process permits a real global subscriber, including rmcp's spawned tasks.
+mod common;
 use serde_json::json;
 use std::{
     sync::{Arc, Mutex},

@@ -174,7 +174,26 @@ fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
 }
 
 #[cfg(windows)]
-fn windows_spelling(path: &str) -> String {
+fn windows_bash_spelling(path: &str, cx: &FloorContext) -> String {
+    if path.starts_with("--") {
+        if let Some((option, value)) = path.split_once('=') {
+            return format!("{option}={}", windows_bash_spelling(value, cx));
+        }
+    } else if path.starts_with('-') {
+        if let Some((at, _)) = path
+            .char_indices()
+            .skip(1)
+            .find(|(_, c)| matches!(c, 'o' | 'O'))
+        {
+            if !path[at + 1..].is_empty() {
+                return format!(
+                    "{}{}",
+                    &path[..at + 1],
+                    windows_bash_spelling(&path[at + 1..], cx)
+                );
+            }
+        }
+    }
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("//?/").unwrap_or(&path);
     let path = path.strip_prefix("/cygdrive").unwrap_or(path);
@@ -185,6 +204,20 @@ fn windows_spelling(path: &str) -> String {
     } else {
         path
     };
+    if path.eq_ignore_ascii_case("%USERPROFILE%") {
+        return cx
+            .home
+            .as_ref()
+            .map_or(path.to_owned(), |home| home.display().to_string());
+    }
+    if path
+        .get(..14)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("%USERPROFILE%/"))
+    {
+        return cx.home.as_ref().map_or(path.to_owned(), |home| {
+            home.join(&path[14..]).display().to_string()
+        });
+    }
     let bytes = path.as_bytes();
     if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
         format!("{}:{}", &path[1..2], &path[2..])
@@ -210,48 +243,14 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
 /// [`resolve_path`], optionally leaving a link in the final component alone.
 #[cfg(windows)]
 fn resolve(path: &str, cx: &FloorContext, _follow_last: bool) -> Option<PathBuf> {
-    let path = windows_spelling(path);
-    if path.is_empty() || path.contains('\0') {
-        return None;
-    }
-    let joined = if path == "~" || path.eq_ignore_ascii_case("%USERPROFILE%") {
-        cx.home.clone()?
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        cx.home.as_ref()?.join(rest)
-    } else if path
-        .get(..14)
-        .is_some_and(|p| p.eq_ignore_ascii_case("%USERPROFILE%/"))
-    {
-        cx.home.as_ref()?.join(&path[14..])
-    } else if Path::new(&path).is_absolute() {
-        PathBuf::from(&path)
-    } else {
-        cx.workspace.join(&path)
-    };
-    crate::tools::nofollow::path_identity(&joined).ok()
+    crate::tools::nofollow::resolve_target(Path::new(path), &cx.workspace, cx.home.as_deref()).ok()
 }
 
 #[cfg(unix)]
 fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> {
-    #[cfg(windows)]
-    let normalized = windows_spelling(path);
-    #[cfg(windows)]
-    let path = normalized.as_str();
     if path.is_empty() || path.contains('\0') {
         return None;
     }
-    #[cfg(windows)]
-    let expanded = if path.to_ascii_uppercase() == "%USERPROFILE%" {
-        Some(cx.home.clone()?)
-    } else if path
-        .get(..14)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("%USERPROFILE%/"))
-    {
-        Some(cx.home.as_ref()?.join(&path[14..]))
-    } else {
-        None
-    };
-    #[cfg(unix)]
     let expanded: Option<PathBuf> = None;
     let joined = if let Some(expanded) = expanded {
         expanded
@@ -352,10 +351,6 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
 /// The spelling and the resolved target are both checked: a link named
 /// innocently can point at a key.
 fn names_credential(word: &str, cx: &FloorContext) -> bool {
-    #[cfg(windows)]
-    let normalized = windows_spelling(word);
-    #[cfg(windows)]
-    let word = normalized.as_str();
     let plain: String = word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
     credential(Path::new(&plain)) || resolve_path(word, cx).is_some_and(|path| credential(&path))
 }
@@ -543,6 +538,23 @@ fn reads_only_redirection(op: &str) -> bool {
 }
 
 fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
+    #[cfg(windows)]
+    let normalized = {
+        let mut normalized = command.clone();
+        normalized.words = source_words(command)
+            .iter()
+            .map(|word| windows_bash_spelling(word, cx))
+            .collect();
+        for redirect in &mut normalized.redirections {
+            redirect.target = windows_bash_spelling(&redirect.target, cx);
+        }
+        normalized
+    };
+    #[cfg(windows)]
+    let command = &normalized;
+    #[cfg(windows)]
+    let all = command.words.clone();
+    #[cfg(unix)]
     let all = source_words(command);
     let (program, rest, operands) = operands(command, &all);
     let program = program.as_deref().map(basename);
@@ -689,7 +701,10 @@ mod tests {
             "C:/Users/Captain/data/withnav.db-shm",
             "C:/Users/Captain/config/flows/custom.toml",
         ] {
-            assert!(protected_word(path, &cx).unwrap(), "{path}");
+            assert!(
+                protected_word(&windows_bash_spelling(path, &cx), &cx).unwrap(),
+                "{path}"
+            );
             for line in [
                 format!("echo x > '{path}'"),
                 format!("sort --output='{path}' in"),
@@ -708,13 +723,67 @@ mod tests {
             "/c/Users/Captain/.env",
             r"\\?\C:\Users\Captain\secret.KEY",
         ] {
-            assert!(names_credential(path, &cx), "{path}");
+            assert!(
+                names_credential(&windows_bash_spelling(path, &cx), &cx),
+                "{path}"
+            );
             assert!(matches!(
                 bash_floor(&cx, &format!("cat '{path}'")),
                 Floor::Credential(_)
             ));
         }
         assert_eq!(basename(r"C:\bin\cat"), "cat");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_root_relative_paths_match_dispatch_not_bash_drive_mapping() {
+        let f = fixture();
+        let target = f.cx.config_dir.as_ref().unwrap().join("config.json");
+        std::fs::write(&target, "protected").unwrap();
+        let target = crate::tools::nofollow::path_identity(&target).unwrap();
+        let root = crate::tools::nofollow::drive_root(&target).unwrap();
+        let tail = target
+            .strip_prefix(&root)
+            .unwrap()
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let cx = crate::tools::ToolContext {
+            binding: None,
+            workspace: f.cx.workspace.clone(),
+            writable_roots: vec![],
+            readable_roots: vec![],
+        };
+        // No second drive is needed: native /d is an ordinary root-relative
+        // directory, even when Git Bash would interpret it as a drive mount.
+        for spelling in [
+            format!("/d/../{tail}"),
+            format!("/cygdrive/d/../../{tail}"),
+            format!("/{tail}"),
+        ] {
+            let dispatch =
+                crate::agent::permissions::resolve_read_target(Path::new(&spelling), &cx).unwrap();
+            assert_eq!(dispatch, target, "{spelling}");
+            assert_eq!(resolve_path(&spelling, &f.cx), Some(dispatch));
+            assert!(
+                matches!(
+                    check(&native_call("write", &spelling), &[], &f.cx),
+                    Floor::Protected(_)
+                ),
+                "{spelling}"
+            );
+        }
+        let stream = format!("{}::$DATA", target.display());
+        assert!(crate::agent::permissions::resolve_read_target(Path::new(&stream), &cx).is_err());
+        assert!(matches!(
+            check(&native_call("write", &stream), &[], &f.cx),
+            Floor::Unresolved(_)
+        ));
+        assert!(matches!(
+            bash_floor(&f.cx, &format!("echo x > '{stream}'")),
+            Floor::Protected(_)
+        ));
     }
 
     struct Fixture {

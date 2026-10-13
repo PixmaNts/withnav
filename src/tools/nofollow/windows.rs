@@ -4,6 +4,37 @@ use std::path::Path;
 
 use crate::error::ToolError;
 
+/// Native paths have no shell expansion; root-relative paths retain the workspace drive.
+pub(crate) fn requested_path(
+    path: &Path,
+    workspace: &Path,
+    home: Option<&Path>,
+) -> Result<std::path::PathBuf, ToolError> {
+    if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
+        return Err(ToolError::PathTraversal(path.to_path_buf()));
+    }
+    if path.starts_with("~") {
+        Ok(home
+            .ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?
+            .join(
+                path.strip_prefix("~")
+                    .map_err(|_| ToolError::PathTraversal(path.to_path_buf()))?,
+            ))
+    } else if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(workspace.join(path))
+    }
+}
+
+pub(crate) fn resolve_target(
+    path: &Path,
+    workspace: &Path,
+    home: Option<&Path>,
+) -> Result<std::path::PathBuf, ToolError> {
+    path_identity(&requested_path(path, workspace, home)?)
+}
+
 /// The ordinary path Windows will open, including aliases of existing ancestors.
 pub(crate) fn path_identity(path: &Path) -> Result<std::path::PathBuf, ToolError> {
     validate_target(path)?;

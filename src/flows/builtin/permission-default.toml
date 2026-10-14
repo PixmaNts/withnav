@@ -31,7 +31,7 @@ false = ["rule_effect"]
 [[node]]
 id = "protected_requested"
 type = "noul"
-instructions = "Did the Captain explicitly ask to change WithNav's configuration, permission rules or database in this way, or explicitly accept an agent proposal to do it?"
+instructions = "Does this call only read WithNav's configuration, permission rules or database without changing them, or did the Captain explicitly ask for this change, or explicitly accept an agent proposal to make it?"
 threshold = "constant.PROTECTED_MIN"
 state_template = "protected-state.md"
 [node.inputs]

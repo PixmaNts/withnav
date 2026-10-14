@@ -243,6 +243,19 @@ Decisions taken while implementing this ADR that refine it:
   asked for it, or explicitly accepted an agent proposal to do it. Otherwise the Captain is asked and can approve once. A flow on disk,
   even a copy of the built-in one, can make that answer stricter but never grant it. The check is
   asked once per call and its answer is passed to the flows.
+- **General protected check for bash.** The floor no longer guesses whether a program that names a
+  protected file writes it (the `sqlite3 -readonly` exception and the "`sqlite3` or opaque line
+  naming `withnav.db`" fallback are gone). It keeps as protected writes only certain ones:
+  redirections and output options to a protected file, the written operands of known writers
+  (`rm`, `mv`, `tee`, `truncate`, `touch`, `chmod`…, the destination of `cp`/`install`/`ln`, `of=`
+  of `dd`, every operand of `sed -i`), SQLite text that saves to a file (`.save`, `.output`,
+  `.once`, `.backup`, `VACUUM INTO`), and the `nav permissions` writers. Any other command naming a
+  protected file, as an operand or inside a quoted script or SQL text, is `NamesProtected`: it goes
+  through the same compiled protected check, whose question now reads "does this call only read
+  WithNav's configuration, rules or database, or did the Captain explicitly ask for this change?".
+  Replayed on the live model with an unrelated Captain request: `sqlite3 -readonly …withnav.db
+  "SELECT …"` passes (0.98), `sqlite3 …withnav.db "DELETE FROM permission_rules"` asks (0.03–0.05),
+  as do a Python `UPDATE` (0.06) and `S=$(sqlite3 … "DROP TABLE …")` (0.04).
 - **Permission database.** If the database cannot open, the session starts in degraded mode and
   shows the error. Calls are judged as having no rule: the fixed floor and permission flow still
   apply, and the flow may allow. Bypass cannot answer, Always is not offered, and decisions cannot

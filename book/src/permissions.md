@@ -15,7 +15,9 @@ Every tool call goes through the same steps, in this order:
 2. **Fixed checks**: a call that touches credentials (keys, `auth.json`, `.env` files) always asks
    you. A write to WithNav's own `config.json`, database or global flows folder runs only if you
    explicitly asked for it, or explicitly accepted the agent's proposal to do it; otherwise it asks
-   you.
+   you. A command that merely names one of these files (`sqlite3 …/withnav.db "SELECT …"`, a script
+   given the path) is judged by the same question, which also lets a pure read run: a query that
+   reads your rules runs, one that deletes them asks.
 3. **Reads inside the project** (`read`, `grep`, `glob`) run without asking. So do **writes to a
    temporary folder**: a `write` or `edit` whose file is in the system temp directory (such as
    `/tmp`) or a scratch folder, unless a rule of yours denies or asks about it. A `bash` command

@@ -1419,7 +1419,7 @@ async fn execute_call(
         }
     }
     if actor.cancel.is_cancelled() {
-        return DispatchOutcome::Settled(ToolResult::interrupted());
+        return DispatchOutcome::Settled(ToolResult::not_started());
     }
     observe(AgentEvent::PreCall {
         permission_gate: note.as_ref().and_then(|note| note.get("permission_gate")),
@@ -1512,9 +1512,28 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
     }
 }
 
+/// What the model reads for a call cancelled before it started: an empty
+/// result would read as a success with no output.
+pub(crate) const NOT_RUN: &str = "interrupted: the call did not run";
+
+/// What the model reads for an interrupted call.
+fn interrupted_content(result: &ToolResult) -> String {
+    if result.never_started() {
+        NOT_RUN.to_owned()
+    } else if result.output.trim().is_empty() {
+        "interrupted while running; partial output: (none)".to_owned()
+    } else {
+        format!(
+            "interrupted while running; partial output:\n{}",
+            result.output
+        )
+    }
+}
+
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
     let content = match result.status {
-        ToolStatus::Ok | ToolStatus::Interrupted => result.output.clone(),
+        ToolStatus::Ok => result.output.clone(),
+        ToolStatus::Interrupted => interrupted_content(result),
         _ => serde_json::to_string(result).unwrap_or_else(|_| result.output.clone()),
     };
     actor.transcript.push(ChatMessage::Tool {
@@ -1524,8 +1543,9 @@ fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolR
     });
 }
 
+/// Settles a call that never started.
 fn append_interrupted(actor: &mut AgentActor, tool_call_id: &str) {
-    append_tool_result(actor, tool_call_id, &ToolResult::interrupted());
+    append_tool_result(actor, tool_call_id, &ToolResult::not_started());
 }
 
 #[cfg(test)]
@@ -2734,8 +2754,9 @@ mod tests {
         actor.push_user("yes, go ahead");
         assert!(!actor.has_pending());
         assert!(!a.exists() && !b.exists(), "text is never an approval");
-        assert_eq!(tool_result_of(&actor, "w1").unwrap(), "");
-        assert_eq!(tool_result_of(&actor, "w2").unwrap(), "");
+        // The model reads that nothing ran, never an empty success.
+        assert_eq!(tool_result_of(&actor, "w1").unwrap(), NOT_RUN);
+        assert_eq!(tool_result_of(&actor, "w2").unwrap(), NOT_RUN);
         assert!(matches!(
             actor.transcript.last(),
             Some(ChatMessage::User { content, .. }) if content == "yes, go ahead"
@@ -2748,8 +2769,37 @@ mod tests {
         actor.interrupt_pending_permission();
         assert!(!actor.has_pending());
         assert!(!a.exists() && !b.exists());
-        assert!(tool_result_of(&actor, "w1").is_some());
-        assert!(tool_result_of(&actor, "w2").is_some());
+        // The model reads that nothing ran, never an empty success.
+        assert_eq!(tool_result_of(&actor, "w1").as_deref(), Some(NOT_RUN));
+        assert_eq!(tool_result_of(&actor, "w2").as_deref(), Some(NOT_RUN));
+    }
+
+    #[test]
+    fn an_interrupted_call_never_reads_as_an_empty_success() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_all(),
+            CancellationToken::new(),
+        );
+        append_tool_result(&mut actor, "a", &ToolResult::not_started());
+        append_tool_result(
+            &mut actor,
+            "b",
+            &ToolResult::interrupted_with("line 1\nline 2"),
+        );
+        append_tool_result(&mut actor, "c", &ToolResult::interrupted());
+        assert_eq!(
+            tool_result_of(&actor, "a").as_deref(),
+            Some("interrupted: the call did not run")
+        );
+        assert_eq!(
+            tool_result_of(&actor, "b").as_deref(),
+            Some("interrupted while running; partial output:\nline 1\nline 2")
+        );
+        assert_eq!(
+            tool_result_of(&actor, "c").as_deref(),
+            Some("interrupted while running; partial output: (none)")
+        );
     }
 
     #[tokio::test]

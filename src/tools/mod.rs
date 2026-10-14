@@ -164,14 +164,34 @@ impl ToolResult {
         }
     }
 
+    /// Cut while it ran; `output` holds whatever it produced before the stop.
     pub fn interrupted() -> Self {
+        Self::interrupted_with(String::new())
+    }
+
+    /// Cut while it ran, with the output it produced before the stop.
+    pub fn interrupted_with(partial: impl Into<String>) -> Self {
         Self {
             status: ToolStatus::Interrupted,
-            output: String::new(),
+            output: partial.into(),
             truncated: None,
             error: None,
             metadata: Value::Null,
         }
+    }
+
+    /// Cancelled before it started, e.g. while its permission question waited:
+    /// nothing ran.
+    pub fn not_started() -> Self {
+        Self {
+            metadata: serde_json::json!({ "started": false }),
+            ..Self::interrupted()
+        }
+    }
+
+    /// Whether this is an interruption of a call that never started.
+    pub fn never_started(&self) -> bool {
+        self.status == ToolStatus::Interrupted && self.metadata["started"] == false
     }
 
     pub fn with_metadata(mut self, metadata: Value) -> Self {

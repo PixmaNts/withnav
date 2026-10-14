@@ -494,6 +494,9 @@ impl AgentActor {
     /// the process ended; it is never run again. Returns how many were
     /// settled.
     pub fn settle_unanswered_calls(&mut self) -> usize {
+        /// The process ended while the call waited or ran: whether it ran is unknown.
+        const UNFINISHED: &str =
+            "interrupted: the session ended before this call finished; it may not have run";
         let Some(last) = self
             .transcript
             .iter()
@@ -521,7 +524,7 @@ impl AgentActor {
         for id in &unanswered {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: id.clone(),
-                content: String::new(),
+                content: UNFINISHED.into(),
                 answered_by: None,
             });
         }
@@ -616,7 +619,7 @@ impl AgentActor {
         for call in std::iter::once(call).chain(remaining) {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: call.id.clone(),
-                content: String::new(),
+                content: crate::agent::run_loop::NOT_RUN.into(),
                 answered_by: None,
             });
         }

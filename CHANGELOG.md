@@ -36,8 +36,8 @@ Permissions chapter of the guide.
 - **Validation of flows and skills.** A global or workspace flow, and a skill, run only once you
   have validated their current content; a changed file asks again. A validated flow, a workspace
   flow included, can allow tool calls: read it before validating it.
-- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and new
-  sessions run every tool call without any check: no prompt, no rule, no flow, no protection of
+- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and
+  sessions started or resumed afterwards run every tool call without any check: no prompt, no rule, no flow, no protection of
   credentials or WithNav's configuration. Each call records `approved_by: yolo`, and `YOLO` stays
   visible in the terminal, the browser and VS Code; `nav doctor` warns. It is off by default and
   unsafe: use it only on a machine you can afford to lose.
@@ -47,7 +47,8 @@ Permissions chapter of the guide.
   call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
   Always saves a global rule. Calls are cancellable, have
   deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
-  shutdown. `nav doctor` reports configuration and startup diagnostics.
+  shutdown. `nav doctor` reports configuration and startup diagnostics, without empty `skipped:`
+  or `stderr:` fields.
 
 ### Changed
 

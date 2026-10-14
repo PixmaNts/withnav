@@ -183,7 +183,7 @@ nav permissions revoke-validation <id>
 > make it do so. Use it only in a disposable machine or container you can throw away.
 
 Set `"yolo": true` in `config.json` (see [Configuration](configuration.md)). It is off by default,
-applies to new sessions, and their subagents inherit it.
+is read when a session starts or is resumed, and its subagents inherit it.
 
 There are three levels of control, from the strongest: **normal** (rules, the permission flow and
 prompts), **bypass** (ordinary prompts skipped for one session; `deny` rules and protected requests
@@ -199,8 +199,11 @@ still apply) and **yolo** (nothing is checked).
 - Still enforced: which tools a session or agent has, malformed or missing arguments, and
   cancellation. A refused call still says `approved_by: yolo`.
 - `YOLO` shows in the terminal header and sidebar, as a badge in the browser and in VS Code, and
-  `nav doctor` prints `permissions: yolo (no permission control)`.
-- Changing the setting applies to new sessions, not to open ones.
+  `nav doctor` prints `⚠ warning config.yolo: permissions: yolo (no permission control)`.
+- Changing the setting applies to sessions started or resumed afterwards. A session that is
+  running keeps the value it started with; one that was stopped (an interrupted turn ends the live
+  session) and is resumed, for example by sending it a new message from a client, reads the new
+  value. Model and agent switches keep it.
 
 ## Agents
 

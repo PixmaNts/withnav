@@ -265,18 +265,7 @@ pub async fn inspect(
                         "starting" => Status::Warning,
                         _ => Status::Failed,
                     },
-                    format!(
-                        "{}; {} tools; skipped: {}; {}; stderr: {}",
-                        status.state,
-                        status.tool_count,
-                        status.skipped_tools.join(", "),
-                        status.error.as_deref().unwrap_or(""),
-                        if status.state == "failed" {
-                            &status.stderr_tail
-                        } else {
-                            ""
-                        }
-                    ),
+                    mcp_line(&status),
                     None,
                 );
             }
@@ -1526,3 +1515,57 @@ fn timeout_error() -> ProviderError {
 
 #[cfg(test)]
 mod tests;
+
+/// One MCP server's doctor line: its state and tool count, then only the
+/// fields that say something (skipped tools, the error, a failed server's stderr).
+fn mcp_line(status: &crate::mcp::ServerStatus) -> String {
+    let mut parts = vec![
+        status.state.to_owned(),
+        format!("{} tools", status.tool_count),
+    ];
+    if !status.skipped_tools.is_empty() {
+        parts.push(format!("skipped: {}", status.skipped_tools.join(", ")));
+    }
+    if let Some(error) = status.error.as_deref().filter(|e| !e.is_empty()) {
+        parts.push(error.to_owned());
+    }
+    if status.state == "failed" && !status.stderr_tail.is_empty() {
+        parts.push(format!("stderr: {}", status.stderr_tail));
+    }
+    parts.join("; ")
+}
+
+#[cfg(test)]
+mod mcp_line_tests {
+    use super::mcp_line;
+    use crate::mcp::ServerStatus;
+
+    fn status(state: &'static str) -> ServerStatus {
+        ServerStatus {
+            server_id: "codegraph".into(),
+            state,
+            tool_count: 1,
+            skipped_tools: vec![],
+            error: None,
+            stderr_tail: String::new(),
+        }
+    }
+
+    #[test]
+    fn empty_fields_are_left_out() {
+        assert_eq!(mcp_line(&status("ready")), "ready; 1 tools");
+        let mut failed = status("failed");
+        failed.tool_count = 0;
+        failed.skipped_tools = vec!["a".into(), "b".into()];
+        failed.error = Some("exited".into());
+        failed.stderr_tail = "boom".into();
+        assert_eq!(
+            mcp_line(&failed),
+            "failed; 0 tools; skipped: a, b; exited; stderr: boom"
+        );
+        // A ready server's stderr is not shown.
+        let mut ready = status("ready");
+        ready.stderr_tail = "noise".into();
+        assert_eq!(mcp_line(&ready), "ready; 1 tools");
+    }
+}

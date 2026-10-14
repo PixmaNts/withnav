@@ -32,9 +32,12 @@ Every tool call goes through the same steps, in this order:
    never stops one you explicitly asked for.
 
 The permission flow reads all your messages and the last four messages of the conversation, yours
-and the agent's. A short answer such as "yes, go" therefore accepts the proposal the agent just
-made, and counts as your request, including for WithNav's own configuration. A message from the
-agent alone never counts, whatever it says you approved.
+and the agent's, up to your last message. A short answer such as "yes, go" therefore accepts the
+proposal the agent just made, and counts as your request, including for WithNav's own
+configuration. A message from the agent alone never counts, whatever it says you approved. What
+the agent wrote after your last message (reading a file, reasoning, announcing the command it is
+about to run) is not read at all: if you ask it to "apply" a file, a command found in that file
+is not your request until you have seen it and said yes.
 7. **You**: Once, Always or Reject.
 
 There are no default rules: on a new project you answer more often at first, and each **Always**

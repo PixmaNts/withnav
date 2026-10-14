@@ -76,8 +76,11 @@ Permissions chapter of the guide.
   unrequested destructive commands still ask. Under an allow rule, a call judged dangerous now
   runs when you asked for it and asks otherwise, as it would without the rule.
 - The permission flow, and the check on WithNav's own configuration, read the last four messages
-  of the conversation with yours. A short "yes, go" accepts the proposal the agent just made and
-  counts as your request; an agent message alone never does.
+  of the conversation with yours, up to your last message. A short "yes, go" accepts the proposal
+  the agent just made and counts as your request; an agent message alone never does. What the
+  agent wrote after your last message is left out: asked to "apply" a file, it could otherwise
+  repeat a command from that file and have it read as your request (a recorded `rm` of a file in
+  your home directory ran this way; replayed with the cut, the flow asks).
 - An allowed file write is bound to the path you were shown: if a link is put in its place before
   it runs, nothing is written and the call is decided again.
 - If the permission database cannot open, the session starts with a visible warning. Every call

@@ -118,6 +118,7 @@ pub fn catalogue() -> Catalogue {
                 ("rule", Text, false),
                 ("commands", Array, false),
                 ("inside_project", Boolean, false),
+                ("location", Text, false),
                 ("protected", Boolean, false),
                 ("protected_checked", Boolean, false),
                 ("skill", Object, false),

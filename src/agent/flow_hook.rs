@@ -51,6 +51,9 @@ pub struct PermissionCallContext {
     pub rule: Option<String>,
     pub commands: Option<Vec<PermissionCommand>>,
     pub inside_project: Option<bool>,
+    /// Where the call acts, from its literal paths: `project`, `scratch`,
+    /// `temp`, `outside` or `unknown`; see [`crate::permission::floor::location`].
+    pub location: Option<&'static str>,
     pub protected: bool,
     pub skill: Option<ValidatedSkill>,
     pub captain_messages: Vec<String>,

@@ -63,6 +63,11 @@ Permissions chapter of the guide.
   WithNav's own files asks whether the command only reads them or you asked for the change. A
   read-only query runs, with or without `-readonly`; a `DELETE`, a script `UPDATE` or a
   `.save` over the database asks you unless you requested it.
+- WithNav's scratch folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your
+  `permissions.scratch_dirs`) are a free zone for shell commands, deletions included. The rest of
+  the temp directory is not: creating a new file there runs, but deleting or overwriting an existing
+  one is judged like any other deletion. The permission flow now knows where a shell command acts
+  (project, scratch, temp, elsewhere or unknown) from its literal paths.
 - **Always** is no longer offered for a shell command that deletes, moves, overwrites, changes
   permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
   `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule

@@ -21,7 +21,11 @@ Every tool call goes through the same steps, in this order:
 3. **Reads inside the project** (`read`, `grep`, `glob`) run without asking. So do **writes to a
    temporary folder**: a `write` or `edit` whose file is in the system temp directory (such as
    `/tmp`) or a scratch folder, unless a rule of yours denies or asks about it. A `bash` command
-   that writes there is still judged by the permission flow, which treats it as recoverable.
+   that writes there is still judged by the permission flow: anything inside WithNav's scratch
+   folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your `permissions.scratch_dirs`),
+   deleting included, is recoverable; in the rest of the temp directory, creating a new file is
+   recoverable, but deleting or overwriting an existing one is not, since other programs keep
+   their files there.
 4. **Your rules**: a `deny` rule stops the call, whatever comes after.
 5. **Bypass** (if on for this session): the call runs.
 6. **The permission flow**: Instinct judges whether you, or a skill you validated, asked for the

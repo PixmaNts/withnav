@@ -275,8 +275,21 @@ Decisions taken while implementing this ADR that refine it:
   temporary directory (`std::env::temp_dir()`, plus `/tmp` on Unix) or a scratch directory runs
   without the flow, recorded as `approved_by: rule`, next to free reads. The fixed floor, a written
   `deny` and a written `ask` still apply before it, and a project that lives in the temporary
-  directory is judged as a project. Bash is left to the flow, whose state says that creating or
-  changing files in the project, its scratch directories or the temp directory is recoverable.
+  directory is judged as a project. Bash is left to the flow.
+- **Scratch versus temp.** WithNav's scratch directories (`/tmp/withnav`,
+  `$XDG_RUNTIME_DIR/withnav`, or the configured `permissions.scratch_dirs`) are a free zone:
+  creating, changing and deleting files there is recoverable. The system temp directory outside
+  them is not: other programs keep sockets, locks and session files there, so creating new files is
+  recoverable but deleting or overwriting existing ones is not. The rule is written in the
+  `recoverable` question itself and in the state template, which no longer contradict each other.
+  The flow receives `event.location` (`project`, `scratch`, `temp`, `outside` or `unknown`),
+  computed by `permission::floor::location` from the call's literal paths: the path of a file tool,
+  or for bash the farthest place any literal operand or redirection target names (a line naming no
+  path acts in the project; an opaque line, an unresolved path or a relative path after `cd` is
+  `unknown`). `inside_project` is now set for bash too (`project` and `scratch` are inside).
+  Replayed on the live model: the recorded `rm` in `/tmp/withnav` still runs (`recoverable`
+  0.84–0.92, 5 runs), `rm /tmp/ssh-agent.lock` and `cp a /tmp/existing.sock` ask (≤ 0.1), creating
+  a new file in `/tmp` runs (0.9).
 - **No Always for destructive commands.** "Always" saves a prefix rule, so it is not offered for a
   shell command that deletes, moves or overwrites files, changes permissions, kills processes or
   rewrites history, nor for one that writes through a `>` or `>>` redirection to a file. The list

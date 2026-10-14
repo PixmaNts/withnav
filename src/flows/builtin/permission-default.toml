@@ -68,6 +68,7 @@ tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
 yes = ["allow"]
@@ -98,6 +99,7 @@ tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
 yes = ["allow"]
@@ -106,7 +108,7 @@ no = ["recoverable"]
 [[node]]
 id = "recoverable"
 type = "noul"
-instructions = "Is this a recoverable change: creating or editing files inside the project, its scratch directories or the system temp directory, or building, testing, formatting or linting the project? Deleting files, discarding uncommitted work, rewriting or pushing git history, publishing, or changing anything outside those places is not recoverable."
+instructions = "Is this a recoverable change? When the location is scratch, the answer is yes: WithNav's scratch directories are a free zone where creating, changing and deleting files are all recoverable. Otherwise recoverable means: creating or editing files inside the project, creating new files in the system temp directory, or building, testing, formatting or linting the project. Not recoverable: deleting files in the project or elsewhere, deleting or overwriting existing files in the system temp directory (location temp), discarding uncommitted work, rewriting or pushing git history, publishing, or changing anything outside those places."
 threshold = "constant.RECOVERABLE_MIN"
 state_template = "state.md"
 [node.inputs]
@@ -118,6 +120,7 @@ tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
 yes = ["allow"]
@@ -138,6 +141,7 @@ tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
 yes = ["requested"]

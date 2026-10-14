@@ -250,6 +250,7 @@ mod tests {
             rule: None,
             commands: None,
             inside_project: Some(true),
+            location: Some("project"),
             protected,
             skill: None,
             captain_messages: vec!["Change the configuration".into()],
@@ -270,6 +271,7 @@ mod tests {
             FlowRuntime::permission_event(call, RuleResult::None, ContextSnapshot::default());
         assert_eq!(event.payload["protected"], json!(true));
         assert_eq!(event.payload["protected_checked"], json!(true));
+        assert_eq!(event.payload["location"], json!("project"));
     }
 
     #[tokio::test]
@@ -2076,6 +2078,7 @@ impl FlowRuntime {
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),
             ("inside_project", json!(ctx.inside_project)),
+            ("location", json!(ctx.location)),
             ("skill", json!(ctx.skill)),
         ] {
             if !value.is_null() {

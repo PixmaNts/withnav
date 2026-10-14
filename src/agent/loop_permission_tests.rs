@@ -87,6 +87,7 @@ impl ToolCallFlows for FakeFlows {
                     run_id: "run".into(),
                     action: String::new(),
                     used_rule: !own,
+                    scores: Default::default(),
                 }],
             }
         })
@@ -974,6 +975,48 @@ async fn the_protected_checks_score_is_recorded_with_the_decision_and_the_reques
         .as_ref()
         .expect("the decision keeps the check");
     assert_eq!(trace["protected_check"], gate["protected_check"]);
+}
+
+#[tokio::test]
+async fn a_decision_names_the_flow_runs_and_scores_behind_it() {
+    let mut actor = actor_with(None);
+    let store = Arc::new(crate::flows::store::FlowStore::new(
+        actor.tool_context.workspace.clone(),
+        actor.permission_dirs.config.clone().unwrap(),
+    ));
+    let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+        store,
+        Arc::new(ScoreInstinct(0.25)),
+        Arc::new(crate::flows::runtime::NoEffects),
+    ));
+    actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+    script(&mut actor, vec![owned(&[bash("b1", "rm -v notes.txt")])]).await;
+    actor.push_user("look at the notes");
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("an unrequested deletion asks");
+    };
+    let rows = decisions(&actor);
+    let trace = rows[0]
+        .flow_trace
+        .as_ref()
+        .expect("the decision names its runs");
+    let run = &trace["flows"][0];
+    assert_eq!(run["flow"], json!("permission-default"), "{trace}");
+    assert!(run["run_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(run["scores"]["requested"], json!(0.25), "{trace}");
+    assert_eq!(run["scores"]["recoverable"], json!(0.25), "{trace}");
+    let gate = request.permission_gate.as_deref().unwrap();
+    assert_eq!(gate["flows"], trace["flows"]);
+    assert!(
+        request.reason.contains("requested 0.25"),
+        "{}",
+        request.reason
+    );
+    assert!(
+        crate::permission::decisions::scores_summary(&rows[0]).contains("requested 0.25"),
+        "{}",
+        crate::permission::decisions::scores_summary(&rows[0])
+    );
 }
 
 /// An actor whose workspace holds the skill `helper`, not yet validated.

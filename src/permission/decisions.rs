@@ -280,6 +280,44 @@ pub struct Decision {
     pub approved_by: Option<String>,
 }
 
+/// The scores behind a decision on one line, e.g.
+/// `protected_check failed 0.25; permission-default requested 0.04 read_only 0.01`.
+pub fn scores_summary(decision: &Decision) -> String {
+    decision
+        .flow_trace
+        .as_ref()
+        .map(trace_summary)
+        .unwrap_or_default()
+}
+
+/// [`scores_summary`] of a `flow_trace` value.
+pub fn trace_summary(trace: &Value) -> String {
+    let mut parts = Vec::new();
+    let check = &trace["protected_check"];
+    if let Some(verdict) = check["verdict"].as_str() {
+        parts.push(match check["score"].as_f64() {
+            Some(score) => format!("protected_check {verdict} {score}"),
+            None => format!("protected_check {verdict}"),
+        });
+    }
+    for run in trace["flows"].as_array().into_iter().flatten() {
+        let scores = run["scores"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(node, score)| Some(format!("{node} {}", score.as_f64()?)))
+            .collect::<Vec<_>>();
+        if !scores.is_empty() {
+            parts.push(format!(
+                "{} {}",
+                run["flow"].as_str().unwrap_or_default(),
+                scores.join(" ")
+            ));
+        }
+    }
+    parts.join("; ")
+}
+
 #[derive(Debug, Default)]
 pub struct DecisionFilter {
     pub session_id: Option<String>,

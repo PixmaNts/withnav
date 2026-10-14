@@ -475,9 +475,25 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
         .map(|redirection| redirection.target.as_str());
     let reads_only =
         program.is_some_and(|program| READERS.contains(&program)) && outputs.is_empty();
+    // `sqlite3 -readonly` opens its database read-only: SQLite itself refuses
+    // every write, so the database file it opens is read, like with `cat`.
+    // Only that file is exempt, and only in a command the splitter understood,
+    // so the flag is a real argument. A database named inside SQL or a
+    // dot-command (`.save withnav.db`, `.output withnav.db`) can still be
+    // written: such a word contains spaces and keeps the protection.
+    let read_only_sqlite = !command.opaque
+        && program.is_some_and(|program| matches!(program, "sqlite3" | "sqlite"))
+        && rest.iter().any(|word| word == "-readonly");
+    let read_only_sqlite_file =
+        |word: &str| read_only_sqlite && !word.contains(char::is_whitespace);
     let mut candidates: Vec<&str> = written.chain(outputs.iter().copied()).collect();
     if !reads_only {
-        candidates.extend(operands.iter().map(String::as_str));
+        candidates.extend(
+            operands
+                .iter()
+                .map(String::as_str)
+                .filter(|word| !read_only_sqlite_file(word)),
+        );
     }
     for word in candidates {
         match protected_word(word, cx) {
@@ -490,7 +506,7 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     if (command.opaque || words().any(|word| matches!(word, "sqlite3" | "sqlite")))
         && operands
             .iter()
-            .any(|word| basename(word).starts_with("withnav.db"))
+            .any(|word| basename(word).starts_with("withnav.db") && !read_only_sqlite_file(word))
     {
         return Floor::Protected("withnav.db".into());
     }
@@ -693,6 +709,31 @@ mod tests {
             bash_floor(
                 &f.cx,
                 &format!("sqlite3 {root}/data/withnav.db 'drop table x'")
+            ),
+            Floor::Protected(_)
+        ));
+        // A read-only SQLite session cannot change the database.
+        assert_eq!(
+            bash_floor(
+                &f.cx,
+                &format!(
+                    "cd /tmp && sqlite3 -readonly -separator ' | ' {root}/data/withnav.db \"SELECT id FROM permission_decisions\""
+                )
+            ),
+            Floor::None
+        );
+        assert!(matches!(
+            bash_floor(
+                &f.cx,
+                &format!("sqlite3 {root}/data/withnav.db \"SELECT '-readonly'\"")
+            ),
+            Floor::Protected(_)
+        ));
+        // Read-only on another database, but a dot-command writes ours.
+        assert!(matches!(
+            bash_floor(
+                &f.cx,
+                &format!("sqlite3 -readonly /tmp/other.db \".save {root}/data/withnav.db\"")
             ),
             Floor::Protected(_)
         ));

@@ -54,6 +54,8 @@ pub type ParentCaptain = Arc<std::sync::Mutex<Option<CaptainEvidence>>>;
 pub struct PermissionDirs {
     pub config: Option<std::path::PathBuf>,
     pub data: Option<std::path::PathBuf>,
+    /// The system temporary directories, where a native write needs no flow.
+    pub temp: Vec<std::path::PathBuf>,
 }
 
 impl PermissionDirs {
@@ -62,6 +64,7 @@ impl PermissionDirs {
         Self {
             config: crate::provider::auth::default_config_dir(),
             data: crate::paths::data_dir(),
+            temp: crate::permission::floor::system_temp_roots(),
         }
     }
 }

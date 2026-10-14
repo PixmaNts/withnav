@@ -124,6 +124,8 @@ fn actor_with(flows: Option<Arc<FakeFlows>>) -> AgentActor {
     actor.permission_dirs = crate::agent::actor::PermissionDirs {
         config: Some(home.join("config")),
         data: Some(home.join("data")),
+        // The test workspaces live in the system temp directory.
+        temp: Vec::new(),
     };
     actor.permission_session = "session".into();
     actor.tool_flows = flows.map(|flows| flows as Arc<dyn ToolCallFlows>);

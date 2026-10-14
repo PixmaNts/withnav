@@ -1731,7 +1731,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
         std::mem::forget(tmp);
-        AgentActor::new(
+        let mut actor = AgentActor::new(
             registry,
             ToolContext {
                 binding: None,
@@ -1752,7 +1752,11 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(256),
             cancel,
-        )
+        );
+        // The test workspaces live in the system temp directory, where writes
+        // would need no permission: these tests judge them like project writes.
+        actor.permission_dirs.temp = Vec::new();
+        actor
     }
 
     /// Loop tests that are not about permissions run under one rule that allows everything.

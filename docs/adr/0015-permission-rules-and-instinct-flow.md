@@ -258,6 +258,12 @@ Decisions taken while implementing this ADR that refine it:
   text are supplied separately as `conversation.delegation`, with attachments removed and a 16 KiB
   whole-message budget. The ordinary permission flow may treat delegation as a request; the
   protected check never reads delegation.
+- **Temporary writes.** A native `write` or `edit` whose resolved file is inside the system
+  temporary directory (`std::env::temp_dir()`, plus `/tmp` on Unix) or a scratch directory runs
+  without the flow, recorded as `approved_by: rule`, next to free reads. The fixed floor, a written
+  `deny` and a written `ask` still apply before it, and a project that lives in the temporary
+  directory is judged as a project. Bash is left to the flow, whose state says that creating or
+  changing files in the project, its scratch directories or the temp directory is recoverable.
 - **Recent exchanges.** The permission flow and the protected check both receive
   `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
   labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,

@@ -79,6 +79,14 @@ pub trait PermissionFlows: Send + Sync {
     /// Whether the Captain's own messages ask for a protected write. `Unavailable`
     /// when the built-in flow is disabled or the check failed.
     fn protected_check<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, ProtectedCheck>;
+    /// [`Self::protected_check`] with the run that answered it, kept in the
+    /// decision so that a refused protected write can be explained.
+    fn protected_check_traced<'a>(
+        &'a self,
+        query: &'a FlowQuery<'a>,
+    ) -> BoxFuture<'a, (ProtectedCheck, Option<crate::agent::flow_hook::RunScores>)> {
+        Box::pin(async move { (self.protected_check(query).await, None) })
+    }
 }
 
 pub struct Input<'a> {
@@ -152,6 +160,8 @@ pub struct Trace {
     pub effect: Option<Effect>,
     pub flow_verdict: Option<&'static str>,
     pub protected_check: Option<ProtectedCheck>,
+    /// The run that answered the protected check and its score, when one ran.
+    pub protected_run: Option<crate::agent::flow_hook::RunScores>,
     pub command_matches: Value,
     pub floor: Option<String>,
     pub doom_loop: bool,
@@ -365,8 +375,9 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
             floor: &floor,
             protected_check: None,
         };
-        let check = flows.protected_check(&query).await;
+        let (check, run) = flows.protected_check_traced(&query).await;
         trace.protected_check = Some(check);
+        trace.protected_run = run;
         if check != ProtectedCheck::Passed {
             return ask(
                 match &floor {

@@ -74,6 +74,19 @@ impl PermissionStore {
             CREATE INDEX IF NOT EXISTS permission_decisions_session_time
                 ON permission_decisions(session_id, time DESC, id DESC);",
         )?;
+        // Added after the first release of the table: the flow runs behind a
+        // decision (run ids and per-node scores), as JSON.
+        let has_trace = connection
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('permission_decisions') WHERE name='flow_trace'",
+            )?
+            .exists([])?;
+        if !has_trace {
+            connection.execute(
+                "ALTER TABLE permission_decisions ADD COLUMN flow_trace TEXT",
+                [],
+            )?;
+        }
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS validations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

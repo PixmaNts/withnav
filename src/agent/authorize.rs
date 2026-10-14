@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::actor::AgentActor;
 use crate::agent::flow_hook::{
     captain_messages_with_cut, delegation_with_cut, recent_with_cut, FlowVerdict,
-    PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
+    PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule, RunScores,
     ToolCallContext, ToolCallFlows, ValidatedSkill,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
@@ -133,14 +133,21 @@ impl PermissionFlows for SessionFlows {
     }
 
     fn protected_check<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, ProtectedCheck> {
+        Box::pin(async move { self.protected_check_traced(query).await.0 })
+    }
+
+    fn protected_check_traced<'a>(
+        &'a self,
+        query: &'a FlowQuery<'a>,
+    ) -> BoxFuture<'a, (ProtectedCheck, Option<RunScores>)> {
         Box::pin(async move {
             let Some(hook) = &self.hook else {
-                return ProtectedCheck::Unavailable;
+                return (ProtectedCheck::Unavailable, None);
             };
-            let check = hook.protected_check(self.context(query), &self.cancel);
+            let check = hook.protected_check_traced(self.context(query), &self.cancel);
             tokio::time::timeout(FLOW_DEADLINE, check)
                 .await
-                .unwrap_or(ProtectedCheck::Unavailable)
+                .unwrap_or((ProtectedCheck::Unavailable, None))
         })
     }
 }
@@ -519,8 +526,22 @@ pub(super) async fn save_always(
         })
 }
 
+/// What the flows answered for this decision, for the decision table and the
+/// permission card: the protected check's verdict, run and score.
+fn flow_trace(decision: &Decision) -> Option<Value> {
+    let check = decision.trace.protected_check?;
+    let run = decision.trace.protected_run.as_ref();
+    Some(json!({
+        "protected_check": {
+            "verdict": check.as_str(),
+            "run_id": run.map(|run| run.run_id.as_str()),
+            "score": run.and_then(|run| run.scores.get("protected_requested")),
+        }
+    }))
+}
+
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {
-    json!({
+    let mut gate = json!({
         "policy_version": 3,
         "source": source,
         "reason": reason,
@@ -529,7 +550,13 @@ fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {
         "flow_verdict": decision.trace.flow_verdict,
         "floor": decision.trace.floor,
         "truncated": false,
-    })
+    });
+    if let Some(Value::Object(trace)) = flow_trace(decision) {
+        gate.as_object_mut()
+            .expect("the gate is an object")
+            .extend(trace);
+    }
+    gate
 }
 
 fn approval(approved_by: &str, decision: &Decision) -> Value {
@@ -577,6 +604,7 @@ async fn record(
         rule_id: decision.trace.rule_id,
         effect: decision.trace.effect,
         flow_verdict: decision.trace.flow_verdict.map(str::to_owned),
+        flow_trace: flow_trace(decision),
         captain_answer: None,
         outcome,
         approved_by: approved_by.map(str::to_owned),

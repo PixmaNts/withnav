@@ -8,7 +8,7 @@ budget_ms = 2000
 start = ["protected"]
 
 [constants]
-PROTECTED_MIN = 0.9
+PROTECTED_MIN = 0.8
 REQUESTED_MIN = 0.6
 READ_ONLY_MIN = 0.6
 RECOVERABLE_MIN = 0.7

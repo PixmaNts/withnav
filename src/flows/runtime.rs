@@ -2,6 +2,7 @@
 use super::{catalogue::catalogue, store::FlowStore};
 pub use crate::agent::flow_hook::{
     PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, ProtectedCheck, RuleResult,
+    RunScores,
 };
 use instinct_flow::*;
 use serde_json::{json, Value};
@@ -47,6 +48,24 @@ fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
         value: Some(json!(&messages[start..])),
         cut: start != 0,
         redacted: false,
+    }
+}
+
+/// The run id and the score of every node of `outcome` that asked Instinct.
+fn run_scores(outcome: &RunOutcome) -> RunScores {
+    RunScores {
+        run_id: outcome.trace.run_id.clone(),
+        scores: outcome
+            .trace
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.answer {
+                Some(instinct_flow::protocol::Answer::Noul { noul }) => {
+                    Some((node.id.clone(), *noul))
+                }
+                _ => None,
+            })
+            .collect(),
     }
 }
 
@@ -1028,6 +1047,8 @@ mod tests {
         assert_eq!(states[0].0, "protected_requested");
         assert!(states[0].1.contains("PROPOSAL: say go"), "{}", states[0].1);
         assert!(states[0].1.contains("explicit acceptance"));
+        // A message naming the change counts, a vague goal does not.
+        assert!(states[0].1.contains("names this change"));
     }
 
     #[test]
@@ -2133,14 +2154,35 @@ impl FlowRuntime {
             .await
     }
 
+    /// [`Self::permission_protected_check`] with the run that answered it.
+    pub async fn permission_protected_check_traced(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+    ) -> (ProtectedCheck, Option<RunScores>) {
+        self.protected_check_traced_with(compiled_protected_check(), ctx, cancel)
+            .await
+    }
+
     async fn protected_check_with(
         &self,
         compiled: Option<CompiledDefinition>,
         ctx: PermissionCallContext,
         cancel: CancellationToken,
     ) -> ProtectedCheck {
+        self.protected_check_traced_with(compiled, ctx, cancel)
+            .await
+            .0
+    }
+
+    async fn protected_check_traced_with(
+        &self,
+        compiled: Option<CompiledDefinition>,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+    ) -> (ProtectedCheck, Option<RunScores>) {
         let Some(compiled) = compiled else {
-            return ProtectedCheck::Unavailable;
+            return (ProtectedCheck::Unavailable, None);
         };
         let (event, context, _) = Self::permission_event(
             PermissionCallContext {
@@ -2156,7 +2198,7 @@ impl FlowRuntime {
             .get("conversation.captain_messages")
             .is_none_or(|v| v.cut || v.value.is_none())
         {
-            return ProtectedCheck::Unavailable;
+            return (ProtectedCheck::Unavailable, None);
         }
         let outcome = run(
             &compiled,
@@ -2185,10 +2227,11 @@ impl FlowRuntime {
             }
             _ => ProtectedCheck::Unavailable,
         };
+        let scores = run_scores(&outcome);
         if let Some(records) = &self.records {
             records.enqueue(outcome.trace.clone());
         }
-        result
+        (result, Some(scores))
     }
 
     pub async fn tool_pre_call(
@@ -2283,6 +2326,16 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ProtectedCheck> {
         Box::pin(self.runtime.permission_protected_check(ctx, cancel.clone()))
+    }
+    fn protected_check_traced<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, (ProtectedCheck, Option<RunScores>)> {
+        Box::pin(
+            self.runtime
+                .permission_protected_check_traced(ctx, cancel.clone()),
+        )
     }
 }
 

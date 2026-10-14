@@ -69,6 +69,25 @@ pub struct PermissionCallContext {
     pub protected_check: Option<ProtectedCheck>,
 }
 
+/// One flow run behind a permission decision: its id in the flow run log
+/// (`flows/runs/<workspace>/runs.jsonl`) and the score of each node that asked
+/// Instinct a question.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct RunScores {
+    pub run_id: String,
+    pub scores: std::collections::BTreeMap<String, f64>,
+}
+
+impl ProtectedCheck {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// The answer of the compiled-in protected check alone, the only authority
 /// for a write to WithNav's own configuration or database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,5 +157,13 @@ pub trait ToolCallFlows: Send + Sync + std::fmt::Debug {
     ) -> Pin<Box<dyn Future<Output = ProtectedCheck> + Send + 'a>> {
         let _ = (ctx, cancel);
         Box::pin(async { ProtectedCheck::Unavailable })
+    }
+    /// [`Self::protected_check`] with the run that answered it, when one ran.
+    fn protected_check_traced<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = (ProtectedCheck, Option<RunScores>)> + Send + 'a>> {
+        Box::pin(async move { (self.protected_check(ctx, cancel).await, None) })
     }
 }

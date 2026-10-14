@@ -847,9 +847,30 @@ mod tests {
             ),
             (true, RuleResult::Allow, vec![], false),
             (false, RuleResult::Ask, vec![("requested", 0.6)], true),
-            (false, RuleResult::None, vec![("safe", 0.7)], true),
+            (false, RuleResult::None, vec![("read_only", 0.6)], true),
+            (false, RuleResult::None, vec![("recoverable", 0.7)], true),
+            (
+                false,
+                RuleResult::None,
+                vec![("read_only", 0.59), ("recoverable", 0.69)],
+                false,
+            ),
             (false, RuleResult::Ask, vec![], false),
+            // Under an allow rule a dangerous call asks unless it was requested.
             (false, RuleResult::Allow, vec![("danger", 0.5)], false),
+            (
+                false,
+                RuleResult::Allow,
+                vec![("danger", 0.5), ("requested", 0.6)],
+                true,
+            ),
+            // A dangerous unrequested call is never let through as a read.
+            (
+                false,
+                RuleResult::Allow,
+                vec![("danger", 0.5), ("read_only", 1.0), ("recoverable", 1.0)],
+                false,
+            ),
             (false, RuleResult::Allow, vec![], true),
         ] {
             let dir = tempfile::tempdir().unwrap();
@@ -884,7 +905,12 @@ mod tests {
             let result = runtime
                 .permission_pre_call(call, rule, CancellationToken::new())
                 .await;
-            assert_eq!(matches!(result.verdict, FlowVerdict::Allow), allowed);
+            assert_eq!(
+                matches!(result.verdict, FlowVerdict::Allow),
+                allowed,
+                "{rule:?} {:?}",
+                result.verdict
+            );
             let failed = FlowRuntime::new(store, Arc::new(Fake), Arc::new(NoEffects));
             assert!(!matches!(
                 failed

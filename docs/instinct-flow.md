@@ -342,9 +342,13 @@ override or exact clone, can supply protected authority. Other flows can only
 tighten the protected verdict. A skipped/failed/missing check or cut Captain
 evidence asks even under an allow rule. Ordinary validated workspace allows
 remain unrestricted for non-protected calls.
-Otherwise the built-in asks whether the action was requested (≥ 0.6), then
-whether it is a read or recoverable project change (≥ 0.7). For an allow rule,
-it asks about destruction, irreversibility, publication and credentials (≥ 0.5).
+Otherwise the built-in asks whether the Captain asked for the action or accepted
+an agent proposal to do it (≥ 0.6), then whether the call only reads or lists
+(≥ 0.6), then whether it is a recoverable change: files in the project, its
+scratch directories or the temp directory, or building, testing, formatting or
+linting (≥ 0.7). For an allow rule it first asks about destruction,
+irreversibility, publication and credentials (≥ 0.5); a yes goes to the same
+`requested` question, and an unrequested dangerous call asks.
 Its state explicitly treats everything except Captain messages and the validated
 active skill as untrusted evidence.
 

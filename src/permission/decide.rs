@@ -349,13 +349,16 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
             );
         }
         Floor::Protected(target) => trace.floor = Some(format!("protected: {target}")),
+        Floor::NamesProtected(target) => trace.floor = Some(format!("names protected: {target}")),
         Floor::None => {}
     }
 
     // A protected write needs the protected check, and only it: rules, bypass
     // and a generic flow allow never stand in for it, and it is never saved as
     // a rule. It is asked after the deny above and before anything can run it.
-    if let Floor::Protected(target) = &floor {
+    // A command that only names a protected file goes through the same check:
+    // its question also accepts a call that only reads WithNav's files.
+    if let Floor::Protected(target) | Floor::NamesProtected(target) = &floor {
         let query = FlowQuery {
             rule: rules.result,
             matched: rules.rule.as_ref(),
@@ -366,7 +369,10 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         trace.protected_check = Some(check);
         if check != ProtectedCheck::Passed {
             return ask(
-                format!("{target} is WithNav's own configuration; only your explicit request can change it"),
+                match &floor {
+                    Floor::NamesProtected(_) => format!("{target} is WithNav's own configuration or database and this command may change it; only your explicit request can change it"),
+                    _ => format!("{target} is WithNav's own configuration; only your explicit request can change it"),
+                },
                 Vec::new(),
                 trace,
             );
@@ -431,7 +437,9 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         })
         .await;
     trace.flow_verdict = Some(answer.as_str());
-    let proposals = if input.store.is_none() || matches!(floor, Floor::Protected(_)) {
+    let proposals = if input.store.is_none()
+        || matches!(floor, Floor::Protected(_) | Floor::NamesProtected(_))
+    {
         Vec::new()
     } else {
         rules.proposals
@@ -1091,6 +1099,28 @@ mod tests {
                 &bash(&format!("nav permissions {command}")),
             );
             assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass), "{command}");
+        }
+    }
+
+    #[test]
+    fn a_command_naming_the_database_goes_through_the_protected_check() {
+        let f = fixture();
+        let db = f.root().join("data/withnav.db").display().to_string();
+        for line in [
+            format!("sqlite3 -readonly {db} 'SELECT 1'"),
+            format!("sqlite3 {db} 'DELETE FROM permission_rules'"),
+        ] {
+            let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Passed);
+            let decision = f.decide_full(Control::Normal, &bash(&line), 1, &flows);
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Flow), "{line}");
+            assert_eq!(flows.check_calls.get(), 1);
+            let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Failed);
+            let decision = f.decide_full(Control::Bypass, &bash(&line), 1, &flows);
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{line}"
+            );
+            assert!(proposals(&decision).is_empty());
         }
     }
 

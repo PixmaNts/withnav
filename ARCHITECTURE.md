@@ -150,7 +150,9 @@ mode), opens it again without creation and writes relative to that descriptor. V
 The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
 flows directory: a write there needs the compiled-in protected check, asked once by the host and
 passed to the flows, which never ask it again; anything else asks the Captain. Literal references in
-bash are checked too, best effort; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
+bash are checked too, best effort: certain writes (redirections, output options, writer operands,
+SQLite `.save`) are `Floor::Protected`; any other command naming a protected file is
+`Floor::NamesProtected` and goes through the same check, which also passes a pure read; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
 
 An allowed write or edit is bound to the canonical file the decision was made for, without

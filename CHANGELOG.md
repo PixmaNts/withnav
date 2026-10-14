@@ -58,6 +58,11 @@ Permissions chapter of the guide.
   `ask` count as your words.
 - A `write` or `edit` to a file in the system temp directory (such as `/tmp`) or a scratch folder
   runs without a question, unless one of your rules denies or asks about it; credentials still ask.
+- A shell command that only names WithNav's database or configuration (`sqlite3 withnav.db
+  "SELECT …"`, a script given the path) is no longer blocked by a fixed exception list: the check on
+  WithNav's own files asks whether the command only reads them or you asked for the change. A
+  read-only query runs, with or without `-readonly`; a `DELETE`, a script `UPDATE` or a
+  `.save` over the database asks you unless you requested it.
 - **Always** is no longer offered for a shell command that deletes, moves, overwrites, changes
   permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
   `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule

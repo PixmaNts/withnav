@@ -79,7 +79,7 @@ impl SessionFlows {
                 .map(|rule| format!("{} {} {}", rule.action, rule.resource, rule.effect.as_str())),
             commands: self.commands.clone(),
             inside_project: self.inside_project,
-            protected: matches!(query.floor, Floor::Protected(_)),
+            protected: matches!(query.floor, Floor::Protected(_) | Floor::NamesProtected(_)),
             skill: self.skill.clone(),
             captain_messages: self.captain_messages.clone(),
             captain_messages_cut: self.captain_messages_cut,

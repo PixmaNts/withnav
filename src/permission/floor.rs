@@ -4,8 +4,11 @@
 //! configuration, the database and the global flows directory are free to read
 //! but need the permission flow's protected check before they are written.
 //! For bash the floor is best effort: it looks at literal path words,
-//! redirection targets and WithNav's own rule-changing commands. It does not
-//! expand globs or variables, and it is not a sandbox.
+//! redirection targets and WithNav's own rule-changing commands. Only certain
+//! writes are [`Floor::Protected`]; a command that merely names a protected
+//! file is [`Floor::NamesProtected`] and the protected check decides whether
+//! it only reads. It does not expand globs or variables, and it is not a
+//! sandbox.
 
 use std::{
     collections::VecDeque,
@@ -106,8 +109,16 @@ pub enum Floor {
     None,
     /// A credential is touched; the string names the target.
     Credential(String),
-    /// WithNav's own configuration or database is written; the string names the target.
+    /// WithNav's own configuration or database is certainly written: a
+    /// redirection or output option to it, a writer (`cp`, `rm`, `sed -i`, …)
+    /// whose written operand it is, a SQLite dot-command that saves to it, or
+    /// a `nav permissions` writer. The string names the target.
     Protected(String),
+    /// A command that is not a known reader names a protected file without
+    /// certainly writing it (`sqlite3 withnav.db …`, a script given the
+    /// path). Whether it only reads or changes it is the permission flow's
+    /// protected question, never a guess of the floor.
+    NamesProtected(String),
     /// A path could not be resolved the way execution would resolve it, so what
     /// it names is unknown. Nothing but yolo allows it.
     Unresolved(String),
@@ -256,7 +267,8 @@ pub fn check(call: &ToolCall, commands: &[ShellCommand], cx: &FloorContext) -> F
                 Floor::Credential(_) => 0,
                 Floor::Unresolved(_) => 1,
                 Floor::Protected(_) => 2,
-                Floor::None => 3,
+                Floor::NamesProtected(_) => 3,
+                Floor::None => 4,
             })
             .unwrap_or(Floor::None),
         _ => Floor::None,
@@ -481,48 +493,50 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     {
         return Floor::Credential(word.to_owned());
     }
-    let written = command
+    let reads_only =
+        program.is_some_and(|program| READERS.contains(&program)) && outputs.is_empty();
+    // A known writer: what it writes is known, its other operands are read.
+    // An opaque line that names a writer or holds a `>` anywhere writes every
+    // operand.
+    let writer = match program {
+        Some(_) => written_operands(program, &rest, &operands),
+        None if command.opaque
+            && (command.raw.contains('>')
+                || all
+                    .iter()
+                    .any(|word| WRITERS.contains(&basename(word)) || basename(word) == "sed")) =>
+        {
+            Some(operands.iter().map(String::as_str).collect())
+        }
+        None => None,
+    };
+    // Certain writes: redirections, output options, the written operands of a
+    // known writer, and the files SQL text saves to.
+    let written: Vec<&str> = command
         .redirections
         .iter()
         .filter(|redirection| !reads_only_redirection(&redirection.op))
-        .map(|redirection| redirection.target.as_str());
-    let reads_only =
-        program.is_some_and(|program| READERS.contains(&program)) && outputs.is_empty();
-    // `sqlite3 -readonly` opens its database read-only: SQLite itself refuses
-    // every write, so the database file it opens is read, like with `cat`.
-    // Only that file is exempt, and only in a command the splitter understood,
-    // so the flag is a real argument. A database named inside SQL or a
-    // dot-command (`.save withnav.db`, `.output withnav.db`) can still be
-    // written: such a word contains spaces and keeps the protection.
-    let read_only_sqlite = !command.opaque
-        && program.is_some_and(|program| matches!(program, "sqlite3" | "sqlite"))
-        && rest.iter().any(|word| word == "-readonly");
-    let read_only_sqlite_file =
-        |word: &str| read_only_sqlite && !word.contains(char::is_whitespace);
-    let mut candidates: Vec<&str> = written.chain(outputs.iter().copied()).collect();
-    if !reads_only {
-        candidates.extend(
-            operands
-                .iter()
-                .map(String::as_str)
-                .filter(|word| !read_only_sqlite_file(word)),
-        );
-    }
-    for word in candidates {
+        .map(|redirection| redirection.target.as_str())
+        .chain(outputs.iter().copied())
+        .chain(writer.iter().flatten().copied())
+        .chain(all.iter().flat_map(|word| sql_written_files(word)))
+        .collect();
+    for word in written {
         match protected_word(word, cx) {
             None => return Floor::Unresolved(word.to_owned()),
             Some(true) => return Floor::Protected(word.to_owned()),
             Some(false) => {}
         }
     }
-    let words = || all.iter().map(|word| basename(word));
-    if (command.opaque || words().any(|word| matches!(word, "sqlite3" | "sqlite")))
-        && operands
-            .iter()
-            .any(|word| basename(word).starts_with("withnav.db") && !read_only_sqlite_file(word))
-    {
-        return Floor::Protected("withnav.db".into());
+    if !reads_only {
+        // Any other operand: a path that cannot be resolved stays unknown.
+        for word in &operands {
+            if protected_word(word, cx).is_none() {
+                return Floor::Unresolved(word.clone());
+            }
+        }
     }
+    let words = || all.iter().map(|word| basename(word));
     let words: Vec<&str> = words().collect();
     if words.contains(&"nav")
         && words.windows(2).any(|pair| {
@@ -532,7 +546,107 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     {
         return Floor::Protected("nav permissions".into());
     }
+    if !reads_only && writer.is_none() {
+        // Naming a protected file anywhere in the command, inside a quoted
+        // script or SQL text too, leaves the question to the flow.
+        if let Some(name) = all.iter().flat_map(|word| path_tokens(word)).find(|token| {
+            basename(token).starts_with("withnav.db") || protected_word(token, cx) == Some(true)
+        }) {
+            return Floor::NamesProtected(name.to_owned());
+        }
+    }
     Floor::None
+}
+
+/// The operands a known writer changes: every operand of `rm`, `mv`, `tee`,
+/// `truncate` and the like, the destination of `cp`, `install` and `ln` (the
+/// last operand, or the `-t` directory), `of=` of `dd`, and every operand of
+/// `sed -i`. Best effort: nothing is expanded.
+/// `None` when the program is not a known writer.
+fn written_operands<'a>(
+    program: Option<&str>,
+    rest: &'a [String],
+    operands: &'a [String],
+) -> Option<Vec<&'a str>> {
+    let all = || Some(operands.iter().map(String::as_str).collect());
+    match program {
+        Some(program)
+            if WRITERS.contains(&program) && !matches!(program, "cp" | "install" | "ln" | "dd") =>
+        {
+            all()
+        }
+        Some("sed")
+            if rest.iter().any(|word| {
+                word == "--in-place"
+                    || word.starts_with("--in-place=")
+                    || (word.starts_with('-') && !word.starts_with("--") && word.contains('i'))
+            }) =>
+        {
+            all()
+        }
+        Some("cp" | "install" | "ln") => {
+            let mut iter = rest.iter();
+            while let Some(word) = iter.next() {
+                if word == "-t" || word == "--target-directory" {
+                    return Some(iter.next().map(String::as_str).into_iter().collect());
+                }
+                if let Some(dir) = word
+                    .strip_prefix("--target-directory=")
+                    .or_else(|| word.strip_prefix("-t").filter(|d| !d.is_empty()))
+                {
+                    return Some(vec![dir]);
+                }
+            }
+            Some(match operands {
+                [_, .., last] => vec![last.as_str()],
+                _ => Vec::new(),
+            })
+        }
+        Some("dd") => Some(
+            rest.iter()
+                .filter_map(|word| word.strip_prefix("of="))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Programs whose written operands [`written_operands`] knows (`sed` only with `-i`).
+const WRITERS: &[&str] = &[
+    "rm", "rmdir", "unlink", "shred", "mv", "tee", "truncate", "touch", "mkdir", "chmod", "chown",
+    "chgrp", "cp", "install", "ln", "dd",
+];
+
+/// Files SQL or SQLite dot-command text inside one word saves to:
+/// `.save F`, `.output F`, `.once F`, `.backup [DB] F` and `VACUUM INTO 'F'`.
+fn sql_written_files(word: &str) -> Vec<&str> {
+    let mut files = Vec::new();
+    for statement in word.split(['\n', ';']) {
+        let tokens: Vec<&str> = statement
+            .split_whitespace()
+            .map(|token| token.trim_matches(|c| c == '\'' || c == '"'))
+            .collect();
+        match tokens.first().map(|t| t.to_ascii_lowercase()).as_deref() {
+            Some(".save" | ".output" | ".once" | ".backup") if tokens.len() > 1 => {
+                files.extend(tokens.last().copied());
+            }
+            _ => {}
+        }
+        if let Some(at) = tokens.windows(2).position(|pair| {
+            pair[0].eq_ignore_ascii_case("vacuum") && pair[1].eq_ignore_ascii_case("into")
+        }) {
+            files.extend(tokens.get(at + 2).copied());
+        }
+    }
+    files.retain(|file| !file.is_empty());
+    files
+}
+
+/// Path-like pieces of a word, a quoted script or SQL text included: split on
+/// whitespace, quotes, brackets, `=`, `,` and `;`.
+fn path_tokens(word: &str) -> impl Iterator<Item = &str> {
+    word.split(|c: char| c.is_whitespace() || "'\"()[]{}=,;`".contains(c))
+        .filter(|token| !token.is_empty())
 }
 
 #[cfg(test)]
@@ -719,76 +833,72 @@ mod tests {
             bash_floor(&f.cx, &format!("sqlite3 {root}/data/other.db .tables")),
             Floor::None
         );
-        assert!(matches!(
-            bash_floor(
-                &f.cx,
-                &format!("sqlite3 {root}/data/withnav.db 'drop table x'")
+        // A program that merely names WithNav's database may read or change
+        // it: the permission flow's protected question decides, never the
+        // floor alone. `-readonly` is not special.
+        for line in [
+            format!("sqlite3 {root}/data/withnav.db 'drop table x'"),
+            format!(
+                "cd /tmp && sqlite3 -readonly -separator ' | ' {root}/data/withnav.db \"SELECT id FROM permission_decisions\""
             ),
-            Floor::Protected(_)
-        ));
-        // A read-only SQLite session cannot change the database.
-        assert_eq!(
-            bash_floor(
-                &f.cx,
-                &format!(
-                    "cd /tmp && sqlite3 -readonly -separator ' | ' {root}/data/withnav.db \"SELECT id FROM permission_decisions\""
-                )
+            format!("sqlite3 {root}/data/withnav.db \"SELECT '-readonly'\""),
+            format!(
+                "S=$(sqlite3 -readonly {root}/data/withnav.db \"SELECT id FROM permission_decisions WHERE id=69\"); echo \"$S\""
             ),
-            Floor::None
-        );
-        assert!(matches!(
-            bash_floor(
-                &f.cx,
-                &format!("sqlite3 {root}/data/withnav.db \"SELECT '-readonly'\"")
-            ),
-            Floor::Protected(_)
-        ));
-        // Read-only on another database, but a dot-command writes ours.
-        assert!(matches!(
-            bash_floor(
-                &f.cx,
-                &format!("sqlite3 -readonly /tmp/other.db \".save {root}/data/withnav.db\"")
-            ),
-            Floor::Protected(_)
-        ));
-        // Inside a command substitution the inner command is judged on its own.
-        assert_eq!(
-            bash_floor(
-                &f.cx,
-                &format!(
-                    "S=$(sqlite3 -readonly {root}/data/withnav.db \"SELECT id FROM permission_decisions WHERE id=69\"); echo \"$S\""
-                )
-            ),
-            Floor::None
-        );
-        assert_eq!(
-            bash_floor(
-                &f.cx,
-                &format!("echo \"$(sqlite3 -readonly {root}/data/withnav.db 'SELECT 1')\"")
-            ),
-            Floor::None
-        );
-        assert!(matches!(
-            bash_floor(
-                &f.cx,
-                &format!("S=$(sqlite3 {root}/data/withnav.db \"drop table x\")")
-            ),
-            Floor::Protected(_)
-        ));
-        assert!(matches!(
-            bash_floor(
-                &f.cx,
-                &format!("S=$(sqlite3 -readonly /tmp/x.db \".save {root}/data/withnav.db\")")
-            ),
-            Floor::Protected(_)
-        ));
-        assert!(matches!(
-            bash_floor(
-                &f.cx,
-                &format!("echo $(sqlite3 -readonly /tmp/x.db) > {root}/data/withnav.db")
-            ),
-            Floor::Protected(_)
-        ));
+            format!("echo \"$(sqlite3 -readonly {root}/data/withnav.db 'SELECT 1')\""),
+            format!("S=$(sqlite3 {root}/data/withnav.db \"drop table x\")"),
+            format!("litecli {root}/data/withnav.db"),
+            format!("python3 inspect.py {root}/data/withnav.db"),
+            format!("python3 inspect.py --db={root}/config/config.json"),
+            // Relative to a directory the floor does not follow: the name is enough.
+            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'".to_owned(),
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, &line), Floor::NamesProtected(_)),
+                "{line}: {:?}",
+                bash_floor(&f.cx, &line)
+            );
+        }
+        // A dot-command that writes a file names it inside the SQL text: a
+        // certain write.
+        for line in [
+            format!("sqlite3 -readonly /tmp/other.db \".save {root}/data/withnav.db\""),
+            format!("S=$(sqlite3 -readonly /tmp/x.db \".save {root}/data/withnav.db\")"),
+            format!("sqlite3 /tmp/x.db \".output {root}/config/config.json\" 'select 1'"),
+            format!("echo $(sqlite3 -readonly /tmp/x.db) > {root}/data/withnav.db"),
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                "{line}: {:?}",
+                bash_floor(&f.cx, &line)
+            );
+        }
+        // Writers whose operand is a protected file write it.
+        for line in [
+            format!("mv a {root}/data/withnav.db"),
+            format!("rm -f {root}/data/withnav.db-wal"),
+            format!("tee -a {root}/config/config.json"),
+            format!("dd if=/dev/zero of={root}/data/withnav.db bs=1 count=1"),
+            format!("install -m 600 a {root}/config/config.json"),
+            format!("ln -sf /tmp/x {root}/config/config.json"),
+            format!("truncate -s 0 {root}/data/withnav.db"),
+            format!("sed -i 's/a/b/' {root}/config/config.json"),
+            format!("cp -t {root}/config/flows a.toml"),
+        ] {
+            assert!(
+                matches!(bash_floor(&f.cx, &line), Floor::Protected(_)),
+                "{line}: {:?}",
+                bash_floor(&f.cx, &line)
+            );
+        }
+        // Copying from a protected file, or linking to it, only reads it.
+        for line in [
+            format!("cp {root}/data/withnav.db /tmp/backup.db"),
+            format!("ln -s {root}/config/config.json /tmp/c.json"),
+            format!("sqlite3 {root}/data/other.db .tables"),
+        ] {
+            assert_eq!(bash_floor(&f.cx, &line), Floor::None, "{line}");
+        }
         assert!(matches!(
             bash_floor(&f.cx, "nav permissions add bash '*' allow"),
             Floor::Protected(_)

@@ -81,7 +81,7 @@ this mode.** Fix the database and start a new session to restore them. Yolo rema
 | Answer | Meaning |
 |---|---|
 | **Once** | Run this call. |
-| **Always** | Save the `allow` rule shown on the button, then run the call. Calls of the same turn that the new rule covers run too. Not offered for credentials, WithNav's own configuration, or a command WithNav cannot split. |
+| **Always** | Save the `allow` rule shown on the button, then run the call. Calls of the same turn that the new rule covers run too. Not offered for credentials, WithNav's own configuration, a command WithNav cannot split, or a command that deletes or changes files, processes or history. |
 | **Reject** | Do not run it. You can add a message that the model reads; every other waiting call of the turn is rejected with it. |
 | **Validate this skill** | Offered the first time a skill (or a changed version of it) is loaded. **Always** keeps the validation for this exact content. |
 
@@ -92,12 +92,22 @@ What **Always** saves:
 
 | Call | Rule saved | Scope |
 |---|---|---|
-| `bash git push origin feature` | `bash` / `git push *` (the command's prefix, which also matches a bare `git push`) | this project |
+| `bash cargo test -p withnav` | `bash` / `cargo test *` (the command's prefix, which also matches a bare `cargo test`) | this project |
+| `bash rm -v notes.txt`, `bash echo x > f` | nothing: **Always** is not offered for a command that deletes, moves, overwrites or kills (see below) | |
 | `write src/main.rs` | `write` / the exact file path | this project |
 | a file outside the project | the file rule, plus `external_directory` / its folder | this project |
 | `fetch https://docs.rs/serde` | `fetch` / `https://docs.rs/*` | this project |
 | a skill rule question | `skill` / the exact skill name | every project |
 | an MCP tool or another tool not listed above | the tool name / `*` | every project |
+
+**Always** is never offered for a shell command that deletes, moves or overwrites files, changes
+permissions, kills processes or rewrites history: `rm`, `rmdir`, `mv`, `cp`, `dd`, `shred`,
+`truncate`, `chmod`, `chown`, `ln`, `tee`, `install`, `sed -i`, `perl -i`, `sqlite3` without
+`-readonly`, `git push`, `git reset`, `git clean`, `git checkout`, `git restore`, `git rebase`,
+`git branch -D`, `git tag -d`, `kill`, `killall`, `pkill`, and any command that writes to a file
+with `>` or `>>`. A rule such as `rm *` would allow every future deletion. Answer **Once**, or
+write a narrower rule yourself with `nav permissions add`. Reads keep their prefix rule
+(`sqlite3 -readonly *` saves `sqlite3 *`, `git status` saves `git status *`).
 
 On a skill-validation question, **Always** stores a validation of that exact content (its hash),
 not a rule.

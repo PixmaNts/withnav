@@ -1308,6 +1308,28 @@ mod tests {
     }
 
     #[test]
+    fn destructive_or_writing_commands_offer_no_always() {
+        let f = fixture();
+        for line in [
+            "rm -v f",
+            "echo x > f",
+            "git status && rm -v f",
+            "sqlite3 x.db .tables",
+        ] {
+            let decision = f.decide(Control::Normal, &bash(line));
+            assert!(proposals(&decision).is_empty(), "{line}");
+        }
+        for (line, pattern) in [
+            ("sqlite3 -readonly x.db 'SELECT 1'", "sqlite3 *"),
+            ("git status", "git status *"),
+        ] {
+            let always = proposals(&f.decide(Control::Normal, &bash(line)));
+            assert_eq!(always.len(), 1, "{line}");
+            assert_eq!(always[0].resource, pattern);
+        }
+    }
+
+    #[test]
     fn a_line_with_an_opaque_part_offers_no_always() {
         let f = fixture();
         let decision = f.decide(

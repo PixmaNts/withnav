@@ -340,17 +340,17 @@ async fn a_config_write_runs_only_on_a_passed_protected_check() {
 }
 
 #[tokio::test]
-async fn always_on_a_push_saves_the_prefix_and_releases_the_held_sibling() {
+async fn always_on_a_fetch_saves_the_prefix_and_releases_the_held_sibling() {
     let flows = Arc::new(FakeFlows::new("apply"));
     let mut actor = actor_with(Some(flows.clone()));
     script(
         &mut actor,
         vec![
             owned(&[
-                bash("p1", "git push origin x"),
-                bash("p2", "git push origin y"),
+                bash("p1", "git fetch origin x"),
+                bash("p2", "git fetch origin y"),
             ]),
-            done("pushed"),
+            done("fetched"),
         ],
     )
     .await;
@@ -360,7 +360,7 @@ async fn always_on_a_push_saves_the_prefix_and_releases_the_held_sibling() {
     assert_eq!(request.tool_call_id, "p1");
     assert_eq!(
         request.always_label.as_deref(),
-        Some("Always (project): bash git push *")
+        Some("Always (project): bash git fetch *")
     );
     let mut approved = Vec::new();
     let outcome = resolve_permission(
@@ -375,7 +375,7 @@ async fn always_on_a_push_saves_the_prefix_and_releases_the_held_sibling() {
     )
     .await
     .unwrap();
-    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "pushed"));
+    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "fetched"));
     // The rule exists before the call runs, and the sibling runs under it.
     assert_eq!(approved, [json!("captain"), json!("rule")]);
     let rules = actor
@@ -387,7 +387,7 @@ async fn always_on_a_push_saves_the_prefix_and_releases_the_held_sibling() {
     assert_eq!(rules.len(), 1);
     assert_eq!(
         (rules[0].action.as_str(), rules[0].resource.as_str()),
-        ("bash", "git push *")
+        ("bash", "git fetch *")
     );
     assert_eq!(
         rules[0].scope,
@@ -1419,7 +1419,7 @@ async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
     let mut actor = actor_with(Some(flows));
     script(
         &mut actor,
-        vec![owned(&[bash("p1", "git push origin x")]), done("pushed")],
+        vec![owned(&[bash("p1", "git fetch origin x")]), done("fetched")],
     )
     .await;
     let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
@@ -1439,7 +1439,7 @@ async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
     )
     .await
     .unwrap();
-    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "pushed"));
+    assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "fetched"));
     assert_eq!(approved, [json!("captain")], "the call runs once");
     assert!(actor
         .permission_store

@@ -167,7 +167,7 @@ The only checks written in Rust, skipped only by yolo:
 
 | Target | Read | Write |
 |---|---|---|
-| `config.json`, `withnav.db` and its `-wal` / `-shm` files, the global flows directory | free | only when the permission flow's protected check answers that the Captain's own messages explicitly ask for it (threshold 0.9); a skill cannot satisfy it, a failed or skipped check asks, and "Always" never covers it |
+| `config.json`, `withnav.db` and its `-wal` / `-shm` files, the global flows directory | free | only when the permission flow's protected check answers that the Captain explicitly asked for it or accepted the agent's proposal to do it (threshold 0.9); a skill cannot satisfy it, a failed or skipped check asks, and "Always" never covers it |
 | Credentials: `auth.json`, `~/.ssh/id_*`, `.env` and the existing sensitive-name list | asks | asks |
 
 Bypass does not skip the floor. For bash the floor looks at literal paths and redirections of each
@@ -239,8 +239,8 @@ flow, Captain, bypass, yolo), and tool availability per agent.
 Decisions taken while implementing this ADR that refine it:
 
 - **Protected writes.** A write to `config.json`, `withnav.db` or the global flows directory runs
-  automatically only when the protected check compiled into the binary answers that the Captain's
-  own messages ask for it. Otherwise the Captain is asked and can approve once. A flow on disk,
+  automatically only when the protected check compiled into the binary answers that the Captain
+  asked for it, or explicitly accepted an agent proposal to do it. Otherwise the Captain is asked and can approve once. A flow on disk,
   even a copy of the built-in one, can make that answer stricter but never grant it. The check is
   asked once per call and its answer is passed to the flows.
 - **Permission database.** If the database cannot open, the session starts in degraded mode and
@@ -257,7 +257,13 @@ Decisions taken while implementing this ADR that refine it:
   child is created and refreshed when the parent steers it. The delegated prompt and the steering
   text are supplied separately as `conversation.delegation`, with attachments removed and a 16 KiB
   whole-message budget. The ordinary permission flow may treat delegation as a request; the
-  protected check still uses only the Captain's own messages.
+  protected check never reads delegation.
+- **Recent exchanges.** The permission flow and the protected check both receive
+  `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
+  labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,
+  whole messages within 8 KiB with a cut flag. A short answer such as "yes go" is read with the
+  agent proposal it answers, so accepting a proposal counts as a request, protected writes
+  included. The agent's message alone never counts, whatever it says the Captain approved.
 - **Answers to `ask`.** The Captain's answer to an `ask` counts as the Captain's words, labelled
   with the assistant's question, after editor selections and skill blocks attached to it are
   removed.

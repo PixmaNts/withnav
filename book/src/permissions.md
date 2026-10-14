@@ -13,8 +13,9 @@ Every tool call goes through the same steps, in this order:
 
 1. **Yolo** (if you turned it on): the call runs, nothing is checked.
 2. **Fixed checks**: a call that touches credentials (keys, `auth.json`, `.env` files) always asks
-   you. A write to WithNav's own `config.json`, database or global flows folder runs only if your
-   own messages explicitly ask for it; otherwise it asks you.
+   you. A write to WithNav's own `config.json`, database or global flows folder runs only if you
+   explicitly asked for it, or explicitly accepted the agent's proposal to do it; otherwise it asks
+   you.
 3. **Reads inside the project** (`read`, `grep`, `glob`) run without asking.
 4. **Your rules**: a `deny` rule stops the call, whatever comes after.
 5. **Bypass** (if on for this session): the call runs.
@@ -22,6 +23,11 @@ Every tool call goes through the same steps, in this order:
    call (including a parent agent's delegation to a subagent), or whether it is a read or a
    recoverable change inside the project. It can let the call
    run, or ask you.
+
+The permission flow reads all your messages and the last four messages of the conversation, yours
+and the agent's. A short answer such as "yes, go" therefore accepts the proposal the agent just
+made, and counts as your request, including for WithNav's own configuration. A message from the
+agent alone never counts, whatever it says you approved.
 7. **You**: Once, Always or Reject.
 
 There are no default rules: on a new project you answer more often at first, and each **Always**

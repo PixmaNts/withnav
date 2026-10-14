@@ -263,7 +263,9 @@ Captain messages taken at creation and refreshed when the parent steers it; a de
 steering text never counts as Captain evidence. It is supplied separately as
 `conversation.delegation` (Parent-provenance transcript messages, stripped of attachments, newest
 whole messages within 16 KiB, with a cut flag). The ordinary flow may accept the parent's request;
-the protected check never reads delegation. A skill is decided after its validation, with action `skill` and its
+the protected check never reads delegation. Both the flow and the protected check also get
+`conversation.recent` (`recent_with_cut`): the last 4 Captain and agent messages, labelled with
+their author, so a short Captain answer is read with the proposal it answers. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it
 (`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
 whose permission database cannot be opened starts with `permissions_unavailable` in its status,

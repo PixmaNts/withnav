@@ -30,11 +30,12 @@ false = ["rule_effect"]
 [[node]]
 id = "protected_requested"
 type = "noul"
-instructions = "Do the Captain's own messages explicitly ask to change WithNav's configuration, permission rules or database?"
+instructions = "Did the Captain explicitly ask to change WithNav's configuration, permission rules or database in this way, or explicitly accept an agent proposal to do it?"
 threshold = "constant.PROTECTED_MIN"
 state_template = "protected-state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 tool = "event.tool"
 args = "event.args"
 [node.next]
@@ -54,11 +55,12 @@ false = ["requested"]
 [[node]]
 id = "requested"
 type = "noul"
-instructions = "Did the Captain, the parent agent through its delegation, or the validated skill active this turn ask for this action?"
+instructions = "Did the Captain ask for this action, or explicitly accept an agent proposal to do it? A request from the parent agent through its delegation, or from the validated skill active this turn, counts too."
 threshold = "constant.REQUESTED_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 delegation = "conversation.delegation"
 skill = "event.skill"
 tool = "event.tool"
@@ -78,6 +80,7 @@ threshold = "constant.SAFE_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 delegation = "conversation.delegation"
 skill = "event.skill"
 tool = "event.tool"
@@ -97,6 +100,7 @@ threshold = "constant.DANGER_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 delegation = "conversation.delegation"
 skill = "event.skill"
 tool = "event.tool"
@@ -126,7 +130,7 @@ id = "protected_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "The Captain's own messages do not explicitly request this protected WithNav change."
+note = "The Captain did not explicitly request or accept this change to WithNav's own configuration."
 
 [[node]]
 id = "unrequested_ask"

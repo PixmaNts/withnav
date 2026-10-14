@@ -336,7 +336,7 @@ custom flows may still ask or deny. The strictest verdict wins.
 
 The built-in first checks protected calls using only Captain messages and the
 call, never the skill. Its dedicated `protected_requested` question must answer
-yes at ≥ 0.9 and reach `protected_allow` with `protected_ok = true`. The host
+yes at ≥ 0.8 and reach `protected_allow` with `protected_ok = true`. The host
 evaluates this check itself from the binary's embedded definition and state
 template, independently of loader overrides. No disk flow, even a same-name
 override or exact clone, can supply protected authority. Other flows can only

@@ -832,6 +832,17 @@ impl ToolCallFlows for RuntimeFlows {
     ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
         Box::pin(self.0.permission_protected_check(ctx, cancel.clone()))
     }
+    fn protected_check_traced<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, (ProtectedCheck, Option<crate::agent::flow_hook::RunScores>)>
+    {
+        Box::pin(
+            self.0
+                .permission_protected_check_traced(ctx, cancel.clone()),
+        )
+    }
 }
 
 #[tokio::test]
@@ -882,6 +893,87 @@ async fn a_protected_write_asks_the_protected_question_exactly_once() {
     assert_eq!(approved, [json!("flow")]);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "{}");
     assert_eq!(client.protected.load(Ordering::SeqCst), 1);
+}
+
+/// Answers every instinct question with one score.
+struct ScoreInstinct(f64);
+
+impl instinct_flow::DecisionClient for ScoreInstinct {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "fake/score".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        request: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: std::time::Instant,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        let score = self.0;
+        Box::pin(async move {
+            Ok(instinct_flow::protocol::DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            instinct_flow::protocol::Answer::Noul { noul: score },
+                        )
+                    })
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn the_protected_checks_score_is_recorded_with_the_decision_and_the_request() {
+    let mut actor = actor_with(None);
+    let store = Arc::new(crate::flows::store::FlowStore::new(
+        actor.tool_context.workspace.clone(),
+        actor.permission_dirs.config.clone().unwrap(),
+    ));
+    let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+        store,
+        Arc::new(ScoreInstinct(0.25)),
+        Arc::new(crate::flows::runtime::NoEffects),
+    ));
+    actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+    script(
+        &mut actor,
+        vec![owned(&[bash("b1", "nav permissions revoke 3")])],
+    )
+    .await;
+    actor.push_user("remove permission rule 3");
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("a failed protected check asks");
+    };
+    let gate = request.permission_gate.as_deref().unwrap();
+    assert_eq!(
+        gate["protected_check"]["verdict"],
+        json!("failed"),
+        "{gate}"
+    );
+    assert_eq!(gate["protected_check"]["score"], json!(0.25), "{gate}");
+    assert!(gate["protected_check"]["run_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+    let rows = decisions(&actor);
+    let trace = rows[0]
+        .flow_trace
+        .as_ref()
+        .expect("the decision keeps the check");
+    assert_eq!(trace["protected_check"], gate["protected_check"]);
 }
 
 /// An actor whose workspace holds the skill `helper`, not yet validated.

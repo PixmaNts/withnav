@@ -99,6 +99,7 @@ mod tests {
                 rule_id: Some(rule.id),
                 effect: Some(Effect::Allow),
                 flow_verdict: None,
+                flow_trace: None,
                 captain_answer: None,
                 outcome: Outcome::Allowed,
                 approved_by: Some("rule".into()),
@@ -167,6 +168,9 @@ mod tests {
             rule_id: Some(rule.id),
             effect: Some(Effect::Allow),
             flow_verdict: Some("ask_captain".into()),
+            flow_trace: Some(
+                serde_json::json!({"protected_check": {"verdict": "failed", "score": 0.25}}),
+            ),
             captain_answer: None,
             outcome: Outcome::Pending,
             approved_by: None,
@@ -191,6 +195,7 @@ mod tests {
         assert_eq!(row.command_matches, decision.command_matches);
         assert_eq!(row.captain_answer.as_ref(), Some(&answer));
         assert_eq!(row.approved_by.as_deref(), Some("captain"));
+        assert_eq!(row.flow_trace, decision.flow_trace);
         assert_eq!(row.outcome, Outcome::Allowed);
         assert_eq!(row.call_snapshot.arguments.len(), 4095);
         assert!(row.call_snapshot.truncated);
@@ -266,6 +271,10 @@ pub struct Decision {
     pub rule_id: Option<i64>,
     pub effect: Option<Effect>,
     pub flow_verdict: Option<String>,
+    /// The flow runs behind the decision: their run ids in the flow run log
+    /// and the score of each node that asked Instinct (see `nav permissions history`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_trace: Option<Value>,
     pub captain_answer: Option<Value>,
     pub outcome: Outcome,
     pub approved_by: Option<String>,
@@ -328,6 +337,9 @@ fn read_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
             _ => return Err(rusqlite::Error::InvalidQuery),
         },
         approved_by: row.get(16)?,
+        flow_trace: row
+            .get::<_, Option<String>>(17)?
+            .and_then(|text| serde_json::from_str(&text).ok()),
     })
 }
 
@@ -355,7 +367,8 @@ fn history_query(
     }
     let mut sql = String::from(
         "SELECT id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,
-         call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by
+         call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by,
+         flow_trace
          FROM permission_decisions",
     );
     if !clauses.is_empty() {
@@ -483,14 +496,19 @@ impl PermissionStore {
             })
         };
         let flow_verdict = short(&decision.flow_verdict);
+        let flow_trace = decision.flow_trace.clone().map(|mut trace| {
+            bound_value(&mut trace, SHORT_TEXT_BYTES);
+            trace
+        });
         let approved_by = short(&decision.approved_by);
         let workspace = decision.workspace.canonicalize()?;
         let db = self.db();
         db.execute(
             "INSERT INTO permission_decisions
              (time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,
-              command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+              command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by,
+              flow_trace)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 decision.time,
                 decision.session_id,
@@ -510,7 +528,8 @@ impl PermissionStore {
                     .map(serde_json::to_string)
                     .transpose()?,
                 decision.outcome.as_str(),
-                approved_by
+                approved_by,
+                flow_trace.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
         Ok(db.last_insert_rowid())

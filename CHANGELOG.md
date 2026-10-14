@@ -62,6 +62,9 @@ Permissions chapter of the guide.
   agent wrote, in the delegation or in steering, is a separate request source for ordinary calls,
   never for protected configuration writes. Your answers to an
   `ask` count as your words.
+- The permission flow, and the check on WithNav's own configuration, read the last four messages
+  of the conversation with yours. A short "yes, go" accepts the proposal the agent just made and
+  counts as your request; an agent message alone never does.
 - An allowed file write is bound to the path you were shown: if a link is put in its place before
   it runs, nothing is written and the call is decided again.
 - If the permission database cannot open, the session starts with a visible warning. Every call

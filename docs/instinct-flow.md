@@ -320,7 +320,12 @@ Captain's answers to `ask`, labelled with the assistant's question, and, in a
 subagent, the parent's Captain messages. `conversation.delegation` contains the parent's
 delegation and steering separately, attachments stripped, whole newest messages within 16 KiB
 with a cut flag; it is empty for a root session. The ordinary permission flow may accept delegation
-as a request, but the compiled protected check never reads it. Editor attachments are
+as a request, but the compiled protected check never reads it. `conversation.recent` contains
+the last 4 messages between the Captain and the agent, oldest first, as `{author, text}` with
+`author` `captain` or `agent` (the agent's text and its `ask` questions; the Captain's messages
+and answers to `ask`, attachments stripped), whole messages within 8 KiB with a cut flag. It lets
+a short Captain answer be read with the agent proposal it answers; an `agent` entry is never a
+request on its own. Both the permission flow and the protected check read it. Editor attachments are
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 

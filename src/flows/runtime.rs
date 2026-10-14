@@ -256,6 +256,8 @@ mod tests {
             captain_messages_cut: false,
             delegation: vec![],
             delegation_cut: false,
+            recent: vec![],
+            recent_cut: false,
             protected_check: None,
         }
     }
@@ -896,6 +898,108 @@ mod tests {
                 FlowVerdict::Allow
             ));
         }
+    }
+
+    /// Records the state of every question it is asked and answers `answer`.
+    struct StateClient(std::sync::Mutex<Vec<(String, String)>>, f64);
+    impl DecisionClient for StateClient {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/state".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            for id in request.questions.keys() {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((id.clone(), request.state.to_string()));
+            }
+            Box::pin(async move {
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                instinct_flow::protocol::Answer::Noul { noul: self.1 },
+                            )
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    fn proposal_then_yes(workspace: PathBuf, protected: bool) -> PermissionCallContext {
+        use crate::agent::flow_hook::RecentMessage;
+        let mut call = permission_call(workspace, protected);
+        call.captain_messages = vec!["test the permissions".into(), "yes go".into()];
+        call.recent = vec![
+            RecentMessage {
+                author: "agent",
+                text: "PROPOSAL: say go and I delete the 2 test files".into(),
+            },
+            RecentMessage {
+                author: "captain",
+                text: "yes go".into(),
+            },
+        ];
+        call
+    }
+
+    #[tokio::test]
+    async fn the_flow_reads_a_short_answer_with_the_proposal_it_answers() {
+        let client = Arc::new(StateClient(Default::default(), 1.0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let verdict = runtime
+            .permission_pre_call(
+                proposal_then_yes(dir.path().into(), false),
+                RuleResult::None,
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(verdict.verdict, FlowVerdict::Allow));
+        let states = client.0.lock().unwrap().clone();
+        let (_, state) = states.iter().find(|(id, _)| id == "requested").unwrap();
+        assert!(state.contains("PROPOSAL: say go"), "{state}");
+        assert!(state.contains(r#""author":"agent""#), "{state}");
+        assert!(state.contains(r#""author":"captain","text":"yes go""#));
+    }
+
+    #[tokio::test]
+    async fn the_protected_check_reads_the_recent_exchanges() {
+        let client = Arc::new(StateClient(Default::default(), 1.0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let check = runtime
+            .protected_check_with(
+                compile_protected_check(true),
+                proposal_then_yes(dir.path().into(), true),
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(check, ProtectedCheck::Passed);
+        let states = client.0.lock().unwrap().clone();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].0, "protected_requested");
+        assert!(states[0].1.contains("PROPOSAL: say go"), "{}", states[0].1);
+        assert!(states[0].1.contains("explicit acceptance"));
     }
 
     #[test]
@@ -1933,6 +2037,14 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.delegation".into(), delegation);
+        context.values.insert(
+            "conversation.recent".into(),
+            InputValue {
+                value: Some(json!(ctx.recent)),
+                cut: ctx.recent_cut,
+                redacted: false,
+            },
+        );
         let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),

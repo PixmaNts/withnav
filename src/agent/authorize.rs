@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::actor::AgentActor;
 use crate::agent::flow_hook::{
-    captain_messages_with_cut, delegation_with_cut, FlowVerdict, PermissionCallContext,
-    PermissionCommand, ProtectedCheck, RuleResult as FlowRule, ToolCallContext, ToolCallFlows,
-    ValidatedSkill,
+    captain_messages_with_cut, delegation_with_cut, recent_with_cut, FlowVerdict,
+    PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
+    ToolCallContext, ToolCallFlows, ValidatedSkill,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
@@ -59,6 +59,8 @@ struct SessionFlows {
     captain_messages_cut: bool,
     delegation: Vec<String>,
     delegation_cut: bool,
+    recent: Vec<crate::agent::flow_hook::RecentMessage>,
+    recent_cut: bool,
     cancel: CancellationToken,
 }
 
@@ -83,6 +85,8 @@ impl SessionFlows {
             captain_messages_cut: self.captain_messages_cut,
             delegation: self.delegation.clone(),
             delegation_cut: self.delegation_cut,
+            recent: self.recent.clone(),
+            recent_cut: self.recent_cut,
             protected_check: query.protected_check,
         }
     }
@@ -236,6 +240,7 @@ pub(super) async fn authorize(
         ));
     }
     let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
+    let (recent, recent_cut) = recent_with_cut(&actor.transcript);
     let flows = SessionFlows {
         reason: std::sync::Mutex::new(None),
         hook: actor.tool_flows.clone(),
@@ -260,6 +265,8 @@ pub(super) async fn authorize(
         captain_messages_cut,
         delegation,
         delegation_cut,
+        recent,
+        recent_cut,
         cancel: actor.cancel.clone(),
     };
     let control = control(actor);

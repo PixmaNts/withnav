@@ -113,6 +113,10 @@ impl FlowEffects for EditorEffects {
 fn owns_trigger(store: &crate::flows::store::FlowStore, event: TriggerKind) -> bool {
     // Reload before eligibility: a newly enabled flow must own its very next editor event.
     store.refresh();
+    owns(store, event)
+}
+
+fn owns(store: &crate::flows::store::FlowStore, event: TriggerKind) -> bool {
     store.snapshot().values().any(|f| {
         let header = &f.compiled.definition().flow;
         header.enabled && header.on == event.as_str()
@@ -131,13 +135,16 @@ impl Runtime {
             delivered: AtomicBool::new(false),
         });
         let flows = factory(effects.clone());
-        // A reload reads flow validations from the permission database:
-        // on the blocking pool, never on the editor's runtime thread.
-        let owned = {
+        // A pending reload reads flow validations from the permission
+        // database: on the blocking pool. Without one the check stays on this
+        // thread, so the trigger is not overtaken by the edits that follow it.
+        let owned = if flows.store.refresh_pending() {
             let store = flows.store.clone();
             tokio::task::spawn_blocking(move || owns_trigger(&store, event))
                 .await
                 .unwrap_or(false)
+        } else {
+            owns(&flows.store, event)
         };
         if !owned {
             return false;

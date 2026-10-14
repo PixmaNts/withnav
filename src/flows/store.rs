@@ -177,7 +177,7 @@ struct ReloadMarker {
     state: std::sync::Mutex<MarkerState>,
 }
 #[derive(Default)]
-struct MarkerState {
+pub(crate) struct MarkerState {
     directory: Option<Directory>,
     observed: u64,
 }
@@ -625,6 +625,31 @@ impl FlowStore {
             .iter()
             .map(|(_, error)| error.clone())
             .collect()
+    }
+    /// Whether [`Self::refresh`] has work to do: a reload published since this
+    /// store last loaded, a reload that failed and must be retried, or a
+    /// refresh running on another thread. It reads the small marker file and
+    /// never waits: no database access, no lock held by another thread. When
+    /// it is false, the store is current and an evaluation can use its
+    /// snapshot without leaving the runtime thread.
+    pub fn refresh_pending(&self) -> bool {
+        let Some(marker) = &self.reload_marker else {
+            return false;
+        };
+        let mut state = match marker.state.try_lock() {
+            Ok(state) => state,
+            // Another thread is refreshing or reloading.
+            Err(_) => return true,
+        };
+        match marker.read(&mut state) {
+            Ok(generation) => generation > state.observed,
+            // `refresh` records the error and falls back to the built-ins.
+            Err(_) => true,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn hold_reload_marker_for_test(&self) -> std::sync::MutexGuard<'_, MarkerState> {
+        self.reload_marker.as_ref().unwrap().state.lock().unwrap()
     }
     /// A marker, not flow-file watching: external edits remain inactive until explicit reload.
     pub fn refresh(&self) {

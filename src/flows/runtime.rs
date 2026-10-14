@@ -1615,13 +1615,17 @@ impl FlowRuntime {
     ) {
         // A pending reload reads flow validations from the permission
         // database and may wait on the reload marker held by another thread:
-        // on the blocking pool, never on a runtime thread.
-        let store = self.store.clone();
-        if tokio::task::spawn_blocking(move || store.refresh())
-            .await
-            .is_err()
-        {
-            tracing::warn!("flow refresh task failed; evaluating the current snapshot");
+        // it runs on the blocking pool. With nothing pending the evaluation
+        // stays on this thread, so an editor trigger keeps its place among
+        // the edits that follow it.
+        if self.store.refresh_pending() {
+            let store = self.store.clone();
+            if tokio::task::spawn_blocking(move || store.refresh())
+                .await
+                .is_err()
+            {
+                tracing::warn!("flow refresh task failed; evaluating the current snapshot");
+            }
         }
         let snapshot = self.store.snapshot();
         let started = Instant::now();
@@ -2310,5 +2314,73 @@ mod application_status_tests {
                 .values()
                 .all(|flow| flow.location == crate::flows::store::Location::Builtin));
         });
+    }
+
+    /// An evaluation with no reload pending must not leave the runtime
+    /// thread: an extra hop delays editor triggers past the edits that follow
+    /// them. With the only blocking thread busy, the evaluation still ends.
+    #[test]
+    fn an_evaluation_without_a_pending_reload_stays_on_the_runtime_thread() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(FlowStore::with_data(
+                dir.path().into(),
+                dir.path().join("config"),
+                dir.path().join("data"),
+            ));
+            assert!(!store.refresh_pending());
+            let runtime = FlowRuntime::new(
+                store.clone(),
+                Arc::new(crate::flows::client::UnavailableClient),
+                Arc::new(NoEffects),
+            );
+            let (release, busy) = std::sync::mpsc::channel::<()>();
+            let occupied = tokio::task::spawn_blocking(move || busy.recv());
+            let evaluated = tokio::time::timeout(
+                Duration::from_secs(2),
+                runtime.evaluate(
+                    Event {
+                        trigger: "save".into(),
+                        payload: json!({}),
+                    },
+                    ContextSnapshot::default(),
+                    CancellationToken::new(),
+                ),
+            )
+            .await;
+            release.send(()).unwrap();
+            occupied.await.unwrap().unwrap();
+            assert!(
+                evaluated.is_ok(),
+                "the evaluation waited for the blocking pool"
+            );
+        });
+    }
+
+    /// A reload published by another store, or one in progress on another
+    /// thread, is pending; a store that saw the last reload has nothing pending.
+    #[test]
+    fn a_reload_is_pending_after_another_store_reloads_or_while_one_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, data) = (dir.path().join("config"), dir.path().join("data"));
+        let writer = FlowStore::with_data(dir.path().into(), config.clone(), data.clone());
+        let reader = Arc::new(FlowStore::with_data(dir.path().into(), config, data));
+        assert!(!reader.refresh_pending());
+        writer.reload().unwrap();
+        assert!(reader.refresh_pending());
+        reader.refresh();
+        assert!(!reader.refresh_pending());
+        let held = reader.hold_reload_marker_for_test();
+        assert!(
+            reader.refresh_pending(),
+            "a reload in progress counts as pending"
+        );
+        drop(held);
+        assert!(!reader.refresh_pending());
     }
 }

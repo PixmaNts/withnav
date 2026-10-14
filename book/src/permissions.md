@@ -79,9 +79,14 @@ nav permissions add write '*.md' allow --agent plan     # plan may write Markdow
 nav permissions add write '*' ask --agent plan
 ```
 
-`history` shows every decision: the call, the matching rule, the flow's verdict, your answer and
+`history` shows every decision: the call, the matching rule, the flow's verdict and the scores
+behind it (for example `permission-default requested 0.04 read_only 0.01 recoverable 0.05`), your
+answer and
 the outcome (`allowed`, `denied`, `pending`, `cancelled`, `expired`). Arguments are stored with
-secrets redacted and size-limited.
+secrets redacted and size-limited. `--json` adds `flow_trace`: the run id of each flow run, which
+finds the full run, its inputs and the exact text sent to Instinct, in
+`~/.local/share/withnav/flows/runs/<workspace hash>/runs.jsonl`. A question also shows these scores
+in its reason.
 
 Rules and history live in `~/.local/share/withnav/withnav.db`. If it cannot open, the session starts
 with **Permission rules unavailable** and the error. Every call is judged without a rule: the floor

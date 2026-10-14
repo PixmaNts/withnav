@@ -48,6 +48,8 @@ pub(super) enum Authorized {
 /// nothing can establish a protected request.
 struct SessionFlows {
     reason: std::sync::Mutex<Option<String>>,
+    /// The flow runs that answered, kept for the decision row.
+    runs: std::sync::Mutex<Vec<crate::agent::flow_hook::PermissionFlowAnswer>>,
     hook: Option<Arc<dyn ToolCallFlows>>,
     call: ToolCall,
     agent: Option<String>,
@@ -106,7 +108,11 @@ impl PermissionFlows for SessionFlows {
                 RuleResult::NoRule => FlowRule::None,
             };
             let answer = hook.permission_pre_call(self.context(query), rule, &self.cancel);
-            match tokio::time::timeout(FLOW_DEADLINE, answer).await {
+            let answer = tokio::time::timeout(FLOW_DEADLINE, answer).await;
+            if let Ok(answer) = &answer {
+                *self.runs.lock().unwrap_or_else(|e| e.into_inner()) = answer.flows.clone();
+            }
+            match answer {
                 // No flow that ran gave a verdict of its own: the rule applies,
                 // and the decision says the rule, not a flow, let it through.
                 Ok(answer)
@@ -273,6 +279,7 @@ pub(super) async fn authorize(
     let place = location(call, &commands, &cx, &scratch);
     let flows = SessionFlows {
         reason: std::sync::Mutex::new(None),
+        runs: Default::default(),
         hook: actor.tool_flows.clone(),
         call: call.clone(),
         agent: actor.role.as_ref().map(|role| role.id.as_str().to_owned()),
@@ -346,6 +353,8 @@ pub(super) async fn authorize(
         _ = actor.cancel.cancelled() => return Authorized::Interrupted,
         decision = decide::decide_with(&input, lookup, &flows) => decision,
     };
+    decision.trace.flow_runs =
+        std::mem::take(&mut *flows.runs.lock().unwrap_or_else(|e| e.into_inner()));
     if let Some(note) = flows
         .reason
         .lock()
@@ -392,7 +401,14 @@ pub(super) async fn authorize(
                 update(actor, id, Outcome::Cancelled, None, None).await;
             }
             let mut request = PermissionRequest::new(call, scope(call, &cx), &agent);
-            request.reason = reason;
+            // The scores behind the question, so that the card explains itself.
+            request.reason = match flow_trace(&decision)
+                .map(|trace| decisions::trace_summary(&trace))
+                .filter(|scores| !scores.is_empty())
+            {
+                Some(scores) => format!("{reason} (scores: {scores})"),
+                None => reason,
+            };
             request.requires_captain = actor.permission_store.is_none() || !bypassable(&decision);
             request.always_label = always_label(&always);
             request.reusable_approval = !always.is_empty() && actor.permission_store.is_some();
@@ -529,15 +545,30 @@ pub(super) async fn save_always(
 /// What the flows answered for this decision, for the decision table and the
 /// permission card: the protected check's verdict, run and score.
 fn flow_trace(decision: &Decision) -> Option<Value> {
-    let check = decision.trace.protected_check?;
-    let run = decision.trace.protected_run.as_ref();
-    Some(json!({
-        "protected_check": {
-            "verdict": check.as_str(),
-            "run_id": run.map(|run| run.run_id.as_str()),
-            "score": run.and_then(|run| run.scores.get("protected_requested")),
-        }
-    }))
+    let mut trace = serde_json::Map::new();
+    if let Some(check) = decision.trace.protected_check {
+        let run = decision.trace.protected_run.as_ref();
+        trace.insert(
+            "protected_check".into(),
+            json!({
+                "verdict": check.as_str(),
+                "run_id": run.map(|run| run.run_id.as_str()),
+                "score": run.and_then(|run| run.scores.get("protected_requested")),
+            }),
+        );
+    }
+    if !decision.trace.flow_runs.is_empty() {
+        trace.insert(
+            "flows".into(),
+            json!(decision
+                .trace
+                .flow_runs
+                .iter()
+                .map(|run| json!({"flow": run.flow, "run_id": run.run_id, "scores": run.scores}))
+                .collect::<Vec<_>>()),
+        );
+    }
+    (!trace.is_empty()).then_some(Value::Object(trace))
 }
 
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {

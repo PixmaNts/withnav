@@ -267,13 +267,14 @@ fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
             } else {
                 for decision in decisions {
                     println!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         decision.id,
                         decision.time,
                         decision.session_id,
                         decision.agent,
                         decision.tool,
-                        decision.outcome.as_str()
+                        decision.outcome.as_str(),
+                        crate::permission::decisions::scores_summary(&decision)
                     );
                 }
             }

@@ -162,6 +162,8 @@ pub struct Trace {
     pub protected_check: Option<ProtectedCheck>,
     /// The run that answered the protected check and its score, when one ran.
     pub protected_run: Option<crate::agent::flow_hook::RunScores>,
+    /// The permission flow runs that answered, filled in by the caller.
+    pub flow_runs: Vec<crate::agent::flow_hook::PermissionFlowAnswer>,
     pub command_matches: Value,
     pub floor: Option<String>,
     pub doom_loop: bool,

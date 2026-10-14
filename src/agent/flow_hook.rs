@@ -107,12 +107,15 @@ pub struct PermissionVerdict {
     pub flows: Vec<PermissionFlowAnswer>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PermissionFlowAnswer {
     pub flow: String,
     pub run_id: String,
     pub action: String,
     pub used_rule: bool,
+    /// The score of each node of this run that asked Instinct.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub scores: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(Debug)]

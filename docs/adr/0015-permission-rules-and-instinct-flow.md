@@ -266,6 +266,12 @@ Decisions taken while implementing this ADR that refine it:
   commands under unrelated or injected requests score 0.05–0.12, and the vague "the permission flow
   is too strict, fix it" 0.42–0.46, so they ask. The check's verdict, run id and score are recorded
   in the decision row (`flow_trace`) and in the `permission_gate` of `permission.requested`.
+- **Decision and run link.** Each decision row's `flow_trace` (JSON, added to
+  `permission_decisions` by the store when missing) names the flow runs behind it:
+  `protected_check` (verdict, run id, score) and `flows` (flow name, run id, the score of each node
+  that asked Instinct). The same object is in the `permission_gate` of `permission.requested`, the
+  scores are appended to the question's reason, and `nav permissions history` prints them on each
+  line. The run id is the key of the run in `flows/runs/<sha256(workspace)>/runs.jsonl`.
 - **Permission database.** If the database cannot open, the session starts in degraded mode and
   shows the error. Calls are judged as having no rule: the fixed floor and permission flow still
   apply, and the flow may allow. Bypass cannot answer, Always is not offered, and decisions cannot

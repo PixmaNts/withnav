@@ -79,6 +79,9 @@ Permissions chapter of the guide.
   "set yolo to false") now counts as your request for it; a vague goal or "apply this file" still
   does not. The check's verdict and score are recorded with the decision and shown with the
   question, so a refusal can be explained.
+- Each permission decision names the flow runs behind it and their scores: `nav permissions history`
+  prints them, `--json` gives the run ids that find the full run in the flow run log, and a
+  question shows the scores in its reason.
 - **Always** is no longer offered for a shell command that deletes, moves, overwrites, changes
   permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
   `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule

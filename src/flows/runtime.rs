@@ -121,6 +121,7 @@ fn resolve_permissions(
                 run_id: outcome.trace.run_id.clone(),
                 action: rule_action.into(),
                 used_rule: true,
+                scores: run_scores(outcome).scores,
             });
             candidates.push((
                 rule_action,
@@ -143,6 +144,7 @@ fn resolve_permissions(
                 run_id: outcome.trace.run_id.clone(),
                 action: resolved.into(),
                 used_rule,
+                scores: run_scores(outcome).scores,
             });
             candidates.push((
                 resolved,

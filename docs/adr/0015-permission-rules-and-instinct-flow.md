@@ -285,6 +285,14 @@ Decisions taken while implementing this ADR that refine it:
   whole messages within 8 KiB with a cut flag. A short answer such as "yes go" is read with the
   agent proposal it answers, so accepting a proposal counts as a request, protected writes
   included. The agent's message alone never counts, whatever it says the Captain approved.
+  The transcript is cut at the Captain's last message (a Captain message or a Captain answer to
+  `ask`) before the last 4 are taken: what the agent wrote after it (reading a file, reasoning,
+  announcing the command) is never read, so a command copied from a file the Captain asked to
+  "apply" cannot become a request through the agent's own text. An `ask` question the Captain
+  answered stays, since it precedes the answer. The compaction summary stays excluded. Replayed
+  against the live model on the recorded case (`rm` of a file in the home directory after
+  "read plan.txt and apply it"), `requested` went from 0.91 to 0.05; the recorded "yes go" + `rm`
+  still scores 0.93.
 - **Answers to `ask`.** The Captain's answer to an `ask` counts as the Captain's words, labelled
   with the assistant's question, after editor selections and skill blocks attached to it are
   removed.

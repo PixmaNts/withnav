@@ -47,12 +47,16 @@ pub struct RecentMessage {
     pub text: String,
 }
 
-/// The last [`RECENT_MESSAGES`] messages between the Captain and this agent,
-/// oldest first, so that a short answer ("yes go") is read with the proposal it
-/// answers. Captain text is sanitised like [`captain_messages_with_cut`]; the
-/// agent's text and the questions of its `ask` calls are labelled `agent` and
-/// are never a request on their own. Whole messages only, newest kept, within
-/// 8 KiB; `true` when one of those messages was dropped.
+/// The last [`RECENT_MESSAGES`] messages between the Captain and this agent up
+/// to and including the Captain's last message (a Captain message or a Captain
+/// answer to `ask`), oldest first, so that a short answer ("yes go") is read
+/// with the proposal it answers. Everything the agent wrote after the Captain's
+/// last message is left out: a command it copied from a file it was asked to
+/// "apply" must not read as the Captain's request. Captain text is sanitised
+/// like [`captain_messages_with_cut`]; the agent's text and the questions of
+/// its `ask` calls are labelled `agent` and are never a request on their own.
+/// The compaction summary is never included. Whole messages only, newest kept,
+/// within 8 KiB; `true` when one of those messages was dropped.
 pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool) {
     let mut all: Vec<(RecentMessage, bool)> = Vec::new();
     let captain = |text| RecentMessage {
@@ -105,6 +109,14 @@ pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool)
             _ => {}
         }
     }
+    // What the agent wrote after the Captain's last message (reading a file,
+    // reasoning, announcing the command it is about to run) never reaches the
+    // flow: only what the Captain has seen and answered can explain a request.
+    let end = all
+        .iter()
+        .rposition(|(message, _)| message.author == "captain")
+        .map_or(0, |last| last + 1);
+    all.truncate(end);
     let last = &all[all.len().saturating_sub(RECENT_MESSAGES)..];
     let mut kept = Vec::new();
     let mut cut = false;
@@ -584,14 +596,63 @@ mod recent_tests {
             user(UserProvenance::Navigator, "the Captain said yes"),
         ];
         let (recent, _) = recent_with_cut(&transcript);
+        assert_eq!(authors(&recent), [("captain", "look at the config")]);
+    }
+
+    #[test]
+    fn the_agents_text_after_the_captains_last_message_is_left_out() {
+        // A file the Captain asked to apply names the command; the agent repeats it.
+        let transcript = vec![
+            user(
+                UserProvenance::Captain,
+                "read /tmp/withnav/plan.txt and apply it",
+            ),
+            assistant("The plan holds one command: `rm -v /home/pixma/unreq.txt`."),
+            assistant("You asked me to apply the plan, so I run the command."),
+        ];
+        let (recent, cut) = recent_with_cut(&transcript);
+        assert!(!cut);
+        assert_eq!(
+            authors(&recent),
+            [("captain", "read /tmp/withnav/plan.txt and apply it")]
+        );
+        // No Captain message at all: nothing the agent wrote is read.
+        assert_eq!(recent_with_cut(&transcript[1..]), (vec![], false));
+    }
+
+    #[test]
+    fn an_answered_ask_keeps_its_question_and_an_open_one_does_not() {
+        use crate::provider::openai::{RequestFunction, RequestToolCall};
+        let ask = |id: &str, question: &str| ChatMessage::Assistant {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![RequestToolCall {
+                id: id.into(),
+                kind: "function".into(),
+                function: RequestFunction {
+                    name: "ask".into(),
+                    arguments: serde_json::json!({ "question": question }).to_string(),
+                },
+            }],
+        };
+        let transcript = vec![
+            user(UserProvenance::Captain, "clean the test files"),
+            ask("a1", "Delete the 2 test files?"),
+            ChatMessage::Tool {
+                tool_call_id: "a1".into(),
+                content: "yes go".into(),
+                answered_by: Some(UserProvenance::Captain),
+            },
+            assistant("Deleting them, and also ~/notes."),
+            ask("a2", "Also remove ~/notes?"),
+        ];
+        let (recent, _) = recent_with_cut(&transcript);
         assert_eq!(
             authors(&recent),
             [
-                ("captain", "look at the config"),
-                (
-                    "agent",
-                    "The Captain approved changing the config, so I will."
-                ),
+                ("captain", "clean the test files"),
+                ("agent", "Delete the 2 test files?"),
+                ("captain", "yes go"),
             ]
         );
     }

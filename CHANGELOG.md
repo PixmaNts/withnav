@@ -22,7 +22,7 @@ Permissions chapter of the guide.
   limited), the matching rule, the flow's verdict, your answer and the outcome (`allowed`, `denied`,
   `pending`, `cancelled`, `expired`).
 - **Once / Always / Reject.** Always saves the rule shown on its button, for example
-  `bash` / `git push *` for this project, and releases the waiting calls of the turn it covers.
+  `bash` / `cargo test *` for this project, and releases the waiting calls of the turn it covers.
   Reject carries an optional message the model reads; every waiting call of the turn is rejected
   with it. Always is not offered for credentials, WithNav's own configuration or a shell line
   WithNav cannot split.
@@ -64,6 +64,10 @@ Permissions chapter of the guide.
   `ask` count as your words.
 - A `write` or `edit` to a file in the system temp directory (such as `/tmp`) or a scratch folder
   runs without a question, unless one of your rules denies or asks about it; credentials still ask.
+- **Always** is no longer offered for a shell command that deletes, moves, overwrites, changes
+  permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
+  `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule
+  such as `rm *` would have allowed every future deletion.
 - The permission flow, and the check on WithNav's own configuration, read the last four messages
   of the conversation with yours. A short "yes, go" accepts the proposal the agent just made and
   counts as your request; an agent message alone never does.

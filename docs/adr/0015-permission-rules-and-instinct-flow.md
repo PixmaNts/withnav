@@ -264,6 +264,10 @@ Decisions taken while implementing this ADR that refine it:
   `deny` and a written `ask` still apply before it, and a project that lives in the temporary
   directory is judged as a project. Bash is left to the flow, whose state says that creating or
   changing files in the project, its scratch directories or the temp directory is recoverable.
+- **No Always for destructive commands.** "Always" saves a prefix rule, so it is not offered for a
+  shell command that deletes, moves or overwrites files, changes permissions, kills processes or
+  rewrites history, nor for one that writes through a `>` or `>>` redirection to a file. The list
+  is one constant, `permission::shell::NO_ALWAYS`; `sqlite3 -readonly` stays a read.
 - **Recent exchanges.** The permission flow and the protected check both receive
   `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
   labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,

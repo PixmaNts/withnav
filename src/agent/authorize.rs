@@ -22,7 +22,7 @@ use crate::permission::{
         RuleProposal, RuleResult, Verdict,
     },
     decisions::{self, CallSnapshot, Outcome},
-    floor::{resolve_path, Floor, FloorContext},
+    floor::{location, resolve_path, Floor, FloorContext, Location},
     rules::{Effect, RuleOrigin, RuleScope},
     shell,
 };
@@ -54,6 +54,7 @@ struct SessionFlows {
     workspace: PathBuf,
     commands: Option<Vec<PermissionCommand>>,
     inside_project: Option<bool>,
+    location: Option<&'static str>,
     skill: Option<ValidatedSkill>,
     captain_messages: Vec<String>,
     captain_messages_cut: bool,
@@ -79,6 +80,7 @@ impl SessionFlows {
                 .map(|rule| format!("{} {} {}", rule.action, rule.resource, rule.effect.as_str())),
             commands: self.commands.clone(),
             inside_project: self.inside_project,
+            location: self.location,
             protected: matches!(query.floor, Floor::Protected(_) | Floor::NamesProtected(_)),
             skill: self.skill.clone(),
             captain_messages: self.captain_messages.clone(),
@@ -185,8 +187,16 @@ fn control(actor: &AgentActor) -> Control {
     }
 }
 
-/// Whether the target of a file tool lies inside the project.
-fn inside_project(call: &ToolCall, cx: &FloorContext) -> Option<bool> {
+/// Whether the call acts inside the project: the target of a file tool, or
+/// for bash every literal path of the line ([`location`]); `None` when unknown.
+fn inside_project(call: &ToolCall, cx: &FloorContext, location: Option<Location>) -> Option<bool> {
+    if call.name == "bash" {
+        return match location? {
+            Location::Project | Location::Scratch => Some(true),
+            Location::Temp | Location::Outside => Some(false),
+            Location::Unknown => None,
+        };
+    }
     if !matches!(
         call.name.as_str(),
         "read" | "grep" | "glob" | "write" | "edit"
@@ -248,6 +258,12 @@ pub(super) async fn authorize(
     }
     let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
     let (recent, recent_cut) = recent_with_cut(&actor.transcript);
+    let scratch: Vec<PathBuf> = actor
+        .scratch_roots
+        .iter()
+        .map(|root| root.path.clone())
+        .collect();
+    let place = location(call, &commands, &cx, &scratch);
     let flows = SessionFlows {
         reason: std::sync::Mutex::new(None),
         hook: actor.tool_flows.clone(),
@@ -264,7 +280,8 @@ pub(super) async fn authorize(
                 })
                 .collect()
         }),
-        inside_project: inside_project(call, &cx),
+        inside_project: inside_project(call, &cx, place),
+        location: place.map(Location::as_str),
         skill: actor
             .active_validated_skill()
             .map(|(name, instructions)| ValidatedSkill { name, instructions }),

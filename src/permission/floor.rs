@@ -649,6 +649,100 @@ fn path_tokens(word: &str) -> impl Iterator<Item = &str> {
         .filter(|token| !token.is_empty())
 }
 
+/// Where a call acts, from its literal paths: the project, one of WithNav's
+/// scratch directories, the system temp directory outside them, elsewhere, or
+/// unknown (an opaque line, a path that cannot be resolved, a relative path
+/// after a `cd`). For bash, the farthest place any literal operand or
+/// redirection target names; a command naming no path acts in the project,
+/// its working directory. `None` for a tool without a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Location {
+    Project,
+    Scratch,
+    Temp,
+    Outside,
+    Unknown,
+}
+
+impl Location {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Scratch => "scratch",
+            Self::Temp => "temp",
+            Self::Outside => "outside",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+pub fn location(
+    call: &ToolCall,
+    commands: &[ShellCommand],
+    cx: &FloorContext,
+    scratch: &[PathBuf],
+) -> Option<Location> {
+    let roots = |paths: &[PathBuf]| -> Vec<PathBuf> {
+        paths
+            .iter()
+            .filter_map(|root| resolve_path(&root.to_string_lossy(), cx))
+            .collect()
+    };
+    let (scratch, temp) = (roots(scratch), roots(&cx.temp_roots));
+    let project = roots(
+        &std::iter::once(cx.workspace.clone())
+            .chain(cx.writable_roots.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let place = |word: &str| match resolve_path(word, cx) {
+        None => Location::Unknown,
+        Some(path) if scratch.iter().any(|root| path.starts_with(root)) => Location::Scratch,
+        Some(path) if project.iter().any(|root| path.starts_with(root)) => Location::Project,
+        Some(path) if temp.iter().any(|root| path.starts_with(root)) => Location::Temp,
+        Some(_) => Location::Outside,
+    };
+    match call.name.as_str() {
+        "read" | "grep" | "glob" | "write" | "edit" => Some(
+            call.args
+                .get("path")
+                .and_then(Value::as_str)
+                .map_or(Location::Project, place),
+        ),
+        "bash" => {
+            let mut farthest = Location::Project;
+            // After a `cd`, a relative path no longer starts in the project.
+            let mut moved = false;
+            for command in commands {
+                if command.opaque {
+                    return Some(Location::Unknown);
+                }
+                let (program, _, operands) = operands(command, &command.words);
+                let program = program.as_deref().map(basename);
+                let targets = command
+                    .redirections
+                    .iter()
+                    .map(|redirection| redirection.target.as_str())
+                    .filter(|target| {
+                        !target.starts_with("/dev/")
+                            && !target.chars().all(|c| c.is_ascii_digit() || c == '-')
+                    });
+                for word in operands.iter().map(String::as_str).chain(targets) {
+                    let absolute = word.starts_with('/') || word.starts_with('~');
+                    let here = if moved && !absolute {
+                        Location::Unknown
+                    } else {
+                        place(word)
+                    };
+                    farthest = farthest.max(here);
+                }
+                moved |= matches!(program, Some("cd" | "pushd" | "popd"));
+            }
+            Some(farthest)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,6 +1330,62 @@ mod tests {
         ));
         // The target alone, outside, is not protected.
         assert!(!protected_write(&root.join("elsewhere/custom.toml"), &f.cx));
+    }
+
+    #[test]
+    fn a_call_is_located_by_its_literal_paths() {
+        let f = fixture();
+        let root = f.cx.workspace.parent().unwrap().to_path_buf();
+        for sub in ["tmp/withnav", "tmp/other"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        let cx = FloorContext {
+            temp_roots: vec![root.join("tmp"), root.join("tmp/withnav")],
+            ..f.cx.clone()
+        };
+        let scratch = [root.join("tmp/withnav")];
+        let at = |line: &str| {
+            let call = ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                args: json!({"command": line}),
+                args_valid: true,
+            };
+            location(&call, &split(line), &cx, &scratch)
+        };
+        let r = root.display();
+        assert_eq!(at("cargo test"), Some(Location::Project));
+        assert_eq!(at("rm -v src/a.rs"), Some(Location::Project));
+        assert_eq!(
+            at(&format!(
+                "ls -la {r}/tmp/withnav/u.txt && rm -v {r}/tmp/withnav/u.txt"
+            )),
+            Some(Location::Scratch)
+        );
+        assert_eq!(at(&format!("rm {r}/tmp/other/lock")), Some(Location::Temp));
+        assert_eq!(
+            at(&format!("echo x > {r}/tmp/withnav/a && rm {r}/home/x.txt")),
+            Some(Location::Outside)
+        );
+        assert_eq!(at("cd /x && rm y"), Some(Location::Unknown));
+        assert_eq!(at("if true; then rm a; fi"), Some(Location::Unknown));
+        let file = |name: &str, path: &str| location(&native_call(name, path), &[], &cx, &scratch);
+        assert_eq!(file("write", "src/a.rs"), Some(Location::Project));
+        assert_eq!(
+            file("write", &format!("{r}/tmp/withnav/n.md")),
+            Some(Location::Scratch)
+        );
+        assert_eq!(
+            file("read", &format!("{r}/home/n.md")),
+            Some(Location::Outside)
+        );
+        let other = ToolCall {
+            id: "c".into(),
+            name: "fetch".into(),
+            args: json!({"url": "https://example.com"}),
+            args_valid: true,
+        };
+        assert_eq!(location(&other, &[], &cx, &scratch), None);
     }
 
     #[test]

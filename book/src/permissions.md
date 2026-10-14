@@ -23,9 +23,13 @@ Every tool call goes through the same steps, in this order:
 4. **Your rules**: a `deny` rule stops the call, whatever comes after.
 5. **Bypass** (if on for this session): the call runs.
 6. **The permission flow**: Instinct judges whether you, or a skill you validated, asked for the
-   call (including a parent agent's delegation to a subagent), or whether it is a read or a
-   recoverable change inside the project. It can let the call
-   run, or ask you.
+   call (including a parent agent's delegation to a subagent), whether it only reads, or whether
+   it is a recoverable change: files in the project, its scratch folders or the temp folder, or
+   building, testing, formatting or linting the project. It can let the call run, or ask you.
+   Under an **allow** rule it asks only whether this exact call is dangerous (destructive,
+   irreversible, publishing or touching credentials); a dangerous call still runs if you asked for
+   it, and asks you otherwise. So an **Always** never makes a dangerous call run unasked, and
+   never stops one you explicitly asked for.
 
 The permission flow reads all your messages and the last four messages of the conversation, yours
 and the agent's. A short answer such as "yes, go" therefore accepts the proposal the agent just

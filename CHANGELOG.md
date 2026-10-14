@@ -30,7 +30,8 @@ Permissions chapter of the guide.
   matched by its prefix (`git push`, `cargo test`, `npm run build`), and the strictest answer wins.
 - **The permission flow.** The built-in `permission-default` flow asks Instinct whether you, or a
   skill you validated, asked for the call, or whether it is a read or a recoverable change in the
-  project; under an `allow` rule it asks whether this exact call is destructive. It runs in the
+  project; under an `allow` rule it asks whether this exact call is destructive and, if so,
+  whether you asked for it. It runs in the
   Studio like any flow and can be tuned there. If Instinct is unavailable, your rules apply.
 - **Validation of flows and skills.** A global or workspace flow, and a skill, run only once you
   have validated their current content; a changed file asks again. A validated flow, a workspace
@@ -68,6 +69,12 @@ Permissions chapter of the guide.
   permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
   `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule
   such as `rm *` would have allowed every future deletion.
+- **The permission flow judges better.** Its "read or recoverable change" question is split in
+  two plain questions: does the call only read, and is it a recoverable change (files in the
+  project, its scratch folders or the temp folder, or building, testing, formatting, linting).
+  Replayed on a real test session, project and temp writes and requested deletions now run, and
+  unrequested destructive commands still ask. Under an allow rule, a call judged dangerous now
+  runs when you asked for it and asks otherwise, as it would without the rule.
 - The permission flow, and the check on WithNav's own configuration, read the last four messages
   of the conversation with yours. A short "yes, go" accepts the proposal the agent just made and
   counts as your request; an agent message alone never does.

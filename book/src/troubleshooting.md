@@ -99,7 +99,8 @@ The gateway has no usable key. Run `nav auth set <provider>`, or export the vari
 ### Permission prompts for a command you trust
 
 Answer **Always** to save the allow rule shown on the button. Later calls still go through the
-fixed floor, the repeated-call check and the permission flow's danger check.
+fixed floor, the repeated-call check and the permission flow's danger check (a dangerous call you
+did not ask for still asks). **Always** is not offered for commands that delete or overwrite.
 You can also add a rule yourself, for example
 `nav permissions add bash 'cargo test *' allow`. See [Permissions](permissions.md). Do not use
 bypass to avoid prompts you do not understand.

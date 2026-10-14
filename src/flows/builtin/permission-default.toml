@@ -10,7 +10,8 @@ start = ["protected"]
 [constants]
 PROTECTED_MIN = 0.9
 REQUESTED_MIN = 0.6
-SAFE_MIN = 0.7
+READ_ONLY_MIN = 0.6
+RECOVERABLE_MIN = 0.7
 DANGER_MIN = 0.5
 
 [fallback]
@@ -70,13 +71,43 @@ inside_project = "event.inside_project"
 rule = "event.rule"
 [node.next]
 yes = ["allow"]
-no = ["safe"]
+no = ["unrequested"]
 
 [[node]]
-id = "safe"
+id = "unrequested"
+type = "expression"
+condition = 'is_set(effect) && effect == "allow"'
+[node.inputs]
+effect = "event.rule_effect"
+[node.next]
+true = ["danger_ask"]
+false = ["read_only"]
+
+[[node]]
+id = "read_only"
 type = "noul"
-instructions = "Is this a read, or a recoverable change inside the project?"
-threshold = "constant.SAFE_MIN"
+instructions = "Does this call only read or list things, without changing any file, process or remote state?"
+threshold = "constant.READ_ONLY_MIN"
+state_template = "state.md"
+[node.inputs]
+captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
+delegation = "conversation.delegation"
+skill = "event.skill"
+tool = "event.tool"
+args = "event.args"
+commands = "event.commands"
+inside_project = "event.inside_project"
+rule = "event.rule"
+[node.next]
+yes = ["allow"]
+no = ["recoverable"]
+
+[[node]]
+id = "recoverable"
+type = "noul"
+instructions = "Is this a recoverable change: creating or editing files inside the project, its scratch directories or the system temp directory, or building, testing, formatting or linting the project? Deleting files, discarding uncommitted work, rewriting or pushing git history, publishing, or changing anything outside those places is not recoverable."
+threshold = "constant.RECOVERABLE_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
@@ -109,7 +140,7 @@ commands = "event.commands"
 inside_project = "event.inside_project"
 rule = "event.rule"
 [node.next]
-yes = ["danger_ask"]
+yes = ["requested"]
 no = ["allow"]
 
 [[node]]
@@ -137,11 +168,11 @@ id = "unrequested_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "This action was not requested and is not a read or recoverable project change."
+note = "This action was not requested, does not only read, and is not a recoverable change."
 
 [[node]]
 id = "danger_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "This exact call is destructive, irreversible, publishes something or touches credentials."
+note = "This exact call is destructive, irreversible, publishes something or touches credentials, and was not requested."

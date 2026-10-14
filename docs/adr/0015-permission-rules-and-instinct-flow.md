@@ -268,6 +268,17 @@ Decisions taken while implementing this ADR that refine it:
   shell command that deletes, moves or overwrites files, changes permissions, kills processes or
   rewrites history, nor for one that writes through a `>` or `>>` redirection to a file. The list
   is one constant, `permission::shell::NO_ALWAYS`; `sqlite3 -readonly` stays a read.
+- **The built-in questions.** The single "read, or recoverable change inside the project?"
+  question was judged badly (0.08 for a write in the scratch directory). It is split into two plain
+  questions: `read_only`, "Does this call only read or list things, without changing any file,
+  process or remote state?" (≥ 0.6), and `recoverable`, "Is this a recoverable change: creating or
+  editing files inside the project, its scratch directories or the system temp directory, or
+  building, testing, formatting or linting the project?" (≥ 0.7; the question also says that
+  deleting, discarding uncommitted work, rewriting or pushing history, publishing or changing
+  anything elsewhere is not). Under an `allow` rule, a call judged dangerous now goes to the same
+  `requested` question: an explicitly requested `rm` runs under `bash rm *` as it would with no
+  rule, and an unrequested one asks. The thresholds were checked by replaying the Captain's test
+  session against the live model.
 - **Recent exchanges.** The permission flow and the protected check both receive
   `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
   labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,

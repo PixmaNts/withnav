@@ -538,12 +538,18 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
     }
     let words = || all.iter().map(|word| basename(word));
     let words: Vec<&str> = words().collect();
-    if words.contains(&"nav")
-        && words.windows(2).any(|pair| {
-            pair[0] == "permissions"
-                && matches!(pair[1], "add" | "revoke" | "validate" | "revoke-validation")
-        })
-    {
+    let nav_writer = words.windows(2).position(|pair| {
+        pair[0] == "permissions"
+            && matches!(pair[1], "add" | "revoke" | "validate" | "revoke-validation")
+    });
+    // `--help` or `-h` after the subcommand prints its help and changes nothing.
+    let help = nav_writer.is_some_and(|at| {
+        words[at + 2..]
+            .iter()
+            .take_while(|word| **word != "--")
+            .any(|word| matches!(*word, "--help" | "-h"))
+    });
+    if words.contains(&"nav") && nav_writer.is_some() && !help {
         return Floor::Protected("nav permissions".into());
     }
     if !reads_only && writer.is_none() {
@@ -1002,6 +1008,18 @@ mod tests {
             Floor::Protected(_)
         ));
         assert_eq!(bash_floor(&f.cx, "nav permissions list"), Floor::None);
+        // Help changes nothing.
+        for line in [
+            "nav permissions --help; nav permissions add --help",
+            "target/release/nav permissions revoke -h",
+            "nav permissions validate --help | head -30",
+        ] {
+            assert_eq!(bash_floor(&f.cx, line), Floor::None, "{line}");
+        }
+        assert!(matches!(
+            bash_floor(&f.cx, "nav permissions add bash 'x --help' allow"),
+            Floor::Protected(_)
+        ));
     }
 
     #[test]

@@ -65,11 +65,23 @@ pub struct FloorContext {
     pub writable_roots: Vec<PathBuf>,
     /// Extra places `read`, `grep` and `glob` may look, never change.
     pub readable_roots: Vec<PathBuf>,
+    /// Temporary directories: the system temp directory and the scratch
+    /// directories. A native `write` or `edit` there runs without the flow.
+    pub temp_roots: Vec<PathBuf>,
     /// Holds `config.json` and the global flows directory.
     pub config_dir: Option<PathBuf>,
     /// Holds `withnav.db` and its write-ahead files.
     pub data_dir: Option<PathBuf>,
     pub home: Option<PathBuf>,
+}
+
+/// The system temporary directories: `std::env::temp_dir()` and, on Unix, `/tmp`.
+pub fn system_temp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    if cfg!(unix) && !roots.iter().any(|root| root == Path::new("/tmp")) {
+        roots.push(PathBuf::from("/tmp"));
+    }
+    roots
 }
 
 impl FloorContext {
@@ -80,6 +92,7 @@ impl FloorContext {
             workspace: cx.workspace.clone(),
             writable_roots: cx.writable_roots.clone(),
             readable_roots: cx.readable_roots.clone(),
+            temp_roots: system_temp_roots(),
             config_dir: crate::provider::auth::default_config_dir(),
             data_dir: crate::paths::data_dir(),
             home: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
@@ -543,6 +556,7 @@ mod tests {
             workspace: root.join("project"),
             writable_roots: Vec::new(),
             readable_roots: Vec::new(),
+            temp_roots: Vec::new(),
             config_dir: Some(root.join("config")),
             data_dir: Some(root.join("data")),
             home: Some(root.join("home")),

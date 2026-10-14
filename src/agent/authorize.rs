@@ -149,6 +149,13 @@ pub(super) fn floor_context(actor: &AgentActor) -> FloorContext {
         workspace: actor.tool_context.workspace.clone(),
         writable_roots: actor.tool_context.writable_roots.clone(),
         readable_roots: actor.tool_context.readable_roots.clone(),
+        temp_roots: actor
+            .permission_dirs
+            .temp
+            .iter()
+            .cloned()
+            .chain(actor.scratch_roots.iter().map(|root| root.path.clone()))
+            .collect(),
         config_dir: actor.permission_dirs.config.clone(),
         data_dir: actor.permission_dirs.data.clone(),
         home: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),

@@ -194,6 +194,9 @@ impl DoomTracker {
 pub struct Lookup {
     floor: Floor,
     free_read: bool,
+    /// A native write inside a temporary directory: it runs once no rule
+    /// stops or asks about it.
+    temp_write: bool,
     rules: Evaluation,
     /// The rule for a loop, read only when the call repeats enough and no
     /// written deny stops it. Its failure is kept apart: it only matters at
@@ -209,12 +212,14 @@ pub fn lookup(input: &Input<'_>) -> Result<Lookup, Error> {
         return Ok(Lookup {
             floor: Floor::None,
             free_read: false,
+            temp_write: false,
             rules: Evaluation::default(),
             doom: Ok(None),
         });
     }
     let floor = floor::check(input.call, input.commands, input.cx);
     let free_read = input.store.is_some() && floor == Floor::None && reads_inside_roots(input);
+    let temp_write = input.store.is_some() && floor == Floor::None && writes_inside_temp(input);
     let rules = if free_read {
         Evaluation::default()
     } else {
@@ -239,6 +244,7 @@ pub fn lookup(input: &Input<'_>) -> Result<Lookup, Error> {
     Ok(Lookup {
         floor,
         free_read,
+        temp_write,
         rules,
         doom,
     })
@@ -277,6 +283,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
     let Lookup {
         floor,
         free_read,
+        temp_write,
         rules,
         doom,
     } = lookup;
@@ -299,7 +306,9 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
     // resolved the way execution would resolve it, asks and nothing can allow it.
     // 3. Reads inside the readable roots (`free_read`) need no rule and no
     // flow. They still go through the loop check below, so a model re-reading
-    // the same file forever is stopped.
+    // the same file forever is stopped. A native write inside a temporary
+    // directory (`temp_write`) needs no flow either: what it changes is
+    // temporary by definition. A written `deny` or `ask` rule still applies.
     // 4. Rules (`rules`), read by `lookup`.
     trace.command_matches = rules.matches.clone();
     trace.rule_id = rules.rule.as_ref().map(|rule| rule.id);
@@ -403,7 +412,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         }
     }
 
-    if free_read {
+    if free_read || (temp_write && rules.result != RuleResult::Ask) {
         return run(ApprovedBy::Rule, trace);
     }
 
@@ -486,6 +495,28 @@ fn reads_inside_roots(input: &Input<'_>) -> bool {
             .filter_map(|root| resolve_path(&root.to_string_lossy(), input.cx)),
     );
     resolve_path(path, input.cx).is_some_and(|path| inside(&path, &roots))
+}
+
+/// Whether a native `write` or `edit` lands inside a temporary directory:
+/// the system temp directory or a scratch directory, after every link is
+/// followed, so a link in `/tmp` to a project file is not a temp write. A
+/// project that itself lives in the temp directory is judged as a project.
+fn writes_inside_temp(input: &Input<'_>) -> bool {
+    if !matches!(input.call.name.as_str(), "write" | "edit") {
+        return false;
+    }
+    let Some(target) = path_argument(input.call).and_then(|path| resolve_path(path, input.cx))
+    else {
+        return false;
+    };
+    let roots: Vec<PathBuf> = input
+        .cx
+        .temp_roots
+        .iter()
+        .filter_map(|root| resolve_path(&root.to_string_lossy(), input.cx))
+        .collect();
+    let workspace = resolve_path(&input.cx.workspace.to_string_lossy(), input.cx);
+    inside(&target, &roots) && !workspace.is_some_and(|workspace| target.starts_with(workspace))
 }
 
 struct Item {
@@ -778,7 +809,14 @@ mod tests {
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        for sub in ["project", "config/flows", "data", "home/.ssh", "outside"] {
+        for sub in [
+            "project",
+            "config/flows",
+            "data",
+            "home/.ssh",
+            "outside",
+            "tmp",
+        ] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
         let store = PermissionStore::open(root.join("data")).unwrap();
@@ -786,6 +824,7 @@ mod tests {
             workspace: root.join("project"),
             writable_roots: Vec::new(),
             readable_roots: vec![root.join("skills")],
+            temp_roots: vec![root.join("tmp")],
             config_dir: Some(root.join("config")),
             data_dir: Some(root.join("data")),
             home: Some(root.join("home")),
@@ -1084,6 +1123,106 @@ mod tests {
         let outside = f.root().join("outside/x").display().to_string();
         let decision = f.decide(Control::Normal, &file("read", &outside));
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn writes_inside_a_temp_directory_run_without_the_flow() {
+        let f = fixture();
+        let temp = |name: &str| f.root().join("tmp").join(name).display().to_string();
+        for call in [
+            file("write", &temp("x")),
+            file("edit", &temp("deep/new/y.txt")),
+        ] {
+            let (decision, asked) =
+                f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::Deny));
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
+            assert_eq!(asked, 0);
+        }
+        // The real system temp directory too.
+        let cx = FloorContext {
+            temp_roots: floor::system_temp_roots(),
+            ..f.cx.clone()
+        };
+        let fixture = Fixture { cx, ..f };
+        let (decision, asked) = fixture.decide_with(
+            Control::Normal,
+            &file("write", "/tmp/withnav-temp-write-test/x"),
+            1,
+            FlowAnswer::Deny,
+        );
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn a_temp_write_still_meets_rules_the_floor_and_links() {
+        let f = fixture();
+        let target = f.root().join("tmp/x").display().to_string();
+        // A written deny on the path denies.
+        f.add("write", &literal(&target), Effect::Deny);
+        let decision = f.decide(Control::Normal, &file("write", &target));
+        assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+        // A credential-looking path asks.
+        let key = f.root().join("tmp/.env").display().to_string();
+        let (decision, asked) =
+            f.decide_with(Control::Normal, &file("write", &key), 1, FlowAnswer::Allow);
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        assert_eq!(asked, 0);
+        // A link in the temp directory to a project file is a project write.
+        let link = f.root().join("tmp/link");
+        std::os::unix::fs::symlink(f.cx.workspace.join("a.rs"), &link).unwrap();
+        let (decision, asked) = f.decide_with(
+            Control::Normal,
+            &file("write", &link.display().to_string()),
+            1,
+            FlowAnswer::AskCaptain,
+        );
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        assert_eq!(asked, 1);
+        // An ask rule still asks.
+        let other = f.root().join("tmp/y").display().to_string();
+        f.add("write", &literal(&other), Effect::Ask);
+        let decision = f.decide(Control::Normal, &file("write", &other));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn an_edit_outside_temp_still_goes_to_the_flow() {
+        let f = fixture();
+        for path in [
+            "src/a.rs".to_owned(),
+            f.root().join("outside/b").display().to_string(),
+        ] {
+            let (decision, asked) = f.decide_with(
+                Control::Normal,
+                &file("edit", &path),
+                1,
+                FlowAnswer::AskCaptain,
+            );
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{path}"
+            );
+            assert_eq!(asked, 1, "{path}");
+        }
+        // A project that lives in the temp directory is judged as a project.
+        let cx = FloorContext {
+            temp_roots: vec![f.root()],
+            ..f.cx.clone()
+        };
+        let inner = Fixture { cx, ..f };
+        let (_, asked) = inner.decide_with(
+            Control::Normal,
+            &file("write", "src/a.rs"),
+            1,
+            FlowAnswer::AskCaptain,
+        );
+        assert_eq!(asked, 1);
+        let f = inner;
+        // A bash write to the temp directory is the flow's to judge.
+        let line = format!("echo x > {}", f.root().join("tmp/x").display());
+        let (_, asked) = f.decide_with(Control::Normal, &bash(&line), 1, FlowAnswer::Allow);
+        assert_eq!(asked, 1);
     }
 
     #[test]

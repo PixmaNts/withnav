@@ -2596,6 +2596,7 @@ impl Service {
         actor.permission_dirs = crate::agent::actor::PermissionDirs {
             config: Some(self.config.config_dir.clone()),
             data: Some(self.config.data_dir.clone()),
+            temp: crate::permission::floor::system_temp_roots(),
         };
         actor.permission_session = session_id.to_string();
         actor.compaction_decision = compaction_decision(

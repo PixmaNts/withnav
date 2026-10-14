@@ -471,7 +471,7 @@ impl Parser<'_> {
                 while self.peek().is_some_and(|c| c.is_whitespace() && c != '\n') {
                     self.advance()?;
                 }
-                let target = self.word(&mut pending.children, depth, stop)?;
+                let (target, _) = self.word(&mut pending.children, depth, stop)?;
                 pending.redirections.push(Redirection { op, target });
                 needs_command = false;
                 has_command = true;
@@ -510,15 +510,13 @@ impl Parser<'_> {
                 return Err(());
             } else {
                 let word_start = self.pos;
-                let word = self.word(&mut pending.children, depth, stop)?;
+                let (word, plain) = self.word(&mut pending.children, depth, stop)?;
                 if &self.text[word_start..self.pos] == "!" && pending.words.is_empty() {
                     needs_command = true;
                     continue;
                 }
                 pending.words.push(word);
-                pending
-                    .plain
-                    .push(!self.text[word_start..self.pos].contains(['\'', '"', '\\']));
+                pending.plain.push(plain);
                 needs_command = false;
                 has_command = true;
             }
@@ -562,15 +560,22 @@ impl Parser<'_> {
         Ok(self.text[start..self.pos].to_owned())
     }
 
+    /// One word, and whether it is plain: no quote or escape outside a command
+    /// substitution, and a substitution only in the value of an assignment.
+    /// Quoting inside `$(…)` belongs to the inner command, which is split and
+    /// judged on its own; it does not make `S=$(…)` ambiguous. A substitution
+    /// anywhere else leaves the word non-plain, so it never names a program
+    /// or a rule prefix.
     fn word(
         &mut self,
         children: &mut Vec<ShellCommand>,
         depth: usize,
         stop: Option<char>,
-    ) -> Result<String, ()> {
+    ) -> Result<(String, bool), ()> {
         let start = self.pos;
         let mut value = String::new();
         let mut quote = None;
+        let (mut quoted, mut substituted) = (false, false);
         while let Some(c) = self.peek() {
             if self.backticks > 0 && self.rest().starts_with("\\`") {
                 // Backticks undergo an extra escape-processing pass in Bash.
@@ -580,6 +585,7 @@ impl Parser<'_> {
             if quote.is_none() && Some(c) == stop {
                 break;
             } else if quote == Some('\'') {
+                quoted = true;
                 self.advance()?;
                 if c == '\'' {
                     quote = None;
@@ -590,6 +596,7 @@ impl Parser<'_> {
                 self.advance()?;
                 quote = None;
             } else if c == '\\' {
+                quoted = true;
                 self.advance()?;
                 let escaped = self.advance()?;
                 if escaped != '\n' {
@@ -603,6 +610,7 @@ impl Parser<'_> {
                 || (quote.is_none()
                     && (self.rest().starts_with("<(") || self.rest().starts_with(">(")))
             {
+                substituted = true;
                 value.push_str(&self.substitution(children, depth)?);
             } else if quote.is_none()
                 && (self.rest().starts_with("$'") || self.rest().starts_with("$\""))
@@ -610,6 +618,7 @@ impl Parser<'_> {
                 // ANSI-C and locale quoting cannot be normalized by quote removal.
                 return Err(());
             } else if quote.is_none() && matches!(c, '\'' | '"') {
+                quoted = true;
                 self.advance()?;
                 quote = Some(c);
             } else if quote.is_none()
@@ -623,7 +632,12 @@ impl Parser<'_> {
         if quote.is_some() || self.pos == start {
             return Err(());
         }
-        Ok(value)
+        let plain = !quoted
+            && (!substituted
+                || value
+                    .split_once('=')
+                    .is_some_and(|(name, _)| assignment(&format!("{name}="))));
+        Ok((value, plain))
     }
 }
 
@@ -932,6 +946,24 @@ mod tests {
             assert!(matches(&pattern, &command.prefix.join(" ")));
         }
         assert!(!matches("git status *", "git status-other"));
+    }
+
+    #[test]
+    fn an_assigned_substitution_keeps_the_line_understood() {
+        let commands = split("S=$(sqlite3 -readonly a.db \"SELECT 1\"); echo \"$S\"");
+        assert!(commands.iter().all(|command| !command.opaque));
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.prefix.join(" "))
+                .collect::<Vec<_>>(),
+            ["", "sqlite3", "echo"]
+        );
+        assert_eq!(commands[0].save_pattern(), None);
+        // A substitution that could name the program stays opaque.
+        for line in ["$(echo rm) -rf x", "`echo rm` x", "S=1 $(echo rm) x"] {
+            assert!(split(line)[0].opaque, "{line}");
+        }
     }
 
     #[test]

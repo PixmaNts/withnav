@@ -737,6 +737,44 @@ mod tests {
             ),
             Floor::Protected(_)
         ));
+        // Inside a command substitution the inner command is judged on its own.
+        assert_eq!(
+            bash_floor(
+                &f.cx,
+                &format!(
+                    "S=$(sqlite3 -readonly {root}/data/withnav.db \"SELECT id FROM permission_decisions WHERE id=69\"); echo \"$S\""
+                )
+            ),
+            Floor::None
+        );
+        assert_eq!(
+            bash_floor(
+                &f.cx,
+                &format!("echo \"$(sqlite3 -readonly {root}/data/withnav.db 'SELECT 1')\"")
+            ),
+            Floor::None
+        );
+        assert!(matches!(
+            bash_floor(
+                &f.cx,
+                &format!("S=$(sqlite3 {root}/data/withnav.db \"drop table x\")")
+            ),
+            Floor::Protected(_)
+        ));
+        assert!(matches!(
+            bash_floor(
+                &f.cx,
+                &format!("S=$(sqlite3 -readonly /tmp/x.db \".save {root}/data/withnav.db\")")
+            ),
+            Floor::Protected(_)
+        ));
+        assert!(matches!(
+            bash_floor(
+                &f.cx,
+                &format!("echo $(sqlite3 -readonly /tmp/x.db) > {root}/data/withnav.db")
+            ),
+            Floor::Protected(_)
+        ));
         assert!(matches!(
             bash_floor(&f.cx, "nav permissions add bash '*' allow"),
             Floor::Protected(_)

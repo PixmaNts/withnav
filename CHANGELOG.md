@@ -47,6 +47,14 @@ Permissions chapter of the guide.
   as `C:\...`; tool output lists relative paths with `/` on every platform. Release assets: an MSVC
   `nav.exe` ZIP with licenses and a `win32-x64` VSIX bundling `nav.exe`, with checksums. The test
   suite runs natively on Windows in CI. MCP servers on Windows come with MCP support itself.
+- **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`; ready tools
+  appear as `mcp__<server>__<tool>` in new sessions and go through your permission rules like any
+  other tool. With no matching rule, the default is ask; the permission flow may still allow the
+  call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
+  Always saves a global rule. Calls are cancellable, have
+  deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
+  shutdown. `nav doctor` reports configuration and startup diagnostics, without empty `skipped:`
+  or `stderr:` fields.
 
 ### Changed
 

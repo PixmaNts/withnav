@@ -143,6 +143,29 @@ fn check<'a>(report: &'a Report, id: &str) -> &'a withnav::app::doctor::Check {
         .find(|c| c.id == id)
         .unwrap_or_else(|| panic!("missing {id}: {}", report.human()))
 }
+
+#[tokio::test]
+async fn mcp_doctor_reports_ready_disabled_and_invalid_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.layer = Some(DoctorLayer::Reflex);
+    let mut settings = withnav::settings::load(&config).unwrap();
+    settings.set_dotted("mcp", json!({
+        "fixture":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")]},
+        "disabled":{"command":["missing"],"enabled":false},
+        "INVALID":{"command":["missing"]}
+    }));
+    withnav::settings::save(&config, &settings).unwrap();
+    let report = inspect(&args, &config, None, None).await;
+    assert_eq!(check(&report, "mcp.fixture").status, Status::Ok);
+    assert!(check(&report, "mcp.fixture").value.contains("8 tools"));
+    assert!(check(&report, "mcp.fixture").value.contains("collision"));
+    assert_eq!(check(&report, "mcp.disabled").status, Status::Ok);
+    assert_eq!(check(&report, "mcp.INVALID").status, Status::Failed);
+    args.offline = true;
+    let report = inspect(&args, &config, None, None).await;
+    assert!(check(&report, "mcp.fixture").value.contains("not started"));
+}
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SnapshotEntry {
     path: std::path::PathBuf,
@@ -714,4 +737,28 @@ async fn doctor_does_not_report_a_non_database_file_as_readable() {
         std::fs::read_to_string(&path).unwrap(),
         "this is not a SQLite database"
     );
+}
+
+#[tokio::test]
+async fn mcp_doctor_reports_a_hung_initialisation_as_failed_with_its_stderr() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.layer = Some(DoctorLayer::Reflex);
+    let mut settings = withnav::settings::load(&config).unwrap();
+    settings.set_dotted("mcp", json!({
+        "hang":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],
+            "startup_timeout_ms":300,"env":{"HANG_STDERR":"1"}}
+    }));
+    withnav::settings::save(&config, &settings).unwrap();
+    let started = std::time::Instant::now();
+    let report = inspect(&args, &config, None, None).await;
+    let hang = check(&report, "mcp.hang");
+    assert_eq!(hang.status, Status::Failed, "{}", hang.value);
+    assert!(hang.value.contains("timed out"), "{}", hang.value);
+    assert!(
+        hang.value.contains("hung-init-stderr-line"),
+        "{}",
+        hang.value
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
 }

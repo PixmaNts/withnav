@@ -361,6 +361,13 @@ subagent text as untrusted and never treats it as a Captain turn.
 
 ## State on disk
 
+`WITHNAV_CONFIG_DIR` and `WITHNAV_DATA_DIR` override the configuration and data
+roots on every platform, for isolated tests and portable setups. When unset,
+the platform's normal per-user directory resolution is unchanged.
+Empty overrides are also unset. Relative overrides resolve to absolute paths
+against the nav process working directory, not a tool's workspace; storage and
+the protected floor therefore refer to the same files.
+
 MCP declarations live only in the global `config.json` under `mcp`. Connections, restart
 counters, tool inventories and bounded stderr tails are memory-only. Environment references
 are resolved only for child launch, never saved to configuration, history or events; declared

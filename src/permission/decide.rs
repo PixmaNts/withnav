@@ -492,7 +492,16 @@ fn project_roots(cx: &FloorContext) -> Vec<PathBuf> {
 }
 
 fn inside(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
+    #[cfg(windows)]
+    {
+        roots
+            .iter()
+            .any(|root| crate::tools::nofollow::path_within(path, root))
+    }
+    #[cfg(unix)]
+    {
+        roots.iter().any(|root| path.starts_with(root))
+    }
 }
 
 fn path_argument(call: &ToolCall) -> Option<&str> {
@@ -627,9 +636,20 @@ fn items(input: &Input<'_>) -> Result<Vec<Item>, Error> {
             let mut items = vec![classify(find(tool, &text)?, Some(proposal), text.clone())];
             if !inside(&resolved, &project_roots(input.cx)) {
                 let parent = resolved.parent().map_or(String::new(), |p| {
-                    p.to_string_lossy().trim_end_matches('/').to_owned()
+                    #[cfg(windows)]
+                    let separators: &[_] = &['/', '\\'];
+                    #[cfg(unix)]
+                    let separators: &[_] = &['/'];
+                    p.to_string_lossy().trim_end_matches(separators).to_owned()
                 });
-                let proposal = project("external_directory", format!("{}/*", literal(&parent)));
+                #[cfg(windows)]
+                let separator = "\\";
+                #[cfg(unix)]
+                let separator = "/";
+                let proposal = project(
+                    "external_directory",
+                    format!("{}*", literal(&format!("{parent}{separator}"))),
+                );
                 items.push(classify(
                     find("external_directory", &text)?,
                     Some(proposal),
@@ -765,7 +785,7 @@ fn opaque_deny(input: &Input<'_>) -> Result<Option<Rule>, Error> {
     let Some(store) = input.store else {
         return Ok(None);
     };
-    let workspace = input.cx.workspace.canonicalize()?;
+    let workspace = crate::tools::canonical_path(&input.cx.workspace)?;
     Ok(store
         .list(&RuleFilter::default())?
         .into_iter()
@@ -773,7 +793,9 @@ fn opaque_deny(input: &Input<'_>) -> Result<Option<Rule>, Error> {
         .filter(|rule| pattern_matches(&rule.action, "bash"))
         .find(|rule| match &rule.scope {
             RuleScope::Global => true,
-            RuleScope::Project(path) => *path == workspace,
+            RuleScope::Project(path) => {
+                crate::tools::resolved_path_key(path) == crate::tools::resolved_path_key(&workspace)
+            }
             RuleScope::Agent(name) => name == input.agent,
         }))
 }
@@ -829,7 +851,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = crate::tools::canonical_path(dir.path()).unwrap();
         for sub in [
             "project",
             "config/flows",
@@ -855,7 +877,7 @@ mod tests {
 
     impl Fixture {
         fn root(&self) -> PathBuf {
-            self.dir.path().canonicalize().unwrap()
+            crate::tools::canonical_path(self.dir.path()).unwrap()
         }
 
         fn add(&self, action: &str, resource: &str, effect: Effect) -> Rule {
@@ -1168,6 +1190,34 @@ mod tests {
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_project_aliases_are_inside_and_free_to_read() {
+        let f = fixture();
+        let target = f.cx.workspace.join("file.txt");
+        std::fs::write(&target, "content").unwrap();
+        let mut spellings = vec![
+            target.display().to_string().to_uppercase(),
+            format!("{}.", target.display()),
+            f.cx.workspace.join("file.txt ").display().to_string(),
+        ];
+        if let Some(alias) = crate::tools::nofollow::short_alias(&f.cx.workspace) {
+            spellings.push(alias.join("file.txt").display().to_string());
+        }
+        for path in spellings {
+            let resolved = resolve_path(&path, &f.cx).unwrap();
+            assert!(inside(&resolved, &project_roots(&f.cx)), "{path}");
+            let (decision, asked) = f.decide_with(
+                Control::Normal,
+                &file("read", &path),
+                1,
+                allow(FlowAnswer::Deny),
+            );
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{path}");
+            assert_eq!(asked, 0);
+        }
+    }
+
     #[test]
     fn writes_inside_a_temp_directory_run_without_the_flow() {
         let f = fixture();
@@ -1189,7 +1239,13 @@ mod tests {
         let fixture = Fixture { cx, ..f };
         let (decision, asked) = fixture.decide_with(
             Control::Normal,
-            &file("write", "/tmp/withnav-temp-write-test/x"),
+            &file(
+                "write",
+                &std::env::temp_dir()
+                    .join("withnav-temp-write-test/x")
+                    .display()
+                    .to_string(),
+            ),
             1,
             FlowAnswer::Deny,
         );
@@ -1212,16 +1268,20 @@ mod tests {
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
         assert_eq!(asked, 0);
         // A link in the temp directory to a project file is a project write.
-        let link = f.root().join("tmp/link");
-        std::os::unix::fs::symlink(f.cx.workspace.join("a.rs"), &link).unwrap();
-        let (decision, asked) = f.decide_with(
-            Control::Normal,
-            &file("write", &link.display().to_string()),
-            1,
-            FlowAnswer::AskCaptain,
-        );
-        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
-        assert_eq!(asked, 1);
+        // Creating a symlink needs a privilege on Windows: Unix only.
+        #[cfg(unix)]
+        {
+            let link = f.root().join("tmp/link");
+            std::os::unix::fs::symlink(f.cx.workspace.join("a.rs"), &link).unwrap();
+            let (decision, asked) = f.decide_with(
+                Control::Normal,
+                &file("write", &link.display().to_string()),
+                1,
+                FlowAnswer::AskCaptain,
+            );
+            assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+            assert_eq!(asked, 1);
+        }
         // An ask rule still asks.
         let other = f.root().join("tmp/y").display().to_string();
         f.add("write", &literal(&other), Effect::Ask);
@@ -1385,7 +1445,13 @@ mod tests {
     #[test]
     fn outside_project_write_asks_and_needs_both_rules() {
         let f = fixture();
-        let target = f.root().join("outside/note.txt").display().to_string();
+        let target = resolve_path(
+            &f.root().join("outside/note.txt").display().to_string(),
+            &f.cx,
+        )
+        .unwrap()
+        .display()
+        .to_string();
         let write = file("write", &target);
         let decision = f.decide(Control::Normal, &write);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
@@ -1397,8 +1463,12 @@ mod tests {
         assert_eq!(
             always[1].resource,
             format!(
-                "{}/*",
-                literal(&f.root().join("outside").display().to_string())
+                "{}*",
+                literal(&format!(
+                    "{}{}",
+                    f.root().join("outside").display(),
+                    std::path::MAIN_SEPARATOR
+                ))
             )
         );
         // The file rule alone is not enough.
@@ -1410,8 +1480,12 @@ mod tests {
         f.add(
             "external_directory",
             &format!(
-                "{}/*",
-                literal(&f.root().join("outside").display().to_string())
+                "{}*",
+                literal(&format!(
+                    "{}{}",
+                    f.root().join("outside").display(),
+                    std::path::MAIN_SEPARATOR
+                ))
             ),
             Effect::Allow,
         );
@@ -1421,8 +1495,12 @@ mod tests {
         f.add(
             "external_directory",
             &format!(
-                "{}/*",
-                literal(&f.root().join("outside").display().to_string())
+                "{}*",
+                literal(&format!(
+                    "{}{}",
+                    f.root().join("outside").display(),
+                    std::path::MAIN_SEPARATOR
+                ))
             ),
             Effect::Deny,
         );
@@ -1430,14 +1508,40 @@ mod tests {
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn external_directory_proposal_preserves_a_trailing_backslash() {
+        let f = fixture();
+        let directory = f.root().join("outside\\");
+        std::fs::create_dir(&directory).unwrap();
+        let target = directory.join("note.txt");
+        let decision = f.decide(Control::Normal, &file("write", &target.to_string_lossy()));
+        let always = proposals(&decision);
+        assert_eq!(always[1].action, "external_directory");
+        assert_eq!(
+            always[1].resource,
+            format!("{}*", literal(&format!("{}/", directory.display())))
+        );
+        f.add("write", &literal(&target.to_string_lossy()), Effect::Allow);
+        f.add("external_directory", &always[1].resource, Effect::Allow);
+        assert_eq!(
+            run_by(&f.decide(Control::Normal, &file("write", &target.to_string_lossy()))),
+            Some(ApprovedBy::Rule)
+        );
+    }
+
     #[test]
     fn inside_project_file_rules_use_the_canonical_literal_path() {
         let f = fixture();
-        let target = f.cx.workspace.join("a*b.txt");
+        #[cfg(unix)]
+        let filename = "a*b.txt";
+        #[cfg(windows)]
+        let filename = "a[b].txt";
+        let target = f.cx.workspace.join(filename);
         let resource = literal(&target.display().to_string());
         f.add("write", &resource, Effect::Allow);
-        let decision = f.decide(Control::Normal, &file("write", "a*b.txt"));
-        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        let decision = f.decide(Control::Normal, &file("write", filename));
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{decision:?}");
         // A star in the name is not a wildcard.
         let decision = f.decide(Control::Normal, &file("write", "aXb.txt"));
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
@@ -1449,7 +1553,10 @@ mod tests {
             literal(&f.cx.workspace.join("aXb.txt").display().to_string())
         );
         // A relative path and `..` fold to the same resource.
-        let decision = f.decide(Control::Normal, &file("write", "src/../a*b.txt"));
+        let decision = f.decide(
+            Control::Normal,
+            &file("write", &format!("src/../{filename}")),
+        );
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
     }
 
@@ -1528,7 +1635,10 @@ mod tests {
     #[test]
     fn output_options_and_read_write_redirections_ask_under_bypass_and_allow_rules() {
         let f = fixture();
-        let config = f.root().join("config/config.json").display().to_string();
+        let config = format!(
+            "\"{}\"",
+            crate::tools::relative_path_text(&f.root().join("config/config.json"))
+        );
         f.add("bash", "*", Effect::Allow);
         f.add("bash", "sort *", Effect::Allow);
         for line in [
@@ -1574,6 +1684,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_below_the_flows_directory_needs_the_protected_check() {
         let f = fixture();
@@ -1593,6 +1704,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_path_that_cannot_be_resolved_asks_and_is_never_saved() {
         let f = fixture();

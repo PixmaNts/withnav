@@ -10,6 +10,80 @@ fn fixture() -> Fixture {
     Fixture::new("packages/app")
 }
 
+#[cfg(unix)]
+#[test]
+fn discovers_distinct_non_utf8_skill_directories() {
+    use std::os::unix::ffi::OsStrExt;
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(
+        &root.join(std::ffi::OsStr::from_bytes(b"skill-\xff")),
+        "first",
+        "First skill",
+    );
+    add(
+        &root.join(std::ffi::OsStr::from_bytes(b"skill-\xfe")),
+        "second",
+        "Second skill",
+    );
+    let skills = load(&fx);
+    assert!(matches!(skills.resolve("first"), Resolution::Found(_)));
+    assert!(matches!(skills.resolve("second"), Resolution::Found(_)));
+}
+
+#[cfg(windows)]
+#[test]
+fn discovers_skill_manifest_across_the_long_path_boundary() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let directory = root.join("a".repeat(110)).join("b".repeat(110));
+    let manifest = add(&directory, "long-skill", "Long path skill");
+    assert!(
+        crate::tools::canonical_path(&root)
+            .unwrap()
+            .to_string_lossy()
+            .len()
+            < 260
+    );
+    assert!(crate::tools::canonical_path(&manifest)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    let skills = load(&fx);
+    assert!(
+        skills.snapshot("long-skill").is_ok(),
+        "{:?}",
+        skills.diagnostics()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn validates_short_directory_with_verbatim_manifest() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    std::fs::create_dir_all(&root).unwrap();
+    let length = 254
+        - crate::tools::canonical_path(&root)
+            .unwrap()
+            .to_string_lossy()
+            .encode_utf16()
+            .count()
+        - 1;
+    let directory = root.join("a".repeat(length));
+    let manifest = add(&directory, "boundary", "Boundary skill");
+    assert!(!crate::tools::canonical_path(&directory)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    assert!(crate::tools::canonical_path(&manifest)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    let result = load(&fx).snapshot("boundary");
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
 #[test]
 fn skill_authority_and_selection_queue_follow_the_logical_turn() {
     let fx = fixture();
@@ -227,7 +301,10 @@ fn the_nested_real_layout_is_discovered() {
         "{:?}",
         skills.diagnostics()
     );
-    assert_eq!(skills.readable_roots(), [root.canonicalize().unwrap()]);
+    assert_eq!(
+        skills.readable_roots(),
+        [crate::tools::canonical_path(&root).unwrap()]
+    );
 }
 
 // Given a skill directory with a SKILL.md and a nested directory with another
@@ -453,28 +530,34 @@ fn duplicate_names_follow_the_precedence() {
     let user_claude = add(&fx.home.join(".claude/skills/u"), "dup", "user claude");
     assert_eq!(
         path_of(&load(&fx), "dup"),
-        user_agents.canonicalize().unwrap()
+        crate::tools::canonical_path(&user_agents).unwrap()
     );
 
     let root_oc = add(&fx.repo.join(".opencode/skills/d"), "dup", "root opencode");
-    assert_eq!(path_of(&load(&fx), "dup"), root_oc.canonicalize().unwrap());
+    assert_eq!(
+        path_of(&load(&fx), "dup"),
+        crate::tools::canonical_path(&root_oc).unwrap()
+    );
 
     let root_claude = add(&fx.repo.join(".claude/skills/d"), "dup", "root claude");
     assert_eq!(
         path_of(&load(&fx), "dup"),
-        root_claude.canonicalize().unwrap()
+        crate::tools::canonical_path(&root_claude).unwrap()
     );
 
     let root_agents = add(&fx.repo.join(".agents/skills/d"), "dup", "root agents");
     assert_eq!(
         path_of(&load(&fx), "dup"),
-        root_agents.canonicalize().unwrap()
+        crate::tools::canonical_path(&root_agents).unwrap()
     );
 
     // The workspace scope is nearer than the worktree root, whatever the source.
     let ws_oc = add(&fx.ws.join(".opencode/skills/d"), "dup", "ws opencode");
     let skills = load(&fx);
-    assert_eq!(path_of(&skills, "dup"), ws_oc.canonicalize().unwrap());
+    assert_eq!(
+        path_of(&skills, "dup"),
+        crate::tools::canonical_path(&ws_oc).unwrap()
+    );
     assert_eq!(skills.len(), 1);
     assert!(has(&skills, |k| matches!(
         k,
@@ -505,8 +588,18 @@ async fn equal_priority_duplicates_are_ambiguous() {
 
     let err = skills.snapshot("twin").unwrap_err();
     assert!(err.contains("skill_ambiguous"));
-    assert!(err.contains(&a.canonicalize().unwrap().display().to_string()));
-    assert!(err.contains(&b.canonicalize().unwrap().display().to_string()));
+    assert!(err.contains(
+        &crate::tools::canonical_path(&a)
+            .unwrap()
+            .display()
+            .to_string()
+    ));
+    assert!(err.contains(
+        &crate::tools::canonical_path(&b)
+            .unwrap()
+            .display()
+            .to_string()
+    ));
 }
 
 // Given a skill with disable-model-invocation: true
@@ -552,6 +645,7 @@ fn no_skills_means_no_message() {
 // Given a link looping back to an ancestor, and a link out of the roots
 // When discovered
 // Then the loop is cut once, the escape is rejected, nothing hangs
+#[cfg(unix)]
 #[test]
 fn cycles_and_escaping_links_are_rejected() {
     let fx = fixture();
@@ -582,6 +676,7 @@ fn cycles_and_escaping_links_are_rejected() {
 // Given a link to a directory inside another skill root, and a root reached
 //       twice
 // Then the skill counts once
+#[cfg(unix)]
 #[test]
 fn a_second_path_to_the_same_skill_counts_once() {
     let fx = fixture();
@@ -609,6 +704,7 @@ fn a_second_path_to_the_same_skill_counts_once() {
 // Given a SKILL.md that is a link to another SKILL.md in the same root
 // When discovered
 // Then it is one skill, not an ambiguous id
+#[cfg(unix)]
 #[test]
 fn a_manifest_linked_to_another_manifest_is_one_skill() {
     let fx = fixture();
@@ -629,6 +725,7 @@ fn a_manifest_linked_to_another_manifest_is_one_skill() {
 // Given the same manifest reached from a project root and, through a link,
 //       from a user root
 // Then it is one skill at the better rank, shadowing nothing
+#[cfg(unix)]
 #[test]
 fn a_manifest_reached_from_two_roots_is_one_skill() {
     let fx = fixture();
@@ -811,7 +908,7 @@ async fn the_tool_returns_body_paths_and_resources() {
         !res.output.contains("description:"),
         "the header is not repeated"
     );
-    let canonical = manifest.canonicalize().unwrap();
+    let canonical = crate::tools::canonical_path(&manifest).unwrap();
     assert_eq!(res.metadata["path"], json!(canonical));
     assert_eq!(res.metadata["base_dir"], json!(canonical.parent().unwrap()));
     assert_eq!(
@@ -918,6 +1015,7 @@ async fn a_file_that_vanished_or_broke_is_unreadable() {
 //       file outside the skill roots
 // When the tool loads it
 // Then it is unreadable and nothing of the outside file is returned
+#[cfg(unix)]
 #[tokio::test]
 async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
     let fx = fixture();
@@ -941,6 +1039,7 @@ async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
 //       a link to a place outside the skill roots
 // When the tool loads it
 // Then it is refused
+#[cfg(unix)]
 #[tokio::test]
 async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
     let fx = fixture();
@@ -970,6 +1069,7 @@ async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
 //       inside the roots
 // When the tool loads it
 // Then it is refused too: the file is no longer the one that was found
+#[cfg(unix)]
 #[tokio::test]
 async fn a_directory_swapped_for_another_one_in_the_roots_is_refused() {
     let fx = fixture();
@@ -1144,13 +1244,14 @@ fn without_skills_nothing_is_registered() {
 //       to a file outside the skill roots before it is opened
 // When the manifest is opened for reading
 // Then the opened file itself is checked and refused, so nothing outside is read
+#[cfg(unix)]
 #[test]
 fn a_manifest_swapped_between_check_and_open_is_refused() {
     let fx = fixture();
     let root = fx.home.join(".agents/skills");
     let manifest = add(&root.join("race"), "race", "Race.");
     let skills = load(&fx);
-    let manifest = fs::canonicalize(&manifest).unwrap();
+    let manifest = crate::tools::canonical_path(&manifest).unwrap();
     assert!(skills.snapshot("race").is_ok());
 
     let outside = fx.home.join("outside-race.md");

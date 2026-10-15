@@ -10,7 +10,9 @@ use ulid::Ulid;
 
 use crate::error::ToolError;
 use crate::provider::ToolCall;
-use crate::tools::{bound_output, validate_path, ToolContext};
+#[cfg(unix)]
+use crate::tools::validate_path;
+use crate::tools::{bound_output, ToolContext};
 
 /// The longest rendering of a call's arguments kept in a request, in bytes.
 pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;
@@ -188,29 +190,53 @@ impl PermissionDecision {
 }
 
 pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
-    let path = requested_path(path, cx)?;
-    validate_path(&[PathBuf::from("/")], &path)
+    #[cfg(windows)]
+    {
+        let home = directories::BaseDirs::new();
+        crate::tools::nofollow::resolve_target(
+            path,
+            &cx.workspace,
+            home.as_ref().map(|dirs| dirs.home_dir()),
+        )
+    }
+    #[cfg(unix)]
+    {
+        let path = requested_path(path, cx)?;
+        validate_path(&[PathBuf::from("/")], &path)
+    }
 }
 
 pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
-    // Native tools do not perform shell expansion: only a bare `~` component
-    // names HOME; `~name` remains a literal workspace-relative filename.
-    let path = if path.starts_with("~") {
-        let home =
-            std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
-        PathBuf::from(home).join(
-            path.strip_prefix("~")
-                .map_err(|_| ToolError::PathTraversal(path.to_path_buf()))?,
+    #[cfg(windows)]
+    {
+        let home = directories::BaseDirs::new();
+        crate::tools::nofollow::requested_path(
+            path,
+            &cx.workspace,
+            home.as_ref().map(|dirs| dirs.home_dir()),
         )
-    } else if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cx.workspace.join(path)
-    };
-    if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
-        return Err(ToolError::PathTraversal(path));
     }
-    Ok(path)
+    #[cfg(unix)]
+    {
+        // Native tools do not perform shell expansion: only a bare `~` component
+        // names HOME; `~name` remains a literal workspace-relative filename.
+        let path = if path.starts_with("~") {
+            let home = std::env::var_os("HOME")
+                .ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
+            PathBuf::from(home).join(
+                path.strip_prefix("~")
+                    .map_err(|_| ToolError::PathTraversal(path.to_path_buf()))?,
+            )
+        } else if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cx.workspace.join(path)
+        };
+        if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
+            return Err(ToolError::PathTraversal(path));
+        }
+        Ok(path)
+    }
 }
 
 #[cfg(test)]

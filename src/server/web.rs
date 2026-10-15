@@ -124,29 +124,38 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
 
     // The history records a workspace as the client wrote it; fold the spellings of one
     // directory together on its canonical path.
-    let mut seen: HashMap<PathBuf, (u64, Option<String>)> = HashMap::new();
+    let mut seen: HashMap<PathBuf, (PathBuf, u64, Option<String>)> = HashMap::new();
     for row in stored {
         let Ok(canonical) = std::fs::canonicalize(&row.workspace) else {
             continue;
         };
-        let entry = seen.entry(canonical).or_default();
-        entry.0 += row.session_count;
-        if entry.1.as_deref() < Some(row.updated_at.as_str()) {
-            entry.1 = Some(row.updated_at);
+        let key = crate::tools::resolved_path_key(&canonical);
+        let entry = seen.entry(key).or_insert((canonical, 0, None));
+        entry.1 += row.session_count;
+        if entry.2.as_deref() < Some(row.updated_at.as_str()) {
+            entry.2 = Some(row.updated_at);
         }
     }
 
     let mut rows: Vec<(PathBuf, bool, u64, Option<String>)> = Vec::new();
     for path in &launch {
-        let (count, updated) = seen.remove(path).unwrap_or_default();
-        if !rows.iter().any(|row| &row.0 == path) {
+        let (_, count, updated) = seen
+            .remove(&crate::tools::resolved_path_key(path))
+            .unwrap_or_default();
+        if !rows.iter().any(|row| {
+            crate::tools::resolved_path_key(&row.0) == crate::tools::resolved_path_key(path)
+        }) {
             rows.push((path.clone(), true, count, updated));
         }
     }
     let mut others: Vec<_> = seen
         .into_iter()
-        .filter(|(path, _)| !hidden.contains(path))
-        .map(|(path, (count, updated))| (path, false, count, updated))
+        .filter(|(_, (path, _, _))| {
+            !hidden.iter().any(|h| {
+                crate::tools::resolved_path_key(h) == crate::tools::resolved_path_key(path)
+            })
+        })
+        .map(|(_, (path, count, updated))| (path, false, count, updated))
         .collect();
     others.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
     rows.extend(others);
@@ -162,7 +171,10 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
                     || path.to_string_lossy().into_owned(),
                     |n| n.to_string_lossy().into_owned(),
                 ),
-                path: path.to_string_lossy().into_owned(),
+                path: crate::tools::canonical_path(&path)
+                    .unwrap_or_else(|_| path.clone())
+                    .to_string_lossy()
+                    .into_owned(),
                 launched,
                 session_count,
                 updated_at,
@@ -220,9 +232,11 @@ pub(super) async fn hide_workspace(
         Err(error) => return error_response(error),
     };
     if state.http.web.as_ref().is_some_and(|web| {
-        web.launch_workspaces
-            .iter()
-            .any(|launch| std::fs::canonicalize(launch).ok().as_ref() == Some(&path))
+        web.launch_workspaces.iter().any(|launch| {
+            std::fs::canonicalize(launch).is_ok_and(|launch| {
+                crate::tools::resolved_path_key(&launch) == crate::tools::resolved_path_key(&path)
+            })
+        })
     }) {
         return (StatusCode::CONFLICT, Json(json!({
             "reason": "launched",

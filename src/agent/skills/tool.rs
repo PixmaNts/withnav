@@ -70,10 +70,23 @@ impl Tool for SkillTool {
                     return Ok(ToolResult::error("skill_disabled", "disabled skill"))
                 }
                 Resolution::Ambiguous(paths) => {
-                    return Ok(ToolResult::error(
-                        "skill_ambiguous",
-                        format!("ambiguous skill: {paths:?}"),
-                    ))
+                    return Ok(ToolResult::error("skill_ambiguous", {
+                        #[cfg(windows)]
+                        {
+                            format!(
+                                "ambiguous skill: {}",
+                                paths
+                                    .iter()
+                                    .map(|path| path.display().to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
+                        #[cfg(unix)]
+                        {
+                            format!("ambiguous skill: {paths:?}")
+                        }
+                    }))
                 }
                 Resolution::Found(_) => {}
             }

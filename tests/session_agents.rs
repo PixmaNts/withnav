@@ -840,7 +840,11 @@ async fn http_creates_with_an_agent_and_shows_it() {
     let (_, list) = request_json(
         &router,
         "GET",
-        &format!("/v1/sessions?workspace={ws}"),
+        &format!("/v1/sessions?{}", {
+            let mut url = reqwest::Url::parse("http://localhost").unwrap();
+            url.query_pairs_mut().append_pair("workspace", &ws);
+            url.query().unwrap().to_owned()
+        }),
         None,
     )
     .await;
@@ -895,7 +899,9 @@ fn run_withnav(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::pr
         r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, root);
+    command
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")

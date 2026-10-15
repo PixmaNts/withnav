@@ -2672,19 +2672,16 @@ impl Service {
                 actor.permissions_unavailable = Some(reason);
             }
         }
-        // A scratch directory that contains, or sits inside, WithNav's own
-        // configuration would make it writable without the protected check.
-        let config_root =
-            crate::tools::validate_path(&[PathBuf::from("/")], &self.config.config_dir).ok();
+        let config_root = scratch_config_root(&self.config.config_dir);
         for path in &execution.scratch_choice {
-            if config_root
-                .as_ref()
-                .is_none_or(|root| root.starts_with(path) || path.starts_with(root))
-            {
-                crate::agent::scratch::warn_once("scratch overlaps protected config directory");
-                continue;
-            }
-            match crate::agent::scratch::Identity::capture(path) {
+            let path = match scratch_candidate(config_root.as_deref(), path) {
+                Ok(path) => path,
+                Err(error) => {
+                    crate::agent::scratch::warn_once(&error);
+                    continue;
+                }
+            };
+            match crate::agent::scratch::Identity::capture(&path) {
                 Ok(identity) => {
                     actor
                         .tool_context
@@ -3430,6 +3427,90 @@ pub use resolve::CLEAR_WORD;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// WithNav's configuration directory as scratch candidates are compared with it; `None`
+/// when it cannot be resolved, which refuses every scratch directory.
+fn scratch_config_root(config_dir: &std::path::Path) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        crate::tools::validate_path(&[PathBuf::from("/")], config_dir).ok()
+    }
+    // On Windows `/` names the current drive's root: containment in it would fail for a
+    // configuration directory on another drive (checkout on D:, profile on C:).
+    #[cfg(windows)]
+    {
+        crate::tools::canonical_path(config_dir).ok()
+    }
+}
+
+/// The scratch directory to capture. One that contains, or sits inside, WithNav's own
+/// configuration would make it writable without the protected check, so it is refused;
+/// so is every candidate when the configuration directory could not be resolved.
+fn scratch_candidate(
+    config_root: Option<&std::path::Path>,
+    path: &std::path::Path,
+) -> Result<PathBuf, String> {
+    const OVERLAP: &str = "scratch overlaps protected config directory";
+    let root = config_root.ok_or_else(|| OVERLAP.to_owned())?;
+    #[cfg(unix)]
+    {
+        if root.starts_with(path) || path.starts_with(root) {
+            return Err(OVERLAP.into());
+        }
+        Ok(path.to_path_buf())
+    }
+    // Windows resolves the candidate first and refuses it when that fails: a fallback
+    // spelling could miss the overlap, while creating it later trims a trailing dot onto
+    // a directory inside the configuration.
+    #[cfg(windows)]
+    {
+        let path = crate::tools::canonical_path(path).map_err(|error| error.to_string())?;
+        if crate::tools::nofollow::path_within(root, &path)
+            || crate::tools::nofollow::path_within(&path, root)
+        {
+            return Err(OVERLAP.into());
+        }
+        Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod scratch_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_inside_or_around_the_configuration_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let root = scratch_config_root(&config);
+        assert!(scratch_candidate(root.as_deref(), &config.join("scratch")).is_err());
+        assert!(scratch_candidate(root.as_deref(), tmp.path()).is_err());
+        assert!(scratch_candidate(None, &tmp.path().join("elsewhere")).is_err());
+        let elsewhere = tmp.path().join("elsewhere");
+        assert!(scratch_candidate(root.as_deref(), &elsewhere).is_ok());
+    }
+
+    // A short-form ancestor followed by a missing component ending in a dot cannot be
+    // resolved; refusing it keeps directory creation from trimming the dot onto a
+    // scratch directory inside the configuration.
+    #[cfg(windows)]
+    #[test]
+    fn unresolvable_scratch_under_a_short_config_alias_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("withnav long configuration directory");
+        std::fs::create_dir_all(&config).unwrap();
+        let Some(short) = crate::tools::nofollow::short_alias(&config).filter(|s| s != &config)
+        else {
+            eprintln!("skipping: the volume does not generate 8.3 short names");
+            return;
+        };
+        let root = scratch_config_root(&config);
+        assert!(scratch_candidate(root.as_deref(), &short.join("scratch.")).is_err());
+        assert!(scratch_candidate(root.as_deref(), &short.join("scratch")).is_err());
+        assert!(!config.join("scratch").exists());
+    }
+}
 
 /// The session's Instinct layer as the judge compaction asks which old tool
 /// outputs still matter; `None` when Instinct is unavailable.

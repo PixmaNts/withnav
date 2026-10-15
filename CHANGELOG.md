@@ -41,6 +41,12 @@ Permissions chapter of the guide.
   credentials or WithNav's configuration. Each call records `approved_by: yolo`, and `YOLO` stays
   visible in the terminal, the browser and VS Code; `nav doctor` warns. It is off by default and
   unsafe: use it only on a machine you can afford to lose.
+- **Native Windows x64.** `nav.exe` runs on Windows: CLI, TUI, web client and LSP, sessions,
+  settings, private `auth.json`, the permission database, flows and the file tools. The `bash` tool
+  uses Git Bash from Git for Windows, with each call's processes in a job object. Paths are shown
+  as `C:\...`; tool output lists relative paths with `/` on every platform. Release assets: an MSVC
+  `nav.exe` ZIP with licenses and a `win32-x64` VSIX bundling `nav.exe`, with checksums. The test
+  suite runs natively on Windows in CI. MCP servers on Windows come with MCP support itself.
 - **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`; ready tools
   appear as `mcp__<server>__<tool>` in new sessions and go through your permission rules like any
   other tool. With no matching rule, the default is ask; the permission flow may still allow the

@@ -3,6 +3,7 @@
 use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
+mod common;
 
 struct Run {
     out: Output,
@@ -34,6 +35,7 @@ fn tui_command(args: &[&str], env: &[(&str, &str)]) -> (Command, TempDir) {
     std::fs::write(config.join("withnav/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
     withnav::provider::auth::set_key(&config.join("withnav"), "mock", "test-key").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, dirs.path());
     command
         .arg("tui")
         .args(args)

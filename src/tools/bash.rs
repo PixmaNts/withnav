@@ -1,12 +1,13 @@
 use std::future::Future;
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+#[cfg(unix)]
 use nix::sys::signal::{killpg, Signal};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, BufReader};
@@ -19,82 +20,20 @@ use crate::tools::{DEFAULT_BASH_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES};
 
 const READER_JOIN_DEADLINE_MS: u64 = 500;
 
-static TRUSTED_SHELL: OnceLock<Option<PathBuf>> = OnceLock::new();
-
-/// Snapshot the trusted launcher at process startup; never resolve it through PATH.
-/// Candidates: the usual paths, then bash entries of the root-managed /etc/shells.
-pub fn init_shell() {
-    TRUSTED_SHELL.get_or_init(|| {
-        let listed = std::fs::read_to_string("/etc/shells").unwrap_or_default();
-        let found = ["/usr/bin/bash", "/bin/bash"]
-            .into_iter()
-            .chain(
-                listed
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| line.starts_with('/') && line.ends_with("/bash")),
-            )
-            .find_map(|path| trusted_launcher(std::path::Path::new(path)));
-        found
-    });
-}
-
-/// Canonical launcher target, with every ancestor locked against non-root replacement.
-/// A sticky root-owned directory (NixOS /nix/store) counts only for a root-owned entry.
-fn trusted_launcher(path: &std::path::Path) -> Option<PathBuf> {
-    let canonical = path.canonicalize().ok()?;
-    let file = canonical.metadata().ok()?;
-    if !file.is_file() || file.uid() != 0 || file.mode() & 0o022 != 0 {
-        return None;
-    }
-    let mut child_uid = file.uid();
-    for dir in canonical.ancestors().skip(1) {
-        let meta = dir.metadata().ok()?;
-        let locked = meta.mode() & 0o022 == 0 || (meta.mode() & 0o1000 != 0 && child_uid == 0);
-        if !meta.is_dir() || meta.uid() != 0 || !locked {
-            return None;
-        }
-        child_uid = meta.uid();
-    }
-    Some(canonical)
-}
-
-fn bash_command() -> Result<Command, ToolError> {
-    // Also initialize for library callers that do not use our binary entry points.
-    init_shell();
-    let shell = TRUSTED_SHELL.get().and_then(Option::as_ref).ok_or_else(|| {
-        ToolError::Denied {
-            code: "untrusted_shell".into(),
-            message: "bash tool unavailable: no trusted bash (root-owned file and directories, not group/other writable unless sticky) at /usr/bin/bash, /bin/bash or in /etc/shells".into(),
-        }
-    })?;
-    let mut command = Command::new(shell);
-    command.args(["--noprofile", "--norc", "-c"]);
-    for key in [
-        "BASH_ENV",
-        "ENV",
-        "SHELLOPTS",
-        "BASHOPTS",
-        "PROMPT_COMMAND",
-        "CDPATH",
-        "GLOBIGNORE",
-        "IFS",
-    ] {
-        command.env_remove(key);
-    }
-    for (key, _) in std::env::vars_os() {
-        if key.as_encoded_bytes().starts_with(b"BASH_FUNC_") {
-            command.env_remove(key);
-        }
-    }
-    Ok(command)
-}
-
-/// The same trusted launcher used by the tool, without executing it.
-pub fn trusted_shell() -> Option<&'static std::path::Path> {
-    init_shell();
-    TRUSTED_SHELL.get().and_then(Option::as_deref)
-}
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
+#[cfg(unix)]
+use unix::bash_command;
+#[cfg(all(unix, test))]
+use unix::trusted_launcher;
+#[cfg(unix)]
+pub use unix::{init_shell, trusted_shell};
+#[cfg(windows)]
+use windows::bash_command;
+#[cfg(windows)]
+pub use windows::{init_shell, trusted_shell};
 
 pub struct BashTool;
 
@@ -147,19 +86,28 @@ async fn run_bash(
     grace_ms: u64,
 ) -> Result<ToolResult, ToolError> {
     let mut launcher = bash_command()?;
+    #[cfg(unix)]
+    launcher.arg(command);
+    #[cfg(windows)]
+    windows::set_command(&mut launcher, command);
     launcher
-        .arg(command)
         .current_dir(&cx.workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    launcher.process_group(0);
+    #[cfg(unix)]
     let mut child = launcher.spawn()?;
+    #[cfg(windows)]
+    let (mut child, job) = super::process_job::Job::spawn(&mut launcher, None)?;
 
+    #[cfg(unix)]
     let pid = child.id().ok_or_else(|| ToolError::Denied {
         code: "spawn_failed".into(),
         message: "child process exited before a pid was available".into(),
     })?;
+    #[cfg(unix)]
     let pgid = positive_pgid(pid).ok_or_else(|| ToolError::Denied {
         code: "spawn_failed".into(),
         message: "child process id is not a positive process group id".into(),
@@ -194,7 +142,13 @@ async fn run_bash(
     let exit_status = match ending {
         Ending::Exited(status) => Some(status),
         Ending::Canceled | Ending::TimedOut => {
+            #[cfg(unix)]
             terminate_group(pgid, grace_ms).await;
+            #[cfg(windows)]
+            {
+                let _ = grace_ms;
+                job.terminate();
+            }
             let _ = child.wait().await;
             None
         }
@@ -288,6 +242,7 @@ async fn join_reader(reader: &mut Reader) -> String {
     }
 }
 
+#[cfg(unix)]
 fn positive_pgid(pid: u32) -> Option<Pid> {
     i32::try_from(pid)
         .ok()
@@ -295,6 +250,7 @@ fn positive_pgid(pid: u32) -> Option<Pid> {
         .map(Pid::from_raw)
 }
 
+#[cfg(unix)]
 async fn terminate_group(pgid: Pid, grace_ms: u64) {
     if pgid.as_raw() <= 0 {
         return;
@@ -321,6 +277,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn impostor_bash_first_in_path_is_never_executed() {
         const CHILD: &str = "WITHNAV_TEST_IMPOSTOR_BASH";
         if let Some(root) = std::env::var_os(CHILD) {
@@ -412,6 +369,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn process_group_id_rejects_zero_and_overflow() {
         assert!(positive_pgid(0).is_none());
         assert!(positive_pgid(i32::MAX as u32 + 1).is_none());
@@ -481,6 +439,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn cancel_kills_process_group_including_descendant() {
         let tmp = tempfile::tempdir().unwrap();
         let pidfile = tmp.path().join("child.pid");
@@ -549,7 +508,10 @@ mod tests {
     async fn a_cancelled_command_keeps_the_output_it_produced() {
         let tmp = tempfile::tempdir().unwrap();
         let marker = tmp.path().join("started");
-        let cmd = format!("echo partial-line; touch {}; sleep 30", marker.display());
+        let cmd = format!(
+            "echo partial-line; touch \"{}\"; sleep 30",
+            marker.display()
+        );
         let cancel = CancellationToken::new();
         let handle = tokio::spawn({
             let (cx, cancel) = (ctx(tmp.path()), cancel.clone());
@@ -568,6 +530,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn setsid_escaped_descendant_does_not_hang_tool() {
         let tmp = tempfile::tempdir().unwrap();
         let marker = "2718281";
@@ -600,6 +563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn launcher_rejects_user_owned_bash() {
         let tmp = tempfile::tempdir().unwrap();
         let fake = tmp.path().join("bash");

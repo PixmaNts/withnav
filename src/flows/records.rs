@@ -528,31 +528,47 @@ mod tests {
     }
     #[test]
     fn append_retains_count_and_compacts_only_periodically() {
+        #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         let temp = tempfile::tempdir().unwrap();
         let records = Records::new(temp.path(), temp.path());
         let mut record = fixture();
         records.append(&record).unwrap();
         let path = records.path.join("runs.jsonl");
+        #[cfg(unix)]
         let inode = std::fs::metadata(&path).unwrap().ino();
         for i in 1..1500 {
             record.run_id = i.to_string();
             records.append(&record).unwrap();
         }
+        #[cfg(unix)]
         assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
         let kept = records.read().unwrap();
         assert_eq!(kept.len(), 1000);
         assert_eq!(kept[0].run_id, "500");
         record.run_id = "1500".into();
         records.append(&record).unwrap();
+        #[cfg(unix)]
         let compacted = std::fs::metadata(&path).unwrap().ino();
+        #[cfg(unix)]
         assert_ne!(compacted, inode);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().lines().count(),
             1000
         );
         records.append(&record).unwrap();
+        #[cfg(unix)]
         assert_eq!(std::fs::metadata(&path).unwrap().ino(), compacted);
+    }
+    #[test]
+    fn missing_storage_reads_as_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(&temp.path().join("missing"), temp.path());
+        assert!(!records.path.exists());
+        assert!(records.read().unwrap().is_empty());
+        assert!(records.summaries("flow", None, 10).unwrap().runs.is_empty());
+        records.read_health().unwrap();
+        assert!(!records.path.exists());
     }
     #[test]
     fn append_retains_byte_limit_and_preserves_captures_on_oversize() {

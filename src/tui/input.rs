@@ -413,8 +413,8 @@ pub fn route_key(
         };
         return None;
     }
-    if key.code == KeyCode::Esc && ui.quit_confirm {
-        ui.quit_confirm = false;
+    if key.code == KeyCode::Esc && ui.quit_confirm.is_some() {
+        ui.quit_confirm = None;
         return None;
     }
     if key.code == KeyCode::End && ctrl {
@@ -423,18 +423,18 @@ pub fn route_key(
         return None;
     }
     if key.code == KeyCode::Char('c') && ctrl && state.activity != Activity::Running {
-        if ui.quit_confirm {
+        if ui.quit_confirm.is_some() {
             return Some(Action::Quit);
         }
-        ui.quit_confirm = true;
+        ui.quit_confirm = Some("ctrl+c");
         return None;
     }
     if key.code == KeyCode::Char('q')
         && ctrl
         && (!editor.text().trim().is_empty() || state.activity == Activity::Running)
-        && !ui.quit_confirm
+        && ui.quit_confirm.is_none()
     {
-        ui.quit_confirm = true;
+        ui.quit_confirm = Some("ctrl+q");
         return None;
     }
     if let Some(action) = commands::key_to_action(key) {

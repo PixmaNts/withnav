@@ -127,7 +127,7 @@ mod tests {
             );
             let mut expected = decision;
             expected.id = id;
-            expected.workspace = dir.path().canonicalize().unwrap();
+            expected.workspace = crate::tools::canonical_path(dir.path()).unwrap();
             assert_eq!(
                 store
                     .list_decisions(&DecisionFilter::default(), 100)
@@ -397,7 +397,11 @@ fn history_query(
     }
     if let Some(workspace) = &filter.workspace {
         clauses.push("workspace = ?");
-        values.push(path_text(&workspace.canonicalize()?)?.to_owned().into());
+        values.push(
+            path_text(&crate::tools::canonical_path(workspace)?)?
+                .to_owned()
+                .into(),
+        );
     }
     if let Some(outcome) = filter.outcome {
         clauses.push("outcome = ?");
@@ -502,6 +506,9 @@ fn bound_value(value: &mut Value, limit: usize) {
 
 fn bound_matches(matches: &Value) -> Value {
     let mut matches = matches.clone();
+    // Redact the complete evidence before pruning commands: truncation must
+    // not discard the only evidence that a secret was removed.
+    bound_value(&mut matches, MATCH_LABEL_BYTES);
     if let Value::Array(items) = &mut matches {
         let total = items.len();
         items.truncate(MATCHES_KEPT);
@@ -509,7 +516,6 @@ fn bound_matches(matches: &Value) -> Value {
             items.push(serde_json::json!({"omitted": total - MATCHES_KEPT}));
         }
     }
-    bound_value(&mut matches, MATCH_LABEL_BYTES);
     matches
 }
 
@@ -539,7 +545,7 @@ impl PermissionStore {
             trace
         });
         let approved_by = short(&decision.approved_by);
-        let workspace = decision.workspace.canonicalize()?;
+        let workspace = crate::tools::canonical_path(&decision.workspace)?;
         let db = self.db();
         db.execute(
             "INSERT INTO permission_decisions

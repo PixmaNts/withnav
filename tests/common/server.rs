@@ -51,16 +51,8 @@ pub fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
 /// readable by the owner only.
 pub fn write_auth_file(config_dir: &Path, provider: &str, api_key: &str) -> PathBuf {
     let path = config_dir.join("auth.json");
-    std::fs::write(
-        &path,
-        json!({ provider: { "api_key": api_key } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
-    }
+    withnav::provider::auth::set_key(config_dir, provider, api_key)
+        .expect("write private auth.json");
     path
 }
 
@@ -606,7 +598,16 @@ pub async fn collect_until(
     sub: withnav::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    collect_until_within(sub, pred, Duration::from_secs(20)).await
+}
+
+/// Explicit budget for high-volume fixtures; ordinary event waits retain 20 seconds.
+pub async fn collect_until_within(
+    sub: withnav::session::Subscription,
+    pred: impl Fn(&EventEnvelope) -> bool,
+    budget: Duration,
+) -> Vec<EventEnvelope> {
+    let deadline = tokio::time::Instant::now() + budget;
     let mut out = Vec::new();
     if let withnav::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
@@ -617,7 +618,7 @@ pub async fn collect_until(
             let env = tokio::time::timeout(remaining, live.recv())
                 .await
                 .unwrap_or_else(|_| {
-                    panic!("timed out waiting for matching server event; seen: {out:?}")
+                    panic!("timed out waiting for matching server event after {budget:?}; count={}; last kinds={:?}", out.len(), out.iter().rev().take(20).map(|event| event.kind.as_str()).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>())
                 });
             let Some(env) = env else { break };
             let matched = pred(&env);
@@ -633,7 +634,16 @@ pub async fn collect_until(
     }
     assert!(
         out.iter().any(&pred),
-        "stream closed before the matching server event; seen: {out:?}"
+        "stream closed before the matching server event; count={}; last kinds={:?}",
+        out.len(),
+        out.iter()
+            .rev()
+            .take(20)
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
     );
     out
 }

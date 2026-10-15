@@ -423,7 +423,21 @@ async fn http_answers_and_legacy_answers_apply_to_the_held_call() {
         let requested = wait_events(&state, id, "permission.requested", 1).await;
         assert_eq!(
             requested[0].payload["always_label"],
-            format!("Always (project): write {}", target.display())
+            format!(
+                "Always (project): write {}",
+                withnav::permission::rules::literal(
+                    &withnav::permission::floor::resolve_path(
+                        &target.display().to_string(),
+                        &withnav::permission::floor::FloorContext {
+                            workspace: env.ws.clone(),
+                            ..Default::default()
+                        }
+                    )
+                    .unwrap()
+                    .display()
+                    .to_string()
+                )
+            )
         );
         let (status, body) = answer(
             &router,
@@ -470,7 +484,10 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     assert_eq!(payload["tool"], "write");
     assert_eq!(payload["tool_call_id"], "w1");
     assert_eq!(payload["agent"], "build");
-    assert_eq!(payload["scope"], json!({"kind": "folder", "value": env.ws}));
+    assert_eq!(
+        payload["scope"],
+        json!({"kind": "folder", "value": withnav::tools::canonical_path(&env.ws).unwrap()})
+    );
     assert!(payload["arguments"].as_str().unwrap().len() <= 4096);
     assert!(!target.exists(), "the call has not run");
     wait_events(&state, id, "turn.end", 1).await;
@@ -921,7 +938,9 @@ fn run_withnav(root: &Path, ws: &Path, models: &Path, extra: &[&str]) -> std::pr
         r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
     )
     .unwrap();
-    std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, root);
+    command
         .args(["run", "--workspace"])
         .arg(ws)
         .arg("--models")
@@ -962,7 +981,10 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     assert_eq!(stopped.status.code(), Some(3), "{stopped:?}");
     let stderr = String::from_utf8_lossy(&stopped.stderr);
     assert!(
-        stderr.contains(&format!("permission_required: write {}", env.ws.display())),
+        stderr.contains(&format!(
+            "permission_required: write {}",
+            withnav::tools::canonical_path(&env.ws).unwrap().display()
+        )),
         "{stderr}"
     );
     assert!(!target.exists());
@@ -1008,7 +1030,10 @@ async fn withnav_run_yes_stops_at_the_hard_floor_without_side_effects() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("permission_required: write "), "{stderr}");
     assert!(
-        stderr.contains(&format!("{}: ", env.ws.display())),
+        stderr.contains(&format!(
+            "{}: ",
+            withnav::tools::canonical_path(&env.ws).unwrap().display()
+        )),
         "{stderr}"
     );
     assert!(!target.exists());

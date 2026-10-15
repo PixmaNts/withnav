@@ -94,7 +94,10 @@ impl SkillValidation {
 }
 
 pub fn snapshot(skill: &Skill) -> Result<SkillSnapshot, String> {
-    if std::fs::canonicalize(&skill.base_dir).map_err(|e| e.to_string())? != skill.base_dir {
+    if crate::tools::path_key(
+        &crate::tools::canonical_path(&skill.base_dir).map_err(|e| e.to_string())?,
+    ) != crate::tools::path_key(&skill.base_dir)
+    {
         return Err("skill directory changed since discovery".into());
     }
     fn walk(
@@ -139,6 +142,8 @@ pub fn snapshot(skill: &Skill) -> Result<SkillSnapshot, String> {
                     .to_str()
                     .ok_or("skill paths must be UTF-8")?
                     .to_owned();
+                #[cfg(windows)]
+                let relative = relative.replace('\\', "/");
                 files.insert(relative, bytes);
             } else {
                 return Err("skill contains a non-regular file; cannot validate".into());

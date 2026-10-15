@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 mod common;
 
 use axum::{
@@ -9,7 +11,6 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::{
-    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -172,6 +173,15 @@ struct SnapshotEntry {
     mode: u32,
     modified: SystemTime,
 }
+#[cfg(unix)]
+fn snapshot_mode(metadata: &std::fs::Metadata) -> u32 {
+    metadata.permissions().mode()
+}
+#[cfg(windows)]
+fn snapshot_mode(metadata: &std::fs::Metadata) -> u32 {
+    u32::from(metadata.permissions().readonly())
+}
+
 fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     let mut entries = vec![];
     for entry in std::fs::read_dir(root).unwrap() {
@@ -192,7 +202,7 @@ fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
         entries.push(SnapshotEntry {
             path: entry.path(),
             contents,
-            mode: metadata.permissions().mode(),
+            mode: snapshot_mode(&metadata),
             modified: metadata.modified().unwrap(),
         });
     }
@@ -241,10 +251,10 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
         (503, false, "http_server"),
         (200, false, "unreachable"),
     ] {
-        let (base, _, task) = server(status, invalid, Duration::ZERO).await;
+        let (base, _, mut task) = server(status, invalid, Duration::ZERO).await;
         if category == "unreachable" {
             task.abort();
-            tokio::task::yield_now().await;
+            let _ = (&mut task).await;
         }
         let root = tempfile::tempdir().unwrap();
         let (config, mut args) = fixture(root.path(), &base);
@@ -267,12 +277,19 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
             for id in ids {
                 let result = check(&report, id);
                 assert_eq!(result.status, Status::Failed, "{id}/{category}");
-                assert_eq!(
-                    result.category.as_deref(),
-                    Some(category),
-                    "{id}: {}",
-                    report.human()
-                );
+                if cfg!(windows) && category == "unreachable" {
+                    assert!(matches!(
+                        result.category.as_deref(),
+                        Some("unreachable" | "timeout")
+                    ));
+                } else {
+                    assert_eq!(
+                        result.category.as_deref(),
+                        Some(category),
+                        "{id}: {}",
+                        report.human()
+                    );
+                }
                 if status != 200 {
                     assert!(result.value.contains(&status.to_string()));
                 }
@@ -423,9 +440,15 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
         .any(|check| check.id.contains("workspace_trust") || check.id.contains("trust_file")));
     // The editor server is nav lsp, including after migration of a legacy path.
     let home = root.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    #[cfg(unix)]
     let settings = home.join(".config/Code/User/settings.json");
+    #[cfg(windows)]
+    let settings = withnav::tools::canonical_path(&args.workspace)
+        .unwrap()
+        .join(".vscode/settings.json");
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    let nav = home.join("nav");
+    let nav = home.join(if cfg!(windows) { "nav.exe" } else { "nav" });
     std::fs::write(&nav, "synthetic existing binary").unwrap();
     for (server_path, expected) in [
         (nav.clone(), Status::Ok),
@@ -459,16 +482,19 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     assert_eq!(result.status, Status::Warning);
     assert!(result.value.contains("not detectable"));
     assert_eq!(snapshot(root.path()), before);
-    std::fs::set_permissions(
-        config.join("auth.json"),
-        std::fs::Permissions::from_mode(0o644),
-    )
-    .unwrap();
-    let report = inspect(&args, &config, None, None).await;
-    assert_eq!(
-        check(&report, "config.auth").status,
-        withnav::app::doctor::Status::Failed
-    );
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(
+            config.join("auth.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let report = inspect(&args, &config, None, None).await;
+        assert_eq!(
+            check(&report, "config.auth").status,
+            withnav::app::doctor::Status::Failed
+        );
+    }
     std::fs::write(
         config.join("config.json"),
         "{invalid secret-doctor-auth-sentinel",
@@ -526,13 +552,18 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     let home = root.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let (config, args) = fixture(&home.join(".config"), &base);
-    let legacy = home.join(".config/navai");
-    let navigator = args.workspace.join(".navigator");
+    let legacy = home.join(".config").join("navai");
+    let navigator = withnav::tools::canonical_path(&args.workspace)
+        .unwrap()
+        .join(".navigator");
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::create_dir_all(&navigator).unwrap();
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_nav"), bin.join("nav")).unwrap();
+    #[cfg(windows)]
+    std::fs::copy(env!("CARGO_BIN_EXE_nav"), bin.join("nav.exe")).unwrap();
     let before = snapshot(root.path());
     for layer in ["reflex", "instinct", "metacognition"] {
         for (json, offline) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -548,6 +579,10 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                 .env("XDG_DATA_HOME", home.join(".local/share"))
                 .env("NAVAI_FOO", ENV_SECRET)
                 .env("RUST_LOG", "trace");
+            common::isolate(command.as_std_mut(), root.path());
+            command
+                .env("WITHNAV_CONFIG_DIR", &config)
+                .env("WITHNAV_DATA_DIR", home.join(".local/share/withnav"));
             if json {
                 command.arg("--json");
             }
@@ -571,7 +606,17 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
             assert!(stdout.contains("NAVAI_FOO"));
             assert!(stdout.contains("WITHNAV_FOO"));
             for path in [&legacy, &navigator] {
-                assert!(stdout.contains(&format!("legacy.path.{}", path.display())));
+                if json {
+                    let escaped =
+                        serde_json::to_string(&format!("legacy.path.{}", path.display())).unwrap();
+                    assert!(stdout.contains(&escaped));
+                } else {
+                    assert!(
+                        stdout.contains(&format!("legacy.path.{}", path.display())),
+                        "missing {}: {stdout}",
+                        path.display()
+                    );
+                }
             }
             if json {
                 let report: Value = serde_json::from_str(&stdout).unwrap();

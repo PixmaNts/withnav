@@ -117,7 +117,7 @@ fn actor_with(flows: Option<Arc<FakeFlows>>) -> AgentActor {
             .unwrap()
             .clone(),
     );
-    let ws = actor.tool_context.workspace.canonicalize().unwrap();
+    let ws = crate::tools::canonical_path(&actor.tool_context.workspace).unwrap();
     actor.tool_context.workspace = ws.clone();
     actor.tool_context.writable_roots = vec![ws.clone()];
     let home = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
@@ -725,6 +725,7 @@ async fn the_same_call_three_times_in_a_turn_asks_and_a_new_turn_resets() {
     assert_eq!(request.tool_call_id, "b3");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_target_swapped_after_the_decision_is_decided_again_floor_included() {
     let flows = Arc::new(FakeFlows::with_check("allow", ProtectedCheck::Failed));

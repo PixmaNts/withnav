@@ -208,7 +208,13 @@ impl Matcher {
         if pattern.trim().is_empty() {
             return Err(denied("invalid_pattern", "the pattern is empty"));
         }
-        if Path::new(pattern).is_absolute() || pattern.starts_with('~') {
+        if Path::new(pattern).has_root()
+            || pattern.starts_with('~')
+            || matches!(
+                Path::new(pattern).components().next(),
+                Some(std::path::Component::Prefix(_))
+            )
+        {
             return Err(denied(
                 "invalid_pattern",
                 "the pattern must be relative; pass the directory as `path`",
@@ -331,7 +337,7 @@ fn walk(
                 stack.push(path);
             } else if let Ok(rel) = path.strip_prefix(root) {
                 if matcher.glob.is_match(rel) {
-                    out.paths.push(rel.to_string_lossy().into_owned());
+                    out.paths.push(super::relative_path_text(rel));
                 }
             }
         }
@@ -569,6 +575,7 @@ mod tests {
     // Given links to a file, a directory outside, and back to the root
     // When the walk runs
     // Then none is listed or followed
+    #[cfg(unix)]
     #[tokio::test]
     async fn links_are_not_followed() {
         let tmp = tempfile::tempdir().unwrap();

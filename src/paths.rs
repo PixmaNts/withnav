@@ -12,10 +12,35 @@ use directories::ProjectDirs;
 /// The application name every dir is derived from.
 pub(crate) const APP_NAME: &str = "withnav";
 
+/// The user's home folder: `HOME`, and on Windows, where it is usually unset, the
+/// profile folder from the Known Folder API.
+pub fn home_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    #[cfg(windows)]
+    let home =
+        home.or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()));
+    home
+}
+
 /// WithNav's data dir (`~/.local/share/withnav` on Linux), when the home
 /// directory can be resolved.
 pub fn data_dir() -> Option<PathBuf> {
+    if let Some(path) = root_override("WITHNAV_DATA_DIR") {
+        return Some(path);
+    }
     ProjectDirs::from("", "", APP_NAME).map(|dirs| dirs.data_dir().to_path_buf())
+}
+
+/// Resolve portable/test roots against the process directory, never a tool's workspace.
+pub(crate) fn root_override(name: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(name).filter(|value| !value.is_empty())?;
+    let path = PathBuf::from(value);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        std::path::absolute(path)
+            .expect("cannot resolve relative WithNav root override: process directory unavailable")
+    })
 }
 
 /// The conversation-history database, `<data_dir>/withnav.db`.
@@ -40,7 +65,10 @@ mod tests {
         let (Some(dir), Some(db), Some(log)) = (data_dir(), history_db(), decision_log()) else {
             return; // no home directory in this environment
         };
+        #[cfg(unix)]
         assert!(dir.ends_with("withnav"));
+        #[cfg(windows)]
+        assert!(dir.ends_with(std::path::Path::new("withnav").join("data")));
         assert_eq!(db, dir.join("withnav.db"));
         assert_eq!(log, dir.join("withnav.jsonl"));
     }

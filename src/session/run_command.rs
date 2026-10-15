@@ -747,20 +747,7 @@ mod tests {
 
     fn service_with(dir: &Path, url: &str, window: u64) -> Service {
         std::fs::create_dir_all(dir.join("cfg")).expect("cfg dir");
-        std::fs::write(
-            dir.join("cfg/auth.json"),
-            r#"{"mock":{"api_key":"test-key"}}"#,
-        )
-        .expect("auth");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                dir.join("cfg/auth.json"),
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .expect("chmod");
-        }
+        crate::provider::auth::set_key(&dir.join("cfg"), "mock", "test-key").expect("auth");
         std::fs::write(
             dir.join("models.json"),
             format!(

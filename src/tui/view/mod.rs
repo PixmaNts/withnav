@@ -407,9 +407,10 @@ pub fn draw(
         frame.render_widget(editor.area(), inner);
     }
     frame.buffer_mut().set_style(hints, theme.panel());
-    if ui.quit_confirm {
+    if let Some(key) = ui.quit_confirm {
         frame.render_widget(
-            Paragraph::new(" ctrl+q again to quit · esc to keep working").style(theme.warning()),
+            Paragraph::new(format!(" {key} again to quit · esc to keep working"))
+                .style(theme.warning()),
             hints,
         );
     } else {

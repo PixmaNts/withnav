@@ -480,9 +480,7 @@ const CONVERT_MAX_ELEMENTS: usize = 200_000;
 /// Longest a conversion child may run, whatever time the call has left.
 const CONVERT_MAX_DURATION: Duration = Duration::from_secs(10);
 /// Address-space and CPU limits of the conversion child.
-#[cfg(unix)]
 const CONVERT_MAX_ADDRESS_SPACE: u64 = 512 * 1024 * 1024;
-#[cfg(unix)]
 const CONVERT_MAX_CPU_SECS: u64 = 10;
 /// Output read from the child: the tool output bound plus a margin for the
 /// note and for the cut.
@@ -667,7 +665,14 @@ async fn convert_in_child(
             });
         }
     }
+    #[cfg(not(windows))]
     let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    #[cfg(windows)]
+    let (mut child, _job) = super::process_job::Job::spawn(
+        &mut cmd,
+        Some((CONVERT_MAX_ADDRESS_SPACE, CONVERT_MAX_CPU_SECS)),
+    )
+    .map_err(|e| format!("bounded converter job: {e}"))?;
     let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill().await;
         return Err("no pipes".into());

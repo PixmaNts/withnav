@@ -349,8 +349,14 @@ fn state() -> State {
             // The status line shows the home folder as `~`, and the snapshots expect
             // `~/dev/project`. A fixed `/home/pixma/...` only matched on a machine whose home
             // is `/home/pixma` (observed 2026-10-12: ten snapshots failed on a runner whose
-            // home is `/home/runner`), so build the path from the actual home.
-            workspace: format!("{}/dev/project", std::env::var("HOME").unwrap()),
+            // home is `/home/runner`), so build the path from the actual home. Windows usually
+            // has no `HOME`: the status line then uses `USERPROFILE`, and so does this fixture.
+            workspace: format!(
+                "{}/dev/project",
+                std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap()
+            ),
             model: "cognition".into(),
             agent: None,
             variant: None,

@@ -6,6 +6,11 @@ export interface ServerChoice {
   source: ServerSource;
 }
 
+/** Executable shipped by a platform-specific package. */
+export function bundledServerName(platform: string): string {
+  return platform === "win32" ? "nav.exe" : "nav";
+}
+
 /**
  * Picks the server command: a path the user set wins, then the binary shipped inside a
  * platform-specific package, then `nav` from PATH. Kept free of the editor API so the order

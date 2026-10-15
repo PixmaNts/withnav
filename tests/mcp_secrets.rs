@@ -26,7 +26,7 @@ async fn escaped_secrets_never_reach_provider_events_or_store() {
         .rules_home(&env.home)
         .config();
     let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
-    settings.set_dotted("mcp", json!({"fake":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"SECRET":SECRET}}}));
+    settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"SECRET":SECRET}}}));
     settings.set_dotted("yolo", json!(true));
     withnav::settings::save(&cfg.config_dir, &settings).unwrap();
     let history_db = cfg.history_db.clone();

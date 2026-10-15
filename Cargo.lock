@@ -4182,6 +4182,7 @@ dependencies = [
  "tui-markdown",
  "ulid",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
  "wiremock",
 ]
 

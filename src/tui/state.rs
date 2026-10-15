@@ -580,7 +580,8 @@ pub struct UiState {
     pub selected_block: Option<String>,
     pub expanded: std::collections::HashSet<String>,
     pub mode: super::protocol::Mode,
-    pub quit_confirm: bool,
+    /// The key that asked to quit and must be pressed again to confirm.
+    pub quit_confirm: Option<&'static str>,
     pub tick: u64,
     pub filter: String,
     /// The theme the screen is drawn with; while the theme picker is open, the one previewed.

@@ -118,6 +118,36 @@ test("child approval posts to parent with bearer token and exact deny body", asy
   assert.equal(backend.hasOpenPermissions(), true);
 });
 
+for (const decision of ["allow_once", "allow_always", "reject"]) {
+  test(`new ${decision} answer posts to the owner with its optional message`, async t => {
+    const { backend, calls, permission } = setup(t);
+    permission({ child_session_id: "child", always_label: "Always (project): bash git push *" });
+    await backend.answerPermission("parent", "R", decision, "Use another approach");
+    assert.deepEqual(JSON.parse(calls[0].body), {
+      decision, ...(decision === "reject" ? { message: "Use another approach" } : {}),
+    });
+  });
+}
+
+test("Always without a server label never posts", async t => {
+  const { backend, calls, permission } = setup(t);
+  permission({ tool: "fetch" });
+  await assert.rejects(backend.answerPermission("parent", "R", "allow_always"));
+  assert.equal(calls.length, 0);
+});
+
+test("reject reasons enforce UTF-8 admission without consuming the request", async t => {
+  const { backend, calls, permission } = setup(t);
+  permission();
+  for (const message of ["a".repeat(2049), "a".repeat(2047) + "é"]) {
+    await assert.rejects(backend.answerPermission("parent", "R", "reject", message), /2048 UTF-8 bytes/);
+    assert.equal(calls.length, 0);
+    assert.equal(backend.hasOpenPermissions(), true);
+  }
+  await backend.answerPermission("parent", "R", "reject", "é".repeat(1024));
+  assert.equal(JSON.parse(calls[0].body).message, "é".repeat(1024));
+});
+
 test("sending a message percent-encodes the session id in the request path", async t => {
   const { backend, calls } = setup(t);
   backend.state.session = "a/b c";

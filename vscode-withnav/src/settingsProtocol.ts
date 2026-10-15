@@ -148,7 +148,6 @@ export function parseSettingsMessage(raw: unknown): SettingsToHost | null {
 /** Wire types are checked before HTTP; semantic catalogue and range checks belong to the server. */
 export function validateSettingValue(key: string, value: unknown): string | null {
   if (value === null) return null;
-  if (key === "permissions.automatic_review") return typeof value === "boolean" ? null : "Expected a boolean.";
   if (["subagents.max_concurrent", "subagents.watchdog_interval_secs", "agent.watchdog_interval_secs"].includes(key)) {
     return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) ? null : "Expected a finite integer.";
   }

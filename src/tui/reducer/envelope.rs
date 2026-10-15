@@ -509,7 +509,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 return Ok(());
             }
             let prompt = PermissionPrompt {
-                allow_config_session: v["allow_config_session"].as_bool().unwrap_or(false),
+                always_label: v["always_label"].as_str().map(strip_controls),
                 skill_script: serde_json::from_value(v["skill_script"].clone()).ok(),
                 child_session_id: child.map(str::to_string),
                 request_id,
@@ -532,6 +532,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 }),
                 resolution: None,
                 message: None,
+                always_saved: true,
                 stale: false,
             };
             // A fresh request for the call just approved (it now lands
@@ -602,7 +603,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 ..
             }) = s.conversation.blocks.iter_mut().find(|b| b.id == id)
             {
-                prompt.message = v["message"].as_str().map(strip_controls);
+                prompt.always_saved = v["always_saved"].as_bool() != Some(false);
+                prompt.message = v["message"]
+                    .as_str()
+                    .or(v["always_error"].as_str())
+                    .map(strip_controls);
                 prompt.resolution = Some(resolution.clone());
             }
             let call_id = strip_controls(v["tool_call_id"].as_str().unwrap_or_default());
@@ -963,7 +968,7 @@ fn open_permission_for(s: &State, call_id: &str) -> bool {
 /// planned in the same turn) are `Interrupted`. An allowed call runs and reports itself.
 fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
     let ids: Vec<String> = match resolution {
-        "deny" => vec![call_id.to_string()],
+        "deny" | "reject" => vec![call_id.to_string()],
         "cancelled" | "expired" => s
             .conversation
             .tools_by_turn
@@ -978,7 +983,7 @@ fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
         if let Some(b) = s.conversation.blocks.iter_mut().find(|b| b.id == bid) {
             set_tool_status_if_pending(
                 b,
-                if resolution == "deny" {
+                if matches!(resolution, "deny" | "reject") {
                     ToolStatus::Denied
                 } else {
                     ToolStatus::Interrupted

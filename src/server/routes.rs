@@ -26,7 +26,7 @@
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
-//! - `POST /v1/sessions/:id/permissions/:request_id` `{decision:"allow_once"|"allow_folder"|"deny", message?}`
+//! - `POST /v1/sessions/:id/permissions/:request_id` `{decision:"allow_once"|"allow_always"|"reject", message?}` (legacy values accepted)
 //!   -> `{accepted:true}`: the typed answer to a `permission.requested`. 404 unknown session or
 //!   malformed id, 409 `{"error","reason":"permission_stale"}` for a request that is not waiting
 //!   (answered, cancelled, expired, never existed), 400 for a body that is not a decision.
@@ -160,11 +160,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models", get(list_models))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
-        .route("/v1/skill-grants", get(list_skill_grants))
-        .route(
-            "/v1/skill-grants/{skill}",
-            axum::routing::delete(revoke_skill_grant),
-        )
         .route(
             "/v1/settings",
             get(super::settings::get).put(super::settings::put),
@@ -459,6 +454,8 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub yolo: bool,
+    pub permissions_unavailable: Option<String>,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -523,6 +520,8 @@ async fn list_sessions(
                     }
                 };
                 sessions.push(SessionListEntry {
+                    yolo: summary.yolo,
+                    permissions_unavailable: summary.permissions_unavailable,
                     bypass: summary.bypass,
                     bypass_seq: summary.bypass_seq,
                     incarnation: summary.incarnation,
@@ -971,6 +970,8 @@ pub struct AnswerPermissionRequest {
 #[serde(rename_all = "snake_case")]
 pub enum DecisionKind {
     AllowOnce,
+    AllowAlways,
+    Reject,
     AllowFolder,
     AllowConfigSession,
     AllowSkillMachine,
@@ -979,30 +980,6 @@ pub enum DecisionKind {
 
 /// The message a denial carries when the Captain gave none.
 const DEFAULT_DENIAL: &str = "the user denied this tool call";
-
-async fn list_skill_grants(State(state): State<AppState>) -> Response {
-    let store = crate::agent::skill_grants::SkillGrants::in_dir(&state.config.config_dir);
-    match store.read() {
-        Ok(grants) => Json(json!({"grants": grants})).into_response(),
-        Err(error) => grants_error(error),
-    }
-}
-
-async fn revoke_skill_grant(State(state): State<AppState>, Path(skill): Path<String>) -> Response {
-    let store = crate::agent::skill_grants::SkillGrants::in_dir(&state.config.config_dir);
-    match store.revoke(&skill) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => grants_error(error),
-    }
-}
-
-fn grants_error(error: String) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": error})),
-    )
-        .into_response()
-}
 
 async fn answer_permission(
     State(state): State<AppState>,
@@ -1021,11 +998,24 @@ async fn answer_permission(
         Err(err) => return error_response(err),
     };
     use crate::agent::permissions::PermissionDecision;
+    if matches!(body.decision, DecisionKind::Reject | DecisionKind::Deny)
+        && body.message.as_ref().is_some_and(|message| {
+            message.len() > crate::agent::permissions::REJECT_MESSAGE_MAX_BYTES
+        })
+    {
+        return error_response(ServerError::MalformedBody(
+            crate::agent::permissions::REJECT_MESSAGE_LIMIT_ERROR.into(),
+        ));
+    }
     let decision = match body.decision {
         DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
+        DecisionKind::AllowAlways => PermissionDecision::AllowAlways,
+        DecisionKind::Reject => PermissionDecision::Reject {
+            message: body.message.filter(|m| !m.trim().is_empty()),
+        },
         DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
         DecisionKind::AllowConfigSession => PermissionDecision::AllowConfigSession,
-        DecisionKind::AllowSkillMachine => PermissionDecision::AllowSkillMachine,
+        DecisionKind::AllowSkillMachine => return error_response(ServerError::PermissionStale),
         DecisionKind::Deny => PermissionDecision::Deny {
             message: body
                 .message

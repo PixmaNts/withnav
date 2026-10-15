@@ -49,17 +49,6 @@ impl Settings {
         &self.root
     }
 
-    pub fn permissions_review_timeout_secs(&self) -> Result<u64, String> {
-        match self.get_dotted("permissions.review_timeout_secs") {
-            None => Ok(40),
-            Some(value) => value
-                .as_u64()
-                .filter(|n| (5..=300).contains(n))
-                .ok_or_else(|| {
-                    "permissions.review_timeout_secs must be an integer from 5 to 300".into()
-                }),
-        }
-    }
     pub fn compaction_writer(&self) -> Result<&str, String> {
         match self.get_dotted("compaction.writer").and_then(Value::as_str) {
             Some(value @ ("metacognition" | "session")) => Ok(value),
@@ -171,20 +160,14 @@ impl Settings {
                 "agent.watchdog_interval_secs must be an integer from 0 to 31536000".into()
             })
     }
-    /// Automatic advisory review; disabling it asks for every mutating call.
-    pub fn permissions_automatic_review(&self) -> Result<bool, String> {
-        let Some(permissions) = self.root.get("permissions") else {
-            return Ok(true);
-        };
-        if !permissions.is_object() {
-            return Err("permissions must be an object".into());
+    /// Top-level `yolo`: disables all permission control for new sessions.
+    pub fn yolo(&self) -> Result<bool, String> {
+        match self.root.get("yolo") {
+            None => Ok(false),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| "yolo must be a boolean".into()),
         }
-        let Some(value) = permissions.get("automatic_review") else {
-            return Ok(true);
-        };
-        value
-            .as_bool()
-            .ok_or_else(|| "permissions.automatic_review must be a boolean".into())
     }
     /// Progress-check interval; zero disables child supervision.
     pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
@@ -413,24 +396,6 @@ pub fn save_tui_favorite_models(config_dir: &Path, names: &[String]) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn review_timeout_defaults_and_rejects_out_of_range_values() {
-        let mut settings = super::Settings::default();
-        assert_eq!(settings.permissions_review_timeout_secs().unwrap(), 40);
-        for value in [5, 73, 300] {
-            settings.set_dotted("permissions.review_timeout_secs", serde_json::json!(value));
-            assert_eq!(settings.permissions_review_timeout_secs().unwrap(), value);
-        }
-        for value in [
-            serde_json::json!(4),
-            serde_json::json!(301),
-            serde_json::json!("40"),
-            serde_json::json!(5.5),
-        ] {
-            settings.set_dotted("permissions.review_timeout_secs", value);
-            assert!(settings.permissions_review_timeout_secs().is_err());
-        }
-    }
     use super::*;
     #[test]
     fn snapshot_revision_matches_parsed_bytes() {
@@ -593,6 +558,22 @@ mod tests {
                 serde_json::json!({"watchdog_interval_secs":bad}),
             );
             assert!(settings.agent_watchdog_interval_secs().is_err());
+        }
+    }
+
+    #[test]
+    fn yolo_defaults_to_false_and_must_be_a_boolean() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.yolo(), Ok(false));
+        settings.root.insert("yolo".into(), serde_json::json!(true));
+        assert_eq!(settings.yolo(), Ok(true));
+        settings
+            .root
+            .insert("yolo".into(), serde_json::json!(false));
+        assert_eq!(settings.yolo(), Ok(false));
+        for bad in [serde_json::json!("true"), serde_json::json!(1), Value::Null] {
+            settings.root.insert("yolo".into(), bad);
+            assert_eq!(settings.yolo(), Err("yolo must be a boolean".into()));
         }
     }
 

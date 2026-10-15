@@ -6,9 +6,8 @@ use crate::agent::compaction::{
     effective_history, project_reasoning, validate as validate_compaction, Compaction, Components,
 };
 use crate::agent::definitions::{AgentAccess, AgentDefinition};
-use crate::agent::guard::RoleGuard;
 use crate::agent::instructions::Instructions;
-use crate::agent::permissions::{Grants, PermissionRequest};
+use crate::agent::permissions::PermissionRequest;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::ChatMessage;
@@ -44,6 +43,32 @@ pub enum PendingInteraction {
     },
 }
 
+/// Captain messages as permission evidence, and whether any were cut.
+pub type CaptainEvidence = (Vec<String>, bool);
+
+/// A child's shared snapshot of its parent's Captain evidence.
+pub type ParentCaptain = Arc<std::sync::Mutex<Option<CaptainEvidence>>>;
+
+/// Where the configuration and the database the fixed floor protects live.
+#[derive(Debug, Clone, Default)]
+pub struct PermissionDirs {
+    pub config: Option<std::path::PathBuf>,
+    pub data: Option<std::path::PathBuf>,
+    /// The system temporary directories, where a native write needs no flow.
+    pub temp: Vec<std::path::PathBuf>,
+}
+
+impl PermissionDirs {
+    /// This machine's configured directories.
+    pub fn machine() -> Self {
+        Self {
+            config: crate::provider::auth::default_config_dir(),
+            data: crate::paths::data_dir(),
+            temp: crate::permission::floor::system_temp_roots(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BypassState {
     pub enabled: bool,
@@ -57,19 +82,31 @@ pub struct AgentActor {
     pub compaction_chunk_tokens: u64,
     pub compaction_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
     pub tool_flows: Option<Arc<dyn super::flow_hook::ToolCallFlows>>,
+    /// The permission rules and the decision table. A session opens the
+    /// shared database; an actor built outside one keeps a private, empty one.
+    pub permission_store: Option<Arc<crate::permission::store::PermissionStore>>,
+    /// The open error when the shared store is unavailable, exposed to clients.
+    pub permissions_unavailable: Option<String>,
+    /// WithNav's own configuration and data directories, which the fixed floor protects.
+    pub permission_dirs: PermissionDirs,
+    /// The session the decision table files this actor's decisions under.
+    pub permission_session: String,
+    /// The turn the decision table files decisions under; renewed with each run.
+    pub permission_turn: String,
+    /// Identical consecutive calls in this turn.
+    pub doom: crate::permission::decide::DoomTracker,
+    /// A child's snapshot of its parent's Captain messages: the Captain's
+    /// request reaches a delegated call only through it, never through the
+    /// delegated prompt or the parent's steering text.
+    pub parent_captain: ParentCaptain,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
-    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
-    pub permission_context: Arc<std::sync::Mutex<super::permission_gate::context::ReviewContext>>,
-    pub captain_request_inherited: bool,
-    pub protected_config_spelling: Option<std::path::PathBuf>,
-    pub protected_config_unresolved: bool,
+    /// Private temporary storage offered to the model; a write there is bound
+    /// to the directory's identity (inode and mode).
     pub scratch_roots: Vec<super::scratch::Identity>,
-    pub protected_config_root: Option<std::path::PathBuf>,
-    pub permission_reviewer_unavailable: &'static str,
-    pub automatic_permission_review: bool,
-    pub permission_review_timeout_secs: u64,
-    pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
-    pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
+    /// Captain setting `yolo`: no permission control at all for this session.
+    pub yolo: bool,
+    /// The Instinct judge compaction asks which old tool outputs still matter.
+    pub compaction_decision: Option<Arc<dyn crate::provider::systemone::DecisionModel>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
@@ -120,22 +157,17 @@ pub struct AgentActor {
     pub cancel: CancellationToken,
     pub state: AgentState,
     pub pending: Option<PendingInteraction>,
-    /// The folder and origin approvals: given in this session, or kept for
-    /// its workspace when the session service loads them.
-    pub grants: Grants,
-    pub skill_grants: Option<super::skill_grants::SkillGrants>,
+    pub selected_skill_snapshots: Vec<(u64, String)>,
+    pub skill_turn_generation: u64,
+    pub skill_turn_start: usize,
+    pub skill_turn_open: bool,
     /// What the Captain last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// captain (a human ingress identity), never from a navigator wake, delegated
-    /// text or a subagent result. The role guard and the permission review judge
-    /// calls against it. Not stored on its own: a resumed session rebuilds it
+    /// text or a subagent result. The watchdog judges progress against it. Not stored on its own: a resumed session rebuilds it
     /// from the stored `message.received` events (the newest from the Captain),
     /// so it is `None` only when the Captain never spoke.
     pub captain_task: Option<String>,
-    /// The second opinion a guarded agent's exceptions go through before the
-    /// captain. `None` when the session has no guard: every exception then goes
-    /// to the Captain.
-    pub guard: Option<Arc<dyn RoleGuard>>,
 }
 
 impl AgentActor {
@@ -211,19 +243,20 @@ impl AgentActor {
             compaction_chunk_tokens: 64_000,
             compaction_progress: None,
             tool_flows: None,
-            captain_request_inherited: false,
-            protected_config_spelling: None,
-            protected_config_unresolved: false,
+            permission_store: Some(Arc::new(
+                crate::permission::store::PermissionStore::in_memory()
+                    .expect("an in-memory permission database opens"),
+            )),
+            permissions_unavailable: None,
+            permission_dirs: PermissionDirs::machine(),
+            permission_session: String::new(),
+            permission_turn: String::new(),
+            doom: Default::default(),
+            parent_captain: Arc::default(),
             scratch_roots: Vec::new(),
-            protected_config_root: None,
-            permission_reviewer_unavailable: "no alias",
-            automatic_permission_review: true,
-            permission_review_timeout_secs: 40,
+            yolo: false,
             bypass: Arc::default(),
-            config_session_grant: Arc::default(),
-            permission_context: Arc::default(),
-            permission_judge: None,
-            permission_reviewer: None,
+            compaction_decision: None,
             transcript: Vec::new(),
             compaction: None,
             registry,
@@ -246,10 +279,11 @@ impl AgentActor {
             cancel,
             state: AgentState::Idle,
             pending: None,
-            grants: Grants::default(),
-            skill_grants: None,
+            selected_skill_snapshots: vec![],
+            skill_turn_generation: 0,
+            skill_turn_start: 0,
+            skill_turn_open: false,
             captain_task: None,
-            guard: None,
         }
     }
 
@@ -301,6 +335,26 @@ impl AgentActor {
         self.skills = skills;
     }
 
+    /// The most recently admitted skill in this turn; new Captain input clears it.
+    pub fn active_validated_skill(&self) -> Option<(String, String)> {
+        self.skill_turn_open
+            .then(|| self.skills.active_validated_skill())
+            .flatten()
+    }
+
+    pub fn begin_skill_turn(&mut self) {
+        self.end_skill_turn();
+        self.skill_turn_generation = self.skill_turn_generation.wrapping_add(1);
+        self.skill_turn_start = self.transcript.len();
+        self.skill_turn_open = true;
+    }
+
+    pub fn end_skill_turn(&mut self) {
+        self.skills.validation.begin_turn();
+        self.selected_skill_snapshots.clear();
+        self.skill_turn_open = false;
+    }
+
     /// The parts of the request besides the history. `role` is
     /// [`AgentActor::role_message`], which the caller keeps alive.
     pub fn components<'a>(
@@ -331,7 +385,14 @@ impl AgentActor {
     /// another model would send.
     pub fn effective_history_at(&self, floor: usize) -> Vec<ChatMessage> {
         effective_history(
-            &project_reasoning(&self.transcript, floor),
+            &super::skills::validation::project_skill_history(
+                &project_reasoning(&self.transcript, floor),
+                if self.skill_turn_open {
+                    Some(self.skill_turn_start)
+                } else {
+                    None
+                },
+            ),
             self.compaction.as_ref(),
         )
     }
@@ -436,6 +497,9 @@ impl AgentActor {
     /// the process ended; it is never run again. Returns how many were
     /// settled.
     pub fn settle_unanswered_calls(&mut self) -> usize {
+        /// The process ended while the call waited or ran: whether it ran is unknown.
+        const UNFINISHED: &str =
+            "interrupted: the session ended before this call finished; it may not have run";
         let Some(last) = self
             .transcript
             .iter()
@@ -463,7 +527,8 @@ impl AgentActor {
         for id in &unanswered {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: id.clone(),
-                content: String::new(),
+                content: UNFINISHED.into(),
+                answered_by: None,
             });
         }
         unanswered.len()
@@ -478,19 +543,33 @@ impl AgentActor {
         text: impl Into<String>,
         provenance: crate::provider::openai::UserProvenance,
     ) {
+        if provenance == crate::provider::openai::UserProvenance::Captain {
+            self.begin_skill_turn();
+        }
+        self.push_user_in_current_turn(text, provenance);
+    }
+
+    pub fn push_user_in_current_turn(
+        &mut self,
+        text: impl Into<String>,
+        provenance: crate::provider::openai::UserProvenance,
+    ) {
         let text = text.into();
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
                 self.transcript.push(ChatMessage::Tool {
                     tool_call_id,
                     content: text,
+                    answered_by: Some(provenance),
                 });
             }
             Some(PendingInteraction::Permission {
+                request,
                 call,
                 remaining_calls,
                 ..
             }) => {
+                self.cancel_pending_decision(&request);
                 self.settle_interrupted(&call, &remaining_calls);
                 self.transcript.push(ChatMessage::User {
                     provenance,
@@ -507,7 +586,9 @@ impl AgentActor {
     /// Settles every call a pending permission holds as interrupted: none of
     /// them runs. For a stop; a pending `ask` is left as it is.
     pub fn interrupt_pending_permission(&mut self) {
+        self.end_skill_turn();
         if let Some(PendingInteraction::Permission {
+            request,
             call,
             remaining_calls,
             ..
@@ -515,7 +596,25 @@ impl AgentActor {
             .pending
             .take_if(|p| matches!(p, PendingInteraction::Permission { .. }))
         {
+            self.cancel_pending_decision(&request);
             self.settle_interrupted(&call, &remaining_calls);
+        }
+    }
+
+    /// A question nobody answers ends as `cancelled` in the decision table.
+    fn cancel_pending_decision(&self, request: &PermissionRequest) {
+        if let (Some(id), Some(store)) = (request.decision_id, &self.permission_store) {
+            // Off the runtime thread: nothing waits on this write.
+            store.detach(move |store| {
+                if let Err(error) = store.update_outcome(
+                    id,
+                    crate::permission::decisions::Outcome::Cancelled,
+                    None,
+                    None,
+                ) {
+                    tracing::warn!(%error, "permission decision outcome not recorded");
+                }
+            });
         }
     }
 
@@ -523,7 +622,8 @@ impl AgentActor {
         for call in std::iter::once(call).chain(remaining) {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: call.id.clone(),
-                content: String::new(),
+                content: crate::agent::run_loop::NOT_RUN.into(),
+                answered_by: None,
             });
         }
     }

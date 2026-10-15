@@ -938,6 +938,8 @@ fn child_entry(status: &str, agent: Option<&str>, title: Option<&str>) -> Sessio
 fn subagent_parent() -> State {
     let tab = Tab {
         session: Some(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -1112,6 +1114,8 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
             ClientEvent::Metadata {
                 generation: generation.clone(),
                 result: Ok(SessionMetadata {
+                    yolo: false,
+                    permissions_unavailable: None,
                     bypass: false,
                     bypass_seq: 0,
                     incarnation: None,
@@ -1838,6 +1842,8 @@ fn steps(s: &State) -> Vec<(String, String)> {
 }
 fn with_session(s: &mut State, id: &str) {
     s.session = Some(SessionMetadata {
+        yolo: false,
+        permissions_unavailable: None,
         bypass: false,
         bypass_seq: 0,
         incarnation: None,
@@ -2582,6 +2588,8 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     let meta = |g: &Generation, model: &str| ClientEvent::Metadata {
         generation: g.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -3893,6 +3901,8 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     let meta = ClientEvent::Metadata {
         generation: first.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -4034,6 +4044,8 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     let summary = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -4170,6 +4182,8 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
     let summary = |s: &State, seq: u64, agent: &str, variant: Option<&str>| ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -4389,6 +4403,7 @@ fn permission_script(request: u128) -> Script {
     s.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(request),
             tool_call_id: "w1".into(),
@@ -4497,6 +4512,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
     script.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(11),
             tool_call_id: "w1".into(),
@@ -4545,6 +4561,7 @@ fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
     script.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(21),
             tool_call_id: "w1".into(),
@@ -4629,6 +4646,7 @@ fn an_accepted_answer_waiting_for_its_resolution_is_not_sent_again() {
     script.push(
         EventKind::PermissionRequested,
         &PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id: Ulid(31),
             tool_call_id: "w1".into(),
@@ -5044,6 +5062,8 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
     let old = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -5458,7 +5478,7 @@ fn an_acceptance_of_an_unknown_operation_is_not_labelled_with_this_tabs_alias() 
 #[test]
 fn approval_evidence_survives_live_and_replay() {
     let mut script = Script::new();
-    let gate = json!({"policy_version":1,"source":"jev","verdicts":{"effect":"read_only","scope":"inside","risk":"low"}});
+    let gate = json!({"policy_version":1,"source":"instinct","verdicts":{"effect":"read_only","scope":"inside","risk":"low"}});
     script.raw("tool.pre_call",json!({"tool_call_id":"review","name":"bash","args":{"command":"ls"},"permission_gate":gate}));
     script.raw("tool.post_call",json!({"tool_call_id":"review","name":"bash","status":"ok","output":"done","metadata":{"permission_gate":gate}}));
     for _ in 0..2 {
@@ -5489,4 +5509,53 @@ fn approval_evidence_survives_live_and_replay() {
             .any(|span| span.content.contains("auto · instinct")));
         }
     }
+}
+
+#[test]
+fn an_unsaved_always_says_it_ran_once() {
+    let mut script = permission_script(88);
+    resolved(
+        &mut script,
+        88,
+        PermissionResolution::AllowAlways {
+            always_saved: false,
+            always_error: Some("database is locked".into()),
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let prompt = s
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some(p.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(prompt.resolution.as_deref(), Some("allow_always"));
+    assert_eq!(prompt.message.as_deref(), Some("database is locked"));
+    assert!(!prompt.always_saved);
+    let mut script = permission_script(89);
+    resolved(
+        &mut script,
+        89,
+        PermissionResolution::AllowAlways {
+            always_saved: true,
+            always_error: None,
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let prompt = s
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some(p.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(prompt.always_saved);
+    assert_eq!(prompt.message, None);
 }

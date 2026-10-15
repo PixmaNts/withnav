@@ -9,9 +9,12 @@ const request = (extra = {}) => envelope("permission.requested", {
   scope: { kind: "folder", value: "/workspace" }, reason: "Full reason\nSecond line", ...extra,
 });
 
-test("config session answer is offered only by the protected request", () => {
-  assert.equal(eventView(request()).card.allowConfigSession, false);
-  assert.equal(eventView(request({ allow_config_session: true })).card.allowConfigSession, true);
+test("removed folder and session-wide answers are never offered", () => {
+  for (const extra of [{}, { allow_config_session: true }, { tool: "fetch" }]) {
+    const { card } = eventView(request(extra));
+    assert.equal("allowFolder" in card, false);
+    assert.equal("allowConfigSession" in card, false);
+  }
 });
 
 test("machine skill answer uses only the host skill binding", () => {
@@ -28,10 +31,15 @@ test("permission card preserves full reason, command, scope and ids", () => {
   assert.equal(card.reason, "Full reason\nSecond line");
   assert.equal(card.call, "echo first\nprintf second");
   assert.deepEqual(card.scope, { kind: "folder", value: "/workspace" });
-  assert.equal(card.allowFolder, false);
 });
 
-for (const resolution of ["allow_once", "deny", "expired", "cancelled", "stale"]) {
+test("Always uses only the server label", () => {
+  assert.equal(eventView(request({ tool: "fetch" })).card.alwaysLabel, undefined);
+  assert.equal(eventView(request({ always_label: "Always (project): bash git push *" })).card.alwaysLabel, "Always (project): bash git push *");
+  assert.equal(eventView(request({ always_label: 123 })).card.alwaysLabel, undefined);
+});
+
+for (const resolution of ["allow_once", "allow_always", "reject", "deny", "expired", "cancelled", "stale"]) {
   test(`permission requested → ${resolution} closes the matching card`, () => {
     const controls = new ConversationControls();
     controls.apply(eventView(request()));
@@ -41,6 +49,7 @@ for (const resolution of ["allow_once", "deny", "expired", "cancelled", "stale"]
     controls.apply(result);
     assert.equal(controls.permissions.size, 0);
     if (resolution === "deny") assert.equal(permissionOutcome(resolution, result.message), "Denied: Do not run");
+    if (resolution === "reject") assert.equal(permissionOutcome(resolution, result.message), "Rejected: Do not run");
     if (resolution === "expired") assert.match(permissionOutcome(resolution), /session restarted/);
     if (resolution === "stale") assert.match(permissionOutcome(resolution), /No longer waiting/);
   });
@@ -71,12 +80,6 @@ test("durable replay reconstructs closed and still-open child permissions on the
   assert.equal(replay().open[0].childSessionId, "child");
 });
 
-  for (const tool of ["bash", "write", "edit", "read", "grep", "glob", "fetch"]) {
-  test(`reusable ${tool} grant follows server offer`, () => {
-    assert.equal(eventView(request({ tool })).card.allowFolder, tool === "fetch");
-    assert.equal(eventView(request({ tool, agent: "plan" })).card.allowFolder, false);
-  });
-}
 
 test("write and edit previews bound content independently with exact UTF-8 omissions", () => {
   const content = "é".repeat(2500);
@@ -146,7 +149,7 @@ test("evidence absent and malformed does not invent an approval", () => {
 });
 
 test("evidence preserves all optional review fields only when present", () => {
-  for (const source of ["instinct", "jev", "metacognition", "captain", "driver"]) {
+  for (const source of ["instinct", "metacognition", "captain", "driver"]) {
     const minimal = { policy_version: 1, source };
     assert.deepEqual(permissionEvidence(minimal), minimal);
     const full = { ...minimal, reason: "Low risk", verdicts: { effect: "write", scope: "project", risk: "low" },
@@ -156,12 +159,10 @@ test("evidence preserves all optional review fields only when present", () => {
   }
 });
 
-test("stored legacy instinct events render with the layer name", () => {
+test("instinct events render with the layer name", () => {
   const { evidenceLabel } = require("../out/tests/eventView.js");
-  for (const source of ["jev", "instinct"]) {
-    const evidence = permissionEvidence({ source, policy_version: 1 });
-    assert.equal(evidenceLabel(evidence, "tool"), "auto · instinct");
-  }
+  const evidence = permissionEvidence({ source: "instinct", policy_version: 1 });
+  assert.equal(evidenceLabel(evidence, "tool"), "auto · instinct");
 });
 
 test("open and denied Captain-review cards never claim approval", () => {
@@ -221,4 +222,15 @@ test("Captain and Nav provenance retain human and wake rendering for new session
     assert.equal(evidenceLabel({ source, policy_version: 1 }, "tool"), "approved · Captain");
   }
   assert.equal(eventView(envelope("message.received", { source: "nav", content: "wake" })).author, "navigator");
+});
+
+test("an Always answer that saved nothing says it ran once", () => {
+  const failed = eventView(envelope("permission.resolved", { request_id: "R", resolution: "allow_always", always_saved: false, always_error: "database is locked" }));
+  assert.equal(failed.resolution, "allow_always");
+  assert.equal(failed.message, "database is locked");
+  assert.equal(failed.alwaysSaved, false);
+  assert.equal(permissionOutcome(failed.resolution, failed.message, failed.alwaysSaved), "Always not saved: database is locked; ran once");
+  const saved = eventView(envelope("permission.resolved", { request_id: "R", resolution: "allow_always" }));
+  assert.equal(saved.alwaysSaved, undefined);
+  assert.equal(permissionOutcome(saved.resolution, saved.message, saved.alwaysSaved), "Allowed always");
 });

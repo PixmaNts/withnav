@@ -29,6 +29,17 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 
+describe("yolo badge", () => {
+  it("shows a YOLO badge on a session, with the bypass badge's markup", () => {
+    const row = (id: string, yolo: boolean) => ({ id, title: id, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", message_count: 1, agent: "build", model: "m", live: true, yolo });
+    vi.mocked(useSessions).mockReturnValue({ data: [row("on", true), row("off", false)] } as never);
+    act(() => root.render(<WorkspaceRow ws={ws} route={route} navigate={navigate} expanded setOpen={vi.fn()} />));
+    const badges = [...container.querySelectorAll(".bypass-badge")];
+    expect(badges.map((badge) => badge.textContent)).toEqual(["⚠ YOLO"]);
+    expect(badges[0]?.closest(".sess")?.textContent).toContain("on");
+  });
+});
+
 describe("workspace expansion", () => {
   it("expands a non-current workspace without changing the route", () => {
     const setOpen = vi.fn();
@@ -80,4 +91,13 @@ describe("workspace expansion", () => {
     localStorage.setItem(EXPANDED_WORKSPACES_KEY, '[42,"relative"]');
     expect(readExpandedWorkspaces(ws.path, localStorage)).toEqual(new Set([ws.path]));
   });
+});
+
+it("shows unavailable permission rules with the shared warning badge and error detail", () => {
+  const row = { id: "degraded", title: "degraded", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", message_count: 1, agent: "build", model: "m", live: true, permissions_unavailable: "database open error" };
+  vi.mocked(useSessions).mockReturnValue({ data: [row] } as never);
+  act(() => root.render(<WorkspaceRow ws={ws} route={route} navigate={navigate} expanded setOpen={vi.fn()} />));
+  const badge = container.querySelector(".bypass-badge");
+  expect(badge?.textContent).toContain("Permission rules unavailable");
+  expect(badge?.getAttribute("title")).toBe("database open error");
 });

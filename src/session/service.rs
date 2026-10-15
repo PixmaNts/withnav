@@ -47,7 +47,6 @@ use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
 use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::instructions::Instructions;
-use crate::agent::permissions::Grants;
 use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
 use crate::bus::command::Command;
@@ -61,9 +60,6 @@ use crate::bus::SessionBus;
 use crate::error::ServerError;
 use crate::provider::config::{load_models, ApiKind, ModelConfig};
 use crate::provider::openai::ChatMessage;
-
-/// The file in the data dir that keeps the "allow folder" grants of every workspace.
-const GRANTS_FILE: &str = "grants.json";
 
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
@@ -156,8 +152,7 @@ pub struct SelectedModel {
 
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
-    pub(crate) automatic_permission_review: bool,
-    pub(crate) permission_review_timeout_secs: u64,
+    pub(crate) yolo: bool,
     pub(crate) scratch_choice: Vec<PathBuf>,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
@@ -166,9 +161,9 @@ pub(crate) struct EffectiveExecution {
 type ChildPolicy = (
     BTreeMap<String, bool>,
     bool,
-    bool,
     Option<String>,
     Vec<PathBuf>,
+    bool,
 );
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -326,6 +321,9 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    /// Captain setting `yolo`: the session runs with no permission control.
+    pub yolo: bool,
+    pub permissions_unavailable: Option<String>,
     pub bypass: bool,
     pub bypass_seq: u64,
     pub incarnation: Option<String>,
@@ -913,10 +911,9 @@ impl Service {
         }
         let mut allowed = BTreeMap::new();
         // A plan-owned child inherits plan's no-write capability ceiling even
-        // when its definition is full-access. We use the stricter capability
-        // ceiling rather than duplicating the advisory parent role guard: the
-        // child has no write/edit/bash dispatch path, so it cannot launder
-        // writes past the plan parent's restriction.
+        // when its definition is full-access: the child has no write/edit/bash
+        // dispatch path, so it cannot launder writes past the plan parent's
+        // restriction.
         for tool in [
             "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
         ] {
@@ -944,10 +941,6 @@ impl Service {
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
-                    inherited
-                        .execution
-                        .as_ref()
-                        .is_some_and(|execution| execution.automatic_permission_review),
                     self.history
                         .latest_captain_message(parent)
                         .await
@@ -957,6 +950,10 @@ impl Service {
                         .as_ref()
                         .map(|execution| execution.scratch_choice.clone())
                         .unwrap_or_default(),
+                    inherited
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.yolo),
                 )),
                 Some(parent),
                 Some(inherited),
@@ -1406,20 +1403,17 @@ impl Service {
                     barrier.release.notified().await;
                 }
             }
-            let result = handle.skills.load_listed(name).await;
-            if result.status != crate::tools::ToolStatus::Ok {
-                return Err(ServerError::MalformedBody(
-                    result
-                        .error
-                        .map(|error| format!("{}: {}", error.code, error.message))
-                        .unwrap_or(result.output),
-                ));
-            }
+            let skills = handle.skills.clone();
+            let skill_name = name.clone();
+            let snapshot = tokio::task::spawn_blocking(move || skills.snapshot(&skill_name))
+                .await
+                .map_err(|e| ServerError::MalformedBody(e.to_string()))?
+                .map_err(ServerError::MalformedBody)?;
             for block in &mut command.content {
                 if matches!(block, crate::bus::command::ContentBlock::Skill { .. }) {
                     *block = crate::bus::command::ContentBlock::LoadedSkill {
                         name: name.clone(),
-                        content: result.output.clone(),
+                        content: snapshot.id.clone(),
                     };
                 }
             }
@@ -1543,6 +1537,19 @@ impl Service {
                 "steering message must be nonempty and at most 16 KiB".into(),
             ));
         }
+        // The steering text is the parent's, not the Captain's: only the
+        // parent's current Captain messages are refreshed.
+        let captain = owner
+            .status
+            .captain_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        *handle
+            .status
+            .parent_captain
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(captain);
         if !handle.status.steer(message.to_string(), interrupt) {
             return Err(ServerError::ChildNotParked);
         }
@@ -1590,6 +1597,9 @@ impl Service {
         request_id: Ulid,
         decision: crate::agent::permissions::PermissionDecision,
     ) -> Result<(), ServerError> {
+        decision
+            .validate_message()
+            .map_err(|message| ServerError::MalformedBody(message.into()))?;
         let handle = self.routable_handle(session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
@@ -1859,6 +1869,11 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         Ok(SessionSummary {
+            permissions_unavailable: handle.status.permissions_unavailable.clone(),
+            yolo: selected
+                .execution
+                .as_ref()
+                .is_some_and(|execution| execution.yolo),
             bypass: bypass.enabled,
             bypass_seq: bypass.seq,
             incarnation: Some(handle.incarnation.to_string()),
@@ -1913,6 +1928,8 @@ impl Service {
             meta.provenance.as_ref(),
         );
         Ok(SessionSummary {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: meta.last_seq,
             incarnation: None,
@@ -2488,17 +2505,8 @@ impl Service {
         })?;
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
-            permission_review_timeout_secs: match inherited
-                .as_ref()
-                .and_then(|parent| parent.execution.as_ref())
-            {
-                Some(execution) => execution.permission_review_timeout_secs,
-                None => settings
-                    .permissions_review_timeout_secs()
-                    .map_err(ServerError::MalformedBody)?,
-            },
             scratch_choice: match &child_policy {
-                Some((_, _, _, _, choice)) => choice.clone(),
+                Some((_, _, _, choice, _)) => choice.clone(),
                 None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
@@ -2507,12 +2515,12 @@ impl Service {
                     }
                 },
             },
-            automatic_permission_review: match &child_policy {
-                Some((_, _, enabled, _, _)) => *enabled,
-                None => match settings.permissions_automatic_review() {
-                    Ok(enabled) => enabled,
+            yolo: match &child_policy {
+                Some((_, _, _, _, yolo)) => *yolo,
+                None => match settings.yolo() {
+                    Ok(yolo) => yolo,
                     Err(error) => {
-                        tracing::warn!("automatic permission review disabled: {error}");
+                        tracing::warn!("yolo ignored: {error}");
                         false
                     }
                 },
@@ -2539,14 +2547,6 @@ impl Service {
                 session_cancel.child_token(),
             ),
         };
-        // "Allow folder" answers are kept per workspace, across sessions. A
-        actor.skill_grants = Some(crate::agent::skill_grants::SkillGrants::in_dir(
-            &self.config.config_dir,
-        ));
-        // subagent keeps its own in memory, as its parent's policy decides.
-        if child_policy.is_none() {
-            actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);
-        }
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
@@ -2574,58 +2574,81 @@ impl Service {
                 .reasoning_floor
                 .map_or(0, |floor| usize::try_from(floor).unwrap_or(usize::MAX))
                 .min(actor.transcript.len());
-            // The task the role guard judges against: the Captain's latest
-            // stored words, not a navigator wake.
+            // The task the watchdog judges progress against: the Captain's
+            // latest stored words, not a navigator wake.
             actor.captain_task = self
                 .history
                 .latest_captain_message(session_id)
                 .await
                 .map_err(ServerError::History)?;
-            let events = self
-                .history
-                .permission_context_events(session_id)
-                .await
-                .map_err(ServerError::History)?;
-            actor
-                .permission_context
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .restore(&events);
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
             .await;
-        let skills = self
+        let mut skills = self
             .load_skills(&workspace, session_id, resumed.is_some())
             .await;
+        skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
+            data_dir: Some(self.config.data_dir.clone()),
+            ..Default::default()
+        });
         actor.set_skills(skills);
-        actor.guard = super::guard::instinct_guard(
-            self.config.models_path.as_deref(),
-            &workspace,
-            &self.config.config_dir,
-        );
-        actor.permission_judge = super::guard::permission_judge(
+        actor.permission_dirs = crate::agent::actor::PermissionDirs {
+            config: Some(self.config.config_dir.clone()),
+            data: Some(self.config.data_dir.clone()),
+            temp: crate::permission::floor::system_temp_roots(),
+        };
+        actor.permission_session = session_id.to_string();
+        actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,
         );
         actor.compaction_catalog = Some(self.catalog.clone());
-        actor.automatic_permission_review = execution.automatic_permission_review;
-        actor.permission_review_timeout_secs = execution.permission_review_timeout_secs;
-        actor.protected_config_spelling = Some(self.config.config_dir.clone());
-        actor.protected_config_root =
-            crate::agent::permissions::resolve_protected_root(&self.config.config_dir).ok();
-        actor.protected_config_unresolved = actor.protected_config_root.is_none();
-        if actor.protected_config_unresolved {
-            crate::agent::scratch::warn_once(
-                "config root unresolved; native writes require captain approval",
-            );
+        actor.yolo = execution.yolo;
+        // An unavailable database is an explicit degraded mode: no rules can
+        // be read or saved, but the floor and permission flows still apply.
+        // Opened on the blocking pool: the database may wait on another
+        // connection's write for its busy timeout.
+        let opened = {
+            let data_dir = self.config.data_dir.clone();
+            let expire = resumed.is_some().then(|| session_id.to_string());
+            tokio::task::spawn_blocking(move || {
+                let store = crate::permission::store::PermissionStore::open(&data_dir)?;
+                if let Some(session) = expire {
+                    if let Err(error) = store.expire_pending(&session) {
+                        tracing::warn!(%error, "pending permission decisions not expired");
+                    }
+                }
+                Ok(store)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(crate::permission::store::Error::Invalid(error.to_string()))
+            })
+        };
+        match opened {
+            Ok(store) => {
+                actor.permission_store = Some(Arc::new(store));
+            }
+            Err(error) => {
+                let reason = format!(
+                    "{}: {error}",
+                    self.config.data_dir.join("withnav.db").display()
+                );
+                tracing::warn!(%reason, "permission rules unavailable; decisions will not be recorded");
+                actor.permission_store = None;
+                actor.permissions_unavailable = Some(reason);
+            }
         }
+        // A scratch directory that contains, or sits inside, WithNav's own
+        // configuration would make it writable without the protected check.
+        let config_root =
+            crate::tools::validate_path(&[PathBuf::from("/")], &self.config.config_dir).ok();
         for path in &execution.scratch_choice {
-            if actor
-                .protected_config_root
+            if config_root
                 .as_ref()
-                .is_some_and(|root| root.starts_with(path) || path.starts_with(root))
+                .is_none_or(|root| root.starts_with(path) || path.starts_with(root))
             {
                 crate::agent::scratch::warn_once("scratch overlaps protected config directory");
                 continue;
@@ -2641,8 +2664,7 @@ impl Service {
                 Err(error) => crate::agent::scratch::warn_once(&error),
             }
         }
-        if let Some((_, _, _, captain_task, _)) = &child_policy {
-            actor.captain_request_inherited = true;
+        if let Some((_, _, captain_task, _, _)) = &child_policy {
             actor.captain_task = captain_task.clone();
         }
         if let Ok((models, _)) = crate::provider::config::load_models(
@@ -2702,29 +2724,6 @@ impl Service {
                 }
                 .await;
             }
-            let reviewer_present = crate::provider::layers::assigned(
-                &models,
-                &self.config.config_dir,
-                crate::provider::assignments::Layer::Metacognition,
-            )
-            .is_ok();
-            actor.permission_reviewer_unavailable = if reviewer_present {
-                "no key"
-            } else {
-                "metacognition layer unavailable"
-            };
-            actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
-                &models,
-                "metacognition",
-                &self.config.config_dir,
-                &self.catalog,
-                Arc::new(crate::provider::openai::ClientCache::new()),
-                self.config.data_dir.join("withnav.jsonl"),
-            )
-            .ok()
-            .map(|reviewer| {
-                Arc::new(reviewer) as Arc<dyn crate::agent::permission_gate::PermissionReviewer>
-            });
         }
         self.hooks.configure_actor(editor, &mut actor);
         if child_policy.is_some() {
@@ -3004,13 +3003,18 @@ impl Service {
             };
         let mut runtime_status =
             runtime::RuntimeStatus::with_selection(AgentSelection::new(agents, role));
-        runtime_status.permission_context = actor.permission_context.clone();
-        // Share only live memory: a resumed root constructs a fresh grant.
-        if let Some(parent) = child_parent {
-            if let Some(handle) = self.handle(parent) {
-                runtime_status.config_session_grant = handle.status.config_session_grant.clone();
-                runtime_status.permission_context = handle.status.permission_context.clone();
-            }
+        runtime_status.permissions_unavailable = actor.permissions_unavailable.clone();
+        if let Some(parent) = child_parent.and_then(|parent| self.handle(parent)) {
+            let captain = parent
+                .status
+                .captain_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            *runtime_status
+                .parent_captain
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(captain);
         }
         let status = Arc::new(runtime_status);
         status.init_variant(selected.clone());
@@ -3174,19 +3178,34 @@ impl Service {
             variant: selected,
             offer: Arc::new(offered),
         }));
-        let flows = child_parent
-            .is_none()
-            .then(|| self.flows.runtime(&workspace))
-            .flatten();
-        actor.tool_flows = flows.as_ref().map(|runtime| {
-            super::flows::hook(
+        // A new workspace entry loads its flows and reads their validations
+        // from the permission database: built on the blocking pool.
+        let runtime = {
+            let (host, workspace) = (self.flows.clone(), workspace.clone());
+            tokio::task::spawn_blocking(move || host.runtime(&workspace))
+                .await
+                .ok()
+                .flatten()
+        };
+        let flows = child_parent.is_none().then(|| runtime.clone()).flatten();
+        actor.tool_flows = match &flows {
+            Some(runtime) => Some(super::flows::hook(
                 runtime,
                 session_id.to_string(),
                 selected_model.clone(),
                 status.clone(),
                 sequencer.clone(),
-            )
-        });
+            )),
+            // A subagent's calls are judged by the same permission flows as
+            // its parent's; flow effects stay with the root session.
+            None => runtime.map(|runtime| {
+                runtime.tool_hook_with_effects(
+                    session_id.to_string(),
+                    selected_model.clone(),
+                    Arc::new(crate::flows::runtime::NoEffects),
+                )
+            }),
+        };
         status.install_model_switcher(self.model_switcher(
             session_id,
             workspace.clone(),
@@ -3377,3 +3396,21 @@ pub use resolve::CLEAR_WORD;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The session's Instinct layer as the judge compaction asks which old tool
+/// outputs still matter; `None` when Instinct is unavailable.
+fn compaction_decision(
+    models_path: Option<&std::path::Path>,
+    workspace: &std::path::Path,
+    config_dir: &std::path::Path,
+) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
+    let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
+        .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
+        .ok()?;
+    let client = crate::provider::layers::available_instinct(
+        &models,
+        config_dir,
+        Arc::new(crate::provider::openai::ClientCache::new()),
+    )?;
+    Some(Arc::new(client))
+}

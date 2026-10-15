@@ -2,7 +2,7 @@
 
 Date: 2026-10-04
 
-Status: Accepted
+Status: Superseded by [ADR 0015](0015-permission-rules-and-instinct-flow.md) on 2026-10-13
 
 Naming status: the human role is now called the Captain and the product WithNav;
 see [ADR 0014](0014-rebrand-withnav.md). Original decision wording is retained.

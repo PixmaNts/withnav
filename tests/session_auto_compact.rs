@@ -673,6 +673,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
         ChatMessage::Tool {
             tool_call_id: format!("call_{n}"),
             content: "lorem ".repeat(3_400),
+            answered_by: None,
         },
         ChatMessage::Assistant {
             content: Some(format!("answer {n} {}", "word ".repeat(1_000))),

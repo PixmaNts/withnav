@@ -164,14 +164,34 @@ impl ToolResult {
         }
     }
 
+    /// Cut while it ran; `output` holds whatever it produced before the stop.
     pub fn interrupted() -> Self {
+        Self::interrupted_with(String::new())
+    }
+
+    /// Cut while it ran, with the output it produced before the stop.
+    pub fn interrupted_with(partial: impl Into<String>) -> Self {
         Self {
             status: ToolStatus::Interrupted,
-            output: String::new(),
+            output: partial.into(),
             truncated: None,
             error: None,
             metadata: Value::Null,
         }
+    }
+
+    /// Cancelled before it started, e.g. while its permission question waited:
+    /// nothing ran.
+    pub fn not_started() -> Self {
+        Self {
+            metadata: serde_json::json!({ "started": false }),
+            ..Self::interrupted()
+        }
+    }
+
+    /// Whether this is an interruption of a call that never started.
+    pub fn never_started(&self) -> bool {
+        self.status == ToolStatus::Interrupted && self.metadata["started"] == false
     }
 
     pub fn with_metadata(mut self, metadata: Value) -> Self {
@@ -202,7 +222,9 @@ pub struct ToolContext {
 pub struct DispatchBinding {
     pub(crate) destination: PathBuf,
     pub(crate) scratch: Option<crate::agent::scratch::Identity>,
-    pub(crate) script: Option<Value>,
+    /// Set by the host in yolo, never from arguments: the call's root is
+    /// trusted, so the tools skip their root-level sensitive-path denial.
+    pub(crate) yolo: bool,
 }
 
 impl ToolContext {

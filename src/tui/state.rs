@@ -76,7 +76,7 @@ pub struct QuestionPrompt {
 /// What a permission request asks and, once it ended, how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
-    pub allow_config_session: bool,
+    pub always_label: Option<String>,
     pub skill_script: Option<Box<SkillScript>>,
     pub child_session_id: Option<String>,
     pub request_id: String,
@@ -92,8 +92,10 @@ pub struct PermissionPrompt {
     pub reason: String,
     /// `None` while open; then `allow_once`, `allow_folder`, `deny`, `cancelled` or `expired`.
     pub resolution: Option<String>,
-    /// What a denial told the model.
+    /// What a denial told the model, or why an "Always" answer was not saved.
     pub message: Option<String>,
+    /// False when an "Always" answer could not save its rules: the call ran once.
+    pub always_saved: bool,
     /// The server said the request was no longer waiting (409) before its `permission.resolved`
     /// arrived: it takes no answer, and how it ended is not known yet.
     pub stale: bool,

@@ -47,6 +47,7 @@ pub fn message_tokens(message: &ChatMessage) -> u64 {
         ChatMessage::Tool {
             tool_call_id,
             content,
+            ..
         } => tool_call_id.len() + content.len(),
     };
     bytes_tokens(bytes) + MESSAGE_FRAMING_TOKENS

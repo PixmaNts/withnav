@@ -49,6 +49,7 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
     std::fs::create_dir(&ws).unwrap();
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128000)
+        .allow_everything()
         .state();
     let parent = state.create_session(&ws, None, false).await.unwrap();
     let child = state

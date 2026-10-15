@@ -40,12 +40,24 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     }
     frame.buffer_mut().set_style(area, theme.panel());
     {
-        let marker = if state.bypass {
+        let yolo = state.session.as_ref().is_some_and(|m| m.yolo);
+        let unavailable = state
+            .session
+            .as_ref()
+            .and_then(|m| m.permissions_unavailable.as_ref());
+        let marked = yolo || state.bypass || unavailable.is_some();
+        let marker = if yolo {
+            " ⚠ YOLO   "
+        } else if unavailable.is_some() {
+            " ⚠ Permission rules unavailable "
+        } else if state.bypass {
             " ⚠ bypass "
         } else {
             " 🛡 safe "
         };
-        let marker_width = (if state.bypass {
+        let marker_width = (if unavailable.is_some() && !yolo {
+            33
+        } else if marked {
             11
         } else if area.width >= 80 {
             10
@@ -65,7 +77,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 marker,
-                if state.bypass {
+                if marked {
                     theme.warning().add_modifier(Modifier::BOLD)
                 } else {
                     theme.muted()
@@ -88,6 +100,14 @@ fn line(state: &State, theme: &Theme, total: usize) -> Line<'static> {
             fit_end(&format!(" ◆ archive · {reason}"), total),
             theme.muted(),
         );
+    }
+    if let Some(error) = state
+        .session
+        .as_ref()
+        .and_then(|m| m.permissions_unavailable.as_deref())
+        .filter(|_| !state.session.as_ref().is_some_and(|m| m.yolo))
+    {
+        return Line::styled(fit_end(error, total), theme.warning());
     }
     let agent = state.agent_name();
     let agent_style = super::sidebar::agent_style(agent, theme);

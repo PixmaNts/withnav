@@ -66,8 +66,8 @@ impl Tool for ReadTool {
                     let target =
                         crate::agent::permissions::resolve_read_target(Path::new(path), cx)?;
                     let target = validate_path(&cx.read_roots(), &target)?;
-                    if crate::agent::permission_gate::sensitive_read(&target)
-                        || crate::agent::permission_gate::sensitive_read(
+                    if crate::permission::floor::sensitive_read(&target)
+                        || crate::permission::floor::sensitive_read(
                             &crate::agent::permissions::requested_path(Path::new(path), cx)?,
                         )
                     {
@@ -330,9 +330,12 @@ impl Tool for GrepTool {
                     code: "outside_project".into(),
                     message: crate::tools::OUTSIDE_SEARCH.into(),
                 })?;
-            if crate::agent::permission_gate::sensitive_read(
-                &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
-            ) || crate::agent::permission_gate::sensitive_read(&search_root)
+            // Host-owned: the loop sets it from the session's yolo setting.
+            let trusted = cx.binding.as_ref().is_some_and(|binding| binding.yolo);
+            if !trusted
+                && (crate::permission::floor::sensitive_read(
+                    &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+                ) || crate::permission::floor::sensitive_read(&search_root))
             {
                 return Err(ToolError::Denied {
                     code: "sensitive_path".into(),
@@ -341,7 +344,7 @@ impl Tool for GrepTool {
                             .into(),
                 });
             }
-            super::grep::search(pattern.to_owned(), search_root, _cancel).await
+            super::grep::search(pattern.to_owned(), search_root, _cancel, trusted).await
         })
     }
 }
@@ -694,6 +697,49 @@ mod tests {
         assert!(res.output.contains("needle"));
     }
 
+    // Given a sensitive directory holding a plain file and a credential
+    // When grep is asked for it, in normal mode and with the host's yolo binding
+    // Then only yolo may search the root, and the credential is still filtered
+    #[tokio::test]
+    async fn grep_trusts_a_sensitive_root_only_with_the_hosts_yolo_binding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ssh = tmp.path().join(".ssh");
+        std::fs::create_dir(&ssh).unwrap();
+        std::fs::write(ssh.join("notes.txt"), "needle in notes\n").unwrap();
+        std::fs::write(ssh.join("id_ed25519"), "needle in key\n").unwrap();
+        let args = json!({"pattern": "needle", "path": ssh.to_str().unwrap()});
+        let mut cx = ctx(tmp.path());
+        let refused = GrepTool
+            .call(args.clone(), CancellationToken::new(), &cx)
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("sensitive search root"));
+        // Arguments cannot ask for the capability.
+        let forged = json!({"pattern": "needle", "path": ssh.to_str().unwrap(), "yolo": true});
+        assert!(GrepTool
+            .call(forged, CancellationToken::new(), &cx)
+            .await
+            .is_err());
+        let destination = ssh.canonicalize().unwrap();
+        cx.binding = Some(crate::tools::DispatchBinding {
+            destination,
+            scratch: None,
+            yolo: false,
+        });
+        assert!(GrepTool
+            .call(args.clone(), CancellationToken::new(), &cx)
+            .await
+            .is_err());
+        cx.binding.as_mut().unwrap().yolo = true;
+        let res = GrepTool
+            .call(args, CancellationToken::new(), &cx)
+            .await
+            .unwrap();
+        assert!(res.output.contains("needle in notes"), "{}", res.output);
+        assert!(!res.output.contains("needle in key"));
+        assert_eq!(res.metadata["sensitive_skipped"], 1);
+    }
+
     #[tokio::test]
     async fn grep_builtin_fallback_same_shape() {
         let tmp = tempfile::tempdir().unwrap();
@@ -703,6 +749,7 @@ mod tests {
             "needle".into(),
             tmp.path().into(),
             CancellationToken::new(),
+            false,
         )
         .await
         .unwrap();
@@ -755,6 +802,7 @@ mod tests {
             "needle".into(),
             root,
             CancellationToken::new(),
+            false,
         )
         .await
         .unwrap();

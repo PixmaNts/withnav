@@ -1,11 +1,12 @@
 //! Root supervision reuses child evidence and scheduling, but settles tools before stopping.
+use crate::provider::systemone::DecisionModel;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use super::watchdog::{Clock, Evidence, InstinctJudge, Judge, RealClock, Verdict, Watchdog};
+use super::watchdog::{Clock, Evidence, RealClock, Verdict, Watchdog};
 use crate::bus::event::EventKind;
 use crate::bus::runtime::RuntimeStatus;
 use crate::bus::sequencer::{Candidate, Sequencer};
@@ -117,7 +118,7 @@ pub async fn review_bounded(
 pub(crate) struct RootWatchdog {
     pub interval: u64,
     clock: Arc<dyn Clock>,
-    judge: Option<Arc<dyn Judge>>,
+    judge: Option<Arc<dyn DecisionModel>>,
     reviewer: Option<Arc<dyn ProgressReviewer>>,
 }
 
@@ -125,7 +126,7 @@ pub(crate) struct RootWatchdog {
 #[derive(Clone)]
 pub(crate) struct TestRootWatchdog {
     pub clock: Arc<dyn Clock>,
-    pub judge: Arc<dyn Judge>,
+    pub judge: Arc<dyn DecisionModel>,
     pub reviewer: Option<Arc<dyn ProgressReviewer>>,
 }
 #[cfg(debug_assertions)]
@@ -141,7 +142,7 @@ impl Service {
     pub fn install_root_watchdog_test(
         &self,
         clock: Arc<dyn Clock>,
-        judge: Arc<dyn Judge>,
+        judge: Arc<dyn DecisionModel>,
         reviewer: Option<Arc<dyn ProgressReviewer>>,
     ) {
         *self
@@ -180,7 +181,7 @@ impl Service {
                     cache.clone(),
                 )
             })
-            .map(|client| Arc::new(InstinctJudge(client)) as Arc<dyn Judge>);
+            .map(|client| Arc::new(client) as Arc<dyn DecisionModel>);
         let reviewer = models.as_ref().and_then(|models| {
             let assigned = match crate::provider::layers::assigned(
                 models,

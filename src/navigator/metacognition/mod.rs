@@ -7,7 +7,6 @@
 //! the reflex-context producer.
 
 mod answer;
-mod permission;
 mod reflex_context;
 mod tools;
 
@@ -430,7 +429,7 @@ impl LlmCommenter {
                     messages.push(ChatMessage::Tool {
                         tool_call_id: tc.id.clone(),
                         content: output,
-                    });
+answered_by: None, });
                 }
             }
             let mut message = message.expect("the loop always sets the final message");

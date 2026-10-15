@@ -39,6 +39,7 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
     store.save("route", crate::flows::store::Location::Global, None, crate::flows::store::Content::Toml {
         toml: "[flow]\nversion=1\nname='route'\non='message.received'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='routing evidence'\n".into(), templates: Default::default(),
     }).unwrap();
+    store.validate_test_documents();
     store.reload().unwrap();
     let id = service
         .create_session(dir.path(), None, false)

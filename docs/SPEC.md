@@ -6,7 +6,7 @@
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
 **Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 
-> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. WithNav grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, the permission gate, skills, rules, the model catalog, variants, the context budget and manual compaction were built. Plugins, MCP, subagents, hot reload and the co-agent were not.
+> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. WithNav grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, permission rules with a permission flow (ADR 0015), skills, rules, the model catalog, variants, the context budget, compaction, subagents were built. Plugins, MCP, hot reload and the co-agent were not.
 >
 > - **What the code does:** [`ARCHITECTURE.md`](../ARCHITECTURE.md) (modules and flows) and [`CONTEXT.md`](../CONTEXT.md) (vocabulary). The decisions are in [`docs/adr/`](adr/).
 > - **Status of each section** is the line that starts with "Status" under its heading: *built*, *partly built*, *not built*, *superseded*, *historical* or *direction*. Sections 9, 10.3, 17, 18, 20, 21, 22, 24 and 27 were rewritten to match the code. The others keep their original wording; where a statement is not true of the code, the status line says so.
@@ -569,7 +569,7 @@ A plain-text assistant question may still result in `Done`, but personas SHOULD 
 
 ## 9. Tools
 
-> **Status: built, and larger than first specified.** The registry holds eight tools (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`), and a ninth, `skill`, is added per session. The permission gate and the plan role guard (9.4, 9.5) were not in the first design. Code: `src/tools/`, `src/agent/permissions.rs`, `src/agent/guard.rs`.
+> **Status: built, and larger than first specified.** The registry holds eight tools (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`), and a ninth, `skill`, is added per session. The permission decision (9.4) was not in the first design. Code: `src/tools/`, `src/agent/authorize.rs`, `src/permission/`.
 
 ### 9.1 Registry Tools
 
@@ -602,21 +602,19 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 
 - Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the WithNav config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
 - `bash` is not sandboxed. It runs with the operator's OS permissions.
-- A `write` or `edit` whose destination was reviewed is opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the check is refused and the call is checked again.
+- An allowed `write` or `edit` is bound to the canonical pathname it was decided for and opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the decision is refused and the call is decided again.
 - Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
 
-### 9.4 Permission Gate
+### 9.4 Permission Decision
 
-A session that runs as an agent asks the Captain before it runs `write`, `edit`, `bash` or `fetch`. `read`, `grep`, `glob`, `skill` and `ask` never ask.
+Every tool call is decided before it runs, in a fixed order: yolo, the fixed floor (credentials, WithNav's own configuration and database), free reads inside the project, the Captain's rules (a `deny` stops the call), bypass, the permission flow, then the Captain. See ADR 0015.
 
-- The call does not run. The turn yields and the server publishes a durable `permission.requested`. The scope is the canonical parent folder for `write` and `edit`, the workspace for `bash` (what the Captain approves, not a confinement) and the URL origin for `fetch`.
-- The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_folder` or `deny` with a message. `allow_folder` is remembered in memory, per agent, capability and scope, until the session ends. Chat text never approves a request: a message sent while a request waits cancels it.
-- `permission.resolved` ends every request: `allow_once`, `allow_folder`, `deny`, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
+- A call that needs the Captain does not run. The turn yields and the server publishes a durable `permission.requested`, with `always_label` when an "Always" answer can save a rule.
+- The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_always` or `reject` with an optional message. Older answers still parse: `allow_folder` and `allow_config_session` count as `allow_once`, `deny` as `reject`. Chat text never approves a request: a message sent while a request waits cancels it.
+- `permission.resolved` ends every request: the answer, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
 - `nav run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` turns on the session's bypass before the first prompt, so ordinary requests run once without asking; a request that still arrives (protected configuration, credentials or keys, for the session or a subagent) is printed with its tool, scope and reason and exits 3 (unsafe).
 
-### 9.5 Plan Role Guard
-
-The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Instinct (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the Captain. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
+An agent's limits are rules with `agent` scope; WithNav seeds none (ADR 0015 replaces the plan role guard of ADR 0008).
 
 ## 10. Event Bus
 
@@ -672,7 +670,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 
 ### 10.3 Event Catalog
 
-> **Status: built, without hooks.** The code emits 19 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
+> **Status: built, without hooks.** The code emits 24 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
 
 | Event | Fired when | Payload shape |
 |---|---|---|
@@ -684,14 +682,14 @@ A hook mutates the candidate payload before the finalized event is published. It
 | `llm.delta` | A normalized text, reasoning or tool-call delta arrived (live-only) | `{turn_id, step_id, delta}` |
 | `llm.response` | A full streamed response was normalized | `{turn_id, step_id, message, usage?, finish_reason?}` |
 | `tool.pre_call` | Before a tool runs | `{tool_call_id, name, source, args, actor_id}`; `source` is always `native` |
-| `tool.post_call` | A tool completed, before its result enters the transcript | `{tool_call_id, name, status, output, metadata}`; `metadata` carries `duration_ms` and, for a guarded `plan` call, `guard` |
+| `tool.post_call` | A tool completed, before its result enters the transcript | `{tool_call_id, name, status, output, metadata}`; `metadata` carries `duration_ms` and how the call was allowed (`approved_by`, `permission_gate`) or refused (`denied_by`) |
 | `agent.state` | The actor changed state | `{actor_id, from, to, reason?}`; the values are `idle`, `running`, `yielded` |
 | `agent.yield` | The actor pauses for human input | `{actor_id, turn_id, question, kind?, details?}` |
 | `task.done` | The actor produced a final response for the task | `{task_id, actor_id, result_message_id, status}`; `status` is `done` |
 | `command.result` | A session command (`/help`, `/model`, `/compact`, ...) has run | `{operation_id, name, ok, data?, error?}`; `data` bounded to 16 KiB |
 | `session.agent_changed` | The session's primary agent was changed (`/agent`) | `{agent, previous}` |
 | `permission.requested` | A gated tool call (`write`, `edit`, `bash`, `fetch`) waits for a decision; it has not run | `{request_id, tool_call_id, tool, arguments, scope{kind, value}, agent, reason}`; `arguments` is JSON text cut to 4 KiB |
-| `permission.resolved` | A permission request ended | `{request_id, tool_call_id, resolution, message?}`; `resolution` is `allow_once`, `allow_folder`, `deny` (with `message`), `cancelled` (stop, or a message sent meanwhile) or `expired` (restart) |
+| `permission.resolved` | A permission request ended | `{request_id, tool_call_id, resolution, message?}`; `resolution` is `allow_once`, `allow_always`, `reject` (optional `message`), `cancelled` (stop, or a message sent meanwhile) or `expired` (restart); events written before ADR 0015 may also say `allow_folder`, `allow_config_session` or `deny` |
 | `model.changed` | The model selection of the session was committed: its first selection at start, then each `/model <alias>` switch, variant change, or resume refresh of the variant | `{operation_id?, revision, reason, previous?{alias, provider, model}, new{alias, provider, model}, variant, window, input_budget, from_message}`; `reason` is `initial`, `switch`, `variant` or `resume-refresh`; `from_message` is the transcript index where the new selection starts |
 | `context.updated` | The estimated size of the next request changed (after a provider response, after a step's tool results, at turn start and end) | The context snapshot: `{alias, variant?, window, window_source, estimate_total, breakdown{system, rules, skills_catalog, tools, messages}, output_reserve, margin, input_budget, percent, estimated, skills{listed, omitted}, rule_files, last_usage?{alias, prompt_tokens, completion_tokens, step}, incarnation, revision}`. `revision` counts within one runtime `incarnation` (a stopped and resumed session starts a new one). Incarnation ids carry no order, so a client retires the incarnation it moves past and ignores later snapshots of it. Live-only (not stored or replayed); also readable from `GET /v1/sessions/{id}/context`. |
 | `context.compacted` | A compaction was saved (`/compact`): a summary now stands for the start of the conversation | `{generation, through_message, pruned, estimate_before, estimate_after}`; explanatory only (the stored checkpoint is what a resume restores) |
@@ -1491,7 +1489,7 @@ access: read-only
 You are a focused Rust reviewer. ...
 ```
 
-Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). **`model`, `tools` and `access` are loaded and validated but not applied today:** they do not change which tools a session can call, and they do not change the session's model. A session uses the model it was created with, and the permission gate (section 9.4) is what limits `write`, `edit`, `bash` and `fetch`. Only the role prompt (the body) and `mode` take effect. Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
+Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). **`model`, `tools` and `access` are loaded and validated but not applied today:** they do not change which tools a session can call, and they do not change the session's model. A session uses the model it was created with, and the permission decision (section 9.4) is what limits every tool call. Only the role prompt (the body) and `mode` take effect. Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
 
 An agent definition says what the agent is for. It does not say what it may execute: permissions are separate (section 9.4, ADR 0008). `/agent` lists and switches the primary agent between turns. Only primary agents can be selected; subagents cannot be started yet (section 14).
 
@@ -1639,7 +1637,7 @@ Other bodies:
 - `POST /v1/sessions/{id}/stop` gives `{accepted: true, actor_state: "stopped"}`.
 - `GET /v1/models` lists the chat aliases with their resolved window, `enabled`, `disabled_reason` and, when known, where the window came from, its staleness, and the variants on offer.
 - `GET /v1/commands` lists the session commands; `POST .../commands` with `{name, arguments?}` runs one and answers `{operation_id, ok, data?, error?}`. The commands are `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`, `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. A command that cannot run is 200 with `ok: false`. The outcome is also published as a `command.result` event.
-- `POST .../permissions/{request_id}` takes `{decision: "allow_once" | "allow_folder" | "deny", message?}` and answers `{accepted: true}`; 409 `permission_stale` when the request is not waiting.
+- `POST .../permissions/{request_id}` takes `{decision: "allow_once" | "allow_always" | "reject", message?}` (older `allow_folder`, `allow_config_session` and `deny` still parse) and answers `{accepted: true}`; 409 `permission_stale` when the request is not waiting.
 - `GET .../context` returns the context snapshot (section 10.3, `context.updated`).
 
 All errors share the `{"error": ...}` shape.
@@ -1703,7 +1701,7 @@ The core supports OpenAI-compatible chat completions for the agent:
 POST <base_url>/chat/completions        ("stream": true)
 ```
 
-OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A model alias may also name another `api`: `fim` (the reflex, fill-in-the-middle) or `systemone` (the instinct and the plan role guard, typed decisions). These serve the navigator layers only; the agent loop speaks `chat`.
+OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A model alias may also name another `api`: `fim` (the reflex, fill-in-the-middle) or `systemone` (the instinct: typed decisions, including the permission flow's). These serve the navigator layers only; the agent loop speaks `chat`.
 
 ### 21.2 `models.json`
 
@@ -1877,7 +1875,7 @@ When a request is over the input budget the status shows it; the Captain compact
 
 ## 25. Security and Reliability Boundaries
 
-> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission gate are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built. Persistence is queued, and nothing is redacted before it is stored (section 17).
+> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission decision are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built. Persistence is queued; stored permission decisions are redacted and bounded, conversation events are not (section 17).
 
 ### 25.1 Trusted Personal Agent
 
@@ -1966,12 +1964,14 @@ nav/
 │   ├── main.rs, app.rs, app/  the `nav` CLI: run, serve, tui, web, auth, lsp
 │   │   └── lsp.rs              editor startup (Language Server + session server) and replay
 │   ├── lib.rs, error.rs, paths.rs, settings.rs, render.rs
-│   ├── agent/                 loop, actor, prompt, permissions, guard, context, compaction,
+│   ├── agent/                 loop, actor, prompt, authorize, permission wire types, context, compaction,
 │   │                          instructions (rules), skills, definitions (agents), selection
 │   ├── bus/                   sequencer, event catalog, commands, inboxes, runtime task
 │   ├── provider/              models.json, auth, catalog, chat client, SSE, FIM, System One
 │   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask, no-follow open
-│   ├── session/               service, commands, store (SQLite), lifecycle, hooks, guard wiring
+│   ├── session/               service, commands, store (SQLite), lifecycle, hooks, subagents
+│   ├── permission/            rules, decision history, validations, shell splitting, fixed floor, decision order
+│   ├── flows/                 flow store, runtime, built-in flows, run records
 │   ├── server/                HTTP routes and SSE
 │   ├── navigator/             Language Server, reflex, instinct pipeline, metacognition, replay
 │   ├── tui/                   terminal client: reducer, runtime, view, theme
@@ -2172,6 +2172,12 @@ Version 0.1 is complete when all of the following are true:
 The central success criterion is not feature count. It is that one small, owned agent loop can support many faces and behaviors through a coherent event-driven boundary without fighting its operator.
 # Permission review evidence
 
+> **Status: historical.** This is the evidence of the per-call review that ADR 0015 removed. Stored
+> events written before it keep this shape and stay readable. New non-yolo events write
+> `policy_version: 3`; yolo tool-event evidence still carries `policy_version: 2`. Version 3 records:
+> `source` and `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yolo`, `validation`), `reason`,
+> `rule_id`, `effect`, `flow_verdict` and `floor`.
+
 Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_gate` and
 `permission.requested.permission_gate` may carry:
 
@@ -2188,9 +2194,9 @@ Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_ga
 }
 ```
 
-Legacy `jev` sources and metadata keys remain readable until 0.8; new events write `instinct`.
+New events write `instinct` as the layer source.
 
 `source` is `instinct`, `metacognition` or `captain`. Verdicts are validated typed Instinct answers, not
 the deterministic effective classification. Override names are fixed. Unknown model ids, verdicts
 and latencies are omitted. `truncated` reports bounded context excerpts, never cut tool arguments.
-Old events without these optional fields remain valid. No event kind is added; the catalog stays 22.
+Old events without these optional fields remain valid.

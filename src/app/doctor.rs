@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -166,6 +166,33 @@ pub async fn inspect(
         schema_version: 1,
         ..Default::default()
     };
+    if let Some(data) = &data {
+        let path = data.join("withnav.db");
+        if path.exists() || (data.exists() && !data.is_dir()) {
+            let readable = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|db| {
+                    db.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))?;
+                    for (table, columns) in [
+                        ("permission_rules", "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at,action_glob,resource_glob,action_bare_glob,resource_bare_glob,precision"),
+                        ("permission_decisions", "id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by"),
+                        ("validations", "id,kind,name,location,content_sha256,validated_at,revoked_at"),
+                    ] {
+                        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0))?;
+                        if exists {
+                            db.prepare(&format!("SELECT {columns} FROM {table} LIMIT 1"))?.query([])?.next()?;
+                        }
+                    }
+                    Ok(())
+                });
+            match readable {
+                Ok(()) => report.add("permissions.database", Status::Ok, format!("{}: readable (initialisation and writes not tested)", path.display()), None),
+                Err(error) => report.add("permissions.database", Status::Warning,
+                    format!("{}: {error}", path.display()),
+                    Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled.")),
+            }
+        }
+    }
+
     let workspace = args
         .workspace
         .canonicalize()
@@ -191,6 +218,23 @@ pub async fn inspect(
         },
         Some("Edit config.json; unknown keys are retained."),
     );
+    if let Ok(settings) = &settings {
+        match settings.yolo() {
+            Ok(true) => report.add(
+                "config.yolo",
+                Status::Warning,
+                "permissions: yolo (no permission control)",
+                Some("Set \"yolo\": false in config.json to restore permission control."),
+            ),
+            Ok(false) => {}
+            Err(error) => report.add(
+                "config.yolo",
+                Status::Failed,
+                error,
+                Some("Set \"yolo\" to true or false in config.json."),
+            ),
+        }
+    }
     let settings_document = settings
         .as_ref()
         .ok()
@@ -211,13 +255,11 @@ pub async fn inspect(
                     "agent",
                     "tui",
                     "compaction",
+                    "yolo",
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),
-            (
-                "permissions",
-                &["automatic_review", "scratch_dirs", "review_timeout_secs"],
-            ),
+            ("permissions", &["scratch_dirs"]),
             ("subagents", &["max_concurrent", "watchdog_interval_secs"]),
             ("agent", &["watchdog_interval_secs"]),
             ("compaction", &["writer", "chunk_tokens"]),
@@ -289,7 +331,7 @@ pub async fn inspect(
         &workspace,
         settings_document.as_ref(),
     );
-    workspace_checks(&mut report, config, &workspace);
+    workspace_checks(&mut report, config, &workspace, data.as_deref());
     binary_checks(&mut report, home, &workspace).await;
     let mut keys = BTreeMap::new();
     if let Ok((models, _, _)) = &models {
@@ -913,7 +955,7 @@ fn legacy(
     }
 }
 
-fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
+fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: Option<&Path>) {
     report.add(
         "workspace.directory",
         if workspace.is_dir() {
@@ -946,32 +988,6 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
         intent.display().to_string(),
         Some("Create a readable .withnav/intent.md."),
     );
-    let trust = crate::flows::store::inspect_trust(config, workspace);
-    report.add(
-        "flows.trust_file",
-        if trust.is_ok() {
-            Status::Ok
-        } else {
-            Status::Failed
-        },
-        if trust.is_ok() {
-            "valid or absent flows-trust.json"
-        } else {
-            "invalid or unsafe flows-trust.json"
-        },
-        Some("Review flows-trust.json schema, ownership and permissions."),
-    );
-    let trusted = trust.unwrap_or(false);
-    report.add(
-        "flows.workspace_trust",
-        if trusted { Status::Ok } else { Status::Warning },
-        if trusted {
-            "workspace explicitly trusted"
-        } else {
-            "untrusted: workspace flow validation skipped; no workspace flow read"
-        },
-        Some("Explicitly trust workspace flows in WithNav before validating them."),
-    );
     for (definition, templates) in crate::flows::builtin::definitions() {
         let name = definition.flow.name.clone();
         let valid = crate::flows::store::validate(crate::flows::store::Content::Graph {
@@ -993,9 +1009,6 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
             crate::paths::workspace_dir(workspace).join("flows"),
         ),
     ] {
-        if scope == "workspace" && !trusted {
-            continue;
-        }
         match crate::flows::store::inspect_directory(&path) {
             Ok(entries) if entries.is_empty() => report.add(
                 format!("flows.{scope}"),
@@ -1004,16 +1017,25 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
                 None,
             ),
             Ok(entries) => {
-                for (name, valid) in entries {
+                for (name, valid, hash) in entries {
+                    let location = path
+                        .canonicalize()
+                        .unwrap_or_else(|_| path.clone())
+                        .join(&name);
+                    let approval = crate::permission::validation::inspect_valid(
+                        data,
+                        crate::permission::validation::ValidationKind::Flow,
+                        &location.to_string_lossy(),
+                        &hash,
+                    );
                     report.add(
                         format!("flows.{scope}.{name}"),
-                        if valid { Status::Ok } else { Status::Failed },
-                        if valid {
-                            "schema and templates validated"
-                        } else {
-                            "invalid schema or unreadable template"
-                        },
-                        Some("Review flow TOML/templates; doctor does not reload flows."),
+                        if !valid || approval.is_err() { Status::Failed } else if approval.as_ref().is_ok_and(|valid| *valid) { Status::Ok } else { Status::Warning },
+                        if !valid { "invalid schema or unreadable template" }
+                        else if approval.is_err() { "validation database unreadable" }
+                        else if approval.unwrap_or(false) { "current flow version validated" }
+                        else { "current flow version not validated; not loaded" },
+                        Some("Review the flow and use nav permissions validate flow <name>; doctor does not reload flows."),
                     );
                 }
             }
@@ -1385,31 +1407,6 @@ async fn live_layer(
                 ),
             )
             .await;
-            let input = role_input();
-            measured(
-                report,
-                "live.instinct.role_guard",
-                decision_check(&client, &input.state, &input.questions()),
-            )
-            .await;
-            let state = serde_json::json!({
-                "rules": crate::agent::permission_gate::TRUST_RULE,
-                "host_facts": {"workspace": "/workspace", "writable_roots": ["/workspace"]},
-                "captain_request": "Inspect git status in this repository",
-                "captain_request_complete": true,
-                "untrusted_evidence": {"arguments": {"command": "git status --short"}}
-            })
-            .to_string();
-            measured(
-                report,
-                "live.instinct.permission",
-                decision_check(
-                    &client,
-                    &state,
-                    &crate::agent::permission_gate::permission_questions(),
-                ),
-            )
-            .await;
         }
         Layer::Metacognition => {
             measured(report, "live.metacognition.chat", async {
@@ -1461,23 +1458,6 @@ fn timeout_error() -> ProviderError {
         message: "deadline exceeded".into(),
         partial: None,
     }
-}
-
-pub fn role_input() -> crate::agent::guard::GuardInput {
-    crate::agent::guard::GuardInput::describe(&crate::agent::guard::CallFacts {
-        role_id: "plan",
-        role_prompt:
-            "The plan agent researches and produces markdown plans. It never modifies source code.",
-        task: Some("Plan the compiler restructuring"),
-        workspace: Path::new("/workspace"),
-        tool: "write",
-        target: Some(Path::new("/workspace/src/compiler.rs")),
-        arguments: &json!({"path":"/workspace/src/compiler.rs","content":"pub fn compile() {}"}),
-    })
-    .unwrap_or_else(|| crate::agent::guard::GuardInput {
-        instructions: "Judge role conformance".into(),
-        state: "plan role source edit".into(),
-    })
 }
 
 #[cfg(test)]

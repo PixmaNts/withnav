@@ -587,9 +587,14 @@ pub struct CompactionWriter {
 }
 
 /// A gated tool call waits for a Captain's decision. The call has not run.
+pub use crate::agent::permissions::{REJECT_MESSAGE_LIMIT_ERROR, REJECT_MESSAGE_MAX_BYTES};
+
+/// A gated tool call waits for a Captain's decision. The call has not run.
 /// `arguments` is the call's JSON text cut to 4 KiB, for review only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequested {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<Ulid>,
     pub request_id: Ulid,
@@ -606,6 +611,19 @@ pub struct PermissionRequested {
 #[serde(tag = "resolution", rename_all = "snake_case")]
 pub enum PermissionResolution {
     AllowOnce,
+    /// The call ran. `always_saved` is false when its rules could not be
+    /// saved: the call then ran once, and `always_error` says why. Events
+    /// written before the field existed count as saved.
+    AllowAlways {
+        #[serde(default = "saved")]
+        always_saved: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        always_error: Option<String>,
+    },
+    Reject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     AllowFolder,
     AllowConfigSession,
     AllowSkillMachine,
@@ -625,6 +643,13 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
         use crate::agent::permissions::PermissionDecision as Decision;
         match decision {
             Decision::AllowOnce => Self::AllowOnce,
+            Decision::AllowAlways => Self::AllowAlways {
+                always_saved: true,
+                always_error: None,
+            },
+            Decision::Reject { message } => Self::Reject {
+                message: message.clone(),
+            },
             Decision::AllowFolder => Self::AllowFolder,
             Decision::AllowConfigSession => Self::AllowConfigSession,
             Decision::AllowSkillMachine => Self::AllowSkillMachine,
@@ -633,6 +658,10 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
             },
         }
     }
+}
+
+fn saved() -> bool {
+    true
 }
 
 /// A permission request ended, by a decision, a stop or a restart. Published
@@ -1098,6 +1127,7 @@ mod tests {
             (
                 "permission.requested",
                 serde_json::to_value(&PermissionRequested {
+                    always_label: None,
                     child_session_id: None,
                     request_id: Ulid::generate(),
                     tool_call_id: "call_1".into(),
@@ -1186,6 +1216,7 @@ mod tests {
     fn permission_events_wire_shape_roundtrips() {
         let request_id = Ulid::generate();
         let requested = PermissionRequested {
+            always_label: None,
             child_session_id: None,
             request_id,
             tool_call_id: "call_1".into(),

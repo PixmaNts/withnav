@@ -18,7 +18,6 @@ import type {
   ReplayResult,
   RunRecord,
   RunSummary,
-  Trust,
   ValidateResult,
 } from "./types";
 
@@ -37,8 +36,7 @@ export interface StudioApi {
   replay(body: { source: FlowSource; run_id: string }): Promise<ReplayResult>;
   reload(): Promise<ReloadResult>;
   health(): Promise<Health>;
-  trust(): Promise<Trust>;
-  setTrust(trusted: boolean): Promise<Trust>;
+  setTrust(flow: { name: string; location: Location; revision: string }): Promise<unknown>;
 }
 
 /** The diagnostics of an error envelope, when the server sent one. */
@@ -74,8 +72,7 @@ export function httpStudioApi(workspace: string): StudioApi {
     replay: (body) => request(url("/replay"), json("POST", body)),
     reload: () => request(url("/reload"), json("POST", {})),
     health: () => request(url("/health")),
-    trust: () => request(url("/trust")),
-    setTrust: (trusted) => request(url("/trust"), json("POST", { trusted })),
+    setTrust: (flow) => request(url("/trust"), json("POST", flow)),
   };
 }
 

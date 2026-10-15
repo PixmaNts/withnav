@@ -18,9 +18,8 @@ nav doctor --layer instinct
 | `--layer <reflex\|instinct\|metacognition>` | Limit the layer and live checks to one layer. Shared config, agent, compaction and workspace checks still run. |
 
 > **Without `--offline`, doctor sends small synthetic requests to your configured providers and
-> may incur charges.** It makes two Reflex FIM calls (plain and with bounded context), three
-> Instinct calls (an editor decision, a role-conformance check and one permission review), and one
-> tool-free Metacognition chat call. Instinct keeps its 2-second deadline. FIM is bounded at 10
+> may incur charges.** It makes two Reflex FIM calls (plain and with bounded context), one
+> Instinct call (an editor decision), and one tool-free Metacognition chat call. Instinct keeps its 2-second deadline. FIM is bounded at 10
 > seconds and chat at 20 seconds. No project source, session or tool is executed or sent. Provider
 > catalogue discovery may also run to verify offers.
 
@@ -30,15 +29,16 @@ compaction writer, the trusted system `bash`, the `nav lsp` version and, when it
 the VS Code server path (`nav` by default). Missing optional features and failed detection are
 warnings.
 
-Doctor changes nothing. It does not migrate, fix, trust, reload or write anything, including
-metadata caches. Workspace flows are not even read until you trust them.
+Doctor changes nothing. It does not migrate, fix, validate, reload or write anything, including
+metadata caches. For each global and workspace flow it reports whether its current content is
+validated; a flow that is not validated does not load.
 
 ### Read the output
 
 ```text
 ✓ ok assignment.layer.instinct: gateway/typesafe/jev variant=off
 ✓ ok live.instinct.editor: valid answer (145 ms)
-⚠ warning flows.workspace_trust: untrusted: workspace flow validation skipped; no workspace flow read
+⚠ warning flows.workspace.guard: current flow version not validated; not loaded
 ✕ failed live.metacognition.chat: HTTP 401 rejected; Check provider authentication, model id and API support.
 ```
 
@@ -84,7 +84,8 @@ for `assignment.layer.<name>` in `nav doctor`. The model must use the right `api
 No other model is chosen for you. A layer that is off never falls back silently:
 
 - Without Reflex, there are no suggestions.
-- Without Instinct, permission review asks you.
+- Without Instinct, the permission flow cannot judge: your rules apply, and a call with no rule
+  asks you.
 - Without Metacognition, there are no remarks.
 
 An unknown model for a non-default agent falls back to the default agent's model, with a warning
@@ -97,14 +98,18 @@ The gateway has no usable key. Run `nav auth set <provider>`, or export the vari
 
 ### Permission prompts for a command you trust
 
-Read [Permissions](permissions.md). A program you own, in a folder only you can write, outside the
-workspace, is trusted. Anything else is reviewed. Do not use bypass to avoid prompts you do not
-understand.
+Answer **Always** to save the allow rule shown on the button. Later calls still go through the
+fixed floor, the repeated-call check and the permission flow's danger check (a dangerous call you
+did not ask for still asks). **Always** is not offered for commands that delete or overwrite.
+You can also add a rule yourself, for example
+`nav permissions add bash 'cargo test *' allow`. See [Permissions](permissions.md). Do not use
+bypass to avoid prompts you do not understand.
 
 ### `nav run` exits with code 3
 
 A tool call needs approval and nobody can give it. `nav run` never approves on its own. Rerun
-with `--yes` only if you accept that ordinary calls run unreviewed; protected requests still stop it.
+with `--yes` only if you accept that ordinary calls run without asking; `deny` rules still apply
+and protected requests still stop it.
 
 ### VS Code shows `$(error) WithNav` in the status bar
 

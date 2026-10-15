@@ -12,6 +12,7 @@ shows the flags of one.
 | [`nav auth`](#nav-auth) | Store API keys. |
 | [`nav doctor`](#nav-doctor) | Read-only diagnostics. |
 | [`nav lsp`](#nav-lsp) | The language server the editor extension launches. |
+| [`nav permissions`](#nav-permissions) | Permission rules, decision history, and validations of flows and skills. |
 | `nav flows catalogue` | Print the flow schema of this build as JSON. |
 
 Add `--version` to any of them to print the version.
@@ -113,6 +114,30 @@ nav doctor [--offline] [--json] [--workspace <dir>] [--layer <reflex|instinct|me
 ```
 
 Checks your configuration. It is covered in [Troubleshooting](troubleshooting.md#check-your-setup-with-nav-doctor).
+
+## `nav permissions`
+
+```sh
+nav permissions list [--all] [--project <dir> | --global | --agent <id>] [--json]
+nav permissions add <action> <resource> <allow|ask|deny> [--project <dir> | --global | --agent <id>]
+nav permissions revoke <id>
+nav permissions history [--limit <n>] [--json]
+nav permissions validate flow <name> [--location global|workspace]
+nav permissions validations [--json]
+nav permissions revoke-validation <id>
+```
+
+| Subcommand | What it does |
+|---|---|
+| `list` | The active rules, newest first; `--all` includes revoked ones. |
+| `add` | Add a rule. Without a scope flag it applies to the current project. |
+| `revoke` | Revoke a rule by id. Rules are kept in the history, never deleted. |
+| `history` | The last permission decisions: call, rule, flow verdict, your answer, outcome. |
+| `validate flow` | Validate the current content of a global or workspace flow, so it can run. Reload flows to apply. Skills are validated from the conversation, when they are first loaded. |
+| `validations` | Every validation of a flow or a skill, with its content hash. |
+| `revoke-validation` | Revoke a validation. For a flow, revocation takes effect at the next flow reload; skills require validation again at their next use. |
+
+See [Permissions](permissions.md).
 
 ## `nav lsp`
 

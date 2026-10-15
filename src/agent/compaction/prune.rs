@@ -23,7 +23,13 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::permission_gate::{PermissionJudge, PermissionReviewInput};
+use crate::provider::systemone::DecisionModel;
+
+#[derive(Debug, Clone)]
+struct PruneBatch {
+    state: String,
+    questions: Questions,
+}
 use crate::provider::openai::{ChatMessage, UserProvenance};
 use crate::provider::systemone::{Answer, Answers, Question, Questions};
 
@@ -84,6 +90,7 @@ fn pairs(transcript: &[ChatMessage]) -> Vec<Pair> {
             ChatMessage::Tool {
                 tool_call_id,
                 content,
+                ..
             } => {
                 let Some((call_index, call)) = calls.remove(tool_call_id.as_str()) else {
                     continue;
@@ -240,7 +247,7 @@ fn probability(answers: &Answers, key: &str) -> Option<f64> {
     }
 }
 
-fn request_bytes(input: &PermissionReviewInput) -> usize {
+fn request_bytes(input: &PruneBatch) -> usize {
     serde_json::to_vec(
         &json!({"model":"typesafe/jev-1.13", "state":input.state,"questions":input.questions}),
     )
@@ -255,13 +262,13 @@ pub async fn prune(
     first: usize,
     end: usize,
     earlier: Option<&str>,
-    judge: &dyn PermissionJudge,
+    decision: &dyn DecisionModel,
     cancel: &CancellationToken,
 ) -> Option<Vec<ChatMessage>> {
     let pins = pinned(transcript);
     let pairs = pairs(transcript);
     let state = state(transcript, earlier)?;
-    let mut input = PermissionReviewInput {
+    let mut input = PruneBatch {
         state,
         questions: Questions::new(),
     };
@@ -287,7 +294,7 @@ pub async fn prune(
                 },
             );
         }
-        let trial = PermissionReviewInput {
+        let trial = PruneBatch {
             state: input.state.clone(),
             questions: next,
         };
@@ -316,7 +323,7 @@ pub async fn prune(
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => return None,
-            result = tokio::time::timeout(std::time::Duration::from_millis(2500), judge.judge(batch,cancel)) => result,
+            result = tokio::time::timeout(std::time::Duration::from_millis(2500), decision.decide(&batch.state, &batch.questions, cancel)) => result,
         };
         answers.extend(result.ok()?.ok()?);
     }

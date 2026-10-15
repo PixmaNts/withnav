@@ -27,6 +27,8 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  yolo = false;
+  permissionsUnavailable?: string;
   bypass = false;
   bypassSeq = -1;
   bypassEvents: { seq: number; enabled: boolean }[] = [];
@@ -87,9 +89,11 @@ export class CognitionBackend implements ChatBackend {
   private bypassConfirmations = new Set<string>();
   publishBypass(): void {
     this.emit({ type: "bypass", enabled: this.state.bypass, pending: this.state.bypassPending,
-      disabled: this.state.readOnly || this.state.starting });
+      disabled: this.state.readOnly || this.state.starting, yolo: this.state.yolo, permissionsUnavailable: this.state.permissionsUnavailable });
   }
   private acceptBypassSnapshot(summary: any): void {
+    this.state.permissionsUnavailable = typeof summary?.permissions_unavailable === "string" ? summary.permissions_unavailable : undefined;
+    if (typeof summary?.yolo === "boolean") this.state.yolo = summary.yolo;
     if (typeof summary?.bypass !== "boolean" || !Number.isSafeInteger(summary.bypass_seq) || summary.bypass_seq < 0 ||
         !(typeof summary.incarnation === "string" || summary.incarnation === null)) return;
     if (summary.bypass_seq < this.state.bypassSeq) return;
@@ -733,15 +737,17 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation = this.state.streamGeneration): Promise<void> {
+    if ((decision === "reject" || decision === "deny") && typeof message === "string" && Buffer.byteLength(message, "utf8") > 2048) {
+      throw new Error("Reject message must be at most 2048 UTF-8 bytes");
+    }
     if (this.isReadOnly()) throw new Error("Answer subagent permissions in the parent conversation.");
     this.checkGeneration(generation);
     const card = this.state.controls.permissions.get(requestId);
     const owner = this.state.controlOwners.get(`permission:${requestId}`);
     if (sessionId !== this.state.session || owner?.session !== sessionId || owner.generation !== generation || !card ||
-        !["allow_once", "allow_folder", "allow_config_session", "allow_skill_machine", "deny"].includes(decision) ||
-        (decision === "allow_config_session" && !card.allowConfigSession) ||
+        !["allow_once", "allow_always", "reject", "allow_skill_machine", "deny"].includes(decision) ||
+        (decision === "allow_always" && card.alwaysLabel === undefined) ||
         (decision === "allow_skill_machine" && !card.skillName) ||
-        (decision === "allow_folder" && !card.allowFolder) ||
         (message !== undefined && typeof message !== "string")) {
       throw new Error("This permission request does not belong to the open conversation.");
     }
@@ -753,7 +759,7 @@ export class CognitionBackend implements ChatBackend {
     this.emit({ type: "permissionState", requestId, resolution: "pending" });
     try {
       const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, {
-        method: "POST", body: JSON.stringify({ decision, ...(decision === "deny" && message ? { message } : {}) }),
+        method: "POST", body: JSON.stringify({ decision, ...((decision === "reject" || decision === "deny") && message ? { message } : {}) }),
       }, "operation");
       if (result?.accepted === false) throw new Error("Permission answer refused by the server.");
     } catch (error) {

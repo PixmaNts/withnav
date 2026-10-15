@@ -35,11 +35,16 @@ fn description(key: &str) -> &'static str {
     } else {
         match key {
             "default_agent" => "The primary agent used for new conversations.",
-            "permissions.automatic_review" => "Instinct reviews calls; metacognition approves risk. On doubt, the Captain decides. Off: ask for every call.",
-            "permissions.scratch_dirs" => "Absolute scratch paths. An empty list disables scratch access.",
+            "permissions.scratch_dirs" => {
+                "Absolute scratch paths. An empty list disables scratch access."
+            }
             "subagents.max_concurrent" => "Maximum concurrent subagents per session.",
-            "subagents.watchdog_interval_secs" => "Subagent watchdog interval in seconds. Zero disables it.",
-            "agent.watchdog_interval_secs" => "Root agent watchdog interval in seconds. Zero disables it.",
+            "subagents.watchdog_interval_secs" => {
+                "Subagent watchdog interval in seconds. Zero disables it."
+            }
+            "agent.watchdog_interval_secs" => {
+                "Root agent watchdog interval in seconds. Zero disables it."
+            }
             "tui.theme" => "Terminal colours. Applied when written to config.json.",
             _ => "Gateway catalogue. Read-only here; edit in models.json.",
         }

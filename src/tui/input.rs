@@ -448,6 +448,15 @@ pub fn route_key(
         }
         return Some(action);
     }
+    if ui.focus == Focus::Transcript
+        && !state.read_only()
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char(c) if c.is_alphanumeric())
+    {
+        ui.focus = Focus::Editor;
+    }
     if ui.focus == Focus::Transcript || state.read_only() {
         match key.code {
             KeyCode::Up | KeyCode::Down => {
@@ -1009,5 +1018,39 @@ mod tests {
         }
         assert_eq!(editor.revision(), revision);
         assert_eq!(editor.text(), "first\nsecond");
+    }
+
+    #[test]
+    fn a_plain_letter_or_digit_leaves_the_transcript_and_is_typed() {
+        let state = State::default();
+        let mut editor = Editor::new();
+        for (code, modifiers, focus, text) in [
+            (
+                KeyCode::Char('j'),
+                KeyModifiers::CONTROL,
+                Focus::Transcript,
+                "",
+            ),
+            (
+                KeyCode::Char('.'),
+                KeyModifiers::NONE,
+                Focus::Transcript,
+                "",
+            ),
+            (KeyCode::Char('a'), KeyModifiers::NONE, Focus::Editor, "a"),
+            (KeyCode::Char('B'), KeyModifiers::SHIFT, Focus::Editor, "B"),
+            (KeyCode::Char('7'), KeyModifiers::NONE, Focus::Editor, "7"),
+        ] {
+            let mut ui = UiState {
+                focus: Focus::Transcript,
+                ..Default::default()
+            };
+            editor.set_text("");
+            let revision = editor.revision();
+            route_key(KeyEvent::new(code, modifiers), &state, &mut ui, &mut editor);
+            assert_eq!(ui.focus, focus, "{code:?}");
+            assert_eq!(editor.text(), text, "{code:?}");
+            assert_eq!(editor.revision() > revision, !text.is_empty(), "{code:?}");
+        }
     }
 }

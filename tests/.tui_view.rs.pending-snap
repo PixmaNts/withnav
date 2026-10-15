@@ -1,0 +1,9 @@
+{"run_id":"1792094236-505830189","line":263,"new":{"module_name":"tui_view","snapshot_name":"a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only-2","metadata":{"source":"tests/tui_view.rs","assertion_line":263,"expression":"line(15)"},"snapshot":" alt+w parent · drag copy text · alt+s subagents"},"old":{"module_name":"tui_view","metadata":{},"snapshot":" alt+w parent · drag copy text"}}
+{"run_id":"1792094245-514893257","line":262,"new":null,"old":null}
+{"run_id":"1792094245-514893257","line":263,"new":{"module_name":"tui_view","snapshot_name":"a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only-2","metadata":{"source":"tests/tui_view.rs","assertion_line":263,"expression":"line(15)"},"snapshot":" alt+w parent · drag copy text · alt+s subagents"},"old":{"module_name":"tui_view","metadata":{},"snapshot":" alt+w parent · drag copy text"}}
+{"run_id":"1792094255-756232266","line":262,"new":null,"old":null}
+{"run_id":"1792094255-756232266","line":263,"new":null,"old":null}
+{"run_id":"1792094355-548488954","line":262,"new":null,"old":null}
+{"run_id":"1792094355-548488954","line":263,"new":null,"old":null}
+{"run_id":"1792094394-327491521","line":262,"new":null,"old":null}
+{"run_id":"1792094394-327491521","line":263,"new":null,"old":null}

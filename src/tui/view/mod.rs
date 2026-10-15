@@ -86,12 +86,7 @@ fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>>
 fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
     if state.archive() {
         return &[Hints {
-            hints: &[
-                "alt+w close archive",
-                "drag copy text",
-                "y copy block",
-                "page↑/↓ scroll",
-            ],
+            hints: &["alt+w close archive", "drag copy text", "page↑/↓ scroll"],
             required: 1,
         }];
     }
@@ -107,7 +102,6 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
     {
         return &[Hints {
             hints: &[
-                "y copy block",
                 "drag copy text",
                 "shift+drag native",
                 "shift+tab write",
@@ -118,12 +112,7 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
     }
     if state.archive() {
         return &[Hints {
-            hints: &[
-                "alt+w close archive",
-                "drag copy text",
-                "y copy block",
-                "page↑/↓ scroll",
-            ],
+            hints: &["alt+w close archive", "drag copy text", "page↑/↓ scroll"],
             required: 1,
         }];
     }
@@ -146,7 +135,6 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
             hints: &[
                 "alt+w parent",
                 "drag copy text",
-                "y copy block",
                 "alt+s subagents",
                 "page↑/↓ scroll",
                 "esc stop",

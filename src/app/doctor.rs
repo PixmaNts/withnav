@@ -248,7 +248,9 @@ pub async fn inspect(
                 .max()
                 .unwrap_or(0)
                 .min(30_000);
-            let deadline = Instant::now() + Duration::from_millis(budget + 100);
+            // One second past the largest startup timeout for scheduling on a loaded host; the
+            // loop ends as soon as no server is still starting.
+            let deadline = Instant::now() + Duration::from_millis(budget + 1_000);
             while manager.statuses().iter().any(|s| s.state == "starting")
                 && Instant::now() < deadline
             {

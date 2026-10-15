@@ -214,7 +214,7 @@ pub struct AgentDefinition {
 
 impl AgentDefinition {
     /// Cartographe's write exception is confined to Mermaid chart files.
-    /// Call before permission review and again at dispatch: approval must not broaden it.
+    /// Checked before the permission decision and again at dispatch: an approval must not broaden it.
     pub fn validate_write_scope(
         &self,
         tool: &str,
@@ -236,11 +236,14 @@ impl AgentDefinition {
         };
         let resolved = crate::tools::validate_path(&[workspace.to_path_buf()], &candidate)
             .map_err(|e| e.to_string())?;
-        let root = workspace
-            .canonicalize()
+        let root = crate::tools::canonical_path(workspace)
             .map_err(|e| e.to_string())?
             .join(".withnav/charts");
-        if !resolved.starts_with(&root)
+        #[cfg(windows)]
+        let inside = crate::tools::nofollow::path_within(&resolved, &root);
+        #[cfg(unix)]
+        let inside = resolved.starts_with(&root);
+        if !inside
             || !resolved
                 .extension()
                 .is_some_and(|e| e == "mmd" || e == "mermaid")
@@ -360,7 +363,9 @@ impl Agents {
                 path: dir.to_path_buf(),
                 message: format!(
                     "links outside {}: the directory is not read",
-                    boundary.display()
+                    crate::tools::canonical_path(&boundary)
+                        .unwrap_or_else(|_| boundary.clone())
+                        .display()
                 ),
             });
             return;
@@ -401,7 +406,9 @@ impl Agents {
                         path,
                         message: format!(
                             "links outside {}: the file is not read",
-                            boundary.display()
+                            crate::tools::canonical_path(&boundary)
+                                .unwrap_or_else(|_| boundary.clone())
+                                .display()
                         ),
                     });
                     continue;

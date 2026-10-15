@@ -27,6 +27,27 @@ pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
     .collect()
 }
 
+/// All host defaults; editor-only callers retain their historical definition set.
+pub fn all_definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
+    definitions()
+        .into_iter()
+        .chain(std::iter::once((
+            Definition::parse(include_str!("permission-default.toml"))
+                .expect("embedded permission flow parses"),
+            BTreeMap::from([
+                (
+                    "state.md".into(),
+                    include_str!("permission-default-state.md").into(),
+                ),
+                (
+                    "protected-state.md".into(),
+                    include_str!("permission-default-protected-state.md").into(),
+                ),
+            ]),
+        )))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -48,7 +69,7 @@ mod tests {
 
     #[test]
     fn embedded_flows_validate() {
-        for (definition, templates) in super::definitions() {
+        for (definition, templates) in super::all_definitions() {
             definition
                 .validate(
                     &crate::flows::catalogue::catalogue(),

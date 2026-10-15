@@ -9,8 +9,8 @@ use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use super::{ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
-use crate::agent::permission_gate::{sensitive_read, SENSITIVE_NAMES};
 use crate::error::ToolError;
+use crate::permission::floor::{sensitive_read, SENSITIVE_NAMES};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 const MAX_ENTRIES: usize = 100_000;
@@ -27,6 +27,8 @@ struct Limits {
     total_bytes: u64,
     matches: usize,
     duration: Duration,
+    /// The root itself is trusted (yolo): only what is below it is filtered.
+    trusted_root: bool,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -37,6 +39,7 @@ impl Default for Limits {
             total_bytes: MAX_TOTAL_BYTES,
             matches: MAX_MATCHES,
             duration: DEADLINE,
+            trusted_root: false,
         }
     }
 }
@@ -85,16 +88,21 @@ fn rg_command_with_hidden(pattern: &str, root: &Path, hidden: bool) -> tokio::pr
 }
 
 fn rg_available() -> bool {
+    #[cfg(windows)]
+    let executable = "rg.exe";
+    #[cfg(unix)]
+    let executable = "rg";
     std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rg").is_file()))
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(executable).is_file()))
 }
 
 pub(super) async fn search(
     pattern: String,
     root: PathBuf,
     cancel: CancellationToken,
+    trusted_root: bool,
 ) -> Result<ToolResult, ToolError> {
-    search_with(Engine::Auto, pattern, root, cancel).await
+    search_with(Engine::Auto, pattern, root, cancel, trusted_root).await
 }
 
 #[derive(Clone, Copy)]
@@ -111,12 +119,15 @@ pub(super) async fn search_with(
     pattern: String,
     root: PathBuf,
     cancel: CancellationToken,
+    trusted_root: bool,
 ) -> Result<ToolResult, ToolError> {
-    if sensitive_read(&root) {
+    let sensitive_root = sensitive_read(&root);
+    if sensitive_root && !trusted_root {
         return Ok(result(String::new(), "builtin", 1, None, 0));
     }
     let use_rg = match engine {
-        Engine::Auto => rg_available(),
+        // rg's exclusions match whole paths, so a trusted sensitive root walks.
+        Engine::Auto => rg_available() && !sensitive_root,
         #[cfg(test)]
         Engine::Rg => true,
         #[cfg(test)]
@@ -125,7 +136,16 @@ pub(super) async fn search_with(
     if use_rg {
         rg_search(&pattern, &root, &cancel).await
     } else {
-        builtin(pattern, root, cancel, Limits::default()).await
+        builtin(
+            pattern,
+            root,
+            cancel,
+            Limits {
+                trusted_root,
+                ..Limits::default()
+            },
+        )
+        .await
     }
 }
 
@@ -142,6 +162,15 @@ async fn rg_search(
     cancel: &CancellationToken,
 ) -> Result<ToolResult, ToolError> {
     let mut command = rg_command(pattern, root);
+    rg_search_command(pattern, root, cancel, &mut command).await
+}
+
+async fn rg_search_command(
+    pattern: &str,
+    root: &Path,
+    cancel: &CancellationToken,
+    command: &mut tokio::process::Command,
+) -> Result<ToolResult, ToolError> {
     compile_pattern(pattern)?;
     command
         .stdout(std::process::Stdio::piped())
@@ -388,7 +417,12 @@ fn walk_with(
             let Ok(entry) = entry else {
                 return Continue;
             };
-            if sensitive_read(entry.path()) {
+            let below_root = if limits.trusted_root {
+                entry.path().strip_prefix(root).unwrap_or(entry.path())
+            } else {
+                entry.path()
+            };
+            if sensitive_read(below_root) {
                 *skipped += 1;
                 return Skip;
             }
@@ -488,6 +522,7 @@ mod tests {
                 "(".into(),
                 tmp.path().to_path_buf(),
                 CancellationToken::new(),
+                false,
             )
             .await
             .unwrap_err();
@@ -498,14 +533,12 @@ mod tests {
     async fn rg_match_limit_reports_partial_instead_of_silently_dropping_extra_match() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("short"), "x\n".repeat(MAX_MATCHES + 1)).unwrap();
-        let result = search_with(
-            Engine::Rg,
-            "x".into(),
-            tmp.path().into(),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
+        // Relative output keeps the byte cap independent of the temporary root length.
+        let mut command = rg_command("x", Path::new("short"));
+        command.current_dir(tmp.path());
+        let result = rg_search_command("x", tmp.path(), &CancellationToken::new(), &mut command)
+            .await
+            .unwrap();
         assert_eq!(result.metadata["partial"], "match limit");
         assert!(result.output.contains("partial results: match limit"));
         assert_eq!(
@@ -722,6 +755,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_sensitive_rule_generates_rg_exclusions_before_unreadable_files_are_opened() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("ordinary"), "needle").unwrap();
@@ -730,6 +764,7 @@ mod tests {
             assert!(sensitive_read(Path::new(&name)), "{rule}");
             let file = tmp.path().join(&name);
             std::fs::write(&file, "needle").unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o0)).unwrap();
         }
         for name in [
@@ -741,6 +776,7 @@ mod tests {
             let file = tmp.path().join(name);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, "needle").unwrap();
+            #[cfg(unix)]
             std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o0)).unwrap();
         }
         let mut command = rg_command_with_hidden("needle", tmp.path(), true);

@@ -10,6 +10,224 @@ fn fixture() -> Fixture {
     Fixture::new("packages/app")
 }
 
+#[cfg(unix)]
+#[test]
+fn discovers_distinct_non_utf8_skill_directories() {
+    use std::os::unix::ffi::OsStrExt;
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(
+        &root.join(std::ffi::OsStr::from_bytes(b"skill-\xff")),
+        "first",
+        "First skill",
+    );
+    add(
+        &root.join(std::ffi::OsStr::from_bytes(b"skill-\xfe")),
+        "second",
+        "Second skill",
+    );
+    let skills = load(&fx);
+    assert!(matches!(skills.resolve("first"), Resolution::Found(_)));
+    assert!(matches!(skills.resolve("second"), Resolution::Found(_)));
+}
+
+#[cfg(windows)]
+#[test]
+fn discovers_skill_manifest_across_the_long_path_boundary() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let directory = root.join("a".repeat(110)).join("b".repeat(110));
+    let manifest = add(&directory, "long-skill", "Long path skill");
+    assert!(
+        crate::tools::canonical_path(&root)
+            .unwrap()
+            .to_string_lossy()
+            .len()
+            < 260
+    );
+    assert!(crate::tools::canonical_path(&manifest)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    let skills = load(&fx);
+    assert!(
+        skills.snapshot("long-skill").is_ok(),
+        "{:?}",
+        skills.diagnostics()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn validates_short_directory_with_verbatim_manifest() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    std::fs::create_dir_all(&root).unwrap();
+    let length = 254
+        - crate::tools::canonical_path(&root)
+            .unwrap()
+            .to_string_lossy()
+            .encode_utf16()
+            .count()
+        - 1;
+    let directory = root.join("a".repeat(length));
+    let manifest = add(&directory, "boundary", "Boundary skill");
+    assert!(!crate::tools::canonical_path(&directory)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    assert!(crate::tools::canonical_path(&manifest)
+        .unwrap()
+        .to_string_lossy()
+        .starts_with(r"\\?\"));
+    let result = load(&fx).snapshot("boundary");
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn skill_authority_and_selection_queue_follow_the_logical_turn() {
+    let fx = fixture();
+    add(&fx.home.join(".agents/skills/live"), "live", "Live skill");
+    let mut actor = actor(&fx, Registry::new());
+    actor.set_skills(load(&fx));
+    actor.push_user("first request");
+    let generation = actor.skill_turn_generation;
+    let snapshot = actor.skills.snapshot("live").unwrap();
+    actor.skills.validation.approve(&snapshot, false).unwrap();
+    actor
+        .selected_skill_snapshots
+        .extend([(generation, "first".into()), (generation, "second".into())]);
+    assert!(actor.active_validated_skill().is_some());
+    // Permission and compaction continuations leave the logical generation intact.
+    assert_eq!(actor.skill_turn_generation, generation);
+    actor.end_skill_turn();
+    assert!(actor.skills.validation.snapshots.lock().unwrap().is_empty());
+    assert!(actor.active_validated_skill().is_none());
+    assert!(actor.skills.validation.approved.lock().unwrap().is_empty());
+    actor.push_user_with_provenance("wake", crate::provider::openai::UserProvenance::Navigator);
+    actor.begin_skill_turn();
+    assert_ne!(actor.skill_turn_generation, generation);
+    assert!(actor.selected_skill_snapshots.is_empty());
+    actor.skills.validation.approve(&snapshot, false).unwrap();
+    actor
+        .selected_skill_snapshots
+        .push((actor.skill_turn_generation, "cancelled selection".into()));
+    actor.push_user("replacement request");
+    assert!(actor.active_validated_skill().is_none());
+    assert!(actor.selected_skill_snapshots.is_empty());
+}
+
+#[tokio::test]
+async fn compaction_continuation_keeps_the_same_skill_generation() {
+    let fx = fixture();
+    add(&fx.home.join(".agents/skills/live"), "live", "Live skill");
+    let mut actor = actor(&fx, Registry::new());
+    actor.set_skills(load(&fx));
+    actor.push_user("use this skill");
+    let generation = actor.skill_turn_generation;
+    let snapshot = actor.skills.snapshot("live").unwrap();
+    actor.skills.validation.approve(&snapshot, false).unwrap();
+    actor.input_budget = Some(0);
+    let first = crate::agent::run_loop::run_agent(&mut actor, &mut |_| {})
+        .await
+        .unwrap();
+    assert!(matches!(
+        first,
+        crate::agent::run_loop::RunOutcome::NeedsCompaction { .. }
+    ));
+    assert_eq!(actor.skill_turn_generation, generation);
+    assert!(actor.active_validated_skill().is_some());
+    let continued = crate::agent::run_loop::continue_run(&mut actor, &mut |_| {}, 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        continued,
+        crate::agent::run_loop::RunOutcome::NeedsCompaction { .. }
+    ));
+    assert!(actor.active_validated_skill().is_some());
+}
+
+#[tokio::test]
+async fn provider_failure_and_interruption_clear_once_before_a_wake() {
+    let fx = fixture();
+    add(&fx.home.join(".agents/skills/live"), "live", "Live skill");
+    let mut actor = actor(&fx, Registry::new());
+    actor.set_skills(load(&fx));
+    for interrupted in [false, true] {
+        actor.push_user("use skill");
+        let snapshot = actor.skills.snapshot("live").unwrap();
+        actor.skills.validation.approve(&snapshot, false).unwrap();
+        if interrupted {
+            actor.cancel.cancel();
+        }
+        let result = crate::agent::run_loop::run_agent(&mut actor, &mut |_| {}).await;
+        assert!(
+            result.is_err()
+                || matches!(result, Ok(crate::agent::run_loop::RunOutcome::Interrupted))
+        );
+        assert!(actor.active_validated_skill().is_none());
+        actor.push_user_with_provenance("wake", crate::provider::openai::UserProvenance::Navigator);
+        assert!(actor.active_validated_skill().is_none());
+    }
+}
+
+#[test]
+fn validation_hash_covers_every_file_and_admits_the_same_snapshot() {
+    let fx = fixture();
+    let directory = fx.home.join(".agents/skills/validated");
+    add(&directory, "validated", "A complete skill");
+    fs::write(directory.join("script.sh"), "first bytes").unwrap();
+    let mut skills = load(&fx);
+    skills.validation = Arc::new(validation::SkillValidation {
+        data_dir: Some(fx.home.join("data")),
+        ..Default::default()
+    });
+    let first = skills.snapshot("validated").unwrap();
+    assert!(!skills.validation.validated(&first).unwrap());
+    skills.validation.approve(&first, false).unwrap();
+    assert!(!skills.validation.validated(&first).unwrap());
+    skills.validation.begin_turn();
+    assert!(skills.active_validated_skill().is_none());
+    assert!(skills.validation.approved.lock().unwrap().is_empty());
+    skills.validation.approve(&first, true).unwrap();
+    assert!(skills
+        .validation
+        .validated(&skills.snapshot("validated").unwrap())
+        .unwrap());
+    fs::write(directory.join("script.sh"), "changed bytes").unwrap();
+    let changed = skills.snapshot("validated").unwrap();
+    assert_ne!(first.hash, changed.hash);
+    assert!(!skills.validation.validated(&changed).unwrap());
+    fs::write(
+        directory.join("SKILL.md"),
+        skill_text("validated", "Changed body").replace("Body of validated.", "NEW BODY"),
+    )
+    .unwrap();
+    assert!(!first.output.output.contains("NEW BODY"));
+    let store = crate::permission::store::PermissionStore::open(fx.home.join("data")).unwrap();
+    store
+        .revoke_validation(store.list_validations().unwrap()[0].id)
+        .unwrap();
+    assert!(!skills.validation.validated(&first).unwrap());
+}
+
+#[test]
+fn validation_never_hashes_a_truncated_inventory() {
+    let fx = fixture();
+    let directory = fx.home.join(".agents/skills/large");
+    add(&directory, "large", "Large skill");
+    let skills = load(&fx);
+    for i in 0..256 {
+        fs::write(directory.join(format!("file-{i}")), "x").unwrap();
+    }
+    assert!(skills.snapshot("large").unwrap_err().contains("256 files"));
+    for i in 0..256 {
+        fs::remove_file(directory.join(format!("file-{i}"))).unwrap();
+    }
+    fs::write(directory.join("large.bin"), vec![0; 8 * 1024 * 1024]).unwrap();
+    assert!(skills.snapshot("large").unwrap_err().contains("8 MiB"));
+}
+
 fn skill_text(name: &str, description: &str) -> String {
     format!("---\nname: {name}\ndescription: {description}\n---\n\nBody of {name}.\n")
 }
@@ -83,7 +301,10 @@ fn the_nested_real_layout_is_discovered() {
         "{:?}",
         skills.diagnostics()
     );
-    assert_eq!(skills.readable_roots(), [root.canonicalize().unwrap()]);
+    assert_eq!(
+        skills.readable_roots(),
+        [crate::tools::canonical_path(&root).unwrap()]
+    );
 }
 
 // Given a skill directory with a SKILL.md and a nested directory with another
@@ -309,28 +530,34 @@ fn duplicate_names_follow_the_precedence() {
     let user_claude = add(&fx.home.join(".claude/skills/u"), "dup", "user claude");
     assert_eq!(
         path_of(&load(&fx), "dup"),
-        user_agents.canonicalize().unwrap()
+        crate::tools::canonical_path(&user_agents).unwrap()
     );
 
     let root_oc = add(&fx.repo.join(".opencode/skills/d"), "dup", "root opencode");
-    assert_eq!(path_of(&load(&fx), "dup"), root_oc.canonicalize().unwrap());
+    assert_eq!(
+        path_of(&load(&fx), "dup"),
+        crate::tools::canonical_path(&root_oc).unwrap()
+    );
 
     let root_claude = add(&fx.repo.join(".claude/skills/d"), "dup", "root claude");
     assert_eq!(
         path_of(&load(&fx), "dup"),
-        root_claude.canonicalize().unwrap()
+        crate::tools::canonical_path(&root_claude).unwrap()
     );
 
     let root_agents = add(&fx.repo.join(".agents/skills/d"), "dup", "root agents");
     assert_eq!(
         path_of(&load(&fx), "dup"),
-        root_agents.canonicalize().unwrap()
+        crate::tools::canonical_path(&root_agents).unwrap()
     );
 
     // The workspace scope is nearer than the worktree root, whatever the source.
     let ws_oc = add(&fx.ws.join(".opencode/skills/d"), "dup", "ws opencode");
     let skills = load(&fx);
-    assert_eq!(path_of(&skills, "dup"), ws_oc.canonicalize().unwrap());
+    assert_eq!(
+        path_of(&skills, "dup"),
+        crate::tools::canonical_path(&ws_oc).unwrap()
+    );
     assert_eq!(skills.len(), 1);
     assert!(has(&skills, |k| matches!(
         k,
@@ -359,16 +586,20 @@ async fn equal_priority_duplicates_are_ambiguous() {
         .count();
     assert_eq!(ambiguous, 2);
 
-    let (_, cx) = context(&fx);
-    let res = call(&skills, "twin", &cx).await;
-    let err = res.error.expect("error");
-    assert_eq!(err.code, "skill_ambiguous");
-    assert!(err
-        .message
-        .contains(&a.canonicalize().unwrap().display().to_string()));
-    assert!(err
-        .message
-        .contains(&b.canonicalize().unwrap().display().to_string()));
+    let err = skills.snapshot("twin").unwrap_err();
+    assert!(err.contains("skill_ambiguous"));
+    assert!(err.contains(
+        &crate::tools::canonical_path(&a)
+            .unwrap()
+            .display()
+            .to_string()
+    ));
+    assert!(err.contains(
+        &crate::tools::canonical_path(&b)
+            .unwrap()
+            .display()
+            .to_string()
+    ));
 }
 
 // Given a skill with disable-model-invocation: true
@@ -387,10 +618,10 @@ async fn disabled_skills_stay_out_of_the_catalog() {
     let skills = load(&fx);
     assert_eq!(catalog_lines(&skills), ["on — Visible."]);
     let (_, cx) = context(&fx);
-    assert_eq!(
-        call(&skills, "off", &cx).await.error.unwrap().code,
-        "skill_disabled"
-    );
+    assert!(skills
+        .snapshot("off")
+        .unwrap_err()
+        .contains("skill_disabled"));
     assert_eq!(call(&skills, "on", &cx).await.status, ToolStatus::Ok);
 }
 
@@ -414,6 +645,7 @@ fn no_skills_means_no_message() {
 // Given a link looping back to an ancestor, and a link out of the roots
 // When discovered
 // Then the loop is cut once, the escape is rejected, nothing hangs
+#[cfg(unix)]
 #[test]
 fn cycles_and_escaping_links_are_rejected() {
     let fx = fixture();
@@ -444,6 +676,7 @@ fn cycles_and_escaping_links_are_rejected() {
 // Given a link to a directory inside another skill root, and a root reached
 //       twice
 // Then the skill counts once
+#[cfg(unix)]
 #[test]
 fn a_second_path_to_the_same_skill_counts_once() {
     let fx = fixture();
@@ -471,6 +704,7 @@ fn a_second_path_to_the_same_skill_counts_once() {
 // Given a SKILL.md that is a link to another SKILL.md in the same root
 // When discovered
 // Then it is one skill, not an ambiguous id
+#[cfg(unix)]
 #[test]
 fn a_manifest_linked_to_another_manifest_is_one_skill() {
     let fx = fixture();
@@ -491,6 +725,7 @@ fn a_manifest_linked_to_another_manifest_is_one_skill() {
 // Given the same manifest reached from a project root and, through a link,
 //       from a user root
 // Then it is one skill at the better rank, shadowing nothing
+#[cfg(unix)]
 #[test]
 fn a_manifest_reached_from_two_roots_is_one_skill() {
     let fx = fixture();
@@ -638,17 +873,18 @@ fn context(fx: &Fixture) -> (Registry, ToolContext) {
 }
 
 async fn call(skills: &Skills, name: &str, cx: &ToolContext) -> crate::tools::ToolResult {
+    match skills.snapshot(name) {
+        Ok(snapshot) => {
+            skills.validation.approve(&snapshot, false).unwrap();
+        }
+        Err(_) => return skills.load_listed(name).await,
+    }
     let mut registry = Registry::new();
     registry.register(Box::new(SkillTool::new(Arc::new(skills.clone()))));
     registry
-        .dispatch(
-            "skill",
-            json!({ "name": name }),
-            CancellationToken::new(),
-            cx,
-        )
+        .dispatch("skill", json!({"name":name}), CancellationToken::new(), cx)
         .await
-        .expect("dispatch")
+        .unwrap()
 }
 
 #[tokio::test]
@@ -659,6 +895,7 @@ async fn the_tool_returns_body_paths_and_resources() {
     fs::create_dir_all(dir.join("scripts")).unwrap();
     fs::write(dir.join("scripts/run.sh"), "echo hi").unwrap();
     fs::write(dir.join("notes.md"), "n").unwrap();
+    fs::write(dir.join(".hidden"), "hidden evidence").unwrap();
     fs::create_dir_all(dir.join("node_modules/x")).unwrap();
     fs::write(dir.join("node_modules/x/y.js"), "n").unwrap();
     let skills = load(&fx);
@@ -671,12 +908,17 @@ async fn the_tool_returns_body_paths_and_resources() {
         !res.output.contains("description:"),
         "the header is not repeated"
     );
-    let canonical = manifest.canonicalize().unwrap();
+    let canonical = crate::tools::canonical_path(&manifest).unwrap();
     assert_eq!(res.metadata["path"], json!(canonical));
     assert_eq!(res.metadata["base_dir"], json!(canonical.parent().unwrap()));
     assert_eq!(
         res.metadata["resources"],
-        json!(["notes.md", "scripts/run.sh"])
+        json!([
+            ".hidden",
+            "node_modules/x/y.js",
+            "notes.md",
+            "scripts/run.sh"
+        ])
     );
     assert!(res.output.contains("- scripts/run.sh"));
     assert!(res.output.contains(&canonical.display().to_string()));
@@ -689,8 +931,13 @@ async fn the_tool_takes_the_exact_id_only() {
     let skills = load(&fx);
     let (_, cx) = context(&fx);
     for wrong in ["ask", "ASK-MATT", "ask-matt ", "", "../a", "ask-*"] {
-        let res = call(&skills, wrong, &cx).await;
-        assert_eq!(res.error.expect("error").code, "skill_unknown", "{wrong:?}");
+        assert!(
+            skills
+                .snapshot(wrong)
+                .unwrap_err()
+                .contains("skill_unknown"),
+            "{wrong:?}"
+        );
     }
     let mut registry = Registry::new();
     registry.register(Box::new(SkillTool::new(Arc::new(skills))));
@@ -722,13 +969,14 @@ async fn the_body_cap_is_an_explicit_error_not_a_cut() {
     let skills = load(&fx);
     let (_, cx) = context(&fx);
     assert_eq!(call(&skills, "big", &cx).await.status, ToolStatus::Ok);
-    let res = call(&skills, "bigger", &cx).await;
-    assert_eq!(res.error.expect("error").code, "skill_oversized");
-    assert!(!res.output.is_empty());
+    assert!(skills
+        .snapshot("bigger")
+        .unwrap_err()
+        .contains("exceeds 32 KiB"));
 }
 
 #[tokio::test]
-async fn resources_are_capped_with_a_note() {
+async fn resources_are_complete_within_the_validation_bound() {
     let fx = fixture();
     let dir = fx.home.join(".agents/skills/many");
     add(&dir, "many", "Many files.");
@@ -740,10 +988,9 @@ async fn resources_are_capped_with_a_note() {
     let res = call(&skills, "many", &cx).await;
     assert_eq!(
         res.metadata["resources"].as_array().unwrap().len(),
-        MAX_RESOURCES
+        MAX_RESOURCES + 6
     );
-    assert_eq!(res.metadata["resources_omitted"], 6);
-    assert!(res.output.contains("[6 more files omitted]"));
+    assert_eq!(res.metadata["resources_omitted"], 0);
 }
 
 #[tokio::test]
@@ -768,6 +1015,7 @@ async fn a_file_that_vanished_or_broke_is_unreadable() {
 //       file outside the skill roots
 // When the tool loads it
 // Then it is unreadable and nothing of the outside file is returned
+#[cfg(unix)]
 #[tokio::test]
 async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
     let fx = fixture();
@@ -791,6 +1039,7 @@ async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
 //       a link to a place outside the skill roots
 // When the tool loads it
 // Then it is refused
+#[cfg(unix)]
 #[tokio::test]
 async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
     let fx = fixture();
@@ -820,6 +1069,7 @@ async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
 //       inside the roots
 // When the tool loads it
 // Then it is refused too: the file is no longer the one that was found
+#[cfg(unix)]
 #[tokio::test]
 async fn a_directory_swapped_for_another_one_in_the_roots_is_refused() {
     let fx = fixture();
@@ -846,32 +1096,6 @@ async fn a_manifest_that_is_no_longer_a_file_is_unreadable() {
     fs::create_dir(&manifest).unwrap();
     let res = call(&skills, "x", &cx).await;
     assert_eq!(res.error.expect("error").code, "skill_unreadable");
-}
-
-// Given a skill directory with more files than the listing budget
-// When resources are listed with the budget nearly spent
-// Then only the budget left is read and the listing stops
-#[test]
-fn the_resource_listing_enumerates_no_more_than_its_budget() {
-    let fx = fixture();
-    let dir = fx.home.join("res");
-    fs::create_dir_all(dir.join("sub")).unwrap();
-    for i in 0..40 {
-        fs::write(dir.join(format!("f{i:02}.txt")), "x").unwrap();
-        fs::write(dir.join(format!("sub/g{i:02}.txt")), "x").unwrap();
-    }
-    let mut entries = tool::MAX_RESOURCE_ENTRIES - 5;
-    let mut out = Vec::new();
-    tool::list_resources(&dir, "", 0, &mut entries, &mut out);
-    assert_eq!(entries, tool::MAX_RESOURCE_ENTRIES);
-    assert!(out.len() <= 5, "{out:?}");
-
-    // A fresh budget reads everything.
-    let mut entries = 0;
-    let mut all = Vec::new();
-    tool::list_resources(&dir, "", 0, &mut entries, &mut all);
-    assert_eq!(all.len(), 80);
-    assert_eq!(entries, 81);
 }
 
 // ---- readable roots ----
@@ -1020,19 +1244,20 @@ fn without_skills_nothing_is_registered() {
 //       to a file outside the skill roots before it is opened
 // When the manifest is opened for reading
 // Then the opened file itself is checked and refused, so nothing outside is read
+#[cfg(unix)]
 #[test]
 fn a_manifest_swapped_between_check_and_open_is_refused() {
     let fx = fixture();
     let root = fx.home.join(".agents/skills");
     let manifest = add(&root.join("race"), "race", "Race.");
-    let roots = vec![fs::canonicalize(&root).unwrap()];
-    let manifest = fs::canonicalize(&manifest).unwrap();
-    assert!(tool::open_in_place(&manifest, &roots).is_ok());
+    let skills = load(&fx);
+    let manifest = crate::tools::canonical_path(&manifest).unwrap();
+    assert!(skills.snapshot("race").is_ok());
 
     let outside = fx.home.join("outside-race.md");
     fs::write(&outside, "---\nname: race\ndescription: d\n---\nOUTSIDE\n").unwrap();
     fs::remove_file(&manifest).unwrap();
     std::os::unix::fs::symlink(&outside, &manifest).unwrap();
-    let err = tool::open_in_place(&manifest, &roots).expect_err("escaping file opened");
-    assert!(err.contains("outside the skill roots"), "{err}");
+    let err = skills.snapshot("race").unwrap_err();
+    assert!(err.contains("symbolic link"), "{err}");
 }

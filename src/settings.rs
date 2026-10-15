@@ -44,22 +44,15 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Global MCP server declarations, preserving invalid entries for diagnostics.
+    pub fn mcp(&self) -> Vec<(String, Result<crate::mcp::config::ServerConfig, String>)> {
+        crate::mcp::config::parse(self.root.get("mcp"))
+    }
     /// The parsed settings snapshot, including unknown keys.
     pub(crate) fn as_object(&self) -> &Map<String, Value> {
         &self.root
     }
 
-    pub fn permissions_review_timeout_secs(&self) -> Result<u64, String> {
-        match self.get_dotted("permissions.review_timeout_secs") {
-            None => Ok(40),
-            Some(value) => value
-                .as_u64()
-                .filter(|n| (5..=300).contains(n))
-                .ok_or_else(|| {
-                    "permissions.review_timeout_secs must be an integer from 5 to 300".into()
-                }),
-        }
-    }
     pub fn compaction_writer(&self) -> Result<&str, String> {
         match self.get_dotted("compaction.writer").and_then(Value::as_str) {
             Some(value @ ("metacognition" | "session")) => Ok(value),
@@ -130,14 +123,15 @@ impl Settings {
         {
             None => {
                 let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default();
+                let home = crate::paths::home_dir().unwrap_or_default();
                 let private = private_scratch_root(runtime.as_deref(), &home);
-                Ok(unique_roots(vec![
-                    private,
-                    std::env::temp_dir().join("withnav"),
-                ]))
+                #[allow(unused_mut)]
+                let mut roots = vec![private, std::env::temp_dir().join("withnav")];
+                // Without a home folder the private root would be relative, and so resolved
+                // against whatever directory nav was started from.
+                #[cfg(windows)]
+                roots.retain(|root| root.is_absolute());
+                Ok(unique_roots(roots))
             }
             Some(Value::Array(values)) => values
                 .iter()
@@ -171,20 +165,14 @@ impl Settings {
                 "agent.watchdog_interval_secs must be an integer from 0 to 31536000".into()
             })
     }
-    /// Automatic advisory review; disabling it asks for every mutating call.
-    pub fn permissions_automatic_review(&self) -> Result<bool, String> {
-        let Some(permissions) = self.root.get("permissions") else {
-            return Ok(true);
-        };
-        if !permissions.is_object() {
-            return Err("permissions must be an object".into());
+    /// Top-level `yolo`: disables all permission control for new sessions.
+    pub fn yolo(&self) -> Result<bool, String> {
+        match self.root.get("yolo") {
+            None => Ok(false),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| "yolo must be a boolean".into()),
         }
-        let Some(value) = permissions.get("automatic_review") else {
-            return Ok(true);
-        };
-        value
-            .as_bool()
-            .ok_or_else(|| "permissions.automatic_review must be a boolean".into())
     }
     /// Progress-check interval; zero disables child supervision.
     pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
@@ -338,9 +326,8 @@ pub fn load_with_revision(config_dir: &Path) -> Result<(Settings, String), Setti
     }
 }
 
-/// Writes the settings through a synced temporary file renamed over the old one, then syncs the
-/// directory: atomic (a crash never leaves a half-written file) and durable (the rename itself
-/// survives a crash).
+/// Writes settings atomically through a synced temporary file. Unix also syncs the
+/// directory to make the rename durable; Windows does not provide that guarantee.
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError> {
     let path = path(config_dir);
     let write_err = |source| SettingsError::Write {
@@ -355,6 +342,7 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
     tmp.write_all(text.as_bytes()).map_err(write_err)?;
     tmp.as_file().sync_all().map_err(write_err)?;
     tmp.persist(&path).map_err(|err| write_err(err.error))?;
+    #[cfg(unix)]
     std::fs::File::open(config_dir)
         .and_then(|dir| dir.sync_all())
         .map_err(write_err)?;
@@ -386,9 +374,15 @@ pub fn update<T, E: From<SettingsError>>(
         .open(&lock_path)
         .map_err(error)
         .map_err(E::from)?;
+    #[cfg(unix)]
     let _lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
         .map_err(|(_, e)| error(std::io::Error::from(e)))
         .map_err(E::from)?;
+    #[cfg(windows)]
+    let _lock = {
+        file.lock().map_err(error).map_err(E::from)?;
+        file
+    };
     let (mut settings, revision) = load_with_revision(config_dir).map_err(E::from)?;
     let result = edit(&mut settings, &revision)?;
     save(config_dir, &settings).map_err(E::from)?;
@@ -413,24 +407,6 @@ pub fn save_tui_favorite_models(config_dir: &Path, names: &[String]) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn review_timeout_defaults_and_rejects_out_of_range_values() {
-        let mut settings = super::Settings::default();
-        assert_eq!(settings.permissions_review_timeout_secs().unwrap(), 40);
-        for value in [5, 73, 300] {
-            settings.set_dotted("permissions.review_timeout_secs", serde_json::json!(value));
-            assert_eq!(settings.permissions_review_timeout_secs().unwrap(), value);
-        }
-        for value in [
-            serde_json::json!(4),
-            serde_json::json!(301),
-            serde_json::json!("40"),
-            serde_json::json!(5.5),
-        ] {
-            settings.set_dotted("permissions.review_timeout_secs", value);
-            assert!(settings.permissions_review_timeout_secs().is_err());
-        }
-    }
     use super::*;
     #[test]
     fn snapshot_revision_matches_parsed_bytes() {
@@ -484,6 +460,7 @@ mod tests {
         assert!(!load(dir.path()).unwrap().has_assignment_configuration());
     }
     #[test]
+    #[cfg(unix)]
     fn private_scratch_uses_only_owned_private_runtime_directory() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
@@ -526,6 +503,8 @@ mod tests {
     }
     #[test]
     fn scratch_setting_disables_or_selects_absolute_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let custom = temp.path().join("custom");
         let settings = super::Settings {
             root: serde_json::json!({"permissions":{"scratch_dirs":[]}})
                 .as_object()
@@ -534,15 +513,12 @@ mod tests {
         };
         assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
         let settings = super::Settings {
-            root: serde_json::json!({"permissions":{"scratch_dirs":["/tmp/custom"]}})
+            root: serde_json::json!({"permissions":{"scratch_dirs":[custom]}})
                 .as_object()
                 .unwrap()
                 .clone(),
         };
-        assert_eq!(
-            settings.permissions_scratch_dirs().unwrap(),
-            vec![std::path::PathBuf::from("/tmp/custom")]
-        );
+        assert_eq!(settings.permissions_scratch_dirs().unwrap(), vec![custom]);
     }
     #[test]
     fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {
@@ -593,6 +569,22 @@ mod tests {
                 serde_json::json!({"watchdog_interval_secs":bad}),
             );
             assert!(settings.agent_watchdog_interval_secs().is_err());
+        }
+    }
+
+    #[test]
+    fn yolo_defaults_to_false_and_must_be_a_boolean() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.yolo(), Ok(false));
+        settings.root.insert("yolo".into(), serde_json::json!(true));
+        assert_eq!(settings.yolo(), Ok(true));
+        settings
+            .root
+            .insert("yolo".into(), serde_json::json!(false));
+        assert_eq!(settings.yolo(), Ok(false));
+        for bad in [serde_json::json!("true"), serde_json::json!(1), Value::Null] {
+            settings.root.insert("yolo".into(), bad);
+            assert_eq!(settings.yolo(), Err("yolo must be a boolean".into()));
         }
     }
 

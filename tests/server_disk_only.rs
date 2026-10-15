@@ -184,6 +184,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "gateway",
             "incarnation",
             "model",
+            "permissions_unavailable",
             "read_only",
             "resume_disabled_reason",
             "session_id",
@@ -191,7 +192,8 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "upstream_id",
             "variant",
             "variant_source",
-            "workspace"
+            "workspace",
+            "yolo"
         ]
     );
     assert_eq!(restarted.state.session_count(), 0, "no memory slot made");

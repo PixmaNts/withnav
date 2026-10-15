@@ -23,7 +23,7 @@ struct Env {
 /// A temp home and a Git workspace holding its own `AGENTS.md`.
 fn env() -> Env {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(tmp.path()).expect("canonical");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical");
     let home = root.join("home");
     let ws = root.join("ws");
     std::fs::create_dir_all(home.join(".agents")).unwrap();
@@ -107,6 +107,10 @@ fn messages(provider: &CapturingProvider, n: usize) -> Vec<(String, String)> {
 }
 
 fn rules_label(path: &Path) -> String {
+    #[cfg(windows)]
+    let canonical = withnav::tools::canonical_path(path).unwrap();
+    #[cfg(windows)]
+    let path = canonical.as_path();
     format!("Instructions from {}:", path.display())
 }
 
@@ -232,13 +236,15 @@ async fn withnav_run_sends_the_rules_too() {
     std::fs::create_dir_all(env.root.join("config/withnav")).unwrap();
     std::fs::write(
         env.root.join("config/withnav/config.json"),
-        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+        if cfg!(windows) { serde_json::json!({"agents":{"build":{"model":"mock/mock-model"}}, "permissions":{"scratch_dirs":[env.root.join("scratch")]}}).to_string() } else { r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#.to_owned() },
     )
     .unwrap();
     let models = env.root.join("models.json");
     let (ws, root) = (env.ws.clone(), env.root.clone());
     let out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+        common::isolate(&mut command, &root);
+        command
             .args(["run", "--workspace"])
             .arg(&ws)
             .arg("--models")
@@ -246,6 +252,7 @@ async fn withnav_run_sends_the_rules_too() {
             .args(["--prompt", "go"])
             .env("WITHNAV_TEST_KEY", "test-key")
             .env("HOME", root.join("home"))
+            .env("USERPROFILE", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .output()
@@ -258,6 +265,14 @@ async fn withnav_run_sends_the_rules_too() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
+    #[cfg(unix)]
     assert!(sent[1].1.contains("/tmp/withnav"));
+    #[cfg(windows)]
+    assert!(sent[1].1.contains("scratch"));
+    #[cfg(unix)]
     assert!(sent[2].1.contains("global rule") && sent[2].1.contains("project rule"));
+    // Windows Known Folders ignore HOME/USERPROFILE overrides; the injected-root
+    // service tests above cover global instructions without reading a real profile.
+    #[cfg(windows)]
+    assert!(sent[2].1.contains("project rule"));
 }

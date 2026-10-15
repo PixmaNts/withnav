@@ -11,7 +11,16 @@ async fn settings_locked_put_keeps_runtime_responsive() {
         .bearer_token("secret")
         .state();
     let app = withnav::server::app(state);
-    let uri = format!("/v1/settings?workspace={}", dir.path().display());
+    let uri = format!("/v1/settings?workspace={}", {
+        let mut url = reqwest::Url::parse("http://localhost").unwrap();
+        url.query_pairs_mut()
+            .append_pair("workspace", &dir.path().to_string_lossy());
+        url.query()
+            .unwrap()
+            .strip_prefix("workspace=")
+            .unwrap()
+            .to_owned()
+    });
     let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
     let path = dir.path().join("cfg/config.json.lock");
     let released = Arc::new(AtomicBool::new(false));
@@ -101,7 +110,16 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         .bearer_token("secret")
         .state();
     let app = withnav::server::app(state);
-    let uri = format!("/v1/settings?workspace={}", dir.path().display());
+    let uri = format!("/v1/settings?workspace={}", {
+        let mut url = reqwest::Url::parse("http://localhost").unwrap();
+        url.query_pairs_mut()
+            .append_pair("workspace", &dir.path().to_string_lossy());
+        url.query()
+            .unwrap()
+            .strip_prefix("workspace=")
+            .unwrap()
+            .to_owned()
+    });
     assert_eq!(request(&app, "GET", &uri, Value::Null, false).await.0, 401);
     let path = dir.path().join("cfg/config.json");
     std::fs::remove_file(&path).unwrap();
@@ -117,8 +135,10 @@ async fn settings_edit_validation_removal_and_stale_revision() {
     assert!(!path.exists(), "malformed JSON must not write settings");
     for (key, value) in [
         ("subagents.max_concurrent", json!(12)),
-        ("permissions.automatic_review", json!(false)),
-        ("permissions.scratch_dirs", json!(["/tmp/custom"])),
+        (
+            "permissions.scratch_dirs",
+            json!([dir.path().join("custom")]),
+        ),
         ("subagents.watchdog_interval_secs", json!(0)),
         ("agent.watchdog_interval_secs", json!(42)),
         ("tui.theme", json!("nord-light")),
@@ -147,7 +167,9 @@ async fn settings_edit_validation_removal_and_stale_revision() {
         ("unknown", Value::Null),
         ("subagents.max_concurrent", json!(65)),
         ("subagents.max_concurrent", json!(1.5)),
-        ("permissions.automatic_review", json!(1)),
+        // Removed with the per-call review: an unknown key now.
+        ("permissions.automatic_review", json!(false)),
+        ("permissions.review_timeout_secs", json!(40)),
         ("permissions.scratch_dirs", json!(["relative"])),
         ("agent.watchdog_interval_secs", json!(31536001)),
         ("tui.theme", json!("bad")),
@@ -222,7 +244,16 @@ async fn settings_gateway_base_url_never_carries_credentials() {
     .bearer_token("secret")
     .state();
     let app = withnav::server::app(state);
-    let uri = format!("/v1/settings?workspace={}", dir.path().display());
+    let uri = format!("/v1/settings?workspace={}", {
+        let mut url = reqwest::Url::parse("http://localhost").unwrap();
+        url.query_pairs_mut()
+            .append_pair("workspace", &dir.path().to_string_lossy());
+        url.query()
+            .unwrap()
+            .strip_prefix("workspace=")
+            .unwrap()
+            .to_owned()
+    });
     let (status, body) = request(&app, "GET", &uri, Value::Null, true).await;
     assert_eq!(status, 200);
     assert_eq!(body["gateways"][0]["base_url"], "http://127.0.0.1:9/v1");
@@ -244,7 +275,16 @@ async fn gateway_probe_never_returns_credentials_or_upstream_body() {
         .bearer_token("secret")
         .state();
     let app = withnav::server::app(state);
-    let uri = format!("/v1/gateways/mock/test?workspace={}", dir.path().display());
+    let uri = format!("/v1/gateways/mock/test?workspace={}", {
+        let mut url = reqwest::Url::parse("http://localhost").unwrap();
+        url.query_pairs_mut()
+            .append_pair("workspace", &dir.path().to_string_lossy());
+        url.query()
+            .unwrap()
+            .strip_prefix("workspace=")
+            .unwrap()
+            .to_owned()
+    });
     Mock::given(method("GET"))
         .and(path("/models"))
         .and(header("authorization", "Bearer test-key"))

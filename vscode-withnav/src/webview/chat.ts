@@ -23,14 +23,15 @@ const identity = new ConversationIdentity(() => {
 const post = (message: WebviewToHost): void => rawPost({ ...message, generation: identity.generation });
 const bypassToggle = document.createElement("button");
 bypassToggle.type = "button"; bypassToggle.className = "bypass-toggle";
-function renderBypass(enabled: boolean, pending = false): void {
-  const label = enabled ? "Bypass active" : "Safe mode";
+function renderBypass(enabled: boolean, pending = false, yolo = false, unavailable?: string): void {
+  enabled = enabled || yolo || !!unavailable;
+  const label = yolo ? "YOLO" : unavailable ? "Permission rules unavailable" : enabled ? "Bypass active" : "Safe mode";
   bypassToggle.innerHTML = `<svg class="icon" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 1 14 3v5c0 3-6 7-6 7S2 11 2 8V3Z"/>${enabled ? '<path d="m2 2 12 12"/>' : ''}</svg><span></span>`;
   bypassToggle.querySelector("span")!.textContent = label;
   bypassToggle.setAttribute("aria-label", label);
   bypassToggle.setAttribute("aria-pressed", String(enabled));
   bypassToggle.dataset.pending = String(pending);
-  bypassToggle.title = enabled ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.";
+  bypassToggle.title = unavailable && !yolo ? unavailable : yolo ? "YOLO: no permission control at all. Set yolo to false in config.json to turn it off." : enabled ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.";
 }
 renderBypass(false);
 document.querySelector(".topbar .identity")!.after(bypassToggle);
@@ -781,23 +782,38 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   const controls = el("div", "permission-controls");
   const denyMessage = el("textarea", "deny-message");
   denyMessage.rows = 2;
-  denyMessage.placeholder = "Deny message (optional)";
-  denyMessage.setAttribute("aria-label", `Optional deny message for ${card.tool}`);
+  denyMessage.placeholder = "Reject message (optional)";
+  denyMessage.setAttribute("aria-label", `Optional reject message for ${card.tool}`);
+  const messageFeedback = el("div", "control-meta", "0 / 2048 UTF-8 bytes");
+  messageFeedback.setAttribute("role", "status");
+  let previousMessage = "";
+  denyMessage.addEventListener("input", () => {
+    const bytes = new TextEncoder().encode(denyMessage.value).length;
+    if (bytes > 2048) {
+      denyMessage.value = previousMessage;
+      messageFeedback.textContent = "Reject message must be at most 2048 UTF-8 bytes";
+    } else {
+      previousMessage = denyMessage.value;
+      messageFeedback.textContent = `${bytes} / 2048 UTF-8 bytes`;
+    }
+  });
   const buttons = el("div", "control-actions");
   const answer = (decision: PermissionDecision): void => {
     if (!sessionId) return;
+    if (decision === "reject" && new TextEncoder().encode(denyMessage.value).length > 2048) {
+      messageFeedback.textContent = "Reject message must be at most 2048 UTF-8 bytes";
+      return;
+    }
     for (const button of buttons.querySelectorAll("button")) button.disabled = true;
     denyMessage.disabled = true;
     outcome.textContent = "Sending answer…";
     post({ type: "answerPermission", sessionId, requestId: card.requestId, decision,
-      ...(decision === "deny" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
+      ...(decision === "reject" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
   };
-  buttons.append(actionButton("Allow once", () => answer("allow_once"), true));
-  if (card.skillName) buttons.append(actionButton(`Allow scripts of skill ${card.skillName} on this machine`, () => answer("allow_skill_machine")));
-  if (card.allowConfigSession) buttons.append(actionButton("Allow WithNav config for this session", () => answer("allow_config_session")));
-  if (card.allowFolder) buttons.append(actionButton(card.scope.kind === "origin" ? "Allow site" : "Allow folder", () => answer("allow_folder")));
-  buttons.append(actionButton("Deny", () => answer("deny")));
-  controls.append(denyMessage, buttons);
+  buttons.append(actionButton("Once", () => answer("allow_once"), true));
+  if (card.alwaysLabel !== undefined) buttons.append(actionButton(card.alwaysLabel, () => answer("allow_always")));
+  buttons.append(actionButton("Reject", () => answer("reject")));
+  controls.append(denyMessage, messageFeedback, buttons);
   const outcome = el("div", "control-outcome", "Waiting for your answer");
   outcome.setAttribute("role", "status");
   root.append(controls, outcome);
@@ -861,8 +877,8 @@ function receive(event: HostToWebview): void {
   if (conversations(event)) return;
   switch (event.type) {
     case "bypass":
-      bypassToggle.disabled = event.disabled || event.pending;
-      renderBypass(event.enabled, event.pending);
+      bypassToggle.disabled = event.disabled || event.pending || event.yolo === true;
+      renderBypass(event.enabled, event.pending, event.yolo === true, event.permissionsUnavailable);
       break;
     case "compaction": {
       compacting = event.pending;
@@ -1008,10 +1024,10 @@ function receive(event: HostToWebview): void {
     case "permissionState": {
       const card = permissionCards.get(event.requestId);
       if (!card) break;
-      card.outcome.textContent = permissionOutcome(event.resolution, event.message);
+      card.outcome.textContent = permissionOutcome(event.resolution, event.message, event.alwaysSaved);
       card.root.dataset.resolution = event.resolution;
       const review = card.root.querySelector(".approval-evidence summary");
-    if (review?.textContent === "Captain review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";
+    if (review?.textContent === "Captain review required" && ["allow_once", "allow_always", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
       for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = readOnly || event.resolution === "pending";
       follow();

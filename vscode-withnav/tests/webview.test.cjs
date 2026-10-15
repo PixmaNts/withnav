@@ -227,13 +227,20 @@ test("real webview initializes with frozen VS Code API, renders history and post
   receive({ type: "history", generation: 2, items: [{ type: "message", author: "driver", text: "Hello from history", id: "M", generation: 2 }] });
   assert.match(dom.window.document.querySelector("#transcript").textContent, /Hello from history/);
   assert.ok(dom.window.document.querySelector(".message.captain"));
-  receive({ type: "permission", generation: 2, card: { requestId: "RA", callId: "C", tool: "bash", agent: "build", scope: { kind: "folder", value: "/a" }, reason: "Review", call: "pwd", allowFolder: false } });
-  [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow once").click();
+  receive({ type: "permission", generation: 2, card: { requestId: "RA", callId: "C", tool: "bash", agent: "build", scope: { kind: "folder", value: "/a" }, reason: "Review", call: "pwd" } });
+  [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Once").click();
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: "answerPermission", sessionId: "A", requestId: "RA", decision: "allow_once", generation: 2 });
   assert.ok(![...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "Allow WithNav config for this session"));
-  receive({ type: "permission", generation: 2, card: { requestId: "RC", callId: "CC", tool: "write", agent: "build", scope: { kind: "folder", value: "/config" }, reason: "Protected config", call: "models.json", allowFolder: false, allowConfigSession: true } });
-  [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Allow WithNav config for this session").click();
-  assert.equal(posts.at(-1).decision, "allow_config_session");
+  assert.ok(![...dom.window.document.querySelectorAll("button")].some(button => button.textContent.startsWith("Always")));
+  receive({ type: "permission", generation: 2, card: { requestId: "RC", callId: "CC", tool: "write", agent: "build", scope: { kind: "folder", value: "/config" }, reason: "Review", call: "file", alwaysLabel: "Always (project): write *" } });
+  [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "Always (project): write *").click();
+  assert.equal(posts.at(-1).decision, "allow_always");
+  receive({ type: "permission", generation: 2, card: { requestId: "RR", callId: "CR", tool: "bash", agent: "build", scope: { kind: "folder", value: "/a" }, reason: "Review", call: "pwd" } });
+  const rejectCard = [...dom.window.document.querySelectorAll(".permission-card")].at(-1);
+  rejectCard.querySelector("textarea").value = "Use a safer command";
+  [...rejectCard.querySelectorAll("button")].find(button => button.textContent === "Reject").click();
+  assert.equal(posts.at(-1).decision, "reject");
+  assert.equal(posts.at(-1).message, "Use a safer command");
   assert.deepEqual(errors, []);
   dom.window.close();
 });
@@ -478,5 +485,14 @@ test('answer file references post openFile but code fences and URLs do not', () 
   buttons[3].click();
   assert.equal(posts.at(-1).line, 12); assert.equal(posts.at(-1).path, 'src/a.rs');
   assert.equal(d.querySelector('.message-body pre .file-link'), null);
+  dom.window.close();
+});
+
+test('unavailable permission rules reuse the warning control with error detail', () => {
+  const { dom, d, receive } = keyboardPage();
+  receive({ type: 'bypass', enabled: false, pending: false, disabled: false, permissionsUnavailable: 'withnav.db: open failed' });
+  const badge = d.querySelector('.bypass-toggle');
+  assert.match(badge.textContent, /Permission rules unavailable/);
+  assert.equal(badge.title, 'withnav.db: open failed');
   dom.window.close();
 });

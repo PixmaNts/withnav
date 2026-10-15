@@ -36,9 +36,10 @@ diagnostics and user feedback, and hosts the Cognition chat view.
   as editor context.
 - **Subagents in chat:** see delegated goals and live states beneath the conversation. Open a
   subagent's read-only transcript in a separate editor tab without leaving the parent chat. Stop or continue a parked subagent
-  with confirmation; permission requests are still reviewed in the parent conversation.
+  with confirmation; you answer their permission requests in the parent conversation.
 - **Agent controls in chat**: permission cards show the full reason and command (or a file path
-  and bounded content), with Allow once and Deny plus an optional deny message. Subagents' requests
+  and bounded content), with Once / Always / Reject and an optional reject message. Always is
+  offered only when the call can save a reusable rule. Subagents' requests
   stay in the parent conversation. Sending while approval is pending asks for confirmation.
   Out-of-steps and watchdog pauses offer Continue; watchdog pauses also offer Stop. Subagent
   output is labelled untrusted, selected skills appear beside your messages, and tool rows have
@@ -53,8 +54,9 @@ diagnostics and user feedback, and hosts the Cognition chat view.
   binary on `PATH`, or set `withnav.serverPath` to its absolute path. The extension appends `lsp`;
   do not put the subcommand in the setting. Old `withnav-lsp` and `navai-lsp` paths use `nav` in
   the same directory, with a one-time notice to update the setting.
-- **Windows:** `nav` does not run natively; use WSL or a Remote window and install the Linux package
-  there.
+- **Windows x64:** `withnav-win32-x64-<version>.vsix` bundles `bin/nav.exe`. Explicit paths with
+  spaces need no shell quotes; the LSP starts directly. The `bash` tool needs Git for Windows. See
+  the [Windows install notes](https://withnav.dev/docs/install.html#native-windows-x64).
 - The "WithNav" output channel starts with the line `Using nav binary (...)`: setting, bundled or
   path.
 - Node.js 18+ to build.
@@ -74,9 +76,11 @@ code --install-extension withnav-*.vsix
 package; `.vscodeignore` excludes them). `vsce package` triggers `npm run compile` via the
 `vscode:prepublish` hook.
 
-`scripts/package-vsix.sh <linux-x64|linux-arm64|universal>` (from the repository root) writes the
-release packages into `dist/`. The platform variants build a static `nav` with `cargo-zigbuild` and
-`zig` (or reuse `NAV_BINARY`) and ship it as `bin/nav`.
+`scripts/package-vsix.sh <linux-x64|linux-arm64|win32-x64|universal>` (from the repository root)
+writes the release packages into `dist/`. Linux variants build a static `nav` with `cargo-zigbuild`
+and `zig` (or reuse `NAV_BINARY`) and ship it as `bin/nav`. Windows uses a native MSVC build and
+ships `bin/nav.exe`; under Git Bash, pass the prebuilt executable via `NAV_BINARY`. Universal
+packages contain neither executable; stale bundled binaries are cleared for every variant.
 
 ## How it works
 

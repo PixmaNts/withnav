@@ -65,9 +65,9 @@ impl LlmCommenter {
                     return "error: read target is outside the workspace".into();
                 }
                 if target.is_some_and(|path| {
-                    crate::agent::permission_gate::sensitive_read(path)
+                    crate::permission::floor::sensitive_read(path)
                         || crate::agent::permissions::resolve_read_target(path, &cx).is_ok_and(
-                            |resolved| crate::agent::permission_gate::sensitive_read(&resolved),
+                            |resolved| crate::permission::floor::sensitive_read(&resolved),
                         )
                 }) {
                     return "error: sensitive file requires captain review".into();
@@ -192,10 +192,17 @@ mod tests {
         assert!(output.contains("outside the workspace"), "{output}");
         std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
         std::fs::create_dir(tmp.path().join("ordinary-dir")).unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(tmp.path().join("ordinary.txt"), tmp.path().join(".env"))
             .unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(tmp.path().join("ordinary-dir"), tmp.path().join(".ssh"))
             .unwrap();
+        #[cfg(windows)]
+        {
+            std::fs::write(tmp.path().join(".env"), "secret").unwrap();
+            std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
+        }
         for (tool, path) in [("read", ".env"), ("grep", ".env"), ("grep", ".ssh")] {
             let call = crate::provider::ToolCall {
                 id: tool.into(),

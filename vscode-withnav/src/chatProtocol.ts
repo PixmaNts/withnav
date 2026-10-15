@@ -8,8 +8,9 @@ export const CHAT_VIEW_ID = "withnav.chat";
 /** Who wrote a message shown in the chat. */
 export type Author = "captain" | "nav" | "driver" | "cognition" | "navigator" | "subagent";
 
-export type PermissionDecision = "allow_once" | "allow_folder" | "allow_config_session" | "allow_skill_machine" | "deny";
+export type PermissionDecision = "allow_once" | "allow_skill_machine" | "deny" | "allow_always" | "reject";
 export interface PermissionCard {
+  alwaysLabel?: string;
   requestId: string;
   callId: string;
   tool: string;
@@ -19,14 +20,12 @@ export interface PermissionCard {
   reason: string;
   call: string;
   arguments: string;
-  allowFolder: boolean;
-  allowConfigSession?: boolean;
   skillName?: string;
   evidence?: PermissionEvidence;
 }
 export interface PermissionEvidence {
   policy_version: number;
-  source: "instinct" | "jev" | "metacognition" | "captain" | "driver";
+  source: "instinct" | "metacognition" | "captain" | "driver";
   reason?: string;
   verdicts?: unknown;
   overrides?: unknown;
@@ -40,7 +39,7 @@ export interface AskAnswer { question_call_id: string; selected: number[]; custo
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
-  | { type: "bypass"; enabled: boolean; pending: boolean; disabled: boolean }
+  | { type: "bypass"; enabled: boolean; pending: boolean; disabled: boolean; yolo?: boolean; permissionsUnavailable?: string }
   | { type: "viewMode"; readOnly: boolean; archiveReason?: string }
   | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string; variant_source?: string; models?: ModelInfo[]; locked?: boolean }
   | { type: "compaction"; operationId: string; pending: boolean; text: string; ok?: boolean }
@@ -53,7 +52,7 @@ export type HostToWebview = { generation?: number } & (
    | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
-  | { type: "permissionState"; requestId: string; resolution: string; message?: string }
+  | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false }
   | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
   | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
   | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string; details?: string }

@@ -1,6 +1,6 @@
 import { Compass, Folder, Gauge, User, X } from "@phosphor-icons/react";
 import { useState } from "react";
-import { asBool, asInt, asPaths, asTheme, fieldOf, WATCHDOG_PRESETS } from "../lib/settings";
+import { asInt, asPaths, asTheme, fieldOf, WATCHDOG_PRESETS } from "../lib/settings";
 import { THEMES } from "../theme/themes";
 import { isSet, problem, shown, type SectionProps } from "./context";
 import { Applies, FieldError, Head, Pill } from "./ui";
@@ -8,8 +8,6 @@ import { Applies, FieldError, Head, Pill } from "./ui";
 // ---------- Permissions ----------
 
 export function Permissions(p: SectionProps) {
-  const review = asBool(shown(p, "permissions.automatic_review"), true);
-  const reviewError = problem(p, "permissions.automatic_review");
   const dirs = asPaths(shown(p, "permissions.scratch_dirs"));
   const defaults = asPaths(fieldOf(p.body, "permissions.scratch_dirs")?.default);
   const dirsSet = isSet(p, "permissions.scratch_dirs");
@@ -33,39 +31,24 @@ export function Permissions(p: SectionProps) {
         How mutating tool calls are cleared.
       </Head>
       <div className="st-stack">
-        {p.visible("perm:review") && (
+        {p.visible("perm:rules") && (
           <div className="st-card">
             <div className="st-card-top">
-              <div className="st-card-title">Automatic review</div>
-              <Applies body={p.body} keyName="permissions.automatic_review" className="push" />
-              <button type="button" role="switch" aria-checked={review} aria-label="Automatic review" className="st-switch" onClick={() => p.save.save("permissions.automatic_review", !review)}>
-                <span />
-              </button>
+              <div className="st-card-title">Permission rules</div>
             </div>
             <div className="st-card-desc">
-              Each <span className="mono">bash</span>, <span className="mono">write</span> and <span className="mono">edit</span> call is reviewed before it runs. <span className="mono">fetch</span> keeps its origin grants: allow once, allow origin, or deny.
+              Each tool call is decided by your rules, then the permission flow, then you. Answer <b>Always</b> to save a rule; manage them with <span className="mono">nav permissions</span>.
             </div>
-            {reviewError && <FieldError message={reviewError} />}
             <div className="st-steps">
-              <Step icon={<Gauge size={13} />} title="1 · Instinct">
-                Classifies effects, scope and risk. Read-only and low-risk project changes run.
+              <Step icon={<Gauge size={13} />} title="1 · Rules">
+                A deny stops the call. Credentials and WithNav's own configuration always need you.
               </Step>
-              <Step icon={<Compass size={13} />} title="2 · Metacognition">
-                Must approve risky or outside-project changes before they run.
+              <Step icon={<Compass size={13} />} title="2 · Permission flow">
+                Instinct judges whether you asked for the call, or whether it is safe.
               </Step>
               <Step icon={<User size={13} />} title="3 · Captain">
-                Decides on any doubt, timeout or reviewer failure: allow once or deny. Sensitive reads always end here.
+                Once, Always or Reject, with a message the agent reads.
               </Step>
-            </div>
-            <div className="st-onoff">
-              <button type="button" className="st-onoff-card" aria-pressed={review} onClick={() => !review && p.save.save("permissions.automatic_review", true)}>
-                <b>On</b>
-                <span>Instinct, then the metacognition for risky calls, then you when either is unsure.</span>
-              </button>
-              <button type="button" className="st-onoff-card" aria-pressed={!review} onClick={() => review && p.save.save("permissions.automatic_review", false)}>
-                <b>Off</b>
-                <span>Every bash, write and edit call is asked to you.</span>
-              </button>
             </div>
           </div>
         )}
@@ -117,7 +100,7 @@ export function Permissions(p: SectionProps) {
             {(local ?? dirsError) && <FieldError message={(local ?? dirsError)!} />}
           </div>
         )}
-        {!p.visible("perm:review") && !p.visible("perm:scratch") && <div className="st-empty">No permission setting matches this search.</div>}
+        {!p.visible("perm:rules") && !p.visible("perm:scratch") && <div className="st-empty">No permission setting matches this search.</div>}
       </div>
     </>
   );

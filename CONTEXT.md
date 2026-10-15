@@ -135,7 +135,8 @@ result. `subagent.spawned` and `subagent.done` are replayable events. Results en
 transcript once, as bounded untrusted user messages at a turn boundary. `steer` delivery can use
 a safe boundary within its running turn. Completion wakes an idle parent, but cannot answer its
 pending interaction. Child permissions are answered by the Captain
-through the parent's API, with the interaction and grants remaining on the child. Parent stop and
+through the parent's API, with the pending interaction remaining on the child. Permission rules
+live in the shared database. Parent stop and
 delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
 
@@ -160,7 +161,7 @@ _Avoid_: step event (observation is not an injection boundary)
 Parent guidance injected into a running child's transcript at its next safe boundary, without
 restarting the turn. A parked interaction or watchdog doubt keeps it queued. Guidance is queued
 in memory and can be lost in a crash. `Parent` provenance prevents guidance
-from replacing the Captain's instruction for compaction or the plan guard. A child result whose
+from replacing the Captain's instruction for compaction or as permission evidence. A child result whose
 delivery mode is `steer` uses the same boundary on the parent, with untrusted subagent provenance.
 _Avoid_: Captain message, permission answer
 
@@ -211,7 +212,7 @@ or stop a watchdog doubt. This cannot approve a tool or renew a step budget. The
 Stop and owner Continue endpoints still work. `subagent.watchdog` is a durable parent-stream
 verdict with `child_session_id`, `verdict`, `reason` and `checked_at`; evidence is untrusted data.
 Recovery stops doubts like any other unfinished child; watchdog state is not restored.
-_Avoid_: role guard (that checks role conformance, not progress), permission request
+_Avoid_: permission request
 
 ## Models and commands
 
@@ -249,178 +250,89 @@ _Avoid_: tool, action (an action is what a flow proposes)
 
 ## Permissions
 
-**Captain request**:
-Permission review uses the ordered verified Captain turns and retained newer constraints;
-the role guard still uses only the latest message. Questions,
-ok and praise do not revoke a task. Stop, completion, inspect-only and explicit new-task markers
-replace the anchor. Intent exceeding the bounded budget is incomplete and asks rather than
-dropping a constraint. Human words establish goals, not instructions about reviewers' verdicts.
-Tool arguments, assistant text and parent
-delegations remain untrusted evidence. Ordinary local approval requires confident, recoverable effects;
-protected configuration requires a typed Captain answer or a live config session grant.
+These terms follow [ADR 0015](docs/adr/0015-permission-rules-and-instinct-flow.md).
 
-WithNav's explicitly configured config directory is a protected root: native writes/edits ask the
-Captain before any model review, including symlinks. Scratch never overlaps this root.
-Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
+### Permission rules
 
-**Config session grant**:
-Only the protected-config request offers `allow_config_session` ("allow WithNav config for this
-session"). A typed Captain answer shares an in-memory grant between the root actor and its live
-subagents; future children inherit that same memory. It is never saved to `grants.json` and a new,
-resumed or restarted root asks again. It skips only the Captain-only hold: instinct and
-metacognition review still run, and evidence records `approved_by: config_session_grant`.
-Credential/key targets, `auth.json`, changed scratch roots, and changes to `permissions` or
-`automatic_permission_review` in the resulting `config.json` still ask. Malformed settings JSON
-fails closed; bash naming `config.json` always asks because its resulting settings cannot be parsed.
+**Control level**:
+How much WithNav checks before a tool call runs: yolo (nothing), bypass (written `deny` rules and
+the fixed floor), or normal (rules, then the permission flow, then the Captain).
+_Avoid_: security mode, trust level
 
-**Scratch directory**:
-Two independently checked roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback
-`~/.cache/withnav/scratch`) then shared `<temp_dir>/withnav`. `permissions.scratch_dirs` is an ordered
-absolute-path list; `[]` disables both. Native scratch approval binds the root inode through dispatch.
-These private owned roots are available across projects and children.
-Scratch changes count as project-local during review. The ordered absolute-path list is snapshotted
-and inherited by children; `[]` disables it. It must be a real directory owned by the current user, mode 0700.
-Outside-project file changes receive review like bash effects; approval never extends writable roots.
+**Yolo**:
+The control level that checks nothing, turned on only by `"yolo": true` in the Captain's
+`config.json`. Every call records `approved_by: yolo`, and every client shows it.
+_Avoid_: bypass (bypass still keeps the fixed floor), unsafe mode
 
-**Permission review**:
-An advisory per-call Instinct classification in one batched request: `call_effect`
-(`read_only` / `local_change` / `remote_change` / `unsure`), `call_scope`, `reversibility`
-(`none_needed` / `recoverable` / `destructive` / `unsure`), `publication`
-(`none` / `own_work` / `shared` / `unsure`), plus probability questions `sensitivity` and
-`task_fit` using ordered Captain and untrusted assistant turns, not a host-selected task anchor.
-Only Captain turns establish goals/restrictions; latest Captain turns may finish and start tasks
-in any language. Selected skills contribute name, description and base directory, not body or
-grants; reading/working in their described folders fits the task. Older editor-context blocks
-are stripped. Confidence ≥ 0.7 is required only on deciding
-answers: `read_only` for reads; `local_change`, `recoverable` and `inside` for local changes;
-`remote_change`, `recoverable` and `own_work` for publication of the task's own work.
-Secondary answers need no confidence, but cannot contradict a route with `destructive` or `shared`.
-Floor-free confident read-only calls run before task-fit/scope checks at sensitivity < 0.5,
-including outside-workspace reads and plain unknown programs. Listing key filenames or reading
-SOPS-encrypted configuration is not credential-content access. Mutations retain sensitivity
-< 0.2. Confident inside, recoverable local changes run on Instinct alone unless task fit < 0.2
-clearly contradicts the Captain; unknown program names alone no longer require metacognition.
-Remote own-work publication retains task fit ≥ 0.6. Credential, overwrite, removal, opaque-wrapper and executable-identity
-floors remain. Fd duplication and redirects to `/dev/null` are not writes.
-Git pushes require bounded
-literal-command host facts confirming the current non-default branch and no force/deletion.
-Host facts include the current/default branches, dirty state and literal git path tracking.
-Missing git, a timeout or an ambiguous push supplies no authorization fact.
+**Permission rule**:
+A row of the database saying what happens to a tool call: an action (tool name), a resource
+pattern with `*`, an effect (`allow`, `ask`, `deny`) and a scope. Revoked, never deleted. No
+matching rule means `ask`. The most precise rule wins.
+_Avoid_: grant, whitelist, policy
 
-Destruction and shared publication at any confidence, sensitive or off-task effects, and low
-confidence or unsure deciding answers go to synchronous metacognition review. Every Run path
-still passes the host shell, executable identity, overwrite recovery and removal/move floors.
-Its separate 64 KiB budget carries Instinct
-answers/probabilities, git facts, three bounded untrusted assistant messages and three structured
-untrusted tool calls with arguments, outcome, exit code, output head and approval source;
-Instinct uses `context_window_tokens * 3 / 2` bytes or 16 KiB when unconfigured; the plan role
-guard retains 16 KiB. Rules appear once. Budgeting drops oldest turns, then shortens older pasted
-text with byte-cut markers; the latest Captain turn is never partially shown. If it cannot fit
-alongside arguments, the request is incomplete. Arguments too large get a size-specific reason.
-Evidence records input/budget bytes and dropped/cut turns. On 2026-10-10, OmniRoute →
-openrouter/typesafe/jev-1.13 (64000 tokens → 96000 bytes) measured 4 KiB 0.33 s,
-16 KiB 0.34 s, 32 KiB 0.40 s, 64 KiB 0.44 s, 96 KiB 0.52 s, 112 KiB 0.57 s;
-~134 KiB returned HTTP 400. The 2 s deadline is not the input constraint. Truncation is marked.
-Metacognition receives at most the latest 16 KiB of conversation and three tool calls with outputs
-bounded to 512 bytes, within the separate 64 KiB total budget. It keeps the configured variant
-(`low` by default) and caps output at min(model limit, 16384 tokens). The single deadline is
-`permissions.review_timeout_secs` (default 40, integer 5–300). There is no second attempt;
-a floor-free Instinct read-only verdict below normal sensitivity can still run,
-but writes still ask.
-On 2026-10-10, ten of eleven reviews timed out: 45–54 KB input, one 40.4 s answer with 3817
-reasoning tokens against the old 4096 output cap. Instinct decides ordinary calls; metacognition
-reviews only risky or uncertain calls. A structured `assistant_offered_selection` is the Captain's
-go-ahead for the selected option's task, not an unrelated permission grant.
-Typed Captain allow-once answers become in-memory signature-and-scope precedents shared by live
-children, never restored from `permission.resolved` events on resume. SQLite event JSON is writable
-by ambient bash and cannot authenticate an approval; every resumed session starts with no precedents.
-A matching live precedent replaces only
-metacognition unsure/timeout escalation, never an explicit reject or a host floor, and records
-`approved_by: captain_precedent` plus the earlier request. Bypass/config grants never create one.
-Edit/write approvals bind canonical file and scope; later writes/edits reuse them directly until
-the next Captain message, never for sensitive or protected-config paths.
-New human turns conservatively invalidate precedents; every typed Captain deny clears all session
-precedents, even when the denied call has no signature. Signatures
-use the trusted resolver's validated canonical executable and its file identity (device, inode,
-size, mtime, so a replaced binary inherits no approval), subcommand and sorted flags. Push
-signatures retain the confirmed target and the full effective push URL list, including Git URL
-rewrites; unavailable URLs prevent a signature and precedent reuse. Python JSON exemptions require
-`python3 -I -S` to exclude workspace/PYTHONPATH imports and startup hooks.
-PR edits and execution/path overrides are not covered. A new conversation starts empty.
-Otherwise only explicit approval runs reviewed calls; force pushes, default-branch pushes, releases and
-remote deletions still require the Captain. Protected configuration, credentials and changed
-scratch roots keep their existing Captain floors, and plan role conformance is unchanged.
-Evidence records every answer, thresholds and route (`instinct_run` / `review` / `captain`).
-Malformed answers, unavailable reviewers and deadlines escalate to the Captain. Not a sandbox.
+**Rule scope**:
+Where a permission rule applies: one agent, one project, or every project. On equal precision,
+agent beats project, which beats global.
+_Avoid_: level, layer
 
-Script execution always retains the opaque-script floor and goes to metacognition review,
-never the Instinct-only fast path. Bounded script content is untrusted evidence, not authorization;
-it makes the effects visible so the reviewer can return fewer `unsure` decisions. Direct executable
-scripts attach only with a trusted canonical shebang interpreter (the executable identity resolver:
-owned by root or the current user, not group/other writable, in directory chains owned by root or the
-current user and not group/other writable, outside workspace/writable roots), without `env`
-indirection. A user-installed toolchain (rustup's `~/.cargo/bin/cargo`) is trusted that way, like a
-system one; native writes into `$CARGO_HOME/bin` and `$RUSTUP_HOME/toolchains` are Captain-only
-floors, shell and build scripts are not confined (accepted risk, 2026-10-12).
-Evidence records that interpreter identity. No-follow reads reject multiply linked files as well
-as symlinks, sensitive targets and protected configuration. Complete evidence binds the canonical
-path, original spelling, file/parent identities and SHA-256. Validation is repeated before dispatch
-and immediately before bash spawn; any mismatch or inability to revalidate goes straight to the
-Captain with `script changed since it was reviewed`, even under bypass, without re-reading to
-decide escalation. No snapshot copy is executed: a path-to-spawn race remains, and bash is advisory,
-not a sandbox.
+**Arity prefix**:
+The words that identify a shell command for a rule, from a fixed table (`git push`, `cargo test`,
+`npm run build`), options not counted; an unknown program is identified by its first word.
+"Always" saves the prefix followed by ` *`, which also matches the bare prefix.
+_Avoid_: command signature
 
-Native `read` within readable roots remains ungated, except sensitive targets. Native `grep` and
-`glob` stay confined to readable roots and skip sensitive entries before opening them, with a count.
-Outside single-file reads use the same per-call classification as bash. Approval binds one canonical target,
-re-resolved before dispatch and opened without following replacement links. No root is added.
-Credential/key targets deterministically force risky review and then a typed Captain decision even
-if both models approve. A read-only bash call with a deterministic floor needs review. Reading ordinary WithNav
-configuration follows normal read review; `auth.json` is sensitive.
-Bash is not confined: its sensitive-file detection is best effort (literal canonical operands and
-recognized expansions), not enforcement against arbitrary shell programs. Only native file tools
-enforce the deterministic sensitive-path policy. In-root directory walks still reopen descendants
-by path; replacement links mid-walk need a future descriptor-relative traversal fix.
+**Once / Always / Reject**:
+The Captain's three answers to a permission request. Always saves an `allow` rule with the tool's
+default scope; Reject may carry a message the model reads.
+_Avoid_: allow folder, deny (deny is a rule effect)
+
+**Permission flow**:
+The flow on the `tool.pre_call` trigger that judges a call after the rules: it may allow an `ask`
+the Captain or a validated skill asked for, and turn a dangerous `allow` into a question. A
+written `deny` never reaches it. When it fails, the rule's result applies.
+_Avoid_: permission review (the per-call review it replaces), gate
+
+**Fixed floor**:
+The only checks written in Rust, skipped only by yolo: writes to WithNav's own configuration and
+database, and any access to credentials.
+_Avoid_: hard floor (the older, broader set of checks)
+
+**Validation** (skills and flows):
+The Captain's one-time approval of a skill or flow, bound to a hash of its content. A changed file
+is validated again.
+_Avoid_: trust (workspace trust is a different thing), grant
+
+### Questions and controls
 
 **Permission request**:
-A held tool call awaiting a typed Captain decision. Bash, write and edit offer allow once or deny;
-eligible protected-config calls also offer a config session grant.
-fetch may also offer an origin grant. Chat text never approves a call. A pending request expires
-on restart. Reviewer rejection escalates to the Captain rather than finally denying execution.
+A held tool call awaiting a typed Captain decision: Once, Always (offered only when the decision
+proposes rules, with the rule shown on the button) or Reject. A skill not yet validated at its
+current version asks for validation instead. A child's request is answered in its parent's
+conversation. Chat text never approves a call. A pending request is cancelled by a stop or a new
+message, and expires on restart; its decision row ends `cancelled` or `expired`.
 _Avoid_: confirmation, approval prompt
 
 **Bypass**:
 A per-session setting, off by default and never saved as a preference, that answers ordinary
-permission requests for the Captain. When on, a call that would have asked runs once instead,
-after the usual reviews: their verdicts stay in its evidence and the result is marked
-`approved_by: bypass`. Bypass never creates a config session grant. Without that separate typed
-grant, WithNav's protected configuration still asks; credential/key targets and a changed
-scratch root always ask the Captain (the request says `requires_captain`); validation errors, tool
-policy, read-only agents and outside searches are refused as before, and a question from `ask` is
-never answered. Turning it on also answers an eligible request already waiting. A root session
-sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `nav run --yes`) and its live
-subagents follow every change; a new subagent starts with the parent's current value. A resumed
-session starts off, and its history says so. HTTP changes require a configured bearer token and
-an authenticated client, including slash commands; servers without a token allow only state reads.
-The in-process `nav run --yes` path does not require HTTP authentication.
-Not a sandbox: bash keeps its ambient access.
-_Avoid_: auto-approve, yolo, allow all
+permission requests for the Captain: a call that a rule `ask` or the permission flow would have
+asked about runs once, marked `approved_by: bypass`. A written `deny` rule, the fixed floor, a loop
+check and skill validation still apply; a question from `ask` is never answered. Turning it on also
+answers an eligible request already waiting. A root session sets it (`POST
+/v1/sessions/{id}/bypass`, `/bypass on|off`, `nav run --yes`) and its live subagents follow every
+change. A resumed session starts off. Not a sandbox: bash keeps its ambient access.
+_Avoid_: auto-approve, allow all, yolo (yolo is a different control level)
 
-**Folder grant**:
-Historical bash/file folder approvals remain readable on disk but never authorize execution.
-Only fetch origin grants bypass later requests. Root sessions save those per workspace; children
-keep them in memory. Approval never expands writable roots.
-_Avoid_: whitelist, permission rule
-
-**Role guard**:
-Plan exceptions require instinct role conformance in the same batched request as safety review.
-Plain Markdown exempts only the role question, never permission review. Conformance is recorded
-in result metadata independently of safety approval. Advisory, not a sandbox.
-_Avoid_: filter, sandbox, policy
+**Scratch directory**:
+Two independently checked roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback
+`~/.cache/withnav/scratch`) then shared `<temp_dir>/withnav`. `permissions.scratch_dirs` is an
+ordered absolute-path list; `[]` disables both. Each must be a real directory owned by the current
+user, mode 0700; a write into one is bound to its inode and mode. Scratch counts as part of the
+project, is inherited by children, and never overlaps WithNav's configuration directory.
 
 **Pending interaction**:
 What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
-the held call and the calls behind it). While a permission request is pending, session commands are
+the held call and the calls behind it, which Always and Once release to the decision again and Reject
+settles with the Captain's message). While a permission request is pending, session commands are
 refused, except `/stop`, which runs and cancels the request. While an `ask` is pending, all session
 commands are refused, `/stop` included, until it is answered. The stop endpoint
 (`POST /v1/sessions/{id}/stop`) works in both cases.
@@ -478,7 +390,7 @@ and the [InstinctFlow guide](docs/instinct-flow.md).
 
 **InstinctFlow**:
 The feature: flows run by the instinct layer, edited in the studio.
-_Avoid_: Jev flows
+_Avoid_: Instinct flows
 
 **Studio**:
 The editor where the Captain draws, tests and saves flows, and asks the engine to reload them.
@@ -539,23 +451,24 @@ runs, sessions or workspaces, so a run depends only on its event.
 _Avoid_: state, memory, setting
 
 **Workspace flow** / **Global flow**:
-Where a flow definition lives: in the workspace, read only once the workspace is trusted, or in the
-Captain's own configuration, for every workspace. A workspace flow replaces a global flow of the
+Where a flow definition lives: in the workspace, or in the Captain's own configuration, for every
+workspace. Either runs only once the Captain validated its current content. A workspace flow replaces a global flow of the
 same name. The Captain chooses where when creating the flow.
 _Avoid_: project flow, user flow
 
 **Action** (flows):
-What a chain ends with: something WithNav does, chosen from the closed list WithNav offers. A flow
-can make WithNav more careful (deny a tool call, ask the Captain) but never less: an action that does
-not object leaves the normal permission review in place. Actions never run arbitrary code.
-_Avoid_: outcome, effect, allow (say "no objection")
+What a chain ends with: something WithNav does, chosen from the closed list WithNav offers. On the
+`tool.pre_call` trigger a validated flow may `allow`, `ask_captain`, `deny` or `apply_rule`; the
+strictest answer of all flows wins, and only the compiled-in protected check can allow a write to
+WithNav's own configuration (ADR 0015). Actions never run arbitrary code.
+_Avoid_: outcome, effect, "no objection" (now `allow`)
 
 **Fallback**:
 What a flow does when its run fails: the whole run's actions are replaced by it, even if some
 branches had already concluded. One general fallback (on failure) may be specialised per kind of
 failure (on timeout, on provider error, on invalid answer). The failure message is always kept in
-the trace. Without a fallback, a blocking flow asks the Captain and an asynchronous flow does
-nothing.
+the trace. On the permission hook, a failed run without a fallback applies the rule (`apply_rule`):
+an `allow` rule runs, `ask` or no rule asks. An asynchronous flow without a fallback does nothing.
 _Avoid_: on timeout (a timeout is one kind of failure), default action
 
 **Reload**:
@@ -582,7 +495,10 @@ Re-running recorded answers through a flow definition without calling any model.
 _Avoid_: re-evaluation (that calls the model again)
 
 **Workspace trust**:
-One explicit Captain decision that lets a workspace's own flow definitions read the context they declare. It activates nothing and grants no tool permission or model destination.
+The former per-workspace switch for workspace flows, replaced by Validation: each flow, global or
+workspace, is validated on its own content. A validated flow can allow tool calls on the
+permission hook, a workspace flow included, so validate only what you have read. The Studio's
+"Trust" action records a validation.
 _Avoid_: permission, approval
 
 ## Context budget

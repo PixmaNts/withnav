@@ -41,6 +41,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: FlowCommand,
     },
+    /// Manage permission rules and inspect decision history.
+    Permissions {
+        #[command(subcommand)]
+        command: PermissionCommand,
+    },
     Run(RunArgs),
     Serve(ServeArgs),
     Auth(AuthArgs),
@@ -58,6 +63,226 @@ pub enum FlowCommand {
     Catalogue,
 }
 
+#[derive(Args, Debug, Default)]
+#[group(multiple = false)]
+pub struct PermissionScopeArgs {
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    #[arg(long)]
+    pub global: bool,
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
+impl PermissionScopeArgs {
+    fn scope(self) -> Option<crate::permission::rules::RuleScope> {
+        use crate::permission::rules::RuleScope;
+        if self.global {
+            Some(RuleScope::Global)
+        } else if let Some(project) = self.project {
+            Some(RuleScope::Project(project))
+        } else {
+            self.agent.map(RuleScope::Agent)
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PermissionCommand {
+    Validate {
+        #[arg(value_enum)]
+        kind: crate::permission::validation::ValidationKind,
+        name: String,
+        #[arg(long, value_enum)]
+        location: Option<crate::flows::store::Location>,
+    },
+    Validations {
+        #[arg(long)]
+        json: bool,
+    },
+    RevokeValidation {
+        id: i64,
+    },
+    List {
+        /// Include revoked rules.
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        scope: PermissionScopeArgs,
+        #[arg(long)]
+        json: bool,
+    },
+    Add {
+        action: String,
+        resource: String,
+        #[arg(value_enum)]
+        effect: crate::permission::rules::Effect,
+        /// Defaults to the current project.
+        #[command(flatten)]
+        scope: PermissionScopeArgs,
+    },
+    Revoke {
+        id: i64,
+    },
+    History {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
+    use crate::permission::{
+        decisions::DecisionFilter,
+        rules::{RuleFilter, RuleOrigin, RuleScope},
+        store::PermissionStore,
+    };
+    let data_dir = crate::paths::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
+    let store = PermissionStore::open(&data_dir)?;
+    match command {
+        PermissionCommand::Validate {
+            kind,
+            name,
+            location,
+        } => {
+            if kind != crate::permission::validation::ValidationKind::Flow {
+                anyhow::bail!("skill admission is not available yet");
+            }
+            let flows = crate::flows::store::FlowStore::with_data(
+                std::env::current_dir()?,
+                config_dir()?,
+                data_dir,
+            );
+            let location = match location {
+                Some(location) => location,
+                None => {
+                    let matches: Vec<_> = flows
+                        .list()
+                        .map_err(|e| anyhow::anyhow!("{}", e.reason))?
+                        .into_iter()
+                        .filter(|flow| {
+                            flow.name == name
+                                && flow.location != crate::flows::store::Location::Builtin
+                        })
+                        .collect();
+                    if matches.len() != 1 {
+                        anyhow::bail!("select --location global or workspace for an ambiguous or missing flow");
+                    }
+                    matches[0].location
+                }
+            };
+            let document = flows
+                .get(&name, location)
+                .map_err(|e| anyhow::anyhow!("{}", e.reason))?;
+            let approval = flows
+                .validate_version(&name, location, &document.revision)
+                .map_err(|e| anyhow::anyhow!("{}", e.reason))?;
+            println!(
+                "validated flow {} at {} ({}) as {}",
+                name, approval.location, approval.content_sha256, approval.id
+            );
+        }
+        PermissionCommand::Validations { json } => {
+            let validations = store.list_validations()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&validations)?);
+            } else {
+                for validation in validations {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}{}",
+                        validation.id,
+                        validation.kind.as_str(),
+                        validation.name,
+                        validation.location,
+                        validation.content_sha256,
+                        if validation.revoked_at.is_some() {
+                            "\trevoked"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        PermissionCommand::RevokeValidation { id } => {
+            if !store.revoke_validation(id)? {
+                anyhow::bail!("validation {id} not found or already revoked");
+            }
+            println!("revoked validation {id}; reload flows to apply");
+        }
+        PermissionCommand::List { all, scope, json } => {
+            let rules = store.list(&RuleFilter {
+                include_revoked: all,
+                scope: scope.scope(),
+            })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rules)?);
+            } else if rules.is_empty() {
+                println!("(no permission rules)");
+            } else {
+                for rule in rules {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{:?}{}",
+                        rule.id,
+                        rule.action,
+                        rule.resource,
+                        rule.effect.as_str(),
+                        rule.scope,
+                        if rule.revoked_at.is_some() {
+                            "\trevoked"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        PermissionCommand::Add {
+            action,
+            resource,
+            effect,
+            scope,
+        } => {
+            let scope = match scope.scope() {
+                Some(scope) => scope,
+                None => RuleScope::Project(std::env::current_dir()?),
+            };
+            let rule = store.add(&action, &resource, effect, scope, RuleOrigin::Manual)?;
+            println!("added permission rule {}", rule.id);
+        }
+        PermissionCommand::Revoke { id } => {
+            if !store.revoke(id)? {
+                anyhow::bail!("permission rule {id} not found or already revoked");
+            }
+            println!("revoked permission rule {id}");
+        }
+        PermissionCommand::History { limit, json } => {
+            let decisions = store.list_decisions(&DecisionFilter::default(), limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&decisions)?);
+            } else if decisions.is_empty() {
+                println!("(no permission decisions)");
+            } else {
+                for decision in decisions {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        decision.id,
+                        decision.time,
+                        decision.session_id,
+                        decision.agent,
+                        decision.tool,
+                        decision.outcome.as_str(),
+                        crate::permission::decisions::scores_summary(&decision)
+                    );
+                }
+            }
+        }
+    }
+    Ok(EXIT_DONE)
+}
+
 #[derive(Args, Debug)]
 pub struct HtmlConvertArgs {
     #[arg(long, value_enum)]
@@ -66,6 +291,7 @@ pub struct HtmlConvertArgs {
 
 pub mod doctor;
 mod embedded;
+pub mod logging;
 pub mod lsp;
 pub mod tui;
 pub mod web;
@@ -189,18 +415,25 @@ pub enum AuthCommand {
 }
 
 pub fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(logging::mcp_safe_filter())
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout())),
+        )
         .try_init();
 }
 
 pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Commands::Doctor(args) => doctor::command(args).await,
+        Commands::Permissions { command } => {
+            tokio::task::spawn_blocking(move || permissions_command(command)).await?
+        }
         Commands::Flows {
             command: FlowCommand::Catalogue,
         } => {
@@ -297,6 +530,9 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         rules_roots,
         web: None,
     })?;
+    // The run's only session freezes its tool inventory when it is created:
+    // let configured MCP servers finish starting first (bounded).
+    state.service().wait_for_mcp().await;
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state

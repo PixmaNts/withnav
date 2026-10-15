@@ -1,13 +1,36 @@
 //! Test support shared by the integration tests. Each `tests/*.rs` file is
 //! its own crate and pulls this in with `mod common;`, so a helper one file
 //! does not use is dead code there: hence the crate-level allow.
+
 #![allow(dead_code)]
 
+mod python;
+#[allow(unused_imports)]
+pub use python::python;
+
 pub mod deadline;
+
 pub mod navigator;
 pub mod server;
 pub mod sse;
 pub mod watchdog;
+
+/// Explicit roots keep subprocesses away from real Known Folders on Windows.
+pub fn isolate(command: &mut std::process::Command, root: &std::path::Path) {
+    let config = root.join("config/withnav");
+    let data = root.join("data/withnav");
+    command
+        .env_remove("WITHNAV_CONFIG_DIR")
+        .env_remove("WITHNAV_DATA_DIR");
+    command
+        .env("WITHNAV_CONFIG_DIR", &config)
+        .env("WITHNAV_DATA_DIR", &data);
+    #[cfg(windows)]
+    {
+        assert!(config.starts_with(root));
+        assert!(data.starts_with(root));
+    }
+}
 
 /// An isolated canonical root with empty workspace and home directories.
 pub struct TestEnv {

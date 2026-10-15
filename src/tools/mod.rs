@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,8 @@ pub mod glob;
 mod grep;
 pub mod native;
 pub mod nofollow;
+#[cfg(windows)]
+pub(crate) mod process_job;
 pub mod steer_subagent;
 pub mod task;
 
@@ -164,14 +168,34 @@ impl ToolResult {
         }
     }
 
+    /// Cut while it ran; `output` holds whatever it produced before the stop.
     pub fn interrupted() -> Self {
+        Self::interrupted_with(String::new())
+    }
+
+    /// Cut while it ran, with the output it produced before the stop.
+    pub fn interrupted_with(partial: impl Into<String>) -> Self {
         Self {
             status: ToolStatus::Interrupted,
-            output: String::new(),
+            output: partial.into(),
             truncated: None,
             error: None,
             metadata: Value::Null,
         }
+    }
+
+    /// Cancelled before it started, e.g. while its permission question waited:
+    /// nothing ran.
+    pub fn not_started() -> Self {
+        Self {
+            metadata: serde_json::json!({ "started": false }),
+            ..Self::interrupted()
+        }
+    }
+
+    /// Whether this is an interruption of a call that never started.
+    pub fn never_started(&self) -> bool {
+        self.status == ToolStatus::Interrupted && self.metadata["started"] == false
     }
 
     pub fn with_metadata(mut self, metadata: Value) -> Self {
@@ -202,7 +226,9 @@ pub struct ToolContext {
 pub struct DispatchBinding {
     pub(crate) destination: PathBuf,
     pub(crate) scratch: Option<crate::agent::scratch::Identity>,
-    pub(crate) script: Option<Value>,
+    /// Set by the host in yolo, never from arguments: the call's root is
+    /// trusted, so the tools skip their root-level sensitive-path denial.
+    pub(crate) yolo: bool,
 }
 
 impl ToolContext {
@@ -305,7 +331,89 @@ impl Registry {
     }
 }
 
+#[cfg(windows)]
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    let anchored = if candidate.is_relative() {
+        roots
+            .first()
+            .ok_or_else(|| ToolError::PathTraversal(candidate.to_path_buf()))?
+            .join(candidate)
+    } else {
+        candidate.to_path_buf()
+    };
+    let resolved = nofollow::path_identity(&anchored)?;
+    if roots.iter().any(|root| {
+        nofollow::path_identity(root).is_ok_and(|root| nofollow::path_within(&resolved, &root))
+    }) {
+        Ok(resolved)
+    } else {
+        Err(ToolError::PathTraversal(candidate.to_path_buf()))
+    }
+}
+
+/// A filesystem identity suitable for roots, rules and user-visible paths.
+pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        nofollow::path_identity(path).map_err(std::io::Error::other)
+    }
+    #[cfg(unix)]
+    {
+        path.canonicalize()
+    }
+}
+
+/// Comparison identity; display and filesystem access keep the canonical spelling.
+pub fn path_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy().replace('/', "\\");
+        let plain = text
+            .strip_prefix(r"\\?\")
+            .filter(|plain| {
+                plain.as_bytes().get(1) == Some(&b':')
+                    && plain
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphabetic)
+            })
+            .unwrap_or(&text);
+        PathBuf::from(plain.to_lowercase())
+    }
+    #[cfg(unix)]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// Resolve filesystem aliases before comparing identity; the pure key remains I/O-free.
+pub(crate) fn resolved_path_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        path_key(&canonical_path(path).unwrap_or_else(|_| path.to_path_buf()))
+    }
+    #[cfg(unix)]
+    {
+        path_key(path)
+    }
+}
+
+/// Relative file names shown by tools follow the glob/Git separator convention.
+pub(crate) fn relative_path_text(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.to_string_lossy().replace('\\', "/")
+    }
+    #[cfg(unix)]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(unix)]
+pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
+    #[cfg(windows)]
+    nofollow::validate_target(candidate)?;
     let anchored;
     let candidate = if candidate.is_relative() {
         let root = roots
@@ -320,6 +428,8 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     let canon_existing = existing
         .canonicalize()
         .map_err(|_| ToolError::PathTraversal(candidate.to_path_buf()))?;
+    #[cfg(windows)]
+    nofollow::validate_target(&canon_existing)?;
 
     let tail = candidate
         .strip_prefix(&existing)
@@ -349,6 +459,7 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     Ok(resolved)
 }
 
+#[cfg(unix)]
 fn nearest_existing_ancestor(candidate: &Path) -> PathBuf {
     let mut existing = candidate.to_path_buf();
     while !existing.exists() {
@@ -446,6 +557,12 @@ mod tests {
         let f = root.join("file.txt");
         std::fs::write(&f, "x").unwrap();
         let ok = validate_path(std::slice::from_ref(&root), &f).unwrap();
+        #[cfg(windows)]
+        assert!(nofollow::path_within(
+            &ok,
+            &nofollow::path_identity(&root).unwrap()
+        ));
+        #[cfg(unix)]
         assert!(ok.starts_with(root.canonicalize().unwrap()));
     }
 
@@ -455,6 +572,12 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let target = root.join("new/deep/file.txt");
         let resolved = validate_path(std::slice::from_ref(&root), &target).unwrap();
+        #[cfg(windows)]
+        assert!(nofollow::path_within(
+            &resolved,
+            &nofollow::path_identity(&root).unwrap()
+        ));
+        #[cfg(unix)]
         assert!(resolved.starts_with(root.canonicalize().unwrap()));
         assert!(resolved.ends_with("new/deep/file.txt"));
     }
@@ -464,14 +587,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let roots = vec![tmp.path().to_path_buf()];
         let relative = Path::new("new_dir/sub_dir/file.txt");
-        assert_eq!(
-            validate_path(&roots, relative).unwrap(),
-            tmp.path().canonicalize().unwrap().join(relative)
-        );
+        #[cfg(windows)]
+        let expected = nofollow::path_identity(tmp.path()).unwrap().join(relative);
+        #[cfg(unix)]
+        let expected = tmp.path().canonicalize().unwrap().join(relative);
+        assert_eq!(validate_path(&roots, relative).unwrap(), expected);
         assert!(validate_path(&[], relative).is_err());
         assert!(validate_path(&roots, Path::new("../outside/file.txt")).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_reuses_symlink_root_ancestor_for_new_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -494,6 +619,7 @@ mod tests {
         assert!(matches!(err, ToolError::PathTraversal(_)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn validate_path_rejects_symlink_escaping_root() {
         let tmp = tempfile::tempdir().unwrap();

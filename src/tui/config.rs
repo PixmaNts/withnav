@@ -335,12 +335,6 @@ impl ConfigState {
                         .map(|a| json!(a.id))
                         .collect(),
                 ),
-                "permissions.automatic_review" => (
-                    Section::Permissions,
-                    "Automatic review",
-                    RowKind::Bool,
-                    vec![json!(false), json!(true)],
-                ),
                 "permissions.scratch_dirs" => (
                     Section::Permissions,
                     "Scratch directories",
@@ -524,16 +518,16 @@ impl ConfigState {
                 .as_str()
                 .unwrap_or("build")
                 .into(),
-            if self
-                .value("permissions.automatic_review")
-                .as_bool()
-                .unwrap_or(true)
+            match self
+                .value("permissions.scratch_dirs")
+                .as_array()
+                .map(Vec::len)
             {
-                "automatic review on"
-            } else {
-                "ask for every call"
-            }
-            .into(),
+                Some(0) => "no scratch dir".into(),
+                Some(1) => "1 scratch dir".into(),
+                Some(n) => format!("{n} scratch dirs"),
+                None => "rules".into(),
+            },
             format!(
                 "max {} per session",
                 self.value("subagents.max_concurrent").as_u64().unwrap_or(4)

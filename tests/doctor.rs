@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 mod common;
 
 use axum::{
@@ -9,7 +11,6 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::{
-    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -142,6 +143,29 @@ fn check<'a>(report: &'a Report, id: &str) -> &'a withnav::app::doctor::Check {
         .find(|c| c.id == id)
         .unwrap_or_else(|| panic!("missing {id}: {}", report.human()))
 }
+
+#[tokio::test]
+async fn mcp_doctor_reports_ready_disabled_and_invalid_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.layer = Some(DoctorLayer::Reflex);
+    let mut settings = withnav::settings::load(&config).unwrap();
+    settings.set_dotted("mcp", json!({
+        "fixture":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")]},
+        "disabled":{"command":["missing"],"enabled":false},
+        "INVALID":{"command":["missing"]}
+    }));
+    withnav::settings::save(&config, &settings).unwrap();
+    let report = inspect(&args, &config, None, None).await;
+    assert_eq!(check(&report, "mcp.fixture").status, Status::Ok);
+    assert!(check(&report, "mcp.fixture").value.contains("8 tools"));
+    assert!(check(&report, "mcp.fixture").value.contains("collision"));
+    assert_eq!(check(&report, "mcp.disabled").status, Status::Ok);
+    assert_eq!(check(&report, "mcp.INVALID").status, Status::Failed);
+    args.offline = true;
+    let report = inspect(&args, &config, None, None).await;
+    assert!(check(&report, "mcp.fixture").value.contains("not started"));
+}
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SnapshotEntry {
     path: std::path::PathBuf,
@@ -149,6 +173,15 @@ struct SnapshotEntry {
     mode: u32,
     modified: SystemTime,
 }
+#[cfg(unix)]
+fn snapshot_mode(metadata: &std::fs::Metadata) -> u32 {
+    metadata.permissions().mode()
+}
+#[cfg(windows)]
+fn snapshot_mode(metadata: &std::fs::Metadata) -> u32 {
+    u32::from(metadata.permissions().readonly())
+}
+
 fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     let mut entries = vec![];
     for entry in std::fs::read_dir(root).unwrap() {
@@ -169,7 +202,7 @@ fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
         entries.push(SnapshotEntry {
             path: entry.path(),
             contents,
-            mode: metadata.permissions().mode(),
+            mode: snapshot_mode(&metadata),
             modified: metadata.modified().unwrap(),
         });
     }
@@ -188,8 +221,6 @@ async fn successful_live_layers_and_offline_zero_calls_read_only() {
         "live.reflex.plain",
         "live.reflex.context",
         "live.instinct.editor",
-        "live.instinct.role_guard",
-        "live.instinct.permission",
         "live.metacognition.chat",
     ] {
         assert_eq!(
@@ -200,7 +231,7 @@ async fn successful_live_layers_and_offline_zero_calls_read_only() {
         );
     }
     assert_eq!(report.exit_code(), 0, "{}", report.human());
-    assert_eq!(calls.load(Ordering::SeqCst), 6);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     assert_eq!(snapshot(root.path()), before);
     calls.store(0, Ordering::SeqCst);
     args.offline = true;
@@ -220,10 +251,10 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
         (503, false, "http_server"),
         (200, false, "unreachable"),
     ] {
-        let (base, _, task) = server(status, invalid, Duration::ZERO).await;
+        let (base, _, mut task) = server(status, invalid, Duration::ZERO).await;
         if category == "unreachable" {
             task.abort();
-            tokio::task::yield_now().await;
+            let _ = (&mut task).await;
         }
         let root = tempfile::tempdir().unwrap();
         let (config, mut args) = fixture(root.path(), &base);
@@ -232,14 +263,7 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
                 DoctorLayer::Reflex,
                 &["live.reflex.plain", "live.reflex.context"][..],
             ),
-            (
-                DoctorLayer::Instinct,
-                &[
-                    "live.instinct.editor",
-                    "live.instinct.role_guard",
-                    "live.instinct.permission",
-                ][..],
-            ),
+            (DoctorLayer::Instinct, &["live.instinct.editor"][..]),
             (DoctorLayer::Metacognition, &["live.metacognition.chat"][..]),
         ] {
             args.layer = Some(layer);
@@ -253,12 +277,19 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
             for id in ids {
                 let result = check(&report, id);
                 assert_eq!(result.status, Status::Failed, "{id}/{category}");
-                assert_eq!(
-                    result.category.as_deref(),
-                    Some(category),
-                    "{id}: {}",
-                    report.human()
-                );
+                if cfg!(windows) && category == "unreachable" {
+                    assert!(matches!(
+                        result.category.as_deref(),
+                        Some("unreachable" | "timeout")
+                    ));
+                } else {
+                    assert_eq!(
+                        result.category.as_deref(),
+                        Some(category),
+                        "{id}: {}",
+                        report.human()
+                    );
+                }
                 if status != 200 {
                     assert!(result.value.contains(&status.to_string()));
                 }
@@ -282,15 +313,10 @@ async fn systemone_two_second_deadline() {
     args.layer = Some(withnav::app::doctor::DoctorLayer::Instinct);
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(report.exit_code(), 1);
-    for id in [
-        "live.instinct.editor",
-        "live.instinct.role_guard",
-        "live.instinct.permission",
-    ] {
-        assert_eq!(check(&report, id).status, Status::Failed);
-        assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
-        assert!((1900..2900).contains(&check(&report, id).elapsed_ms.unwrap()));
-    }
+    let id = "live.instinct.editor";
+    assert_eq!(check(&report, id).status, Status::Failed);
+    assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
+    assert!((1900..2900).contains(&check(&report, id).elapsed_ms.unwrap()));
     task.abort();
 }
 
@@ -369,12 +395,12 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     std::fs::create_dir_all(args.workspace.join(".withnav/flows")).unwrap();
     std::fs::write(
         args.workspace.join(".withnav/flows/broken.toml"),
-        "this must remain unread until trusted",
+        "invalid flow",
     )
     .unwrap();
     let before = snapshot(root.path());
     let report = inspect(&args, &config, None, None).await;
-    assert_eq!(report.exit_code(), 0, "{}", report.human());
+    assert_eq!(report.exit_code(), 1, "{}", report.human());
     assert!(check(&report, "assignment.layer.instinct")
         .value
         .contains("must use"));
@@ -404,67 +430,25 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
         .contains("unknown"));
     assert!(!serde_json::to_string(&report).unwrap().contains(SECRET));
     assert_eq!(snapshot(root.path()), before);
-    let canonical = args.workspace.canonicalize().unwrap();
-    let trust = config.join("flows-trust.json");
-    let trusted = json!({"version":1,"workspaces":{canonical.display().to_string():{"trusted":true,"granted_at":"2026-01-01T00:00:00Z"}}}).to_string();
-    for kind in ["malformed", "wrong_mode", "symlink"] {
-        if kind == "symlink" {
-            let target = config.join("trust-target.json");
-            std::fs::write(&target, &trusted).unwrap();
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
-            std::os::unix::fs::symlink(target, &trust).unwrap();
-        } else {
-            std::fs::write(
-                &trust,
-                if kind == "malformed" {
-                    "{invalid"
-                } else {
-                    &trusted
-                },
-            )
-            .unwrap();
-            std::fs::set_permissions(
-                &trust,
-                std::fs::Permissions::from_mode(if kind == "wrong_mode" { 0o666 } else { 0o600 }),
-            )
-            .unwrap();
-        }
-        let before = snapshot(root.path());
-        let report = inspect(&args, &config, None, None).await;
-        assert_eq!(
-            check(&report, "flows.trust_file").status,
-            Status::Failed,
-            "{kind}"
-        );
-        assert_eq!(
-            check(&report, "flows.workspace_trust").status,
-            Status::Warning,
-            "{kind}"
-        );
-        assert!(
-            !report
-                .checks
-                .iter()
-                .any(|c| c.id == "flows.workspace.broken.toml"),
-            "{kind}: workspace flows must remain unread"
-        );
-        assert_eq!(snapshot(root.path()), before, "{kind}");
-        std::fs::remove_file(&trust).unwrap();
-    }
-    std::fs::write(&trust, trusted).unwrap();
-    std::fs::set_permissions(&trust, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let report = inspect(&args, &config, None, None).await;
     assert_eq!(
         check(&report, "flows.workspace.broken.toml").status,
-        withnav::app::doctor::Status::Failed
+        Status::Failed
     );
-    assert_eq!(check(&report, "flows.trust_file").status, Status::Ok);
-    assert_eq!(check(&report, "flows.workspace_trust").status, Status::Ok);
+    assert!(!report
+        .checks
+        .iter()
+        .any(|check| check.id.contains("workspace_trust") || check.id.contains("trust_file")));
     // The editor server is nav lsp, including after migration of a legacy path.
     let home = root.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    #[cfg(unix)]
     let settings = home.join(".config/Code/User/settings.json");
+    #[cfg(windows)]
+    let settings = withnav::tools::canonical_path(&args.workspace)
+        .unwrap()
+        .join(".vscode/settings.json");
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    let nav = home.join("nav");
+    let nav = home.join(if cfg!(windows) { "nav.exe" } else { "nav" });
     std::fs::write(&nav, "synthetic existing binary").unwrap();
     for (server_path, expected) in [
         (nav.clone(), Status::Ok),
@@ -498,16 +482,19 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     assert_eq!(result.status, Status::Warning);
     assert!(result.value.contains("not detectable"));
     assert_eq!(snapshot(root.path()), before);
-    std::fs::set_permissions(
-        config.join("auth.json"),
-        std::fs::Permissions::from_mode(0o644),
-    )
-    .unwrap();
-    let report = inspect(&args, &config, None, None).await;
-    assert_eq!(
-        check(&report, "config.auth").status,
-        withnav::app::doctor::Status::Failed
-    );
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(
+            config.join("auth.json"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let report = inspect(&args, &config, None, None).await;
+        assert_eq!(
+            check(&report, "config.auth").status,
+            withnav::app::doctor::Status::Failed
+        );
+    }
     std::fs::write(
         config.join("config.json"),
         "{invalid secret-doctor-auth-sentinel",
@@ -565,13 +552,18 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
     let home = root.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let (config, args) = fixture(&home.join(".config"), &base);
-    let legacy = home.join(".config/navai");
-    let navigator = args.workspace.join(".navigator");
+    let legacy = home.join(".config").join("navai");
+    let navigator = withnav::tools::canonical_path(&args.workspace)
+        .unwrap()
+        .join(".navigator");
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::create_dir_all(&navigator).unwrap();
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_nav"), bin.join("nav")).unwrap();
+    #[cfg(windows)]
+    std::fs::copy(env!("CARGO_BIN_EXE_nav"), bin.join("nav.exe")).unwrap();
     let before = snapshot(root.path());
     for layer in ["reflex", "instinct", "metacognition"] {
         for (json, offline) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -587,6 +579,10 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                 .env("XDG_DATA_HOME", home.join(".local/share"))
                 .env("NAVAI_FOO", ENV_SECRET)
                 .env("RUST_LOG", "trace");
+            common::isolate(command.as_std_mut(), root.path());
+            command
+                .env("WITHNAV_CONFIG_DIR", &config)
+                .env("WITHNAV_DATA_DIR", home.join(".local/share/withnav"));
             if json {
                 command.arg("--json");
             }
@@ -610,7 +606,17 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
             assert!(stdout.contains("NAVAI_FOO"));
             assert!(stdout.contains("WITHNAV_FOO"));
             for path in [&legacy, &navigator] {
-                assert!(stdout.contains(&format!("legacy.path.{}", path.display())));
+                if json {
+                    let escaped =
+                        serde_json::to_string(&format!("legacy.path.{}", path.display())).unwrap();
+                    assert!(stdout.contains(&escaped));
+                } else {
+                    assert!(
+                        stdout.contains(&format!("legacy.path.{}", path.display())),
+                        "missing {}: {stdout}",
+                        path.display()
+                    );
+                }
             }
             if json {
                 let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -694,4 +700,65 @@ async fn agent_precedence_parent_inheritance_and_invalid_default() {
         check(&report, "assignment.default_agent").status,
         withnav::app::doctor::Status::Failed
     );
+}
+
+#[tokio::test]
+async fn doctor_reports_unreadable_permission_rules_without_changing_the_database() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.offline = true;
+    let data = root.path().join("data");
+    std::fs::create_dir_all(data.join("withnav.db")).unwrap();
+    let report = inspect(&args, &config, None, Some(data)).await;
+    let permission = check(&report, "permissions.database");
+    assert_eq!(permission.status, Status::Warning);
+    let text = report.human();
+    assert!(
+        text.contains("withnav.db") && text.contains("every call is asked"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn doctor_does_not_report_a_non_database_file_as_readable() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.offline = true;
+    let data = root.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let path = data.join("withnav.db");
+    std::fs::write(&path, "this is not a SQLite database").unwrap();
+    let report = inspect(&args, &config, None, Some(data)).await;
+    assert_eq!(
+        check(&report, "permissions.database").status,
+        Status::Warning
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "this is not a SQLite database"
+    );
+}
+
+#[tokio::test]
+async fn mcp_doctor_reports_a_hung_initialisation_as_failed_with_its_stderr() {
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1");
+    args.layer = Some(DoctorLayer::Reflex);
+    let mut settings = withnav::settings::load(&config).unwrap();
+    settings.set_dotted("mcp", json!({
+        "hang":{"command":["python3",concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],
+            "startup_timeout_ms":300,"env":{"HANG_STDERR":"1"}}
+    }));
+    withnav::settings::save(&config, &settings).unwrap();
+    let started = std::time::Instant::now();
+    let report = inspect(&args, &config, None, None).await;
+    let hang = check(&report, "mcp.hang");
+    assert_eq!(hang.status, Status::Failed, "{}", hang.value);
+    assert!(hang.value.contains("timed out"), "{}", hang.value);
+    assert!(
+        hang.value.contains("hung-init-stderr-line"),
+        "{}",
+        hang.value
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
 }

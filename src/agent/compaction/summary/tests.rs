@@ -121,6 +121,7 @@ fn result(id: &str, bytes: usize) -> ChatMessage {
     ChatMessage::Tool {
         tool_call_id: id.into(),
         content: "x".repeat(bytes),
+        answered_by: None,
     }
 }
 
@@ -219,7 +220,7 @@ fn input<'a>(
         source_budget: 100_000,
         focus: None,
         chunk_tokens: 64_000,
-        jev: None,
+        decision: None,
         catalog: None,
         max_message_tokens: None,
         progress: None,

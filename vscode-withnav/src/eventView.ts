@@ -5,7 +5,7 @@ export interface WireEnvelope { seq: number; kind: string; payload: any }
 
 export function permissionEvidence(value: any): PermissionEvidence | undefined {
   if (!value || typeof value.policy_version !== "number" ||
-      !["instinct", "jev", "metacognition", "driver", "captain"].includes(value.source)) return undefined;
+      !["instinct", "metacognition", "driver", "captain"].includes(value.source)) return undefined;
   const result: PermissionEvidence = { policy_version: value.policy_version, source: value.source };
   if (typeof value.reason === "string") result.reason = value.reason;
   for (const key of ["verdicts", "overrides", "models"] as const) {
@@ -48,9 +48,9 @@ export function permissionCall(tool: string, argumentsText: string): string {
 }
 
 export function evidenceLabel(evidence: PermissionEvidence, context: "tool" | "permission", resolution?: string): string {
-  if ((evidence.source === "driver" || evidence.source === "captain")) return context === "tool" || resolution === "allow_once" || resolution === "allow_folder"
+  if ((evidence.source === "driver" || evidence.source === "captain")) return context === "tool" || resolution === "allow_always" || resolution === "allow_once" || resolution === "allow_folder"
     ? "approved · Captain" : "Captain review required";
-  return (evidence.source === "instinct" || evidence.source === "jev") ? "auto · instinct" : "auto · metacognition";
+  return (evidence.source === "instinct") ? "auto · instinct" : "auto · metacognition";
 }
 
 /** Select from the latest response only: provider call ids may be reused. */
@@ -122,15 +122,16 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         reason: String(p.reason ?? ""), call: permissionCall(tool,
           (!p.child_session_id ? calls?.argumentsFor(p) : undefined) ?? String(p.arguments ?? "")),
         arguments: String(p.arguments ?? ""),
-        allowFolder: agent !== "plan" && tool === "fetch",
-        allowConfigSession: p.allow_config_session === true,
+        alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
         evidence: permissionEvidence(p.permission_gate),
       } };
     }
     case "permission.resolved":
       return typeof p.request_id === "string" ? { type: "permissionState", requestId: p.request_id,
-        resolution: String(p.resolution ?? "expired"), message: typeof p.message === "string" ? p.message : undefined } : undefined;
+        resolution: String(p.resolution ?? "expired"),
+        message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
+        ...(p.always_saved === false ? { alwaysSaved: false as const } : {}) } : undefined;
     case "agent.yield": {
       const id = `pause:${envelope.seq}`;
       const token = pauseToken(p.details?.pause_token);
@@ -173,12 +174,14 @@ export class ConversationControls {
   reset(): void { this.permissions.clear(); this.pauses.clear(); this.calls = new PermissionCallReplay(); }
 }
 
-export function permissionOutcome(resolution: string, message?: string): string {
+export function permissionOutcome(resolution: string, message?: string, alwaysSaved?: false): string {
   switch (resolution) {
+    case "allow_always": return alwaysSaved === false ? `Always not saved: ${message ?? "unknown error"}; ran once` : "Allowed always";
     case "allow_once": return "Allowed once";
     case "allow_folder": return "Allowed for this scope";
     case "allow_config_session": return "Allowed WithNav config for this session";
     case "allow_skill_machine": return "Allowed this user skill's script on this machine";
+    case "reject": return message ? `Rejected: ${message}` : "Rejected";
     case "deny": return message ? `Denied: ${message}` : "Denied";
     case "expired": return "Expired: the session restarted";
     case "cancelled": return "Cancelled";

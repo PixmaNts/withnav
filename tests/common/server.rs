@@ -51,16 +51,8 @@ pub fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
 /// readable by the owner only.
 pub fn write_auth_file(config_dir: &Path, provider: &str, api_key: &str) -> PathBuf {
     let path = config_dir.join("auth.json");
-    std::fs::write(
-        &path,
-        json!({ provider: { "api_key": api_key } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
-    }
+    withnav::provider::auth::set_key(config_dir, provider, api_key)
+        .expect("write private auth.json");
     path
 }
 
@@ -140,6 +132,35 @@ impl TestServerConfig {
     pub fn without_window(mut self) -> Self {
         self.without_window = true;
         self
+    }
+
+    /// Saves a global permission rule in the server's data dir, as `nav
+    /// permissions add` would. Tests that are not about permissions use it to
+    /// let their tool calls run.
+    pub fn rule(
+        self,
+        action: &str,
+        resource: &str,
+        effect: withnav::permission::rules::Effect,
+    ) -> Self {
+        withnav::permission::store::PermissionStore::open(self.root.join("data"))
+            .expect("permission database")
+            .add(
+                action,
+                resource,
+                effect,
+                withnav::permission::rules::RuleScope::Global,
+                withnav::permission::rules::RuleOrigin::Manual,
+            )
+            .expect("permission rule");
+        self
+    }
+
+    /// Lets every call run, a loop of identical calls included: for tests
+    /// about something else than permissions.
+    pub fn allow_everything(self) -> Self {
+        use withnav::permission::rules::Effect::Allow;
+        self.rule("*", "*", Allow).rule("doom_loop", "*", Allow)
     }
 
     /// Path of the `models.json` [`Self::config`] writes.
@@ -577,7 +598,16 @@ pub async fn collect_until(
     sub: withnav::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    collect_until_within(sub, pred, Duration::from_secs(20)).await
+}
+
+/// Explicit budget for high-volume fixtures; ordinary event waits retain 20 seconds.
+pub async fn collect_until_within(
+    sub: withnav::session::Subscription,
+    pred: impl Fn(&EventEnvelope) -> bool,
+    budget: Duration,
+) -> Vec<EventEnvelope> {
+    let deadline = tokio::time::Instant::now() + budget;
     let mut out = Vec::new();
     if let withnav::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
@@ -588,7 +618,7 @@ pub async fn collect_until(
             let env = tokio::time::timeout(remaining, live.recv())
                 .await
                 .unwrap_or_else(|_| {
-                    panic!("timed out waiting for matching server event; seen: {out:?}")
+                    panic!("timed out waiting for matching server event after {budget:?}; count={}; last kinds={:?}", out.len(), out.iter().rev().take(20).map(|event| event.kind.as_str()).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>())
                 });
             let Some(env) = env else { break };
             let matched = pred(&env);
@@ -604,7 +634,16 @@ pub async fn collect_until(
     }
     assert!(
         out.iter().any(&pred),
-        "stream closed before the matching server event; seen: {out:?}"
+        "stream closed before the matching server event; count={}; last kinds={:?}",
+        out.len(),
+        out.iter()
+            .rev()
+            .take(20)
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
     );
     out
 }

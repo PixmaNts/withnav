@@ -8,7 +8,7 @@ WithNav to do. A node's active **port** carries the run along its wires. A **con
 belongs to the definition; a **variable** exists only for this run. A **fallback**
 replaces the run's proposed actions on failure. The Studio edits the definition,
 Save writes it, and **reload** changes what runs. A **workspace flow** requires
-explicit **trust**; a **global flow** comes from your own configuration.
+per-version **validation**; a **global flow** comes from your own configuration.
 ```text
 event + payload → trigger / when → decision → expression → action → then → action
                                       yes/no     true/false
@@ -27,9 +27,8 @@ no instinct call. It does not answer the message or change a permission.
    Set `when` to `text == "test"`. Do not write `event.text == "test"` there.
 4. Select the `log` action and set its `text` parameter to `Matched test`.
    The trigger's event port must be wired to this action.
-5. If the trust banner appears, inspect the workspace flows, then choose
-   **Trust this workspace's flows**. Trust allows declared context reads, not
-   tool permissions. Trust itself does not reload.
+5. Inspect the saved flow and choose **Validate this flow version**. A validated
+   flow can allow tool calls. Validation itself does not reload.
 6. **Save**, then **Reload**. Check the reload result; `saved · not reloaded`
    means the file is newer than the running definition.
 7. Click the sample payload in the bottom bar and replace it with:
@@ -238,11 +237,11 @@ Payload fields below are required unless marked `?`. `s` = string, `i` = integer
 Unknown payload fields are rejected.
 
 Action groups: **common** = `wake`, `inject_note`, `log`; **editor** = common plus
-`remark`; **tool** = common plus `no_objection`, `deny`, `ask_captain`.
+`remark`; **tool** = common plus `allow`, `apply_rule`, `deny`, `ask_captain`.
 
 | Trigger | Payload fields | Can block | Allowed actions |
 | --- | --- | --- | --- |
-| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s` | yes | tool |
+| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s`, `rule_effect?:s`, `rule?:s`, `commands?:a`, `inside_project?:boolean`, `protected?:boolean`, `protected_checked?:boolean`, `skill?:o` | yes | tool |
 | `message.received` | `command_id:s`, `author:s`, `text:s`, `selected_skill?:o` | yes | common |
 | `turn.end` | `turn_id:s`, `text:s`, `status:s` | no | common |
 | `save` | `uri:s`, `language_id:s`, `version:i`, `diff:s`; editor extras below | no | editor |
@@ -267,12 +266,15 @@ Only root-session events emit flows in v1; editor events use attached root conte
 `turn.end` is asynchronous after the turn settles. Tool preflight rejection is
 final and is not offered to flows.
 
-All listed parameters are required strings; `no_objection` has an empty map.
+Listed text parameters are required strings; `allow` accepts an optional boolean
+`protected_ok`, and `apply_rule` has an empty map. Loading `no_objection` still
+works as an alias for `allow`.
 
 | Action | Parameters | Kind | What WithNav does |
 | --- | --- | --- | --- |
-| `no_objection` | `{}` | verdict, priority 0 | Continue normal tool permission review, unchanged; not permission to run. |
-| `ask_captain` | `note` | verdict, priority 1 | Hold the call for a Captain-only permission request, skipping model reviews. |
+| `allow` | optional `protected_ok` | verdict, priority 0 | Let the call run (the rules found no `deny`); `protected_ok` is honoured only from the compiled-in protected check. |
+| `apply_rule` | `{}` | verdict, no static priority | Resolve to the caller's rule (`allow` → allow; `ask` or `none` → ask Captain) before comparing verdicts. |
+| `ask_captain` | `note` | verdict, priority 1 | Hold the call for a permission request; the note is its reason. |
 | `deny` | `note` | verdict, priority 2 | Do not run the tool; return the note as the denied tool result. |
 | `remark` | `prompt` | effect | Ask metacognition for an editor remark using inline rendered text, not a prompt-file lookup. |
 | `wake` | `note` | effect | Bring the note to cognition's attention; wake delivery rules/cooldown still apply. |
@@ -283,8 +285,73 @@ Verdicts are only for **blocking `tool.pre_call` flows**, including fallbacks.
 At most one verdict may be reachable per run. `wake` / `inject_note` have typed
 non-Captain provenance (`source: flow`, flow name, run id), remain untrusted data,
 and never update the Captain request, choose a skill, answer an ask or generate
-recursive `message.received` events. No action runs arbitrary code, grants tool
-permission, switches agent/model or starts a session.
+recursive `message.received` events. No action runs arbitrary code, switches
+agent/model or starts a session.
+
+> **A validated flow can allow tool calls**, a workspace flow included. A flow in
+> a repository you cloned is validated only by you: read it before validating.
+
+### Permission hook
+
+The agent loop decides every tool call in the order of ADR 0015: yolo, the fixed
+floor, free reads, rules (a `deny` stops the call), bypass, then the permission
+flows, then the Captain. The embedded `permission-default` flow is enabled. Each
+blocking flow's `apply_rule` (or lack of a verdict) resolves using the rule;
+then `deny` > `ask_captain` > `allow` wins. Zero answering flows also applies
+the rule. The return value includes flow names, run ids, resolved actions and
+whether the rule was used, for decision history.
+
+`rule_effect` is `allow`, `ask` or `none`; written denies stop before this hook.
+`rule` is human text, such as `bash git push * ask (project)`.
+`commands` contains `{raw, normalized, prefix}` entries. `inside_project`
+describes a file target. `protected` marks changes to WithNav configuration,
+rules, database or global flows. `skill` is `{name, instructions}` for the
+validated skill active this turn, never an arbitrary loaded skill.
+
+`conversation.captain_messages` contains only Captain-authored user-role
+transcript messages, newest last: no parent steering, subagent deliveries,
+navigator/flow injections, tool output, assistant text or compaction summary.
+The host drops oldest complete messages to fit 16 KiB (including JSON framing),
+marks `cut`, and never partially shows the latest. If that latest message alone
+cannot fit, it is absent and marked cut. The agent loop obtains messages through
+`agent::flow_hook::captain_messages_with_cut`, passing both returned messages
+and the completeness flag into `PermissionCallContext`. They also include the
+Captain's answers to `ask`, labelled with the assistant's question, and, in a
+subagent, the parent's Captain messages. `conversation.delegation` contains the parent's
+delegation and steering separately, attachments stripped, whole newest messages within 16 KiB
+with a cut flag; it is empty for a root session. The ordinary permission flow may accept delegation
+as a request, but the compiled protected check never reads it. `conversation.recent` contains
+the last 4 messages between the Captain and the agent, oldest first, as `{author, text}` with
+`author` `captain` or `agent` (the agent's text and its `ask` questions; the Captain's messages
+and answers to `ask`, attachments stripped), whole messages within 8 KiB with a cut flag. It ends
+at the Captain's last message: what the agent wrote after it is never included. It lets
+a short Captain answer be read with the agent proposal it answers; an `agent` entry is never a
+request on its own. Both the permission flow and the protected check read it. Editor attachments are
+removed through their final outer closing delimiter; malformed framing drops
+the whole message and marks evidence cut, including after transcript resume.
+
+Protected calls always carry `protected = true`. `protected_checked = true` means
+the host already answered its compiled check; the built-in skips that node, while
+custom flows may still ask or deny. The strictest verdict wins.
+
+The built-in first checks protected calls using only Captain messages and the
+call, never the skill. Its dedicated `protected_requested` question must answer
+yes at ≥ 0.8 and reach `protected_allow` with `protected_ok = true`. The host
+evaluates this check itself from the binary's embedded definition and state
+template, independently of loader overrides. No disk flow, even a same-name
+override or exact clone, can supply protected authority. Other flows can only
+tighten the protected verdict. A skipped/failed/missing check or cut Captain
+evidence asks even under an allow rule. Ordinary validated workspace allows
+remain unrestricted for non-protected calls.
+Otherwise the built-in asks whether the Captain asked for the action or accepted
+an agent proposal to do it (≥ 0.6), then whether the call only reads or lists
+(≥ 0.6), then whether it is a recoverable change: files in the project, its
+scratch directories or the temp directory, or building, testing, formatting or
+linting (≥ 0.7). For an allow rule it first asks about destruction,
+irreversibility, publication and credentials (≥ 0.5); a yes goes to the same
+`requested` question, and an unrequested dangerous call asks.
+Its state explicitly treats everything except Captain messages and the validated
+active skill as untrusted evidence.
 
 ## 8. Blocking, budget and fallback
 
@@ -318,18 +385,18 @@ Fallback inputs can read event, host and constants only. `failure_kind` and
 on_failure = { action = "log", params = { text = "Failed: {failure_kind}: {failure_message}" } }
 ```
 
-Without a matching fallback, a blocking tool flow defaults to `ask_captain` with
-`Flow failed: {failure_message}`. Blocking message flows have **no verdict default**:
+Without a matching fallback, the catalogue defaults a blocking tool flow to
+`apply_rule`: a flow outage leaves the rules in force. Blocking message flows have **no verdict default**:
 the message continues after failure/deadline, with host outage handling. Async
 flows have **no default fallback**; failure with none leaves **not applied**.
 Cancellation of a no-longer-current event applies no live effect or fallback.
 
 Several enabled flows on one event run with independent budgets. Blocking verdicts
-combine as **deny > ask Captain > no objection**. Tied notes are retained in flow-name
+combine as **deny > ask Captain > allow** after rule resolution on the new hook. Tied notes are retained in flow-name
 order; effects accumulate in flow-name / topological order, preserving `then`.
-A flow's no objection never skips normal permission review. **Bypass never answers
-a flow's `ask_captain`**, including follow-ups, and never defeats a flow's denial.
-An approved flow-origin call is still rechecked for preflight, binding and hard floor.
+Under bypass the permission flows are not asked. When bypass is turned on while a
+flow's question waits, it answers that question by deciding the call again under
+bypass, so a `deny` rule written meanwhile still wins.
 
 Limits include 64 nodes/flow, at most 16 decisions reachable in a run, 64 loaded
 flows/workspace, 32 KiB per collected input, 64 KiB total inputs/run and rendered
@@ -342,21 +409,21 @@ exceeding 32 KiB are cut individually, then exhaust the 64 KiB run input budget
 alongside the other selected inputs. The failure is recorded; there is no fallback
 and nothing is applied.
 
-## 9. Files, trust, reload and TOML
+## 9. Files, validation, reload and TOML
 
 | Location | Path / precedence |
 | --- | --- |
-| Workspace flow | `<workspace>/.withnav/flows/<name>.toml`; trusted workspace wins by name. |
+| Workspace flow | `<workspace>/.withnav/flows/<name>.toml`; validated workspace flow wins by name. |
 | Global flow | `~/.config/withnav/flows/<name>.toml` (or configured config directory); wins over built-in. |
 | Built-in | Shipped in WithNav: `navigator-default-save`, `navigator-default-idle`, `navigator-default-conversation`; read-only. |
-| Trust | `<config_dir>/flows-trust.json`, private Captain-granted canonical-workspace trust, not tracked in the workspace. |
+| Validations | `<data_dir>/withnav.db`, Captain approvals bound to flow location and content hash. |
 | Run records | `<data_dir>/flows/runs/<sha256-canonical-workspace>/runs.jsonl`, private captures. |
 
-Untrusted workspace flows stay listed and editable, but cannot run, sample,
-replay or shadow globals. Inspect files before granting trust. Missing/malformed
-or insecure trust storage fails closed. Revoking trust stops new workspace runs
-immediately; runs already in progress finish. Trust grants no model destination
-or tool permission. Definitions/templates must not use symlinks.
+Unvalidated global and workspace flows stay listed and editable but do not run
+or shadow validated globals. Explicit samples and replays are diagnostic only;
+they apply no effects. Inspect files before validating. Revoking an approval
+unloads that version at the next reload; runs already in progress finish. No
+old workspace-wide trust is imported.
 
 **Save is not reload**, including enabled toggles and edits outside the Studio.
 No definition-file watching: a `git pull` alone does not change what runs. Reload
@@ -382,8 +449,8 @@ references and conflicting reachable verdicts are errors. `[layout]` is optional
 
 This is the engine fixture, including its fallback choices and layout. It asks
 about the most consequential effect, then whether changes were requested or how
-far a destructive change could reach. Its timeout deliberately takes no objection
-(normal review still applies). Choose that trade-off consciously for your own flow.
+far a destructive change could reach. Its timeout deliberately allows (the rules
+still decided first). Choose that trade-off consciously for your own flow.
 
 ```toml
 [flow]
@@ -403,7 +470,7 @@ MIN_YES = 0.75
 
 [fallback]
 on_failure = { action = "ask_captain", params = { note = "Flow failed: {failure_message}" } }
-on_timeout = { action = "no_objection", params = {} }
+on_timeout = { action = "allow", params = {} }
 on_provider_error = { action = "ask_captain", params = { note = "Instinct unavailable" } }
 on_invalid_answer = { action = "ask_captain", params = { note = "Invalid instinct answer" } }
 
@@ -481,7 +548,7 @@ false = ["ask"]
 [[node]]
 id = "continue"
 type = "action"
-action = "no_objection"
+action = "allow"
 [node.params]
 
 [[node]]
@@ -588,7 +655,7 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 | `skipped: when is false` | Payload does not satisfy exact comparison. | Inspect text, case and whitespace; edit sample JSON or correct the condition. |
 | Unknown name in `when` | Alias not declared in `[flow.inputs]`, or dotted reference used as expression name. | Select the input chip first; bind `text = "event.text"`, then use `text`. Node inputs do not declare flow inputs. |
 | `in [...]` / single-quoted expression string fails | Unsupported expression syntax. | Use double-quoted string literals and `||`: `text == "test" || text == "hello"`. |
-| Workspace flow cannot sample/replay or does not run | Workspace is untrusted. | Inspect definitions; grant trust explicitly, then reload. Global/built-in flows remain available. |
+| Custom flow does not run | Its current version is not validated. | Inspect the flow and templates, validate the exact version, then reload. Built-ins remain available. |
 | Saved but live behaviour is unchanged | Save did not reload, or another process has not seen the signal yet. | Reload, inspect errors/propagation; other processes reload on their next event. |
 | Reload fails after editing a different flow | Replacement is all-or-nothing, including eligible disabled/shadowed definitions. | Fix every reported error; reload again. The previous set remains running. |
 | Sample/replay says `not applied` | Intentional test behaviour. | Inspect proposed actions/path; use View run on a live record to inspect real application. |
@@ -604,3 +671,19 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 
 Next: create `message-test`, declare `text`, and run the exact sample before adding
 a decision.
+# Flow validation
+
+Every non-built-in flow, global or workspace, must be validated by the Captain
+before reload can activate it. Validation binds its exact location and a SHA-256
+hash of the loaded TOML and all referenced templates. Editing either requires
+a new validation. Built-in flows need none. Previous workspace-wide flow trust
+is not imported.
+
+**A validated flow, including a workspace flow, can allow tool calls.** Review
+its instructions and templates before approving it. Use the Studio's “Validate
+this flow version” action or `nav permissions validate flow <name>` (use
+`--location global|workspace` when the name is ambiguous), then reload.
+`nav permissions validations --json` lists approvals; revoke one with
+`nav permissions revoke-validation <id>` and reload to unload that version.
+
+Studio samples and replays, including drafts and unvalidated versions, are Captain-started diagnostics: they apply no effects, cannot feed a live tool verdict, and are not exposed as agent tools.

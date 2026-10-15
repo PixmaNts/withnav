@@ -4,6 +4,139 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-15
+
+WithNav 0.8.0 runs natively on Windows x64, connects to stdio MCP servers, and redesigns
+permissions: written rules decide tool calls, a flow judges the rest, and you answer Once, Always
+or Reject. See [ADR 0015](https://github.com/PixmaNts/withnav/blob/main/docs/adr/0015-permission-rules-and-instinct-flow.md) and the
+Permissions chapter of the guide.
+
+### Added
+
+- **Permission rules.** A rule says what happens to a tool call (tool, resource pattern with `*`,
+  `allow` / `ask` / `deny`) in one project, every project or for one agent. The most precise rule
+  wins, a `deny` always stops the call, and there are no default rules. With no matching rule,
+  the default is ask; the permission flow may still allow the call, for example when the Captain
+  asked for it. Without a flow that answers, WithNav asks.
+  Rules live in `withnav.db` and are revoked, never deleted.
+- **`nav permissions`**: `list`, `add`, `revoke` and `history` for rules and decisions; `validate`,
+  `validations` and `revoke-validation` for flows and skills.
+- **Decision history.** Every permission decision is recorded with the call (secrets redacted, size
+  limited), the matching rule, the flow's verdict, your answer and the outcome (`allowed`, `denied`,
+  `pending`, `cancelled`, `expired`).
+- **Once / Always / Reject.** Always saves the rule shown on its button, for example
+  `bash` / `cargo test *` for this project, and releases the waiting calls of the turn it covers.
+  Reject carries an optional message the model reads; every waiting call of the turn is rejected
+  with it. Always is not offered for credentials, WithNav's own configuration or a shell line
+  WithNav cannot split.
+- **Shell commands are checked one by one.** A `bash` line is split into its commands; each is
+  matched by its prefix (`git push`, `cargo test`, `npm run build`), and the strictest answer wins.
+- **The permission flow.** The built-in `permission-default` flow asks Instinct whether you, or a
+  skill you validated, asked for the call, or whether it is a read or a recoverable change in the
+  project; under an `allow` rule it asks whether this exact call is destructive and, if so,
+  whether you asked for it. It runs in the
+  Studio like any flow and can be tuned there. If Instinct is unavailable, your rules apply.
+- **Validation of flows and skills.** A global or workspace flow, and a skill, run only once you
+  have validated their current content; a changed file asks again. A validated flow, a workspace
+  flow included, can allow tool calls: read it before validating it.
+- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and
+  sessions started or resumed afterwards run every tool call without any check: no prompt, no rule, no flow, no protection of
+  credentials or WithNav's configuration. Each call records `approved_by: yolo`, and `YOLO` stays
+  visible in the terminal, the browser and VS Code; `nav doctor` warns. It is off by default and
+  unsafe: use it only on a machine you can afford to lose.
+- **Native Windows x64.** `nav.exe` runs on Windows: CLI, TUI, web client and LSP, sessions,
+  settings, private `auth.json`, the permission database, flows and the file tools. The `bash` tool
+  uses Git Bash from Git for Windows, with each call's processes in a job object. Paths are shown
+  as `C:\...`; tool output lists relative paths with `/` on every platform. Release assets: an MSVC
+  `nav.exe` ZIP with licenses and a `win32-x64` VSIX bundling `nav.exe`, with checksums. The test
+  suite runs natively on Windows in CI.
+- **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`; ready tools
+  appear as `mcp__<server>__<tool>` in new sessions and go through your permission rules like any
+  other tool. With no matching rule, the default is ask; the permission flow may still allow the
+  call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
+  Always saves a global rule. Calls are cancellable, have
+  deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
+  shutdown. `nav doctor` reports configuration and startup diagnostics, without empty `skipped:`
+  or `stderr:` fields.
+  On Windows, servers receive the Windows runtime variables, commands such as `npx` or `uvx`
+  (`.cmd` files) are found through the server's `Path`, and each server runs in a job object, so
+  stopping it stops everything it started.
+
+### Changed
+
+- **Every tool call goes through one decision**, in a fixed order: yolo, the fixed checks
+  (credentials always ask; a write to WithNav's own configuration or database needs your explicit
+  request), reads inside the project, your rules, bypass, the permission flow, then you. MCP tools
+  and tools of agents without a role are decided too.
+- **Bypass** now answers only questions raised by a rule `ask` or the permission flow; a `deny`
+  rule still denies, and credentials, WithNav's configuration and skill validation still ask.
+- **An agent's limits are rules** with that agent's scope. WithNav seeds none: `plan` writes are
+  decided like any other call, and its prompt still tells it to write Markdown only.
+- A subagent's permission flow sees your messages in the parent conversation; text the parent
+  agent wrote, in the delegation or in steering, is a separate request source for ordinary calls,
+  never for protected configuration writes. Your answers to an
+  `ask` count as your words.
+- A `write` or `edit` to a file in the system temp directory (such as `/tmp`) or a scratch folder
+  runs without a question, unless one of your rules denies or asks about it; credentials still ask.
+- A shell command that only names WithNav's database or configuration (`sqlite3 withnav.db
+  "SELECT …"`, a script given the path) is no longer blocked by a fixed exception list: the check on
+  WithNav's own files asks whether the command only reads them or you asked for the change. A
+  read-only query runs, with or without `-readonly`; a `DELETE`, a script `UPDATE` or a
+  `.save` over the database asks you unless you requested it.
+- WithNav's scratch folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your
+  `permissions.scratch_dirs`) are a free zone for shell commands, deletions included. The rest of
+  the temp directory is not: creating a new file there runs, but deleting or overwriting an existing
+  one is judged like any other deletion. The permission flow now knows where a shell command acts
+  (project, scratch, temp, elsewhere or unknown) from its literal paths.
+- A message that names a change to WithNav's configuration or rules ("remove permission 3",
+  "set yolo to false") now counts as your request for it; a vague goal or "apply this file" still
+  does not. The check's verdict and score are recorded with the decision and shown with the
+  question, so a refusal can be explained.
+- Each permission decision names the flow runs behind it and their scores: `nav permissions history`
+  prints them, `--json` gives the run ids that find the full run in the flow run log, and a
+  question shows the scores in its reason.
+- **Always** is no longer offered for a shell command that deletes, moves, overwrites, changes
+  permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
+  `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule
+  such as `rm *` would have allowed every future deletion.
+- **The permission flow judges better.** Its "read or recoverable change" question is split in
+  two plain questions: does the call only read, and is it a recoverable change (files in the
+  project, its scratch folders or the temp folder, or building, testing, formatting, linting).
+  Replayed on a real test session, project and temp writes and requested deletions now run, and
+  unrequested destructive commands still ask. Under an allow rule, a call judged dangerous now
+  runs when you asked for it and asks otherwise, as it would without the rule.
+- The permission flow, and the check on WithNav's own configuration, read the last four messages
+  of the conversation with yours, up to your last message. A short "yes, go" accepts the proposal
+  the agent just made and counts as your request; an agent message alone never does. What the
+  agent wrote after your last message is left out: asked to "apply" a file, it could otherwise
+  repeat a command from that file and have it read as your request (a recorded `rm` of a file in
+  your home directory ran this way; replayed with the cut, the flow asks).
+- An allowed file write is bound to the path you were shown: if a link is put in its place before
+  it runs, nothing is written and the call is decided again.
+- If the permission database cannot open, the session starts with a visible warning. Every call
+  gets no rule; the floor and flow still apply, and the flow may allow even though deny rules are
+  invisible. Bypass and Always are disabled and decision history is unavailable.
+- In the terminal client, the quit confirmation names the key you pressed: after `ctrl+c` it said
+  "ctrl+q again to quit", although only a second `ctrl+c` quit.
+- The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with
+  install, configuration, permissions and troubleshooting rewritten for clarity.
+
+### Removed
+
+- **The per-call review.** Instinct's call classification, the Metacognition permission review,
+  their deadlines, Captain precedents and the shell risk analysis are gone. Metacognition still
+  writes remarks and decides the watchdog's doubts.
+- **Settings `permissions.automatic_review` and `permissions.review_timeout_secs`.** Saving them
+  is now refused as an unknown key; a value already in `config.json` is ignored, and `nav doctor`
+  reports it as an unknown key.
+- **The plan role guard** and its `role_conformance` question.
+- **Grants.** "Allow for this folder / site", "Allow WithNav config for this session" and
+  "Allow this skill's scripts on this machine" are no longer offered. `grants.json`,
+  `skill-grants.json` and `flows-trust.json` are no longer read; their content is not imported.
+  Only older clients' folder and configuration-session answers count as Once. A legacy
+  skill-machine answer is refused as stale; legacy `deny` maps to Reject.
+- The `nav doctor` live checks `live.instinct.role_guard` and `live.instinct.permission`.
+
 ## [0.7.8] - 2026-10-12
 
 WithNav 0.7.8 prepares the public opening. Tagged releases now ship ready-to-install Linux
@@ -309,7 +442,7 @@ language server, context budgeting and providers.
 
 - **Permission review and supervision now use the Instinct layer name.**
   New events write `instinct` source, model, latency and guard metadata; clients
-  still read stored `jev` events and display them as `auto · instinct` until 0.8.
+  display these events as `auto · instinct`.
 - **The VS Code panel colours what waits on you, how subagents are doing, and how big a change is.**
   Pause cards and pending permissions get the warning colour; a subagent's state reads blue while
   running, amber when it needs you, green when done, red when failed; a wake shows `+N −M` and its
@@ -444,7 +577,7 @@ instinct runs, in the new Studio, and the legacy decision pipeline is gone.
 ### Rebrand to WithNav
 
 Write new names throughout 0.7; legacy readers warn or give a migration hint.
-Removal of the deprecated names is planned for 0.8 ([ADR 0014](docs/adr/0014-rebrand-withnav.md)).
+Removal of the deprecated names is planned for 0.8 ([ADR 0014](https://github.com/PixmaNts/withnav/blob/develop/docs/adr/0014-rebrand-withnav.md)).
 
 - **Product and crate:** Navai → WithNav (withnav.dev), crate `rust-agent` → `withnav`.
   No old crate alias. The GitHub repository moves to `github.com/PixmaNts/withnav`
@@ -497,7 +630,7 @@ Removal of the deprecated names is planned for 0.8 ([ADR 0014](docs/adr/0014-reb
   file and Reload makes it run. A blocking `tool.pre_call` flow can deny a tool call or ask you,
   never allow one past the normal permission review, and bypass never answers it.
   `message.received` and `turn.end` flows can inject a note or wake the cognition, marked as
-  coming from a flow. See [the Captain's guide](docs/instinct-flow.md).
+  coming from a flow. See [the Captain's guide](https://withnav.dev/docs/instinctflow.html).
 - **The Studio** (`#/studio` in the browser): canvas and TOML views of the same file, an inspector
   per node, Run sample against the instinct, Replay of recorded runs without a model call, and
   24-hour health per flow.
@@ -689,7 +822,7 @@ reviewed instead of refused, lists are searchable and compaction shows its progr
 - **VS Code conversations can start subagents.** The agent of a VS Code conversation now has the
   `task` tool (and `steer_subagent`, `decide_subagent`), like the terminal client. Subagents'
   results reach the conversation as before; they never become the navigator's conversation.
-- **Reading secrets is never approved on Jev's word.** A read-only call that is risky, such as
+- **Reading secrets is never approved on Instinct's word.** A read-only call that is risky, such as
   reading a key or a credentials file, now goes to metacognition and then to you. Reading
   `~/.ssh`, `~/.gnupg`, `.env` files, `*.pem` / `*.key`, cloud credentials or Navai's
   `auth.json` with the `read` tool always asks you. `grep` and `glob` skip these files (without
@@ -704,7 +837,7 @@ reviewed instead of refused, lists are searchable and compaction shows its progr
 
 ### Changed
 
-- **`read` outside the project is reviewed like `bash`** instead of being refused: if Jev,
+- **`read` outside the project is reviewed like `bash`** instead of being refused: if Instinct,
   metacognition or you approve it, it reads that one file once. `grep` and `glob` outside the
   project are still refused, with a message pointing to `read` or `bash`.
 - A `bash` command that writes into Navai's config directory (`~/.config/navai`) always asks you,
@@ -776,8 +909,8 @@ The VS Code chat can now answer the agent's permission requests and continue a p
 
 ### Added
 
-- **VS Code chat**: tool rows show who approved a reviewed call (Jev or metacognition), with the
-  reason and Jev's verdicts in an expandable note, like the terminal client.
+- **VS Code chat**: tool rows show who approved a reviewed call (Instinct or metacognition), with the
+  reason and Instinct's verdicts in an expandable note, like the terminal client.
 
 ## [0.4.4] - 2026-10-04
 
@@ -786,7 +919,7 @@ who approved each call.
 
 ### Changed
 
-- **Your request counts in the permission review**: Jev and metacognition receive your latest
+- **Your request counts in the permission review**: Instinct and metacognition receive your latest
   request as your intent, so a write you explicitly asked for (for example a file in your home
   folder) can be approved instead of refused as "untrusted". Its text is never an instruction to
   the reviewers, and claims made by the agent, a subagent or a tool still prove nothing. Navai's
@@ -798,10 +931,10 @@ who approved each call.
 
 ### Added
 
-- **Terminal client**: a tool block says who approved a reviewed call (`auto · Jev`,
-  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and the
+- **Terminal client**: a tool block says who approved a reviewed call (`auto · Instinct`,
+  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Instinct's verdicts and the
   plan role check. Copies include it.
-- **Review evidence**: the permission review records Jev's verdicts, the deterministic checks that
+- **Review evidence**: the permission review records Instinct's verdicts, the deterministic checks that
   tightened the call, the reviewer models and their response times on the tool and permission
   events, also when you approved the call yourself.
 
@@ -867,17 +1000,17 @@ Every file change and shell command is now reviewed one by one, conversations no
 ### Changed
 
 - **Per-call permission review**: every `bash`, `write` and `edit` call is reviewed before it runs,
-  instead of an "allow folder" answer letting every later call through. Jev classifies the call: a
+  instead of an "allow folder" answer letting every later call through. Instinct classifies the call: a
   read-only call, or a low-risk change inside the project, runs; a risky or outside-project change
   needs metacognition's approval; anything else asks you, with the reason. "Allow folder" is gone
   for these tools and the bash/file grants saved by 0.4.1 are ignored; `fetch` keeps its origin
   grants. `permissions.automatic_review: false` in `config.json` asks for every such call; an
   invalid value fails closed. The review is advisory, not a sandbox.
 - **No more 50-step limit**: a conversation's turn runs until it ends, is stopped, or the watchdog
-  stops it. Every 5 minutes (`agent.watchdog_interval_secs`) Jev checks it is making progress. Stuck:
+  stops it. Every 5 minutes (`agent.watchdog_interval_secs`) Instinct checks it is making progress. Stuck:
   the turn stops after its current tools finish, keeping the work done. In doubt: metacognition
   decides; if it hesitates too, the turn pauses and asks you (`alt+c` continues, a new message
-  replaces the paused turn). With the watchdog off (`0`) or Jev unavailable, a 500-step cap applies,
+  replaces the paused turn). With the watchdog off (`0`) or Instinct unavailable, a 500-step cap applies,
   renewed only by you. `NAVAI_MAX_STEPS` still sets an explicit cap. Subagents keep their 50-step
   budget.
 
@@ -911,7 +1044,7 @@ Fixes from daily use of 0.4.0, mostly in the terminal client.
 ## [0.4.0] - 2026-10-04
 
 Background subagents: a conversation's agent can delegate work to other agents that run on their
-own, report back, can be steered or interrupted, and are watched by Jev. The terminal client shows
+own, report back, can be steered or interrupted, and are watched by Instinct. The terminal client shows
 them under their conversation.
 
 ### Added
@@ -934,10 +1067,10 @@ them under their conversation.
   `steer` adds guidance to the subagent's running turn before its next model request, after all
   the tool results of its current step; `interrupt` cancels that turn and starts a new one with the
   message, keeping the same subagent.
-- **Jev watchdog**: every 5 minutes (`subagents.watchdog_interval_secs`, 0 turns it off) Jev checks
+- **Instinct watchdog**: every 5 minutes (`subagents.watchdog_interval_secs`, 0 turns it off) Instinct checks
   each running subagent from its goal, how long it has been quiet, its last tool call and its step
   count. `stuck` stops it and hands its partial work to the parent; `doubt` pauses it and asks the
-  parent's agent, which answers with `decide_subagent(child_id, continue|stop)`. Jev failing to
+  parent's agent, which answers with `decide_subagent(child_id, continue|stop)`. Instinct failing to
   answer twice in a row counts as doubt.
 - **You stay in control**: a subagent's permission requests appear in the parent conversation and
   are answered there; approvals stay with that subagent. You can read and stop a subagent but not
@@ -1028,7 +1161,7 @@ keyboard; four layers of models watch, complete, judge and discuss.
 - **Reflex**: fill-in-the-middle ghost-text suggestions (Inception Mercury Edit 2), with a short
   context note kept current by the metacognition.
 - **Instinct**: a decision pipeline in TOML and Markdown prompts, asking typed questions to a
-  System One model (Jev). Project `.navigator/` overrides the user and built-in pipelines; hot
+  System One model. Project `.navigator/` overrides the user and built-in pipelines; hot
   reload on save.
 - **Metacognition**: short end-of-line remarks from a fast model, with read-only `read` and `grep`
   tools under a budget, aware of the conversation, the intent record and recent edits.

@@ -18,7 +18,6 @@ function settingsBody(revision = "rev-1") {
       field("layers.instinct", { model: "omniroute/typesafe/jev-1.13", variant: null }, null, true, "restart"),
       field("layers.metacognition", { model: "omniroute/combo/flash", variant: "low" }, null, true, "restart"),
       field("default_agent", "build", "build", true),
-      field("permissions.automatic_review", null, true, false),
       field("permissions.scratch_dirs", null, ["/run/user/1000/withnav", "/tmp/withnav"], false),
       field("subagents.max_concurrent", 5, 4, true),
       field("subagents.watchdog_interval_secs", null, 300, false),
@@ -249,20 +248,13 @@ test("webview controls post one key per change; refusals show under their row; s
   const { dom, d, posts, receive, rows, toc } = page();
   receive({ type: "snapshot", data: snapshot() });
   toc("Permissions").click();
-  const box = rows()[0].querySelector("input[type=checkbox]");
-  assert.equal(box.checked, true, "automatic review defaults to on");
-  box.click();
-  assert.deepEqual(posts.at(-1), { type: "save", key: "permissions.automatic_review", value: false });
-  receive({ type: "saved", key: "permissions.automatic_review" });
-
-  rows()[1].querySelector(".list > .button").click();
-  const input = rows()[1].querySelector(".list-edit input");
+  rows()[0].querySelector(".list > .button").click();
+  const input = rows()[0].querySelector(".list-edit input");
   input.value = "/srv/scratch";
-  rows()[1].querySelector(".list-edit .button.primary").click();
+  rows()[0].querySelector(".list-edit .button.primary").click();
   assert.deepEqual(posts.at(-1), { type: "save", key: "permissions.scratch_dirs", value: ["/run/user/1000/withnav", "/tmp/withnav", "/srv/scratch"] });
   receive({ type: "invalid", key: "permissions.scratch_dirs", message: "scratch dir must be absolute" });
-  assert.equal(rows()[1].querySelector(".row-error").textContent, "scratch dir must be absolute");
-  assert.equal(rows()[0].querySelector(".row-error"), null);
+  assert.equal(rows()[0].querySelector(".row-error").textContent, "scratch dir must be absolute");
 
   toc("Subagents").click();
   const reset = rows()[0].querySelector(".row-reset");

@@ -886,7 +886,7 @@ mod tests {
         let models = json!({"providers":{"mock":{"base_url":"https://url-secret.invalid/v1", "api_key_env":"AUTH_SECRET", "headers":{"Authorization":"header-secret"}}},"models":{
             "mock/combo/chat":{"provider":"mock","model":"combo/chat","api":"chat","context_window":128000,"supports_tools":true,"variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}},"default_variant":"high"},
             "mock/fim":{"provider":"mock","model":"fim","api":"fim"},
-            "mock/jev":{"provider":"mock","model":"jev","api":"systemone"}
+            "mock/instinct":{"provider":"mock","model":"instinct","api":"systemone"}
         }});
         std::fs::write(config_dir.join("models.json"), models.to_string()).unwrap();
         for (name, header) in [
@@ -921,7 +921,20 @@ mod tests {
         route: &str,
         extra: &str,
     ) -> (StatusCode, Value) {
-        let uri = format!("/v1/{route}?workspace={}{}", root.display(), extra);
+        let uri = format!(
+            "/v1/{route}?workspace={}{}",
+            {
+                let mut url = reqwest::Url::parse("http://localhost").unwrap();
+                url.query_pairs_mut()
+                    .append_pair("workspace", &root.to_string_lossy());
+                url.query()
+                    .unwrap()
+                    .strip_prefix("workspace=")
+                    .unwrap()
+                    .to_owned()
+            },
+            extra
+        );
         let response = crate::server::routes::app(state.clone())
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
@@ -1168,12 +1181,12 @@ mod tests {
     #[tokio::test]
     async fn layer_non_chat_variants_match_runtime_and_discovery_is_explicitly_unresolved() {
         let (root, state) = fixture(
-            json!({"layers":{"reflex":{"model":"mock/fim","variant":"low"},"instinct":{"model":"mock/jev","variant":"low"},"metacognition":"mock/combo/chat"}}),
+            json!({"layers":{"reflex":{"model":"mock/fim","variant":"low"},"instinct":{"model":"mock/instinct","variant":"low"},"metacognition":"mock/combo/chat"}}),
         );
         let path = state.config.models_path.as_ref().unwrap();
         let mut catalog: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        for key in ["mock/fim", "mock/jev"] {
+        for key in ["mock/fim", "mock/instinct"] {
             catalog["models"][key]["variants"] = json!({"low":{"reasoning_effort":"low"}});
         }
         catalog["models"]["mock/combo/chat"]

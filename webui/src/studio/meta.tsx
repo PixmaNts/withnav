@@ -21,7 +21,9 @@ export const TYPE_LOOK: Record<"noul" | "choice" | "score" | "expression", Look 
 };
 
 export const ACTION_LOOK: Record<string, Look & { label: string; describe: string }> = {
-  no_objection: { tag: "ACTION", icon: (s) => <CheckCircle size={s} />, color: "var(--gr)", label: "No objection", describe: "The call goes on to the normal permission review." },
+  allow: { tag: "ACTION", icon: (s) => <CheckCircle size={s} />, color: "var(--gr)", label: "Allow", describe: "Allow the call on the permission hook; the legacy hook keeps normal review." },
+  no_objection: { tag: "ACTION", icon: (s) => <CheckCircle size={s} />, color: "var(--gr)", label: "Allow (legacy alias)", describe: "Loaded as allow." },
+  apply_rule: { tag: "ACTION", icon: (s) => <CheckCircle size={s} />, color: "var(--gr)", label: "Apply rule", describe: "Use the caller's permission rule before combining verdicts." },
   deny: { tag: "ACTION", icon: (s) => <Prohibit size={s} />, color: "var(--rd)", label: "Deny the tool call", describe: "The call does not run; the note is what the model sees." },
   ask_captain: { tag: "ACTION", icon: (s) => <Hand size={s} />, color: "var(--or)", label: "Ask the Captain", describe: "A permission request with the note, without the model review." },
   remark: { tag: "ACTION", icon: (s) => <Compass size={s} />, color: "var(--at)", label: "Beacon · Remark", describe: "A Beacon signed by Nav appears beside the line." },

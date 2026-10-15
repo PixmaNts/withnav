@@ -15,7 +15,6 @@ use withnav::tui::{
 fn body(revision: &str) -> SettingsBody {
     serde_json::from_value(json!({"revision": revision, "paths": {"config":"/cfg/config.json","models":null,"agents":[]}, "gateways":[], "fields": [
         {"key":"layers.reflex","value":null,"default":null,"set":false,"error":null,"applies":"restart"},
-        {"key":"permissions.automatic_review","value":true,"default":true,"set":true,"error":null,"applies":"new_sessions"},
         {"key":"permissions.scratch_dirs","value":[],"default":[],"set":true,"error":null,"applies":"new_sessions"},
         {"key":"subagents.max_concurrent","value":4,"default":4,"set":true,"error":null,"applies":"new_sessions"},
         {"key":"tui.theme","value":"ayu-dark","default":"ayu-dark","set":true,"error":null,"applies":"live"}
@@ -54,7 +53,10 @@ fn navigate_jump_stage_revert() {
     reducer::handle_action(&mut s, &mut ui, a);
     assert_eq!(s.config.section, Section::Permissions);
     action(&mut s, &mut ui, ConfigAction::Move(1));
-    assert_eq!(s.config.row, 1);
+    assert_eq!(
+        s.config.row, 0,
+        "scratch directories is the only permissions row"
+    );
     action(&mut s, &mut ui, ConfigAction::CycleSection(1));
     assert_eq!(s.config.section, Section::Subagents);
     action(&mut s, &mut ui, ConfigAction::Step(1));
@@ -134,8 +136,7 @@ async fn write_carries_revision_and_theme_applies_live() {
     .await;
     let client = Client::new(server.url.trim_end_matches("/v1"), None);
     let (mut s, mut ui) = setup();
-    s.config
-        .stage("permissions.automatic_review".into(), json!(false));
+    s.config.stage("subagents.max_concurrent".into(), json!(5));
     s.config.stage("tui.theme".into(), json!("nord-dark"));
     let mut editor = Editor::default();
     let a = route_key(
@@ -229,11 +230,14 @@ async fn stale_reloads_keeps_unsent_and_invalid_marks_row() {
 
 #[test]
 fn inline_scratch_paths_require_absolute_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let one = root.path().join("one").display().to_string();
+    let two = root.path().join("two").display().to_string();
     let (mut s, mut ui) = setup();
     action(
         &mut s,
         &mut ui,
-        ConfigAction::ListText("relative\n/tmp/valid".into()),
+        ConfigAction::ListText(format!("relative\n{one}")),
     );
     action(&mut s, &mut ui, ConfigAction::CommitList);
     assert!(s.config.staged.is_empty());
@@ -241,12 +245,12 @@ fn inline_scratch_paths_require_absolute_paths() {
     action(
         &mut s,
         &mut ui,
-        ConfigAction::ListText("/tmp/one\n/tmp/two".into()),
+        ConfigAction::ListText(format!("{one}\n{two}")),
     );
     action(&mut s, &mut ui, ConfigAction::CommitList);
     assert_eq!(
         s.config.staged["permissions.scratch_dirs"],
-        json!(["/tmp/one", "/tmp/two"])
+        json!([one, two])
     );
 }
 
@@ -399,14 +403,18 @@ fn failed_stale_reload_leave_write_retries_before_put() {
 
 #[test]
 fn scratch_list_route_key_enter_adds_newline_ctrl_s_stages() {
+    let root = tempfile::tempdir().unwrap();
+    let one = root.path().join("one").display().to_string();
+    let two = root.path().join("two").display().to_string();
+    let text = format!("{one}\n{two}");
     let (mut s, mut ui) = setup();
     let mut editor = Editor::default();
     action(&mut s, &mut ui, ConfigAction::Jump(Section::Permissions));
     action(&mut s, &mut ui, ConfigAction::Move(1));
     for code in std::iter::once(KeyCode::Enter)
-        .chain("/tmp/one".chars().map(KeyCode::Char))
+        .chain(one.chars().map(KeyCode::Char))
         .chain(std::iter::once(KeyCode::Enter))
-        .chain("/tmp/two".chars().map(KeyCode::Char))
+        .chain(two.chars().map(KeyCode::Char))
     {
         let key = route_key(
             KeyEvent::new(code, KeyModifiers::NONE),
@@ -417,7 +425,7 @@ fn scratch_list_route_key_enter_adds_newline_ctrl_s_stages() {
         .unwrap();
         reducer::handle_action(&mut s, &mut ui, key);
     }
-    assert_eq!(s.config.list_editor.as_deref(), Some("/tmp/one\n/tmp/two"));
+    assert_eq!(s.config.list_editor.as_deref(), Some(text.as_str()));
     assert!(s.config.staged.is_empty());
     let key = route_key(
         KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
@@ -430,7 +438,7 @@ fn scratch_list_route_key_enter_adds_newline_ctrl_s_stages() {
     assert!(s.config.list_editor.is_none());
     assert_eq!(
         s.config.staged["permissions.scratch_dirs"],
-        json!(["/tmp/one", "/tmp/two"])
+        json!([one, two])
     );
     assert!(s.config.writing.is_none());
 }
@@ -498,17 +506,22 @@ async fn runtime_routes_y_to_settings_scratch_editor_and_filter_not_transcript_s
     runtime.handle_terminal_event(press(KeyCode::Char('4')));
     runtime.handle_terminal_event(press(KeyCode::Down));
     runtime.handle_terminal_event(press(KeyCode::Enter));
-    for c in "/tmp/y".chars() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("y").display().to_string();
+    for c in scratch.chars() {
         runtime.handle_terminal_event(press(KeyCode::Char(c)));
     }
-    assert_eq!(runtime.state.config.list_editor.as_deref(), Some("/tmp/y"));
+    assert_eq!(
+        runtime.state.config.list_editor.as_deref(),
+        Some(scratch.as_str())
+    );
     runtime.handle_terminal_event(Event::Key(KeyEvent::new(
         KeyCode::Char('s'),
         KeyModifiers::CONTROL,
     )));
     assert_eq!(
         runtime.state.config.staged["permissions.scratch_dirs"],
-        json!(["/tmp/y"])
+        json!([scratch])
     );
     runtime.handle_terminal_event(press(KeyCode::Char('/')));
     runtime.handle_terminal_event(press(KeyCode::Char('y')));

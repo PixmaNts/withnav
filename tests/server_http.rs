@@ -366,6 +366,7 @@ async fn close_session_removes_the_entry_and_get_answers_from_the_store() {
 // server task is the only listener). A controllable oneshot trigger would
 // exercise a DIFFERENT future than the one production uses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
 async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     let _socket_guard = REAL_SOCKET_LOCK.lock().await;
     let tmp = tempfile::tempdir().expect("tempdir");

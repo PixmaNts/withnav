@@ -101,6 +101,15 @@ async fn dispatch(
         Err(e) => error(e),
     }
 }
+/// Runs flow-store work that reads or writes the permission database on the
+/// blocking pool: a locked database waits there for its busy timeout.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
+) -> Result<T, StoreError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| StoreError::reason("io"))?
+}
 fn invalid() -> StoreError {
     StoreError::reason("invalid")
 }
@@ -189,7 +198,13 @@ async fn handle(
 ) -> Result<(StatusCode, Value), StoreError> {
     network(state, headers, peer)?;
     let workspace = workspace(state, query).await?;
-    let store = state.flows.store(workspace.clone());
+    // A new workspace entry loads its flows and reads their validations from
+    // the permission database: built on the blocking pool.
+    let store = blocking({
+        let (host, workspace) = (state.flows.clone(), workspace.clone());
+        move || Ok(host.store(workspace))
+    })
+    .await?;
     let records = state.flows.records(&workspace);
     let data: Value = if body.is_empty() {
         json!({})
@@ -202,9 +217,16 @@ async fn handle(
             serde_json::to_value(crate::flows::catalogue::catalogue()).map_err(|_| invalid())?
         ),
         ("GET", "") => {
-            store.refresh();
+            let flows = blocking({
+                let store = store.clone();
+                move || {
+                    store.refresh();
+                    store.list()
+                }
+            })
+            .await?;
             ok(
-                json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace),"propagation":"other WithNav processes reload on their next event"}),
+                json!({"flows":flows,"errors":state.flows.diagnostics(&workspace),"propagation":"other WithNav processes reload on their next event"}),
             )
         }
         ("POST", "") => {
@@ -218,23 +240,32 @@ async fn handle(
         }
         ("POST", "validate") => ok(json!(validate(parse::<Content>(data["content"].clone())?))),
         ("POST", "reload") => {
-            store.reload()?;
+            let flows = blocking({
+                let store = store.clone();
+                move || {
+                    store.reload()?;
+                    store.list()
+                }
+            })
+            .await?;
             ok(
-                json!({"reloaded":true,"errors":[],"flows":store.list()?,"propagation":"other WithNav processes reload on their next event"}),
+                json!({"reloaded":true,"errors":store.reload_diagnostics(),"flows":flows,"propagation":"other WithNav processes reload on their next event"}),
             )
         }
-        ("GET", "trust") | ("POST", "trust") => {
-            if method == Method::POST {
-                store.set_trust(data["trusted"].as_bool().ok_or_else(invalid)?)?;
-            }
-            ok(
-                json!({"workspace":workspace,"has_workspace_flows":store.list()?.iter().any(|s|s.location==Location::Workspace),"trusted":store.trusted(),"propagation":"other WithNav processes reload on their next event"}),
-            )
+        ("POST", "trust") => {
+            let (name, location, revision) = (
+                required(&data, "name")?.to_owned(),
+                location(&data["location"])?,
+                required(&data, "revision")?.to_owned(),
+            );
+            let approval = blocking({
+                let store = store.clone();
+                move || store.validate_version(&name, location, &revision)
+            })
+            .await?;
+            ok(json!(approval))
         }
         ("POST", "sample") => {
-            if !store.trusted() {
-                return Err(StoreError::reason("untrusted"));
-            }
             let compiled = source(&store, &data["source"])?;
             let runtime = state
                 .flows
@@ -280,9 +311,6 @@ async fn handle(
             ok(json!(outcome.trace))
         }
         ("POST", "replay") => {
-            if !store.trusted() {
-                return Err(StoreError::reason("untrusted"));
-            }
             let compiled = source(&store, &data["source"])?;
             let id = required(&data, "run_id")?;
             let record = records
@@ -426,11 +454,7 @@ mod tests {
         state
             .flows
             .inject_client(&workspace, std::sync::Arc::new(FakeClient));
-        state
-            .flows
-            .store(workspace.clone())
-            .set_trust(true)
-            .unwrap();
+
         let app = super::super::routes::app(state.clone());
         async fn post(
             app: Router,
@@ -440,10 +464,16 @@ mod tests {
         ) -> (StatusCode, Value) {
             let request = axum::http::Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/v1/flows/{endpoint}?workspace={}",
-                    workspace.display()
-                ))
+                .uri(format!("/v1/flows/{endpoint}?workspace={}", {
+                    let mut url = reqwest::Url::parse("http://localhost").unwrap();
+                    url.query_pairs_mut()
+                        .append_pair("workspace", &workspace.to_string_lossy());
+                    url.query()
+                        .unwrap()
+                        .strip_prefix("workspace=")
+                        .unwrap()
+                        .to_owned()
+                }))
                 .header("host", "127.0.0.1:8080")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()))
@@ -635,10 +665,6 @@ mod tests {
             listed["propagation"],
             "other WithNav processes reload on their next event"
         );
-        let (_, trust) = handle(&state, &query, &headers, peer, Method::GET, "trust", b"")
-            .await
-            .unwrap();
-        assert_eq!(trust["trusted"], false);
         assert_eq!(
             handle(
                 &state,
@@ -654,7 +680,10 @@ mod tests {
             .reason,
             "forbidden"
         );
-        let unknown = HashMap::from([("workspace".into(), "/unknown-workspace".into())]);
+        let unknown = HashMap::from([(
+            "workspace".into(),
+            dir.path().join("unknown-workspace").display().to_string(),
+        )]);
         assert_eq!(
             handle(
                 &state,
@@ -698,7 +727,10 @@ mod tests {
             peer,
             Method::POST,
             "trust",
-            br#"{"trusted":true}"#,
+            &serde_json::to_vec(
+                &json!({"name":"test","location":"workspace","revision":document["revision"]}),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -720,21 +752,18 @@ mod tests {
         );
         let (_,saved)=handle(&state,&query,&headers,peer,Method::PUT,"test",&serde_json::to_vec(&json!({"location":"workspace","revision":document["revision"],"content":{"format":"toml","toml":"broken","templates":{}}})).unwrap()).await.unwrap();
         assert!(!saved["errors"].as_array().unwrap().is_empty());
-        assert_eq!(
-            handle(
-                &state,
-                &query,
-                &headers,
-                peer,
-                Method::POST,
-                "reload",
-                b"{}"
-            )
-            .await
-            .unwrap_err()
-            .reason,
-            "reload_invalid"
-        );
+        let (_, reloaded) = handle(
+            &state,
+            &query,
+            &headers,
+            peer,
+            Method::POST,
+            "reload",
+            b"{}",
+        )
+        .await
+        .unwrap();
+        assert!(!reloaded["errors"].as_array().unwrap().is_empty());
         headers.insert("origin", "http://foreign.example".parse().unwrap());
         assert_eq!(
             handle(

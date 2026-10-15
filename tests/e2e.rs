@@ -140,6 +140,19 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
 
     let mock = spawn_scripted_mock(&ws).await;
     let mut actor = build_actor(mock.url.clone(), ws.clone(), CancellationToken::new());
+    // Every tool is the subject here, not permissions: one rule lets them run.
+    actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .add(
+            "*",
+            "*",
+            withnav::permission::rules::Effect::Allow,
+            withnav::permission::rules::RuleScope::Global,
+            withnav::permission::rules::RuleOrigin::Manual,
+        )
+        .unwrap();
     actor.push_user("exercise every tool then ask");
 
     let mut noop = |_e: AgentEvent| {};

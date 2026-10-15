@@ -202,78 +202,50 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
     match (answerable, draft) {
         (Some(_), Some(_)) => &[
             Hints {
-                hints: &["enter deny with this message", "esc deny without one"],
+                hints: &["enter reject with this message", "esc reject without one"],
                 required: 2,
             },
             Hints {
-                hints: &["enter deny", "esc no message"],
+                hints: &["enter reject", "esc no message"],
                 required: 2,
             },
             Hints {
-                hints: &["enter deny", "esc omit"],
+                hints: &["enter reject", "esc omit"],
                 required: 2,
             },
         ],
-        (Some(open), None) if editor.text().is_empty() && open.skill_script.is_some() => &[
-            Hints {
-                hints: &["y allow once", "a skill this machine", "n deny"],
-                required: 3,
-            },
-            Hints {
-                hints: &["y once", "a skill machine", "n deny"],
-                required: 3,
-            },
-            Hints {
-                hints: &["y", "a skill", "n"],
-                required: 3,
-            },
-        ],
-        (Some(open), None) if editor.text().is_empty() && open.allow_config_session => &[
-            Hints {
-                hints: &["y allow once", "a config this session", "n deny"],
-                required: 3,
-            },
-            Hints {
-                hints: &["y once", "a config session", "n deny"],
-                required: 3,
-            },
-            Hints {
-                hints: &["y", "a config", "n"],
-                required: 3,
-            },
-        ],
-        // The plan agent's exceptions are allowed once or denied, never always.
+        // Without a server-supplied label, no reusable approval is offered.
         (Some(open), None) if editor.text().is_empty() && !permission::offers_always(open) => &[
             Hints {
-                hints: &["y allow once", "n deny", "esc stop", "ctrl+p palette"],
+                hints: &["o once", "r reject", "esc stop", "ctrl+p palette"],
                 required: 2,
             },
             Hints {
-                hints: &["y once", "n deny", "esc stop"],
+                hints: &["o once", "r reject", "esc stop"],
                 required: 2,
             },
             Hints {
-                hints: &["y", "n"],
+                hints: &["o", "r"],
                 required: 2,
             },
         ],
         (Some(_), None) if editor.text().is_empty() => &[
             Hints {
                 hints: &[
-                    "y allow once",
+                    "o once",
                     "a always",
-                    "n deny",
+                    "r reject",
                     "esc stop",
                     "ctrl+p palette",
                 ],
                 required: 3,
             },
             Hints {
-                hints: &["y once", "a always", "n deny", "esc stop"],
+                hints: &["o once", "a always", "r reject", "esc stop"],
                 required: 3,
             },
             Hints {
-                hints: &["y", "a", "n"],
+                hints: &["o", "a", "r"],
                 required: 3,
             },
         ],
@@ -435,9 +407,10 @@ pub fn draw(
         frame.render_widget(editor.area(), inner);
     }
     frame.buffer_mut().set_style(hints, theme.panel());
-    if ui.quit_confirm {
+    if let Some(key) = ui.quit_confirm {
         frame.render_widget(
-            Paragraph::new(" ctrl+q again to quit · esc to keep working").style(theme.warning()),
+            Paragraph::new(format!(" {key} again to quit · esc to keep working"))
+                .style(theme.warning()),
             hints,
         );
     } else {

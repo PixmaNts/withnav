@@ -1,0 +1,71 @@
+# Publishes withnav.dev on GitHub Pages: the landing page from site/ at the root and the user
+# guide built from book/ with mdBook under /docs/. Pushing main (releases only) publishes, so the
+# live docs match the latest release. A pull request touching the site or the book builds it
+# without publishing; a manual run publishes the chosen branch.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - book/**
+      - docs/instinct-flow.md
+      - vscode-withnav/README.md
+      - CHANGELOG.md
+      - CONTRIBUTING.md
+      - SECURITY.md
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - site/**
+      - book/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer one waits instead of cancelling a live deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: mdbook@0.5.4
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mdbook build book
+          mkdir -p public
+          cp -R site/. public/
+          cp -R book/build/. public/docs/
+          # GitHub Pages serves the custom domain from this file.
+          echo withnav.dev > public/CNAME
+          touch public/.nojekyll
+          du -sh public
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

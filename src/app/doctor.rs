@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -128,9 +128,7 @@ pub async fn command(args: super::DoctorArgs) -> anyhow::Result<i32> {
         inspect(
             &args,
             &config,
-            std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .as_deref(),
+            crate::paths::home_dir().as_deref(),
             crate::paths::data_dir(),
         )
         .await
@@ -166,10 +164,36 @@ pub async fn inspect(
         schema_version: 1,
         ..Default::default()
     };
-    let workspace = args
-        .workspace
-        .canonicalize()
-        .unwrap_or_else(|_| args.workspace.clone());
+    if let Some(data) = &data {
+        let path = data.join("withnav.db");
+        if path.exists() || (data.exists() && !data.is_dir()) {
+            let readable = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .and_then(|db| {
+                    db.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))?;
+                    for (table, columns) in [
+                        ("permission_rules", "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at,action_glob,resource_glob,action_bare_glob,resource_bare_glob,precision"),
+                        ("permission_decisions", "id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by"),
+                        ("validations", "id,kind,name,location,content_sha256,validated_at,revoked_at"),
+                    ] {
+                        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0))?;
+                        if exists {
+                            db.prepare(&format!("SELECT {columns} FROM {table} LIMIT 1"))?.query([])?.next()?;
+                        }
+                    }
+                    Ok(())
+                });
+            match readable {
+                Ok(()) => report.add("permissions.database", Status::Ok, format!("{}: readable (initialisation and writes not tested)", path.display()), None),
+                Err(error) => report.add("permissions.database", Status::Warning,
+                    format!("{}: {error}", path.display()),
+                    Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled.")),
+            }
+        }
+    }
+
+    let workspace =
+        crate::tools::canonical_path(&args.workspace).unwrap_or_else(|_| args.workspace.clone());
+
     report.add(
         "config.location",
         Status::Ok,
@@ -191,6 +215,75 @@ pub async fn inspect(
         },
         Some("Edit config.json; unknown keys are retained."),
     );
+    if let Ok(settings) = &settings {
+        let empty_settings = crate::settings::Settings::default();
+        let manager = crate::mcp::McpManager::start(if args.offline {
+            // Offline inspection must not launch configured commands.
+            &empty_settings
+        } else {
+            settings
+        });
+        if args.offline {
+            for (id, entry) in settings.mcp() {
+                report.add(
+                    format!("mcp.{id}"),
+                    if entry.is_ok() {
+                        Status::Warning
+                    } else {
+                        Status::Failed
+                    },
+                    entry
+                        .err()
+                        .unwrap_or_else(|| "configured; not started (offline)".into()),
+                    None,
+                );
+            }
+        } else {
+            let budget = settings
+                .mcp()
+                .into_iter()
+                .filter_map(|(_, c)| c.ok())
+                .filter(|c| c.enabled)
+                .map(|c| c.startup_timeout_ms)
+                .max()
+                .unwrap_or(0)
+                .min(30_000);
+            let deadline = Instant::now() + Duration::from_millis(budget + 100);
+            while manager.statuses().iter().any(|s| s.state == "starting")
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            for status in manager.statuses() {
+                report.add(
+                    format!("mcp.{}", status.server_id),
+                    match status.state {
+                        "ready" | "disabled" => Status::Ok,
+                        "starting" => Status::Warning,
+                        _ => Status::Failed,
+                    },
+                    mcp_line(&status),
+                    None,
+                );
+            }
+        }
+        manager.shutdown().await;
+        match settings.yolo() {
+            Ok(true) => report.add(
+                "config.yolo",
+                Status::Warning,
+                "permissions: yolo (no permission control)",
+                Some("Set \"yolo\": false in config.json to restore permission control."),
+            ),
+            Ok(false) => {}
+            Err(error) => report.add(
+                "config.yolo",
+                Status::Failed,
+                error,
+                Some("Set \"yolo\" to true or false in config.json."),
+            ),
+        }
+    }
     let settings_document = settings
         .as_ref()
         .ok()
@@ -211,13 +304,12 @@ pub async fn inspect(
                     "agent",
                     "tui",
                     "compaction",
+                    "yolo",
+                    "mcp",
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),
-            (
-                "permissions",
-                &["automatic_review", "scratch_dirs", "review_timeout_secs"],
-            ),
+            ("permissions", &["scratch_dirs"]),
             ("subagents", &["max_concurrent", "watchdog_interval_secs"]),
             ("agent", &["watchdog_interval_secs"]),
             ("compaction", &["writer", "chunk_tokens"]),
@@ -235,29 +327,52 @@ pub async fn inspect(
         unknown_keys(&mut report, Some(document), "auth", &sections);
     }
     let auth_path = config.join("auth.json");
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(&auth_path)
-        .ok()
-        .map(|m| m.permissions().mode() & 0o777);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&auth_path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777);
+        report.add(
+            "config.auth",
+            if auth_ok && mode.is_none_or(|m| m == 0o600) {
+                if mode.is_some() {
+                    Status::Ok
+                } else {
+                    Status::Warning
+                }
+            } else {
+                Status::Failed
+            },
+            match mode {
+                Some(mode) => format!(
+                    "auth.json mode {mode:04o}; parse {}",
+                    if auth_ok { "valid" } else { "invalid" }
+                ),
+                None => "auth.json absent; environment credentials may be used".into(),
+            },
+            Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        );
+    }
+    #[cfg(windows)]
     report.add(
         "config.auth",
-        if auth_ok && mode.is_none_or(|m| m == 0o600) {
-            if mode.is_some() {
-                Status::Ok
-            } else {
-                Status::Warning
-            }
-        } else {
+        if !auth_ok {
             Status::Failed
+        } else if auth_path.exists() {
+            Status::Ok
+        } else {
+            Status::Warning
         },
-        match mode {
-            Some(mode) => format!(
-                "auth.json mode {mode:04o}; parse {}",
+        if auth_path.exists() {
+            format!(
+                "auth.json private DACL and parse {}",
                 if auth_ok { "valid" } else { "invalid" }
-            ),
-            None => "auth.json absent; environment credentials may be used".into(),
+            )
+        } else {
+            "auth.json absent; environment credentials may be used".into()
         },
-        Some("Use nav auth set <provider> and chmod 600 auth.json."),
+        Some("Use nav auth set <provider> to create a private auth.json."),
     );
     let models = crate::provider::config::load_models_with_document(&workspace, config);
     if let Ok((_, path, document)) = &models {
@@ -289,7 +404,7 @@ pub async fn inspect(
         &workspace,
         settings_document.as_ref(),
     );
-    workspace_checks(&mut report, config, &workspace);
+    workspace_checks(&mut report, config, &workspace, data.as_deref());
     binary_checks(&mut report, home, &workspace).await;
     let mut keys = BTreeMap::new();
     if let Ok((models, _, _)) = &models {
@@ -913,7 +1028,7 @@ fn legacy(
     }
 }
 
-fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
+fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: Option<&Path>) {
     report.add(
         "workspace.directory",
         if workspace.is_dir() {
@@ -946,32 +1061,6 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
         intent.display().to_string(),
         Some("Create a readable .withnav/intent.md."),
     );
-    let trust = crate::flows::store::inspect_trust(config, workspace);
-    report.add(
-        "flows.trust_file",
-        if trust.is_ok() {
-            Status::Ok
-        } else {
-            Status::Failed
-        },
-        if trust.is_ok() {
-            "valid or absent flows-trust.json"
-        } else {
-            "invalid or unsafe flows-trust.json"
-        },
-        Some("Review flows-trust.json schema, ownership and permissions."),
-    );
-    let trusted = trust.unwrap_or(false);
-    report.add(
-        "flows.workspace_trust",
-        if trusted { Status::Ok } else { Status::Warning },
-        if trusted {
-            "workspace explicitly trusted"
-        } else {
-            "untrusted: workspace flow validation skipped; no workspace flow read"
-        },
-        Some("Explicitly trust workspace flows in WithNav before validating them."),
-    );
     for (definition, templates) in crate::flows::builtin::definitions() {
         let name = definition.flow.name.clone();
         let valid = crate::flows::store::validate(crate::flows::store::Content::Graph {
@@ -993,9 +1082,6 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
             crate::paths::workspace_dir(workspace).join("flows"),
         ),
     ] {
-        if scope == "workspace" && !trusted {
-            continue;
-        }
         match crate::flows::store::inspect_directory(&path) {
             Ok(entries) if entries.is_empty() => report.add(
                 format!("flows.{scope}"),
@@ -1004,16 +1090,25 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
                 None,
             ),
             Ok(entries) => {
-                for (name, valid) in entries {
+                for (name, valid, hash) in entries {
+                    let location = path
+                        .canonicalize()
+                        .unwrap_or_else(|_| path.clone())
+                        .join(&name);
+                    let approval = crate::permission::validation::inspect_valid(
+                        data,
+                        crate::permission::validation::ValidationKind::Flow,
+                        &location.to_string_lossy(),
+                        &hash,
+                    );
                     report.add(
                         format!("flows.{scope}.{name}"),
-                        if valid { Status::Ok } else { Status::Failed },
-                        if valid {
-                            "schema and templates validated"
-                        } else {
-                            "invalid schema or unreadable template"
-                        },
-                        Some("Review flow TOML/templates; doctor does not reload flows."),
+                        if !valid || approval.is_err() { Status::Failed } else if approval.as_ref().is_ok_and(|valid| *valid) { Status::Ok } else { Status::Warning },
+                        if !valid { "invalid schema or unreadable template" }
+                        else if approval.is_err() { "validation database unreadable" }
+                        else if approval.unwrap_or(false) { "current flow version validated" }
+                        else { "current flow version not validated; not loaded" },
+                        Some("Review the flow and use nav permissions validate flow <name>; doctor does not reload flows."),
                     );
                 }
             }
@@ -1030,25 +1125,17 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path) {
 async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Path) {
     report.add("binary.nav", Status::Ok, env!("CARGO_PKG_VERSION"), None);
     match crate::tools::bash::trusted_shell() {
-        Some(path) => report.add(
-            "binary.bash",
-            Status::Ok,
-            format!(
-                "{} (regular, root-owned, not group/other writable)",
-                path.display()
-            ),
-            None,
-        ),
+        Some(path) => report.add("binary.bash", Status::Ok, shell_description(path), None),
         None => report.add(
             "binary.bash",
             Status::Failed,
-            "no trusted /usr/bin/bash or /bin/bash",
-            Some("Install a root-owned bash without group/other write permissions."),
+            shell_missing(),
+            Some(shell_hint()),
         ),
     }
     let lsp = std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
-            .map(|p| p.join("nav"))
+            .map(|p| p.join(nav_filename()))
             .find(|p| p.is_file())
     });
     if let Some(path) = lsp {
@@ -1098,7 +1185,7 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
     }
     let mut settings = vec![workspace.join(".vscode/settings.json")];
     if let Some(home) = home {
-        settings.push(home.join(".config/Code/User/settings.json"));
+        settings.push(code_settings(home));
     }
     let mut detected = false;
     for path in settings {
@@ -1114,13 +1201,17 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
             // Match the extension's migration of the former server executable.
             let configured = Path::new(server);
             let migrated = match configured.file_name().and_then(|s| s.to_str()) {
-                Some("withnav-lsp" | "navai-lsp") => configured.with_file_name("nav"),
+                Some("withnav-lsp" | "navai-lsp") => configured.with_file_name(nav_filename()),
+                #[cfg(windows)]
+                Some("withnav-lsp.exe" | "navai-lsp.exe") => {
+                    configured.with_file_name(nav_filename())
+                }
                 _ => configured.to_path_buf(),
             };
             let exists = migrated.is_file()
-                || (migrated == Path::new("nav")
+                || ((migrated == Path::new("nav") || migrated == Path::new(nav_filename()))
                     && std::env::var_os("PATH").is_some_and(|paths| {
-                        std::env::split_paths(&paths).any(|p| p.join("nav").is_file())
+                        std::env::split_paths(&paths).any(|p| p.join(nav_filename()).is_file())
                     }));
             report.add(
                 format!("extension.server_path.{}", path.display()),
@@ -1142,6 +1233,53 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
             Some("Check the extension server-path setting in your active VS Code profile."),
         );
     }
+}
+
+#[cfg(unix)]
+fn shell_description(path: &Path) -> String {
+    format!(
+        "{} (regular, root-owned, not group/other writable)",
+        path.display()
+    )
+}
+#[cfg(windows)]
+fn shell_description(path: &Path) -> String {
+    format!("{} (Git Bash)", path.display())
+}
+#[cfg(unix)]
+fn shell_missing() -> &'static str {
+    "no trusted /usr/bin/bash or /bin/bash"
+}
+#[cfg(windows)]
+fn shell_missing() -> &'static str {
+    "Git Bash not found: searched HKLM/HKCU SOFTWARE\\GitForWindows InstallPath, %ProgramFiles%\\Git\\bin\\bash.exe and PATH; Windows/WSL launchers excluded"
+}
+#[cfg(unix)]
+fn shell_hint() -> &'static str {
+    "Install a root-owned bash without group/other write permissions."
+}
+#[cfg(windows)]
+fn shell_hint() -> &'static str {
+    "Install Git for Windows with Git Bash."
+}
+#[cfg(unix)]
+fn nav_filename() -> &'static str {
+    "nav"
+}
+#[cfg(windows)]
+fn nav_filename() -> &'static str {
+    "nav.exe"
+}
+#[cfg(unix)]
+fn code_settings(home: &Path) -> std::path::PathBuf {
+    home.join(".config/Code/User/settings.json")
+}
+#[cfg(windows)]
+fn code_settings(home: &Path) -> std::path::PathBuf {
+    std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join("AppData/Roaming"))
+        .join("Code/User/settings.json")
 }
 
 fn sanitize(text: &str, secrets: &[String]) -> String {
@@ -1385,31 +1523,6 @@ async fn live_layer(
                 ),
             )
             .await;
-            let input = role_input();
-            measured(
-                report,
-                "live.instinct.role_guard",
-                decision_check(&client, &input.state, &input.questions()),
-            )
-            .await;
-            let state = serde_json::json!({
-                "rules": crate::agent::permission_gate::TRUST_RULE,
-                "host_facts": {"workspace": "/workspace", "writable_roots": ["/workspace"]},
-                "captain_request": "Inspect git status in this repository",
-                "captain_request_complete": true,
-                "untrusted_evidence": {"arguments": {"command": "git status --short"}}
-            })
-            .to_string();
-            measured(
-                report,
-                "live.instinct.permission",
-                decision_check(
-                    &client,
-                    &state,
-                    &crate::agent::permission_gate::permission_questions(),
-                ),
-            )
-            .await;
         }
         Layer::Metacognition => {
             measured(report, "live.metacognition.chat", async {
@@ -1463,22 +1576,59 @@ fn timeout_error() -> ProviderError {
     }
 }
 
-pub fn role_input() -> crate::agent::guard::GuardInput {
-    crate::agent::guard::GuardInput::describe(&crate::agent::guard::CallFacts {
-        role_id: "plan",
-        role_prompt:
-            "The plan agent researches and produces markdown plans. It never modifies source code.",
-        task: Some("Plan the compiler restructuring"),
-        workspace: Path::new("/workspace"),
-        tool: "write",
-        target: Some(Path::new("/workspace/src/compiler.rs")),
-        arguments: &json!({"path":"/workspace/src/compiler.rs","content":"pub fn compile() {}"}),
-    })
-    .unwrap_or_else(|| crate::agent::guard::GuardInput {
-        instructions: "Judge role conformance".into(),
-        state: "plan role source edit".into(),
-    })
+#[cfg(test)]
+mod tests;
+
+/// One MCP server's doctor line: its state and tool count, then only the
+/// fields that say something (skipped tools, the error, a failed server's stderr).
+fn mcp_line(status: &crate::mcp::ServerStatus) -> String {
+    let mut parts = vec![
+        status.state.to_owned(),
+        format!("{} tools", status.tool_count),
+    ];
+    if !status.skipped_tools.is_empty() {
+        parts.push(format!("skipped: {}", status.skipped_tools.join(", ")));
+    }
+    if let Some(error) = status.error.as_deref().filter(|e| !e.is_empty()) {
+        parts.push(error.to_owned());
+    }
+    if status.state == "failed" && !status.stderr_tail.is_empty() {
+        parts.push(format!("stderr: {}", status.stderr_tail));
+    }
+    parts.join("; ")
 }
 
 #[cfg(test)]
-mod tests;
+mod mcp_line_tests {
+    use super::mcp_line;
+    use crate::mcp::ServerStatus;
+
+    fn status(state: &'static str) -> ServerStatus {
+        ServerStatus {
+            server_id: "codegraph".into(),
+            state,
+            tool_count: 1,
+            skipped_tools: vec![],
+            error: None,
+            stderr_tail: String::new(),
+        }
+    }
+
+    #[test]
+    fn empty_fields_are_left_out() {
+        assert_eq!(mcp_line(&status("ready")), "ready; 1 tools");
+        let mut failed = status("failed");
+        failed.tool_count = 0;
+        failed.skipped_tools = vec!["a".into(), "b".into()];
+        failed.error = Some("exited".into());
+        failed.stderr_tail = "boom".into();
+        assert_eq!(
+            mcp_line(&failed),
+            "failed; 0 tools; skipped: a, b; exited; stderr: boom"
+        );
+        // A ready server's stderr is not shown.
+        let mut ready = status("ready");
+        ready.stderr_tail = "noise".into();
+        assert_eq!(mcp_line(&ready), "ready; 1 tools");
+    }
+}

@@ -1,12 +1,11 @@
 pub mod actor;
+pub(crate) mod authorize;
 pub mod boundary;
 pub mod compaction;
 pub mod context;
 pub mod definitions;
 pub mod flow_hook;
-pub mod guard;
 pub mod instructions;
-pub mod permission_gate;
 pub mod permissions;
 pub mod prompt;
 pub mod response;
@@ -14,7 +13,6 @@ pub mod response;
 pub mod run_loop;
 pub mod scratch;
 pub mod selection;
-pub mod skill_grants;
 pub mod skills;
 
 #[cfg(test)]

@@ -97,13 +97,13 @@ export const WATCHDOG_PRESETS: { secs: number; label: string }[] = [
 export function summaries(body: SettingsBody | undefined): Record<SectionId, string> {
   if (!body) return { gateways: "", layers: "", permissions: "", subagents: "", appearance: "" };
   const layers = (["reflex", "instinct", "metacognition"] as const).filter((l) => choiceOf(body, `layers.${l}`)).map((l) => (l === "metacognition" ? "meta" : l));
-  const review = asBool(effective(fieldOf(body, "permissions.automatic_review")), true);
+  const scratch = asPaths(effective(fieldOf(body, "permissions.scratch_dirs"))).length;
   const max = asInt(effective(fieldOf(body, "subagents.max_concurrent")), 4);
   const theme = asTheme(effective(fieldOf(body, "tui.theme")));
   return {
     gateways: body.gateways.map((g) => g.name).join(" · ") || "none in models.json",
     layers: [...layers, "cognition"].join(" · "),
-    permissions: review ? "automatic review on" : "ask for every call",
+    permissions: scratch === 0 ? "no scratch dir" : `${scratch} scratch dir${scratch === 1 ? "" : "s"}`,
     subagents: `max ${max} per session`,
     appearance: theme ? THEMES.find((t) => t.id === theme)!.label : "not set",
   };
@@ -146,7 +146,7 @@ export function searchIndex(body: SettingsBody | undefined, agents: AgentEntry[]
   out.push(e("layers", "layer:metacognition", "metacognition chat variant layers.metacognition", choiceOf(body, "layers.metacognition")?.model));
   out.push(e("layers", "layer:cognition", "cognition agents default agent default_agent"));
   for (const a of agents) out.push(e("layers", `agent:${a.id}`, "agent", a.id, `agents.${a.id}`, a.mode, a.description, choiceOf(body, `agents.${a.id}`)?.model ?? a.effective?.model));
-  out.push(e("permissions", "perm:review", "automatic review permissions.automatic_review bash write edit fetch instinct metacognition captain"));
+  out.push(e("permissions", "perm:rules", "permission rules always once reject deny bash write edit fetch instinct flow captain nav permissions"));
   out.push(e("permissions", "perm:scratch", "scratch directories permissions.scratch_dirs", ...asPaths(effective(fieldOf(body, "permissions.scratch_dirs")))));
   out.push(e("subagents", "sub:max", "max concurrent per session subagents.max_concurrent"));
   out.push(e("subagents", "sub:watchdog", "subagent watchdog subagents.watchdog_interval_secs"));

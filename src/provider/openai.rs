@@ -69,6 +69,10 @@ pub enum ChatMessage {
     Tool {
         tool_call_id: String,
         content: String,
+        /// Who answered an `ask` call with this text; absent for every other
+        /// tool result. Kept in the stored transcript, never sent to the model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answered_by: Option<UserProvenance>,
     },
 }
 
@@ -121,6 +125,17 @@ fn serialize_wire_messages<S: serde::Serializer>(
             if let ChatMessage::User { content, .. } = self.0 {
                 let mut object = serializer.serialize_struct("ChatMessage", 2)?;
                 object.serialize_field("role", "user")?;
+                object.serialize_field("content", content)?;
+                object.end()
+            } else if let ChatMessage::Tool {
+                tool_call_id,
+                content,
+                ..
+            } = self.0
+            {
+                let mut object = serializer.serialize_struct("ChatMessage", 3)?;
+                object.serialize_field("role", "tool")?;
+                object.serialize_field("tool_call_id", tool_call_id)?;
                 object.serialize_field("content", content)?;
                 object.end()
             } else {

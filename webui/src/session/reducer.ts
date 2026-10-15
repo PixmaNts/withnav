@@ -56,7 +56,7 @@ export interface Turn {
 }
 
 export interface Permission {
-  allowConfigSession?: boolean;
+  alwaysLabel?: string;
   skillName?: string;
   requestId: string;
   toolCallId: string;
@@ -68,7 +68,10 @@ export interface Permission {
   childSessionId?: string;
   /** `allow_once` | `allow_folder` | `deny` | `cancelled` | `expired`, absent while waiting. */
   resolution?: string;
+  /** What a denial told the model, or why an Always answer was not saved. */
   message?: string;
+  /** False when an Always answer could not save its rules: the call ran once. */
+  alwaysSaved?: false;
 }
 
 export type Item =
@@ -299,7 +302,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
           reason: str(p.reason),
           scope: { kind: str(p.scope?.kind), value: str(p.scope?.value) },
           arguments: str(p.arguments),
-          allowConfigSession: p.allow_config_session === true,
+          alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
           childSessionId: typeof p.child_session_id === "string" ? p.child_session_id : undefined,
         },
@@ -318,7 +321,12 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       if (!perm) return next;
       next.permissions = {
         ...next.permissions,
-        [requestId]: { ...perm, resolution: str(p.resolution, "expired"), message: typeof p.message === "string" ? p.message : undefined },
+        [requestId]: {
+          ...perm,
+          resolution: str(p.resolution, "expired"),
+          message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
+          alwaysSaved: p.always_saved === false ? false : undefined,
+        },
       };
       return next;
     }

@@ -1,8 +1,8 @@
 # Contributing to WithNav
 
 WithNav is a pair-programming system in Rust: you keep the keyboard, and several models of
-different speeds watch, complete, judge and discuss. See the [README](README.md) for what it does
-and [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the code is laid out.
+different speeds watch, complete, judge and discuss. See the [README](https://github.com/PixmaNts/withnav#readme) for what it does
+and [`ARCHITECTURE.md`](https://github.com/PixmaNts/withnav/blob/develop/ARCHITECTURE.md) for how the code is laid out.
 
 ## Questions and help
 
@@ -16,14 +16,14 @@ A good report has the WithNav version (`nav --version`), your OS, how you instal
 that reproduce the problem, what you expected and what happened. Attach the output of
 `nav doctor --offline --json` when configuration may be involved. It makes no network calls.
 
-For a security problem, do not open an issue: see [`SECURITY.md`](SECURITY.md).
+For a security problem, do not open an issue: see [`SECURITY.md`](https://github.com/PixmaNts/withnav/blob/develop/SECURITY.md).
 
 ## Proposing features
 
 Use the [feature request form](https://github.com/PixmaNts/withnav/issues/new?template=feature_request.yml).
 For a large idea, start a thread in
 [Discussions](https://github.com/PixmaNts/withnav/discussions) first, before writing code.
-Read [`CONTEXT.md`](CONTEXT.md) for the vocabulary and [`docs/adr/`](docs/adr/) for decisions
+Read [`CONTEXT.md`](https://github.com/PixmaNts/withnav/blob/develop/CONTEXT.md) for the vocabulary and [`docs/adr/`](https://github.com/PixmaNts/withnav/tree/develop/docs/adr) for decisions
 already taken.
 
 ## Development setup
@@ -51,11 +51,11 @@ cd vscode-withnav && npm ci && npm run compile
 ```
 
 The repository has no `.vscode/launch.json`, so there is no ready-made F5 configuration. To try
-the extension, build and install it as described in the README
+the extension, build and install it as described in the [install guide](https://withnav.dev/docs/install.html)
 (`npm run package`, then `code --install-extension vscode-withnav/withnav-*.vsix`). Releases also
 publish platform-specific VSIX files for linux-x64 and linux-arm64 that bundle a static `nav`
 binary, and a universal VSIX that uses `nav` from your `PATH` or the `withnav.serverPath` setting.
-Native Windows is not supported yet; WSL or VS Code Remote works with the linux VSIX.
+Releases also publish a `win32-x64` VSIX bundling `nav.exe` for native Windows x64.
 
 ## Branching
 
@@ -64,7 +64,7 @@ Native Windows is not supported yet; WSL or VS Code Remote works with the linux 
   `test/<name>`. One topic per branch, short kebab-case names.
 - Open a pull request into `develop`.
 
-More detail, including how releases are cut, is in [`AGENTS.md`](AGENTS.md).
+More detail, including how releases are cut, is in [`AGENTS.md`](https://github.com/PixmaNts/withnav/blob/develop/AGENTS.md).
 
 ## Commit style
 
@@ -99,10 +99,10 @@ CI enforces this list. In the description, say what changed for the user and how
 
 ## Changelog
 
-Add a line under `Unreleased` in [`CHANGELOG.md`](CHANGELOG.md). Documentation-only changes
+Add a line under `Unreleased` in [`CHANGELOG.md`](https://github.com/PixmaNts/withnav/blob/develop/CHANGELOG.md). Documentation-only changes
 do not need one.
 
 ## Code of Conduct and security
 
-- Taking part means following the [Code of Conduct](CODE_OF_CONDUCT.md).
-- Report vulnerabilities privately, as described in [`SECURITY.md`](SECURITY.md).
+- Taking part means following the [Code of Conduct](https://github.com/PixmaNts/withnav/blob/develop/CODE_OF_CONDUCT.md).
+- Report vulnerabilities privately, as described in [`SECURITY.md`](https://github.com/PixmaNts/withnav/blob/develop/SECURITY.md).

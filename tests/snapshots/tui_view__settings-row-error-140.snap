@@ -17,7 +17,7 @@ expression: snapshot
  build               │                                                                                  │ subagents                         
                      │                                                                                  │                                   
  4 Permissions       │                                                                                  │ PENDING · 1                       
- automatic review on │                                                                                  │ subagents.max_concurrent          
+ 2 scratch dirs      │                                                                                  │ subagents.max_concurrent          
                      │                                                                                  │ - 4                               
 ▌5 Subagents ●1      │                                                                                  │ + 65                              
  max 65 per session  │                                                                                  │ [ctrl+s] write  [ctrl+z] revert   

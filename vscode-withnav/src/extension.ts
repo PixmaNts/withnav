@@ -25,7 +25,7 @@ import { registerReflex } from "./reflex";
 import * as fs from "fs";
 import * as path from "path";
 import { affectsSettings, isSettingExplicit, readServerPath, readSetting } from "./settings";
-import { pickServerCommand, ServerChoice } from "./serverPath";
+import { bundledServerName, pickServerCommand, ServerChoice } from "./serverPath";
 import { CognitionBackend } from "./cognition";
 import { registerChatView } from "./chatView";
 import { registerSettingsView } from "./settingsView";
@@ -143,7 +143,7 @@ function readConfig(): WithNavConfig {
  * unpacked; without it the spawn fails with EACCES, so restore it (best effort).
  */
 function resolveServer(): ServerChoice {
-  const bundled = reflexContext ? path.join(reflexContext.extensionPath, "bin", "nav") : "";
+  const bundled = reflexContext ? path.join(reflexContext.extensionPath, "bin", bundledServerName(process.platform)) : "";
   const bundledExists = bundled !== "" && fs.existsSync(bundled);
   const choice = pickServerCommand({
     configured: readServerPath(),
@@ -151,7 +151,7 @@ function resolveServer(): ServerChoice {
     bundled,
     bundledExists,
   });
-  if (choice.source === "bundled") {
+  if (choice.source === "bundled" && process.platform !== "win32") {
     try {
       if ((fs.statSync(bundled).mode & 0o111) === 0) {
         fs.chmodSync(bundled, 0o755);

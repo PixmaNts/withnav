@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "withnav"
-version = "0.7.8"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.89"
 homepage = "https://withnav.dev"
@@ -22,6 +22,7 @@ name = "nav"
 path = "src/main.rs"
 
 [dependencies]
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }
 instinct-flow = { path = "crates/instinct-flow" }
 tokio = { version = "1.53", features = [
     "rt-multi-thread",
@@ -47,7 +48,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 ulid = { version = "3.0.0", features = ["std", "serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
-nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
 sha2 = "0.11.0"
 # sha2 0.11 digests no longer implement LowerHex: hex-encode them explicitly.
 hex = "0.4"
@@ -100,9 +100,25 @@ name = "instinct_probe"
 path = "tools/instinct_probe.rs"
 
 [[example]]
-name = "permission_corpus_probe"
-path = "tools/permission_corpus_probe.rs"
-
-[[example]]
 name = "reflex_latency_probe"
 path = "tools/reflex_latency_probe.rs"
+
+# Unix-only primitives (signals, process groups, descriptor-relative file access, flock).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
+
+# Windows backends: file ACLs for private files, Job Objects for owned process trees,
+# ShellExecuteW to open the browser, the registry to locate Git for Windows.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

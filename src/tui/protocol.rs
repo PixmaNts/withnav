@@ -211,6 +211,10 @@ pub struct CreateSessionResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     #[serde(default, skip_serializing_if = "is_false")]
+    pub yolo: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions_unavailable: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub bypass: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub bypass_seq: u64,
@@ -266,7 +270,7 @@ pub struct StopResponse {
 /// `POST /v1/sessions/{id}/permissions/{request_id}` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionAnswer {
-    /// `allow_once`, `allow_folder` or `deny`.
+    /// `allow_once`, `allow_always` or `reject`.
     pub decision: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

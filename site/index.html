@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WithNav · You set the course. Nav lights the way.</title>
+  <meta name="description" content="WithNav is an open-source pair-programming system in Rust. You keep the keyboard; a crew of models watches, completes, reviews and discusses your code in the terminal, VS Code and the browser.">
+  <link rel="canonical" href="https://withnav.dev/">
+  <meta name="theme-color" content="#061115" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f2f8f8" media="(prefers-color-scheme: light)">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="WithNav">
+  <meta property="og:url" content="https://withnav.dev/">
+  <meta property="og:title" content="WithNav · You set the course. Nav lights the way.">
+  <meta property="og:description" content="An open-source pair-programming system in Rust. You keep the keyboard; a crew of models helps you explore, understand and change your code.">
+  <meta property="og:image" content="https://withnav.dev/assets/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The WithNav logo and the line: You set the course. Nav lights the way.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="WithNav · You set the course. Nav lights the way.">
+  <meta name="twitter:description" content="An open-source pair-programming system in Rust. You keep the keyboard; a crew of models helps you explore, understand and change your code.">
+  <meta name="twitter:image" content="https://withnav.dev/assets/img/og.png">
+  <meta name="twitter:image:alt" content="The WithNav logo and the line: You set the course. Nav lights the way.">
+
+  <link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/img/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+  <link rel="preload" href="assets/fonts/bricolage-grotesque-latin-opsz-wght-500-600.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="assets/css/site.css">
+  <script>try{var t=localStorage.getItem("withnav-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+  <script src="assets/js/theme.js" defer></script>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <!-- Phosphor Icons (regular), MIT licence, https://phosphoricons.com -->
+    <symbol id="i-github" viewBox="0 0 256 256"><path d="M208.31,75.68A59.78,59.78,0,0,0,202.93,28,8,8,0,0,0,196,24a59.75,59.75,0,0,0-48,24H124A59.75,59.75,0,0,0,76,24a8,8,0,0,0-6.93,4,59.78,59.78,0,0,0-5.38,47.68A58.14,58.14,0,0,0,56,104v8a56.06,56.06,0,0,0,48.44,55.47A39.8,39.8,0,0,0,96,192v8H72a24,24,0,0,1-24-24A40,40,0,0,0,8,136a8,8,0,0,0,0,16,24,24,0,0,1,24,24,40,40,0,0,0,40,40H96v16a8,8,0,0,0,16,0V192a24,24,0,0,1,48,0v40a8,8,0,0,0,16,0V192a39.8,39.8,0,0,0-8.44-24.53A56.06,56.06,0,0,0,216,112v-8A58.14,58.14,0,0,0,208.31,75.68ZM200,112a40,40,0,0,1-40,40H112a40,40,0,0,1-40-40v-8a41.74,41.74,0,0,1,6.9-22.48A8,8,0,0,0,80,73.83a43.81,43.81,0,0,1,.79-33.58,43.88,43.88,0,0,1,32.32,20.06A8,8,0,0,0,119.82,64h32.35a8,8,0,0,0,6.74-3.69,43.87,43.87,0,0,1,32.32-20.06A43.81,43.81,0,0,1,192,73.83a8.09,8.09,0,0,0,1,7.65A41.72,41.72,0,0,1,200,104Z"/></symbol>
+    <symbol id="i-compass" viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216ZM172.42,72.84l-64,32a8.05,8.05,0,0,0-3.58,3.58l-32,64A8,8,0,0,0,80,184a8.1,8.1,0,0,0,3.58-.84l64-32a8.05,8.05,0,0,0,3.58-3.58l32-64a8,8,0,0,0-10.74-10.74ZM138,138,97.89,158.11,118,118l40.15-20.07Z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 256 256"><path d="M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm0,72c0,37.07-13.66,67.16-40.6,89.42A129.3,129.3,0,0,1,128,223.62a128.25,128.25,0,0,1-38.92-21.81C61.82,179.51,48,149.3,48,112l0-56,160,0ZM82.34,141.66a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32l-56,56a8,8,0,0,1-11.32,0Z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 256 256"><path d="M168,112a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,112Zm-8,24H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16Zm72-8A104,104,0,0,1,79.12,219.82L45.07,231.17a16,16,0,0,1-20.24-20.24l11.35-34.05A104,104,0,1,1,232,128Zm-16,0A88,88,0,1,0,51.81,172.06a8,8,0,0,1,.66,6.54L40,216,77.4,203.53a7.85,7.85,0,0,1,2.53-.42,8,8,0,0,1,4,1.08A88,88,0,0,0,216,128Z"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 256 256"><path d="M128,128a8,8,0,0,1-3,6.25l-40,32a8,8,0,1,1-10-12.5L107.19,128,75,102.25a8,8,0,1,1,10-12.5l40,32A8,8,0,0,1,128,128Zm48,24H136a8,8,0,0,0,0,16h40a8,8,0,0,0,0-16Zm56-96V200a16,16,0,0,1-16,16H40a16,16,0,0,1-16-16V56A16,16,0,0,1,40,40H216A16,16,0,0,1,232,56ZM216,200V56H40V200H216Z"/></symbol>
+    <symbol id="i-code" viewBox="0 0 256 256"><path d="M69.12,94.15,28.5,128l40.62,33.85a8,8,0,1,1-10.24,12.29l-48-40a8,8,0,0,1,0-12.29l48-40a8,8,0,0,1,10.24,12.3Zm176,27.7-48-40a8,8,0,1,0-10.24,12.3L227.5,128l-40.62,33.85a8,8,0,1,0,10.24,12.29l48-40a8,8,0,0,0,0-12.29ZM162.73,32.48a8,8,0,0,0-10.25,4.79l-64,176a8,8,0,0,0,4.79,10.26A8.14,8.14,0,0,0,96,224a8,8,0,0,0,7.52-5.27l64-176A8,8,0,0,0,162.73,32.48Z"/></symbol>
+    <symbol id="i-browser" viewBox="0 0 256 256"><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,16V88H40V56Zm0,144H40V104H216v96Z"/></symbol>
+    <symbol id="i-lightning" viewBox="0 0 256 256"><path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17ZM109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06l52.8,19.8Z"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 256 256"><path d="M227.31,73.37,182.63,28.68a16,16,0,0,0-22.63,0L36.69,152A15.86,15.86,0,0,0,32,163.31V208a16,16,0,0,0,16,16H92.69A15.86,15.86,0,0,0,104,219.31L227.31,96a16,16,0,0,0,0-22.63ZM92.69,208H48V163.31l88-88L180.69,120ZM192,108.68,147.31,64l24-24L216,84.68Z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 256 256"><path d="M247.31,124.76c-.35-.79-8.82-19.58-27.65-38.41C194.57,61.26,162.88,48,128,48S61.43,61.26,36.34,86.35C17.51,105.18,9,124,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208s66.57-13.26,91.66-38.34c18.83-18.83,27.3-37.61,27.65-38.4A8,8,0,0,0,247.31,124.76ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.47,133.47,0,0,1,25,128,133.33,133.33,0,0,1,48.07,97.25C70.33,75.19,97.22,64,128,64s57.67,11.19,79.93,33.25A133.46,133.46,0,0,1,231.05,128C223.84,141.46,192.43,192,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 256 256"><path d="M120,40V16a8,8,0,0,1,16,0V40a8,8,0,0,1-16,0Zm72,88a64,64,0,1,1-64-64A64.07,64.07,0,0,1,192,128Zm-16,0a48,48,0,1,0-48,48A48.05,48.05,0,0,0,176,128ZM58.34,69.66A8,8,0,0,0,69.66,58.34l-16-16A8,8,0,0,0,42.34,53.66Zm0,116.68-16,16a8,8,0,0,0,11.32,11.32l16-16a8,8,0,0,0-11.32-11.32ZM192,72a8,8,0,0,0,5.66-2.34l16-16a8,8,0,0,0-11.32-11.32l-16,16A8,8,0,0,0,192,72Zm5.66,114.34a8,8,0,0,0-11.32,11.32l16,16a8,8,0,0,0,11.32-11.32ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Zm80,80a8,8,0,0,0-8,8v24a8,8,0,0,0,16,0V216A8,8,0,0,0,128,208Zm112-88H216a8,8,0,0,0,0,16h24a8,8,0,0,0,0-16Z"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 256 256"><path d="M233.54,142.23a8,8,0,0,0-8-2,88.08,88.08,0,0,1-109.8-109.8,8,8,0,0,0-10-10,104.84,104.84,0,0,0-52.91,37A104,104,0,0,0,136,224a103.09,103.09,0,0,0,62.52-20.88,104.84,104.84,0,0,0,37-52.91A8,8,0,0,0,233.54,142.23ZM188.9,190.34A88,88,0,0,1,65.66,67.11a89,89,0,0,1,31.4-26A106,106,0,0,0,96,56,104.11,104.11,0,0,0,200,160a106,106,0,0,0,14.92-1.06A89,89,0,0,1,188.9,190.34Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 256 256"><path d="M240,136v64a16,16,0,0,1-16,16H32a16,16,0,0,1-16-16V136a16,16,0,0,1,16-16H72a8,8,0,0,1,0,16H32v64H224V136H184a8,8,0,0,1,0-16h40A16,16,0,0,1,240,136Zm-117.66-2.34a8,8,0,0,0,11.32,0l48-48a8,8,0,0,0-11.32-11.32L136,108.69V24a8,8,0,0,0-16,0v84.69L85.66,74.34A8,8,0,0,0,74.34,85.66ZM200,168a12,12,0,1,0-12,12A12,12,0,0,0,200,168Z"/></symbol>
+    <symbol id="i-package" viewBox="0 0 256 256"><path d="M223.68,66.15,135.68,18a15.88,15.88,0,0,0-15.36,0l-88,48.17a16,16,0,0,0-8.32,14v95.64a16,16,0,0,0,8.32,14l88,48.17a15.88,15.88,0,0,0,15.36,0l88-48.17a16,16,0,0,0,8.32-14V80.18A16,16,0,0,0,223.68,66.15ZM128,32l80.34,44-29.77,16.3-80.35-44ZM128,120,47.66,76l33.9-18.56,80.34,44ZM40,90l80,43.78v85.79L40,175.82Zm176,85.78h0l-80,43.79V133.82l32-17.51V152a8,8,0,0,0,16,0V107.55L216,90v85.77Z"/></symbol>
+    <symbol id="i-snowflake" viewBox="0 0 256 256"><path d="M223.77,150.09a8,8,0,0,1-5.86,9.68l-24.64,6,6.46,24.11a8,8,0,0,1-5.66,9.8A8.25,8.25,0,0,1,192,200a8,8,0,0,1-7.72-5.93l-7.72-28.8L136,141.86v46.83l21.66,21.65a8,8,0,0,1-11.32,11.32L128,203.31l-18.34,18.35a8,8,0,0,1-11.32-11.32L120,188.69V141.86L79.45,165.27l-7.72,28.8A8,8,0,0,1,64,200a8.25,8.25,0,0,1-2.08-.27,8,8,0,0,1-5.66-9.8l6.46-24.11-24.64-6a8,8,0,0,1,3.82-15.54l29.45,7.23L112,128,71.36,104.54l-29.45,7.23A7.85,7.85,0,0,1,40,112a8,8,0,0,1-1.91-15.77l24.64-6L56.27,66.07a8,8,0,0,1,15.46-4.14l7.72,28.8L120,114.14V67.31L98.34,45.66a8,8,0,0,1,11.32-11.32L128,52.69l18.34-18.35a8,8,0,0,1,11.32,11.32L136,67.31v46.83l40.55-23.41,7.72-28.8a8,8,0,0,1,15.46,4.14l-6.46,24.11,24.64,6A8,8,0,0,1,216,112a7.85,7.85,0,0,1-1.91-.23l-29.45-7.23L144,128l40.64,23.46,29.45-7.23A8,8,0,0,1,223.77,150.09Z"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 256 256"><path d="M226.76,69a8,8,0,0,0-12.84-2.88l-40.3,37.19-17.23-3.7-3.7-17.23,37.19-40.3A8,8,0,0,0,187,29.24,72,72,0,0,0,88,96,72.34,72.34,0,0,0,94,124.94L33.79,177c-.15.12-.29.26-.43.39a32,32,0,0,0,45.26,45.26c.13-.13.27-.28.39-.42L131.06,162A72,72,0,0,0,232,96,71.56,71.56,0,0,0,226.76,69ZM160,152a56.14,56.14,0,0,1-27.07-7,8,8,0,0,0-9.92,1.77L67.11,211.51a16,16,0,0,1-22.62-22.62L109.18,133a8,8,0,0,0,1.77-9.93,56,56,0,0,1,58.36-82.31l-31.2,33.81a8,8,0,0,0-1.94,7.1L141.83,108a8,8,0,0,0,6.14,6.14l26.35,5.66a8,8,0,0,0,7.1-1.94l33.81-31.2A56.06,56.06,0,0,1,160,152Z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 256 256"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></symbol>
+    <symbol id="wordtype" viewBox="0 0 162 31"><path d="M14.52 30L7.24 30L1.08 3.60L6.56 3.60L10.96 25.60L11.36 25.60L16.28 3.60L22.80 3.60L27.68 25.60L28.12 25.60L32.56 3.60L37.80 3.60L31.52 30L24.40 30L19.64 8L19.28 8L14.52 30ZM45.96 30L40.92 30L40.92 9.08L45.96 9.08L45.96 30ZM43.44 5.80L43.44 5.80Q41.92 5.80 41.10 5.14Q40.28 4.48 40.28 3.24L40.28 3.24Q40.28 2 41.10 1.34Q41.92 0.68 43.44 0.68L43.44 0.68Q45.04 0.68 45.84 1.32Q46.64 1.96 46.64 3.24L46.64 3.24Q46.64 4.48 45.82 5.14Q45.00 5.80 43.44 5.80ZM58.16 30.48L58.16 30.48Q54.84 30.48 53.28 28.70Q51.72 26.92 51.72 23.16L51.72 23.16L51.72 13.12L48.64 13.12L48.72 9.12L50.76 9.12Q51.92 9.12 52.48 8.76Q53.04 8.40 53.16 7.48L53.16 7.48L53.64 4.44L56.56 4.44L56.56 9.08L62.08 9.08L62.08 13.28L56.56 13.28L56.56 22.96Q56.56 24.44 57.26 25.12Q57.96 25.80 59.36 25.80L59.36 25.80Q60.12 25.80 60.86 25.62Q61.60 25.44 62.24 25L62.24 25L62.24 29.80Q61.00 30.20 59.98 30.34Q58.96 30.48 58.16 30.48ZM70.64 30L65.60 30L65.60 17L65.60 1.60L70.68 1.60L70.68 8.12Q70.68 8.96 70.62 9.84Q70.56 10.72 70.44 11.64Q70.32 12.56 70.18 13.48Q70.04 14.40 69.88 15.32L69.88 15.32L70.72 15.32Q71.28 13.16 72.16 11.66Q73.04 10.16 74.42 9.36Q75.80 8.56 77.80 8.56L77.80 8.56Q81.44 8.56 83.24 11.10Q85.04 13.64 85.04 18.80L85.04 18.80L85.04 30L79.96 30L79.96 19.52Q79.96 16.08 78.94 14.44Q77.92 12.80 75.88 12.80L75.88 12.80Q74.20 12.80 73.08 13.82Q71.96 14.84 71.36 16.52Q70.76 18.20 70.64 20.32L70.64 20.32L70.64 30ZM94.76 30L89.84 30L89.84 3.60L96.44 3.60L109.08 23.24L109.44 23.24L109.12 3.60L114.04 3.60L114.04 30L108.04 30L94.84 9.60L94.44 9.60L94.76 30ZM124.04 30.52L124.04 30.52Q122.32 30.52 120.96 29.86Q119.60 29.20 118.82 27.88Q118.04 26.56 118.04 24.60L118.04 24.60Q118.04 22.96 118.66 21.80Q119.28 20.64 120.52 19.90Q121.76 19.16 123.60 18.66Q125.44 18.16 127.92 17.80L127.92 17.80Q129.28 17.60 130.14 17.40Q131 17.20 131.40 16.78Q131.80 16.36 131.80 15.52L131.80 15.52Q131.80 14.28 130.94 13.38Q130.08 12.48 128.16 12.48L128.16 12.48Q127 12.48 125.94 12.88Q124.88 13.28 124.12 14.14Q123.36 15 123.08 16.40L123.08 16.40L118.56 15Q119 13.40 119.84 12.22Q120.68 11.04 121.92 10.20Q123.16 9.36 124.76 8.96Q126.36 8.56 128.28 8.56L128.28 8.56Q131.20 8.56 133.08 9.50Q134.96 10.44 135.88 12.42Q136.80 14.40 136.80 17.52L136.80 17.52L136.80 21.44Q136.80 22.80 136.86 24.26Q136.92 25.72 137.02 27.18Q137.12 28.64 137.28 30L137.28 30L132.76 30Q132.60 28.88 132.48 27.60Q132.36 26.32 132.28 25L132.28 25L131.64 25Q131.08 26.52 130.04 27.78Q129 29.04 127.50 29.78Q126 30.52 124.04 30.52ZM126.04 26.80L126.04 26.80Q126.84 26.80 127.66 26.52Q128.48 26.24 129.28 25.68Q130.08 25.12 130.76 24.30Q131.44 23.48 131.92 22.36L131.92 22.36L131.84 18.80L132.80 18.96Q132.12 19.52 131.12 19.84Q130.12 20.16 129.02 20.32Q127.92 20.48 126.82 20.70Q125.72 20.92 124.84 21.26Q123.96 21.60 123.44 22.22Q122.92 22.84 122.92 23.92L122.92 23.92Q122.92 25.28 123.80 26.04Q124.68 26.80 126.04 26.80ZM153.24 30L146.28 30L139.12 9.12L144.72 9.12L149.56 25.96L150.16 25.96L155 9.12L160.44 9.12L153.24 30Z"/></symbol>
+    <symbol id="mark" viewBox="0 0 64 64"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"/><circle cx="32" cy="16" r="4.5" fill="var(--la)"/><polygon points="32,31 40.5,47 32,63 23.5,47" fill="currentColor"/><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"/></symbol>
+  </svg>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap site-header__row">
+      <a class="brand" href="#top" aria-label="WithNav, back to top">
+        <svg class="brand__mark" aria-hidden="true"><use href="#mark"/></svg>
+        <svg class="brand__word" aria-hidden="true"><use href="#wordtype"/></svg>
+      </a>
+      <nav class="site-nav" aria-label="Main">
+        <a href="#crew">Crew</a>
+        <a href="#layers">Layers</a>
+        <a href="#clients">Clients</a>
+        <a href="#install">Install</a>
+        <a href="/docs/">Docs</a>
+        <a href="https://github.com/PixmaNts/withnav/blob/main/CHANGELOG.md">Changelog</a>
+      </nav>
+      <div class="site-header__tools">
+        <button class="theme-toggle" type="button" id="theme-toggle" hidden aria-label="Switch to light theme">
+          <svg class="icon icon-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+          <svg class="icon icon-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+        <a class="gh-btn" href="https://github.com/PixmaNts/withnav">
+          <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg><span>GitHub</span>
+          <span class="sr-only"> (source code)</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Hero -->
+    <section id="top" class="wrap hero" aria-labelledby="hero-title">
+      <div class="hero__copy">
+        <ul class="badges" aria-label="About this release">
+          <li><a class="badge" href="https://github.com/PixmaNts/withnav/releases/latest">v0.8.0 · pre-1.0</a></li>
+          <li><span class="badge badge--ok">Free and open source</span></li>
+          <li><span class="badge">Written in Rust</span></li>
+        </ul>
+        <p class="eyebrow" aria-hidden="true">WITHNAV</p>
+        <h1 id="hero-title"><span>You set the course.</span><span class="accent">Nav lights the way.</span></h1>
+        <p class="hero__sub">A pair-programming system where you keep the keyboard. A crew of AI models helps you explore, understand and change your code. You stay at the helm.</p>
+        <div class="btn-row">
+          <a class="btn btn--primary" href="#install">Install WithNav</a>
+          <a class="btn" href="/docs/">Read the docs</a>
+        </div>
+        <p class="cmd" aria-label="Command: run the terminal client"><span class="p" aria-hidden="true">$</span><span>nav tui</span></p>
+      </div>
+
+      <figure class="demo" aria-labelledby="demo-caption">
+        <div class="demo__bar" aria-hidden="true">
+          <span><span class="who-nav">◆</span> <span class="who-captain">withnav</span></span><span>~/dev/parser</span><span>develop ●3</span><span class="agent">▌build</span>
+        </div>
+        <div class="demo__body">
+          <div><span class="who-captain">▌captain</span><div>Swap the toml parser for an incremental one. Keep <span class="ref">Config::load(p)</span>.</div></div>
+          <div><span class="who-nav">▌nav</span><div>I'll map the call sites first, then edit.</div>
+            <div class="tool"><span class="ok">✓</span> grep "from_str" · 7 matches</div>
+            <div class="tool"><span class="vig"><span class="spin" aria-hidden="true">◐</span> vigie</span> · scouting · read-only</div>
+          </div>
+          <div class="remark"><div class="remark__head">◇ remark · nav · config.rs:42</div><div>A second parameter breaks "public API unchanged" in the intent record.</div><div class="keys">useful · noise · dismiss</div></div>
+          <div class="ask"><div class="ask__head">✋ edit src/config.rs · needs your approval</div><div class="keys"><b>o</b> once · <b>a</b> always · <b>r</b> reject</div></div>
+        </div>
+        <div class="demo__foot" aria-hidden="true"><span class="p">❯</span> <span style="opacity:.7">/ for commands · ctrl+p palette</span></div>
+        <figcaption id="demo-caption" class="sr-only">Illustration of a WithNav session: the Captain asks for a change, Nav maps the call sites while Vigie scouts, Nav leaves a remark that the change breaks the intent record, and the edit waits for the Captain's approval.</figcaption>
+      </figure>
+    </section>
+
+    <!-- Crew -->
+    <section id="crew" class="band" aria-labelledby="crew-title">
+      <div class="wrap section">
+        <div class="intro">
+          <p class="kicker kicker--nav">The Crew</p>
+          <h2 id="crew-title" class="h2">One point of contact. Three specialists when needed.</h2>
+          <p class="lead">You talk to Nav. Nav brings in Vigie, Lux or Mousse when the task calls for it. You see each one's goal and progress as it works, and each one only has the access its role needs.</p>
+        </div>
+        <div class="grid-cards">
+          <article class="crew-card">
+            <svg class="glyph c-nav" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="4" opacity=".5"/><g transform="rotate(30 32 32)"><polygon points="32,11 38.5,32 25.5,32" fill="currentColor"/><polygon points="25.5,32 38.5,32 32,53" fill="currentColor" opacity=".45"/></g></svg>
+            <div class="crew-card__name"><h3 class="c-nav">Nav</h3><span class="crew-card__role">The Navigator</span></div>
+            <p>Understands the course, proposes a route, coordinates the crew and asks before important decisions.</p>
+            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg>Edits under your permission rules</div>
+          </article>
+          <article class="crew-card">
+            <svg class="glyph c-vig" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="16" width="60" height="32" rx="16" fill="none" stroke="currentColor" stroke-width="4" opacity=".5"/><path d="M13 32 Q32 18 51 32 Q32 46 13 32Z" fill="none" stroke="currentColor" stroke-width="4.5" stroke-linejoin="round"/><circle cx="32" cy="32" r="5" fill="currentColor"/></svg>
+            <div class="crew-card__name"><h3 class="c-vig">Vigie</h3><span class="crew-card__role">The Lookout</span></div>
+            <p>Scouts the codebase, docs and web. Separates what it saw from what it assumes, and cites its sources.</p>
+            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>Read-only</div>
+          </article>
+          <article class="crew-card">
+            <svg class="glyph c-lux" viewBox="0 0 64 64" aria-hidden="true"><polygon points="32,5 60,56 4,56" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round" opacity=".5"/><path d="M32 24 L35.2 35.8 L47 39 L35.2 42.2 L32 54 L28.8 42.2 L17 39 L28.8 35.8Z" fill="currentColor"/></svg>
+            <div class="crew-card__name"><h3 class="c-lux">Lux</h3><span class="crew-card__role">The Expert Advisor</span></div>
+            <p>When the route becomes uncertain, ask Lux: architecture, risks, reviews and hard bugs.</p>
+            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>Read-only · recommends</div>
+          </article>
+          <article class="crew-card">
+            <svg class="glyph c-mou" viewBox="0 0 64 64" aria-hidden="true"><rect x="5" y="5" width="54" height="54" rx="15" fill="none" stroke="currentColor" stroke-width="4" opacity=".5"/><circle cx="26" cy="32" r="9.5" fill="none" stroke="currentColor" stroke-width="5.5"/><circle cx="38" cy="32" r="9.5" fill="none" stroke="currentColor" stroke-width="5.5"/></svg>
+            <div class="crew-card__name"><h3 class="c-mou">Mousse</h3><span class="crew-card__role">The Lightweight Deckhand</span></div>
+            <p>A quick hand for small, local edits: renames, formatting, basic tests. Hands the task back to Nav when it grows.</p>
+            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg>Small local edits · under your rules</div>
+          </article>
+        </div>
+        <ul class="on-demand">
+          <li class="on-demand__label">On demand:</li>
+          <li class="chip">
+            <svg class="glyph c-car" viewBox="0 0 64 64" aria-hidden="true"><polygon points="60,32 46,7.75 18,7.75 4,32 18,56.25 46,56.25" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round" opacity=".5"/><polyline points="18,41 30,23 46,36" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linejoin="round"/><circle cx="18" cy="41" r="5" fill="currentColor"/><circle cx="30" cy="23" r="5" fill="currentColor"/><circle cx="46" cy="36" r="5" fill="currentColor"/></svg>
+            <span class="chip__text"><span class="chip__name c-car">Cartographe</span><span class="chip__body">Charts modules, dependencies and flows</span></span>
+          </li>
+          <li class="chip">
+            <svg class="glyph c-son" viewBox="0 0 64 64" aria-hidden="true"><rect x="16" y="2" width="32" height="60" rx="16" fill="none" stroke="currentColor" stroke-width="6" opacity=".5"/><path d="M23 15 Q32 9 41 15" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><line x1="32" y1="13" x2="32" y2="38" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><polygon points="32,36 39,45.5 32,55 25,45.5" fill="currentColor"/></svg>
+            <span class="chip__text"><span class="chip__name c-son">Sondeur</span><span class="chip__body">Looks for root causes</span></span>
+          </li>
+        </ul>
+        <p class="motto">I remain in control, but I no longer navigate alone.</p>
+      </div>
+    </section>
+
+    <!-- Layers -->
+    <section id="layers" class="band band--panel" aria-labelledby="layers-title">
+      <div class="wrap section">
+        <div class="intro">
+          <p class="kicker">Under the hood · four layers</p>
+          <h2 id="layers-title" class="h2">Fast layers watch. Slow layers think. You decide.</h2>
+          <p class="lead">Each layer has its own model and its own job. The fast ones run often; the deep ones speak only when it is worth it.</p>
+        </div>
+        <ol class="layers">
+          <li class="layer layer--captain">
+            <div class="layer__name"><h3><svg viewBox="0 0 12 20" aria-hidden="true"><polygon points="6,0 12,10 6,20 0,10" fill="currentColor"/></svg>Captain</h3></div>
+            <p class="layer__desc">You. You keep the helm, give each remark a verdict and decide what gets done. Nav does the work only when you hand it over.</p>
+            <div class="layer__when">always in charge</div>
+          </li>
+          <li class="layer">
+            <div class="layer__name"><h3>Reflex</h3><span class="layer__api">api · fim</span></div>
+            <p class="layer__desc">Ghost-text suggestions in the editor, accepted with Tab.</p>
+            <div class="layer__when"><span>as you type</span><div class="depth" aria-hidden="true"><span style="width:12%"></span></div></div>
+          </li>
+          <li class="layer">
+            <div class="layer__name"><h3>Instinct</h3><span class="layer__api">api · systemone</span></div>
+            <p class="layer__desc">Typed decisions: when to speak, how to judge tool calls no rule covers through the permission flow, and whether a subagent is stuck.</p>
+            <div class="layer__when"><span>on every trigger</span><div class="depth" aria-hidden="true"><span style="width:36%"></span></div></div>
+          </li>
+          <li class="layer">
+            <div class="layer__name"><h3>Metacognition</h3><span class="layer__api">api · chat</span></div>
+            <p class="layer__desc">Short remarks beside your code, decisions on watchdog doubts, and a wake for Nav when the code contradicts what you agreed.</p>
+            <div class="layer__when"><span>when it matters</span><div class="depth" aria-hidden="true"><span style="width:64%"></span></div></div>
+          </li>
+          <li class="layer">
+            <div class="layer__name"><h3>Cognition</h3><span class="layer__api">api · chat · agents</span></div>
+            <p class="layer__desc">Where Nav and the crew run: the build and plan agents, Vigie, Lux and Mousse in the background, tools, MCP servers, skills and rules.</p>
+            <div class="layer__when"><span>when you ask</span><div class="depth" aria-hidden="true"><span style="width:100%"></span></div></div>
+          </li>
+        </ol>
+        <p class="footnote">Models come from the gateways you configure. One model per lower layer, one per agent, all in <code>config.json</code>.</p>
+      </div>
+    </section>
+
+    <!-- You keep the helm -->
+    <section class="wrap section" aria-labelledby="helm-title">
+      <div class="intro">
+        <p class="kicker">You keep the helm</p>
+        <h2 id="helm-title" class="h2">Built to work with you, not instead of you.</h2>
+      </div>
+      <div class="points">
+        <article class="point">
+          <svg class="icon" aria-hidden="true"><use href="#i-compass"/></svg>
+          <h3>An intent record you share</h3>
+          <p>Nav writes down the goal, the route and the decisions as they settle. When the code drifts from them, Nav says so beside the line.</p>
+          <code>.withnav/intent.md</code>
+        </article>
+        <article class="point">
+          <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+          <h3>Your rules decide what runs</h3>
+          <p>Your rules say allow, ask or deny: the most precise wins, and a deny is final. A permission flow judges calls no rule covers: did you ask for it, is it a read or a recoverable change? Anything still in doubt is asked to you. Credentials and WithNav's own configuration stay protected unless you turn off all checks with yolo. This is not a sandbox.</p>
+          <code>once · always · reject</code>
+        </article>
+        <article class="point">
+          <svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>
+          <h3>Remarks you can rate</h3>
+          <p>Mark a remark useful or noise, or dismiss it. Verdicts go to a local decision log, and you can replay recorded runs against a changed flow without calling a model.</p>
+          <code>useful · noise · dismissed</code>
+        </article>
+      </div>
+    </section>
+
+    <!-- Clients -->
+    <section id="clients" class="band band--panel" aria-labelledby="clients-title">
+      <div class="wrap section">
+        <div class="intro">
+          <p class="kicker">One core, every surface</p>
+          <h2 id="clients-title" class="h2">The same sessions in your terminal, editor and browser.</h2>
+          <p class="lead">Every client talks to one local session server. Settings in any of them write the same <code>config.json</code>.</p>
+        </div>
+        <div class="grid-cards">
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg><h3>Terminal</h3></div>
+            <p>Tabs, a command palette, a model picker, subagents and Settings, built with Ratatui.</p>
+            <code class="snippet">nav tui</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><h3>VS Code</h3></div>
+            <p>Inline suggestions, remarks on the line, and the Nav chat beside your code.</p>
+            <code class="snippet">pixmants.withnav</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg><h3>Browser</h3></div>
+            <p>Workspaces and sessions on a private local link that changes on every run.</p>
+            <code class="snippet">nav web</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-lightning"/></svg><h3>One task</h3></div>
+            <p>Run one task and exit, with exit codes for scripts and CI.</p>
+            <code class="snippet">nav run -p "…"</code>
+          </article>
+        </div>
+        <div class="split" style="margin-top:12px">
+          <div class="stack">
+            <h3>Or build your own client</h3>
+            <p class="muted">HTTP for commands, Server-Sent Events for the stream. Every event carries a sequence number, so a client can reconnect and pick up where it left off. <code>nav serve</code> listens on loopback by default.</p>
+            <a class="link" href="/docs/cli.html#nav-serve">Server reference <svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+          </div>
+<pre tabindex="0" class="code-block" aria-label="Example: start a session and follow its events with curl"><span class="c"># start a session</span>
+curl -s -H 'content-type: application/json' \
+  -d '{"workspace":"'"$PWD"'"}' <span class="k">127.0.0.1:7310/v1/sessions</span>
+
+<span class="c"># follow it (resume with Last-Event-ID)</span>
+curl -N <span class="k">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
+<span class="e">id:</span> 42
+<span class="e">data:</span> {"kind":"llm.delta", …}</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Models -->
+    <section class="wrap section split" style="align-items:center;gap:40px" aria-labelledby="models-title">
+      <div class="stack" style="gap:12px">
+        <p class="kicker">Your models</p>
+        <h2 id="models-title" class="h2">Bring the gateways you already use.</h2>
+        <p class="lead"><code>models.json</code> lists what you can reach, named <code>gateway/id</code>. <code>config.json</code> says which model each layer and agent uses. Change it from <code>/config</code>, VS Code or the browser; a session can switch its own model without touching the file.</p>
+      </div>
+<pre tabindex="0" class="code-block code-block--panel" aria-label="Excerpt of config.example.json"><span class="c">// ~/.config/withnav/config.json</span>
+{
+  <span class="k">"layers"</span>: {
+    <span class="k">"reflex"</span>: <span class="s">"inception/mercury-edit-2"</span>,
+    <span class="k">"instinct"</span>: <span class="s">"omniroute/typesafe/jev-1.13"</span>,
+    <span class="k">"metacognition"</span>: {
+      <span class="k">"model"</span>: <span class="s">"omniroute/combo/deepseek-v4-flash"</span>,
+      <span class="k">"variant"</span>: <span class="s">"low"</span>
+    }
+  },
+  <span class="k">"default_agent"</span>: <span class="s">"build"</span>,
+  <span class="k">"agents"</span>: {
+    <span class="k">"build"</span>: { <span class="k">"model"</span>: <span class="s">"omniroute/cc/claude-opus-5-5"</span> }
+  }
+}</pre>
+    </section>
+
+    <!-- Install -->
+    <section id="install" class="band band--panel" aria-labelledby="install-title">
+      <div class="wrap section">
+        <div class="intro">
+          <p class="kicker">Install</p>
+          <h2 id="install-title" class="h2">Pick the package for your setup.</h2>
+          <p class="lead">Every release on GitHub ships ready-to-install files for Linux and Windows, with <code>SHA256SUMS</code> to check them.</p>
+        </div>
+        <div class="grid-cards grid-cards--3">
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><h3>VS Code on Linux</h3></div>
+            <p>One package for x64 and one for arm64. Each has <code>nav</code> inside, so there is nothing else to install.</p>
+            <code class="snippet">withnav-linux-x64-&lt;version&gt;.vsix</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><h3>VS Code on Windows</h3></div>
+            <p>The x64 package bundles <code>nav.exe</code>. The bash tool needs Git for Windows. See the <a href="/docs/install.html#native-windows-x64">Windows install notes</a>.</p>
+            <code class="snippet">withnav-win32-x64-&lt;version&gt;.vsix</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg><h3>Universal VSIX</h3></div>
+            <p>No binary inside. It uses <code>nav</code> from your <code>PATH</code>, or the path in <code>withnav.serverPath</code>.</p>
+            <code class="snippet">withnav-&lt;version&gt;.vsix</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg><h3>The nav binary</h3></div>
+            <p>Static Linux binaries for x64 and arm64 as tarballs, and <code>nav-&lt;version&gt;-x86_64-pc-windows-msvc.zip</code> for Windows x64. One binary runs the terminal, the browser and the server.</p>
+            <code class="snippet">nav-&lt;version&gt;-x86_64-unknown-linux-musl.tar.gz</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-snowflake"/></svg><h3>Nix</h3></div>
+            <p>The flake builds both. Its overlay adds <code>pkgs.withnav</code> and <code>pkgs.vscode-withnav</code>.</p>
+            <code class="snippet">nix build github:PixmaNts/withnav#withnav</code>
+          </article>
+          <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><h3>From source</h3></div>
+            <p>Clone the repository and build with cargo (Rust 1.89 or later).</p>
+            <code class="snippet">cargo build --release --bins</code>
+          </article>
+        </div>
+        <div class="btn-row">
+          <a class="btn btn--primary" href="https://github.com/PixmaNts/withnav/releases/latest"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Latest release</a>
+          <a class="btn" href="/docs/install.html">Install guide</a>
+        </div>
+        <p class="notice"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>The extension needs VS Code 1.91 or later. It is not on the VS Code Marketplace yet: install the VSIX file with <code>code --install-extension</code>. Then add your gateways and keys (see the <a href="/docs/quick-start.html">quick start</a>) and run <code>nav doctor</code> to check the setup.</span></p>
+      </div>
+    </section>
+
+    <!-- Open source -->
+    <section class="band oss" aria-labelledby="oss-title">
+      <div class="wrap section">
+        <h2 id="oss-title">Free and open source, dual-licensed MIT or Apache-2.0.</h2>
+        <p class="lead">WithNav is developed in the open on GitHub. Read the code, ask a question, open an issue, or send a pull request to <code>develop</code>.</p>
+        <div class="btn-row">
+          <a class="btn btn--accent" href="https://github.com/PixmaNts/withnav"><svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>github.com/PixmaNts/withnav</a>
+          <a class="btn" href="https://github.com/PixmaNts/withnav/discussions">Discussions</a>
+          <a class="btn" href="https://github.com/PixmaNts/withnav/blob/main/CONTRIBUTING.md">How to contribute</a>
+        </div>
+        <ul class="facts">
+          <li><a href="https://github.com/PixmaNts/withnav#license">MIT OR Apache-2.0</a></li>
+          <li>Rust · TypeScript</li>
+          <li>Runs locally, with the model gateways you choose</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap site-footer__row">
+      <span class="brand" role="img" aria-label="WithNav">
+        <svg class="brand__mark" aria-hidden="true"><use href="#mark"/></svg>
+        <svg class="brand__word" aria-hidden="true"><use href="#wordtype"/></svg>
+      </span>
+      <span>MIT OR Apache-2.0 · WithNav contributors</span>
+      <nav aria-label="Footer">
+        <a href="/docs/">Docs</a>
+        <a href="https://github.com/PixmaNts/withnav/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/PixmaNts/withnav/discussions">Discussions</a>
+        <a href="https://github.com/PixmaNts/withnav">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

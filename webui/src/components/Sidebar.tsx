@@ -179,6 +179,8 @@ function SessionRow({ s, kids, ws, route, navigate, onDelete }: { s: SessionList
           title={title}
         >
           <span className="title">{title}</span>
+          {s.yolo && <span className="bypass-badge">⚠ YOLO</span>}
+          {!s.yolo && s.permissions_unavailable && <span className="bypass-badge" title={s.permissions_unavailable}>⚠ Permission rules unavailable</span>}
           {s.bypass && <span className="bypass-badge">⚠ bypass</span>}
           <span className="meta">
             {[dayLabel(s.updated_at), plural(s.message_count, "msg")].filter(Boolean).join(" · ")}
@@ -200,6 +202,8 @@ function SessionRow({ s, kids, ws, route, navigate, onDelete }: { s: SessionList
           title={k.title ?? undefined}
         >
           <span className="agent">└ <Crew id={k.agent} /></span>
+          {k.yolo && <span className="bypass-badge">⚠ YOLO</span>}
+          {!k.yolo && k.permissions_unavailable && <span className="bypass-badge" title={k.permissions_unavailable}>⚠ Permission rules unavailable</span>}
           {k.bypass && <span className="bypass-badge">⚠ bypass</span>}
           <span className="meta">{k.child_status ?? (k.live ? "running" : "")}</span>
         </button>

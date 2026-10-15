@@ -66,10 +66,10 @@ const triggers: TriggerSpec[] = [
   {
     name: "tool.pre_call",
     can_block: true,
-    payload_fields: [f("tool", "string"), f("args", "object"), f("call_id", "string")],
-    allowed_actions: ["ask_captain", "deny", "inject_note", "log", "no_objection", "wake"],
+    payload_fields: [f("tool", "string"), f("args", "object"), f("call_id", "string"), f("rule_effect", "string", false), f("rule", "string", false), f("commands", "array", false), f("inside_project", "boolean", false), f("protected", "boolean", false), f("skill", "object", false)],
+    allowed_actions: ["ask_captain", "deny", "inject_note", "log", "allow", "apply_rule", "wake"],
     sample_payload: { tool: "write", args: { path: "src/lib.rs", content: "" }, call_id: "sample" },
-    default_fallback: { action: "ask_captain", params: { note: "Flow failed: {failure_message}" }, then: null },
+    default_fallback: { action: "apply_rule", params: {}, then: null },
   },
   {
     name: "turn.end",
@@ -84,6 +84,7 @@ const triggers: TriggerSpec[] = [
 const input = (name: string, value_type: InputSpec["value_type"], source: string, on: string[]): InputSpec => ({ name, input_type: "text", value_type, source, triggers: on });
 
 const inputs: InputSpec[] = [
+  input("conversation.captain_messages", "array", "conversation", ALL),
   input("conversation.digest", "string", "conversation", ALL),
   input("conversation.last_captain", "string", "conversation", ALL),
   input("conversation.last_turns", "array", "conversation", ALL),
@@ -106,7 +107,8 @@ const actions: ActionSpec[] = [
   { name: "deny", kind: "verdict", priority: 2, params: note, allowed_triggers: ["tool.pre_call"] },
   { name: "inject_note", kind: "effect", priority: null, params: [f("text", "string")], allowed_triggers: ALL },
   { name: "log", kind: "effect", priority: null, params: [f("text", "string")], allowed_triggers: ALL },
-  { name: "no_objection", kind: "verdict", priority: 0, params: [], allowed_triggers: ["tool.pre_call"] },
+  { name: "allow", kind: "verdict", priority: 0, params: [{ name: "protected_ok", value_type: "boolean", required: false }], allowed_triggers: ["tool.pre_call"] },
+  { name: "apply_rule", kind: "verdict", priority: null, params: [], allowed_triggers: ["tool.pre_call"] },
   { name: "remark", kind: "effect", priority: null, params: [f("prompt", "string")], allowed_triggers: EDITOR },
   { name: "wake", kind: "effect", priority: null, params: note, allowed_triggers: ALL },
 ];
@@ -142,7 +144,7 @@ MIN_YES = 0.75
 
 [fallback]
 on_failure = { action = "ask_captain", params = { note = "Flow failed: {failure_message}" } }
-on_timeout = { action = "no_objection", params = {} }
+on_timeout = { action = "allow", params = {} }
 on_provider_error = { action = "ask_captain", params = { note = "Instinct unavailable" } }
 on_invalid_answer = { action = "ask_captain", params = { note = "Invalid instinct answer" } }
 
@@ -220,7 +222,7 @@ false = ["ask"]
 [[node]]
 id = "continue"
 type = "action"
-action = "no_objection"
+action = "allow"
 [node.params]
 
 [[node]]

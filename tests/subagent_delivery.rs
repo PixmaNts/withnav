@@ -37,6 +37,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     std::fs::create_dir(&ws).unwrap();
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
+        .allow_everything()
         .state();
     let parent = state
         .create_session(&ws, None, false)
@@ -447,8 +448,12 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
         .unwrap();
     let mut other_config = config.clone();
     other_config.data_dir = tmp.path().join("another-data-directory");
+    #[cfg(unix)]
     let alias = tmp.path().join("database-alias.db");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&config.history_db, &alias).unwrap();
+    #[cfg(windows)]
+    let alias = config.history_db.clone();
     other_config.history_db = alias;
     let second = AppState::new(other_config).unwrap();
     assert_eq!(

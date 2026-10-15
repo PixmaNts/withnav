@@ -1198,7 +1198,7 @@ pub fn combine_verdicts(
         };
         for action in actions {
             match catalogue.action(&action.action) {
-                Some(spec) if spec.kind == ActionKind::Verdict => {
+                Some(spec) if spec.kind == ActionKind::Verdict && spec.priority.is_some() => {
                     candidates.push((spec.priority.unwrap_or(0), &outcome.trace.flow_name, action))
                 }
                 Some(_) => {}

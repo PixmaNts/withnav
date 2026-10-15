@@ -335,6 +335,8 @@ fn state() -> State {
         selected_model_name: Some("cc/claude-opus-5-5".into()),
         context_window: Some(200_000),
         session: Some(SessionMetadata {
+            yolo: false,
+            permissions_unavailable: None,
             bypass: false,
             bypass_seq: 0,
             incarnation: None,
@@ -347,8 +349,14 @@ fn state() -> State {
             // The status line shows the home folder as `~`, and the snapshots expect
             // `~/dev/project`. A fixed `/home/pixma/...` only matched on a machine whose home
             // is `/home/pixma` (observed 2026-10-12: ten snapshots failed on a runner whose
-            // home is `/home/runner`), so build the path from the actual home.
-            workspace: format!("{}/dev/project", std::env::var("HOME").unwrap()),
+            // home is `/home/runner`), so build the path from the actual home. Windows usually
+            // has no `HOME`: the status line then uses `USERPROFILE`, and so does this fixture.
+            workspace: format!(
+                "{}/dev/project",
+                std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap()
+            ),
             model: "cognition".into(),
             agent: None,
             variant: None,
@@ -430,7 +438,7 @@ fn watchdog_pause_and_budget_are_not_questions_and_permission_keys_take_priority
     let mut permission = asking(prompt("bash", json!({"command":"true"}), ("folder", "/ws")));
     permission.watchdog_paused = true;
     let text = screen_text(&permission, &UiState::default(), (100, 30));
-    assert!(text.contains("allow once"));
+    assert!(text.contains("once"));
     assert!(!text.contains("alt+c continue"));
 }
 fn done() -> State {
@@ -500,7 +508,6 @@ fn settings_view_state() -> (State, UiState) {
             "agents.build",
             json!({"model":"omniroute/combo/deepseek-v4-flash","variant":"high"}),
         ),
-        ("permissions.automatic_review", json!(true)),
         (
             "permissions.scratch_dirs",
             json!(["/run/user/1000/withnav", "/tmp/withnav"]),
@@ -572,12 +579,12 @@ fn settings_pending_two_changes() {
     let (mut s, ui) = settings_view_state();
     s.config.section = withnav::tui::config::Section::Subagents;
     s.config
-        .stage("permissions.automatic_review".into(), json!(false));
+        .stage("subagents.watchdog_interval_secs".into(), json!(60));
     s.config.stage("subagents.max_concurrent".into(), json!(5));
     let text = render("settings-pending-140", (140, 40), &s, &ui, &Editor::new());
     assert!(text.contains("● 2 unsaved"));
-    assert!(text.contains("- true"));
-    assert!(text.contains("+ false"));
+    assert!(text.contains("- 300"));
+    assert!(text.contains("+ 60"));
 }
 
 #[test]
@@ -2311,7 +2318,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
     Block {
         id: "permission:R1".into(),
         kind: BlockKind::Permission(withnav::tui::state::PermissionPrompt {
-            allow_config_session: false,
+            always_label: None,
             skill_script: None,
             child_session_id: None,
             request_id: "R1".into(),
@@ -2324,6 +2331,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
             reason: "it changes files".into(),
             resolution: None,
             message: None,
+            always_saved: true,
             stale: false,
         }),
     }
@@ -2368,7 +2376,7 @@ fn a_write_prompt_shows_the_path_the_first_lines_and_the_keys() {
         "+ line 1",
         "+ line 6",
         "… 3 more lines",
-        "y allow once",
+        "o once",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
@@ -2421,7 +2429,7 @@ fn bash_edit_and_fetch_prompts_show_what_they_would_do() {
         "{shown}"
     );
     assert!(shown.contains("https://docs.rs/ratatui"), "{shown}");
-    assert!(shown.contains("a always for this site"), "{shown}");
+    assert!(!shown.contains("a always"), "{shown}");
 }
 
 /// An open prompt for `args` as the server sends it (its copy of the arguments cut to 4 KiB),
@@ -2570,7 +2578,7 @@ fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
     for want in [
         "PERMISSION · plan wants to run write in /ws/src",
         "Instinct judged this outside the plan role.",
-        "y allow once · n deny",
+        "o once · r reject",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
@@ -2605,7 +2613,7 @@ fn a_does_nothing_for_a_plan_exception_but_says_why() {
     assert_eq!(
         a,
         [Action::ShowNotice(
-            "this request can be allowed once or denied, not always".into()
+            "Always is not offered for this request".into()
         )],
         "no answer is sent"
     );
@@ -2615,12 +2623,79 @@ fn a_does_nothing_for_a_plan_exception_but_says_why() {
         "{a:?}"
     );
     assert_eq!(
-        keys("y", &s, &mut ui, &mut editor),
+        keys("o", &s, &mut ui, &mut editor),
         [Action::AnswerPermission {
             request_id: "R1".into(),
             answer: withnav::tui::protocol::PermissionAnswer {
                 decision: "allow_once".into(),
                 message: None,
+            },
+        }]
+    );
+}
+
+#[test]
+fn reject_draft_limits_utf8_bytes_without_answering_or_truncating() {
+    let s = asking(prompt("bash", json!({"command":"true"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    keys("r", &s, &mut ui, &mut editor);
+    assert!(route_paste("é".repeat(1024), &s, &mut ui, &mut editor).is_none());
+    assert_eq!(ui.deny_draft("R1").unwrap().len(), 2048);
+    assert!(matches!(
+        route_paste("a".into(), &s, &mut ui, &mut editor),
+        Some(Action::ShowNotice(_))
+    ));
+    assert!(matches!(
+        keys("é", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    assert_eq!(ui.deny_draft("R1").unwrap().len(), 2048);
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::AnswerPermission { .. }]
+    ));
+    keys("r", &s, &mut ui, &mut editor);
+    ui.deny_message.as_mut().unwrap().text = "a".repeat(2047);
+    assert!(matches!(
+        keys("é", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    ui.deny_message.as_mut().unwrap().text = "a".repeat(2049);
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    assert_eq!(ui.deny_draft("R1").unwrap().len(), 2049);
+}
+
+#[test]
+fn a_answers_always_only_when_the_server_supplies_its_label() {
+    let mut block = prompt(
+        "bash",
+        json!({"command":"git push origin topic"}),
+        ("folder", "/ws"),
+    );
+    if let BlockKind::Permission(p) = &mut block.kind {
+        p.always_label = Some("Always (project): bash git push *".into());
+    }
+    let s = asking(block);
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    assert!(screen_text(&s, &ui, (200, 30)).contains("Always (project): bash git push *"));
+    assert_eq!(
+        keys("a", &s, &mut ui, &mut editor),
+        [Action::AnswerPermission {
+            request_id: "R1".into(),
+            answer: withnav::tui::protocol::PermissionAnswer {
+                decision: "allow_always".into(),
+                message: None
             },
         }]
     );
@@ -2647,16 +2722,16 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
         },
     };
     assert_eq!(
-        keys("y", &s, &mut ui, &mut editor),
+        keys("o", &s, &mut ui, &mut editor),
         [answer("allow_once", None)]
     );
     assert_eq!(
         keys("a", &s, &mut ui, &mut editor),
         [Action::ShowNotice(
-            "this request can be allowed once or denied, not always".into()
+            "Always is not offered for this request".into()
         )]
     );
-    assert!(keys("n", &s, &mut ui, &mut editor).is_empty());
+    assert!(keys("r", &s, &mut ui, &mut editor).is_empty());
     assert_eq!(ui.deny_draft("R1"), Some(""));
     keys("use cargo clean", &s, &mut ui, &mut editor);
     assert_eq!(
@@ -2667,27 +2742,27 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
     render("permission-deny-message", (100, 30), &s, &ui, &editor);
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(
-        shown.contains("deny with a message: use cargo clean"),
+        shown.contains("reject with a message: use cargo clean"),
         "{shown}"
     );
     assert!(
-        shown.contains("enter send · esc deny without a message"),
+        shown.contains("enter send · esc reject without a message"),
         "{shown}"
     );
     assert_eq!(
         keys("⏎", &s, &mut ui, &mut editor),
-        [answer("deny", Some("use cargo clean"))]
+        [answer("reject", Some("use cargo clean"))]
     );
     assert_eq!(ui.deny_message, None);
     // esc denies without one
-    keys("n", &s, &mut ui, &mut editor);
+    keys("r", &s, &mut ui, &mut editor);
     let esc = route_key(
         key(KeyCode::Esc, KeyModifiers::NONE),
         &s,
         &mut ui,
         &mut editor,
     );
-    assert_eq!(esc, Some(answer("deny", None)));
+    assert_eq!(esc, Some(answer("reject", None)));
 }
 
 /// `s` with its open request `R1` replaced by `R2` (R1 ended elsewhere).
@@ -2715,13 +2790,13 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
         ..UiState::default()
     };
     let mut editor = Editor::new();
-    keys("nnot here", &s, &mut ui, &mut editor);
+    keys("rnot here", &s, &mut ui, &mut editor);
     assert_eq!(ui.deny_draft("R1"), Some("not here"));
     let s2 = next_request(&s);
     // the message is not shown on R2, and enter does not deny R2 with it
     let shown = screen_text(&s2, &ui, (100, 30));
     assert!(!shown.contains("not here"), "{shown}");
-    assert!(shown.contains("y allow once"), "{shown}");
+    assert!(shown.contains("o once"), "{shown}");
     let enter = keys("⏎", &s2, &mut ui, &mut editor);
     assert!(
         !enter
@@ -2736,7 +2811,7 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
         ..UiState::default()
     };
     let mut editor = Editor::new();
-    keys("nold", &s, &mut ui, &mut editor);
+    keys("rold", &s, &mut ui, &mut editor);
     route_paste("pasted".into(), &s2, &mut ui, &mut editor);
     assert_eq!(ui.deny_message, None);
     assert_eq!(editor.text(), "pasted", "it goes to the editor");
@@ -2746,16 +2821,16 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
         ..UiState::default()
     };
     let mut editor = Editor::new();
-    keys("nold", &s, &mut ui, &mut editor);
+    keys("rold", &s, &mut ui, &mut editor);
     ui.prompt_shown = Some("R2".into());
-    keys("nnew", &s2, &mut ui, &mut editor);
+    keys("rnew", &s2, &mut ui, &mut editor);
     assert_eq!(ui.deny_draft("R2"), Some("new"));
     assert_eq!(
         keys("⏎", &s2, &mut ui, &mut editor),
         [Action::AnswerPermission {
             request_id: "R2".into(),
             answer: withnav::tui::protocol::PermissionAnswer {
-                decision: "deny".into(),
+                decision: "reject".into(),
                 message: Some("new".into()),
             },
         }]
@@ -2787,14 +2862,14 @@ fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
     assert_eq!(editor.text(), "");
     assert_eq!(ui.selected_block.as_deref(), Some("permission:R1"));
     // keys queued before the next frame never answer an unseen prompt
-    assert!(keys("aay", &s, &mut ui, &mut editor).is_empty(), "no grant");
+    assert!(keys("aao", &s, &mut ui, &mut editor).is_empty(), "no grant");
     assert_eq!(ui.prompt_shown, None, "only a drawn frame marks it shown");
     draw_into(&s, &mut ui, (100, 16));
     assert_eq!(ui.prompt_shown.as_deref(), Some("R1"), "now in view");
     assert_eq!(
         keys("a", &s, &mut ui, &mut editor),
         [Action::ShowNotice(
-            "this request can be allowed once or denied, not always".into()
+            "Always is not offered for this request".into()
         )]
     );
     // in view from the start: the first key answers
@@ -2803,7 +2878,7 @@ fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
         ..UiState::default()
     };
     draw_into(&s, &mut ui, (100, 30));
-    assert_eq!(keys("y", &s, &mut ui, &mut editor).len(), 1);
+    assert_eq!(keys("o", &s, &mut ui, &mut editor).len(), 1);
 }
 
 #[test]
@@ -2815,12 +2890,12 @@ fn an_answered_prompt_says_it_was_sent_and_takes_no_more_keys() {
         ..UiState::default()
     };
     let mut editor = Editor::new();
-    assert!(keys("yyan", &s, &mut ui, &mut editor).is_empty());
+    assert!(keys("ooar", &s, &mut ui, &mut editor).is_empty());
     assert_eq!(editor.text(), "", "the keys are not typed either");
     assert_eq!(ui.deny_message, None);
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(shown.contains("sent, waiting for the server"), "{shown}");
-    assert!(!shown.contains("y allow once"), "{shown}");
+    assert!(!shown.contains("o once"), "{shown}");
 }
 
 #[test]
@@ -2838,7 +2913,7 @@ fn a_prompt_the_server_no_longer_waits_on_is_muted_until_it_says_how_it_ended() 
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(shown.contains("no longer waiting"), "{shown}");
     assert!(!shown.contains("waiting for your answer"), "{shown}");
-    assert!(!shown.contains("y allow once"), "{shown}");
+    assert!(!shown.contains("o once"), "{shown}");
     let t = cells(&s, &ui, (100, 30));
     let theme = Theme::default();
     let row = (0..30)
@@ -2854,8 +2929,8 @@ fn a_prompt_the_server_no_longer_waits_on_is_muted_until_it_says_how_it_ended() 
     assert_ne!(t.backend().buffer()[(x, row)].fg, theme.accent_text);
     let mut editor = Editor::new();
     let mut keys_ui = UiState::default();
-    assert!(keys("y", &s, &mut keys_ui, &mut editor).is_empty());
-    assert_eq!(editor.text(), "y", "the key types: nothing is open");
+    assert!(keys("o", &s, &mut keys_ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "o", "the key types: nothing is open");
     // then the server's resolution
     if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
         p.resolution = Some("allow_once".into());
@@ -2871,8 +2946,8 @@ fn prompt_keys_type_normally_when_the_message_has_text_or_nothing_is_open() {
     let mut ui = UiState::default();
     let mut editor = Editor::new();
     editor.set_text("why ");
-    assert!(keys("yan", &s, &mut ui, &mut editor).is_empty());
-    assert_eq!(editor.text(), "yanwhy ", "typed at the cursor");
+    assert!(keys("oar", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "oarwhy ", "typed at the cursor");
     // a resolved request takes no keys
     let mut s = s;
     if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
@@ -2880,11 +2955,11 @@ fn prompt_keys_type_normally_when_the_message_has_text_or_nothing_is_open() {
     }
     s.conversation.open_permissions.clear();
     let mut editor = Editor::new();
-    assert!(keys("y", &s, &mut ui, &mut editor).is_empty());
-    assert_eq!(editor.text(), "y");
+    assert!(keys("o", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "o");
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(shown.contains("allowed once"), "{shown}");
-    assert!(!shown.contains("y allow once"), "{shown}");
+    assert!(!shown.contains("o once"), "{shown}");
 }
 
 #[test]
@@ -2911,10 +2986,10 @@ fn the_prompt_reads_on_a_light_theme() {
     assert_eq!(cell.fg, theme.accent_text, "the readable accent on light");
     assert_eq!(cell.bg, theme.bg);
     let keys_row = (0..30)
-        .find(|y| row_text(&t, *y, 100).contains("y allow once"))
+        .find(|y| row_text(&t, *y, 100).contains("o once"))
         .unwrap();
     let line = row_text(&t, keys_row, 100);
-    let x = line[..line.find("y allow").unwrap()].chars().count() as u16;
+    let x = line[..line.find("o once").unwrap()].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(x, keys_row)].fg, theme.text);
 }
 
@@ -3174,7 +3249,7 @@ fn the_key_bar_follows_what_the_keys_do_now() {
     let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
     let bar = bottom_row(&s, &ui, &Editor::new(), (200, 30));
     assert!(
-        bar.contains("y allow once · n deny · esc stop · ctrl+p palette"),
+        bar.contains("o once · r reject · esc stop · ctrl+p palette"),
         "{bar}"
     );
     let theme = Theme::default();
@@ -3182,7 +3257,7 @@ fn the_key_bar_follows_what_the_keys_do_now() {
     terminal
         .draw(|f| view::draw(f, &s, &ui, &Editor::new(), &mut RenderCache::default()))
         .unwrap();
-    let x = bar[..bar.find("y allow").unwrap()].chars().count() as u16;
+    let x = bar[..bar.find("o once").unwrap()].chars().count() as u16;
     assert_eq!(
         terminal.backend().buffer()[(x, 29)].fg,
         theme.text,
@@ -3365,7 +3440,7 @@ fn a_deny_message_keeps_both_keys_on_a_narrow_key_bar() {
         for width in [24u16, 28, 40, 80] {
             let row = bottom_row(&s, &ui, &Editor::new(), (width, 30));
             let row = row.rsplit('│').next().unwrap_or(&row).to_string();
-            assert!(row.contains("enter deny"), "{width}: {row}");
+            assert!(row.contains("enter reject"), "{width}: {row}");
             assert!(row.contains("esc "), "{width}: {row}");
         }
     }
@@ -3380,7 +3455,7 @@ fn a_plan_exception_never_offers_always_on_the_key_bar() {
         let row = row.rsplit('│').next().unwrap_or(&row).to_string();
         assert!(!row.contains("always"), "{width}: {row}");
         assert!(!row.split(" · ").any(|h| h.trim() == "a"), "{width}: {row}");
-        assert!(row.contains('y') && row.contains('n'), "{width}: {row}");
+        assert!(row.contains('o') && row.contains('r'), "{width}: {row}");
     }
 }
 
@@ -3391,21 +3466,21 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
     let bar = |width: u16| bottom_row(&s, &ui, &Editor::new(), (width, 30));
     let wide = bar(100);
     assert!(
-        wide.contains("y allow once · n deny · esc stop · ctrl+p palette"),
+        wide.contains("o once · r reject · esc stop · ctrl+p palette"),
         "{wide}"
     );
-    // `y allow once · n deny` needs 34 columns; below that the short labels
+    // `o once · r reject` needs 34 columns; below that the short labels
     let full = bar(34);
-    assert!(full.contains("y allow once · n deny"), "{full}");
+    assert!(full.contains("o once · r reject"), "{full}");
     let mid = bar(30);
-    assert!(mid.contains("y allow once · n deny"), "{mid}");
+    assert!(mid.contains("o once · r reject"), "{mid}");
     let narrow = bar(24);
-    assert!(narrow.contains("y allow once · n deny"), "{narrow}");
+    assert!(narrow.contains("o once · r reject"), "{narrow}");
     for width in [24u16, 30, 40, 50, 60, 80] {
         let row = bar(width);
         // At 80 columns and more the sidebar takes the left of the row.
         let row = row.rsplit('│').next().unwrap_or(&row).to_string();
-        for key in ["y", "n"] {
+        for key in ["o", "r"] {
             assert!(
                 row.split(" · ")
                     .any(|h| h.trim() == key || h.trim().starts_with(&format!("{key} "))),
@@ -3590,7 +3665,7 @@ fn permission_layout_is_fresh_with_one_render_cache() {
             .collect::<String>();
         assert!(
             shown.contains(match stage {
-                0 => "allow once",
+                0 => "once",
                 1 => "first",
                 2 => "edited",
                 _ => "sent, waiting for the server",
@@ -3602,14 +3677,7 @@ fn permission_layout_is_fresh_with_one_render_cache() {
 
 #[test]
 fn auto_approval_notes_render_narrow_with_optional_evidence() {
-    for source in [
-        "instinct",
-        "jev",
-        "metacognition",
-        "captain",
-        "driver",
-        "none",
-    ] {
+    for source in ["instinct", "metacognition", "captain", "driver", "none"] {
         for detailed in [false, true] {
             let mut s = State::default();
             let mut block = tool_block(Some(ToolStatus::Ok));
@@ -3636,16 +3704,34 @@ fn auto_approval_notes_render_narrow_with_optional_evidence() {
             };
             let collapsed = screen_text(&s, &ui, (70, 24));
             match source {
-                "instinct" | "jev" => assert!(collapsed.contains("auto · instinct")),
+                "instinct" => assert!(collapsed.contains("auto · instinct")),
                 "metacognition" => assert!(collapsed.contains("auto · metacognition")),
                 "captain" | "driver" => assert!(collapsed.contains("Captain approved")),
                 _ => assert!(!collapsed.contains("auto ·")),
             }
             ui.expanded.insert("review".into());
             let shown = screen_text(&s, &ui, (70, 24));
-            if source != "jev" {
-                insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
-            }
+            insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
         }
     }
+}
+
+#[test]
+fn unavailable_permission_rules_are_visible_in_the_header_with_the_open_error() {
+    let mut s = state();
+    s.session.as_mut().unwrap().permissions_unavailable = Some("withnav.db: open failed".into());
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut cache = RenderCache::default();
+    terminal
+        .draw(|frame| view::draw(frame, &s, &UiState::default(), &Editor::new(), &mut cache))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Permission rules unavailable"), "{text}");
+    assert!(text.contains("withnav.db: open failed"), "{text}");
 }

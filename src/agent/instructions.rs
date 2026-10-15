@@ -138,7 +138,7 @@ impl Instructions {
     /// it from a blocking context.
     pub fn load(roots: &RulesRoots, workspace: &Path) -> Self {
         let workspace =
-            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            crate::tools::canonical_path(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         let mut loader = Loader::default();
         if let Some(home) = &roots.home {
             loader.slot(
@@ -219,6 +219,13 @@ impl Loader {
                 self.push(
                     fallback,
                     SourceStatus::Shadowed {
+                        // Windows reports the same display form as the loaded source;
+                        // Unix keeps the path as found, so a symlinked primary is
+                        // named by its own path, not its target.
+                        #[cfg(windows)]
+                        by: crate::tools::canonical_path(primary)
+                            .unwrap_or_else(|_| primary.to_path_buf()),
+                        #[cfg(unix)]
                         by: primary.to_path_buf(),
                     },
                     0,
@@ -230,6 +237,10 @@ impl Loader {
     }
 
     fn push(&mut self, path: &Path, status: SourceStatus, loaded_bytes: usize) {
+        #[cfg(windows)]
+        let canonical = crate::tools::canonical_path(path).unwrap_or_else(|_| path.to_path_buf());
+        #[cfg(windows)]
+        let path = canonical.as_path();
         self.sources.push(RuleSource {
             path: path.to_path_buf(),
             status,
@@ -238,11 +249,11 @@ impl Loader {
     }
 
     fn take(&mut self, path: &Path) {
-        let canonical = match std::fs::canonicalize(path) {
+        let canonical = match crate::tools::canonical_path(path) {
             Ok(canonical) => canonical,
             Err(e) => return self.push(path, SourceStatus::ReadError(e.to_string()), 0),
         };
-        if !self.seen.insert(canonical.clone()) {
+        if !self.seen.insert(crate::tools::path_key(&canonical)) {
             return self.push(path, SourceStatus::Duplicate { of: canonical }, 0);
         }
         let left = MAX_TOTAL_BYTES - self.used;
@@ -270,6 +281,8 @@ impl Loader {
             None => SourceStatus::Loaded,
         };
         if status != SourceStatus::Empty {
+            #[cfg(windows)]
+            let path = canonical.as_path();
             self.sections.push((path.to_path_buf(), text));
         }
         self.push(path, status, read.kept);

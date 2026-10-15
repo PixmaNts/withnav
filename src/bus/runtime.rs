@@ -99,11 +99,10 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub permissions_unavailable: Option<String>,
     pub(crate) question_gate: tokio::sync::Mutex<()>,
     pending_question: Mutex<Option<crate::agent::response::HumanRequest>>,
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
-    pub config_session_grant: Arc<std::sync::atomic::AtomicBool>,
-    pub permission_context: Arc<Mutex<crate::agent::permission_gate::context::ReviewContext>>,
     /// Serializes bypass changes and child starts below this root, so a
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
@@ -118,6 +117,12 @@ pub struct RuntimeStatus {
     arrival_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
     pub watchdog_goal: Mutex<String>,
+    /// The Captain's own messages of this session's transcript, as permission
+    /// evidence (`captain_messages_with_cut`), refreshed at each turn start.
+    pub captain_messages: Mutex<crate::agent::actor::CaptainEvidence>,
+    /// For a child: the snapshot of its parent's Captain messages, taken when it
+    /// was created and refreshed when the parent steers it.
+    pub parent_captain: crate::agent::actor::ParentCaptain,
     pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
     pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub awaiting_fresh_captain: std::sync::atomic::AtomicBool,
@@ -907,8 +912,7 @@ pub fn spawn_with_completion(
     status.init_ask(&actor);
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
-    actor.config_session_grant = status.config_session_grant.clone();
-    actor.permission_context = status.permission_context.clone();
+    actor.parent_captain = status.parent_captain.clone();
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -1219,10 +1223,11 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
-                if answer.decision
-                    == crate::agent::permissions::PermissionDecision::AllowConfigSession
-                    && (!request.allow_config_session
-                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain)
+                // Reusable approval is unavailable when the session cannot
+                // persist rules or skill validations. Refuse before resolving.
+                if answer.decision.clone().current()
+                    == crate::agent::permissions::PermissionDecision::AllowAlways
+                    && !request.reusable_approval
                 {
                     status.release_pin(&actor);
                     status.release_permission(answer.request_id);
@@ -1233,11 +1238,6 @@ async fn runtime_loop(
                 }
                 if answer.decision
                     == crate::agent::permissions::PermissionDecision::AllowSkillMachine
-                    && (request.skill_script.is_none()
-                        || answer.origin != crate::agent::permissions::PermissionOrigin::Captain
-                        || !matches!(&actor.pending, Some(crate::agent::actor::PendingInteraction::Permission { call, .. })
-                            if crate::agent::permission_gate::script::skill_script(&actor, call).as_ref()
-                                == request.skill_script.as_deref()))
                 {
                     status.release_pin(&actor);
                     status.release_permission(answer.request_id);
@@ -1246,16 +1246,33 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 }
-                let decision = crate::agent::permissions::offered_decision(
-                    &request.agent,
-                    &request.tool,
-                    answer.decision,
-                );
+                // Folder and session-wide configuration answers no longer
+                // exist: they count as one approval, and say so.
+                let decision = match answer.decision {
+                    crate::agent::permissions::PermissionDecision::AllowFolder
+                    | crate::agent::permissions::PermissionDecision::AllowConfigSession => {
+                        crate::agent::permissions::PermissionDecision::AllowOnce
+                    }
+                    decision => decision,
+                };
+                let mut resolution = PermissionResolution::from(&decision);
+                if decision == PermissionDecision::AllowAlways
+                    && answer.origin == crate::agent::permissions::PermissionOrigin::Captain
+                {
+                    if let Some(error) =
+                        crate::agent::run_loop::save_pending_always(&mut actor, request.id).await
+                    {
+                        resolution = PermissionResolution::AllowAlways {
+                            always_saved: false,
+                            always_error: Some(error),
+                        };
+                    }
+                }
                 publish_resolved_with_origin(
                     &sequencer,
                     active_task_id,
                     &request,
-                    PermissionResolution::from(&decision),
+                    resolution,
                     answer.origin,
                 );
                 let _ = answer.reply.send(Ok(()));
@@ -1266,6 +1283,11 @@ async fn runtime_loop(
             .watchdog_goal
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = actor.captain_task.clone().unwrap_or_default();
+        *status
+            .captain_messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            crate::agent::flow_hook::captain_messages_with_cut(&actor.transcript);
         actor.variant = status.consume_turn().map(|(_, variant)| variant);
         // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
@@ -1584,6 +1606,7 @@ async fn runtime_loop(
                 status.resolve_pending_bypass(&actor, &inbox);
             }
             Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
+                actor.end_skill_turn();
                 if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
                     done(
                         crate::provider::AssistantMessage {
@@ -1642,6 +1665,7 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Err(err) => {
+                actor.end_skill_turn();
                 if let Some(done) = &completion {
                     done(
                         crate::provider::AssistantMessage {
@@ -1821,16 +1845,9 @@ fn publish_resolved_with_origin(
         candidate.payload["approved_by"] = serde_json::json!("bypass");
     } else if matches!(
         candidate.payload["resolution"].as_str(),
-        Some("allow_once" | "allow_folder" | "deny")
+        Some("allow_once" | "allow_always" | "allow_folder" | "reject" | "deny")
     ) {
         candidate.payload["approved_by"] = serde_json::json!("captain");
-        if let Some(signature) = request
-            .permission_gate
-            .as_ref()
-            .and_then(|gate| gate.get("signature"))
-        {
-            candidate.payload["captain_precedent"] = serde_json::json!({"request_id": request.id, "tool": request.tool, "signature": signature, "scope": request.scope, "decision": candidate.payload["resolution"], "when": request.id.to_string()});
-        }
     }
     if let Some(task) = task_id {
         candidate = candidate.with_correlation_id(task);
@@ -1879,6 +1896,17 @@ fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
     let mut payload = to_value(&crate::bus::event::PermissionRequested {
+        always_label: request.always_label.clone().or_else(|| {
+            (request.tool == "skill" && request.reusable_approval).then(|| {
+                format!(
+                    "Always (global): validate skill {} at this version",
+                    serde_json::from_str::<serde_json::Value>(&request.arguments)
+                        .ok()
+                        .and_then(|v| v["name"].as_str().map(str::to_owned))
+                        .unwrap_or_default()
+                )
+            })
+        }),
         child_session_id: None,
         request_id: request.id,
         tool_call_id: request.tool_call_id.clone(),
@@ -1889,11 +1917,20 @@ fn permission_requested(
         reason: request.reason.clone(),
     });
     payload["requires_captain"] = serde_json::json!(request.requires_captain);
-    payload["allow_config_session"] = serde_json::json!(request.allow_config_session);
-    payload["skill_script"] = serde_json::json!(request.skill_script);
-    if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
-        payload["permission_gate"] =
-            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false}));
+    if request.tool == "skill" {
+        let args: serde_json::Value = serde_json::from_str(&request.arguments).unwrap_or_default();
+        payload["action"] = serde_json::json!("skill");
+        payload["resource"] = serde_json::json!(format!(
+            "{} {}",
+            args["name"].as_str().unwrap_or_default(),
+            args["location"].as_str().unwrap_or_default()
+        ));
+    }
+
+    if let Some(gate) = request.permission_gate.as_deref() {
+        payload["permission_gate"] = gate.clone();
+    } else if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
+        payload["permission_gate"] = serde_json::json!({"policy_version":1,"source":"captain","reason":request.reason,"truncated":false});
     }
     payload
 }
@@ -2225,11 +2262,8 @@ mod tests {
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
-                origin: Default::default(),
-                flow_regates: 0,
                 requires_captain: false,
-                allow_config_session: false,
-                skill_script: None,
+
                 permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),
@@ -2238,6 +2272,13 @@ mod tests {
                 scope: Scope::Folder("/workspace".into()),
                 agent: "build".into(),
                 reason: "approval".into(),
+                always_label: None,
+                reusable_approval: false,
+                always: Vec::new(),
+                decision_id: None,
+                repeats: 1,
+                skill_rule: false,
+                always_saved: None,
             }),
             call: crate::provider::ToolCall {
                 id: "held".into(),
@@ -2985,6 +3026,21 @@ mod tests {
         r
     }
 
+    fn allow_everything(actor: &AgentActor) {
+        actor
+            .permission_store
+            .as_ref()
+            .unwrap()
+            .add(
+                "*",
+                "*",
+                crate::permission::rules::Effect::Allow,
+                crate::permission::rules::RuleScope::Global,
+                crate::permission::rules::RuleOrigin::Manual,
+            )
+            .unwrap();
+    }
+
     fn make_actor(base_url: String, cancel: CancellationToken) -> AgentActor {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
@@ -3048,6 +3104,8 @@ mod tests {
         let (inbox_tx, inbox) = ActorInbox::channel();
         let session_cancel = CancellationToken::new();
         let mut actor = make_actor(server_url, CancellationToken::new());
+        // These runs are about the bus, not about permissions.
+        allow_everything(&actor);
         if let Some(n) = max_steps {
             actor.max_steps = n;
         }
@@ -3510,6 +3568,7 @@ mod tests {
         ])
         .await;
         let mut actor = make_actor(server_direct.url.clone(), CancellationToken::new());
+        allow_everything(&actor);
         actor.push_user("run echo hi");
         let mut noop = |_e: AgentEvent<'_>| {};
         let direct = run_agent(&mut actor, &mut noop).await.unwrap();

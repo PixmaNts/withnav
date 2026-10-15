@@ -39,6 +39,7 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
     store.save("route", crate::flows::store::Location::Global, None, crate::flows::store::Content::Toml {
         toml: "[flow]\nversion=1\nname='route'\non='message.received'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='routing evidence'\n".into(), templates: Default::default(),
     }).unwrap();
+    store.validate_test_documents();
     store.reload().unwrap();
     let id = service
         .create_session(dir.path(), None, false)
@@ -59,7 +60,10 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
     service.send(command).await.unwrap();
     // Captures are persisted by a background writer, off the blocking admission path: wait for
     // the record instead of expecting it synchronously.
-    let records = crate::flows::records::Records::new(&service.config.data_dir, dir.path());
+    let records = crate::flows::records::Records::new(
+        &service.config.data_dir,
+        &dir.path().canonicalize().unwrap(),
+    );
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             let applied = records.read().unwrap().iter().any(|record| {
@@ -141,17 +145,7 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
         r#"{"agents":{"build":{"model":"mock/old","variant":"off"}}}"#,
     )
     .unwrap();
-    std::fs::write(
-        dir.path().join("cfg/auth.json"),
-        r#"{"mock":{"api_key":"test"}}"#,
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(
-        dir.path().join("cfg/auth.json"),
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
+    crate::provider::auth::set_key(&dir.path().join("cfg"), "mock", "test").unwrap();
     std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/old":{"provider":"mock","model":"old","context_window":128000}}}"#).unwrap();
     let barrier = Arc::new(crate::session::run_command::Barrier::default());
     *service.preparation_barrier.lock().unwrap() = Some(barrier.clone());

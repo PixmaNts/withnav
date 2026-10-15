@@ -9,7 +9,6 @@ mod catalog;
 mod commands;
 mod config;
 mod flows;
-mod guard;
 mod hooks;
 mod instance;
 mod lifecycle;

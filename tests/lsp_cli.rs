@@ -1,6 +1,13 @@
 //! The editor entry point preserves the offline replay CLI contract.
 
 use std::process::Command;
+mod common;
+
+fn command(root: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, root);
+    command
+}
 
 const REPLAY_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -19,7 +26,8 @@ fn assert_replay_report(stdout: Vec<u8>) {
 
 #[test]
 fn replay_json_preserves_the_report() {
-    let output = Command::new(env!("CARGO_BIN_EXE_nav"))
+    let root = tempfile::tempdir().unwrap();
+    let output = command(root.path())
         .args(["lsp", "replay", "--log", REPLAY_FIXTURE, "--json"])
         .output()
         .unwrap();
@@ -34,7 +42,8 @@ fn replay_json_preserves_the_report() {
 
 #[test]
 fn stdio_flag_is_accepted() {
-    let output = Command::new(env!("CARGO_BIN_EXE_nav"))
+    let root = tempfile::tempdir().unwrap();
+    let output = command(root.path())
         .args(["lsp", "--stdio", "--help"])
         .output()
         .unwrap();
@@ -49,7 +58,7 @@ fn stdio_flag_is_accepted() {
         .contains("--stdio"));
 
     // Execute a real offline command too: help alone bypasses command execution.
-    let output = Command::new(env!("CARGO_BIN_EXE_nav"))
+    let output = command(root.path())
         .args([
             "lsp",
             "--stdio",

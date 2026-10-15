@@ -35,6 +35,7 @@ use crate::agent::instructions::{directories_from_root, RulesRoots};
 mod catalog;
 pub(crate) mod frontmatter;
 mod tool;
+pub mod validation;
 
 pub use catalog::{MAX_DESCRIPTION_CHARS, MAX_TOKENS};
 pub use tool::{SkillTool, MAX_BODY_BYTES, MAX_RESOURCES};
@@ -70,12 +71,6 @@ pub struct Skill {
     pub base_dir: PathBuf,
     pub disabled: bool,
     rank: Rank,
-}
-
-impl Skill {
-    pub(crate) fn is_user(&self) -> bool {
-        self.rank.user
-    }
 }
 
 /// What went wrong, or was set aside, for one file.
@@ -138,14 +133,13 @@ pub(crate) enum Resolution<'a> {
 /// The snapshot taken when a session is created or resumed.
 #[derive(Debug, Clone, Default)]
 pub struct Skills {
+    pub validation: std::sync::Arc<validation::SkillValidation>,
     /// The winning skill of each id.
     winners: BTreeMap<String, Skill>,
     ambiguous: BTreeMap<String, Vec<PathBuf>>,
     diagnostics: Vec<Diagnostic>,
     roots: Vec<PathBuf>,
     /// Discovery spellings retained so machine grants recheck canonical location.
-    grant_user_roots: Vec<PathBuf>,
-    grant_project_roots: Vec<PathBuf>,
     catalog: Option<String>,
     /// How many skills the catalog lists and how many fell out of its bound.
     catalog_listed: usize,
@@ -153,6 +147,47 @@ pub struct Skills {
 }
 
 impl Skills {
+    pub fn snapshot(&self, name: &str) -> Result<validation::SkillSnapshot, String> {
+        let skill = match self.resolve(name) {
+            Resolution::Found(skill) if self.listed().iter().any(|s| s.name == name) => skill,
+            Resolution::Disabled => {
+                return Err(format!("skill_disabled: skill {name} is disabled"))
+            }
+            Resolution::Ambiguous(_) => {
+                #[cfg(windows)]
+                return Err(format!(
+                    "skill_ambiguous: skill {name} is ambiguous: {}",
+                    self.ambiguous
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                #[cfg(unix)]
+                return Err(format!(
+                    "skill_ambiguous: skill {name} is ambiguous: {:?}",
+                    self.ambiguous.get(name)
+                ));
+            }
+            _ => return Err(format!("skill_unknown: no listed skill with id {name:?}")),
+        };
+        let snapshot = validation::snapshot(skill)?;
+        self.validation
+            .snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(snapshot.id.clone(), snapshot.clone());
+        Ok(snapshot)
+    }
+    pub fn active_validated_skill(&self) -> Option<(String, String)> {
+        self.validation
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     /// The same ranked, bounded prefix offered in the model's catalog.
     pub fn listed(&self) -> Vec<&Skill> {
         let mut skills: Vec<_> = self
@@ -167,65 +202,35 @@ impl Skills {
 
     /// Loads with the same provenance, resource listing and bounds as the skill tool.
     pub async fn load_listed(&self, name: &str) -> crate::tools::ToolResult {
-        let Some(skill) = self
-            .listed()
-            .into_iter()
-            .find(|skill| skill.name == name)
-            .cloned()
-        else {
-            return crate::tools::ToolResult::error(
-                "skill_unknown",
-                format!("no listed skill with the id {name:?}"),
-            );
-        };
-        let roots = self.roots.clone();
-        tokio::task::spawn_blocking(move || tool::load(&skill, &roots))
-            .await
-            .unwrap_or_else(|error| {
-                crate::tools::ToolResult::error("skill_unreadable", error.to_string())
-            })
+        let skills = self.clone();
+        let name = name.to_owned();
+        tokio::task::spawn_blocking(move || match skills.snapshot(&name) {
+            Ok(snapshot) => match skills.validation.validated(&snapshot) {
+                Ok(true) => snapshot.output,
+                Ok(false) => crate::tools::ToolResult::error(
+                    "skill_not_validated",
+                    "skill was not loaded: not validated",
+                ),
+                Err(error) => crate::tools::ToolResult::error("skill_unreadable", error),
+            },
+            Err(error) => crate::tools::ToolResult::error("skill_unreadable", error),
+        })
+        .await
+        .unwrap_or_else(|e| crate::tools::ToolResult::error("skill_unreadable", e.to_string()))
     }
 
     /// Discovers the skills of `workspace`. Blocking file I/O: call it from a
     /// blocking context.
     pub fn load(roots: &RulesRoots, workspace: &Path) -> Self {
         let workspace =
-            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            crate::tools::canonical_path(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         let mut walk = Walk::default();
         let candidates = candidate_roots(roots, &workspace);
         for (dir, root) in &candidates {
             walk.add_root(dir.clone(), *root);
         }
         walk.run();
-        let mut skills = walk.finish();
-        for (dir, rank) in candidates {
-            if rank.user {
-                skills.grant_user_roots.push(dir);
-            } else {
-                skills.grant_project_roots.push(dir);
-            }
-        }
-        skills
-    }
-
-    /// Discovery provenance alone does not make project content machine-trusted.
-    pub(crate) fn machine_grant_location(&self, base_dir: &Path, script: &Path) -> bool {
-        let inside_user = self.grant_user_roots.iter().any(|root| {
-            root.canonicalize()
-                .is_ok_and(|root| base_dir.starts_with(&root) && script.starts_with(&root))
-        });
-        inside_user
-            && self
-                .grant_project_roots
-                .iter()
-                .all(|root| match root.canonicalize() {
-                    Ok(root) => {
-                        !base_dir.starts_with(&root)
-                            && !root.starts_with(base_dir)
-                            && !script.starts_with(&root)
-                    }
-                    Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-                })
+        walk.finish()
     }
 
     /// The catalog message; `None` when no skill is offered.
@@ -316,8 +321,13 @@ impl Walk {
     fn add_root(&mut self, dir: PathBuf, rank: Rank) {
         // An absent root is normal; one reached twice (a link, a home that is
         // the worktree) keeps its best rank.
-        if let Ok(canonical) = std::fs::canonicalize(&dir) {
-            if canonical.is_dir() && !self.roots.iter().any(|(r, _)| *r == canonical) {
+        if let Ok(canonical) = crate::tools::canonical_path(&dir) {
+            if canonical.is_dir()
+                && !self
+                    .roots
+                    .iter()
+                    .any(|(r, _)| crate::tools::path_key(r) == crate::tools::path_key(&canonical))
+            {
                 self.roots.push((canonical, rank));
             }
         }
@@ -334,6 +344,12 @@ impl Walk {
     }
 
     fn inside_roots(&self, path: &Path) -> bool {
+        #[cfg(windows)]
+        return self
+            .roots
+            .iter()
+            .any(|(root, _)| crate::tools::nofollow::path_within(path, root));
+        #[cfg(unix)]
         self.roots.iter().any(|(root, _)| path.starts_with(root))
     }
 
@@ -346,7 +362,7 @@ impl Walk {
 
     /// Walks `dir` (canonical): a `SKILL.md` ends the descent.
     fn dir(&mut self, dir: &Path, root: &Path, rank: Rank, depth: usize, stack: &mut Vec<PathBuf>) {
-        if self.exhausted || !self.seen_dirs.insert(dir.to_path_buf()) {
+        if self.exhausted || !self.seen_dirs.insert(crate::tools::path_key(dir)) {
             return;
         }
         let manifest = dir.join("SKILL.md");
@@ -386,12 +402,15 @@ impl Walk {
             if !std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
                 continue;
             }
-            let Ok(canonical) = std::fs::canonicalize(&path) else {
+            let Ok(canonical) = crate::tools::canonical_path(&path) else {
                 continue;
             };
             if !self.inside_roots(&canonical) {
                 self.note(&path, DiagnosticKind::Escapes { to: canonical });
-            } else if stack.contains(&canonical) {
+            } else if stack
+                .iter()
+                .any(|path| crate::tools::path_key(path) == crate::tools::path_key(&canonical))
+            {
                 self.note(&path, DiagnosticKind::Cycle { to: canonical });
             } else {
                 self.dir(&canonical, root, rank, depth + 1, stack);
@@ -404,7 +423,7 @@ impl Walk {
     }
 
     fn manifest(&mut self, manifest: &Path, rank: Rank) {
-        let Ok(path) = std::fs::canonicalize(manifest) else {
+        let Ok(path) = crate::tools::canonical_path(manifest) else {
             return;
         };
         if !self.inside_roots(&path) {
@@ -440,10 +459,10 @@ impl Walk {
         // rank any route gave it: it must never make its own id ambiguous.
         let mut by_manifest: BTreeMap<PathBuf, Skill> = BTreeMap::new();
         for skill in found {
-            match by_manifest.get(&skill.path) {
+            match by_manifest.get(&crate::tools::path_key(&skill.path)) {
                 Some(kept) if kept.rank <= skill.rank => {}
                 _ => {
-                    by_manifest.insert(skill.path.clone(), skill);
+                    by_manifest.insert(crate::tools::path_key(&skill.path), skill);
                 }
             }
         }
@@ -490,8 +509,19 @@ impl Walk {
             .into_iter()
             .map(|(root, _)| root)
             .filter(|root| {
-                winners.values().any(|s| s.base_dir.starts_with(root))
-                    || ambiguous.values().flatten().any(|p| p.starts_with(root))
+                #[cfg(windows)]
+                return winners
+                    .values()
+                    .any(|s| crate::tools::nofollow::path_within(&s.base_dir, root))
+                    || ambiguous
+                        .values()
+                        .flatten()
+                        .any(|p| crate::tools::nofollow::path_within(p, root));
+                #[cfg(unix)]
+                {
+                    winners.values().any(|s| s.base_dir.starts_with(root))
+                        || ambiguous.values().flatten().any(|p| p.starts_with(root))
+                }
             })
             .collect();
         let mut offered: Vec<&Skill> = winners.values().filter(|s| !s.disabled).collect();
@@ -502,6 +532,7 @@ impl Walk {
         };
         let catalog_omitted = offered.len() - catalog_listed;
         Skills {
+            validation: Default::default(),
             catalog_listed,
             catalog_omitted,
             winners,
@@ -509,8 +540,6 @@ impl Walk {
             diagnostics,
             roots,
             catalog,
-            grant_user_roots: Vec::new(),
-            grant_project_roots: Vec::new(),
         }
     }
 }

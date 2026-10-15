@@ -23,13 +23,98 @@ pub struct ShellCommand {
     pub opaque: bool,
 }
 
+/// Commands that change or destroy files, processes or history, for which
+/// "Always" is never offered: a prefix rule such as `rm *` would allow every
+/// future deletion. Each entry is a program, optionally followed by its
+/// subcommand (`git push`) or by an option that must be present (`sed -i`
+/// matches `-i`, `-i.bak`, `-ni` and `--in-place`; `git branch -D` matches
+/// `-D`). `sqlite3` is exempt when it opens the database with `-readonly`.
+/// A write through a redirection (`>`, `>>` and the like, to anything but
+/// `/dev/null` or another descriptor) is never offered "Always" either.
+pub const NO_ALWAYS: &[&str] = &[
+    "chmod",
+    "chown",
+    "cp",
+    "dd",
+    "git branch --delete",
+    "git branch -D",
+    "git branch -d",
+    "git checkout",
+    "git clean",
+    "git push",
+    "git rebase",
+    "git reset",
+    "git restore",
+    "git tag --delete",
+    "git tag -d",
+    "install",
+    "kill",
+    "killall",
+    "ln",
+    "mv",
+    "perl -i",
+    "pkill",
+    "rm",
+    "rmdir",
+    "sed -i",
+    "shred",
+    "sqlite3",
+    "tee",
+    "truncate",
+];
+
 impl ShellCommand {
     pub fn save_pattern(&self) -> Option<String> {
-        if self.opaque || self.prefix.is_empty() {
+        if self.opaque || self.prefix.is_empty() || self.changes_state() {
             None
         } else {
             Some(format!("{} *", self.prefix.join(" ")))
         }
+    }
+
+    /// Whether the command matches [`NO_ALWAYS`] or writes through a redirection.
+    fn changes_state(&self) -> bool {
+        let writes = self.redirections.iter().any(|redirection| {
+            let op = redirection
+                .op
+                .trim_start_matches(|c: char| c.is_ascii_digit());
+            let duplicate = matches!(op, ">&" | "<&")
+                && (redirection.target == "-"
+                    || redirection.target.chars().all(|c| c.is_ascii_digit()));
+            op.contains('>') && !duplicate && redirection.target != "/dev/null"
+        });
+        // The program is the first prefix word that is not a wrapper (`sudo`).
+        let Some(at) = self.prefix.iter().position(|word| !wrapper(word)) else {
+            return writes;
+        };
+        let program = basename(&self.prefix[at]);
+        let subcommand = self.prefix.get(at + 1).map(String::as_str);
+        let words = || self.words.iter().map(String::as_str);
+        // `-i` also matches attached forms and clusters (`-i.bak`, `-pi`) and
+        // `--in-place`; any other option must appear as written.
+        let has_option = |option: &str| {
+            words().any(|word| {
+                word == option
+                    || (option == "-i"
+                        && ((word.starts_with('-')
+                            && !word.starts_with("--")
+                            && word.contains('i'))
+                            || word == "--in-place"
+                            || word.starts_with("--in-place=")))
+            })
+        };
+        let listed = NO_ALWAYS.iter().any(|entry| {
+            let mut parts = entry.split(' ');
+            if parts.next() != Some(program) {
+                return false;
+            }
+            match parts.next() {
+                None => !(program == "sqlite3" && words().any(|word| word == "-readonly")),
+                Some(option) if option.starts_with('-') => has_option(option),
+                Some(sub) => subcommand == Some(sub) && parts.next().is_none_or(has_option),
+            }
+        });
+        listed || writes
     }
 }
 
@@ -471,7 +556,7 @@ impl Parser<'_> {
                 while self.peek().is_some_and(|c| c.is_whitespace() && c != '\n') {
                     self.advance()?;
                 }
-                let target = self.word(&mut pending.children, depth, stop)?;
+                let (target, _) = self.word(&mut pending.children, depth, stop)?;
                 pending.redirections.push(Redirection { op, target });
                 needs_command = false;
                 has_command = true;
@@ -510,15 +595,13 @@ impl Parser<'_> {
                 return Err(());
             } else {
                 let word_start = self.pos;
-                let word = self.word(&mut pending.children, depth, stop)?;
+                let (word, plain) = self.word(&mut pending.children, depth, stop)?;
                 if &self.text[word_start..self.pos] == "!" && pending.words.is_empty() {
                     needs_command = true;
                     continue;
                 }
                 pending.words.push(word);
-                pending
-                    .plain
-                    .push(!self.text[word_start..self.pos].contains(['\'', '"', '\\']));
+                pending.plain.push(plain);
                 needs_command = false;
                 has_command = true;
             }
@@ -562,15 +645,22 @@ impl Parser<'_> {
         Ok(self.text[start..self.pos].to_owned())
     }
 
+    /// One word, and whether it is plain: no quote or escape outside a command
+    /// substitution, and a substitution only in the value of an assignment.
+    /// Quoting inside `$(…)` belongs to the inner command, which is split and
+    /// judged on its own; it does not make `S=$(…)` ambiguous. A substitution
+    /// anywhere else leaves the word non-plain, so it never names a program
+    /// or a rule prefix.
     fn word(
         &mut self,
         children: &mut Vec<ShellCommand>,
         depth: usize,
         stop: Option<char>,
-    ) -> Result<String, ()> {
+    ) -> Result<(String, bool), ()> {
         let start = self.pos;
         let mut value = String::new();
         let mut quote = None;
+        let (mut quoted, mut substituted) = (false, false);
         while let Some(c) = self.peek() {
             if self.backticks > 0 && self.rest().starts_with("\\`") {
                 // Backticks undergo an extra escape-processing pass in Bash.
@@ -580,6 +670,7 @@ impl Parser<'_> {
             if quote.is_none() && Some(c) == stop {
                 break;
             } else if quote == Some('\'') {
+                quoted = true;
                 self.advance()?;
                 if c == '\'' {
                     quote = None;
@@ -590,6 +681,7 @@ impl Parser<'_> {
                 self.advance()?;
                 quote = None;
             } else if c == '\\' {
+                quoted = true;
                 self.advance()?;
                 let escaped = self.advance()?;
                 if escaped != '\n' {
@@ -603,6 +695,7 @@ impl Parser<'_> {
                 || (quote.is_none()
                     && (self.rest().starts_with("<(") || self.rest().starts_with(">(")))
             {
+                substituted = true;
                 value.push_str(&self.substitution(children, depth)?);
             } else if quote.is_none()
                 && (self.rest().starts_with("$'") || self.rest().starts_with("$\""))
@@ -610,6 +703,7 @@ impl Parser<'_> {
                 // ANSI-C and locale quoting cannot be normalized by quote removal.
                 return Err(());
             } else if quote.is_none() && matches!(c, '\'' | '"') {
+                quoted = true;
                 self.advance()?;
                 quote = Some(c);
             } else if quote.is_none()
@@ -623,7 +717,12 @@ impl Parser<'_> {
         if quote.is_some() || self.pos == start {
             return Err(());
         }
-        Ok(value)
+        let plain = !quoted
+            && (!substituted
+                || value
+                    .split_once('=')
+                    .is_some_and(|(name, _)| assignment(&format!("{name}="))));
+        Ok((value, plain))
     }
 }
 
@@ -683,7 +782,12 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(command.save_pattern().as_deref(), Some("make check *"));
+        // It writes out.log through a redirection: no "Always".
+        assert_eq!(command.save_pattern(), None);
+        assert_eq!(
+            split("FOO=1 make check 2>&1")[0].save_pattern().as_deref(),
+            Some("make check *")
+        );
         let quoted = split("FOO=ab echo \"literal path\" a\\ b 'x;y' \\\nnext");
         assert_eq!(quoted[0].normalized, "echo literal path a b x;y next");
         assert_eq!(
@@ -902,8 +1006,8 @@ mod tests {
         }
         for (line, expected) in [
             (
-                "git -C ../x push origin main",
-                "git push -C ../x origin main",
+                "git -C ../x fetch origin main",
+                "git fetch -C ../x origin main",
             ),
             (
                 "git -c core.editor=vim status",
@@ -922,7 +1026,7 @@ mod tests {
                 "time -o f nice -n 5 git status",
                 "time nice git status -o f -n 5",
             ),
-            ("FOO=1 make check >out", "make check"),
+            ("FOO=1 make check", "make check"),
             ("git status", "git status"),
         ] {
             let command = &split(line)[0];
@@ -932,6 +1036,88 @@ mod tests {
             assert!(matches(&pattern, &command.prefix.join(" ")));
         }
         assert!(!matches("git status *", "git status-other"));
+    }
+
+    #[test]
+    fn destructive_or_writing_commands_offer_no_always() {
+        for line in [
+            "rm -v f",
+            "sudo rm -rf build",
+            "rmdir d",
+            "mv a b",
+            "cp a b",
+            "dd if=a of=b",
+            "shred f",
+            "truncate -s 0 f",
+            "chmod +x f",
+            "chown me f",
+            "ln -s a b",
+            "cat a | tee b",
+            "install -m 755 a /usr/local/bin/a",
+            "sed -i s/a/b/ f",
+            "sed -i.bak s/a/b/ f",
+            "sed --in-place s/a/b/ f",
+            "perl -pi -e s/a/b/ f",
+            "sqlite3 x.db 'drop table t'",
+            "git push origin main",
+            "git -C ../x reset --hard",
+            "git clean -fd",
+            "git checkout -- f",
+            "git restore f",
+            "git rebase main",
+            "git branch -D old",
+            "git tag -d v1",
+            "kill 12",
+            "killall nav",
+            "pkill nav",
+            "echo x > f",
+            "echo x >> f",
+            "cargo test &> log",
+        ] {
+            let commands = split(line);
+            assert!(
+                commands
+                    .iter()
+                    .any(|command| command.save_pattern().is_none()),
+                "{line}"
+            );
+        }
+        for (line, pattern) in [
+            ("sqlite3 -readonly x.db 'SELECT 1'", "sqlite3 *"),
+            ("git status", "git status *"),
+            ("git branch -a", "git branch *"),
+            ("git tag -l", "git tag *"),
+            ("sed -n 1,5p f", "sed *"),
+            ("sed -e s/a/b/ f", "sed *"),
+            ("cargo test 2>&1", "cargo test *"),
+            ("cargo build > /dev/null", "cargo build *"),
+            ("grep x < f", "grep *"),
+            ("ls -la", "ls *"),
+        ] {
+            assert_eq!(
+                split(line)[0].save_pattern().as_deref(),
+                Some(pattern),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_assigned_substitution_keeps_the_line_understood() {
+        let commands = split("S=$(sqlite3 -readonly a.db \"SELECT 1\"); echo \"$S\"");
+        assert!(commands.iter().all(|command| !command.opaque));
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.prefix.join(" "))
+                .collect::<Vec<_>>(),
+            ["", "sqlite3", "echo"]
+        );
+        assert_eq!(commands[0].save_pattern(), None);
+        // A substitution that could name the program stays opaque.
+        for line in ["$(echo rm) -rf x", "`echo rm` x", "S=1 $(echo rm) x"] {
+            assert!(split(line)[0].opaque, "{line}");
+        }
     }
 
     #[test]

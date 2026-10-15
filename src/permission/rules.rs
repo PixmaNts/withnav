@@ -594,6 +594,10 @@ impl PermissionStore {
                 "permission values cannot contain NUL".into(),
             ));
         }
+        #[cfg(test)]
+        if self.fail_action.lock().unwrap().as_deref() == Some(action) {
+            return Err(Error::Invalid("rule lookup failed".into()));
+        }
         let workspace = crate::tools::canonical_path(workspace)?;
         path_text(&workspace)?;
         let workspace = crate::tools::path_key(&workspace);

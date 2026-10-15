@@ -13,15 +13,37 @@ Every tool call goes through the same steps, in this order:
 
 1. **Yolo** (if you turned it on): the call runs, nothing is checked.
 2. **Fixed checks**: a call that touches credentials (keys, `auth.json`, `.env` files) always asks
-   you. A write to WithNav's own `config.json`, database or global flows folder runs only if your
-   own messages explicitly ask for it; otherwise it asks you.
-3. **Reads inside the project** (`read`, `grep`, `glob`) run without asking.
+   you. A write to WithNav's own `config.json`, database or global flows folder runs only if you
+   explicitly asked for it, or explicitly accepted the agent's proposal to do it; otherwise it asks
+   you. A command that merely names one of these files (`sqlite3 …/withnav.db "SELECT …"`, a script
+   given the path) is judged by the same question, which also lets a pure read run: a query that
+   reads your rules runs, one that deletes them asks.
+3. **Reads inside the project** (`read`, `grep`, `glob`) run without asking. So do **writes to a
+   temporary folder**: a `write` or `edit` whose file is in the system temp directory (such as
+   `/tmp`) or a scratch folder, unless a rule of yours denies or asks about it. A `bash` command
+   that writes there is still judged by the permission flow: anything inside WithNav's scratch
+   folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your `permissions.scratch_dirs`),
+   deleting included, is recoverable; in the rest of the temp directory, creating a new file is
+   recoverable, but deleting or overwriting an existing one is not, since other programs keep
+   their files there.
 4. **Your rules**: a `deny` rule stops the call, whatever comes after.
 5. **Bypass** (if on for this session): the call runs.
 6. **The permission flow**: Instinct judges whether you, or a skill you validated, asked for the
-   call (including a parent agent's delegation to a subagent), or whether it is a read or a
-   recoverable change inside the project. It can let the call
-   run, or ask you.
+   call (including a parent agent's delegation to a subagent), whether it only reads, or whether
+   it is a recoverable change: files in the project, its scratch folders or the temp folder, or
+   building, testing, formatting or linting the project. It can let the call run, or ask you.
+   Under an **allow** rule it asks only whether this exact call is dangerous (destructive,
+   irreversible, publishing or touching credentials); a dangerous call still runs if you asked for
+   it, and asks you otherwise. So an **Always** never makes a dangerous call run unasked, and
+   never stops one you explicitly asked for.
+
+The permission flow reads all your messages and the last four messages of the conversation, yours
+and the agent's, up to your last message. A short answer such as "yes, go" therefore accepts the
+proposal the agent just made, and counts as your request, including for WithNav's own
+configuration. A message from the agent alone never counts, whatever it says you approved. What
+the agent wrote after your last message (reading a file, reasoning, announcing the command it is
+about to run) is not read at all: if you ask it to "apply" a file, a command found in that file
+is not your request until you have seen it and said yes.
 7. **You**: Once, Always or Reject.
 
 There are no default rules: on a new project you answer more often at first, and each **Always**
@@ -57,9 +79,14 @@ nav permissions add write '*.md' allow --agent plan     # plan may write Markdow
 nav permissions add write '*' ask --agent plan
 ```
 
-`history` shows every decision: the call, the matching rule, the flow's verdict, your answer and
+`history` shows every decision: the call, the matching rule, the flow's verdict and the scores
+behind it (for example `permission-default requested 0.04 read_only 0.01 recoverable 0.05`), your
+answer and
 the outcome (`allowed`, `denied`, `pending`, `cancelled`, `expired`). Arguments are stored with
-secrets redacted and size-limited.
+secrets redacted and size-limited. `--json` adds `flow_trace`: the run id of each flow run, which
+finds the full run, its inputs and the exact text sent to Instinct, in
+`~/.local/share/withnav/flows/runs/<workspace hash>/runs.jsonl`. A question also shows these scores
+in its reason.
 
 Rules and history live in `~/.local/share/withnav/withnav.db`. If it cannot open, the session starts
 with **Permission rules unavailable** and the error. Every call is judged without a rule: the floor
@@ -72,7 +99,7 @@ this mode.** Fix the database and start a new session to restore them. Yolo rema
 | Answer | Meaning |
 |---|---|
 | **Once** | Run this call. |
-| **Always** | Save the `allow` rule shown on the button, then run the call. Calls of the same turn that the new rule covers run too. Not offered for credentials, WithNav's own configuration, or a command WithNav cannot split. |
+| **Always** | Save the `allow` rule shown on the button, then run the call. Calls of the same turn that the new rule covers run too. Not offered for credentials, WithNav's own configuration, a command WithNav cannot split, or a command that deletes or changes files, processes or history. |
 | **Reject** | Do not run it. You can add a message that the model reads; every other waiting call of the turn is rejected with it. |
 | **Validate this skill** | Offered the first time a skill (or a changed version of it) is loaded. **Always** keeps the validation for this exact content. |
 
@@ -83,12 +110,22 @@ What **Always** saves:
 
 | Call | Rule saved | Scope |
 |---|---|---|
-| `bash git push origin feature` | `bash` / `git push *` (the command's prefix, which also matches a bare `git push`) | this project |
+| `bash cargo test -p withnav` | `bash` / `cargo test *` (the command's prefix, which also matches a bare `cargo test`) | this project |
+| `bash rm -v notes.txt`, `bash echo x > f` | nothing: **Always** is not offered for a command that deletes, moves, overwrites or kills (see below) | |
 | `write src/main.rs` | `write` / the exact file path | this project |
 | a file outside the project | the file rule, plus `external_directory` / its folder | this project |
 | `fetch https://docs.rs/serde` | `fetch` / `https://docs.rs/*` | this project |
 | a skill rule question | `skill` / the exact skill name | every project |
 | an MCP tool or another tool not listed above | the tool name / `*` | every project |
+
+**Always** is never offered for a shell command that deletes, moves or overwrites files, changes
+permissions, kills processes or rewrites history: `rm`, `rmdir`, `mv`, `cp`, `dd`, `shred`,
+`truncate`, `chmod`, `chown`, `ln`, `tee`, `install`, `sed -i`, `perl -i`, `sqlite3` without
+`-readonly`, `git push`, `git reset`, `git clean`, `git checkout`, `git restore`, `git rebase`,
+`git branch -D`, `git tag -d`, `kill`, `killall`, `pkill`, and any command that writes to a file
+with `>` or `>>`. A rule such as `rm *` would allow every future deletion. Answer **Once**, or
+write a narrower rule yourself with `nav permissions add`. Reads keep their prefix rule
+(`sqlite3 -readonly *` saves `sqlite3 *`, `git status` saves `git status *`).
 
 On a skill-validation question, **Always** stores a validation of that exact content (its hash),
 not a rule.
@@ -146,7 +183,7 @@ nav permissions revoke-validation <id>
 > make it do so. Use it only in a disposable machine or container you can throw away.
 
 Set `"yolo": true` in `config.json` (see [Configuration](configuration.md)). It is off by default,
-applies to new sessions, and their subagents inherit it.
+is read when a session starts or is resumed, and its subagents inherit it.
 
 There are three levels of control, from the strongest: **normal** (rules, the permission flow and
 prompts), **bypass** (ordinary prompts skipped for one session; `deny` rules and protected requests
@@ -162,8 +199,11 @@ still apply) and **yolo** (nothing is checked).
 - Still enforced: which tools a session or agent has, malformed or missing arguments, and
   cancellation. A refused call still says `approved_by: yolo`.
 - `YOLO` shows in the terminal header and sidebar, as a badge in the browser and in VS Code, and
-  `nav doctor` prints `permissions: yolo (no permission control)`.
-- Changing the setting applies to new sessions, not to open ones.
+  `nav doctor` prints `⚠ warning config.yolo: permissions: yolo (no permission control)`.
+- Changing the setting applies to sessions started or resumed afterwards. A session that is
+  running keeps the value it started with; one that was stopped (an interrupted turn ends the live
+  session) and is resumed, for example by sending it a new message from a client, reads the new
+  value. Model and agent switches keep it.
 
 ## Agents
 

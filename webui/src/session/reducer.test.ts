@@ -95,6 +95,18 @@ describe("transcript projection", () => {
     expect(openPermissions(view)).toEqual([]);
   });
 
+  it("keeps why an Always answer was not saved", () => {
+    seq = 0;
+    let view = reduceAll(emptyView(), [
+      env("turn.start", { turn_id: "t1", actor_id: "agent:main", task_id: "k" }),
+      env("permission.requested", { request_id: "R", tool_call_id: "c1", tool: "bash", arguments: "{}", scope: { kind: "folder", value: "/w" }, agent: "build", reason: "r" }),
+    ]);
+    view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_always", always_saved: false, always_error: "database is locked" }));
+    expect(view.permissions.R).toMatchObject({ resolution: "allow_always", alwaysSaved: false, message: "database is locked" });
+    view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_always" }));
+    expect(view.permissions.R!.alwaysSaved).toBeUndefined();
+  });
+
   it("labels messages by author: Captain, Nav wake, subagent result", () => {
     seq = 0;
     const view = reduceAll(emptyView(), [

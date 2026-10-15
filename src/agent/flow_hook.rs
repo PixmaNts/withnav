@@ -4,7 +4,10 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 #[path = "captain_messages.rs"]
 mod captain_evidence;
-pub use captain_evidence::{captain_messages, captain_messages_with_cut, delegation_with_cut};
+pub use captain_evidence::{
+    captain_messages, captain_messages_with_cut, delegation_with_cut, recent_with_cut,
+    RecentMessage,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FlowVerdict {
@@ -48,15 +51,41 @@ pub struct PermissionCallContext {
     pub rule: Option<String>,
     pub commands: Option<Vec<PermissionCommand>>,
     pub inside_project: Option<bool>,
+    /// Where the call acts, from its literal paths: `project`, `scratch`,
+    /// `temp`, `outside` or `unknown`; see [`crate::permission::floor::location`].
+    pub location: Option<&'static str>,
     pub protected: bool,
     pub skill: Option<ValidatedSkill>,
     pub captain_messages: Vec<String>,
     pub captain_messages_cut: bool,
     pub delegation: Vec<String>,
     pub delegation_cut: bool,
+    /// The last messages between the Captain and the agent, oldest first; the
+    /// agent's are context for a short Captain answer, never a request.
+    pub recent: Vec<RecentMessage>,
+    pub recent_cut: bool,
     /// The host already ran the compiled protected check for this call: its
     /// answer is the only authority, and the flows do not ask it again.
     pub protected_check: Option<ProtectedCheck>,
+}
+
+/// One flow run behind a permission decision: its id in the flow run log
+/// (`flows/runs/<workspace>/runs.jsonl`) and the score of each node that asked
+/// Instinct a question.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct RunScores {
+    pub run_id: String,
+    pub scores: std::collections::BTreeMap<String, f64>,
+}
+
+impl ProtectedCheck {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 /// The answer of the compiled-in protected check alone, the only authority
@@ -78,12 +107,15 @@ pub struct PermissionVerdict {
     pub flows: Vec<PermissionFlowAnswer>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PermissionFlowAnswer {
     pub flow: String,
     pub run_id: String,
     pub action: String,
     pub used_rule: bool,
+    /// The score of each node of this run that asked Instinct.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub scores: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(Debug)]
@@ -128,5 +160,13 @@ pub trait ToolCallFlows: Send + Sync + std::fmt::Debug {
     ) -> Pin<Box<dyn Future<Output = ProtectedCheck> + Send + 'a>> {
         let _ = (ctx, cancel);
         Box::pin(async { ProtectedCheck::Unavailable })
+    }
+    /// [`Self::protected_check`] with the run that answered it, when one ran.
+    fn protected_check_traced<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = (ProtectedCheck, Option<RunScores>)> + Send + 'a>> {
+        Box::pin(async move { (self.protected_check(ctx, cancel).await, None) })
     }
 }

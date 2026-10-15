@@ -22,7 +22,7 @@ Permissions chapter of the guide.
   limited), the matching rule, the flow's verdict, your answer and the outcome (`allowed`, `denied`,
   `pending`, `cancelled`, `expired`).
 - **Once / Always / Reject.** Always saves the rule shown on its button, for example
-  `bash` / `git push *` for this project, and releases the waiting calls of the turn it covers.
+  `bash` / `cargo test *` for this project, and releases the waiting calls of the turn it covers.
   Reject carries an optional message the model reads; every waiting call of the turn is rejected
   with it. Always is not offered for credentials, WithNav's own configuration or a shell line
   WithNav cannot split.
@@ -30,13 +30,14 @@ Permissions chapter of the guide.
   matched by its prefix (`git push`, `cargo test`, `npm run build`), and the strictest answer wins.
 - **The permission flow.** The built-in `permission-default` flow asks Instinct whether you, or a
   skill you validated, asked for the call, or whether it is a read or a recoverable change in the
-  project; under an `allow` rule it asks whether this exact call is destructive. It runs in the
+  project; under an `allow` rule it asks whether this exact call is destructive and, if so,
+  whether you asked for it. It runs in the
   Studio like any flow and can be tuned there. If Instinct is unavailable, your rules apply.
 - **Validation of flows and skills.** A global or workspace flow, and a skill, run only once you
   have validated their current content; a changed file asks again. A validated flow, a workspace
   flow included, can allow tool calls: read it before validating it.
-- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and new
-  sessions run every tool call without any check: no prompt, no rule, no flow, no protection of
+- **A `yolo` setting turns off all permission control.** Set `"yolo": true` in `config.json` and
+  sessions started or resumed afterwards run every tool call without any check: no prompt, no rule, no flow, no protection of
   credentials or WithNav's configuration. Each call records `approved_by: yolo`, and `YOLO` stays
   visible in the terminal, the browser and VS Code; `nav doctor` warns. It is off by default and
   unsafe: use it only on a machine you can afford to lose.
@@ -61,6 +62,41 @@ Permissions chapter of the guide.
   agent wrote, in the delegation or in steering, is a separate request source for ordinary calls,
   never for protected configuration writes. Your answers to an
   `ask` count as your words.
+- A `write` or `edit` to a file in the system temp directory (such as `/tmp`) or a scratch folder
+  runs without a question, unless one of your rules denies or asks about it; credentials still ask.
+- A shell command that only names WithNav's database or configuration (`sqlite3 withnav.db
+  "SELECT …"`, a script given the path) is no longer blocked by a fixed exception list: the check on
+  WithNav's own files asks whether the command only reads them or you asked for the change. A
+  read-only query runs, with or without `-readonly`; a `DELETE`, a script `UPDATE` or a
+  `.save` over the database asks you unless you requested it.
+- WithNav's scratch folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your
+  `permissions.scratch_dirs`) are a free zone for shell commands, deletions included. The rest of
+  the temp directory is not: creating a new file there runs, but deleting or overwriting an existing
+  one is judged like any other deletion. The permission flow now knows where a shell command acts
+  (project, scratch, temp, elsewhere or unknown) from its literal paths.
+- A message that names a change to WithNav's configuration or rules ("remove permission 3",
+  "set yolo to false") now counts as your request for it; a vague goal or "apply this file" still
+  does not. The check's verdict and score are recorded with the decision and shown with the
+  question, so a refusal can be explained.
+- Each permission decision names the flow runs behind it and their scores: `nav permissions history`
+  prints them, `--json` gives the run ids that find the full run in the flow run log, and a
+  question shows the scores in its reason.
+- **Always** is no longer offered for a shell command that deletes, moves, overwrites, changes
+  permissions, kills or rewrites history (`rm`, `mv`, `cp`, `sed -i`, `sqlite3` without
+  `-readonly`, `git push`, `git reset`, `kill`, a `>` redirection to a file, and others). A rule
+  such as `rm *` would have allowed every future deletion.
+- **The permission flow judges better.** Its "read or recoverable change" question is split in
+  two plain questions: does the call only read, and is it a recoverable change (files in the
+  project, its scratch folders or the temp folder, or building, testing, formatting, linting).
+  Replayed on a real test session, project and temp writes and requested deletions now run, and
+  unrequested destructive commands still ask. Under an allow rule, a call judged dangerous now
+  runs when you asked for it and asks otherwise, as it would without the rule.
+- The permission flow, and the check on WithNav's own configuration, read the last four messages
+  of the conversation with yours, up to your last message. A short "yes, go" accepts the proposal
+  the agent just made and counts as your request; an agent message alone never does. What the
+  agent wrote after your last message is left out: asked to "apply" a file, it could otherwise
+  repeat a command from that file and have it read as your request (a recorded `rm` of a file in
+  your home directory ran this way; replayed with the cut, the flow asks).
 - An allowed file write is bound to the path you were shown: if a link is put in its place before
   it runs, nothing is written and the call is decided again.
 - If the permission database cannot open, the session starts with a visible warning. Every call

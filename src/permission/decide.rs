@@ -79,6 +79,14 @@ pub trait PermissionFlows: Send + Sync {
     /// Whether the Captain's own messages ask for a protected write. `Unavailable`
     /// when the built-in flow is disabled or the check failed.
     fn protected_check<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, ProtectedCheck>;
+    /// [`Self::protected_check`] with the run that answered it, kept in the
+    /// decision so that a refused protected write can be explained.
+    fn protected_check_traced<'a>(
+        &'a self,
+        query: &'a FlowQuery<'a>,
+    ) -> BoxFuture<'a, (ProtectedCheck, Option<crate::agent::flow_hook::RunScores>)> {
+        Box::pin(async move { (self.protected_check(query).await, None) })
+    }
 }
 
 pub struct Input<'a> {
@@ -152,6 +160,10 @@ pub struct Trace {
     pub effect: Option<Effect>,
     pub flow_verdict: Option<&'static str>,
     pub protected_check: Option<ProtectedCheck>,
+    /// The run that answered the protected check and its score, when one ran.
+    pub protected_run: Option<crate::agent::flow_hook::RunScores>,
+    /// The permission flow runs that answered, filled in by the caller.
+    pub flow_runs: Vec<crate::agent::flow_hook::PermissionFlowAnswer>,
     pub command_matches: Value,
     pub floor: Option<String>,
     pub doom_loop: bool,
@@ -189,19 +201,104 @@ impl DoomTracker {
     }
 }
 
-/// Decide one tool call. The permission rules are read; nothing else is touched.
-/// A rule lookup that fails asks the Captain, whatever the control level but yolo.
+/// Everything a decision reads from the permission database and the file
+/// system, gathered by [`lookup`] before any flow is asked.
+pub struct Lookup {
+    floor: Floor,
+    free_read: bool,
+    /// A native write inside a temporary directory: it runs once no rule
+    /// stops or asks about it.
+    temp_write: bool,
+    rules: Evaluation,
+    /// The rule for a loop, read only when the call repeats enough and no
+    /// written deny stops it. Its failure is kept apart: it only matters at
+    /// the loop check, after the deny and the floor.
+    doom: Result<Option<Rule>, Error>,
+}
+
+/// Reads what deciding `input` needs. Blocking: the database may wait up to
+/// its busy timeout on another connection's write, so async callers run this
+/// on the blocking pool.
+pub fn lookup(input: &Input<'_>) -> Result<Lookup, Error> {
+    if input.control == Control::Yolo {
+        return Ok(Lookup {
+            floor: Floor::None,
+            free_read: false,
+            temp_write: false,
+            rules: Evaluation::default(),
+            doom: Ok(None),
+        });
+    }
+    let floor = floor::check(input.call, input.commands, input.cx);
+    let free_read = input.store.is_some() && floor == Floor::None && reads_inside_roots(input);
+    let temp_write = input.store.is_some() && floor == Floor::None && writes_inside_temp(input);
+    let rules = if free_read {
+        Evaluation::default()
+    } else {
+        evaluate(input)?
+    };
+    let doom = if input.repeats >= DOOM_LOOP_THRESHOLD && rules.deny.is_none() {
+        input
+            .store
+            .map(|store| {
+                store.matching(
+                    "doom_loop",
+                    &input.call.name,
+                    &input.cx.workspace,
+                    input.agent,
+                )
+            })
+            .transpose()
+            .map(Option::flatten)
+    } else {
+        Ok(None)
+    };
+    Ok(Lookup {
+        floor,
+        free_read,
+        temp_write,
+        rules,
+        doom,
+    })
+}
+
+/// Decide one tool call, reading the rules on the calling thread.
+#[cfg(test)]
 pub async fn decide(input: &Input<'_>, flows: &dyn PermissionFlows) -> Decision {
-    run(input, flows).await.unwrap_or_else(|error| Decision {
+    decide_with(input, lookup(input), flows).await
+}
+
+/// Decide one tool call from what [`lookup`] read; nothing else is touched.
+/// A rule lookup that failed asks the Captain, whatever the control level but yolo.
+pub async fn decide_with(
+    input: &Input<'_>,
+    lookup: Result<Lookup, Error>,
+    flows: &dyn PermissionFlows,
+) -> Decision {
+    match lookup {
+        Ok(lookup) => run(input, lookup, flows).await,
+        Err(error) => unreadable(error),
+    }
+}
+
+fn unreadable(error: Error) -> Decision {
+    Decision {
         verdict: Verdict::AskCaptain {
             reason: format!("the permission rules could not be read: {error}"),
             always: Vec::new(),
         },
         trace: Trace::default(),
-    })
+    }
 }
 
-async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision, Error> {
+async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> Decision {
+    let Lookup {
+        floor,
+        free_read,
+        temp_write,
+        rules,
+        doom,
+    } = lookup;
     let mut trace = Trace::default();
     let run = |approved_by, trace| Decision {
         verdict: Verdict::Run { approved_by },
@@ -214,44 +311,17 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
 
     // 1. Yolo checks nothing.
     if input.control == Control::Yolo {
-        return Ok(run(ApprovedBy::Yolo, trace));
+        return run(ApprovedBy::Yolo, trace);
     }
 
-    // 2. The fixed floor. A credential, or a path that cannot be resolved the
-    // way execution would resolve it, asks and nothing can allow it.
-    let floor = floor::check(input.call, input.commands, input.cx);
-    match &floor {
-        Floor::Credential(target) => {
-            trace.floor = Some(format!("credential: {target}"));
-            return Ok(ask(
-                format!("{target} is a credential; WithNav always asks before touching one"),
-                Vec::new(),
-                trace,
-            ));
-        }
-        Floor::Unresolved(target) => {
-            trace.floor = Some(format!("unresolved: {target}"));
-            return Ok(ask(
-                format!("{target} cannot be resolved, so WithNav cannot tell what it names"),
-                Vec::new(),
-                trace,
-            ));
-        }
-        Floor::Protected(target) => trace.floor = Some(format!("protected: {target}")),
-        Floor::None => {}
-    }
-
-    // 3. Reads inside the readable roots need no rule and no flow. They still
-    // go through the loop check below, so a model re-reading the same file
-    // forever is stopped.
-    let free_read = input.store.is_some() && reads_inside_roots(input);
-
-    // 4. Rules.
-    let rules = if free_read {
-        Evaluation::default()
-    } else {
-        evaluate(input)?
-    };
+    // 2. The fixed floor (`floor`): a credential, or a path that cannot be
+    // resolved the way execution would resolve it, asks and nothing can allow it.
+    // 3. Reads inside the readable roots (`free_read`) need no rule and no
+    // flow. They still go through the loop check below, so a model re-reading
+    // the same file forever is stopped. A native write inside a temporary
+    // directory (`temp_write`) needs no flow either: what it changes is
+    // temporary by definition. A written `deny` or `ask` rule still applies.
+    // 4. Rules (`rules`), read by `lookup`.
     trace.command_matches = rules.matches.clone();
     trace.rule_id = rules.rule.as_ref().map(|rule| rule.id);
     trace.effect = rules.rule.as_ref().map(|rule| rule.effect);
@@ -264,53 +334,73 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
             "denied by the permission rule {} {}",
             rule.action, rule.resource
         );
-        return Ok(Decision {
+        return Decision {
             verdict: Verdict::Deny {
                 rule: Some(rule),
                 message,
             },
             trace,
-        });
+        };
+    }
+
+    match &floor {
+        Floor::Credential(target) => {
+            trace.floor = Some(format!("credential: {target}"));
+            return ask(
+                format!("{target} is a credential; WithNav always asks before touching one"),
+                Vec::new(),
+                trace,
+            );
+        }
+        Floor::Unresolved(target) => {
+            trace.floor = Some(format!("unresolved: {target}"));
+            return ask(
+                format!("{target} cannot be resolved, so WithNav cannot tell what it names"),
+                Vec::new(),
+                trace,
+            );
+        }
+        Floor::Protected(target) => trace.floor = Some(format!("protected: {target}")),
+        Floor::NamesProtected(target) => trace.floor = Some(format!("names protected: {target}")),
+        Floor::None => {}
     }
 
     // A protected write needs the protected check, and only it: rules, bypass
     // and a generic flow allow never stand in for it, and it is never saved as
     // a rule. It is asked after the deny above and before anything can run it.
-    if let Floor::Protected(target) = &floor {
+    // A command that only names a protected file goes through the same check:
+    // its question also accepts a call that only reads WithNav's files.
+    if let Floor::Protected(target) | Floor::NamesProtected(target) = &floor {
         let query = FlowQuery {
             rule: rules.result,
             matched: rules.rule.as_ref(),
             floor: &floor,
             protected_check: None,
         };
-        let check = flows.protected_check(&query).await;
+        let (check, run) = flows.protected_check_traced(&query).await;
         trace.protected_check = Some(check);
+        trace.protected_run = run;
         if check != ProtectedCheck::Passed {
-            return Ok(ask(
-                format!("{target} is WithNav's own configuration; only your explicit request can change it"),
+            return ask(
+                match &floor {
+                    Floor::NamesProtected(_) => format!("{target} is WithNav's own configuration or database and this command may change it; only your explicit request can change it"),
+                    _ => format!("{target} is WithNav's own configuration; only your explicit request can change it"),
+                },
                 Vec::new(),
                 trace,
-            ));
+            );
         }
     }
 
     // A loop is checked after the rules so that a `deny` is never hidden by a
     // question; bypass skips it.
     if input.repeats >= DOOM_LOOP_THRESHOLD {
-        let rule = input
-            .store
-            .map(|store| {
-                store.matching(
-                    "doom_loop",
-                    &input.call.name,
-                    &input.cx.workspace,
-                    input.agent,
-                )
-            })
-            .transpose()?
-            .flatten();
         trace.doom_loop = true;
-        match rule {
+        let doom = match doom {
+            Ok(rule) => rule,
+            Err(error) => return unreadable(error),
+        };
+        match doom {
             Some(rule) if rule.effect == Effect::Deny => {
                 trace.rule_id = Some(rule.id);
                 trace.effect = Some(Effect::Deny);
@@ -318,36 +408,36 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
                     "{} was called {} times in a row with the same arguments",
                     input.call.name, input.repeats
                 );
-                return Ok(Decision {
+                return Decision {
                     verdict: Verdict::Deny {
                         rule: Some(rule),
                         message,
                     },
                     trace,
-                });
+                };
             }
             Some(rule) if rule.effect == Effect::Allow => {}
             _ if input.control == Control::Bypass && input.store.is_some() => {}
             _ => {
-                return Ok(ask(
+                return ask(
                     format!(
                         "{} was called {} times in a row with the same arguments",
                         input.call.name, input.repeats
                     ),
                     Vec::new(),
                     trace,
-                ))
+                )
             }
         }
     }
 
-    if free_read {
-        return Ok(run(ApprovedBy::Rule, trace));
+    if free_read || (temp_write && rules.result != RuleResult::Ask) {
+        return run(ApprovedBy::Rule, trace);
     }
 
     // 5. Bypass.
     if input.control == Control::Bypass && input.store.is_some() {
-        return Ok(run(ApprovedBy::Bypass, trace));
+        return run(ApprovedBy::Bypass, trace);
     }
 
     // 6. The permission flow, with the rules' result.
@@ -360,7 +450,9 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
         })
         .await;
     trace.flow_verdict = Some(answer.as_str());
-    let proposals = if input.store.is_none() || matches!(floor, Floor::Protected(_)) {
+    let proposals = if input.store.is_none()
+        || matches!(floor, Floor::Protected(_) | Floor::NamesProtected(_))
+    {
         Vec::new()
     } else {
         rules.proposals
@@ -369,7 +461,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
         RuleResult::Ask => "a permission rule asks for this call".to_owned(),
         _ => "no permission rule covers this call".to_owned(),
     };
-    Ok(match answer {
+    match answer {
         FlowAnswer::Allow => run(ApprovedBy::Flow, trace),
         FlowAnswer::Deny => Decision {
             verdict: Verdict::Deny {
@@ -389,7 +481,7 @@ async fn run(input: &Input<'_>, flows: &dyn PermissionFlows) -> Result<Decision,
         }
         FlowAnswer::ApplyRule if rules.result == RuleResult::Allow => run(ApprovedBy::Rule, trace),
         FlowAnswer::ApplyRule => ask(reason(), proposals, trace),
-    })
+    }
 }
 
 fn project_roots(cx: &FloorContext) -> Vec<PathBuf> {
@@ -433,6 +525,28 @@ fn reads_inside_roots(input: &Input<'_>) -> bool {
             .filter_map(|root| resolve_path(&root.to_string_lossy(), input.cx)),
     );
     resolve_path(path, input.cx).is_some_and(|path| inside(&path, &roots))
+}
+
+/// Whether a native `write` or `edit` lands inside a temporary directory:
+/// the system temp directory or a scratch directory, after every link is
+/// followed, so a link in `/tmp` to a project file is not a temp write. A
+/// project that itself lives in the temp directory is judged as a project.
+fn writes_inside_temp(input: &Input<'_>) -> bool {
+    if !matches!(input.call.name.as_str(), "write" | "edit") {
+        return false;
+    }
+    let Some(target) = path_argument(input.call).and_then(|path| resolve_path(path, input.cx))
+    else {
+        return false;
+    };
+    let roots: Vec<PathBuf> = input
+        .cx
+        .temp_roots
+        .iter()
+        .filter_map(|root| resolve_path(&root.to_string_lossy(), input.cx))
+        .collect();
+    let workspace = resolve_path(&input.cx.workspace.to_string_lossy(), input.cx);
+    inside(&target, &roots) && !workspace.is_some_and(|workspace| target.starts_with(workspace))
 }
 
 struct Item {
@@ -645,9 +759,9 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
     let any_unsavable =
         items.iter().any(|item| item.proposal.is_none()) && input.call.name == "bash";
     let mut proposals: Vec<RuleProposal> = Vec::new();
-    if !any_unsavable {
+    if !any_unsavable && items.iter().all(|item| item.rule.is_none()) {
         for item in &items {
-            if item.result != RuleResult::Allow {
+            if item.result == RuleResult::NoRule {
                 if let Some(proposal) = &item.proposal {
                     if !proposals.contains(proposal) {
                         proposals.push(proposal.clone());
@@ -738,7 +852,14 @@ mod tests {
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::tools::canonical_path(dir.path()).unwrap();
-        for sub in ["project", "config/flows", "data", "home/.ssh", "outside"] {
+        for sub in [
+            "project",
+            "config/flows",
+            "data",
+            "home/.ssh",
+            "outside",
+            "tmp",
+        ] {
             std::fs::create_dir_all(root.join(sub)).unwrap();
         }
         let store = PermissionStore::open(root.join("data")).unwrap();
@@ -746,6 +867,7 @@ mod tests {
             workspace: root.join("project"),
             writable_roots: Vec::new(),
             readable_roots: vec![root.join("skills")],
+            temp_roots: vec![root.join("tmp")],
             config_dir: Some(root.join("config")),
             data_dir: Some(root.join("data")),
             home: Some(root.join("home")),
@@ -959,6 +1081,29 @@ mod tests {
     }
 
     #[test]
+    fn written_ask_has_no_always_proposal() {
+        let f = fixture();
+        f.add("bash", "*", Effect::Ask);
+        let decision = f.decide(Control::Normal, &bash("git push origin feature"));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        assert!(proposals(&decision).is_empty(), "{decision:?}");
+    }
+
+    #[test]
+    fn credential_deny_precedes_floor_question() {
+        let f = fixture();
+        f.add("read", "*", Effect::Deny);
+        let target = f.root().join("home/.ssh/id_ed25519").display().to_string();
+        for control in [Control::Normal, Control::Bypass] {
+            let decision = f.decide(control, &file("read", &target));
+            assert!(
+                matches!(decision.verdict, Verdict::Deny { .. }),
+                "{decision:?}"
+            );
+        }
+    }
+
+    #[test]
     fn protected_write_still_obeys_a_deny() {
         let f = fixture();
         let target = f.root().join("data/withnav.db").display().to_string();
@@ -967,6 +1112,51 @@ mod tests {
         let decision = f.decide_full(Control::Normal, &file("write", &target), 1, &flows);
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
         assert_eq!(flows.check_calls.get(), 0);
+    }
+
+    #[test]
+    fn permission_writers_require_protected_check_under_bypass() {
+        let f = fixture();
+        for command in ["add", "revoke", "validate", "revoke-validation"] {
+            let decision = f.decide(
+                Control::Bypass,
+                &bash(&format!("nav permissions {command} flow")),
+            );
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{command}: {decision:?}"
+            );
+            assert!(proposals(&decision).is_empty());
+        }
+        for command in ["list", "history", "validations"] {
+            let decision = f.decide(
+                Control::Bypass,
+                &bash(&format!("nav permissions {command}")),
+            );
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass), "{command}");
+        }
+    }
+
+    #[test]
+    fn a_command_naming_the_database_goes_through_the_protected_check() {
+        let f = fixture();
+        let db = f.root().join("data/withnav.db").display().to_string();
+        for line in [
+            format!("sqlite3 -readonly {db} 'SELECT 1'"),
+            format!("sqlite3 {db} 'DELETE FROM permission_rules'"),
+        ] {
+            let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Passed);
+            let decision = f.decide_full(Control::Normal, &bash(&line), 1, &flows);
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Flow), "{line}");
+            assert_eq!(flows.check_calls.get(), 1);
+            let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Failed);
+            let decision = f.decide_full(Control::Bypass, &bash(&line), 1, &flows);
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{line}"
+            );
+            assert!(proposals(&decision).is_empty());
+        }
     }
 
     #[test]
@@ -1029,6 +1219,110 @@ mod tests {
     }
 
     #[test]
+    fn writes_inside_a_temp_directory_run_without_the_flow() {
+        let f = fixture();
+        let temp = |name: &str| f.root().join("tmp").join(name).display().to_string();
+        for call in [
+            file("write", &temp("x")),
+            file("edit", &temp("deep/new/y.txt")),
+        ] {
+            let (decision, asked) =
+                f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::Deny));
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
+            assert_eq!(asked, 0);
+        }
+        // The real system temp directory too.
+        let cx = FloorContext {
+            temp_roots: floor::system_temp_roots(),
+            ..f.cx.clone()
+        };
+        let fixture = Fixture { cx, ..f };
+        let (decision, asked) = fixture.decide_with(
+            Control::Normal,
+            &file("write", "/tmp/withnav-temp-write-test/x"),
+            1,
+            FlowAnswer::Deny,
+        );
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn a_temp_write_still_meets_rules_the_floor_and_links() {
+        let f = fixture();
+        let target = f.root().join("tmp/x").display().to_string();
+        // A written deny on the path denies.
+        f.add("write", &literal(&target), Effect::Deny);
+        let decision = f.decide(Control::Normal, &file("write", &target));
+        assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+        // A credential-looking path asks.
+        let key = f.root().join("tmp/.env").display().to_string();
+        let (decision, asked) =
+            f.decide_with(Control::Normal, &file("write", &key), 1, FlowAnswer::Allow);
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        assert_eq!(asked, 0);
+        // A link in the temp directory to a project file is a project write.
+        // Creating a symlink needs a privilege on Windows: Unix only.
+        #[cfg(unix)]
+        {
+            let link = f.root().join("tmp/link");
+            std::os::unix::fs::symlink(f.cx.workspace.join("a.rs"), &link).unwrap();
+            let (decision, asked) = f.decide_with(
+                Control::Normal,
+                &file("write", &link.display().to_string()),
+                1,
+                FlowAnswer::AskCaptain,
+            );
+            assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+            assert_eq!(asked, 1);
+        }
+        // An ask rule still asks.
+        let other = f.root().join("tmp/y").display().to_string();
+        f.add("write", &literal(&other), Effect::Ask);
+        let decision = f.decide(Control::Normal, &file("write", &other));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn an_edit_outside_temp_still_goes_to_the_flow() {
+        let f = fixture();
+        for path in [
+            "src/a.rs".to_owned(),
+            f.root().join("outside/b").display().to_string(),
+        ] {
+            let (decision, asked) = f.decide_with(
+                Control::Normal,
+                &file("edit", &path),
+                1,
+                FlowAnswer::AskCaptain,
+            );
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{path}"
+            );
+            assert_eq!(asked, 1, "{path}");
+        }
+        // A project that lives in the temp directory is judged as a project.
+        let cx = FloorContext {
+            temp_roots: vec![f.root()],
+            ..f.cx.clone()
+        };
+        let inner = Fixture { cx, ..f };
+        let (_, asked) = inner.decide_with(
+            Control::Normal,
+            &file("write", "src/a.rs"),
+            1,
+            FlowAnswer::AskCaptain,
+        );
+        assert_eq!(asked, 1);
+        let f = inner;
+        // A bash write to the temp directory is the flow's to judge.
+        let line = format!("echo x > {}", f.root().join("tmp/x").display());
+        let (_, asked) = f.decide_with(Control::Normal, &bash(&line), 1, FlowAnswer::Allow);
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
     fn deny_comes_before_bypass_and_flow() {
         let f = fixture();
         let rule = f.add("bash", "rm *", Effect::Deny);
@@ -1056,11 +1350,10 @@ mod tests {
         );
         assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
         assert_eq!(asked, 1);
-        // One command without a rule: the line asks and proposes only that command.
+        // A partially matched line asks without proposing reusable approval.
         let decision = f.decide(Control::Normal, &bash("git status && rm -rf x"));
         let always = proposals(&decision);
-        assert_eq!(always.len(), 1);
-        assert_eq!(always[0].resource, "rm *");
+        assert!(always.is_empty());
         // One denied command denies the line.
         f.add("bash", "rm *", Effect::Deny);
         let decision = f.decide(Control::Bypass, &bash("git status && rm -rf x"));
@@ -1112,6 +1405,28 @@ mod tests {
     }
 
     #[test]
+    fn destructive_or_writing_commands_offer_no_always() {
+        let f = fixture();
+        for line in [
+            "rm -v f",
+            "echo x > f",
+            "git status && rm -v f",
+            "sqlite3 x.db .tables",
+        ] {
+            let decision = f.decide(Control::Normal, &bash(line));
+            assert!(proposals(&decision).is_empty(), "{line}");
+        }
+        for (line, pattern) in [
+            ("sqlite3 -readonly x.db 'SELECT 1'", "sqlite3 *"),
+            ("git status", "git status *"),
+        ] {
+            let always = proposals(&f.decide(Control::Normal, &bash(line)));
+            assert_eq!(always.len(), 1, "{line}");
+            assert_eq!(always[0].resource, pattern);
+        }
+    }
+
+    #[test]
     fn a_line_with_an_opaque_part_offers_no_always() {
         let f = fixture();
         let decision = f.decide(
@@ -1154,7 +1469,7 @@ mod tests {
         f.add("write", &literal(&target), Effect::Allow);
         let decision = f.decide(Control::Normal, &write);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
-        assert_eq!(proposals(&decision)[0].action, "external_directory");
+        assert!(proposals(&decision).is_empty());
         // Both together allow it.
         f.add(
             "external_directory",
@@ -1505,6 +1820,37 @@ mod tests {
         f.add("doom_loop", "bash", Effect::Deny);
         let (decision, _) = f.decide_with(Control::Bypass, &call, 5, FlowAnswer::ApplyRule);
         assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_written_deny_wins_over_a_failing_loop_lookup() {
+        let f = fixture();
+        f.add("bash", "rm *", Effect::Deny);
+        *f.store.fail_action.lock().unwrap() = Some("doom_loop".into());
+        let call = bash("rm -rf target");
+        let (decision, asked) = f.decide_with(
+            Control::Normal,
+            &call,
+            DOOM_LOOP_THRESHOLD,
+            FlowAnswer::Allow,
+        );
+        assert!(
+            matches!(decision.verdict, Verdict::Deny { rule: Some(_), .. }),
+            "{decision:?}"
+        );
+        assert_eq!(asked, 0);
+        // Without a deny the failed loop lookup still asks, in its place.
+        let call = bash("ls -la");
+        let (decision, _) = f.decide_with(
+            Control::Normal,
+            &call,
+            DOOM_LOOP_THRESHOLD,
+            FlowAnswer::Allow,
+        );
+        assert!(
+            matches!(decision.verdict, Verdict::AskCaptain { .. }),
+            "{decision:?}"
+        );
     }
 
     #[test]

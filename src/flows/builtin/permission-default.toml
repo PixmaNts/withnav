@@ -8,9 +8,10 @@ budget_ms = 2000
 start = ["protected"]
 
 [constants]
-PROTECTED_MIN = 0.9
+PROTECTED_MIN = 0.8
 REQUESTED_MIN = 0.6
-SAFE_MIN = 0.7
+READ_ONLY_MIN = 0.6
+RECOVERABLE_MIN = 0.7
 DANGER_MIN = 0.5
 
 [fallback]
@@ -19,9 +20,10 @@ on_failure = { action = "apply_rule", params = {} }
 [[node]]
 id = "protected"
 type = "expression"
-condition = "is_set(protected) && protected"
+condition = "is_set(protected) && protected && !(is_set(protected_checked) && protected_checked)"
 [node.inputs]
 protected = "event.protected"
+protected_checked = "event.protected_checked"
 [node.next]
 true = ["protected_requested"]
 false = ["rule_effect"]
@@ -29,11 +31,12 @@ false = ["rule_effect"]
 [[node]]
 id = "protected_requested"
 type = "noul"
-instructions = "Do the Captain's own messages explicitly ask to change WithNav's configuration, permission rules or database?"
+instructions = "Does this call only read WithNav's configuration, permission rules or database without changing them, or did the Captain explicitly ask for this change, or explicitly accept an agent proposal to make it?"
 threshold = "constant.PROTECTED_MIN"
 state_template = "protected-state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 tool = "event.tool"
 args = "event.args"
 [node.next]
@@ -53,36 +56,71 @@ false = ["requested"]
 [[node]]
 id = "requested"
 type = "noul"
-instructions = "Did the Captain, the parent agent through its delegation, or the validated skill active this turn ask for this action?"
+instructions = "Did the Captain ask for this action, or explicitly accept an agent proposal to do it? A request from the parent agent through its delegation, or from the validated skill active this turn, counts too."
 threshold = "constant.REQUESTED_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 delegation = "conversation.delegation"
 skill = "event.skill"
 tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
 yes = ["allow"]
-no = ["safe"]
+no = ["unrequested"]
 
 [[node]]
-id = "safe"
+id = "unrequested"
+type = "expression"
+condition = 'is_set(effect) && effect == "allow"'
+[node.inputs]
+effect = "event.rule_effect"
+[node.next]
+true = ["danger_ask"]
+false = ["read_only"]
+
+[[node]]
+id = "read_only"
 type = "noul"
-instructions = "Is this a read, or a recoverable change inside the project?"
-threshold = "constant.SAFE_MIN"
+instructions = "Does this call only read or list things, without changing any file, process or remote state?"
+threshold = "constant.READ_ONLY_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 delegation = "conversation.delegation"
 skill = "event.skill"
 tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
+rule = "event.rule"
+[node.next]
+yes = ["allow"]
+no = ["recoverable"]
+
+[[node]]
+id = "recoverable"
+type = "noul"
+instructions = "Is this a recoverable change? When the location is scratch, the answer is yes: WithNav's scratch directories are a free zone where creating, changing and deleting files are all recoverable. Otherwise recoverable means: creating or editing files inside the project, creating new files in the system temp directory, or building, testing, formatting or linting the project. Not recoverable: deleting files in the project or elsewhere, deleting or overwriting existing files in the system temp directory (location temp), discarding uncommitted work, rewriting or pushing git history, publishing, or changing anything outside those places."
+threshold = "constant.RECOVERABLE_MIN"
+state_template = "state.md"
+[node.inputs]
+captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
+delegation = "conversation.delegation"
+skill = "event.skill"
+tool = "event.tool"
+args = "event.args"
+commands = "event.commands"
+inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
 yes = ["allow"]
@@ -96,15 +134,17 @@ threshold = "constant.DANGER_MIN"
 state_template = "state.md"
 [node.inputs]
 captain_messages = "conversation.captain_messages"
+recent = "conversation.recent"
 delegation = "conversation.delegation"
 skill = "event.skill"
 tool = "event.tool"
 args = "event.args"
 commands = "event.commands"
 inside_project = "event.inside_project"
+location = "event.location"
 rule = "event.rule"
 [node.next]
-yes = ["danger_ask"]
+yes = ["requested"]
 no = ["allow"]
 
 [[node]]
@@ -125,18 +165,18 @@ id = "protected_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "The Captain's own messages do not explicitly request this protected WithNav change."
+note = "The Captain did not explicitly request or accept this change to WithNav's own configuration."
 
 [[node]]
 id = "unrequested_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "This action was not requested and is not a read or recoverable project change."
+note = "This action was not requested, does not only read, and is not a recoverable change."
 
 [[node]]
 id = "danger_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "This exact call is destructive, irreversible, publishes something or touches credentials."
+note = "This exact call is destructive, irreversible, publishes something or touches credentials, and was not requested."

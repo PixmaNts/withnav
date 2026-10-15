@@ -157,12 +157,6 @@ async fn run_bash(
     let stdout_text = join_reader(&mut out_reader).await;
     let stderr_text = join_reader(&mut err_reader).await;
 
-    match ending {
-        Ending::Canceled => return Ok(ToolResult::interrupted()),
-        Ending::TimedOut => return Err(ToolError::Timeout),
-        Ending::Exited(_) => {}
-    }
-
     let mut combined = String::new();
     combined.push_str(&stdout_text);
     if !stderr_text.is_empty() {
@@ -172,6 +166,11 @@ async fn run_bash(
         combined.push_str(&stderr_text);
     }
     let (output, truncated) = bound_output(&combined, DEFAULT_MAX_OUTPUT_BYTES);
+    match ending {
+        Ending::Canceled => return Ok(ToolResult::interrupted_with(output)),
+        Ending::TimedOut => return Err(ToolError::Timeout),
+        Ending::Exited(_) => {}
+    }
     let code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
     let status = if code == 0 {
         ToolStatus::Ok
@@ -503,6 +502,28 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(matches!(err, ToolError::Timeout));
         assert!(elapsed < Duration::from_secs(3), "took {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_command_keeps_the_output_it_produced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("started");
+        let cmd = format!("echo partial-line; touch {}; sleep 30", marker.display());
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn({
+            let (cx, cancel) = (ctx(tmp.path()), cancel.clone());
+            async move { run_bash(&cmd, &cx, cancel, 30_000, 200).await }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !marker.exists() {
+            assert!(std::time::Instant::now() < deadline, "never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        cancel.cancel();
+        let res = handle.await.unwrap().unwrap();
+        assert_eq!(res.status, ToolStatus::Interrupted);
+        assert!(!res.never_started());
+        assert!(res.output.contains("partial-line"), "{:?}", res.output);
     }
 
     #[tokio::test]

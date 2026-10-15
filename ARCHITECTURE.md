@@ -150,7 +150,9 @@ mode), opens it again without creation and writes relative to that descriptor. V
 The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
 flows directory: a write there needs the compiled-in protected check, asked once by the host and
 passed to the flows, which never ask it again; anything else asks the Captain. Literal references in
-bash are checked too, best effort; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
+bash are checked too, best effort: certain writes (redirections, output options, writer operands,
+SQLite `.save`) are `Floor::Protected`; any other command naming a protected file is
+`Floor::NamesProtected` and goes through the same check, which also passes a pure read; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
 
 An allowed write or edit is bound to the canonical file the decision was made for, without
@@ -263,7 +265,9 @@ Captain messages taken at creation and refreshed when the parent steers it; a de
 steering text never counts as Captain evidence. It is supplied separately as
 `conversation.delegation` (Parent-provenance transcript messages, stripped of attachments, newest
 whole messages within 16 KiB, with a cut flag). The ordinary flow may accept the parent's request;
-the protected check never reads delegation. A skill is decided after its validation, with action `skill` and its
+the protected check never reads delegation. Both the flow and the protected check also get
+`conversation.recent` (`recent_with_cut`): the last 4 Captain and agent messages up to the Captain's last one, labelled
+with their author, so a short Captain answer is read with the proposal it answers. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it
 (`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
 whose permission database cannot be opened starts with `permissions_unavailable` in its status,
@@ -277,7 +281,8 @@ A call that runs carries `approved_by` (`rule`, `flow`, `captain`, `bypass`, `yo
 `permission_gate` evidence (normally `policy_version: 3`, rule id, flow verdict, floor; yolo
 tool-event evidence still carries `policy_version: 2`) on `tool.pre_call` and
 `tool.post_call`; a `deny` rule or a flow `deny` settles it as `permission_denied` with `denied_by`.
-Every decision is a row of `permission_decisions` in `withnav.db` (`pending`, then `allowed`,
+Every decision is a row of `permission_decisions` in `withnav.db`, with the flow runs and scores
+behind it in `flow_trace` (`pending`, then `allowed`,
 `denied`, `cancelled` on a stop or new message, `expired` on resume), filed under the session and the
 turn. A question becomes a `PermissionRequest` with its reason, `requires_captain` (set unless a rule
 `ask` or the flow raised it), the "Always" proposals and `always_label` (for example

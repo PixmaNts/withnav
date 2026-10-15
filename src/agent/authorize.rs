@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::actor::AgentActor;
 use crate::agent::flow_hook::{
-    captain_messages_with_cut, delegation_with_cut, FlowVerdict, PermissionCallContext,
-    PermissionCommand, ProtectedCheck, RuleResult as FlowRule, ToolCallContext, ToolCallFlows,
-    ValidatedSkill,
+    captain_messages_with_cut, delegation_with_cut, recent_with_cut, FlowVerdict,
+    PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule, RunScores,
+    ToolCallContext, ToolCallFlows, ValidatedSkill,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
@@ -22,7 +22,7 @@ use crate::permission::{
         RuleProposal, RuleResult, Verdict,
     },
     decisions::{self, CallSnapshot, Outcome},
-    floor::{resolve_path, Floor, FloorContext},
+    floor::{location, resolve_path, Floor, FloorContext, Location},
     rules::{Effect, RuleOrigin, RuleScope},
     shell,
 };
@@ -47,17 +47,23 @@ pub(super) enum Authorized {
 /// compiled-in protected check. Without a flow runtime the rule applies and
 /// nothing can establish a protected request.
 struct SessionFlows {
+    reason: std::sync::Mutex<Option<String>>,
+    /// The flow runs that answered, kept for the decision row.
+    runs: std::sync::Mutex<Vec<crate::agent::flow_hook::PermissionFlowAnswer>>,
     hook: Option<Arc<dyn ToolCallFlows>>,
     call: ToolCall,
     agent: Option<String>,
     workspace: PathBuf,
     commands: Option<Vec<PermissionCommand>>,
     inside_project: Option<bool>,
+    location: Option<&'static str>,
     skill: Option<ValidatedSkill>,
     captain_messages: Vec<String>,
     captain_messages_cut: bool,
     delegation: Vec<String>,
     delegation_cut: bool,
+    recent: Vec<crate::agent::flow_hook::RecentMessage>,
+    recent_cut: bool,
     cancel: CancellationToken,
 }
 
@@ -76,12 +82,15 @@ impl SessionFlows {
                 .map(|rule| format!("{} {} {}", rule.action, rule.resource, rule.effect.as_str())),
             commands: self.commands.clone(),
             inside_project: self.inside_project,
-            protected: matches!(query.floor, Floor::Protected(_)),
+            location: self.location,
+            protected: matches!(query.floor, Floor::Protected(_) | Floor::NamesProtected(_)),
             skill: self.skill.clone(),
             captain_messages: self.captain_messages.clone(),
             captain_messages_cut: self.captain_messages_cut,
             delegation: self.delegation.clone(),
             delegation_cut: self.delegation_cut,
+            recent: self.recent.clone(),
+            recent_cut: self.recent_cut,
             protected_check: query.protected_check,
         }
     }
@@ -99,7 +108,11 @@ impl PermissionFlows for SessionFlows {
                 RuleResult::NoRule => FlowRule::None,
             };
             let answer = hook.permission_pre_call(self.context(query), rule, &self.cancel);
-            match tokio::time::timeout(FLOW_DEADLINE, answer).await {
+            let answer = tokio::time::timeout(FLOW_DEADLINE, answer).await;
+            if let Ok(answer) = &answer {
+                *self.runs.lock().unwrap_or_else(|e| e.into_inner()) = answer.flows.clone();
+            }
+            match answer {
                 // No flow that ran gave a verdict of its own: the rule applies,
                 // and the decision says the rule, not a flow, let it through.
                 Ok(answer)
@@ -110,8 +123,14 @@ impl PermissionFlows for SessionFlows {
                 }
                 Ok(answer) => match answer.verdict {
                     FlowVerdict::Allow => FlowAnswer::Allow,
-                    FlowVerdict::Deny { .. } => FlowAnswer::Deny,
-                    FlowVerdict::AskCaptain { .. } => FlowAnswer::AskCaptain,
+                    FlowVerdict::Deny { note } => {
+                        *self.reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
+                        FlowAnswer::Deny
+                    }
+                    FlowVerdict::AskCaptain { note, .. } => {
+                        *self.reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
+                        FlowAnswer::AskCaptain
+                    }
                 },
                 // A flow outage leaves the rules in force.
                 Err(_) => FlowAnswer::ApplyRule,
@@ -120,14 +139,21 @@ impl PermissionFlows for SessionFlows {
     }
 
     fn protected_check<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, ProtectedCheck> {
+        Box::pin(async move { self.protected_check_traced(query).await.0 })
+    }
+
+    fn protected_check_traced<'a>(
+        &'a self,
+        query: &'a FlowQuery<'a>,
+    ) -> BoxFuture<'a, (ProtectedCheck, Option<RunScores>)> {
         Box::pin(async move {
             let Some(hook) = &self.hook else {
-                return ProtectedCheck::Unavailable;
+                return (ProtectedCheck::Unavailable, None);
             };
-            let check = hook.protected_check(self.context(query), &self.cancel);
+            let check = hook.protected_check_traced(self.context(query), &self.cancel);
             tokio::time::timeout(FLOW_DEADLINE, check)
                 .await
-                .unwrap_or(ProtectedCheck::Unavailable)
+                .unwrap_or((ProtectedCheck::Unavailable, None))
         })
     }
 }
@@ -138,6 +164,13 @@ pub(super) fn floor_context(actor: &AgentActor) -> FloorContext {
         workspace: actor.tool_context.workspace.clone(),
         writable_roots: actor.tool_context.writable_roots.clone(),
         readable_roots: actor.tool_context.readable_roots.clone(),
+        temp_roots: actor
+            .permission_dirs
+            .temp
+            .iter()
+            .cloned()
+            .chain(actor.scratch_roots.iter().map(|root| root.path.clone()))
+            .collect(),
         config_dir: actor.permission_dirs.config.clone(),
         data_dir: actor.permission_dirs.data.clone(),
         home: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
@@ -167,8 +200,16 @@ fn control(actor: &AgentActor) -> Control {
     }
 }
 
-/// Whether the target of a file tool lies inside the project.
-fn inside_project(call: &ToolCall, cx: &FloorContext) -> Option<bool> {
+/// Whether the call acts inside the project: the target of a file tool, or
+/// for bash every literal path of the line ([`location`]); `None` when unknown.
+fn inside_project(call: &ToolCall, cx: &FloorContext, location: Option<Location>) -> Option<bool> {
+    if call.name == "bash" {
+        return match location? {
+            Location::Project | Location::Scratch => Some(true),
+            Location::Temp | Location::Outside => Some(false),
+            Location::Unknown => None,
+        };
+    }
     if !matches!(
         call.name.as_str(),
         "read" | "grep" | "glob" | "write" | "edit"
@@ -212,13 +253,13 @@ fn flow_inside_project_accepts_mixed_case_missing_suffix() {
         args: serde_json::json!({"path":root.parent().unwrap().join("SCRATCH/new.txt")}),
         args_valid: true,
     };
-    assert_eq!(inside_project(&call, &cx), Some(true));
+    assert_eq!(inside_project(&call, &cx, None), Some(true));
     // The target must be within the writable root, not merely the workspace.
     let cx = FloorContext {
         workspace: dir.path().join("project"),
         ..cx
     };
-    assert_eq!(inside_project(&call, &cx), Some(true));
+    assert_eq!(inside_project(&call, &cx, None), Some(true));
 }
 
 /// Decide `call` once. `previous` is the pending decision row a bypass answer
@@ -263,7 +304,16 @@ pub(super) async fn authorize(
         ));
     }
     let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
+    let (recent, recent_cut) = recent_with_cut(&actor.transcript);
+    let scratch: Vec<PathBuf> = actor
+        .scratch_roots
+        .iter()
+        .map(|root| root.path.clone())
+        .collect();
+    let place = location(call, &commands, &cx, &scratch);
     let flows = SessionFlows {
+        reason: std::sync::Mutex::new(None),
+        runs: Default::default(),
         hook: actor.tool_flows.clone(),
         call: call.clone(),
         agent: actor.role.as_ref().map(|role| role.id.as_str().to_owned()),
@@ -278,7 +328,8 @@ pub(super) async fn authorize(
                 })
                 .collect()
         }),
-        inside_project: inside_project(call, &cx),
+        inside_project: inside_project(call, &cx, place),
+        location: place.map(Location::as_str),
         skill: actor
             .active_validated_skill()
             .map(|(name, instructions)| ValidatedSkill { name, instructions }),
@@ -286,10 +337,43 @@ pub(super) async fn authorize(
         captain_messages_cut,
         delegation,
         delegation_cut,
+        recent,
+        recent_cut,
         cancel: actor.cancel.clone(),
     };
+    let control = control(actor);
+    // The rules, the floor and the paths are read on the blocking pool: a
+    // locked database waits there, never on a runtime thread.
+    let lookup = {
+        let (store, call, commands, cx, agent) = (
+            actor.permission_store.clone(),
+            call.clone(),
+            commands.clone(),
+            cx.clone(),
+            agent.clone(),
+        );
+        let read = tokio::task::spawn_blocking(move || {
+            decide::lookup(&Input {
+                control,
+                call: &call,
+                commands: &commands,
+                cx: &cx,
+                store: store.as_deref(),
+                agent: &agent,
+                repeats,
+                validated,
+            })
+        });
+        tokio::select! {
+            biased;
+            _ = actor.cancel.cancelled() => return Authorized::Interrupted,
+            read = read => read.unwrap_or_else(|error| {
+                Err(crate::permission::store::Error::Invalid(error.to_string()))
+            }),
+        }
+    };
     let input = Input {
-        control: control(actor),
+        control,
         call,
         commands: &commands,
         cx: &cx,
@@ -298,11 +382,26 @@ pub(super) async fn authorize(
         repeats,
         validated,
     };
-    let decision = tokio::select! {
+    let mut decision = tokio::select! {
         biased;
         _ = actor.cancel.cancelled() => return Authorized::Interrupted,
-        decision = decide::decide(&input, &flows) => decision,
+        decision = decide::decide_with(&input, lookup, &flows) => decision,
     };
+    decision.trace.flow_runs =
+        std::mem::take(&mut *flows.runs.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some(note) = flows
+        .reason
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .filter(|note| !note.is_empty())
+    {
+        match &mut decision.verdict {
+            Verdict::Deny { message, .. } => *message = note,
+            Verdict::AskCaptain { reason, .. } => *reason = note,
+            Verdict::Run { .. } => {}
+        }
+    }
     match decision.verdict.clone() {
         Verdict::Run { approved_by } => {
             settle_row(
@@ -312,11 +411,12 @@ pub(super) async fn authorize(
                 previous,
                 Outcome::Allowed,
                 Some(approved_by.as_str()),
-            );
+            )
+            .await;
             Authorized::Run(approval(approved_by.as_str(), &decision))
         }
         Verdict::Deny { message, .. } => {
-            settle_row(actor, call, &decision, previous, Outcome::Denied, None);
+            settle_row(actor, call, &decision, previous, Outcome::Denied, None).await;
             let by = if decision.trace.effect == Some(Effect::Deny) {
                 "rule"
             } else {
@@ -332,10 +432,17 @@ pub(super) async fn authorize(
         }
         Verdict::AskCaptain { reason, always } => {
             if let Some(id) = previous {
-                update(actor, id, Outcome::Cancelled, None, None);
+                update(actor, id, Outcome::Cancelled, None, None).await;
             }
             let mut request = PermissionRequest::new(call, scope(call, &cx), &agent);
-            request.reason = reason;
+            // The scores behind the question, so that the card explains itself.
+            request.reason = match flow_trace(&decision)
+                .map(|trace| decisions::trace_summary(&trace))
+                .filter(|scores| !scores.is_empty())
+            {
+                Some(scores) => format!("{reason} (scores: {scores})"),
+                None => reason,
+            };
             request.requires_captain = actor.permission_store.is_none() || !bypassable(&decision);
             request.always_label = always_label(&always);
             request.reusable_approval = !always.is_empty() && actor.permission_store.is_some();
@@ -351,7 +458,8 @@ pub(super) async fn authorize(
                 Outcome::Pending,
                 None,
                 Some(request.id),
-            );
+            )
+            .await;
             request.always = always;
             Authorized::Ask(Box::new(request))
         }
@@ -438,7 +546,10 @@ pub(super) fn always_label(always: &[RuleProposal]) -> Option<String> {
 }
 
 /// Save every proposal of an "Always" answer in one transaction.
-pub(super) fn save_always(actor: &AgentActor, always: &[RuleProposal]) -> Result<Vec<i64>, String> {
+pub(super) async fn save_always(
+    actor: &AgentActor,
+    always: &[RuleProposal],
+) -> Result<Vec<i64>, String> {
     let rules: Vec<_> = always
         .iter()
         .map(|p| {
@@ -454,13 +565,46 @@ pub(super) fn save_always(actor: &AgentActor, always: &[RuleProposal]) -> Result
         .permission_store
         .as_ref()
         .ok_or("permission rules unavailable")?
-        .add_all(&rules, RuleOrigin::Always)
+        .run(move |store| store.add_all(&rules, RuleOrigin::Always))
+        .await
         .map(|rules| rules.into_iter().map(|rule| rule.id).collect())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            tracing::warn!(%error, "the Always rules were not saved");
+            decisions::public_reason(&error).to_owned()
+        })
+}
+
+/// What the flows answered for this decision, for the decision table and the
+/// permission card: the protected check's verdict, run and score.
+fn flow_trace(decision: &Decision) -> Option<Value> {
+    let mut trace = serde_json::Map::new();
+    if let Some(check) = decision.trace.protected_check {
+        let run = decision.trace.protected_run.as_ref();
+        trace.insert(
+            "protected_check".into(),
+            json!({
+                "verdict": check.as_str(),
+                "run_id": run.map(|run| run.run_id.as_str()),
+                "score": run.and_then(|run| run.scores.get("protected_requested")),
+            }),
+        );
+    }
+    if !decision.trace.flow_runs.is_empty() {
+        trace.insert(
+            "flows".into(),
+            json!(decision
+                .trace
+                .flow_runs
+                .iter()
+                .map(|run| json!({"flow": run.flow, "run_id": run.run_id, "scores": run.scores}))
+                .collect::<Vec<_>>()),
+        );
+    }
+    (!trace.is_empty()).then_some(Value::Object(trace))
 }
 
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {
-    json!({
+    let mut gate = json!({
         "policy_version": 3,
         "source": source,
         "reason": reason,
@@ -469,7 +613,13 @@ fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {
         "flow_verdict": decision.trace.flow_verdict,
         "floor": decision.trace.floor,
         "truncated": false,
-    })
+    });
+    if let Some(Value::Object(trace)) = flow_trace(decision) {
+        gate.as_object_mut()
+            .expect("the gate is an object")
+            .extend(trace);
+    }
+    gate
 }
 
 fn approval(approved_by: &str, decision: &Decision) -> Value {
@@ -490,7 +640,7 @@ pub(super) fn answered_approval(request: &PermissionRequest, approved_by: &str) 
     json!({"approved_by": approved_by, "permission_gate": gate})
 }
 
-fn record(
+async fn record(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
@@ -517,19 +667,21 @@ fn record(
         rule_id: decision.trace.rule_id,
         effect: decision.trace.effect,
         flow_verdict: decision.trace.flow_verdict.map(str::to_owned),
+        flow_trace: flow_trace(decision),
         captain_answer: None,
         outcome,
         approved_by: approved_by.map(str::to_owned),
     };
     store
-        .record(&row)
+        .run(move |store| store.record(&row))
+        .await
         .inspect_err(|error| tracing::warn!(%error, "permission decision not recorded"))
         .ok()
 }
 
 /// A bypass answer settles the pending row with the fresh decision; any
 /// other decision is a new row.
-fn settle_row(
+async fn settle_row(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
@@ -538,20 +690,23 @@ fn settle_row(
     approved_by: Option<&str>,
 ) {
     match previous {
-        Some(id) => update(
-            actor,
-            id,
-            outcome,
-            Some(&json!({"answer": "bypass"})),
-            approved_by,
-        ),
+        Some(id) => {
+            update(
+                actor,
+                id,
+                outcome,
+                Some(&json!({"answer": "bypass"})),
+                approved_by,
+            )
+            .await
+        }
         None => {
-            record(actor, call, decision, outcome, approved_by, None);
+            record(actor, call, decision, outcome, approved_by, None).await;
         }
     }
 }
 
-pub(super) fn update(
+pub(super) async fn update(
     actor: &AgentActor,
     id: i64,
     outcome: Outcome,
@@ -561,13 +716,19 @@ pub(super) fn update(
     let Some(store) = &actor.permission_store else {
         return;
     };
-    if let Err(error) = store.update_outcome(id, outcome, answer, approved_by) {
+    let (answer, approved_by) = (answer.cloned(), approved_by.map(str::to_owned));
+    let updated = store
+        .run(move |store| {
+            store.update_outcome(id, outcome, answer.as_ref(), approved_by.as_deref())
+        })
+        .await;
+    if let Err(error) = updated {
         tracing::warn!(%error, "permission decision outcome not recorded");
     }
 }
 
 /// Yolo checks nothing, and the decision table says so.
-pub(super) fn record_yolo(actor: &AgentActor, call: &ToolCall) {
+pub(super) async fn record_yolo(actor: &AgentActor, call: &ToolCall) {
     let decision = Decision {
         verdict: Verdict::Run {
             approved_by: ApprovedBy::Yolo,
@@ -581,5 +742,6 @@ pub(super) fn record_yolo(actor: &AgentActor, call: &ToolCall) {
         Outcome::Allowed,
         Some(ApprovedBy::Yolo.as_str()),
         None,
-    );
+    )
+    .await;
 }

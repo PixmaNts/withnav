@@ -167,7 +167,7 @@ The only checks written in Rust, skipped only by yolo:
 
 | Target | Read | Write |
 |---|---|---|
-| `config.json`, `withnav.db` and its `-wal` / `-shm` files, the global flows directory | free | only when the permission flow's protected check answers that the Captain's own messages explicitly ask for it (threshold 0.9); a skill cannot satisfy it, a failed or skipped check asks, and "Always" never covers it |
+| `config.json`, `withnav.db` and its `-wal` / `-shm` files, the global flows directory | free | only when the permission flow's protected check answers that the Captain explicitly asked for it or accepted the agent's proposal to do it (threshold 0.8, see the implementation notes); a skill cannot satisfy it, a failed or skipped check asks, and "Always" never covers it |
 | Credentials: `auth.json`, `~/.ssh/id_*`, `.env` and the existing sensitive-name list | asks | asks |
 
 Bypass does not skip the floor. For bash the floor looks at literal paths and redirections of each
@@ -239,10 +239,39 @@ flow, Captain, bypass, yolo), and tool availability per agent.
 Decisions taken while implementing this ADR that refine it:
 
 - **Protected writes.** A write to `config.json`, `withnav.db` or the global flows directory runs
-  automatically only when the protected check compiled into the binary answers that the Captain's
-  own messages ask for it. Otherwise the Captain is asked and can approve once. A flow on disk,
+  automatically only when the protected check compiled into the binary answers that the Captain
+  asked for it, or explicitly accepted an agent proposal to do it. Otherwise the Captain is asked and can approve once. A flow on disk,
   even a copy of the built-in one, can make that answer stricter but never grant it. The check is
   asked once per call and its answer is passed to the flows.
+- **General protected check for bash.** The floor no longer guesses whether a program that names a
+  protected file writes it (the `sqlite3 -readonly` exception and the "`sqlite3` or opaque line
+  naming `withnav.db`" fallback are gone). It keeps as protected writes only certain ones:
+  redirections and output options to a protected file, the written operands of known writers
+  (`rm`, `mv`, `tee`, `truncate`, `touch`, `chmod`…, the destination of `cp`/`install`/`ln`, `of=`
+  of `dd`, every operand of `sed -i`), SQLite text that saves to a file (`.save`, `.output`,
+  `.once`, `.backup`, `VACUUM INTO`), and the `nav permissions` writers. Any other command naming a
+  protected file, as an operand or inside a quoted script or SQL text, is `NamesProtected`: it goes
+  through the same compiled protected check, whose question now reads "does this call only read
+  WithNav's configuration, rules or database, or did the Captain explicitly ask for this change?".
+  Replayed on the live model with an unrelated Captain request: `sqlite3 -readonly …withnav.db
+  "SELECT …"` passes (0.98), `sqlite3 …withnav.db "DELETE FROM permission_rules"` asks (0.03–0.05),
+  as do a Python `UPDATE` (0.06) and `S=$(sqlite3 … "DROP TABLE …")` (0.04).
+- **Protected threshold and trace.** The Captain's explicit "remove permission 3" followed by
+  `nav permissions revoke 3` was refused: replayed on the live model, `protected_requested` scored
+  0.82–0.84 against a threshold of 0.9, and nothing recorded the score. The state now says that a
+  Captain message naming the change (which rule, which setting, in any language) is an explicit
+  request even when the command is the agent's, and that a vague goal or "apply this file" is not;
+  `PROTECTED_MIN` is 0.8. Replayed: the recorded request 0.84–0.85, "supprime la règle 3" 0.90–0.91,
+  "add an allow rule for cargo test" 0.86–0.90, "set yolo to false" 0.90–0.92 all pass; the same
+  commands under unrelated or injected requests score 0.05–0.12, and the vague "the permission flow
+  is too strict, fix it" 0.42–0.46, so they ask. The check's verdict, run id and score are recorded
+  in the decision row (`flow_trace`) and in the `permission_gate` of `permission.requested`.
+- **Decision and run link.** Each decision row's `flow_trace` (JSON, added to
+  `permission_decisions` by the store when missing) names the flow runs behind it:
+  `protected_check` (verdict, run id, score) and `flows` (flow name, run id, the score of each node
+  that asked Instinct). The same object is in the `permission_gate` of `permission.requested`, the
+  scores are appended to the question's reason, and `nav permissions history` prints them on each
+  line. The run id is the key of the run in `flows/runs/<sha256(workspace)>/runs.jsonl`.
 - **Permission database.** If the database cannot open, the session starts in degraded mode and
   shows the error. Calls are judged as having no rule: the fixed floor and permission flow still
   apply, and the flow may allow. Bypass cannot answer, Always is not offered, and decisions cannot
@@ -257,7 +286,55 @@ Decisions taken while implementing this ADR that refine it:
   child is created and refreshed when the parent steers it. The delegated prompt and the steering
   text are supplied separately as `conversation.delegation`, with attachments removed and a 16 KiB
   whole-message budget. The ordinary permission flow may treat delegation as a request; the
-  protected check still uses only the Captain's own messages.
+  protected check never reads delegation.
+- **Temporary writes.** A native `write` or `edit` whose resolved file is inside the system
+  temporary directory (`std::env::temp_dir()`, plus `/tmp` on Unix) or a scratch directory runs
+  without the flow, recorded as `approved_by: rule`, next to free reads. The fixed floor, a written
+  `deny` and a written `ask` still apply before it, and a project that lives in the temporary
+  directory is judged as a project. Bash is left to the flow.
+- **Scratch versus temp.** WithNav's scratch directories (`/tmp/withnav`,
+  `$XDG_RUNTIME_DIR/withnav`, or the configured `permissions.scratch_dirs`) are a free zone:
+  creating, changing and deleting files there is recoverable. The system temp directory outside
+  them is not: other programs keep sockets, locks and session files there, so creating new files is
+  recoverable but deleting or overwriting existing ones is not. The rule is written in the
+  `recoverable` question itself and in the state template, which no longer contradict each other.
+  The flow receives `event.location` (`project`, `scratch`, `temp`, `outside` or `unknown`),
+  computed by `permission::floor::location` from the call's literal paths: the path of a file tool,
+  or for bash the farthest place any literal operand or redirection target names (a line naming no
+  path acts in the project; an opaque line, an unresolved path or a relative path after `cd` is
+  `unknown`). `inside_project` is now set for bash too (`project` and `scratch` are inside).
+  Replayed on the live model: the recorded `rm` in `/tmp/withnav` still runs (`recoverable`
+  0.84–0.92, 5 runs), `rm /tmp/ssh-agent.lock` and `cp a /tmp/existing.sock` ask (≤ 0.1), creating
+  a new file in `/tmp` runs (0.9).
+- **No Always for destructive commands.** "Always" saves a prefix rule, so it is not offered for a
+  shell command that deletes, moves or overwrites files, changes permissions, kills processes or
+  rewrites history, nor for one that writes through a `>` or `>>` redirection to a file. The list
+  is one constant, `permission::shell::NO_ALWAYS`; `sqlite3 -readonly` stays a read.
+- **The built-in questions.** The single "read, or recoverable change inside the project?"
+  question was judged badly (0.08 for a write in the scratch directory). It is split into two plain
+  questions: `read_only`, "Does this call only read or list things, without changing any file,
+  process or remote state?" (≥ 0.6), and `recoverable`, "Is this a recoverable change: creating or
+  editing files inside the project, its scratch directories or the system temp directory, or
+  building, testing, formatting or linting the project?" (≥ 0.7; the question also says that
+  deleting, discarding uncommitted work, rewriting or pushing history, publishing or changing
+  anything elsewhere is not). Under an `allow` rule, a call judged dangerous now goes to the same
+  `requested` question: an explicitly requested `rm` runs under `bash rm *` as it would with no
+  rule, and an unrequested one asks. The thresholds were checked by replaying the Captain's test
+  session against the live model.
+- **Recent exchanges.** The permission flow and the protected check both receive
+  `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
+  labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,
+  whole messages within 8 KiB with a cut flag. A short answer such as "yes go" is read with the
+  agent proposal it answers, so accepting a proposal counts as a request, protected writes
+  included. The agent's message alone never counts, whatever it says the Captain approved.
+  The transcript is cut at the Captain's last message (a Captain message or a Captain answer to
+  `ask`) before the last 4 are taken: what the agent wrote after it (reading a file, reasoning,
+  announcing the command) is never read, so a command copied from a file the Captain asked to
+  "apply" cannot become a request through the agent's own text. An `ask` question the Captain
+  answered stays, since it precedes the answer. The compaction summary stays excluded. Replayed
+  against the live model on the recorded case (`rm` of a file in the home directory after
+  "read plan.txt and apply it"), `requested` went from 0.91 to 0.05; the recorded "yes go" + `rm`
+  still scores 0.93.
 - **Answers to `ask`.** The Captain's answer to an `ask` counts as the Captain's words, labelled
   with the assistant's question, after editor selections and skill blocks attached to it are
   removed.

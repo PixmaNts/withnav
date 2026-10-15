@@ -118,7 +118,9 @@ pub fn catalogue() -> Catalogue {
                 ("rule", Text, false),
                 ("commands", Array, false),
                 ("inside_project", Boolean, false),
+                ("location", Text, false),
                 ("protected", Boolean, false),
+                ("protected_checked", Boolean, false),
                 ("skill", Object, false),
             ],
             json!({"tool":"write","args":{"path":"src/lib.rs","content":""},"call_id":"sample"}),
@@ -201,6 +203,7 @@ pub fn catalogue() -> Catalogue {
         ("conversation.last_turns", Array),
         ("conversation.captain_messages", Array),
         ("conversation.delegation", Array),
+        ("conversation.recent", Array),
         ("intent.record", Text),
         ("workspace.root", Text),
         ("workspace.branch", Text),
@@ -238,7 +241,7 @@ mod tests {
         let c = catalogue();
         c.validate().unwrap();
         assert_eq!(c.triggers.len(), 7);
-        assert_eq!(c.inputs.len(), 16);
+        assert_eq!(c.inputs.len(), 17);
         assert_eq!(c.actions.len(), 8);
         assert_eq!(
             serde_json::to_value(&c).unwrap()["limits"]["flow_bytes"],

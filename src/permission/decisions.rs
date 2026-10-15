@@ -99,6 +99,7 @@ mod tests {
                 rule_id: Some(rule.id),
                 effect: Some(Effect::Allow),
                 flow_verdict: None,
+                flow_trace: None,
                 captain_answer: None,
                 outcome: Outcome::Allowed,
                 approved_by: Some("rule".into()),
@@ -167,6 +168,9 @@ mod tests {
             rule_id: Some(rule.id),
             effect: Some(Effect::Allow),
             flow_verdict: Some("ask_captain".into()),
+            flow_trace: Some(
+                serde_json::json!({"protected_check": {"verdict": "failed", "score": 0.25}}),
+            ),
             captain_answer: None,
             outcome: Outcome::Pending,
             approved_by: None,
@@ -191,6 +195,7 @@ mod tests {
         assert_eq!(row.command_matches, decision.command_matches);
         assert_eq!(row.captain_answer.as_ref(), Some(&answer));
         assert_eq!(row.approved_by.as_deref(), Some("captain"));
+        assert_eq!(row.flow_trace, decision.flow_trace);
         assert_eq!(row.outcome, Outcome::Allowed);
         assert_eq!(row.call_snapshot.arguments.len(), 4095);
         assert!(row.call_snapshot.truncated);
@@ -266,9 +271,51 @@ pub struct Decision {
     pub rule_id: Option<i64>,
     pub effect: Option<Effect>,
     pub flow_verdict: Option<String>,
+    /// The flow runs behind the decision: their run ids in the flow run log
+    /// and the score of each node that asked Instinct (see `nav permissions history`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_trace: Option<Value>,
     pub captain_answer: Option<Value>,
     pub outcome: Outcome,
     pub approved_by: Option<String>,
+}
+
+/// The scores behind a decision on one line, e.g.
+/// `protected_check failed 0.25; permission-default requested 0.04 read_only 0.01`.
+pub fn scores_summary(decision: &Decision) -> String {
+    decision
+        .flow_trace
+        .as_ref()
+        .map(trace_summary)
+        .unwrap_or_default()
+}
+
+/// [`scores_summary`] of a `flow_trace` value.
+pub fn trace_summary(trace: &Value) -> String {
+    let mut parts = Vec::new();
+    let check = &trace["protected_check"];
+    if let Some(verdict) = check["verdict"].as_str() {
+        parts.push(match check["score"].as_f64() {
+            Some(score) => format!("protected_check {verdict} {score}"),
+            None => format!("protected_check {verdict}"),
+        });
+    }
+    for run in trace["flows"].as_array().into_iter().flatten() {
+        let scores = run["scores"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(node, score)| Some(format!("{node} {}", score.as_f64()?)))
+            .collect::<Vec<_>>();
+        if !scores.is_empty() {
+            parts.push(format!(
+                "{} {}",
+                run["flow"].as_str().unwrap_or_default(),
+                scores.join(" ")
+            ));
+        }
+    }
+    parts.join("; ")
 }
 
 #[derive(Debug, Default)]
@@ -328,6 +375,9 @@ fn read_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
             _ => return Err(rusqlite::Error::InvalidQuery),
         },
         approved_by: row.get(16)?,
+        flow_trace: row
+            .get::<_, Option<String>>(17)?
+            .and_then(|text| serde_json::from_str(&text).ok()),
     })
 }
 
@@ -359,7 +409,8 @@ fn history_query(
     }
     let mut sql = String::from(
         "SELECT id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,
-         call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by
+         call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by,
+         flow_trace
          FROM permission_decisions",
     );
     if !clauses.is_empty() {
@@ -422,6 +473,25 @@ fn redact_text(text: &str) -> String {
     words.concat()
 }
 
+/// The reason a permission database error gives clients and the decision
+/// history. Database messages can quote paths, SQL and stored values, so
+/// only a fixed phrase chosen from the SQLite error code leaves the process;
+/// callers log the full error through tracing.
+pub fn public_reason(error: &Error) -> &'static str {
+    use rusqlite::ffi::ErrorCode;
+    let Error::Database(rusqlite::Error::SqliteFailure(failure, _)) = error else {
+        return "database error";
+    };
+    match failure.code {
+        ErrorCode::DatabaseLocked => "database is locked",
+        ErrorCode::DatabaseBusy => "database is busy",
+        ErrorCode::ReadOnly => "database is read-only",
+        ErrorCode::DiskFull => "disk is full",
+        ErrorCode::ConstraintViolation => "rule write rejected",
+        _ => "database error",
+    }
+}
+
 fn bound_value(value: &mut Value, limit: usize) {
     match value {
         Value::String(text) => {
@@ -470,14 +540,19 @@ impl PermissionStore {
             })
         };
         let flow_verdict = short(&decision.flow_verdict);
+        let flow_trace = decision.flow_trace.clone().map(|mut trace| {
+            bound_value(&mut trace, SHORT_TEXT_BYTES);
+            trace
+        });
         let approved_by = short(&decision.approved_by);
         let workspace = crate::tools::canonical_path(&decision.workspace)?;
         let db = self.db();
         db.execute(
             "INSERT INTO permission_decisions
              (time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,
-              command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+              command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by,
+              flow_trace)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 decision.time,
                 decision.session_id,
@@ -497,7 +572,8 @@ impl PermissionStore {
                     .map(serde_json::to_string)
                     .transpose()?,
                 decision.outcome.as_str(),
-                approved_by
+                approved_by,
+                flow_trace.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
         Ok(db.last_insert_rowid())
@@ -556,5 +632,60 @@ impl PermissionStore {
         let mut statement = db.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(values), read_decision)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+#[cfg(test)]
+mod public_reason_tests {
+    use super::*;
+
+    fn sqlite(code: rusqlite::ffi::ErrorCode, extended: i32, message: &str) -> Error {
+        Error::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code,
+                extended_code: extended,
+            },
+            Some(message.into()),
+        ))
+    }
+
+    #[test]
+    fn public_reasons_never_carry_the_database_message() {
+        use rusqlite::ffi::{self, ErrorCode};
+        let secret = "token=acme_live_Zq81kPw2\nat /home/user/.secret";
+        for (error, reason) in [
+            (
+                sqlite(ErrorCode::DatabaseLocked, ffi::SQLITE_LOCKED, secret),
+                "database is locked",
+            ),
+            (
+                sqlite(ErrorCode::DatabaseBusy, ffi::SQLITE_BUSY, secret),
+                "database is busy",
+            ),
+            (
+                sqlite(ErrorCode::ReadOnly, ffi::SQLITE_READONLY, secret),
+                "database is read-only",
+            ),
+            (
+                sqlite(ErrorCode::DiskFull, ffi::SQLITE_FULL, secret),
+                "disk is full",
+            ),
+            (
+                sqlite(
+                    ErrorCode::ConstraintViolation,
+                    ffi::SQLITE_CONSTRAINT_TRIGGER,
+                    secret,
+                ),
+                "rule write rejected",
+            ),
+            (
+                sqlite(ErrorCode::SystemIoFailure, ffi::SQLITE_IOERR, secret),
+                "database error",
+            ),
+            (Error::Invalid(secret.into()), "database error"),
+            (Error::Io(std::io::Error::other(secret)), "database error"),
+        ] {
+            assert_eq!(public_reason(&error), reason);
+        }
     }
 }

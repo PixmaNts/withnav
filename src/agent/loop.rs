@@ -419,6 +419,34 @@ pub async fn resolve_permission(
     .await
 }
 
+/// Saves the rules of an "Always" answer to the pending request `request_id`
+/// before its resolution is published, so that the event can say whether
+/// they were saved. The outcome is kept on the request, and
+/// [`resolve_permission_with_origin`] uses it instead of saving again.
+/// Returns the error when the rules were not saved; `None` when they were, or
+/// when the answer saves no rule (a skill validation, a stopped turn).
+pub async fn save_pending_always(actor: &mut AgentActor, request_id: ulid::Ulid) -> Option<String> {
+    if actor.cancel.is_cancelled() {
+        return None;
+    }
+    let Some(PendingInteraction::Permission { request, .. }) = &actor.pending else {
+        return None;
+    };
+    if request.id != request_id
+        || request.always.is_empty()
+        || (request.tool == "skill" && !request.skill_rule)
+    {
+        return None;
+    }
+    let always = request.always.clone();
+    let saved = authorize::save_always(actor, &always).await;
+    let error = saved.as_ref().err().cloned();
+    if let Some(PendingInteraction::Permission { request, .. }) = &mut actor.pending {
+        request.always_saved = Some(saved);
+    }
+    error
+}
+
 /// Whether bypass may answer the pending request: one raised by a rule `ask`
 /// or the permission flow, never the fixed floor, a loop, or a skill validation.
 pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
@@ -460,7 +488,7 @@ pub async fn resolve_permission_with_origin(
         _ => return Err(PermissionError::Stale.into()),
     }
     let Some(PendingInteraction::Permission {
-        request,
+        mut request,
         call,
         remaining_calls,
         destination,
@@ -474,7 +502,7 @@ pub async fn resolve_permission_with_origin(
 
     if actor.cancel.is_cancelled() {
         if let Some(id) = request.decision_id {
-            authorize::update(actor, id, Outcome::Cancelled, answer.as_ref(), None);
+            authorize::update(actor, id, Outcome::Cancelled, answer.as_ref(), None).await;
         }
         append_interrupted(actor, &call.id);
         for rest in &remaining_calls {
@@ -492,16 +520,25 @@ pub async fn resolve_permission_with_origin(
         PermissionDecision::AllowOnce | PermissionDecision::AllowAlways => {
             let mut answer = answer.unwrap_or_default();
             if decision == PermissionDecision::AllowAlways {
-                match authorize::save_always(actor, &request.always) {
-                    Ok(rules) => answer["rule_ids"] = serde_json::json!(rules),
+                let saved = match request.always_saved.take() {
+                    Some(saved) => saved,
+                    None => authorize::save_always(actor, &request.always).await,
+                };
+                match saved {
+                    Ok(rules) => {
+                        answer["always_saved"] = serde_json::json!(true);
+                        answer["rule_ids"] = serde_json::json!(rules);
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "the Always rules were not saved; the call runs once");
-                        answer["save_error"] = serde_json::json!(error);
+                        answer["always_saved"] = serde_json::json!(false);
+                        answer["always_error"] = serde_json::json!(error);
                     }
                 }
             }
             if let Some(id) = request.decision_id {
-                authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"));
+                authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"))
+                    .await;
             }
             let note = authorize::answered_approval(&request, "captain");
             if call.name == "skill" {
@@ -520,7 +557,7 @@ pub async fn resolve_permission_with_origin(
         }
         PermissionDecision::Reject { message } => {
             if let Some(id) = request.decision_id {
-                authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None);
+                authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None).await;
             }
             settle_rejected(actor, &call, &remaining_calls, message);
             return Ok(run_steps(actor, observe, steps_left).await?);
@@ -777,7 +814,8 @@ async fn skill_admission(
                     Outcome::Allowed,
                     Some(&serde_json::json!({"answer":"skill validation"})),
                     Some("captain"),
-                );
+                )
+                .await;
             }
             Admission::Run(authorize::answered_approval(&request, "captain"))
         }
@@ -837,6 +875,13 @@ async fn run_skill(
         reject_call(actor, call, "skill snapshot unavailable".into(), observe);
         return One::Settled;
     };
+    actor
+        .skills
+        .validation
+        .turn_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(snapshot.id.clone());
     let validation = actor.skills.validation.clone();
     let checked = snapshot.clone();
     let mut valid = if actor.yolo {
@@ -871,6 +916,7 @@ async fn run_skill(
             // Validation proves which content the Captain trusted; the rules
             // still decide whether it may be loaded now.
             let approval = if actor.yolo {
+                authorize::record_yolo(actor, call).await;
                 yolo_approval()
             } else if let Some(note) = admitted {
                 note
@@ -1086,7 +1132,7 @@ async fn run_decided(
         // A skill refused before its admission (snapshot gone, validation
         // revoked) never settles the question bypass answered: end it here.
         if let (Some(id), Some(store)) = (previous, &actor.permission_store) {
-            if let Err(error) = store.cancel_if_pending(id) {
+            if let Err(error) = store.run(move |store| store.cancel_if_pending(id)).await {
                 tracing::warn!(%error, "permission decision outcome not recorded");
             }
         }
@@ -1097,7 +1143,7 @@ async fn run_decided(
         return One::Settled;
     }
     if actor.yolo {
-        authorize::record_yolo(actor, call);
+        authorize::record_yolo(actor, call).await;
         return run_yolo(actor, call, observe).await;
     }
     // WithNav's own conversation controls act on this session and its
@@ -1373,7 +1419,7 @@ async fn execute_call(
         }
     }
     if actor.cancel.is_cancelled() {
-        return DispatchOutcome::Settled(ToolResult::interrupted());
+        return DispatchOutcome::Settled(ToolResult::not_started());
     }
     observe(AgentEvent::PreCall {
         permission_gate: note.as_ref().and_then(|note| note.get("permission_gate")),
@@ -1466,9 +1512,28 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
     }
 }
 
+/// What the model reads for a call cancelled before it started: an empty
+/// result would read as a success with no output.
+pub(crate) const NOT_RUN: &str = "interrupted: the call did not run";
+
+/// What the model reads for an interrupted call.
+fn interrupted_content(result: &ToolResult) -> String {
+    if result.never_started() {
+        NOT_RUN.to_owned()
+    } else if result.output.trim().is_empty() {
+        "interrupted while running; partial output: (none)".to_owned()
+    } else {
+        format!(
+            "interrupted while running; partial output:\n{}",
+            result.output
+        )
+    }
+}
+
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
     let content = match result.status {
-        ToolStatus::Ok | ToolStatus::Interrupted => result.output.clone(),
+        ToolStatus::Ok => result.output.clone(),
+        ToolStatus::Interrupted => interrupted_content(result),
         _ => serde_json::to_string(result).unwrap_or_else(|_| result.output.clone()),
     };
     actor.transcript.push(ChatMessage::Tool {
@@ -1478,8 +1543,9 @@ fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolR
     });
 }
 
+/// Settles a call that never started.
 fn append_interrupted(actor: &mut AgentActor, tool_call_id: &str) {
-    append_tool_result(actor, tool_call_id, &ToolResult::interrupted());
+    append_tool_result(actor, tool_call_id, &ToolResult::not_started());
 }
 
 #[cfg(test)]
@@ -1666,7 +1732,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
         std::mem::forget(tmp);
-        AgentActor::new(
+        let mut actor = AgentActor::new(
             registry,
             ToolContext {
                 binding: None,
@@ -1687,7 +1753,11 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(256),
             cancel,
-        )
+        );
+        // The test workspaces live in the system temp directory, where writes
+        // would need no permission: these tests judge them like project writes.
+        actor.permission_dirs.temp = Vec::new();
+        actor
     }
 
     /// Loop tests that are not about permissions run under one rule that allows everything.
@@ -2689,8 +2759,9 @@ mod tests {
         actor.push_user("yes, go ahead");
         assert!(!actor.has_pending());
         assert!(!a.exists() && !b.exists(), "text is never an approval");
-        assert_eq!(tool_result_of(&actor, "w1").unwrap(), "");
-        assert_eq!(tool_result_of(&actor, "w2").unwrap(), "");
+        // The model reads that nothing ran, never an empty success.
+        assert_eq!(tool_result_of(&actor, "w1").unwrap(), NOT_RUN);
+        assert_eq!(tool_result_of(&actor, "w2").unwrap(), NOT_RUN);
         assert!(matches!(
             actor.transcript.last(),
             Some(ChatMessage::User { content, .. }) if content == "yes, go ahead"
@@ -2703,8 +2774,37 @@ mod tests {
         actor.interrupt_pending_permission();
         assert!(!actor.has_pending());
         assert!(!a.exists() && !b.exists());
-        assert!(tool_result_of(&actor, "w1").is_some());
-        assert!(tool_result_of(&actor, "w2").is_some());
+        // The model reads that nothing ran, never an empty success.
+        assert_eq!(tool_result_of(&actor, "w1").as_deref(), Some(NOT_RUN));
+        assert_eq!(tool_result_of(&actor, "w2").as_deref(), Some(NOT_RUN));
+    }
+
+    #[test]
+    fn an_interrupted_call_never_reads_as_an_empty_success() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_all(),
+            CancellationToken::new(),
+        );
+        append_tool_result(&mut actor, "a", &ToolResult::not_started());
+        append_tool_result(
+            &mut actor,
+            "b",
+            &ToolResult::interrupted_with("line 1\nline 2"),
+        );
+        append_tool_result(&mut actor, "c", &ToolResult::interrupted());
+        assert_eq!(
+            tool_result_of(&actor, "a").as_deref(),
+            Some("interrupted: the call did not run")
+        );
+        assert_eq!(
+            tool_result_of(&actor, "b").as_deref(),
+            Some("interrupted while running; partial output:\nline 1\nline 2")
+        );
+        assert_eq!(
+            tool_result_of(&actor, "c").as_deref(),
+            Some("interrupted while running; partial output: (none)")
+        );
     }
 
     #[tokio::test]

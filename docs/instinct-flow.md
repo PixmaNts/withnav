@@ -241,7 +241,7 @@ Action groups: **common** = `wake`, `inject_note`, `log`; **editor** = common pl
 
 | Trigger | Payload fields | Can block | Allowed actions |
 | --- | --- | --- | --- |
-| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s`, `rule_effect?:s`, `rule?:s`, `commands?:a`, `inside_project?:boolean`, `protected?:boolean`, `skill?:o` | yes | tool |
+| `tool.pre_call` | `tool:s`, `args:o`, `call_id:s`, `rule_effect?:s`, `rule?:s`, `commands?:a`, `inside_project?:boolean`, `protected?:boolean`, `protected_checked?:boolean`, `skill?:o` | yes | tool |
 | `message.received` | `command_id:s`, `author:s`, `text:s`, `selected_skill?:o` | yes | common |
 | `turn.end` | `turn_id:s`, `text:s`, `status:s` | no | common |
 | `save` | `uri:s`, `language_id:s`, `version:i`, `diff:s`; editor extras below | no | editor |
@@ -320,22 +320,36 @@ Captain's answers to `ask`, labelled with the assistant's question, and, in a
 subagent, the parent's Captain messages. `conversation.delegation` contains the parent's
 delegation and steering separately, attachments stripped, whole newest messages within 16 KiB
 with a cut flag; it is empty for a root session. The ordinary permission flow may accept delegation
-as a request, but the compiled protected check never reads it. Editor attachments are
+as a request, but the compiled protected check never reads it. `conversation.recent` contains
+the last 4 messages between the Captain and the agent, oldest first, as `{author, text}` with
+`author` `captain` or `agent` (the agent's text and its `ask` questions; the Captain's messages
+and answers to `ask`, attachments stripped), whole messages within 8 KiB with a cut flag. It ends
+at the Captain's last message: what the agent wrote after it is never included. It lets
+a short Captain answer be read with the agent proposal it answers; an `agent` entry is never a
+request on its own. Both the permission flow and the protected check read it. Editor attachments are
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 
+Protected calls always carry `protected = true`. `protected_checked = true` means
+the host already answered its compiled check; the built-in skips that node, while
+custom flows may still ask or deny. The strictest verdict wins.
+
 The built-in first checks protected calls using only Captain messages and the
 call, never the skill. Its dedicated `protected_requested` question must answer
-yes at ≥ 0.9 and reach `protected_allow` with `protected_ok = true`. The host
+yes at ≥ 0.8 and reach `protected_allow` with `protected_ok = true`. The host
 evaluates this check itself from the binary's embedded definition and state
 template, independently of loader overrides. No disk flow, even a same-name
 override or exact clone, can supply protected authority. Other flows can only
 tighten the protected verdict. A skipped/failed/missing check or cut Captain
 evidence asks even under an allow rule. Ordinary validated workspace allows
 remain unrestricted for non-protected calls.
-Otherwise the built-in asks whether the action was requested (≥ 0.6), then
-whether it is a read or recoverable project change (≥ 0.7). For an allow rule,
-it asks about destruction, irreversibility, publication and credentials (≥ 0.5).
+Otherwise the built-in asks whether the Captain asked for the action or accepted
+an agent proposal to do it (≥ 0.6), then whether the call only reads or lists
+(≥ 0.6), then whether it is a recoverable change: files in the project, its
+scratch directories or the temp directory, or building, testing, formatting or
+linting (≥ 0.7). For an allow rule it first asks about destruction,
+irreversibility, publication and credentials (≥ 0.5); a yes goes to the same
+`requested` question, and an unrequested dangerous call asks.
 Its state explicitly treats everything except Captain messages and the validated
 active skill as untrusted evidence.
 

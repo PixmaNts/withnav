@@ -57,7 +57,7 @@ versions and clients can share the file. The Settings screens write the same fil
 | `compaction.writer` | `metacognition` | Who writes compaction summaries: `metacognition`, or `session` for the session's own model. If Metacognition is unavailable, the session model is used. |
 | `compaction.chunk_tokens` | `64000` | Size of one rolling summary chunk, capped at half of the writer's input budget. A positive integer. |
 | `permissions.scratch_dirs` | private runtime directory, then a shared temp one | Absolute paths the agent may use for temporary files; they count as part of the project for your rules. `[]` turns it off. See [Permissions](permissions.md#scratch-folders). |
-| `yolo` | `false` | **Unsafe.** `true` turns off all permission control for new sessions and their subagents: nothing is asked or checked. See [Permissions](permissions.md#yolo). |
+| `yolo` | `false` | **Unsafe.** `true` turns off all permission control for sessions started or resumed afterwards, and their subagents: nothing is asked or checked. See [Permissions](permissions.md#yolo). |
 | `subagents.max_concurrent` | `4` | How many subagents one session may run at once. An integer from 1 to 64. |
 | `subagents.watchdog_interval_secs` | `300` | How often Instinct checks that a background subagent makes progress. `0` turns it off. |
 | `agent.watchdog_interval_secs` | `300` | How often Instinct checks that the main conversation makes progress. `0` turns it off. See [Long turns](permissions.md#long-turns-and-the-watchdog). |

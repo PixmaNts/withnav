@@ -54,6 +54,8 @@ pub type ParentCaptain = Arc<std::sync::Mutex<Option<CaptainEvidence>>>;
 pub struct PermissionDirs {
     pub config: Option<std::path::PathBuf>,
     pub data: Option<std::path::PathBuf>,
+    /// The system temporary directories, where a native write needs no flow.
+    pub temp: Vec<std::path::PathBuf>,
 }
 
 impl PermissionDirs {
@@ -62,6 +64,7 @@ impl PermissionDirs {
         Self {
             config: crate::provider::auth::default_config_dir(),
             data: crate::paths::data_dir(),
+            temp: crate::permission::floor::system_temp_roots(),
         }
     }
 }
@@ -494,6 +497,9 @@ impl AgentActor {
     /// the process ended; it is never run again. Returns how many were
     /// settled.
     pub fn settle_unanswered_calls(&mut self) -> usize {
+        /// The process ended while the call waited or ran: whether it ran is unknown.
+        const UNFINISHED: &str =
+            "interrupted: the session ended before this call finished; it may not have run";
         let Some(last) = self
             .transcript
             .iter()
@@ -521,7 +527,7 @@ impl AgentActor {
         for id in &unanswered {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: id.clone(),
-                content: String::new(),
+                content: UNFINISHED.into(),
                 answered_by: None,
             });
         }
@@ -598,14 +604,17 @@ impl AgentActor {
     /// A question nobody answers ends as `cancelled` in the decision table.
     fn cancel_pending_decision(&self, request: &PermissionRequest) {
         if let (Some(id), Some(store)) = (request.decision_id, &self.permission_store) {
-            if let Err(error) = store.update_outcome(
-                id,
-                crate::permission::decisions::Outcome::Cancelled,
-                None,
-                None,
-            ) {
-                tracing::warn!(%error, "permission decision outcome not recorded");
-            }
+            // Off the runtime thread: nothing waits on this write.
+            store.detach(move |store| {
+                if let Err(error) = store.update_outcome(
+                    id,
+                    crate::permission::decisions::Outcome::Cancelled,
+                    None,
+                    None,
+                ) {
+                    tracing::warn!(%error, "permission decision outcome not recorded");
+                }
+            });
         }
     }
 
@@ -613,7 +622,7 @@ impl AgentActor {
         for call in std::iter::once(call).chain(remaining) {
             self.transcript.push(ChatMessage::Tool {
                 tool_call_id: call.id.clone(),
-                content: String::new(),
+                content: crate::agent::run_loop::NOT_RUN.into(),
                 answered_by: None,
             });
         }

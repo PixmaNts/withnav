@@ -2,6 +2,7 @@
 use super::{catalogue::catalogue, store::FlowStore};
 pub use crate::agent::flow_hook::{
     PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, ProtectedCheck, RuleResult,
+    RunScores,
 };
 use instinct_flow::*;
 use serde_json::{json, Value};
@@ -47,6 +48,24 @@ fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
         value: Some(json!(&messages[start..])),
         cut: start != 0,
         redacted: false,
+    }
+}
+
+/// The run id and the score of every node of `outcome` that asked Instinct.
+fn run_scores(outcome: &RunOutcome) -> RunScores {
+    RunScores {
+        run_id: outcome.trace.run_id.clone(),
+        scores: outcome
+            .trace
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.answer {
+                Some(instinct_flow::protocol::Answer::Noul { noul }) => {
+                    Some((node.id.clone(), *noul))
+                }
+                _ => None,
+            })
+            .collect(),
     }
 }
 
@@ -102,6 +121,7 @@ fn resolve_permissions(
                 run_id: outcome.trace.run_id.clone(),
                 action: rule_action.into(),
                 used_rule: true,
+                scores: run_scores(outcome).scores,
             });
             candidates.push((
                 rule_action,
@@ -124,6 +144,7 @@ fn resolve_permissions(
                 run_id: outcome.trace.run_id.clone(),
                 action: resolved.into(),
                 used_rule,
+                scores: run_scores(outcome).scores,
             });
             candidates.push((
                 resolved,
@@ -250,14 +271,28 @@ mod tests {
             rule: None,
             commands: None,
             inside_project: Some(true),
+            location: Some("project"),
             protected,
             skill: None,
             captain_messages: vec!["Change the configuration".into()],
             captain_messages_cut: false,
             delegation: vec![],
             delegation_cut: false,
+            recent: vec![],
+            recent_cut: false,
             protected_check: None,
         }
+    }
+
+    #[tokio::test]
+    async fn checked_protected_call_keeps_its_protected_identity() {
+        let mut call = permission_call(PathBuf::from("/project"), true);
+        call.protected_check = Some(ProtectedCheck::Passed);
+        let (event, _, _) =
+            FlowRuntime::permission_event(call, RuleResult::None, ContextSnapshot::default());
+        assert_eq!(event.payload["protected"], json!(true));
+        assert_eq!(event.payload["protected_checked"], json!(true));
+        assert_eq!(event.payload["location"], json!("project"));
     }
 
     #[tokio::test]
@@ -835,9 +870,30 @@ mod tests {
             ),
             (true, RuleResult::Allow, vec![], false),
             (false, RuleResult::Ask, vec![("requested", 0.6)], true),
-            (false, RuleResult::None, vec![("safe", 0.7)], true),
+            (false, RuleResult::None, vec![("read_only", 0.6)], true),
+            (false, RuleResult::None, vec![("recoverable", 0.7)], true),
+            (
+                false,
+                RuleResult::None,
+                vec![("read_only", 0.59), ("recoverable", 0.69)],
+                false,
+            ),
             (false, RuleResult::Ask, vec![], false),
+            // Under an allow rule a dangerous call asks unless it was requested.
             (false, RuleResult::Allow, vec![("danger", 0.5)], false),
+            (
+                false,
+                RuleResult::Allow,
+                vec![("danger", 0.5), ("requested", 0.6)],
+                true,
+            ),
+            // A dangerous unrequested call is never let through as a read.
+            (
+                false,
+                RuleResult::Allow,
+                vec![("danger", 0.5), ("read_only", 1.0), ("recoverable", 1.0)],
+                false,
+            ),
             (false, RuleResult::Allow, vec![], true),
         ] {
             let dir = tempfile::tempdir().unwrap();
@@ -872,7 +928,12 @@ mod tests {
             let result = runtime
                 .permission_pre_call(call, rule, CancellationToken::new())
                 .await;
-            assert_eq!(matches!(result.verdict, FlowVerdict::Allow), allowed);
+            assert_eq!(
+                matches!(result.verdict, FlowVerdict::Allow),
+                allowed,
+                "{rule:?} {:?}",
+                result.verdict
+            );
             let failed = FlowRuntime::new(store, Arc::new(Fake), Arc::new(NoEffects));
             assert!(!matches!(
                 failed
@@ -886,6 +947,110 @@ mod tests {
                 FlowVerdict::Allow
             ));
         }
+    }
+
+    /// Records the state of every question it is asked and answers `answer`.
+    struct StateClient(std::sync::Mutex<Vec<(String, String)>>, f64);
+    impl DecisionClient for StateClient {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/state".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            for id in request.questions.keys() {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((id.clone(), request.state.to_string()));
+            }
+            Box::pin(async move {
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                instinct_flow::protocol::Answer::Noul { noul: self.1 },
+                            )
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    fn proposal_then_yes(workspace: PathBuf, protected: bool) -> PermissionCallContext {
+        use crate::agent::flow_hook::RecentMessage;
+        let mut call = permission_call(workspace, protected);
+        call.captain_messages = vec!["test the permissions".into(), "yes go".into()];
+        call.recent = vec![
+            RecentMessage {
+                author: "agent",
+                text: "PROPOSAL: say go and I delete the 2 test files".into(),
+            },
+            RecentMessage {
+                author: "captain",
+                text: "yes go".into(),
+            },
+        ];
+        call
+    }
+
+    #[tokio::test]
+    async fn the_flow_reads_a_short_answer_with_the_proposal_it_answers() {
+        let client = Arc::new(StateClient(Default::default(), 1.0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let verdict = runtime
+            .permission_pre_call(
+                proposal_then_yes(dir.path().into(), false),
+                RuleResult::None,
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(verdict.verdict, FlowVerdict::Allow));
+        let states = client.0.lock().unwrap().clone();
+        let (_, state) = states.iter().find(|(id, _)| id == "requested").unwrap();
+        assert!(state.contains("PROPOSAL: say go"), "{state}");
+        assert!(state.contains(r#""author":"agent""#), "{state}");
+        assert!(state.contains(r#""author":"captain","text":"yes go""#));
+    }
+
+    #[tokio::test]
+    async fn the_protected_check_reads_the_recent_exchanges() {
+        let client = Arc::new(StateClient(Default::default(), 1.0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let check = runtime
+            .protected_check_with(
+                compile_protected_check(true),
+                proposal_then_yes(dir.path().into(), true),
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(check, ProtectedCheck::Passed);
+        let states = client.0.lock().unwrap().clone();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].0, "protected_requested");
+        assert!(states[0].1.contains("PROPOSAL: say go"), "{}", states[0].1);
+        assert!(states[0].1.contains("explicit acceptance"));
+        // A message naming the change counts, a vague goal does not.
+        assert!(states[0].1.contains("names this change"));
     }
 
     #[test]
@@ -1603,7 +1768,20 @@ impl FlowRuntime {
         Vec<tokio::task::JoinHandle<RunOutcome>>,
         Vec<PermissionFlowAnswer>,
     ) {
-        self.store.refresh();
+        // A pending reload reads flow validations from the permission
+        // database and may wait on the reload marker held by another thread:
+        // it runs on the blocking pool. With nothing pending the evaluation
+        // stays on this thread, so an editor trigger keeps its place among
+        // the edits that follow it.
+        if self.store.refresh_pending() {
+            let store = self.store.clone();
+            if tokio::task::spawn_blocking(move || store.refresh())
+                .await
+                .is_err()
+            {
+                tracing::warn!("flow refresh task failed; evaluating the current snapshot");
+            }
+        }
         let snapshot = self.store.snapshot();
         let started = Instant::now();
         let mut blocking = futures_util::stream::FuturesUnordered::new();
@@ -1910,14 +2088,20 @@ impl FlowRuntime {
         context
             .values
             .insert("conversation.delegation".into(), delegation);
-        // With the host's answer in hand the flows judge the ordinary
-        // question; the protected branch is not walked a second time.
-        let walk_protected = ctx.protected && ctx.protected_check.is_none();
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":walk_protected});
+        context.values.insert(
+            "conversation.recent".into(),
+            InputValue {
+                value: Some(json!(ctx.recent)),
+                cut: ctx.recent_cut,
+                redacted: false,
+            },
+        );
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),
             ("inside_project", json!(ctx.inside_project)),
+            ("location", json!(ctx.location)),
             ("skill", json!(ctx.skill)),
         ] {
             if !value.is_null() {
@@ -1972,14 +2156,35 @@ impl FlowRuntime {
             .await
     }
 
+    /// [`Self::permission_protected_check`] with the run that answered it.
+    pub async fn permission_protected_check_traced(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+    ) -> (ProtectedCheck, Option<RunScores>) {
+        self.protected_check_traced_with(compiled_protected_check(), ctx, cancel)
+            .await
+    }
+
     async fn protected_check_with(
         &self,
         compiled: Option<CompiledDefinition>,
         ctx: PermissionCallContext,
         cancel: CancellationToken,
     ) -> ProtectedCheck {
+        self.protected_check_traced_with(compiled, ctx, cancel)
+            .await
+            .0
+    }
+
+    async fn protected_check_traced_with(
+        &self,
+        compiled: Option<CompiledDefinition>,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+    ) -> (ProtectedCheck, Option<RunScores>) {
         let Some(compiled) = compiled else {
-            return ProtectedCheck::Unavailable;
+            return (ProtectedCheck::Unavailable, None);
         };
         let (event, context, _) = Self::permission_event(
             PermissionCallContext {
@@ -1995,7 +2200,7 @@ impl FlowRuntime {
             .get("conversation.captain_messages")
             .is_none_or(|v| v.cut || v.value.is_none())
         {
-            return ProtectedCheck::Unavailable;
+            return (ProtectedCheck::Unavailable, None);
         }
         let outcome = run(
             &compiled,
@@ -2024,10 +2229,11 @@ impl FlowRuntime {
             }
             _ => ProtectedCheck::Unavailable,
         };
+        let scores = run_scores(&outcome);
         if let Some(records) = &self.records {
             records.enqueue(outcome.trace.clone());
         }
-        result
+        (result, Some(scores))
     }
 
     pub async fn tool_pre_call(
@@ -2123,6 +2329,16 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
     ) -> BoxFuture<'a, ProtectedCheck> {
         Box::pin(self.runtime.permission_protected_check(ctx, cancel.clone()))
     }
+    fn protected_check_traced<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, (ProtectedCheck, Option<RunScores>)> {
+        Box::pin(
+            self.runtime
+                .permission_protected_check_traced(ctx, cancel.clone()),
+        )
+    }
 }
 
 fn aggregate_application_status(actions: &[AppliedAction]) -> &'static str {
@@ -2191,5 +2407,176 @@ mod application_status_tests {
             application_status(&Err(ApplyError("session stopped".into()))).0,
             "failed"
         );
+    }
+
+    /// A reload marker newer than the store's view makes an evaluation reload,
+    /// and that reload reads flow validations from the permission database.
+    /// With the database locked and the reload failing, and with a second
+    /// refresh running at the same time, an unrelated task on the same
+    /// single thread must keep running.
+    #[test]
+    fn a_reload_on_a_locked_database_does_not_stall_the_runtime() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (config, data) = (dir.path().join("config"), dir.path().join("data"));
+            let writer = FlowStore::with_data(dir.path().into(), config.clone(), data.clone());
+            let store = Arc::new(FlowStore::with_data(
+                dir.path().into(),
+                config.clone(),
+                data.clone(),
+            ));
+            // A saved global flow forces the reload to read its validation.
+            writer
+                .save(
+                    "guard",
+                    crate::flows::store::Location::Global,
+                    None,
+                    super::super::store::Content::Toml {
+                        toml: "[flow]\nversion=1\nname='guard'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='no_objection'\n[node.params]\n".into(),
+                        templates: BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+            // Validation reads fail on a broken table: every reload fails.
+            writer.reload().unwrap();
+            crate::permission::store::PermissionStore::open(&data)
+                .unwrap()
+                .db()
+                .execute_batch("DROP TABLE validations; CREATE TABLE validations (invalid TEXT)")
+                .unwrap();
+            writer.reload().unwrap_err();
+            let runtime = Arc::new(FlowRuntime::new(
+                store.clone(),
+                Arc::new(crate::flows::client::UnavailableClient),
+                Arc::new(NoEffects),
+            ));
+            let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let ticker = tokio::spawn({
+                let ticks = ticks.clone();
+                async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        ticks.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            });
+            let (locked, is_locked) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn({
+                let (ticks, data) = (ticks.clone(), data.clone());
+                move || {
+                    // Out of WAL, an exclusive lock blocks readers too, and
+                    // every store open waits to switch the journal back.
+                    let db = rusqlite::Connection::open(data.join("withnav.db")).unwrap();
+                    db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+                    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+                    locked.send(()).unwrap();
+                    let before = ticks.load(Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(600));
+                    let during = ticks.load(Ordering::SeqCst) - before;
+                    db.execute_batch("COMMIT").unwrap();
+                    during
+                }
+            });
+            is_locked.recv().unwrap();
+            // A concurrent refresh on another thread holds the marker while
+            // it waits on the database.
+            let concurrent = std::thread::spawn({
+                let store = store.clone();
+                move || store.refresh()
+            });
+            let event = || Event {
+                trigger: "tool.pre_call".into(),
+                payload: json!({}),
+            };
+            for _ in 0..2 {
+                runtime
+                    .evaluate(event(), ContextSnapshot::default(), CancellationToken::new())
+                    .await;
+            }
+            let during = tokio::task::spawn_blocking(move || holder.join().unwrap())
+                .await
+                .unwrap();
+            tokio::task::spawn_blocking(move || concurrent.join().unwrap())
+                .await
+                .unwrap();
+            ticker.abort();
+            assert!(during >= 40, "the runtime stalled: {during} ticks");
+            assert!(store
+                .snapshot()
+                .values()
+                .all(|flow| flow.location == crate::flows::store::Location::Builtin));
+        });
+    }
+
+    /// An evaluation with no reload pending must not leave the runtime
+    /// thread: an extra hop delays editor triggers past the edits that follow
+    /// them. With the only blocking thread busy, the evaluation still ends.
+    #[test]
+    fn an_evaluation_without_a_pending_reload_stays_on_the_runtime_thread() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(FlowStore::with_data(
+                dir.path().into(),
+                dir.path().join("config"),
+                dir.path().join("data"),
+            ));
+            assert!(!store.refresh_pending());
+            let runtime = FlowRuntime::new(
+                store.clone(),
+                Arc::new(crate::flows::client::UnavailableClient),
+                Arc::new(NoEffects),
+            );
+            let (release, busy) = std::sync::mpsc::channel::<()>();
+            let occupied = tokio::task::spawn_blocking(move || busy.recv());
+            let evaluated = tokio::time::timeout(
+                Duration::from_secs(2),
+                runtime.evaluate(
+                    Event {
+                        trigger: "save".into(),
+                        payload: json!({}),
+                    },
+                    ContextSnapshot::default(),
+                    CancellationToken::new(),
+                ),
+            )
+            .await;
+            release.send(()).unwrap();
+            occupied.await.unwrap().unwrap();
+            assert!(
+                evaluated.is_ok(),
+                "the evaluation waited for the blocking pool"
+            );
+        });
+    }
+
+    /// A reload published by another store, or one in progress on another
+    /// thread, is pending; a store that saw the last reload has nothing pending.
+    #[test]
+    fn a_reload_is_pending_after_another_store_reloads_or_while_one_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, data) = (dir.path().join("config"), dir.path().join("data"));
+        let writer = FlowStore::with_data(dir.path().into(), config.clone(), data.clone());
+        let reader = Arc::new(FlowStore::with_data(dir.path().into(), config, data));
+        assert!(!reader.refresh_pending());
+        writer.reload().unwrap();
+        assert!(reader.refresh_pending());
+        reader.refresh();
+        assert!(!reader.refresh_pending());
+        let held = reader.hold_reload_marker_for_test();
+        assert!(
+            reader.refresh_pending(),
+            "a reload in progress counts as pending"
+        );
+        drop(held);
+        assert!(!reader.refresh_pending());
     }
 }

@@ -48,7 +48,7 @@ async fn shutdown_stops_sessions_before_mcp_so_a_queued_call_never_runs() {
         .config();
     with_mcp(
         &cfg,
-        json!({"command":["python3",FIXTURE],"env":{"SLOW_SECONDS":"5"}}),
+        json!({"command":[common::python(),FIXTURE],"env":{"SLOW_SECONDS":"5"}}),
         true,
     );
     let state = AppState::new(cfg).unwrap();
@@ -117,7 +117,7 @@ async fn subagents_receive_mcp_tools_within_parent_and_definition_limits() {
             .chat_tools(128_000)
             .rules_home(&env.home)
             .config();
-        with_mcp(&cfg, json!({"command":["python3",FIXTURE]}), false);
+        with_mcp(&cfg, json!({"command":[common::python(),FIXTURE]}), false);
         let state = AppState::new(cfg).unwrap();
         ready(&state).await;
         let parent = state
@@ -168,7 +168,7 @@ async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
         config_dir.join("config.json"),
         json!({
             "agents":{"build":{"model":"mock/mock-model"}},
-            "mcp":{"fake":{"command":["python3",FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"},"startup_timeout_ms":5000}}
+            "mcp":{"fake":{"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"},"startup_timeout_ms":5000}}
         })
         .to_string(),
     )
@@ -182,6 +182,8 @@ async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
             .arg(&models)
             .args(["--prompt", "hello"])
             .env("WITHNAV_TEST_KEY", "test-key")
+            .env("WITHNAV_CONFIG_DIR", root.join("config/withnav"))
+            .env("WITHNAV_DATA_DIR", root.join("data/withnav"))
             .env("HOME", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_CONFIG_HOME", root.join("config"))
@@ -206,7 +208,7 @@ async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
         .config();
     with_mcp(
         &cfg,
-        json!({"command":["python3",FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"}}),
+        json!({"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"}}),
         false,
     );
     let state = AppState::new(cfg).unwrap();

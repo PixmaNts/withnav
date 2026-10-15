@@ -5,10 +5,8 @@ extension, which can bring its own `nav`.
 
 ## Requirements
 
-- Linux, x64 or arm64; native Windows x64 packages are being prepared (see below).
+- Linux x64 or arm64, or native Windows x64. On macOS, build from source and use the universal VSIX.
 - VS Code 1.91 or later, if you use the extension.
-- Until a release includes the Windows assets below, use WSL or a VS Code Remote window with
-  the Linux package. Windows packaging alone does not establish runtime support.
 - The extension is not on the VS Code Marketplace yet. Install it from a file.
 
 ## VS Code extension
@@ -26,7 +24,7 @@ Pick the package that matches your machine:
 |---|---|---|
 | `withnav-linux-x64-<version>.vsix` | Linux on x64 | Bundled (static binary). Nothing else to install. |
 | `withnav-linux-arm64-<version>.vsix` | Linux on arm64 | Bundled (static binary). Nothing else to install. |
-| `withnav-win32-x64-<version>.vsix` | Native Windows x64, once available | Bundled `nav.exe`; no global `nav` needed. |
+| `withnav-win32-x64-<version>.vsix` | Native Windows x64 | Bundled `nav.exe`; no global `nav` needed. |
 | `withnav-<version>.vsix` (universal) | macOS, Nix, development | Not included. Put `nav` on your `PATH`, or set `withnav.serverPath`. |
 
 A path you set in `withnav.serverPath` always wins over the bundled binary. Set it to the
@@ -37,8 +35,9 @@ To check which binary the extension runs, open the **WithNav** output channel. I
 
 ## `nav` without the extension
 
-Each release also publishes bare `nav` binaries as tarballs, and a `SHA256SUMS` file for all the
-release files. Unpack a tarball and put `nav` on your `PATH`, for example in `~/.local/bin/`.
+Each release also publishes Linux `nav` binaries as tarballs, a Windows x64 ZIP, and a
+`SHA256SUMS` file for all release files. Unpack the archive and put `nav` (or `nav.exe`) on your
+`PATH`, for example in `~/.local/bin/` on Linux.
 
 ## Nix
 
@@ -88,8 +87,7 @@ the path, even when it contains spaces: the extension starts the LSP directly, w
 Explicit settings still take precedence over the bundled executable, then PATH.
 
 Install the Microsoft Visual C++ v14 x64 Redistributable if the executable reports missing
-MSVC runtime DLLs. Redistributables are not bundled; clean-machine runtime verification remains
-a release gate.
+MSVC runtime DLLs on a clean machine. Redistributables are not bundled.
 
 The `bash` tool runs Git Bash from [Git for Windows](https://gitforwindows.org/). WithNav finds it
 through the Git for Windows registry entry, then `%ProgramFiles%\Git`, then `PATH`; it never uses
@@ -123,5 +121,5 @@ cargo xwin clippy --workspace --all-targets --locked --target x86_64-pc-windows-
 ```
 
 Cross-checking is not runtime validation: the test suite also runs natively on Windows in CI.
-Windows ARM64, MSI/winget packages, signing, a native PowerShell tool and MCP servers on Windows
+Windows ARM64, MSI/winget packages, signing and a native PowerShell tool
 are not provided yet.

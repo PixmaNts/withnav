@@ -26,8 +26,13 @@ Connect external tools through stdio MCP servers in `~/.config/withnav/config.js
 Server ids use lowercase letters, digits, `_` or `-`, at most 24 characters, with no `__`.
 Commands are
 argv arrays, never shell commands. Only `env` expands `{env:NAME}`; missing variables fail
-that server. Children inherit PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared values,
-not every provider credential in Nav's environment. Resolved values are never saved.
+that server. On Unix, children inherit PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared
+values, not every provider credential in Nav's environment. On Windows, they also inherit the
+runtime variables PATH, PATHEXT, SYSTEMROOT, SYSTEMDRIVE, WINDIR, COMSPEC, TEMP, TMP,
+USERPROFILE, APPDATA, LOCALAPPDATA, PROGRAMDATA, PROGRAMFILES, PROGRAMFILES(X86),
+PROGRAMW6432, COMMONPROGRAMFILES, NUMBER_OF_PROCESSORS and PROCESSOR_ARCHITECTURE.
+Windows variable names are case-insensitive. Commands such as `npx` or `uvx`, including `.cmd`
+shims, are found through the child's Path/PATHEXT. Resolved values are never saved.
 
 Tools are exposed as `mcp__github__get_issue`, with provider-safe names at most 64 characters.
 The optional `tools` map hides original tool names matching any `false` glob. An agent's
@@ -55,7 +60,8 @@ session it waits until every enabled server is ready or failed, at most the larg
 `startup_timeout_ms` (and never more than 30 s). Existing tool inventories are frozen: a server becoming
 ready later requires a new session. Calls fail clearly on connection loss, have deadlines and
 cancel notifications, and results are limited to 64 KiB. Crashed servers receive five bounded
-restart attempts. Shutdown cleans up process groups, including launcher descendants.
+restart attempts. Shutdown cleans up process groups, including launcher descendants. On Windows,
+each server runs in a job object, so stopping it also stops its children.
 
 MCP tools use ordinary permission rules. With no matching rule, the default is ask; the permission
 flow may still allow the call, for example when the Captain asked for it. Without a flow that

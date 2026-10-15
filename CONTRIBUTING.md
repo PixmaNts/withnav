@@ -55,7 +55,7 @@ the extension, build and install it as described in the [install guide](https://
 (`npm run package`, then `code --install-extension vscode-withnav/withnav-*.vsix`). Releases also
 publish platform-specific VSIX files for linux-x64 and linux-arm64 that bundle a static `nav`
 binary, and a universal VSIX that uses `nav` from your `PATH` or the `withnav.serverPath` setting.
-Native Windows is not supported yet; WSL or VS Code Remote works with the linux VSIX.
+Releases also publish a `win32-x64` VSIX bundling `nav.exe` for native Windows x64.
 
 ## Branching
 

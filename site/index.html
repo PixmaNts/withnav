@@ -93,7 +93,7 @@
     <section id="top" class="wrap hero" aria-labelledby="hero-title">
       <div class="hero__copy">
         <ul class="badges" aria-label="About this release">
-          <li><a class="badge" href="https://github.com/PixmaNts/withnav/releases/latest">v0.7.8 · pre-1.0</a></li>
+          <li><a class="badge" href="https://github.com/PixmaNts/withnav/releases/latest">v0.8.0 · pre-1.0</a></li>
           <li><span class="badge badge--ok">Free and open source</span></li>
           <li><span class="badge">Written in Rust</span></li>
         </ul>
@@ -118,7 +118,7 @@
             <div class="tool"><span class="vig"><span class="spin" aria-hidden="true">◐</span> vigie</span> · scouting · read-only</div>
           </div>
           <div class="remark"><div class="remark__head">◇ remark · nav · config.rs:42</div><div>A second parameter breaks "public API unchanged" in the intent record.</div><div class="keys">useful · noise · dismiss</div></div>
-          <div class="ask"><div class="ask__head">✋ edit src/config.rs · needs your approval</div><div class="keys"><b>y</b> allow once · <b>n</b> deny</div></div>
+          <div class="ask"><div class="ask__head">✋ edit src/config.rs · needs your approval</div><div class="keys"><b>o</b> once · <b>a</b> always · <b>r</b> reject</div></div>
         </div>
         <div class="demo__foot" aria-hidden="true"><span class="p">❯</span> <span style="opacity:.7">/ for commands · ctrl+p palette</span></div>
         <figcaption id="demo-caption" class="sr-only">Illustration of a WithNav session: the Captain asks for a change, Nav maps the call sites while Vigie scouts, Nav leaves a remark that the change breaks the intent record, and the edit waits for the Captain's approval.</figcaption>
@@ -138,7 +138,7 @@
             <svg class="glyph c-nav" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="4" opacity=".5"/><g transform="rotate(30 32 32)"><polygon points="32,11 38.5,32 25.5,32" fill="currentColor"/><polygon points="25.5,32 38.5,32 32,53" fill="currentColor" opacity=".45"/></g></svg>
             <div class="crew-card__name"><h3 class="c-nav">Nav</h3><span class="crew-card__role">The Navigator</span></div>
             <p>Understands the course, proposes a route, coordinates the crew and asks before important decisions.</p>
-            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg>Edits after permission review</div>
+            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg>Edits under your permission rules</div>
           </article>
           <article class="crew-card">
             <svg class="glyph c-vig" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="16" width="60" height="32" rx="16" fill="none" stroke="currentColor" stroke-width="4" opacity=".5"/><path d="M13 32 Q32 18 51 32 Q32 46 13 32Z" fill="none" stroke="currentColor" stroke-width="4.5" stroke-linejoin="round"/><circle cx="32" cy="32" r="5" fill="currentColor"/></svg>
@@ -156,7 +156,7 @@
             <svg class="glyph c-mou" viewBox="0 0 64 64" aria-hidden="true"><rect x="5" y="5" width="54" height="54" rx="15" fill="none" stroke="currentColor" stroke-width="4" opacity=".5"/><circle cx="26" cy="32" r="9.5" fill="none" stroke="currentColor" stroke-width="5.5"/><circle cx="38" cy="32" r="9.5" fill="none" stroke="currentColor" stroke-width="5.5"/></svg>
             <div class="crew-card__name"><h3 class="c-mou">Mousse</h3><span class="crew-card__role">The Lightweight Deckhand</span></div>
             <p>A quick hand for small, local edits: renames, formatting, basic tests. Hands the task back to Nav when it grows.</p>
-            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg>Small local edits · after review</div>
+            <div class="crew-card__rights"><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg>Small local edits · under your rules</div>
           </article>
         </div>
         <ul class="on-demand">
@@ -195,17 +195,17 @@
           </li>
           <li class="layer">
             <div class="layer__name"><h3>Instinct</h3><span class="layer__api">api · systemone</span></div>
-            <p class="layer__desc">Typed decisions: is this worth saying, is this tool call safe, is this subagent stuck.</p>
+            <p class="layer__desc">Typed decisions: when to speak, how to judge tool calls no rule covers through the permission flow, and whether a subagent is stuck.</p>
             <div class="layer__when"><span>on every trigger</span><div class="depth" aria-hidden="true"><span style="width:36%"></span></div></div>
           </li>
           <li class="layer">
             <div class="layer__name"><h3>Metacognition</h3><span class="layer__api">api · chat</span></div>
-            <p class="layer__desc">Short remarks beside your code, review of risky tool calls, and a wake for Nav when the code contradicts what you agreed.</p>
+            <p class="layer__desc">Short remarks beside your code, decisions on watchdog doubts, and a wake for Nav when the code contradicts what you agreed.</p>
             <div class="layer__when"><span>when it matters</span><div class="depth" aria-hidden="true"><span style="width:64%"></span></div></div>
           </li>
           <li class="layer">
             <div class="layer__name"><h3>Cognition</h3><span class="layer__api">api · chat · agents</span></div>
-            <p class="layer__desc">Where Nav and the crew run: the build and plan agents, Vigie, Lux and Mousse in the background, tools, skills and rules.</p>
+            <p class="layer__desc">Where Nav and the crew run: the build and plan agents, Vigie, Lux and Mousse in the background, tools, MCP servers, skills and rules.</p>
             <div class="layer__when"><span>when you ask</span><div class="depth" aria-hidden="true"><span style="width:100%"></span></div></div>
           </li>
         </ol>
@@ -228,9 +228,9 @@
         </article>
         <article class="point">
           <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
-          <h3>Changes go through review</h3>
-          <p>Writes, edits, shell commands and fetches pass a permission gate. Instinct clears the ordinary ones, risky ones get a Metacognition review, and anything still in doubt is asked to you. It guards against drift; it is not a sandbox.</p>
-          <code>allow once · always · deny</code>
+          <h3>Your rules decide what runs</h3>
+          <p>Your rules say allow, ask or deny: the most precise wins, and a deny is final. A permission flow judges calls no rule covers: did you ask for it, is it a read or a recoverable change? Anything still in doubt is asked to you. Credentials and WithNav's own configuration stay protected unless you turn off all checks with yolo. This is not a sandbox.</p>
+          <code>once · always · reject</code>
         </article>
         <article class="point">
           <svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>
@@ -319,7 +319,7 @@ curl -N <span class="k">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
         <div class="intro">
           <p class="kicker">Install</p>
           <h2 id="install-title" class="h2">Pick the package for your setup.</h2>
-          <p class="lead">Every release on GitHub ships ready-to-install files for Linux, with <code>SHA256SUMS</code> to check them.</p>
+          <p class="lead">Every release on GitHub ships ready-to-install files for Linux and Windows, with <code>SHA256SUMS</code> to check them.</p>
         </div>
         <div class="grid-cards grid-cards--3">
           <article class="card">
@@ -328,13 +328,18 @@ curl -N <span class="k">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
             <code class="snippet">withnav-linux-x64-&lt;version&gt;.vsix</code>
           </article>
           <article class="card">
+            <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><h3>VS Code on Windows</h3></div>
+            <p>The x64 package bundles <code>nav.exe</code>. The bash tool needs Git for Windows. See the <a href="/docs/install.html#native-windows-x64">Windows install notes</a>.</p>
+            <code class="snippet">withnav-win32-x64-&lt;version&gt;.vsix</code>
+          </article>
+          <article class="card">
             <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg><h3>Universal VSIX</h3></div>
             <p>No binary inside. It uses <code>nav</code> from your <code>PATH</code>, or the path in <code>withnav.serverPath</code>.</p>
             <code class="snippet">withnav-&lt;version&gt;.vsix</code>
           </article>
           <article class="card">
             <div class="card__head"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg><h3>The nav binary</h3></div>
-            <p>Static Linux binaries for x64 and arm64, as tarballs. One <code>nav</code> runs the terminal, the browser and the server.</p>
+            <p>Static Linux binaries for x64 and arm64 as tarballs, and <code>nav-&lt;version&gt;-x86_64-pc-windows-msvc.zip</code> for Windows x64. One binary runs the terminal, the browser and the server.</p>
             <code class="snippet">nav-&lt;version&gt;-x86_64-unknown-linux-musl.tar.gz</code>
           </article>
           <article class="card">
@@ -352,7 +357,7 @@ curl -N <span class="k">127.0.0.1:7310/v1/sessions/&lt;id&gt;/events</span>
           <a class="btn btn--primary" href="https://github.com/PixmaNts/withnav/releases/latest"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Latest release</a>
           <a class="btn" href="/docs/install.html">Install guide</a>
         </div>
-        <p class="notice"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>The extension needs VS Code 1.91 or later. It is not on the VS Code Marketplace yet: install the VSIX file with <code>code --install-extension</code>. Native Windows is not supported; use WSL or a VS Code Remote window with the Linux package. Then add your gateways and keys (see the <a href="/docs/quick-start.html">quick start</a>) and run <code>nav doctor</code> to check the setup.</span></p>
+        <p class="notice"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg><span>The extension needs VS Code 1.91 or later. It is not on the VS Code Marketplace yet: install the VSIX file with <code>code --install-extension</code>. Then add your gateways and keys (see the <a href="/docs/quick-start.html">quick start</a>) and run <code>nav doctor</code> to check the setup.</span></p>
       </div>
     </section>
 

@@ -1239,7 +1239,13 @@ mod tests {
         let fixture = Fixture { cx, ..f };
         let (decision, asked) = fixture.decide_with(
             Control::Normal,
-            &file("write", "/tmp/withnav-temp-write-test/x"),
+            &file(
+                "write",
+                &std::env::temp_dir()
+                    .join("withnav-temp-write-test/x")
+                    .display()
+                    .to_string(),
+            ),
             1,
             FlowAnswer::Deny,
         );

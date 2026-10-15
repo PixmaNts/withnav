@@ -1753,13 +1753,18 @@ mod tests {
         assert_eq!(at("rm -v src/a.rs"), Some(Location::Project));
         assert_eq!(
             at(&format!(
-                "ls -la {r}/tmp/withnav/u.txt && rm -v {r}/tmp/withnav/u.txt"
+                "ls -la \"{r}/tmp/withnav/u.txt\" && rm -v \"{r}/tmp/withnav/u.txt\""
             )),
             Some(Location::Scratch)
         );
-        assert_eq!(at(&format!("rm {r}/tmp/other/lock")), Some(Location::Temp));
         assert_eq!(
-            at(&format!("echo x > {r}/tmp/withnav/a && rm {r}/home/x.txt")),
+            at(&format!("rm \"{r}/tmp/other/lock\"")),
+            Some(Location::Temp)
+        );
+        assert_eq!(
+            at(&format!(
+                "echo x > \"{r}/tmp/withnav/a\" && rm \"{r}/home/x.txt\""
+            )),
             Some(Location::Outside)
         );
         assert_eq!(at("cd /x && rm y"), Some(Location::Unknown));

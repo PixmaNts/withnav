@@ -508,7 +508,10 @@ mod tests {
     async fn a_cancelled_command_keeps_the_output_it_produced() {
         let tmp = tempfile::tempdir().unwrap();
         let marker = tmp.path().join("started");
-        let cmd = format!("echo partial-line; touch {}; sleep 30", marker.display());
+        let cmd = format!(
+            "echo partial-line; touch \"{}\"; sleep 30",
+            marker.display()
+        );
         let cancel = CancellationToken::new();
         let handle = tokio::spawn({
             let (cx, cancel) = (ctx(tmp.path()), cancel.clone());

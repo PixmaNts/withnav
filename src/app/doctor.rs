@@ -219,6 +219,58 @@ pub async fn inspect(
         Some("Edit config.json; unknown keys are retained."),
     );
     if let Ok(settings) = &settings {
+        let empty_settings = crate::settings::Settings::default();
+        let manager = crate::mcp::McpManager::start(if args.offline {
+            // Offline inspection must not launch configured commands.
+            &empty_settings
+        } else {
+            settings
+        });
+        if args.offline {
+            for (id, entry) in settings.mcp() {
+                report.add(
+                    format!("mcp.{id}"),
+                    if entry.is_ok() {
+                        Status::Warning
+                    } else {
+                        Status::Failed
+                    },
+                    entry
+                        .err()
+                        .unwrap_or_else(|| "configured; not started (offline)".into()),
+                    None,
+                );
+            }
+        } else {
+            let budget = settings
+                .mcp()
+                .into_iter()
+                .filter_map(|(_, c)| c.ok())
+                .filter(|c| c.enabled)
+                .map(|c| c.startup_timeout_ms)
+                .max()
+                .unwrap_or(0)
+                .min(30_000);
+            let deadline = Instant::now() + Duration::from_millis(budget + 100);
+            while manager.statuses().iter().any(|s| s.state == "starting")
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            for status in manager.statuses() {
+                report.add(
+                    format!("mcp.{}", status.server_id),
+                    match status.state {
+                        "ready" | "disabled" => Status::Ok,
+                        "starting" => Status::Warning,
+                        _ => Status::Failed,
+                    },
+                    mcp_line(&status),
+                    None,
+                );
+            }
+        }
+        manager.shutdown().await;
         match settings.yolo() {
             Ok(true) => report.add(
                 "config.yolo",
@@ -256,6 +308,7 @@ pub async fn inspect(
                     "tui",
                     "compaction",
                     "yolo",
+                    "mcp",
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),
@@ -1462,3 +1515,57 @@ fn timeout_error() -> ProviderError {
 
 #[cfg(test)]
 mod tests;
+
+/// One MCP server's doctor line: its state and tool count, then only the
+/// fields that say something (skipped tools, the error, a failed server's stderr).
+fn mcp_line(status: &crate::mcp::ServerStatus) -> String {
+    let mut parts = vec![
+        status.state.to_owned(),
+        format!("{} tools", status.tool_count),
+    ];
+    if !status.skipped_tools.is_empty() {
+        parts.push(format!("skipped: {}", status.skipped_tools.join(", ")));
+    }
+    if let Some(error) = status.error.as_deref().filter(|e| !e.is_empty()) {
+        parts.push(error.to_owned());
+    }
+    if status.state == "failed" && !status.stderr_tail.is_empty() {
+        parts.push(format!("stderr: {}", status.stderr_tail));
+    }
+    parts.join("; ")
+}
+
+#[cfg(test)]
+mod mcp_line_tests {
+    use super::mcp_line;
+    use crate::mcp::ServerStatus;
+
+    fn status(state: &'static str) -> ServerStatus {
+        ServerStatus {
+            server_id: "codegraph".into(),
+            state,
+            tool_count: 1,
+            skipped_tools: vec![],
+            error: None,
+            stderr_tail: String::new(),
+        }
+    }
+
+    #[test]
+    fn empty_fields_are_left_out() {
+        assert_eq!(mcp_line(&status("ready")), "ready; 1 tools");
+        let mut failed = status("failed");
+        failed.tool_count = 0;
+        failed.skipped_tools = vec!["a".into(), "b".into()];
+        failed.error = Some("exited".into());
+        failed.stderr_tail = "boom".into();
+        assert_eq!(
+            mcp_line(&failed),
+            "failed; 0 tools; skipped: a, b; exited; stderr: boom"
+        );
+        // A ready server's stderr is not shown.
+        let mut ready = status("ready");
+        ready.stderr_tail = "noise".into();
+        assert_eq!(mcp_line(&ready), "ready; 1 tools");
+    }
+}

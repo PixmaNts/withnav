@@ -291,6 +291,7 @@ pub struct HtmlConvertArgs {
 
 pub mod doctor;
 mod embedded;
+pub mod logging;
 pub mod lsp;
 pub mod tui;
 pub mod web;
@@ -414,12 +415,16 @@ pub enum AuthCommand {
 }
 
 pub fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(logging::mcp_safe_filter())
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout())),
+        )
         .try_init();
 }
 
@@ -525,6 +530,9 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         rules_roots,
         web: None,
     })?;
+    // The run's only session freezes its tool inventory when it is created:
+    // let configured MCP servers finish starting first (bounded).
+    state.service().wait_for_mcp().await;
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state

@@ -54,6 +54,7 @@ The full guide is at **<https://withnav.dev/docs/>**:
 - [Install](https://withnav.dev/docs/install.html) and [quick start](https://withnav.dev/docs/quick-start.html)
 - [Using Nav](https://withnav.dev/docs/using-nav.html) and the [command line](https://withnav.dev/docs/cli.html)
 - [Configuration](https://withnav.dev/docs/configuration.html): models, layers and agents
+- [MCP servers](https://withnav.dev/docs/mcp-servers.html): external stdio tools from `config.json`
 - [Permissions](https://withnav.dev/docs/permissions.html): how Nav asks before it acts
 - [Troubleshooting](https://withnav.dev/docs/troubleshooting.html), including `nav doctor`
 

@@ -135,7 +135,8 @@ result. `subagent.spawned` and `subagent.done` are replayable events. Results en
 transcript once, as bounded untrusted user messages at a turn boundary. `steer` delivery can use
 a safe boundary within its running turn. Completion wakes an idle parent, but cannot answer its
 pending interaction. Child permissions are answered by the Captain
-through the parent's API, with the interaction and grants remaining on the child. Parent stop and
+through the parent's API, with the pending interaction remaining on the child. Permission rules
+live in the shared database. Parent stop and
 delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
 

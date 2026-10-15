@@ -12,8 +12,8 @@ WithNav is a pair-programming system. You keep the keyboard and stay the author 
 Several models of different speeds watch your work, complete it, judge it and discuss it with you:
 
 - **Reflex** completes what you type, as ghost text.
-- **Instinct** makes small, fast decisions: when to speak, and whether a tool call is safe.
-- **Metacognition** writes short remarks beside your code and reviews risky tool calls.
+- **Instinct** decides when to speak and runs the permission flow that judges tool calls no rule covers.
+- **Metacognition** writes short remarks beside your code and decides watchdog doubts.
 - **Cognition** is Nav, the chat you talk to, with agents that read, edit and run commands.
 
 It is one Rust binary, `nav`, with a terminal client (`nav tui`), a browser client (`nav web`), a
@@ -32,7 +32,9 @@ code --install-extension withnav-linux-x64-<version>.vsix
 - The universal package has no binary. Put `nav` on your `PATH` or set `withnav.serverPath`.
 - Nix: `nix build .#withnav .#vscode-withnav`, or use `overlays.default`.
 - From source: `cargo build --release --bins`.
-- Native Windows is not supported yet. Use WSL or a VS Code Remote window.
+- `withnav-win32-x64-<version>.vsix` bundles `nav.exe` for Windows x64. The `bash` tool needs
+  Git for Windows. See the [Windows install notes](https://withnav.dev/docs/install.html#native-windows-x64).
+- For the CLI on Windows, extract `nav-<version>-x86_64-pc-windows-msvc.zip` and add its directory to `PATH`.
 
 VS Code 1.91 or later is required. The extension is not on the Marketplace yet. See the
 [install guide](https://withnav.dev/docs/install.html) for details.

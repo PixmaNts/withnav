@@ -4,8 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
-Permissions are redesigned: written rules decide tool calls, a flow judges the rest, and you answer
-Once, Always or Reject. See [ADR 0015](https://github.com/PixmaNts/withnav/blob/develop/docs/adr/0015-permission-rules-and-instinct-flow.md) and the
+## [0.8.0] - 2026-10-15
+
+WithNav 0.8.0 runs natively on Windows x64, connects to stdio MCP servers, and redesigns
+permissions: written rules decide tool calls, a flow judges the rest, and you answer Once, Always
+or Reject. See [ADR 0015](https://github.com/PixmaNts/withnav/blob/main/docs/adr/0015-permission-rules-and-instinct-flow.md) and the
 Permissions chapter of the guide.
 
 ### Added
@@ -46,7 +49,7 @@ Permissions chapter of the guide.
   uses Git Bash from Git for Windows, with each call's processes in a job object. Paths are shown
   as `C:\...`; tool output lists relative paths with `/` on every platform. Release assets: an MSVC
   `nav.exe` ZIP with licenses and a `win32-x64` VSIX bundling `nav.exe`, with checksums. The test
-  suite runs natively on Windows in CI. MCP servers on Windows come with MCP support itself.
+  suite runs natively on Windows in CI.
 - **Stdio MCP servers.** Declare external tool servers in `config.json` under `mcp`; ready tools
   appear as `mcp__<server>__<tool>` in new sessions and go through your permission rules like any
   other tool. With no matching rule, the default is ask; the permission flow may still allow the
@@ -55,6 +58,9 @@ Permissions chapter of the guide.
   deadlines and bounded results. Servers are shared, restarted after crashes and cleaned up on
   shutdown. `nav doctor` reports configuration and startup diagnostics, without empty `skipped:`
   or `stderr:` fields.
+  On Windows, servers receive the Windows runtime variables, commands such as `npx` or `uvx`
+  (`.cmd` files) are found through the server's `Path`, and each server runs in a job object, so
+  stopping it stops everything it started.
 
 ### Changed
 
@@ -110,6 +116,8 @@ Permissions chapter of the guide.
 - If the permission database cannot open, the session starts with a visible warning. Every call
   gets no rule; the floor and flow still apply, and the flow may allow even though deny rules are
   invisible. Bypass and Always are disabled and decision history is unavailable.
+- In the terminal client, the quit confirmation names the key you pressed: after `ctrl+c` it said
+  "ctrl+q again to quit", although only a second `ctrl+c` quit.
 - The README is a short front page; the full user guide is an mdBook at withnav.dev/docs, with
   install, configuration, permissions and troubleshooting rewritten for clarity.
 

@@ -36,9 +36,10 @@ diagnostics and user feedback, and hosts the Cognition chat view.
   as editor context.
 - **Subagents in chat:** see delegated goals and live states beneath the conversation. Open a
   subagent's read-only transcript in a separate editor tab without leaving the parent chat. Stop or continue a parked subagent
-  with confirmation; permission requests are still reviewed in the parent conversation.
+  with confirmation; you answer their permission requests in the parent conversation.
 - **Agent controls in chat**: permission cards show the full reason and command (or a file path
-  and bounded content), with Allow once and Deny plus an optional deny message. Subagents' requests
+  and bounded content), with Once / Always / Reject and an optional reject message. Always is
+  offered only when the call can save a reusable rule. Subagents' requests
   stay in the parent conversation. Sending while approval is pending asks for confirmation.
   Out-of-steps and watchdog pauses offer Continue; watchdog pauses also offer Stop. Subagent
   output is labelled untrusted, selected skills appear beside your messages, and tool rows have

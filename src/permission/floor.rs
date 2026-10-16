@@ -320,7 +320,20 @@ fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> 
                         push_all(&mut queue, &target);
                     }
                     Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing = true,
+                    // No file can have this name: it does not exist yet, it continues
+                    // below a file, or a component is longer than a file name may be
+                    // (an opaque line's text, such as a heredoc body, scanned as one
+                    // word). Such a word names nothing, so it is never a protected file.
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound
+                                | std::io::ErrorKind::NotADirectory
+                                | std::io::ErrorKind::InvalidFilename
+                        ) =>
+                    {
+                        missing = true
+                    }
                     Err(_) => return None,
                 }
             }
@@ -1576,6 +1589,22 @@ mod tests {
         ] {
             assert_eq!(bash_floor(&f.cx, &line), Floor::None, "{line}");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn words_that_cannot_name_a_file_are_not_unresolved() {
+        let f = fixture();
+        // A heredoc makes the line opaque; its body is scanned as words, one of
+        // them longer than any file name.
+        let body = "x".repeat(300);
+        let line =
+            format!("python3 - <<'EOF'\ns = \"\"\"{body}\"\"\"\nopen('a.rs','w').write(s)\nEOF");
+        assert!(split(&line)[0].opaque);
+        assert_eq!(bash_floor(&f.cx, &line), Floor::None);
+        // Below a regular file nothing can exist.
+        std::fs::write(f.cx.workspace.join("a.rs"), "").unwrap();
+        assert_eq!(bash_floor(&f.cx, "rm a.rs/x"), Floor::None);
     }
 
     #[test]

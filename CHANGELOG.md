@@ -6,8 +6,7 @@ requests land in `develop`.
 
 ## [Unreleased]
 
-- ** the `nav.` command now default to the TUI while preserving existing `nav tui` for compatibility.
-- Follow current Clap argument structure and test conventions.
+- `nav` with no subcommand opens the terminal client, and takes its flags (`nav --session <id>`); `nav tui` still works.
 
 ## [0.8.0] - 2026-10-15
 

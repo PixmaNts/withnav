@@ -29,13 +29,13 @@ pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
-    /// without a subcommand, `nav` runs the TUI.
+    /// Without a subcommand, `nav` opens the terminal client with these flags.
     #[command(flatten)]
     pub tui: TuiArgs,
 }
 
 impl Cli {
-    /// the command to run : subcommandgive, else the tui.
+    /// The command to run: the subcommand given, else the terminal client.
     pub fn into_command(self) -> Commands {
         self.command.unwrap_or(Commands::Tui(self.tui))
     }

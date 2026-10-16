@@ -4,7 +4,7 @@
 shows the flags of one.
 
 | Command | What it does |
-|---|---|
+| --- | --- |
 | [`nav tui`](#nav-tui) | Terminal chat client. |
 | [`nav web`](#nav-web) | Browser chat client. |
 | [`nav run`](#nav-run) | Run one task and exit. |
@@ -20,11 +20,11 @@ Add `--version` to any of them to print the version.
 ## `nav tui`
 
 ```sh
-nav tui [--workspace <dir>] [--model <gateway/id> | --session <id>] [--models <file> | --url <server>]
+nav [tui] [--workspace <dir>] [--model <gateway/id> | --session <id>] [--models <file> | --url <server>]
 ```
 
 | Flag | Meaning |
-|---|---|
+| --- | --- |
 | `--workspace <dir>` | Folder the conversation works in. Default: the current directory. |
 | `--model <gateway/id>` | Model for a new conversation. Cannot be combined with `--session`. |
 | `--session <id>` | Resume a past conversation. Cannot be combined with `--model`. |
@@ -40,7 +40,7 @@ nav web [--workspace <path>]... [--models <file>] [--port <n>] [--no-open]
 ```
 
 | Flag | Meaning |
-|---|---|
+| --- | --- |
 | `--workspace <path>` | A workspace to offer in the browser. Repeat for several. Default: the current directory. |
 | `--models <file>` | Use this `models.json` for the embedded server. |
 | `--port <n>` | Loopback port to listen on. Default `0`, which picks a free one. |
@@ -56,7 +56,7 @@ Runs one task in the terminal and exits. If you pass no `-p`, or `-p -`, the pro
 standard input. `nav run` never approves a tool call by itself, unless you pass `--yes`.
 
 | Flag | Meaning |
-|---|---|
+| --- | --- |
 | `-m`, `--model <gateway/id>` | Model to use. |
 | `-p`, `--prompt <text>` | The task. A prompt that is a `/command` runs that command. |
 | `--workspace <dir>` | Folder to work in. Default: the current directory. |
@@ -69,7 +69,7 @@ standard input. `nav run` never approves a tool call by itself, unless you pass 
 Exit codes:
 
 | Code | Meaning |
-|---|---|
+| --- | --- |
 | `0` | Done. |
 | `1` | Error. |
 | `2` | The agent asked a question. |
@@ -85,7 +85,7 @@ nav serve [--bind <addr>] [--allow-non-loopback] [--models <file>]
 Runs the session server alone, with no client: an HTTP API with Server-Sent Events.
 
 | Flag | Meaning |
-|---|---|
+| --- | --- |
 | `--bind <addr>` | Address to listen on. Default `127.0.0.1:7310`. |
 | `--allow-non-loopback` | Allow an address that is not loopback. |
 | `--models <file>` | Use this `models.json`. |
@@ -128,7 +128,7 @@ nav permissions revoke-validation <id>
 ```
 
 | Subcommand | What it does |
-|---|---|
+| --- | --- |
 | `list` | The active rules, newest first; `--all` includes revoked ones. |
 | `add` | Add a rule. Without a scope flag it applies to the current project. |
 | `revoke` | Revoke a rule by id. Rules are kept in the history, never deleted. |
@@ -154,7 +154,7 @@ report with `--json`.
 ## Environment variables
 
 | Variable | Meaning |
-|---|---|
+| --- | --- |
 | `WITHNAV_SERVER_TOKEN` | Bearer token for `nav tui --url`. |
 | `WITHNAV_MAX_STEPS` | Cap on the steps of one turn. Unset: no cap for the main agent (a watchdog supervises it) and 50 for subagents. A value that is not a non-negative integer logs a warning and caps the turn at 500 steps (50 for subagents). |
 | API key variables | The names you give in `api_key_env` in `models.json`, for example `OPENAI_API_KEY`. |

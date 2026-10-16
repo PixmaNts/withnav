@@ -1,8 +1,13 @@
+# Changelog
+
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0, a minor version may break compatibility. New entries go under `Unreleased` as pull
 requests land in `develop`.
 
 ## [Unreleased]
+
+- ** the `nav.` command now default to the TUI while preserving existing `nav tui` for compatibility.
+- Follow current Clap argument structure and test conventions.
 
 ## [0.8.0] - 2026-10-15
 

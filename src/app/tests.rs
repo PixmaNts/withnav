@@ -124,7 +124,7 @@ fn web_flags_parse() {
         "--no-open",
     ])
     .expect("parses");
-    let Commands::Web(args) = cli.command else {
+    let Commands::Web(args) = cli.into_command() else {
         panic!("not the web command");
     };
     assert_eq!(
@@ -135,7 +135,9 @@ fn web_flags_parse() {
     assert_eq!(args.port, 7399);
     assert!(args.no_open);
 
-    let Commands::Web(defaults) = Cli::try_parse_from(["nav", "web"]).expect("parses").command
+    let Commands::Web(defaults) = Cli::try_parse_from(["nav", "web"])
+        .expect("parses")
+        .into_command()
     else {
         panic!("not the web command");
     };

@@ -203,20 +203,18 @@ fn windows_bash_spelling(path: &str, cx: &FloorContext) -> String {
         if let Some((option, value)) = path.split_once('=') {
             return format!("{option}={}", windows_bash_spelling(value, cx));
         }
-    } else if path.starts_with('-') {
-        if let Some((at, _)) = path
+    } else if path.starts_with('-')
+        && let Some((at, _)) = path
             .char_indices()
             .skip(1)
             .find(|(_, c)| matches!(c, 'o' | 'O'))
-        {
-            if !path[at + 1..].is_empty() {
-                return format!(
-                    "{}{}",
-                    &path[..at + 1],
-                    windows_bash_spelling(&path[at + 1..], cx)
-                );
-            }
-        }
+        && !path[at + 1..].is_empty()
+    {
+        return format!(
+            "{}{}",
+            &path[..at + 1],
+            windows_bash_spelling(&path[at + 1..], cx)
+        );
     }
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("//?/").unwrap_or(&path);

@@ -159,6 +159,11 @@ async fn run(
     cancel: &CancellationToken,
     permit: tokio::sync::SemaphorePermit<'_>,
 ) -> Result<(), String> {
+    // The startup timeout counts from here, so launching the process (slow on a busy Windows
+    // host, where it also joins a job object) is part of it: a server that hangs is marked
+    // failed `startup_timeout_ms` after it started, which is what `nav doctor` waits for.
+    let startup_deadline =
+        tokio::time::Instant::now() + Duration::from_millis(server.config.startup_timeout_ms);
     let (env, secrets) = super::config::child_env(&server.config)?;
     *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = secrets.clone();
     #[cfg(unix)]
@@ -226,7 +231,7 @@ async fn run(
         };
         let (client, tools) = tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
-            result = tokio::time::timeout(Duration::from_millis(server.config.startup_timeout_ms), startup) => result.map_err(|_| "MCP startup timed out".to_string())??,
+            result = tokio::time::timeout_at(startup_deadline, startup) => result.map_err(|_| "MCP startup timed out".to_string())??,
         };
         drop(permit);
         let disconnected = CancellationToken::new();

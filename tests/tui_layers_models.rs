@@ -428,7 +428,7 @@ async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries
 }
 
 #[test]
-fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
+fn panel_shows_layer_dots_from_the_config_check_without_reflex() {
     use ratatui::{Terminal, backend::TestBackend};
     let mut s = State::default();
     s.tabs[0].selected_model_id = Some("openai/astra".into());
@@ -453,18 +453,71 @@ fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    for value in [
-        "override",
-        "Completion · FIM",
-        "Triage",
-        "usable",
-        "disabled",
-        "wrong API kind",
-        "config.json",
-    ] {
+    for value in ["override", "LAYERS", " ● instinct", "wrong API kind"] {
         assert!(text.contains(value), "{value}: {text}");
     }
+    assert!(!text.contains("reflex"), "reflex must not be shown: {text}");
     assert!(!text.contains("online"));
+}
+
+#[test]
+fn layer_dots_are_green_when_usable_red_when_disabled_and_orange_while_nav_runs() {
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
+    use withnav::tui::state::{Activity, ConnectionStatus};
+    let ui = UiState::default();
+    let theme = ui.theme.palette();
+    let mut s = State {
+        layers: serde_json::from_value::<LayersBody>(json!({"layers":[
+            {"layer":"reflex","status":"usable","model":"inception/mercury","variant":null,"reason":null},
+            {"layer":"instinct","status":"disabled","model":"gateway/instinct","variant":null,"reason":"wrong API kind"},
+            {"layer":"metacognition","status":"usable","model":"omniroute/combo/astra","variant":"low","reason":null}
+        ]})).unwrap().layers,
+        ..State::default()
+    };
+    s.connection = ConnectionStatus::Connected;
+    s.activity = Activity::Idle;
+    let draw = |s: &State| -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
+        let mut cache = withnav::tui::view::RenderCache::default();
+        terminal
+            .draw(|frame| withnav::tui::view::draw(frame, s, &ui, &Editor::new(), &mut cache))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+    // Rows as text; the `●` of the row holding `label`, searched in the right panel only.
+    let row_text =
+        |buffer: &Buffer, y: u16| -> String { (0..160).map(|x| buffer[(x, y)].symbol()).collect() };
+    let dot_fg = |buffer: &Buffer, label: &str| -> Color {
+        let y = (0..45)
+            .find(|&y| row_text(buffer, y).contains(label))
+            .unwrap_or_else(|| panic!("no row with {label:?}"));
+        let x = (160 - 36..160)
+            .find(|&x| buffer[(x, y)].symbol() == "●")
+            .unwrap_or_else(|| panic!("no ● on the row {label:?}"));
+        buffer[(x, y)].fg
+    };
+
+    let buffer = draw(&s);
+    assert_eq!(dot_fg(&buffer, " ● instinct"), theme.red, "disabled layer");
+    assert_eq!(
+        dot_fg(&buffer, " ● metacognition"),
+        theme.green,
+        "usable layer"
+    );
+    assert_eq!(dot_fg(&buffer, " ● nav"), theme.green, "nav idle");
+    let all: String = (0..45)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!all.contains("● reflex"), "reflex must not be shown: {all}");
+
+    s.activity = Activity::Running;
+    let buffer = draw(&s);
+    assert_eq!(dot_fg(&buffer, " ● nav"), theme.orange, "nav running");
+
+    s.connection = ConnectionStatus::Disconnected;
+    let buffer = draw(&s);
+    assert_eq!(dot_fg(&buffer, " ● nav"), theme.red, "nav offline");
 }
 
 fn hierarchy_models() -> ModelsBody {

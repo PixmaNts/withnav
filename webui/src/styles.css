@@ -1931,3 +1931,20 @@ a:hover {
     padding-right: 38px;
   }
 }
+
+/* ---------- MCP servers (extensions tab) ---------- */
+/* The state is also written next to the dot: colour is never the only cue. */
+.mcp-dot { color: var(--mu); }
+.mcp-dot[data-state="ready"] { color: var(--gr); }
+.mcp-dot[data-state="starting"] { color: var(--or); }
+.mcp-dot[data-state="failed"] { color: var(--rd); }
+.mcp-error { color: var(--rd); font-size: 11.5px; }
+.mcp-stderr summary { cursor: pointer; font-size: 11px; }
+.mcp-stderr pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 4px 0 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

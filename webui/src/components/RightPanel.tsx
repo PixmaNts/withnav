@@ -1,6 +1,6 @@
 import { Crew } from "./Crew";
 import { Fragment } from "react";
-import { useIntent, useSkills } from "../api/queries";
+import { useIntent, useMcp, useSkills } from "../api/queries";
 import type { AgentEntry } from "../api/types";
 import type { Child } from "../session/reducer";
 import type { Chat } from "../session/useChat";
@@ -144,6 +144,7 @@ function ExtensionsTab({ chat }: { chat: Chat }) {
   const id = chat.summary?.session_id ?? null;
   const live = !!chat.summary && chat.summary.actor_state !== "stopped";
   const skills = useSkills(id, live);
+  const mcp = useMcp();
   return (
     <>
       <div className="section-label">SKILLS{skills.data?.skills.length ? ` · ${skills.data.skills.length}` : ""}</div>
@@ -162,8 +163,33 @@ function ExtensionsTab({ chat }: { chat: Chat }) {
           ))}
         </div>
       )}
-      <div className="section-label">MCP SERVERS</div>
-      <div className="panel-empty">The server does not report MCP servers yet.</div>
+      <div className="section-label">MCP SERVERS{mcp.data?.servers.length ? ` · ${mcp.data.servers.length}` : ""}</div>
+      {mcp.isError && !mcp.data && <div className="panel-empty">MCP servers could not be read.</div>}
+      {mcp.data && !mcp.data.servers.length && <div className="panel-empty">No MCP server is configured.</div>}
+      {!!mcp.data?.servers.length && (
+        <div className="ext-list">
+          {mcp.data.servers.map((s) => (
+            <div key={s.server_id} className="ext">
+              <span className="mcp-dot" data-state={s.state} aria-hidden="true">●</span>{" "}
+              <span className="mono">mcp:{s.server_id}</span>{" "}
+              <span className="muted">· {s.state}{s.state === "ready" ? ` · ${s.tool_count} ${s.tool_count === 1 ? "tool" : "tools"}` : ""}</span>
+              {s.error && <div className="mcp-error clamp" title={s.error}>{s.error}</div>}
+              {!!s.skipped_tools.length && (
+                <div className="muted" style={{ fontSize: 11.5 }}>
+                  skipped: {s.skipped_tools.join(", ")}{s.skipped_more ? ` and ${s.skipped_more} more` : ""}
+                </div>
+              )}
+              {s.state === "failed" && s.stderr_tail && (
+                <details className="mcp-stderr">
+                  <summary className="muted">stderr{s.stderr_truncated ? " (last lines)" : ""}</summary>
+                  <pre>{s.stderr_tail}</pre>
+                </details>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="muted" style={{ fontSize: 11 }}>A conversation keeps the tools it started with; restart the server after editing the mcp section of config.json.</div>
       <div className="section-label">PLUGINS · JSON-RPC over stdio</div>
       <div className="panel-empty">The server does not report plugins yet.</div>
     </>

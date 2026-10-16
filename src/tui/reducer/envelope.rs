@@ -136,6 +136,14 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         return Ok(());
     }
+    // A gauge of the whole service, ordered by its own revision, not by this stream's seq. A
+    // payload this client cannot read is left aside: it is not worth a resync.
+    if kind == Some(EventKind::McpStatus) {
+        if let Ok(snapshot) = serde_json::from_value(e.payload) {
+            super::keep_newer_mcp(s, snapshot);
+        }
+        return Ok(());
+    }
     if matches!(
         e.kind.as_str(),
         "subagent.spawned" | "subagent.done" | "subagent.watchdog"

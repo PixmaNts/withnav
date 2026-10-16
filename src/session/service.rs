@@ -365,6 +365,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     pub(crate) mcp: Arc<crate::mcp::McpManager>,
+    /// Publishes the MCP servers' status to every live session.
+    pub(super) mcp_bridge: Arc<super::mcp::McpBridge>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
     #[cfg(debug_assertions)]
     skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -444,6 +446,12 @@ impl Service {
     #[doc(hidden)]
     pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
         self.mcp.statuses()
+    }
+
+    /// Every MCP server of this service as clients see it: redacted, bounded, versioned.
+    /// Never waits for discovery.
+    pub fn mcp_status(&self) -> crate::mcp::McpSnapshot {
+        self.mcp.status_snapshot()
     }
 
     /// See [`crate::mcp::McpManager::wait_until_settled`]. Only `nav run` waits:
@@ -718,10 +726,14 @@ impl Service {
             .active_child_counts()
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
+        let mcp = crate::mcp::McpManager::start(
+            &crate::settings::load(&config.config_dir).unwrap_or_default(),
+        );
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let mcp_bridge = Arc::new(super::mcp::McpBridge::start(&mcp, &sessions));
         Ok(Self {
-            mcp: crate::mcp::McpManager::start(
-                &crate::settings::load(&config.config_dir).unwrap_or_default(),
-            ),
+            mcp,
+            mcp_bridge,
             flows: Arc::new(crate::flows::host::Host::new(
                 config.config_dir.clone(),
                 config.data_dir.clone(),
@@ -746,7 +758,7 @@ impl Service {
             #[cfg(debug_assertions)]
             root_watchdog_test: Arc::default(),
             _instance: instance,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions,
             config: Arc::new(config),
             history: Arc::new(history),
             hooks,

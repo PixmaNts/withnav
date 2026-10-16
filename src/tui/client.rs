@@ -145,6 +145,11 @@ impl Client {
             .await
     }
 
+    /// The service's MCP servers; the `mcp.status` event carries the same body.
+    pub async fn mcp(&self) -> Result<crate::bus::event::McpStatus, String> {
+        self.json(self.get("/v1/mcp")).await
+    }
+
     pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {
         let mut body: crate::bus::event::SkillsBody = self
             .json(self.get(&format!(

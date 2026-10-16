@@ -856,7 +856,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
             "Compacting… {}/{}",
             envelope.payload["pass"], envelope.payload["total"]
         ))),
-        EventKind::ContextUpdated | EventKind::SessionBypass => None,
+        EventKind::ContextUpdated | EventKind::SessionBypass | EventKind::McpStatus => None,
     }
 }
 

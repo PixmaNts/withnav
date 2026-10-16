@@ -18,6 +18,70 @@ pub struct ServerStatus {
     pub stderr_tail: String,
 }
 
+/// Bounds of one server's diagnostics on the wire: clients show them, `nav doctor` keeps the
+/// full text.
+const WIRE_STDERR_BYTES: usize = 4 * 1024;
+const WIRE_STDERR_LINES: usize = 40;
+const WIRE_ERROR_CHARS: usize = 500;
+const WIRE_SKIPPED: usize = 20;
+
+/// One server as clients see it: the redacted, bounded form of a [`ServerStatus`].
+pub use crate::bus::event::McpServerView as ServerView;
+/// Every server of the service at one moment, as clients see it.
+pub use crate::bus::event::McpStatus as McpSnapshot;
+
+impl ServerView {
+    fn from_status(status: &ServerStatus, transport: &str) -> Self {
+        let (stderr_tail, stderr_truncated) = bounded_tail(&status.stderr_tail);
+        let ready = status.state == "ready";
+        Self {
+            server_id: status.server_id.clone(),
+            transport: transport.to_owned(),
+            state: status.state.to_owned(),
+            tool_count: if ready { status.tool_count } else { 0 },
+            skipped_tools: status
+                .skipped_tools
+                .iter()
+                .take(WIRE_SKIPPED)
+                .map(|s| bounded_chars(s, WIRE_ERROR_CHARS))
+                .collect(),
+            skipped_more: status.skipped_tools.len().saturating_sub(WIRE_SKIPPED),
+            error: status
+                .error
+                .as_deref()
+                .filter(|e| !e.is_empty())
+                .map(|e| bounded_chars(e, WIRE_ERROR_CHARS)),
+            stderr_tail,
+            stderr_truncated,
+        }
+    }
+}
+
+fn bounded_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}
+
+/// The last lines of `tail` that fit in the wire bounds, cut on a character boundary.
+fn bounded_tail(tail: &str) -> (String, bool) {
+    let lines: Vec<&str> = tail.lines().collect();
+    let mut kept = lines[lines.len().saturating_sub(WIRE_STDERR_LINES)..].join("\n");
+    let mut truncated = kept.len() < tail.trim_end_matches('\n').len();
+    if kept.len() > WIRE_STDERR_BYTES {
+        let mut start = kept.len() - WIRE_STDERR_BYTES;
+        while !kept.is_char_boundary(start) {
+            start += 1;
+        }
+        kept = kept[start..].to_owned();
+        truncated = true;
+    }
+    (kept, truncated)
+}
+
 pub(crate) struct Ready {
     peer: rmcp::Peer<rmcp::RoleClient>,
     disconnected: CancellationToken,
@@ -31,9 +95,15 @@ pub(crate) struct Server {
     status: Mutex<ServerStatus>,
     stderr: Mutex<redaction::StderrTail>,
     secrets: Mutex<Vec<String>>,
+    /// Shared by every server of a manager: bumped after each change a client would see.
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl Server {
+    /// Tells the manager's watchers that this server's status changed.
+    pub(crate) fn notify(&self) {
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
     pub(crate) fn secrets(&self) -> Vec<String> {
         self.secrets
             .lock()
@@ -55,6 +125,8 @@ pub struct McpManager {
     invalid: Vec<ServerStatus>,
     cancel: CancellationToken,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    incarnation: ulid::Ulid,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl std::fmt::Debug for Server {
@@ -69,6 +141,7 @@ impl McpManager {
     pub fn start(settings: &crate::settings::Settings) -> Arc<Self> {
         let cancel = CancellationToken::new();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+        let (changed, _) = tokio::sync::watch::channel(0u64);
         let mut servers = vec![];
         let mut invalid = vec![];
         let mut tasks = vec![];
@@ -100,6 +173,7 @@ impl McpManager {
                 status: Mutex::new(status),
                 stderr: Mutex::new(Default::default()),
                 secrets: Mutex::new(vec![]),
+                changed: changed.clone(),
             });
             if server.config.enabled {
                 let task_server = server.clone();
@@ -116,7 +190,41 @@ impl McpManager {
             invalid,
             cancel,
             tasks: Mutex::new(tasks),
+            incarnation: ulid::Ulid::generate(),
+            changed,
         })
+    }
+
+    /// Wakes when any server's status changes. Changes close together are seen once:
+    /// read [`McpManager::status_snapshot`] after each wake-up, never count them.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+
+    /// What clients see of every server now, redacted and bounded, with the revision a
+    /// client compares to keep the newest. Built from one read of each server's status and
+    /// ready inventory, so a failed server never shows the tools it had.
+    pub fn status_snapshot(&self) -> McpSnapshot {
+        // Read the revision first: a change made while building is then announced again,
+        // and the next snapshot (with a higher revision) carries it.
+        let revision = *self.changed.borrow();
+        let transports = |id: &str| {
+            self.servers
+                .iter()
+                .find(|s| s.id == id)
+                .map_or("unknown", |s| s.config.transport.as_str())
+                .to_owned()
+        };
+        let servers = self
+            .statuses()
+            .iter()
+            .map(|status| ServerView::from_status(status, &transports(&status.server_id)))
+            .collect();
+        McpSnapshot {
+            incarnation: self.incarnation,
+            revision,
+            servers,
+        }
     }
 
     pub fn snapshot(&self) -> Vec<McpTool> {
@@ -154,12 +262,9 @@ impl McpManager {
                     .unwrap_or_default()
             })
             .collect();
+        // Collisions are logged by `snapshot`, once per session registry: a status read is
+        // repeated by every client and must not repeat the warning.
         let (tools, collisions) = resolve_collisions(inventory);
-        for (id, reason) in &collisions {
-            if let Some(server) = self.servers.iter().find(|s| &s.id == id) {
-                tracing::warn!(server = %id, reason = %server.redact(reason), "MCP tool skipped");
-            }
-        }
         let mut statuses = self.invalid.clone();
         statuses.extend(self.servers.iter().map(|s| {
             let mut status = s.status.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -176,6 +281,7 @@ impl McpManager {
                 .iter()
                 .map(|text| s.redact(text))
                 .collect();
+            status.error = status.error.as_deref().map(|text| s.redact(text));
             status
         }));
         statuses
@@ -248,11 +354,66 @@ mod test_python;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_wire_view_is_bounded_on_character_boundaries_and_counts_tools_only_when_ready() {
+        // 60 lines of 3-byte characters: kept to the last 40 lines and 4 KB, cut between characters.
+        let tail: String = (0..60)
+            .map(|n| format!("{n:02} {}\n", "é".repeat(80)))
+            .collect();
+        let (kept, truncated) = bounded_tail(&tail);
+        assert!(truncated);
+        assert!(kept.len() <= WIRE_STDERR_BYTES);
+        assert!(kept.ends_with(&"é".repeat(80)));
+        assert!(!kept.contains("19 "), "older lines are dropped");
+        assert_eq!(bounded_tail("short\n"), ("short".to_owned(), false));
+
+        let error = "x".repeat(WIRE_ERROR_CHARS + 10);
+        let status = ServerStatus {
+            server_id: "s".into(),
+            state: "failed",
+            tool_count: 4,
+            skipped_tools: (0..WIRE_SKIPPED + 3).map(|n| format!("t{n}")).collect(),
+            error: Some(error),
+            stderr_tail: String::new(),
+        };
+        let view = ServerView::from_status(&status, "stdio");
+        assert_eq!(view.tool_count, 0, "a failed server offers no tool");
+        assert_eq!(view.error.unwrap().chars().count(), WIRE_ERROR_CHARS);
+        assert_eq!(view.skipped_tools.len(), WIRE_SKIPPED);
+        assert_eq!(view.skipped_more, 3);
+        let ready = ServerStatus {
+            state: "ready",
+            ..status
+        };
+        assert_eq!(ServerView::from_status(&ready, "stdio").tool_count, 4);
+    }
+
+    #[tokio::test]
+    async fn every_state_change_wakes_the_watchers_and_raises_the_revision() {
+        let mut settings = crate::settings::Settings::default();
+        settings.set_dotted(
+            "mcp",
+            json!({"off": {"command": ["true"], "enabled": false}}),
+        );
+        let manager = McpManager::start(&settings);
+        let mut watch = manager.watch();
+        let first = manager.status_snapshot();
+        assert_eq!(first.servers[0].state, "disabled");
+        manager.servers[0].notify();
+        watch.changed().await.unwrap();
+        let second = manager.status_snapshot();
+        assert_eq!(second.incarnation, first.incarnation);
+        assert!(second.revision > first.revision);
+        manager.shutdown().await;
+    }
+
     #[tokio::test]
     async fn legacy_cross_server_collision_is_sorted_reported_and_dispatches_first() {
         // Bypass id parsing to cover inventories created by older configurations; current
         // declarations reject __ in ids, but the manager still owns collision resolution.
         let cancel = CancellationToken::new();
+        let (changed, _) = tokio::sync::watch::channel(0u64);
         let mut servers = vec![];
         let mut tasks = vec![];
         for (id, name, retained) in [("a__b", "c", "wrong"), ("a", "b__c", "retained")] {
@@ -271,6 +432,7 @@ mod tests {
                 }),
                 stderr: Mutex::new(Default::default()),
                 secrets: Mutex::new(vec![]),
+                changed: changed.clone(),
             });
             let s = server.clone();
             let c = cancel.clone();
@@ -284,6 +446,8 @@ mod tests {
             invalid: vec![],
             cancel,
             tasks: Mutex::new(tasks),
+            incarnation: ulid::Ulid::generate(),
+            changed,
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while manager.statuses().iter().any(|s| s.state != "ready") {

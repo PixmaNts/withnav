@@ -416,6 +416,9 @@ pub struct State {
     pub models_request: u64,
     pub layers_request: u64,
     pub layers: Vec<super::protocol::LayerEntry>,
+    /// The MCP servers of the service, the newest snapshot read or heard; `None` until one
+    /// arrives. Shared by every tab: the servers are the service's, not a conversation's.
+    pub mcp: Option<crate::bus::event::McpStatus>,
     pub default_agent: String,
     pub tabs: Vec<Tab>,
     /// Index of the tab on screen; always valid.
@@ -441,6 +444,7 @@ impl Default for State {
             models_request: 0,
             layers_request: 0,
             layers: vec![],
+            mcp: None,
             default_agent: DEFAULT_AGENT.into(),
             tabs: vec![Tab::default()],
             active: 0,

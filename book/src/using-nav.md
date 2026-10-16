@@ -6,7 +6,7 @@ the same permission rules.
 | Where | Start it | Best for |
 |---|---|---|
 | VS Code | Install the [extension](vscode.md) | Daily work. It adds remarks and ghost-text suggestions to the editor, and hosts the Nav chat. |
-| Terminal | `nav tui` | A full chat client in your terminal. |
+| Terminal | `nav` or `nav tui` | A full chat client in your terminal. |
 | Browser | `nav web` | A chat in your browser, with the Settings screen and the [InstinctFlow](instinctflow.md) Studio. |
 | One task | `nav run -p "<task>"` | Scripts and quick questions. |
 
@@ -54,13 +54,18 @@ summary (`compaction.writer`; see [Configuration](configuration.md#settings-refe
 
 ## The terminal client: `nav tui`
 
-`nav tui` starts a private server and opens a chat. To use a server that is already running, pass
-`--url`; see the [command line](cli.md#nav-tui).
+`nav tui`, or `nav` alone, starts a private server and opens a chat. To use a server that is
+already running, pass `--url`; see the [command line](cli.md#nav-tui).
 
 - **Tabs.** Up to nine conversations, `alt+1` to `alt+9`. `ctrl+n` opens a new one, `alt+w`
   closes the tab and keeps the conversation, `alt+b` hides the tab bar.
 - **Header.** Workspace, git branch, agent and model.
-- **Right column.** Context breakdown, skills and git changes. `alt+r` shows or hides it.
+- **Right column.** The agent with its model and variant, the context breakdown, skills (listed,
+  and loaded by the model) and the MCP servers (a dot each: green ready, orange starting, red
+  failed), the layers (green ready, red unavailable, Nav orange while it runs) and git changes.
+  `alt+r` shows or hides it. The status line also sums up the MCP servers, for example `mcp 2/3`.
+- **Copy mode.** Clicking the transcript gives it the focus to select and copy; `ctrl+shift+c`
+  copies the selection or the selected block. Typing a letter or a digit goes back to the editor.
 - **Command palette.** `ctrl+p` or `/`. It also holds `/config` (edit settings), `/sessions`,
   `/skills`, `/theme` and `/quit`.
 - **Models.** `f2` opens the model picker, with variants. `ctrl+f` marks a favourite.
@@ -72,8 +77,8 @@ summary (`compaction.writer`; see [Configuration](configuration.md#settings-refe
   Choose one with `/theme`; it is saved as `tui.theme`.
 - **Help.** `f1` shows every shortcut. `ctrl+q` quits, `esc` or `ctrl+c` stops a running turn.
 
-Permission questions appear inline: `y` allows once, `n` denies (you can add a message), and `a`
-appears when a reusable approval is possible.
+Permission questions appear inline: `o` allows once, `r` rejects (you can add a message), and `a`
+(always) appears when a reusable rule can be saved.
 
 ## The browser client: `nav web`
 

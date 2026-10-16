@@ -20,8 +20,10 @@ Connect external tools through stdio MCP servers in `~/.config/withnav/config.js
 
 1. Install the server executable and export referenced environment variables before starting Nav.
 2. Restart `nav serve` (or the embedded editor server) after editing configuration.
-3. Run `nav doctor` to inspect startup, tool counts, skipped schemas/names and failure stderr.
-4. Create a new session once the server is ready.
+3. Watch each server's state in the terminal client's right column and status line, or in the
+   browser's Extensions tab (`GET /v1/mcp` gives the same, for scripts). Run `nav doctor` for
+   startup details, tool counts, skipped schemas/names and the full failure stderr.
+4. Create a new session once the server is ready: a conversation keeps the tools it started with.
 
 Server ids use lowercase letters, digits, `_` or `-`, at most 24 characters, with no `__`.
 Commands are

@@ -16,7 +16,7 @@ Several models of different speeds watch your work, complete it, judge it and di
 - **Metacognition** writes short remarks beside your code and decides watchdog doubts.
 - **Cognition** is Nav, the chat you talk to, with agents that read, edit and run commands.
 
-It is one Rust binary, `nav`, with a terminal client (`nav tui`), a browser client (`nav web`), a
+It is one Rust binary, `nav`, with a terminal client (`nav`, or `nav tui`), a browser client (`nav web`), a
 language server and a VS Code extension.
 
 ## Install
@@ -45,7 +45,7 @@ VS Code 1.91 or later is required. The extension is not on the Marketplace yet. 
 2. Give the `build` agent that model in `~/.config/withnav/config.json`.
 3. Store your API key with `nav auth set <provider>`, or export the variable named in `api_key_env`.
 4. Run `nav doctor --offline` to check the setup.
-5. Open a project in VS Code and open the Nav chat, or run `nav tui` or `nav web`.
+5. Open a project in VS Code and open the Nav chat, or run `nav` (the terminal client) or `nav web`.
 
 The [quick start](https://withnav.dev/docs/quick-start.html) has the two files, ready to copy.
 

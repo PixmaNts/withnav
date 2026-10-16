@@ -8,17 +8,17 @@ expression: snapshot
                      │                                                                                                      │ AGENTS                            
                      │                                                                                                      │  ● ◎ Nav  in use                  
                      │                                                                                                      │  cognition · off ·                
-                     │                                                                                                      │    Implements the task, verifies  
-                     │                                                                                                      │    it and reports                 
                      │                                                                                                      │                                   
                      │                                                                                                      │ CONTEXT                           
                      │                                                                                                      │  —                                
-                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │                                   
-                     │                    │ ❯ filter…                                                                │      │ SKILLS                            
-                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │  —                                
-                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │                                   
-                     │                    │                                                                          │      │ LOWER LAYERS · CONFIG             
-                     │                    │ enter delete permanently  esc cancel                                     │      │  Assignments: config.json         
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ SKILLS                            
+                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  —                                
+                     │                    │ ❯ filter…                                                                │      │                                   
+                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ LOWER LAYERS · CONFIG             
+                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  Assignments: config.json         
+                     │                    │                                                                          │      │                                   
+                     │                    │ enter delete permanently  esc cancel                                     │      │                                   
                      │                    └──────────────────────────────────────────────────────────────────────────┘      │                                   
                      │                                                                                                      │                                   
                      │                                                                                                      │                                   

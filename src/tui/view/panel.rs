@@ -1,5 +1,5 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
-//! Agents (the session's agent, its role, and the agents it started), Context (the breakdown of the
+//! Agents (the session's agent and the agents it started), Context (the breakdown of the
 //! last snapshot and the last compaction), Skills (the catalog counts) and Changes (the files git
 //! reports). A section with nothing reported yet shows `—`; none is made up.
 use super::text::{columns, fit_end as fit, fit_start};
@@ -20,22 +20,6 @@ use ratatui::{
 pub const WIDTH: u16 = 36;
 /// Below this terminal width the column hides itself, unless the Captain asked for it.
 pub const MIN_TERMINAL_WIDTH: u16 = 140;
-/// The roles of the two primary agents. Their names are reserved, so no agent file replaces them;
-/// the TUI is a client and reads no agent code, and a test keeps these equal to the server's.
-pub const PRIMARY_ROLES: [(&str, &str); 2] = [
-    ("build", "Implements the task, verifies it and reports"),
-    (
-        "plan",
-        "Researches, writes markdown plans and delegates; never changes code",
-    ),
-];
-
-fn role(agent: &str) -> Option<&'static str> {
-    PRIMARY_ROLES
-        .iter()
-        .find(|(id, _)| *id == agent)
-        .map(|(_, role)| *role)
-}
 
 /// Whether the column is drawn on a terminal `width` columns wide.
 pub fn shown(ui: &UiState, width: u16) -> bool {
@@ -98,26 +82,11 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     ) {
         lines.push(Line::styled(format!(" {part}"), theme.text()));
     }
-    if let Some(entry) = state.agents.iter().find(|a| a.id == agent) {
-        if let Some(assigned) = &entry.assignment {
-            for part in wrap(
-                &format!("assigned: {}", assigned.model),
-                width.saturating_sub(2),
-            ) {
-                lines.push(Line::styled(format!(" {part}"), theme.muted()));
-            }
-        }
-        if let Some(warning) = &entry.warning {
-            for part in wrap(warning, width.saturating_sub(2)) {
-                lines.push(Line::styled(format!(" {part}"), theme.warning()));
-            }
-        }
-    }
-    // The role of build or plan; another agent's comes from its file, which the server does not
-    // send, so none is shown.
-    if let Some(description) = role(agent) {
-        for part in wrap(description, width.saturating_sub(3)) {
-            lines.push(Line::styled(format!("   {part}"), theme.muted()));
+    if let Some(entry) = state.agents.iter().find(|a| a.id == agent)
+        && let Some(warning) = &entry.warning
+    {
+        for part in wrap(warning, width.saturating_sub(2)) {
+            lines.push(Line::styled(format!(" {part}"), theme.warning()));
         }
     }
     for child in &state.children {

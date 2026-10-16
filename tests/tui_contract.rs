@@ -49,21 +49,6 @@ fn default_state_is_idle_without_cursor() {
 }
 
 #[test]
-fn the_panel_gives_the_primary_agents_the_roles_the_server_defines() {
-    let server = withnav::agent::definitions::Agents::builtin();
-    for (id, role) in withnav::tui::view::panel::PRIMARY_ROLES {
-        let definition = server.get(id).unwrap_or_else(|| panic!("{id} is built in"));
-        assert!(!role.is_empty());
-        assert!(
-            definition.description.starts_with("Nav · The Navigator:"),
-            "{id}"
-        );
-        // no agent file can take these names, so the role shown is the one in use
-        assert!(withnav::agent::definitions::AgentId::parse(id).is_ok_and(|a| a.is_reserved()));
-    }
-}
-
-#[test]
 fn the_terminal_client_imports_no_agent_session_or_runtime_code() {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {

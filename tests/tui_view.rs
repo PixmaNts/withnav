@@ -3160,7 +3160,6 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
     for want in [
         "AGENTS",
         "● ◎ Nav  in use",
-        "Implements the task, verifies",
         "rules · 2 files",
         "messages                    ~27k",
         "next request          ~41k · 21%",
@@ -3174,7 +3173,16 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         assert!(shown.contains(want), "{want}: {shown}");
     }
     // nothing the server does not report
-    for absent in ["INTENT", "drift", "MCP", "PLUGINS", "vigie", "review"] {
+    for absent in [
+        "INTENT",
+        "drift",
+        "MCP",
+        "PLUGINS",
+        "vigie",
+        "review",
+        "Implements the task",
+        "assigned:",
+    ] {
         assert!(!shown.contains(absent), "{absent}: {shown}");
     }
 }

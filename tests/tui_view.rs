@@ -3267,6 +3267,7 @@ fn the_right_column_lists_mcp_servers_with_their_state_and_the_skills_the_model_
         revision: 2,
         servers: vec![
             server("github", "ready", 12, None),
+            server("codegraph", "ready", 1, None),
             server("contextd", "failed", 0, Some("MCP startup timed out")),
         ],
     });
@@ -3301,6 +3302,7 @@ fn the_right_column_lists_mcp_servers_with_their_state_and_the_skills_the_model_
         "model loaded                   2",
         "rust-clippy · git-commit",
         "● mcp:github  12 tools",
+        "● mcp:codegraph  1 tool ",
         "● mcp:contextd  MCP startup",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");

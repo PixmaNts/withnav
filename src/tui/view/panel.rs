@@ -275,6 +275,7 @@ fn extensions(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> 
             };
             for server in &mcp.servers[..shown] {
                 let label = match server.state.as_str() {
+                    "ready" if server.tool_count == 1 => "1 tool".to_owned(),
                     "ready" => format!("{} tools", server.tool_count),
                     "failed" => server.error.clone().unwrap_or_else(|| "failed".into()),
                     other => other.to_owned(),

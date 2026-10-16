@@ -172,7 +172,7 @@ function ExtensionsTab({ chat }: { chat: Chat }) {
             <div key={s.server_id} className="ext">
               <span className="mcp-dot" data-state={s.state} aria-hidden="true">●</span>{" "}
               <span className="mono">mcp:{s.server_id}</span>{" "}
-              <span className="muted">· {s.state}{s.state === "ready" ? ` · ${s.tool_count} tools` : ""}</span>
+              <span className="muted">· {s.state}{s.state === "ready" ? ` · ${s.tool_count} ${s.tool_count === 1 ? "tool" : "tools"}` : ""}</span>
               {s.error && <div className="mcp-error clamp" title={s.error}>{s.error}</div>}
               {!!s.skipped_tools.length && (
                 <div className="muted" style={{ fontSize: 11.5 }}>

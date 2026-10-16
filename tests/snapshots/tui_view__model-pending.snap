@@ -15,8 +15,8 @@ expression: snapshot
                      │ │                                                                                │ SKILLS                            
                      │ │ ◎ Nav                                                                          │  —                                
                      │ │  I found the failing test. The empty argument is discarded.                    │                                   
-                     │ │                                                                                │ LOWER LAYERS · CONFIG             
-                     │                                                                                  │  Assignments: config.json         
+                     │ │                                                                                │ LAYERS                            
+                     │                                                                                  │  ● nav  busy                      
                      │                                                                                  │                                   
                      │                                                                                  │                                   
                      │                                                                                  │                                   

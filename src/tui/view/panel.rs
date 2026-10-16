@@ -1,11 +1,12 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
 //! Agents (the session's agent and the agents it started), Context (the breakdown of the
-//! last snapshot and the last compaction), Skills (the catalog counts) and Changes (the files git
-//! reports). A section with nothing reported yet shows `—`; none is made up.
+//! last snapshot and the last compaction), Skills (the catalog counts), Layers (one dot each, from
+//! the assignment check and the conversation's activity) and Changes (the files git reports). A
+//! section with nothing reported yet shows `—`; none is made up.
 use super::text::{columns, fit_end as fit, fit_start};
 use crate::tui::{
     reducer::tokens,
-    state::{State, UiState},
+    state::{Activity, ConnectionStatus, State, UiState},
     theme::Theme,
 };
 use ratatui::{
@@ -55,6 +56,48 @@ fn styled_row(
 
 fn none(theme: &Theme) -> Line<'static> {
     Line::styled(" —", theme.muted())
+}
+
+/// One dot per layer: green ready, orange busy, red off. Reflex is not listed: it needs the
+/// editor's language server, which the terminal client does not run.
+fn layers(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Layers", theme)];
+    for layer in state.layers.iter().filter(|l| l.layer != "reflex") {
+        let (style, label) = if layer.status == "usable" {
+            let role = match layer.layer.as_str() {
+                "instinct" => "triage",
+                "metacognition" => "beacon",
+                other => other,
+            };
+            (theme.success(), role.to_owned())
+        } else {
+            let why = layer.reason.clone().unwrap_or_else(|| layer.status.clone());
+            (theme.error(), why)
+        };
+        lines.push(dot(&layer.layer, label, width, style, theme));
+    }
+    let (style, label) = match (state.connection, state.activity) {
+        (ConnectionStatus::Connected, Activity::Running) => (theme.warning(), "busy"),
+        (ConnectionStatus::Connected, Activity::AwaitingUser) => {
+            (theme.warning(), "waiting for you")
+        }
+        (ConnectionStatus::Connected, Activity::OutOfSteps) => (theme.warning(), "out of steps"),
+        (ConnectionStatus::Connected, _) => (theme.success(), "idle"),
+        _ => (theme.error(), "offline"),
+    };
+    lines.push(dot("nav", label.to_owned(), width, style, theme));
+    lines
+}
+
+/// ` ● name  label`, the label cut to the width that is left.
+fn dot(name: &str, label: String, width: usize, style: Style, theme: &Theme) -> Line<'static> {
+    let name = format!("{name}  ");
+    let room = width.saturating_sub(3 + columns(&name));
+    Line::from(vec![
+        Span::styled(" ● ", style),
+        Span::styled(name, theme.text()),
+        Span::styled(fit(&label, room), theme.muted()),
+    ])
 }
 
 fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -240,44 +283,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     };
     let width = usize::from(inner.width);
     let mut lines = agents(state, width, theme);
-    for section in [context(state, width, theme), skills(state, width, theme)] {
+    for section in [
+        context(state, width, theme),
+        skills(state, width, theme),
+        layers(state, width, theme),
+    ] {
         lines.push(Line::raw(""));
         lines.extend(section);
     }
-    lines.push(Line::raw(""));
-    lines.push(title("Lower layers · config", theme));
-    for layer in &state.layers {
-        let kind = match layer.layer.as_str() {
-            "reflex" => "Completion · FIM",
-            "instinct" => "Triage",
-            "metacognition" => "Beacon",
-            _ => "Nav and the crew",
-        };
-        lines.push(Line::styled(
-            format!(" {} · {kind}", layer.layer),
-            theme.accent(),
-        ));
-        for part in wrap(
-            layer.model.as_deref().unwrap_or("unassigned"),
-            width.saturating_sub(2),
-        ) {
-            lines.push(Line::styled(format!(" {part}"), theme.text()));
-        }
-        lines.push(Line::styled(
-            format!(
-                " {} · {}",
-                layer.variant.as_deref().unwrap_or("off"),
-                layer.status
-            ),
-            theme.muted(),
-        ));
-        if let Some(reason) = &layer.reason {
-            for part in wrap(reason, width.saturating_sub(2)) {
-                lines.push(Line::styled(format!(" {part}"), theme.warning()));
-            }
-        }
-    }
-    lines.push(Line::styled(" Assignments: config.json", theme.muted()));
     let left = usize::from(inner.height).saturating_sub(lines.len() + 1);
     if let Some(section) = changes(state, width, left, theme).filter(|_| left >= 3) {
         lines.push(Line::raw(""));

@@ -15,8 +15,8 @@ expression: snapshot
                      │                                                                                                      │ SKILLS                            
                      │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  —                                
                      │                    │ ❯ filter…                                                                │      │                                   
-                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ LOWER LAYERS · CONFIG             
-                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  Assignments: config.json         
+                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ LAYERS                            
+                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  ● nav  idle                      
                      │                    │                                                                          │      │                                   
                      │                    │ enter delete permanently  esc cancel                                     │      │                                   
                      │                    └──────────────────────────────────────────────────────────────────────────┘      │                                   

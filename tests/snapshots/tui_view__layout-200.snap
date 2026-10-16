@@ -23,8 +23,8 @@ expression: snapshot
                      │                                                                                                                                              │  listed                        12 
                      │                                                                                                                                              │  omitted, no room               3 
                      │                                                                                                                                              │                                   
-                     │                                                                                                                                              │ LOWER LAYERS · CONFIG             
-                     │                                                                                                                                              │  Assignments: config.json         
+                     │                                                                                                                                              │ LAYERS                            
+                     │                                                                                                                                              │  ● nav  idle                      
                      │                                                                                                                                              │                                   
                      │                                                                                                                                              │ CHANGES                           
                      │                                                                                                                                              │  M src/tui/view/file_0.rs         

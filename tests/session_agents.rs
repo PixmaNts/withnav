@@ -4,10 +4,10 @@
 use std::path::Path;
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 
 mod common;
 
@@ -85,10 +85,12 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let result = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(result.ok);
-    assert!(result.data.unwrap()["warning"]
-        .as_str()
-        .unwrap()
-        .contains("mock/missing"));
+    assert!(
+        result.data.unwrap()["warning"]
+            .as_str()
+            .unwrap()
+            .contains("mock/missing")
+    );
     state.history().flush().await.unwrap();
     let loaded = state.history().load(id).await.unwrap().unwrap();
     let event = loaded
@@ -154,10 +156,12 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         .unwrap();
     state.history().flush().await.unwrap();
     let loaded = state.history().load(id).await.unwrap().unwrap();
-    assert!(loaded.envelopes.iter().any(|e| e.kind == "command.result"
-        && e.payload["data"]["warning"]
-            .as_str()
-            .is_some_and(|s| s.contains("plan") && s.contains("mock/absent"))));
+    assert!(loaded.envelopes.iter().any(|e| {
+        e.kind == "command.result"
+            && e.payload["data"]["warning"]
+                .as_str()
+                .is_some_and(|s| s.contains("plan") && s.contains("mock/absent"))
+    }));
     let rows_before = state
         .history()
         .list(&env.ws.display().to_string())
@@ -343,8 +347,8 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
 #[tokio::test]
 async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     use withnav::session::{
-        store::{AgentVariantOverride, HistoryStore},
         VariantChoice,
+        store::{AgentVariantOverride, HistoryStore},
     };
     let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root)
@@ -438,15 +442,17 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
             .unwrap();
     models["providers"]["mock"]["base_url"] = json!("http://127.0.0.1:2/v1");
     std::fs::write(env.root.join("models.json"), models.to_string()).unwrap();
-    assert!(reopened
-        .create_or_resume_session(&env.ws, None, false, Some(overridden))
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .create_or_resume_session(&env.ws, None, false, Some(overridden))
+            .await
+            .is_err()
+    );
 }
 use common::server::{
-    captain_command, collect_until, request_json, stored_events as events, TestServerConfig,
+    TestServerConfig, captain_command, collect_until, request_json, stored_events as events,
 };
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
+use common::sse::{CapturingProvider, http_sse, spawn_capturing_provider, sse_body, text_chunk};
 
 use common::TestEnv as Env;
 
@@ -597,11 +603,13 @@ async fn only_primary_agents_can_start_a_session() {
         );
     }
     assert_eq!(state.session_count(), 0);
-    assert!(state
-        .list(&env.ws.display().to_string())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        state
+            .list(&env.ws.display().to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let id = state
         .create_session_as(&env.ws, None, false, Some("scribe"))

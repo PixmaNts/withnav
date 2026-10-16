@@ -780,9 +780,11 @@ fn a_checkpoint_past_the_latest_user_request_still_carries_it_verbatim() {
     assert!(validate(&k(4, "s", vec![]), &t).is_ok());
     // The prompt of a checkpoint that stands for it keeps it verbatim too.
     let carried = effective_history(&t, Some(&k(4, "s", vec![])));
-    assert!(carried
-        .iter()
-        .any(|m| matches!(m, ChatMessage::User { content, .. } if content == "the instruction")));
+    assert!(
+        carried.iter().any(
+            |m| matches!(m, ChatMessage::User { content, .. } if content == "the instruction")
+        )
+    );
 }
 
 #[test]

@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use rusqlite::OptionalExtension;
-use rusqlite::{params, Row};
+use rusqlite::{Row, params};
 use serde::{Deserialize, Serialize};
 
-use super::store::{path_text, Error, PermissionStore};
+use super::store::{Error, PermissionStore, path_text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -37,10 +37,12 @@ mod tests {
             Effect::Allow,
             RuleScope::Project(other),
         );
-        assert!(store
-            .matching("write", "target", &workspace, "build")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .matching("write", "target", &workspace, "build")
+                .unwrap()
+                .is_none()
+        );
         let deny = add(
             &store,
             "write",
@@ -175,10 +177,12 @@ mod tests {
                 .id,
             rule.id
         );
-        assert!(store
-            .matching("write", "a", other.path(), "plan")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .matching("write", "a", other.path(), "plan")
+                .unwrap()
+                .is_none()
+        );
         let agent = add(
             &store,
             "edit",
@@ -194,10 +198,12 @@ mod tests {
                 .id,
             agent.id
         );
-        assert!(store
-            .matching("edit", "a", dir.path(), "build")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .matching("edit", "a", dir.path(), "build")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store
                 .list(&RuleFilter {
@@ -229,26 +235,32 @@ mod tests {
                     .id,
                 rule.id
             );
-            assert!(store
-                .matching(
-                    "read*",
-                    &value.replace(['?', '[', '*', '\\'], "x"),
-                    dir.path(),
-                    "build"
-                )
-                .unwrap()
-                .is_none());
-            assert!(store
-                .matching("readXYZ", value, dir.path(), "build")
-                .unwrap()
-                .is_none());
+            assert!(
+                store
+                    .matching(
+                        "read*",
+                        &value.replace(['?', '[', '*', '\\'], "x"),
+                        dir.path(),
+                        "build"
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .matching("readXYZ", value, dir.path(), "build")
+                    .unwrap()
+                    .is_none()
+            );
             store.revoke(rule.id).unwrap();
         }
         let rule = add(&store, "read", "a?[b", Effect::Allow, RuleScope::Global);
-        assert!(store
-            .matching("read", "axb", dir.path(), "build")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .matching("read", "axb", dir.path(), "build")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store
                 .matching("read", "a?[b", dir.path(), "build")
@@ -265,20 +277,26 @@ mod tests {
             RuleScope::Global,
         );
         for command in ["git status", "git status --short", "git status a/b"] {
-            assert!(store
-                .matching("bash", command, dir.path(), "build")
-                .unwrap()
-                .is_some());
+            assert!(
+                store
+                    .matching("bash", command, dir.path(), "build")
+                    .unwrap()
+                    .is_some()
+            );
         }
-        assert!(store
-            .matching("bash", "git statusx", dir.path(), "build")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .matching("bash", "git statusx", dir.path(), "build")
+                .unwrap()
+                .is_none()
+        );
         add(&store, "write", "*", Effect::Ask, RuleScope::Global);
-        assert!(store
-            .matching("write", "a/b/c", dir.path(), "build")
-            .unwrap()
-            .is_some());
+        assert!(
+            store
+                .matching("write", "a/b/c", dir.path(), "build")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -286,10 +304,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = PermissionStore::open(dir.path()).unwrap();
         assert!(store.list(&RuleFilter::default()).unwrap().is_empty());
-        assert!(store
-            .matching("bash", "ls", dir.path(), "build")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .matching("bash", "ls", dir.path(), "build")
+                .unwrap()
+                .is_none()
+        );
         store
             .db()
             .execute_batch("DROP TABLE permission_rules")

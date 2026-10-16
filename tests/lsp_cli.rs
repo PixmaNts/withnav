@@ -53,9 +53,11 @@ fn stdio_flag_is_accepted() {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!String::from_utf8(output.stdout)
-        .unwrap()
-        .contains("--stdio"));
+    assert!(
+        !String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("--stdio")
+    );
 
     // Execute a real offline command too: help alone bypasses command execution.
     let output = command(root.path())

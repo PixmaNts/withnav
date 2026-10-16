@@ -6,13 +6,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use withnav::bus::event::EventEnvelope;
 
 mod common;
-use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};
+use common::server::{TestServerConfig, post_create_session, post_message_ok, spawn_server};
 use common::sse::{http_sse, sse_body};
 
 type Requests = Arc<Mutex<Vec<String>>>;

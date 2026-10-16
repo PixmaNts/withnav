@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::log::{excerpt, LogRecord, NavLog};
+use crate::navigator::log::{LogRecord, NavLog, excerpt};
 use crate::navigator::lsp::protocol::{
     InlineCompletionItem, InlineCompletionResult, Position, Range,
 };
@@ -259,10 +259,10 @@ impl ReflexService {
     /// entry, which otherwise lives as long as the server (one per file ever
     /// completed in).
     pub async fn close_document(&self, uri: &str) {
-        if let Some(entry) = self.per_document.lock().await.remove(uri) {
-            if let Some(token) = entry.cancel {
-                token.cancel();
-            }
+        if let Some(entry) = self.per_document.lock().await.remove(uri)
+            && let Some(token) = entry.cancel
+        {
+            token.cancel();
         }
     }
 

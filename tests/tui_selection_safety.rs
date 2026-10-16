@@ -113,9 +113,11 @@ fn archived_root_cannot_resume_prompt_approve_or_continue_historical_watchdog() 
                 },
             },
         ] {
-            assert!(reducer::handle_action(&mut s, &mut ui, action)
-                .iter()
-                .all(|e| matches!(e, Effect::SetEditor { .. })));
+            assert!(
+                reducer::handle_action(&mut s, &mut ui, action)
+                    .iter()
+                    .all(|e| matches!(e, Effect::SetEditor { .. }))
+            );
             assert!(ui.child_confirm.is_none());
         }
         assert!(s.archive());
@@ -296,7 +298,7 @@ fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
 #[test]
 fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_variant() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use withnav::tui::input::{route_key, Editor};
+    use withnav::tui::input::{Editor, route_key};
     for explicit in [false, true] {
         let mut s = State::default();
         agents(&mut s, 1, None, "build");
@@ -348,7 +350,7 @@ fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_
 #[test]
 fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use withnav::tui::input::{route_key, Editor};
+    use withnav::tui::input::{Editor, route_key};
     let mut s = State {
         catalog: vec![ModelEntry {
             api: withnav::tui::protocol::ApiKind::Chat,
@@ -371,13 +373,15 @@ fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
         &mut ui,
         &mut editor,
     );
-    assert!(route_key(
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &s,
-        &mut ui,
-        &mut editor
-    )
-    .is_none());
+    assert!(
+        route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        )
+        .is_none()
+    );
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     for ch in "inherit".chars() {
         route_key(
@@ -400,15 +404,17 @@ fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
     let Effect::Create(request) = &fx[0] else {
         panic!("{fx:?}")
     };
-    assert!(serde_json::to_value(request)
-        .unwrap()
-        .get("variant")
-        .is_none());
+    assert!(
+        serde_json::to_value(request)
+            .unwrap()
+            .get("variant")
+            .is_none()
+    );
 }
 
 #[test]
 fn archive_header_and_variant_override_view_do_not_claim_child_or_assigned() {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let mut s = State::default();
     let mut m = summary(1, "build", "gateway/archive", None);
     m.read_only = true;

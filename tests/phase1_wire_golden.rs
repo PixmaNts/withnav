@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
 use withnav::agent::actor::AgentActor;
-use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use withnav::agent::run_loop::{AgentEvent, RunOutcome, run_agent};
 use withnav::provider::config::{ProviderConfig, ReasoningHistory};
 use withnav::tools::bash::BashTool;
 use withnav::tools::control::AskTool;

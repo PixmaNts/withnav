@@ -45,10 +45,12 @@ fn discovers_skill_manifest_across_the_long_path_boundary() {
             .len()
             < 260
     );
-    assert!(crate::tools::canonical_path(&manifest)
-        .unwrap()
-        .to_string_lossy()
-        .starts_with(r"\\?\"));
+    assert!(
+        crate::tools::canonical_path(&manifest)
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(r"\\?\")
+    );
     let skills = load(&fx);
     assert!(
         skills.snapshot("long-skill").is_ok(),
@@ -72,14 +74,18 @@ fn validates_short_directory_with_verbatim_manifest() {
         - 1;
     let directory = root.join("a".repeat(length));
     let manifest = add(&directory, "boundary", "Boundary skill");
-    assert!(!crate::tools::canonical_path(&directory)
-        .unwrap()
-        .to_string_lossy()
-        .starts_with(r"\\?\"));
-    assert!(crate::tools::canonical_path(&manifest)
-        .unwrap()
-        .to_string_lossy()
-        .starts_with(r"\\?\"));
+    assert!(
+        !crate::tools::canonical_path(&directory)
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(r"\\?\")
+    );
+    assert!(
+        crate::tools::canonical_path(&manifest)
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(r"\\?\")
+    );
     let result = load(&fx).snapshot("boundary");
     assert!(result.is_ok(), "{:?}", result.err());
 }
@@ -190,10 +196,12 @@ fn validation_hash_covers_every_file_and_admits_the_same_snapshot() {
     assert!(skills.active_validated_skill().is_none());
     assert!(skills.validation.approved.lock().unwrap().is_empty());
     skills.validation.approve(&first, true).unwrap();
-    assert!(skills
-        .validation
-        .validated(&skills.snapshot("validated").unwrap())
-        .unwrap());
+    assert!(
+        skills
+            .validation
+            .validated(&skills.snapshot("validated").unwrap())
+            .unwrap()
+    );
     fs::write(directory.join("script.sh"), "changed bytes").unwrap();
     let changed = skills.snapshot("validated").unwrap();
     assert_ne!(first.hash, changed.hash);
@@ -588,18 +596,22 @@ async fn equal_priority_duplicates_are_ambiguous() {
 
     let err = skills.snapshot("twin").unwrap_err();
     assert!(err.contains("skill_ambiguous"));
-    assert!(err.contains(
-        &crate::tools::canonical_path(&a)
-            .unwrap()
-            .display()
-            .to_string()
-    ));
-    assert!(err.contains(
-        &crate::tools::canonical_path(&b)
-            .unwrap()
-            .display()
-            .to_string()
-    ));
+    assert!(
+        err.contains(
+            &crate::tools::canonical_path(&a)
+                .unwrap()
+                .display()
+                .to_string()
+        )
+    );
+    assert!(
+        err.contains(
+            &crate::tools::canonical_path(&b)
+                .unwrap()
+                .display()
+                .to_string()
+        )
+    );
 }
 
 // Given a skill with disable-model-invocation: true
@@ -618,10 +630,12 @@ async fn disabled_skills_stay_out_of_the_catalog() {
     let skills = load(&fx);
     assert_eq!(catalog_lines(&skills), ["on — Visible."]);
     let (_, cx) = context(&fx);
-    assert!(skills
-        .snapshot("off")
-        .unwrap_err()
-        .contains("skill_disabled"));
+    assert!(
+        skills
+            .snapshot("off")
+            .unwrap_err()
+            .contains("skill_disabled")
+    );
     assert_eq!(call(&skills, "on", &cx).await.status, ToolStatus::Ok);
 }
 
@@ -667,10 +681,12 @@ fn cycles_and_escaping_links_are_rejected() {
         .filter(|d| matches!(d.kind, DiagnosticKind::Escapes { .. }))
         .count();
     assert_eq!(escapes, 2, "{:?}", skills.diagnostics());
-    assert!(!skills
-        .readable_roots()
-        .iter()
-        .any(|r| r.starts_with(&outside)));
+    assert!(
+        !skills
+            .readable_roots()
+            .iter()
+            .any(|r| r.starts_with(&outside))
+    );
 }
 
 // Given a link to a directory inside another skill root, and a root reached
@@ -969,10 +985,12 @@ async fn the_body_cap_is_an_explicit_error_not_a_cut() {
     let skills = load(&fx);
     let (_, cx) = context(&fx);
     assert_eq!(call(&skills, "big", &cx).await.status, ToolStatus::Ok);
-    assert!(skills
-        .snapshot("bigger")
-        .unwrap_err()
-        .contains("exceeds 32 KiB"));
+    assert!(
+        skills
+            .snapshot("bigger")
+            .unwrap_err()
+            .contains("exceeds 32 KiB")
+    );
 }
 
 #[tokio::test]
@@ -1216,16 +1234,18 @@ async fn skill_roots_are_readable_but_never_writable() {
     // Outside every root stays outside.
     let outside = fx.home.join("secret.txt");
     fs::write(&outside, "s").unwrap();
-    assert!(actor
-        .registry
-        .dispatch(
-            "read",
-            json!({"path": outside}),
-            CancellationToken::new(),
-            cx
-        )
-        .await
-        .is_err());
+    assert!(
+        actor
+            .registry
+            .dispatch(
+                "read",
+                json!({"path": outside}),
+                CancellationToken::new(),
+                cx
+            )
+            .await
+            .is_err()
+    );
 }
 
 // Given no skills

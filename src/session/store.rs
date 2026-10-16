@@ -164,10 +164,10 @@ pub struct SelectionCheckpoint {
 }
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
@@ -827,13 +827,13 @@ impl HistoryStore {
             let owner = owner
                 .map(|id| id.parse::<Ulid>().map_err(|e| e.to_string()))
                 .transpose()?;
-            if let Some(owner) = owner {
-                if let std::collections::hash_map::Entry::Vacant(entry) = locks.entry(owner) {
-                    let Some(lock) = super::instance::stale_lock(instances, owner)? else {
-                        continue;
-                    };
-                    entry.insert(lock);
-                }
+            if let Some(owner) = owner
+                && let std::collections::hash_map::Entry::Vacant(entry) = locks.entry(owner)
+            {
+                let Some(lock) = super::instance::stale_lock(instances, owner)? else {
+                    continue;
+                };
+                entry.insert(lock);
             }
             finish_child_link_sync(
                 &self.path,
@@ -947,10 +947,10 @@ impl HistoryStore {
                     tx.commit().map_err(|e| e.to_string())
                 }).await.map_err(|e| e.to_string())?
             }))).await;
-            if let Err(error) = result {
-                if error != "permission mirror already delivered" {
-                    return Err(error);
-                }
+            if let Err(error) = result
+                && error != "permission mirror already delivered"
+            {
+                return Err(error);
             }
         }
         Ok(())
@@ -2022,8 +2022,8 @@ fn now_rfc3339() -> String {
 
 // --- the persisting emitter ---
 
-use crate::bus::sequencer::Emitter;
 use crate::bus::SubscribeReply;
+use crate::bus::sequencer::Emitter;
 
 /// Wraps a session's [`SessionBus`] as the sequencer's emitter and forwards
 /// every DURABLE envelope — everything except the live-only kinds
@@ -2061,14 +2061,13 @@ impl Emitter for PersistingEmitter {
         if matches!(
             envelope.kind.as_str(),
             "permission.requested" | "permission.resolved"
-        ) {
-            if let Some((child, _, parent)) = &self.mirror {
-                let mut payload = envelope.payload.clone();
-                payload["child_session_id"] = serde_json::json!(child);
-                if envelope.kind == "permission.requested" {
-                    let kind = EventKind::PermissionRequested;
-                    let _ = parent.publish(crate::bus::sequencer::Candidate::new(kind, payload));
-                }
+        ) && let Some((child, _, parent)) = &self.mirror
+        {
+            let mut payload = envelope.payload.clone();
+            payload["child_session_id"] = serde_json::json!(child);
+            if envelope.kind == "permission.requested" {
+                let kind = EventKind::PermissionRequested;
+                let _ = parent.publish(crate::bus::sequencer::Candidate::new(kind, payload));
             }
         }
         let kind = envelope.kind.as_str();
@@ -2076,23 +2075,23 @@ impl Emitter for PersistingEmitter {
         if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
             // The first captain message becomes the title (the store guards:
             // only when the title is still NULL).
-            if kind == "message.received" && envelope.payload["source"] != "subagent" {
-                if let Some(content) = envelope.payload["content"].as_str() {
-                    self.store
-                        .set_title(self.session_id, title_from_message(content));
-                }
+            if kind == "message.received"
+                && envelope.payload["source"] != "subagent"
+                && let Some(content) = envelope.payload["content"].as_str()
+            {
+                self.store
+                    .set_title(self.session_id, title_from_message(content));
             }
             self.store.append_event(self.session_id, envelope.clone());
-            if envelope.kind == "permission.resolved" {
-                if let Some((_, parent_id, parent)) = &self.mirror {
-                    let (store, parent_id, parent) =
-                        (self.store.clone(), *parent_id, parent.clone());
-                    tokio::spawn(async move {
-                        if store.flush().await.is_ok() {
-                            let _ = store.drain_permission_mirrors(parent_id, parent).await;
-                        }
-                    });
-                }
+            if envelope.kind == "permission.resolved"
+                && let Some((_, parent_id, parent)) = &self.mirror
+            {
+                let (store, parent_id, parent) = (self.store.clone(), *parent_id, parent.clone());
+                tokio::spawn(async move {
+                    if store.flush().await.is_ok() {
+                        let _ = store.drain_permission_mirrors(parent_id, parent).await;
+                    }
+                });
             }
         }
         self.bus.emit(envelope);
@@ -2192,11 +2191,12 @@ mod tests {
         tokio::task::spawn_blocking(move || release.wait())
             .await
             .unwrap();
-        assert!(task
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("cancelled before commit"));
+        assert!(
+            task.await
+                .unwrap()
+                .unwrap_err()
+                .contains("cancelled before commit")
+        );
         let loaded = store.load(id).await.unwrap().unwrap();
         assert!(loaded.meta.agent_overrides.is_empty());
         assert!(loaded.envelopes.is_empty());
@@ -2261,19 +2261,23 @@ mod tests {
         );
         side_connection(&dir).execute_batch("CREATE TRIGGER fail_initial AFTER INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'insert fault'); END;").unwrap();
         let failed = Ulid::generate();
-        assert!(store
-            .record_session_with_overrides(
-                failed, "/w", "p/model", false, None, None, None, &overrides
-            )
-            .await
-            .unwrap_err()
-            .contains("insert fault"));
+        assert!(
+            store
+                .record_session_with_overrides(
+                    failed, "/w", "p/model", false, None, None, None, &overrides
+                )
+                .await
+                .unwrap_err()
+                .contains("insert fault")
+        );
         assert!(store.meta(failed).await.unwrap().is_none());
-        assert!(store
-            .replay(failed, None, u64::MAX)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .replay(failed, None, u64::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2281,13 +2285,15 @@ mod tests {
         let (dir, store) = temp_store();
         let id = Ulid::generate();
         store.record_session(id, "/w", "old", false).await.unwrap();
-        assert!(store
-            .meta(id)
-            .await
-            .unwrap()
-            .unwrap()
-            .agent_overrides
-            .is_empty());
+        assert!(
+            store
+                .meta(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .agent_overrides
+                .is_empty()
+        );
         let build = AgentOverride {
             model: Some("p/build".into()),
             variant: AgentVariantOverride::Off,
@@ -2324,12 +2330,14 @@ mod tests {
         );
         assert_ne!(reset.variant, build.variant);
         reopened.clear_agent_override(id, "plan").await.unwrap();
-        assert!(!reopened
-            .agent_overrides(id)
-            .await
-            .unwrap()
-            .unwrap()
-            .contains_key("plan"));
+        assert!(
+            !reopened
+                .agent_overrides(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .contains_key("plan")
+        );
         reopened.delete(id).await.unwrap();
         assert!(reopened.agent_overrides(id).await.unwrap().is_none());
     }
@@ -2413,22 +2421,24 @@ mod tests {
         invalid_selection.resolution.model = "invalid".into();
         invalid_selection.variant = None;
         invalid_selection.reasoning_floor = 99;
-        assert!(store
-            .commit_agent_selection_with_checkpoint(
-                id,
-                "plan",
-                None,
-                invalid_selection,
-                Some(invalid),
-                vec![EventEnvelope::new(
+        assert!(
+            store
+                .commit_agent_selection_with_checkpoint(
                     id,
-                    2,
-                    EventKind::ModelChanged,
-                    serde_json::json!({})
-                )],
-            )
-            .await
-            .is_err());
+                    "plan",
+                    None,
+                    invalid_selection,
+                    Some(invalid),
+                    vec![EventEnvelope::new(
+                        id,
+                        2,
+                        EventKind::ModelChanged,
+                        serde_json::json!({})
+                    )],
+                )
+                .await
+                .is_err()
+        );
         let invalid_after = store.load(id).await.unwrap().unwrap();
         assert_eq!(
             invalid_after.meta.agent_overrides,
@@ -2517,17 +2527,19 @@ mod tests {
             EventEnvelope::new(id, 2, EventKind::ModelChanged, serde_json::json!({})),
             events[1].clone(),
         ];
-        assert!(store
-            .commit_agent_selection_with_checkpoint(
-                id,
-                "plan",
-                None,
-                failed,
-                Some(replacement),
-                failing_events
-            )
-            .await
-            .is_err());
+        assert!(
+            store
+                .commit_agent_selection_with_checkpoint(
+                    id,
+                    "plan",
+                    None,
+                    failed,
+                    Some(replacement),
+                    failing_events
+                )
+                .await
+                .is_err()
+        );
         let after = store.load(id).await.unwrap().unwrap();
         assert_eq!(after.meta.model, before.meta.model);
         assert_eq!(after.meta.model_resolution, before.meta.model_resolution);
@@ -2591,16 +2603,20 @@ mod tests {
     async fn missing_session_override_updates_and_clears_fail() {
         let (_dir, store) = temp_store();
         let id = Ulid::generate();
-        assert!(store
-            .update_agent_override(id, "build", AgentOverride::default())
-            .await
-            .unwrap_err()
-            .contains("no stored session"));
-        assert!(store
-            .clear_agent_override(id, "build")
-            .await
-            .unwrap_err()
-            .contains("no stored session"));
+        assert!(
+            store
+                .update_agent_override(id, "build", AgentOverride::default())
+                .await
+                .unwrap_err()
+                .contains("no stored session")
+        );
+        assert!(
+            store
+                .clear_agent_override(id, "build")
+                .await
+                .unwrap_err()
+                .contains("no stored session")
+        );
     }
 
     #[tokio::test]
@@ -2643,11 +2659,13 @@ mod tests {
             side_connection(&dir)
                 .execute("UPDATE sessions SET agent_overrides=?1", [raw])
                 .unwrap();
-            assert!(store
-                .meta(id)
-                .await
-                .unwrap_err()
-                .contains("agent_overrides"));
+            assert!(
+                store
+                    .meta(id)
+                    .await
+                    .unwrap_err()
+                    .contains("agent_overrides")
+            );
             assert!(store.load_for_resume(id).await.is_err());
             assert!(store.list("/w").await.unwrap().is_empty());
             assert!(store.clear_agent_override(id, "build").await.is_err());
@@ -2704,10 +2722,10 @@ mod tests {
     /// set_title command).
     async fn poll_title(store: &HistoryStore, id: Ulid) -> LoadedSession {
         for _ in 0..200 {
-            if let Some(loaded) = store.load(id).await.expect("load") {
-                if loaded.meta.title.is_some() {
-                    return loaded;
-                }
+            if let Some(loaded) = store.load(id).await.expect("load")
+                && loaded.meta.title.is_some()
+            {
+                return loaded;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -2948,11 +2966,13 @@ mod tests {
         assert_eq!(joined.id, id);
         assert!(joined.editor);
         assert!(link.is_none());
-        assert!(store
-            .meta_with_child_link(Ulid::generate())
-            .await
-            .expect("unknown meta with link")
-            .is_none());
+        assert!(
+            store
+                .meta_with_child_link(Ulid::generate())
+                .await
+                .expect("unknown meta with link")
+                .is_none()
+        );
         let (resumed, transcript, compaction) = store
             .load_for_resume(id)
             .await
@@ -2962,11 +2982,13 @@ mod tests {
         assert_eq!(transcript.len(), 1);
         assert!(compaction.is_none());
         assert!(store.meta(Ulid::generate()).await.expect("meta").is_none());
-        assert!(store
-            .load_for_resume(Ulid::generate())
-            .await
-            .expect("resume")
-            .is_none());
+        assert!(
+            store
+                .load_for_resume(Ulid::generate())
+                .await
+                .expect("resume")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -3017,11 +3039,13 @@ mod tests {
             first.as_ref().map(|link| link.status.as_str()),
             Some("done")
         );
-        assert!(store
-            .finish_child_link(child, "failed".into(), Some("late".into()), "wrong".into(),)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .finish_child_link(child, "failed".into(), Some("late".into()), "wrong".into(),)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store
                 .child_link(child)
@@ -3077,15 +3101,19 @@ mod tests {
             .consume_completions(parent, vec![child], vec![])
             .await
             .unwrap();
-        assert!(store
-            .consume_completions(parent, vec![child], vec![])
-            .await
-            .is_err());
-        assert!(store
-            .unconsumed_completions(parent)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .consume_completions(parent, vec![child], vec![])
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .unconsumed_completions(parent)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // Given a store whose events table has been destroyed underneath it
@@ -3311,10 +3339,12 @@ mod tests {
             store.meta(id).await.unwrap().unwrap().variant_override,
             None
         );
-        assert!(store
-            .set_variant(Ulid::generate(), Some(&pick("x")))
-            .await
-            .is_err());
+        assert!(
+            store
+                .set_variant(Ulid::generate(), Some(&pick("x")))
+                .await
+                .is_err()
+        );
         let listed = store.list("/w").await.expect("list");
         assert_eq!(listed[0].meta.variant, None);
     }
@@ -3364,10 +3394,12 @@ mod tests {
         let meta = store.meta(id).await.expect("meta").expect("present");
         let saved = ModelResolution::from_saved(&meta.model_resolution.expect("saved")).unwrap();
         assert_eq!(saved.bounds.context_window, 100);
-        assert!(store
-            .set_model_resolution(Ulid::generate(), &make(1))
-            .await
-            .is_err());
+        assert!(
+            store
+                .set_model_resolution(Ulid::generate(), &make(1))
+                .await
+                .is_err()
+        );
     }
 
     fn exchange(n: usize) -> Vec<ChatMessage> {
@@ -3464,13 +3496,15 @@ mod tests {
         store.record_session(id, "/w", "m", false).await.unwrap();
         store.save_transcript(id, exchange(0));
         store.flush().await.unwrap();
-        assert!(store
-            .load_for_resume(id)
-            .await
-            .unwrap()
-            .unwrap()
-            .2
-            .is_none());
+        assert!(
+            store
+                .load_for_resume(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .2
+                .is_none()
+        );
         let conn = side_connection(&dir);
         for bad in [
             "{not json".to_string(),

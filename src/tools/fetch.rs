@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 use reqwest::header::{ACCEPT, CONTENT_TYPE, LOCATION};
 use reqwest::{Client, Url};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::tools::{Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use crate::tools::{DEFAULT_MAX_OUTPUT_BYTES, Tool, ToolContext, ToolResult};
 
 pub const FETCH_DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const FETCH_MAX_TIMEOUT_SECS: u64 = 120;
@@ -644,7 +644,7 @@ async fn convert_in_child(
         .kill_on_drop(true);
     #[cfg(unix)]
     {
-        use nix::sys::resource::{setrlimit, Resource};
+        use nix::sys::resource::{Resource, setrlimit};
         // SAFETY: the closure only calls setrlimit(2), which is
         // async-signal-safe, between fork and exec.
         unsafe {
@@ -1129,10 +1129,12 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests[0].url.query(), Some("token=private"));
         assert_eq!(requests[1].url.query(), None);
-        assert!(FetchTool::new().schema()["description"]
-            .as_str()
-            .unwrap()
-            .contains("drops the original query"));
+        assert!(
+            FetchTool::new().schema()["description"]
+                .as_str()
+                .unwrap()
+                .contains("drops the original query")
+        );
     }
 
     // Given a redirect to another origin

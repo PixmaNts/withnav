@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use withnav::agent::instructions::RulesRoots;
 use withnav::session::preflight::Preflight;
 
@@ -111,11 +111,13 @@ async fn missing_or_wrong_api_lower_layers_are_not_startup_failures() {
 async fn settings_and_models_are_captured_once_and_project_agents_use_actual_scope() {
     let dir = fixture(json!({"default_agent":"local"}));
     let preflight = captured(dir.path()).await;
-    assert!(preflight
-        .check_provisional(dir.path())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        preflight
+            .check_provisional(dir.path())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let workspace = dir.path().join("project");
     std::fs::create_dir_all(workspace.join(".withnav/agents")).unwrap();
     std::fs::write(
@@ -126,12 +128,14 @@ async fn settings_and_models_are_captured_once_and_project_agents_use_actual_sco
     std::fs::write(dir.path().join("config/withnav/config.json"), "{}").unwrap();
     std::fs::write(dir.path().join("config/withnav/models.json"), "{}").unwrap();
     assert_eq!(preflight.check(&workspace).await.unwrap(), "local");
-    assert!(preflight
-        .check(dir.path())
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("unknown"));
+    assert!(
+        preflight
+            .check(dir.path())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("unknown")
+    );
 }
 
 #[tokio::test]
@@ -464,12 +468,14 @@ async fn explicit_window_sends_no_provider_requests_and_missing_window_uses_only
         .remove("context_window");
     std::fs::write(&models_path, models.to_string()).unwrap();
     captured(dir.path()).await.check(dir.path()).await.unwrap();
-    assert!(server
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .all(|r| r.method == "GET"));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method == "GET")
+    );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
@@ -694,11 +700,13 @@ async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
         error.contains("default_agent") && error.contains("invalid variant 'missing'"),
         "{error}"
     );
-    assert!(server
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .all(|r| r.method == "GET"));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method == "GET")
+    );
 }
 mod common;

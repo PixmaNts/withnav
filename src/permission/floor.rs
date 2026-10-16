@@ -440,12 +440,12 @@ fn output_targets<'a>(program: Option<&str>, words: &'a [String], opaque: bool) 
                     targets.push(value);
                 }
             }
-        } else if word.starts_with('-') {
-            if let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c)) {
-                match &word[at + 1..] {
-                    "" => targets.extend(iter.clone().next().map(String::as_str)),
-                    value => targets.push(value),
-                }
+        } else if word.starts_with('-')
+            && let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c))
+        {
+            match &word[at + 1..] {
+                "" => targets.extend(iter.clone().next().map(String::as_str)),
+                value => targets.push(value),
             }
         }
     }
@@ -1311,7 +1311,8 @@ mod tests {
             format!("python3 inspect.py \"{root}/data/withnav.db\""),
             format!("python3 inspect.py --db=\"{root}/config/config.json\""),
             // Relative to a directory the floor does not follow: the name is enough.
-            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'".to_owned(),
+            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'"
+                .to_owned(),
         ] {
             assert!(
                 matches!(bash_floor(&f.cx, &line), Floor::NamesProtected(_)),

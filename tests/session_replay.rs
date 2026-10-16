@@ -9,14 +9,14 @@ use std::time::Duration;
 use serde_json::json;
 use ulid::Ulid;
 
-use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::bus::ResumeOutcome;
+use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::server::AppState;
-use withnav::session::store::HistoryStore;
 use withnav::session::Subscription;
+use withnav::session::store::HistoryStore;
 
 mod common;
-use common::server::{create_session, post_message_ok, spawn_server, TestServerConfig};
+use common::server::{TestServerConfig, create_session, post_message_ok, spawn_server};
 use common::sse::{http_sse, spawn_mock_provider, sse_body};
 
 /// How many durable events the seeded conversation holds: past the ring.

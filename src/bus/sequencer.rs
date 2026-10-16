@@ -732,8 +732,8 @@ mod tests {
     /// assertions below.
     #[tokio::test]
     async fn accept_command_sequences_event_before_committing_and_acking() {
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Mutex;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         #[derive(Debug, Clone, PartialEq, Eq)]
         enum Step {
@@ -1006,13 +1006,14 @@ mod tests {
             payload_pointer
         );
         assert_eq!(rx.recv().await.unwrap().seq, first + 1);
-        assert!(seq
-            .commit_batch_acked(
+        assert!(
+            seq.commit_batch_acked(
                 vec![turn_candidate("lost"), turn_candidate("also lost")],
                 Box::new(|_| Box::pin(async { Err("disk full".into()) })),
             )
             .await
-            .is_err());
+            .is_err()
+        );
         assert!(rx.try_recv().is_err());
         assert_eq!(
             seq.publish_acked(turn_candidate("next")).await.unwrap(),

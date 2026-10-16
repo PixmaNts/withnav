@@ -19,8 +19,8 @@ use tower_lsp_server::ls_types::{
 };
 use tower_lsp_server::{Client, ClientSocket, LanguageServer, LspService, Server};
 
-use crate::navigator::runtime::Runtime;
 use crate::navigator::NavigatorDeps;
+use crate::navigator::runtime::Runtime;
 use protocol::{
     DiagnosticsParams, FeedbackParams, InlineCompletionParams, InlineCompletionResult,
     IntentParams, ReflexShownParams,

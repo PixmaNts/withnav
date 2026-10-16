@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;

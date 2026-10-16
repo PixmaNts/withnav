@@ -20,10 +20,10 @@ use crate::tui::{
 #[cfg(test)]
 pub(crate) use permission::test_prompt;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 pub(crate) use transcript::copy_block;
 pub(crate) use transcript::permission_sections;
@@ -349,7 +349,7 @@ fn editor_height(editor: &Editor, available_height: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use ratatui_textarea::CursorMove;
 
     #[test]

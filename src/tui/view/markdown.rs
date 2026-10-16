@@ -225,11 +225,11 @@ mod selection_tests {
             let mut map = super::super::selection::TranscriptMap::default();
             let rows = super::super::selection::rows(parsed, 60, &mut map, 0, 0);
             assert!(!map.text.contains("```"));
-            assert!(!rows.iter().any(|r| r
-                .line
-                .spans
-                .iter()
-                .any(|s| s.content.contains('\u{e000}'))));
+            assert!(
+                !rows
+                    .iter()
+                    .any(|r| r.line.spans.iter().any(|s| s.content.contains('\u{e000}')))
+            );
             assert!(map.text.contains("a    b"));
         }
         let source = "\u{e000}literal";

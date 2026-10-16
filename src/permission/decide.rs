@@ -8,11 +8,11 @@
 use std::path::{Path, PathBuf};
 
 use futures::future::BoxFuture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{
-    floor::{self, resolve_path, Floor, FloorContext},
-    rules::{literal, Effect, Rule, RuleFilter, RuleScope},
+    floor::{self, Floor, FloorContext, resolve_path},
+    rules::{Effect, Rule, RuleFilter, RuleScope, literal},
     shell::ShellCommand,
     store::{Error, PermissionStore},
 };
@@ -383,8 +383,12 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         if check != ProtectedCheck::Passed {
             return ask(
                 match &floor {
-                    Floor::NamesProtected(_) => format!("{target} is WithNav's own configuration or database and this command may change it; only your explicit request can change it"),
-                    _ => format!("{target} is WithNav's own configuration; only your explicit request can change it"),
+                    Floor::NamesProtected(_) => format!(
+                        "{target} is WithNav's own configuration or database and this command may change it; only your explicit request can change it"
+                    ),
+                    _ => format!(
+                        "{target} is WithNav's own configuration; only your explicit request can change it"
+                    ),
                 },
                 Vec::new(),
                 trace,
@@ -426,7 +430,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
                     ),
                     Vec::new(),
                     trace,
-                )
+                );
             }
         }
     }
@@ -761,12 +765,11 @@ fn evaluate(input: &Input<'_>) -> Result<Evaluation, Error> {
     let mut proposals: Vec<RuleProposal> = Vec::new();
     if !any_unsavable && items.iter().all(|item| item.rule.is_none()) {
         for item in &items {
-            if item.result == RuleResult::NoRule {
-                if let Some(proposal) = &item.proposal {
-                    if !proposals.contains(proposal) {
-                        proposals.push(proposal.clone());
-                    }
-                }
+            if item.result == RuleResult::NoRule
+                && let Some(proposal) = &item.proposal
+                && !proposals.contains(proposal)
+            {
+                proposals.push(proposal.clone());
             }
         }
     }
@@ -1034,12 +1037,14 @@ mod tests {
                     "{call:?} {decision:?}"
                 );
                 assert_eq!(asked, 0);
-                assert!(decision
-                    .trace
-                    .floor
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("credential"));
+                assert!(
+                    decision
+                        .trace
+                        .floor
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("credential")
+                );
             }
         }
     }
@@ -1674,12 +1679,14 @@ mod tests {
                     matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
                     "{line}"
                 );
-                assert!(decision
-                    .trace
-                    .floor
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("credential"));
+                assert!(
+                    decision
+                        .trace
+                        .floor
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("credential")
+                );
             }
         }
     }
@@ -1719,12 +1726,14 @@ mod tests {
                     matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
                     "{call:?}"
                 );
-                assert!(decision
-                    .trace
-                    .floor
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("unresolved"));
+                assert!(
+                    decision
+                        .trace
+                        .floor
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("unresolved")
+                );
             }
         }
         // Yolo skips the floor.

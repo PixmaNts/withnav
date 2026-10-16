@@ -34,7 +34,7 @@ pub enum LspCommand {
 }
 
 pub fn init_tracing_stderr() {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     // stdout carries LSP frames; tracing must never write into that channel.
     let _ = tracing_subscriber::registry()

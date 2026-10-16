@@ -46,7 +46,9 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
         )
         .init();
     let sentinel = "mcp-env-token-log-sentinel";
-    std::env::set_var("WITHNAV_MCP_TEST_TOKEN", sentinel);
+    // SAFETY: this binary holds this one test, and no server is started yet, so no other thread
+    // reads the environment while it changes.
+    unsafe { std::env::set_var("WITHNAV_MCP_TEST_TOKEN", sentinel) };
     let mut settings = Settings::default();
     settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"COMPOSITE":"Bearer {env:WITHNAV_MCP_TEST_TOKEN}"}}}));
     let manager = McpManager::start(&settings);
@@ -98,7 +100,8 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
     assert!(tail.ends_with("[redacted] retained tail"));
     assert!(!tail.contains(sentinel));
     manager.shutdown().await;
-    std::env::remove_var("WITHNAV_MCP_TEST_TOKEN");
+    // SAFETY: the manager is shut down, so its children no longer read the environment.
+    unsafe { std::env::remove_var("WITHNAV_MCP_TEST_TOKEN") };
     let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(
         !logs.contains(sentinel),

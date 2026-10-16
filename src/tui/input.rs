@@ -338,15 +338,17 @@ pub fn route_key(
         }
         return None;
     }
-    if !state.read_only() {
-        if let Some(action) = permission_key(key, state, ui, editor) {
-            return action;
-        }
+    if !state.read_only()
+        && let Some(action) = permission_key(key, state, ui, editor)
+    {
+        return action;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    if !state.read_only() && !ctrl && !alt {
-        if let Some(p) = state
+    if !state.read_only()
+        && !ctrl
+        && !alt
+        && let Some(p) = state
             .conversation
             .blocks
             .iter()
@@ -355,43 +357,40 @@ pub fn route_key(
                 super::state::BlockKind::Question(p) if p.answer.is_none() => Some(p),
                 _ => None,
             })
-        {
-            if !p.dismissed && editor.text().is_empty() {
-                return match key.code {
-                    KeyCode::Up => Some(Action::QuestionMove(-1)),
-                    KeyCode::Down => Some(Action::QuestionMove(1)),
-                    KeyCode::Char(' ') => Some(Action::QuestionToggle),
-                    KeyCode::Esc => Some(Action::QuestionDismiss),
-                    KeyCode::Enter if p.cursor == p.choices.options.len() => {
-                        Some(Action::QuestionCustom)
-                    }
-                    KeyCode::Enter => {
-                        Some(Action::AnswerQuestion(crate::tools::control::AskAnswer {
-                            question_call_id: p.call_id.clone(),
-                            selected: if p.choices.multiple {
-                                p.selected.clone()
-                            } else {
-                                vec![p.cursor]
-                            },
-                            custom: None,
-                        }))
-                    }
-                    _ => None,
-                };
+    {
+        if !p.dismissed && editor.text().is_empty() {
+            return match key.code {
+                KeyCode::Up => Some(Action::QuestionMove(-1)),
+                KeyCode::Down => Some(Action::QuestionMove(1)),
+                KeyCode::Char(' ') => Some(Action::QuestionToggle),
+                KeyCode::Esc => Some(Action::QuestionDismiss),
+                KeyCode::Enter if p.cursor == p.choices.options.len() => {
+                    Some(Action::QuestionCustom)
+                }
+                KeyCode::Enter => Some(Action::AnswerQuestion(crate::tools::control::AskAnswer {
+                    question_call_id: p.call_id.clone(),
+                    selected: if p.choices.multiple {
+                        p.selected.clone()
+                    } else {
+                        vec![p.cursor]
+                    },
+                    custom: None,
+                })),
+                _ => None,
+            };
+        }
+        if p.custom {
+            if key.code == KeyCode::Esc {
+                return Some(Action::QuestionDismiss);
             }
-            if p.custom {
-                if key.code == KeyCode::Esc {
-                    return Some(Action::QuestionDismiss);
-                }
-                if key.code == KeyCode::Enter && !editor.text().trim().is_empty() {
-                    let custom = editor.text().trim().to_owned();
-                    editor.clear_if_revision(editor.revision());
-                    return Some(Action::AnswerQuestion(crate::tools::control::AskAnswer {
-                        question_call_id: p.call_id.clone(),
-                        selected: p.selected.clone(),
-                        custom: Some(custom),
-                    }));
-                }
+            if key.code == KeyCode::Enter && !editor.text().trim().is_empty() {
+                let custom = editor.text().trim().to_owned();
+                editor.clear_if_revision(editor.revision());
+                return Some(Action::AnswerQuestion(crate::tools::control::AskAnswer {
+                    question_call_id: p.call_id.clone(),
+                    selected: p.selected.clone(),
+                    custom: Some(custom),
+                }));
             }
         }
     }
@@ -479,7 +478,7 @@ pub fn route_key(
                 return None;
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                return ui.selected_block.clone().map(Action::ToggleBlock)
+                return ui.selected_block.clone().map(Action::ToggleBlock);
             }
             _ => return None,
         }
@@ -908,17 +907,17 @@ pub fn route_paste(
     if ui.deny_message.is_some() && open.is_none_or(|id| ui.deny_draft(id).is_none()) {
         ui.deny_message = None;
     }
-    if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
-        if ui.overlay.is_none() {
-            let text = text.replace(['\n', '\r'], " ");
-            if message.len() + text.len() > crate::bus::event::REJECT_MESSAGE_MAX_BYTES {
-                return Some(Action::ShowNotice(
-                    crate::bus::event::REJECT_MESSAGE_LIMIT_ERROR.into(),
-                ));
-            }
-            message.push_str(&text);
-            return None;
+    if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut()
+        && ui.overlay.is_none()
+    {
+        let text = text.replace(['\n', '\r'], " ");
+        if message.len() + text.len() > crate::bus::event::REJECT_MESSAGE_MAX_BYTES {
+            return Some(Action::ShowNotice(
+                crate::bus::event::REJECT_MESSAGE_LIMIT_ERROR.into(),
+            ));
         }
+        message.push_str(&text);
+        return None;
     }
     // The palette opened by typing `/` follows the line: a paste edits it like typed keys.
     let typed_palette = ui.overlay == Some(Overlay::Commands) && ui.palette_typed;
@@ -951,9 +950,11 @@ mod tests {
                 description: "Check behavior".into(),
             },
         ];
-        assert!(commands::palette(&state)
-            .iter()
-            .any(|row| row.name == "/skills"));
+        assert!(
+            commands::palette(&state)
+                .iter()
+                .any(|row| row.name == "/skills")
+        );
         assert_eq!(
             commands::command_action("/skills", crate::tui::protocol::Mode::NextTurn),
             Some(Action::OpenOverlay(Overlay::Skills))

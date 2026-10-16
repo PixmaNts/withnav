@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 #[path = "captain_messages.rs"]
 mod captain_evidence;
 pub use captain_evidence::{
-    captain_messages, captain_messages_with_cut, delegation_with_cut, recent_with_cut,
-    RecentMessage,
+    RecentMessage, captain_messages, captain_messages_with_cut, delegation_with_cut,
+    recent_with_cut,
 };
 
 #[derive(Debug, PartialEq, Eq)]

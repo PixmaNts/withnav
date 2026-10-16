@@ -1,14 +1,14 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 use withnav::{
     tools::ToolStatus,
     tui::{
-        input::{route_key, route_paste, Editor},
+        input::{Editor, route_key, route_paste},
         protocol::{Action, ModelEntry, Overlay, SessionListEntry, SessionMetadata},
         state::{Activity, Block, BlockKind, ConnectionStatus, State, Tab, UiState},
         theme::{Theme, ThemeId},
-        view::{self, tool, RenderCache},
+        view::{self, RenderCache, tool},
     },
 };
 
@@ -245,13 +245,15 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
     assert_eq!(action, Action::OpenChild("child-session".into()));
     handle_action(&mut s, &mut ui, action);
     assert!(s.read_only());
-    assert!(route_key(
-        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        &s,
-        &mut ui,
-        &mut editor
-    )
-    .is_none());
+    assert!(
+        route_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        )
+        .is_none()
+    );
     route_paste("can't send this".into(), &s, &mut ui, &mut editor);
     assert!(editor.text().is_empty());
     let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
@@ -638,8 +640,10 @@ fn settings_row_server_error_and_stale_reload() {
     let text = render("settings-row-error-140", (140, 40), &s, &ui, &Editor::new());
     assert!(text.contains("! Must be between 1 and 64"));
     s.config.status = withnav::tui::config::SaveStatus::StaleReloaded(1);
-    assert!(screen_text(&s, &ui, (140, 40))
-        .contains("config.json changed elsewhere; reloaded · 1 still staged"));
+    assert!(
+        screen_text(&s, &ui, (140, 40))
+            .contains("config.json changed elsewhere; reloaded · 1 still staged")
+    );
 }
 #[test]
 fn empty_and_streaming() {
@@ -681,12 +685,14 @@ fn done_tools_and_reasoning() {
     terminal
         .draw(|f| view::draw(f, &s, &ui, &editor, &mut RenderCache::default()))
         .unwrap();
-    assert!(terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .any(|cell| cell.bg == Theme::default().selection_bg()));
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.bg == Theme::default().selection_bg())
+    );
 }
 #[test]
 fn errors_yield_and_connection() {
@@ -716,12 +722,14 @@ fn errors_yield_and_connection() {
     terminal
         .draw(|f| view::draw(f, &s, &ui, &editor, &mut RenderCache::default()))
         .unwrap();
-    assert!(terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .any(|cell| cell.fg == Theme::default().red));
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.fg == Theme::default().red)
+    );
     s.connection = ConnectionStatus::Reconnecting;
     s.activity = Activity::Stopped;
     s.delivery_uncertain = true;
@@ -1124,10 +1132,12 @@ fn overlays_sit_on_the_surface_with_an_accent_border() {
         .expect("popup corner");
     assert_eq!(corner.fg, theme.accent);
     assert!(buffer.content().iter().any(|cell| cell.bg == theme.surface));
-    assert!(buffer
-        .content()
-        .iter()
-        .any(|cell| cell.bg == theme.selection_bg_on_surface()));
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.bg == theme.selection_bg_on_surface())
+    );
 }
 
 #[test]
@@ -1892,9 +1902,10 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
         .find(|r| r.contains('▌') && r.contains("high"))
         .cloned();
     assert!(selected.is_some_and(|r| r.contains("default")), "{rows:#?}");
-    assert!(rows
-        .iter()
-        .any(|r| r.contains("off") && r.contains("no variant")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("off") && r.contains("no variant"))
+    );
     assert!(rows.iter().any(|r| r.contains("Start on variant")));
     // esc goes back to the models with the same one selected
     route_key(

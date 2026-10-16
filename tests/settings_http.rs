@@ -2,8 +2,8 @@ mod common;
 #[tokio::test(flavor = "current_thread")]
 async fn settings_locked_put_keeps_runtime_responsive() {
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
     use std::time::Duration;
     let dir = tempfile::tempdir().unwrap();
@@ -62,7 +62,7 @@ async fn settings_locked_put_keeps_runtime_responsive() {
 use axum::{body::Body, http::Request};
 use common::server::TestServerConfig;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 async fn request(
@@ -209,13 +209,15 @@ async fn settings_edit_validation_removal_and_stale_revision() {
     raw["subagents"]["max_concurrent"] = json!(0);
     std::fs::write(&path, raw.to_string()).unwrap();
     let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
-    assert!(current["fields"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["key"] == "subagents.max_concurrent")
-        .unwrap()["error"]
-        .is_string());
+    assert!(
+        current["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == "subagents.max_concurrent")
+            .unwrap()["error"]
+            .is_string()
+    );
     assert_eq!(
         request(
             &app,
@@ -266,8 +268,8 @@ async fn settings_gateway_base_url_never_carries_credentials() {
 #[tokio::test]
 async fn gateway_probe_never_returns_credentials_or_upstream_body() {
     use wiremock::{
-        matchers::{header, method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path},
     };
     let mock = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();

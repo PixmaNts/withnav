@@ -624,10 +624,10 @@ fn publish_compacted(
     })
     .unwrap_or(serde_json::Value::Null);
     let _ = sequencer.publish(Candidate::new(EventKind::ContextCompacted, notice));
-    if let Some(snapshot) = status.update_context(actor.context_breakdown()) {
-        if let Ok(payload) = serde_json::to_value(&snapshot) {
-            let _ = sequencer.publish(Candidate::new(EventKind::ContextUpdated, payload));
-        }
+    if let Some(snapshot) = status.update_context(actor.context_breakdown())
+        && let Ok(payload) = serde_json::to_value(&snapshot)
+    {
+        let _ = sequencer.publish(Candidate::new(EventKind::ContextUpdated, payload));
     }
 }
 

@@ -37,9 +37,11 @@ async fn extensionless_command_resolves_cmd_shim_from_child_path() {
     );
     let manager = McpManager::start(&settings);
     ready(&manager).await;
-    assert!(registry(&manager)
-        .names()
-        .contains(&"mcp__fixture__echo".into()));
+    assert!(
+        registry(&manager)
+            .names()
+            .contains(&"mcp__fixture__echo".into())
+    );
     manager.shutdown().await;
 }
 
@@ -212,7 +214,10 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let pidfile = directory.path().join("pid");
     let mut settings = Settings::default();
-    let script = format!("import subprocess,time,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); open({:?},'w').write(str(p.pid)); time.sleep(60)", pidfile.to_string_lossy());
+    let script = format!(
+        "import subprocess,time,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); open({:?},'w').write(str(p.pid)); time.sleep(60)",
+        pidfile.to_string_lossy()
+    );
     settings.set_dotted(
         "mcp",
         json!({"hang": {"command":[common::python(), "-c", script], "startup_timeout_ms":10000}}),
@@ -302,9 +307,11 @@ async fn filters_disabled_servers_and_stderr_redaction() {
     settings.set_dotted("mcp.noisy", json!({"command":[common::python(),"-c","import os,sys; sys.stderr.write(os.environ['SECRET']+' '+('x'*100000)); sys.stderr.flush()"],"env":{"SECRET":"mcp-secret-sentinel"},"startup_timeout_ms":1000}));
     let manager = McpManager::start(&settings);
     ready(&manager).await;
-    assert!(!registry(&manager)
-        .names()
-        .contains(&"mcp__fixture__slow".into()));
+    assert!(
+        !registry(&manager)
+            .names()
+            .contains(&"mcp__fixture__slow".into())
+    );
     tokio::time::timeout(Duration::from_secs(3), async {
         while manager
             .statuses()
@@ -342,9 +349,18 @@ async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
     let marker = dir.path().join("descendant-cleanup");
     let started = dir.path().join("descendant-ready");
     let launcher_pid = dir.path().join("launcher-pid");
-    let descendant = format!("import signal,time,sys;\ndef cleanup(*_):\n time.sleep(0.15)\n open({:?},'w').write('cleanup')\n sys.exit(0)\nsignal.signal(signal.SIGTERM,cleanup)\nopen({:?},'w').write('ready')\ntime.sleep(60)",marker.to_string_lossy(),started.to_string_lossy());
+    let descendant = format!(
+        "import signal,time,sys;\ndef cleanup(*_):\n time.sleep(0.15)\n open({:?},'w').write('cleanup')\n sys.exit(0)\nsignal.signal(signal.SIGTERM,cleanup)\nopen({:?},'w').write('ready')\ntime.sleep(60)",
+        marker.to_string_lossy(),
+        started.to_string_lossy()
+    );
     // The launcher exits after its child installs the handler, leaving the group alive.
-    let launcher = format!("import subprocess,time,os,sys; open({:?},'w').write(str(os.getpid())); subprocess.Popen([sys.executable,'-c',{:?}]);\nwhile not os.path.exists({:?}): time.sleep(0.01)",launcher_pid.to_string_lossy(), descendant,started.to_string_lossy());
+    let launcher = format!(
+        "import subprocess,time,os,sys; open({:?},'w').write(str(os.getpid())); subprocess.Popen([sys.executable,'-c',{:?}]);\nwhile not os.path.exists({:?}): time.sleep(0.01)",
+        launcher_pid.to_string_lossy(),
+        descendant,
+        started.to_string_lossy()
+    );
     let mut settings = Settings::default();
     settings.set_dotted(
         "mcp",

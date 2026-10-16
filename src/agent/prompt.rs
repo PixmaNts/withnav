@@ -1,8 +1,8 @@
+use crate::provider::AssistantMessage;
 use crate::provider::config::ReasoningHistory;
 use crate::provider::openai::{
     ChatMessage, ChatRequest, RequestFunction, RequestToolCall, StreamOptions, ToolDef,
 };
-use crate::provider::AssistantMessage;
 
 pub const SYSTEM_CONTRACT: &str = "\
 You are a headless Rust coding agent operating an autonomous tool loop.

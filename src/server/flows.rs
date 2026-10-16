@@ -2,18 +2,18 @@
 use super::AppState;
 use crate::flows::{
     runtime::ContextSnapshot,
-    store::{validate, Content, FlowStore, Location, StoreError},
+    store::{Content, FlowStore, Location, StoreError, validate},
 };
 use axum::{
+    Json, Router,
     body::Bytes,
     extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
-    Json, Router,
 };
 use instinct_flow::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -329,13 +329,15 @@ async fn handle(
             let parts: Vec<_> = tail.split('/').collect();
             if parts.len() >= 2 && parts[1] == "runs" && method == Method::GET {
                 if parts.len() == 3 {
-                    return ok(json!(records
-                        .read()?
-                        .into_iter()
-                        .rev()
-                        .filter(|r| r.flow_name == parts[0])
-                        .find(|r| r.run_id == parts[2])
-                        .ok_or_else(|| StoreError::reason("not_found"))?));
+                    return ok(json!(
+                        records
+                            .read()?
+                            .into_iter()
+                            .rev()
+                            .filter(|r| r.flow_name == parts[0])
+                            .find(|r| r.run_id == parts[2])
+                            .ok_or_else(|| StoreError::reason("not_found"))?
+                    ));
                 }
                 let limit = query
                     .get("limit")
@@ -609,7 +611,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("host", "127.0.0.1:8080".parse().unwrap());
         let peer = ConnectInfo("127.0.0.1:1234".parse().unwrap());
-        let text="[flow]\nversion=1\nname='test'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='hello'\n";
+        let text = "[flow]\nversion=1\nname='test'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='hello'\n";
         let content = json!({"format":"toml","toml":text,"templates":{}});
         let (_, valid) = handle(
             &state,

@@ -120,10 +120,10 @@ impl Runtime {
                 self.extend_selection();
                 self.selection.anchor = None;
                 self.selection.pointer = None;
-                if let Some((a, b)) = self.selection.range {
-                    if let Some(text) = self.cache.transcript.selected_text(a, b) {
-                        self.copy_text(&text);
-                    }
+                if let Some((a, b)) = self.selection.range
+                    && let Some(text) = self.cache.transcript.selected_text(a, b)
+                {
+                    self.copy_text(&text);
                 }
             }
             _ => return,

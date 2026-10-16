@@ -7,17 +7,17 @@ use crate::{
     agent::definitions::{AgentRoots, Agents},
     provider::{
         auth,
-        config::{load_models, ModelsConfig},
+        config::{ModelsConfig, load_models},
     },
     settings,
 };
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::HashMap, path::PathBuf};
 mod editor;
 

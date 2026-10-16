@@ -1,14 +1,14 @@
 //! Remarks use anchored metacognition; flow notes use typed safe-boundary steering.
-use super::{trigger::TriggerContext, Runtime};
+use super::{Runtime, trigger::TriggerContext};
 use crate::{
     flows::runtime::{ContextSnapshot, FlowEffects},
-    navigator::{log::PendingTrigger, TriggerKind},
+    navigator::{TriggerKind, log::PendingTrigger},
 };
 use instinct_flow::{ApplyError, BoxFuture, Event, ProposedAction};
 use serde_json::json;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Weak,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -87,11 +87,9 @@ impl FlowEffects for EditorEffects {
                         }
                         return Err(ApplyError(error));
                     }
-                    if wake {
-                        if let Some(doc) = runtime.documents.lock().await.get_mut(&uri) {
-                            doc.last_wake = Some(tokio::time::Instant::now());
-                            doc.rebase_to(&ctx.text);
-                        }
+                    if wake && let Some(doc) = runtime.documents.lock().await.get_mut(&uri) {
+                        doc.last_wake = Some(tokio::time::Instant::now());
+                        doc.rebase_to(&ctx.text);
                     }
                     pending.requested_action = Some(if wake {
                         "wake_cognition"
@@ -219,14 +217,15 @@ impl Runtime {
                 ("intent.record", json!(ctx.intent_text)),
                 (
                     "editor.open_files",
-                    json!(self
-                        .documents
-                        .lock()
-                        .await
-                        .open_buffers()
-                        .keys()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()),
+                    json!(
+                        self.documents
+                            .lock()
+                            .await
+                            .open_buffers()
+                            .keys()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                    ),
                 ),
             ] {
                 context.values.insert(
@@ -304,10 +303,13 @@ impl Runtime {
                 crate::navigator::log::DeliveryOutcome::Silent { reason: None }
             };
             pending.finish(&self.log, outcome);
-            if !failed && !skipped && !cancel.is_cancelled() && event != TriggerKind::Conversation {
-                if let Some(doc) = self.documents.lock().await.get_mut(uri) {
-                    doc.rebase();
-                }
+            if !failed
+                && !skipped
+                && !cancel.is_cancelled()
+                && event != TriggerKind::Conversation
+                && let Some(doc) = self.documents.lock().await.get_mut(uri)
+            {
+                doc.rebase();
             }
         }
         self.clear_in_flight(uri).await;

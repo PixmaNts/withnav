@@ -24,7 +24,7 @@ use crate::navigator::lsp::protocol::Remark;
 use crate::navigator::ports::{Metacognition, ModelError};
 
 use answer::tool_attempt_instead_of_answer;
-pub use answer::{parse_answer, ParsedAnswer};
+pub use answer::{ParsedAnswer, parse_answer};
 pub use tools::slice_buffer;
 use tools::{tool_def_grep, tool_def_read};
 
@@ -284,7 +284,7 @@ impl LlmCommenter {
     ) -> Result<crate::provider::AssistantMessage, ModelError> {
         use crate::provider::client::ModelClient;
         use crate::provider::openai::ChatRequest;
-        use crate::provider::{start_and_consume, StreamDelta};
+        use crate::provider::{StreamDelta, start_and_consume};
 
         let request = ChatRequest {
             model: self.resolved.model.model.clone(),

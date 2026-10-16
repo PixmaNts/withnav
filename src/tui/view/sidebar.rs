@@ -7,11 +7,11 @@ use crate::tui::{
     theme::Theme,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 /// Columns the sidebar takes, its right border included.

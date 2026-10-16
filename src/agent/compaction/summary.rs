@@ -6,15 +6,15 @@ use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    estimate_effective, loaded_skill_calls, plan, validate, Aim, Checkpoint, Compaction,
-    CompactionError, Components, Plan, SUMMARY_MAX_BYTES,
+    Aim, Checkpoint, Compaction, CompactionError, Components, Plan, SUMMARY_MAX_BYTES,
+    estimate_effective, loaded_skill_calls, plan, validate,
 };
 use crate::agent::context::message_tokens;
 use crate::error::ProviderError;
+use crate::provider::AssistantMessage;
 use crate::provider::client::ModelClient;
 use crate::provider::config::{ProviderConfig, Variant};
 use crate::provider::openai::{ChatMessage, ChatRequest, ClientCache, StreamOptions};
-use crate::provider::AssistantMessage;
 
 /// What the summarizing model is told it is doing.
 pub const SUMMARY_PROMPT: &str = "\
@@ -249,10 +249,10 @@ async fn rolling_summary(
             return Err(CompactionError::Cancelled);
         }
         let mut next = chunk_end(input.transcript, first, end, cap, &elided)?;
-        if total > 1 {
-            if let Some(progress) = input.progress {
-                progress(passes + 1, total.max(passes + 1));
-            }
+        if total > 1
+            && let Some(progress) = input.progress
+        {
+            progress(passes + 1, total.max(passes + 1));
         }
         tracing::info!(
             pass = passes + 1,
@@ -329,7 +329,7 @@ async fn rolling_summary(
                     total = total.max(passes + 2);
                 }
                 Err(error) if previous_error.is_some() => {
-                    return Err(previous_error.unwrap_or(error))
+                    return Err(previous_error.unwrap_or(error));
                 }
                 Err(error) => {
                     previous_error = Some(error);
@@ -444,7 +444,7 @@ pub fn build_summary_request(
                 return Err(CompactionError::SummaryInputTooLarge {
                     needed,
                     budget: input.source_budget,
-                })
+                });
             }
         }
     }

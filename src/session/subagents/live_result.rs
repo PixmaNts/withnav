@@ -1,5 +1,5 @@
 //! Delivered outbox text is also a durable message on the owner's stream.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use ulid::Ulid;
 
 use crate::bus::event::{EventKind, ROOT_ACTOR_ID};

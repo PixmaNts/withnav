@@ -1,10 +1,10 @@
 //! MCP tools inside sessions: shutdown order, subagent inventories and `nav run` startup.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 use withnav::server::{AppState, ServerConfig};
 
 mod common;
-use common::server::{captain_command, wait_for, TestServerConfig};
+use common::server::{TestServerConfig, captain_command, wait_for};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_response, tool_calls_chunk};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py");

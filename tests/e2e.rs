@@ -2,19 +2,19 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use withnav::agent::actor::AgentActor;
-use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use withnav::provider::config::{ProviderConfig, ReasoningHistory};
+use withnav::agent::run_loop::{AgentEvent, RunOutcome, run_agent};
 use withnav::provider::StreamDelta;
+use withnav::provider::config::{ProviderConfig, ReasoningHistory};
 use withnav::tools::bash::BashTool;
 use withnav::tools::control::AskTool;
 use withnav::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
 use withnav::tools::{Registry, ToolContext};
 
 mod common;
-use common::sse::{http_sse, spawn_responding_provider, sse_body, CapturingProvider};
+use common::sse::{CapturingProvider, http_sse, spawn_responding_provider, sse_body};
 
 fn bad_request(reason: &str) -> Vec<u8> {
     let body = format!("{{\"error\":{{\"message\":\"malformed continuation: {reason}\"}}}}");

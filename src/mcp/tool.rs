@@ -2,9 +2,9 @@
 use super::Server;
 use crate::{
     error::ToolError,
-    tools::{Tool, ToolContext, ToolErrorObj, ToolResult, ToolStatus, DEFAULT_MAX_OUTPUT_BYTES},
+    tools::{DEFAULT_MAX_OUTPUT_BYTES, Tool, ToolContext, ToolErrorObj, ToolResult, ToolStatus},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -311,11 +311,9 @@ pub(super) fn convert(
             }
         }
     }
-    if !has_text {
-        if let Some(structured) = value.get("structuredContent") {
-            let structured = super::redaction::redact_value(structured, secrets);
-            parts.push(serde_json::to_string_pretty(&structured).unwrap_or_default());
-        }
+    if !has_text && let Some(structured) = value.get("structuredContent") {
+        let structured = super::redaction::redact_value(structured, secrets);
+        parts.push(serde_json::to_string_pretty(&structured).unwrap_or_default());
     }
     let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
     if value["isError"] == true {
@@ -480,10 +478,12 @@ mod tests {
             json!({"type":"object", "properties":{"s":{"type":"string"}}})
         );
         assert!(normalize(json!({"$ref":"https://bad"})).is_err());
-        assert!(normalize(
-            json!({"$defs":{"s":{"$ref":"#/$defs/s"}},"properties":{"s":{"$ref":"#/$defs/s"}}})
-        )
-        .is_err());
+        assert!(
+            normalize(
+                json!({"$defs":{"s":{"$ref":"#/$defs/s"}},"properties":{"s":{"$ref":"#/$defs/s"}}})
+            )
+            .is_err()
+        );
         assert!(normalize(json!({"oneOf":[]})).is_err());
     }
     #[test]

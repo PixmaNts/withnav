@@ -14,10 +14,10 @@ use withnav::bus::command::ContentBlock;
 use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::tui::client::{Client, SendError};
 use withnav::tui::protocol::{ClientEvent, CreateSessionRequest, Generation, SubmitRequest};
-use withnav::tui::stream::{subscribe, EventStream};
+use withnav::tui::stream::{EventStream, subscribe};
 
 mod common;
-use common::server::{spawn_server, CuttableProxy, TestServer, TestServerConfig};
+use common::server::{CuttableProxy, TestServer, TestServerConfig, spawn_server};
 use common::sse::{http_sse, sse_body, text_chunk, tool_call_chunk};
 
 const WAIT: Duration = Duration::from_secs(15);

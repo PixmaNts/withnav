@@ -94,10 +94,10 @@ pub(super) async fn apply(
             })
             .map_err(|error| error.to_string())
     };
-    if result.is_ok() {
-        if let Some((actor, inbox)) = pending {
-            status.resolve_pending_bypass(actor, inbox);
-        }
+    if result.is_ok()
+        && let Some((actor, inbox)) = pending
+    {
+        status.resolve_pending_bypass(actor, inbox);
     }
     let _ = request.reply.send(result);
 }

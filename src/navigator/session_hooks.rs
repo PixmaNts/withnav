@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
-use crate::navigator::conversation::{ConversationFeed, SessionPost, NAVIGATOR_ACTOR_ID};
+use crate::navigator::conversation::{ConversationFeed, NAVIGATOR_ACTOR_ID, SessionPost};
 use crate::navigator::intent::IntentTool;
 use crate::provider::openai::ChatMessage;
 use crate::session::{SessionHooks, SessionSender, StartedSession, Subscription};
@@ -267,10 +267,12 @@ mod tests {
             })
             .collect();
         assert_eq!(notes.len(), 2);
-        assert!(notes
-            .iter()
-            .all(|(text, flow, _)| text.starts_with("<untrusted-flow-note>")
-                && *flow == "editor-review"));
+        assert!(
+            notes
+                .iter()
+                .all(|(text, flow, _)| text.starts_with("<untrusted-flow-note>")
+                    && *flow == "editor-review")
+        );
         assert_eq!(notes[0].2, "note");
         assert_eq!(notes[1].2, "wake");
     }

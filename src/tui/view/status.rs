@@ -3,10 +3,10 @@ use crate::tui::{
     theme::Theme,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 pub fn number(n: Option<u64>) -> String {

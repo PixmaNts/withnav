@@ -117,13 +117,11 @@ impl Service {
                 if let Some(checked) = watchdog
                     .check(judge.as_deref(), &evidence, &handle.session_cancel)
                     .await
-                {
-                    if let Err(error) = service
+                    && let Err(error) = service
                         .apply_watchdog(link.parent_id, child, generation, checked, evidence)
                         .await
-                    {
-                        tracing::error!(%child, %error, "child watchdog outcome failed");
-                    }
+                {
+                    tracing::error!(%child, %error, "child watchdog outcome failed");
                 }
             }
         });

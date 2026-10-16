@@ -14,10 +14,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use withnav::server::session::ServerConfig;
 use withnav::server::AppState;
+use withnav::server::session::ServerConfig;
 
 mod common;
 use common::server::{spawn_server, write_auth_file};
@@ -243,13 +243,13 @@ async fn collect_events_until_turn_end(resp: reqwest::Response, budget: Duration
                     let raw = buf[..idx].to_string();
                     buf.drain(..idx + 2);
                     for line in raw.lines() {
-                        if let Some(data) = line.strip_prefix("data:") {
-                            if let Ok(env) = serde_json::from_str::<Value>(data.trim()) {
-                                let is_end = env["kind"] == "turn.end";
-                                out.push(env);
-                                if is_end {
-                                    return out;
-                                }
+                        if let Some(data) = line.strip_prefix("data:")
+                            && let Ok(env) = serde_json::from_str::<Value>(data.trim())
+                        {
+                            let is_end = env["kind"] == "turn.end";
+                            out.push(env);
+                            if is_end {
+                                return out;
                             }
                         }
                     }

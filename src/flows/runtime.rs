@@ -5,13 +5,13 @@ pub use crate::agent::flow_hook::{
     RunScores,
 };
 use instinct_flow::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -299,11 +299,13 @@ mod tests {
     async fn permission_aggregation_is_separate_from_legacy_hook() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
-        assert!(store
-            .list()
-            .unwrap()
-            .iter()
-            .any(|f| f.name == "permission-default" && f.enabled == Some(true)));
+        assert!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .any(|f| f.name == "permission-default" && f.enabled == Some(true))
+        );
         without_builtin(&store);
         let runtime = FlowRuntime::new(store.clone(), Arc::new(Fake), Arc::new(NoEffects));
         assert_eq!(
@@ -362,10 +364,12 @@ mod tests {
                 .await;
             assert_eq!(matches!(result.verdict, FlowVerdict::Allow), allowed);
             assert_eq!(result.flows.len(), 2, "{:?}", result.flows);
-            assert!(result
-                .flows
-                .iter()
-                .any(|f| f.flow == "failed" && f.used_rule));
+            assert!(
+                result
+                    .flows
+                    .iter()
+                    .any(|f| f.flow == "failed" && f.used_rule)
+            );
         }
         assert!(matches!(
             runtime
@@ -468,9 +472,11 @@ mod tests {
         {
             Box::pin(async move {
                 if request.questions.contains_key("protected_requested") {
-                    assert!(!request
-                        .state
-                        .contains("SKILL_MUST_NOT_REACH_PROTECTED_CHECK"));
+                    assert!(
+                        !request
+                            .state
+                            .contains("SKILL_MUST_NOT_REACH_PROTECTED_CHECK")
+                    );
                 }
                 Ok(instinct_flow::protocol::DecisionResponse {
                     answers: request
@@ -793,7 +799,7 @@ mod tests {
     #[tokio::test]
     async fn the_decision_path_runs_a_protected_write_through_the_runtime() {
         use crate::permission::{
-            decide::{decide, ApprovedBy, Control, Input, Verdict},
+            decide::{ApprovedBy, Control, Input, Verdict, decide},
             floor::FloorContext,
             store::PermissionStore,
         };
@@ -1337,7 +1343,9 @@ mod tests {
         }
     }
     fn text(name: &str, action: &str) -> String {
-        format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\nnote='{name}'\n")
+        format!(
+            "[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\nnote='{name}'\n"
+        )
     }
     #[tokio::test]
     async fn context_collects_intent_and_leaves_missing_sources_absent() {
@@ -1361,13 +1369,15 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(values["intent.record"]
-            .value
-            .as_ref()
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("Ship it"));
+        assert!(
+            values["intent.record"]
+                .value
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("Ship it")
+        );
         assert_eq!(values["workspace.root"].value, Some(json!(dir.path())));
         assert!(values["conversation.digest"].value.is_none());
     }
@@ -1416,10 +1426,12 @@ mod tests {
     async fn cancelled_collection_is_refused() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        assert!(ContextSnapshot::default()
-            .collect(&[], &cancel, Instant::now() + Duration::from_secs(1))
-            .await
-            .is_err());
+        assert!(
+            ContextSnapshot::default()
+                .collect(&[], &cancel, Instant::now() + Duration::from_secs(1))
+                .await
+                .is_err()
+        );
     }
     #[tokio::test]
     async fn deny_wins_over_ask_and_outage_is_not_repeated() {
@@ -1459,7 +1471,7 @@ mod tests {
             let d = store.get(name, Location::Global).unwrap();
             store.delete(name, Location::Global, &d.revision).unwrap();
         }
-        let toml="[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
+        let toml = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
         store
             .save(
                 "decision",
@@ -1637,15 +1649,15 @@ impl InputSource for ContextSnapshot {
                     redacted: false,
                 });
                 value.redacted |= value.value.as_ref().is_some_and(contains_secret);
-                if let Some(Value::String(text)) = &mut value.value {
-                    if text.len() > instinct_flow::catalogue::MAX_INPUT_BYTES {
-                        let mut end = instinct_flow::catalogue::MAX_INPUT_BYTES;
-                        while !text.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        text.truncate(end);
-                        value.cut = true;
+                if let Some(Value::String(text)) = &mut value.value
+                    && text.len() > instinct_flow::catalogue::MAX_INPUT_BYTES
+                {
+                    let mut end = instinct_flow::catalogue::MAX_INPUT_BYTES;
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
                     }
+                    text.truncate(end);
+                    value.cut = true;
                 }
                 result.insert(name.clone(), value);
             }
@@ -1822,33 +1834,33 @@ impl FlowRuntime {
                 )
                 .await;
                 // The old hook retains its original ask-on-failure default.
-                if permission.is_none() && event.trigger == "tool.pre_call" {
-                    if let RunResult::Failure {
+                if permission.is_none()
+                    && event.trigger == "tool.pre_call"
+                    && let RunResult::Failure {
                         fallback_actions,
                         message,
                         kind,
                     } = &mut outcome.result
-                    {
-                        let fallback = flow.compiled.definition().fallback.as_ref().and_then(|f| {
-                            match kind {
-                                FailureKind::Timeout => f.on_timeout.as_ref(),
-                                FailureKind::ProviderError => f.on_provider_error.as_ref(),
-                                FailureKind::InvalidAnswer => f.on_invalid_answer.as_ref(),
-                                _ => None,
-                            }
-                            .or(f.on_failure.as_ref())
-                        });
-                        if fallback.is_none() {
-                            *fallback_actions = vec![ProposedAction {
-                                node_id: None,
-                                action: "ask_captain".into(),
-                                params: BTreeMap::from([(
-                                    "note".into(),
-                                    json!(format!("Flow failed: {message}")),
-                                )]),
-                            }];
-                            outcome.trace.fallback_actions = fallback_actions.clone();
+                {
+                    let fallback = flow.compiled.definition().fallback.as_ref().and_then(|f| {
+                        match kind {
+                            FailureKind::Timeout => f.on_timeout.as_ref(),
+                            FailureKind::ProviderError => f.on_provider_error.as_ref(),
+                            FailureKind::InvalidAnswer => f.on_invalid_answer.as_ref(),
+                            _ => None,
                         }
+                        .or(f.on_failure.as_ref())
+                    });
+                    if fallback.is_none() {
+                        *fallback_actions = vec![ProposedAction {
+                            node_id: None,
+                            action: "ask_captain".into(),
+                            params: BTreeMap::from([(
+                                "note".into(),
+                                json!(format!("Flow failed: {message}")),
+                            )]),
+                        }];
+                        outcome.trace.fallback_actions = fallback_actions.clone();
                     }
                 }
                 if outcome.trace.nodes.iter().any(|n| n.answer.is_some()) {

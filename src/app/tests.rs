@@ -95,15 +95,17 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
     ]);
     assert!(cli.is_ok());
     assert!(Cli::try_parse_from(["nav", "tui", "--model", "fast", "--session", "01ABC"]).is_err());
-    assert!(Cli::try_parse_from([
-        "nav",
-        "tui",
-        "--models",
-        "models.json",
-        "--url",
-        "http://localhost"
-    ])
-    .is_err());
+    assert!(
+        Cli::try_parse_from([
+            "nav",
+            "tui",
+            "--models",
+            "models.json",
+            "--url",
+            "http://localhost"
+        ])
+        .is_err()
+    );
     let help = Cli::command().render_long_help().to_string();
     assert!(help.contains("tui"));
 }

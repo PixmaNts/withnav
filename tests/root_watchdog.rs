@@ -5,7 +5,7 @@ use tokio::time::Instant;
 use withnav::session::subagents::watchdog::Verdict;
 mod common;
 use common::deadline::Deadline;
-use common::server::{collect_until, send_text, TestServerConfig};
+use common::server::{TestServerConfig, collect_until, send_text};
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
 use common::watchdog::{ConstantJudge, FakeClock};
 
@@ -172,10 +172,12 @@ async fn pause_lifecycle(mode: u8) {
             provider.requests.try_recv().is_err(),
             "recovery must await a real captain"
         );
-        assert!(service
-            .continue_child_with_token(id, id, Some(token))
-            .await
-            .is_err());
+        assert!(
+            service
+                .continue_child_with_token(id, id, Some(token))
+                .await
+                .is_err()
+        );
         service
             .send(input_command(id, "user:cli", "replacement instruction"))
             .await
@@ -221,10 +223,12 @@ async fn pause_lifecycle(mode: u8) {
             .continue_child_with_token(id, id, Some(token))
             .await
             .unwrap();
-        assert!(service
-            .continue_child_with_token(id, id, Some(token))
-            .await
-            .is_err());
+        assert!(
+            service
+                .continue_child_with_token(id, id, Some(token))
+                .await
+                .is_err()
+        );
     }
     let (request, stream) = provider
         .requests
@@ -256,16 +260,20 @@ async fn pause_lifecycle(mode: u8) {
         2,
         "each turn ends once"
     );
-    assert!(events
-        .iter()
-        .any(|e| e.payload["data"]["resolution"].is_string()));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.payload["data"]["resolution"].is_string())
+    );
     if mode == 2 {
         service.history().flush().await.unwrap();
         let saved = service.history().load(id).await.unwrap().unwrap();
         assert!(saved.transcript.iter().any(|message| matches!(message,withnav::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
-        assert!(events
-            .iter()
-            .any(|event| event.payload["data"]["captain_committed"] == true));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.payload["data"]["captain_committed"] == true)
+        );
         service.close_session(id).await.unwrap();
         service
             .create_or_resume_session(&ws, None, false, Some(id))
@@ -504,8 +512,10 @@ async fn stuck_root_settles_tool_results_without_requesting_another_step() {
     let end = events.iter().position(|e| e.kind == "turn.end").unwrap();
     assert!(post < end);
     assert!(provider.requests.try_recv().is_err());
-    assert!(events.iter().any(|e| e.payload["data"]["message"]
-        .as_str()
-        .is_some_and(|m| m.contains("Stopped by watchdog"))));
+    assert!(events.iter().any(|e| {
+        e.payload["data"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Stopped by watchdog"))
+    }));
     service.close_all().await;
 }

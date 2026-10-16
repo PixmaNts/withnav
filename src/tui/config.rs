@@ -5,7 +5,7 @@ use super::{
     theme::ThemeId,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -26,11 +26,7 @@ pub struct SettingField {
 }
 impl SettingField {
     pub fn effective(&self) -> &Value {
-        if self.set {
-            &self.value
-        } else {
-            &self.default
-        }
+        if self.set { &self.value } else { &self.default }
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -430,21 +426,21 @@ impl ConfigState {
                     gateway: None,
                 });
             }
-            if let Some(id) = key.strip_prefix("agents.") {
-                if let Some(a) = agents.iter().find(|a| a.id == id) {
-                    rows.push(ConfigRow {
-                        key: format!("{key}.mode"),
-                        write_key: String::new(),
-                        label: "Mode".into(),
-                        group,
-                        section,
-                        kind: RowKind::ReadOnly,
-                        allowed: vec![],
-                        saved: json!(a.mode),
-                        applies: String::new(),
-                        gateway: None,
-                    });
-                }
+            if let Some(id) = key.strip_prefix("agents.")
+                && let Some(a) = agents.iter().find(|a| a.id == id)
+            {
+                rows.push(ConfigRow {
+                    key: format!("{key}.mode"),
+                    write_key: String::new(),
+                    label: "Mode".into(),
+                    group,
+                    section,
+                    kind: RowKind::ReadOnly,
+                    allowed: vec![],
+                    saved: json!(a.mode),
+                    applies: String::new(),
+                    gateway: None,
+                });
             }
         }
         rows.sort_by_key(|r| {
@@ -616,16 +612,16 @@ pub fn handle(s: &mut State, ui: &mut UiState, action: ConfigAction) -> Vec<Effe
         }
         ConfigAction::Stage { key, value } => config.stage(key, value),
         ConfigAction::Revert => {
-            if config.writing.is_none() {
-                if let Some(row) = row {
-                    config.staged.remove(&row.write_key);
-                    config.field_errors.remove(&row.write_key);
-                    config.status = if config.staged.is_empty() {
-                        SaveStatus::UpToDate
-                    } else {
-                        SaveStatus::Unsaved(config.staged.len())
-                    };
-                }
+            if config.writing.is_none()
+                && let Some(row) = row
+            {
+                config.staged.remove(&row.write_key);
+                config.field_errors.remove(&row.write_key);
+                config.status = if config.staged.is_empty() {
+                    SaveStatus::UpToDate
+                } else {
+                    SaveStatus::Unsaved(config.staged.len())
+                };
             }
         }
         ConfigAction::Step(delta) => {
@@ -776,11 +772,11 @@ pub fn handle(s: &mut State, ui: &mut UiState, action: ConfigAction) -> Vec<Effe
             }
         }
         ConfigAction::TestGateway => {
-            if let Some(name) = row.and_then(|r| r.gateway) {
-                if config.testing_gateway.is_none() {
-                    config.testing_gateway = Some(name.clone());
-                    return vec![Effect::TestGateway(name)];
-                }
+            if let Some(name) = row.and_then(|r| r.gateway)
+                && config.testing_gateway.is_none()
+            {
+                config.testing_gateway = Some(name.clone());
+                return vec![Effect::TestGateway(name)];
             }
         }
     }
@@ -840,10 +836,10 @@ pub fn written(
             config.staged.remove(&key);
             config.field_errors.remove(&key);
             let mut effects = vec![];
-            if key == "tui.theme" {
-                if let Some(theme) = config.value(&key).as_str().and_then(ThemeId::from_id) {
-                    effects.push(Effect::ApplyConfigTheme(theme));
-                }
+            if key == "tui.theme"
+                && let Some(theme) = config.value(&key).as_str().and_then(ThemeId::from_id)
+            {
+                effects.push(Effect::ApplyConfigTheme(theme));
             }
             if config.staged.is_empty() {
                 config.status = SaveStatus::Written;

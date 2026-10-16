@@ -7,9 +7,9 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use super::Runtime;
+use crate::navigator::TriggerKind;
 use crate::navigator::document::text_around_line;
 use crate::navigator::metacognition::RemarkContext;
-use crate::navigator::TriggerKind;
 
 /// Lines on each side of the last edited line shown to the conversation
 /// trigger.

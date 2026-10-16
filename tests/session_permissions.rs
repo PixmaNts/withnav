@@ -6,17 +6,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
 use withnav::bus::event::EventEnvelope;
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 
 mod common;
-use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
+use common::server::{TestServerConfig, captain_command, request_json, stored_events as events};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body, text_chunk,
-    text_response as done, tool_call_chunk, tool_calls_chunk, CapturingProvider,
+    CapturingProvider, http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body,
+    text_chunk, text_response as done, tool_call_chunk, tool_calls_chunk,
 };
 
 use common::TestEnv as Env;
@@ -602,9 +602,11 @@ async fn bypass_resolves_pending_permission_once_with_bypass_provenance() {
     assert_eq!(resolved[0].payload["approved_by"], "bypass");
     let posts = events(&state, id, "tool.post_call").await;
     assert_eq!(posts.len(), 1);
-    assert!(serde_json::to_string(&posts[0].payload)
-        .unwrap()
-        .contains("bypass"));
+    assert!(
+        serde_json::to_string(&posts[0].payload)
+            .unwrap()
+            .contains("bypass")
+    );
     state.close_session(id).await.unwrap();
 }
 
@@ -1262,10 +1264,12 @@ async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_reques
         refusal.payload["operation_id"],
         accepted.operation_id.to_string()
     );
-    assert!(refusal.payload["error"]
-        .as_str()
-        .unwrap()
-        .contains("permission request"));
+    assert!(
+        refusal.payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("permission request")
+    );
     assert_eq!(provider.bodies().len(), 1, "no summary request");
     assert!(events(&state, id, "context.compacted").await.is_empty());
 }
@@ -1336,9 +1340,11 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
     wait_events(&state, id, "task.done", 2).await;
     let resolved = events(&state, id, "permission.resolved").await;
     assert_eq!(resolved.len(), 2);
-    assert!(resolved
-        .iter()
-        .all(|e| e.payload["resolution"] == "allow_once"));
+    assert!(
+        resolved
+            .iter()
+            .all(|e| e.payload["resolution"] == "allow_once")
+    );
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "from w1");
     assert_eq!(std::fs::read_to_string(&b).unwrap(), "from w2");
     let bodies = provider.bodies();
@@ -1389,17 +1395,21 @@ async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again(
     let second = nth_suspended_request(&state, id, 2).await;
     assert_ne!(first, second, "the moved destination is decided again");
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "keep");
-    assert!(std::fs::symlink_metadata(&target)
-        .unwrap()
-        .file_type()
-        .is_symlink());
+    assert!(
+        std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     let posts = events(&state, id, "tool.post_call").await;
     assert_eq!(posts.len(), 1);
     assert_eq!(posts[0].payload["status"], "error");
-    assert!(posts[0].payload["output"]
-        .as_str()
-        .unwrap()
-        .contains("nothing was written"));
+    assert!(
+        posts[0].payload["output"]
+            .as_str()
+            .unwrap()
+            .contains("nothing was written")
+    );
     assert_eq!(events(&state, id, "permission.resolved").await.len(), 1);
     assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
 

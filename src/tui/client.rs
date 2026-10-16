@@ -517,7 +517,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_scoped_calls_encode_the_id_in_the_path() {
-        use axum::{extract::OriginalUri, routing::any, Json, Router};
+        use axum::{Json, Router, extract::OriginalUri, routing::any};
         let (seen, mut paths) = tokio::sync::mpsc::unbounded_channel();
         let app = Router::new().fallback(any(move |uri: OriginalUri| {
             let seen = seen.clone();

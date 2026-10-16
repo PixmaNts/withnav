@@ -8,9 +8,9 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{sync_channel, Receiver, SyncSender},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Receiver, SyncSender, sync_channel},
     },
 };
 const MAX_RECORDS: usize = 1000;
@@ -610,9 +610,11 @@ mod tests {
         record.run_id = "after-crash".into();
         records.append(&record).unwrap();
         assert_eq!(records.read().unwrap().len(), 2);
-        assert!(std::fs::read_to_string(records.path.join("runs.jsonl"))
-            .unwrap()
-            .contains("after-crash"));
+        assert!(
+            std::fs::read_to_string(records.path.join("runs.jsonl"))
+                .unwrap()
+                .contains("after-crash")
+        );
         // A fresh writer's initial compaction repairs the incomplete row and old raw captures.
         let fresh = Records::new(temp.path(), temp.path());
         record.run_id = "after-restart".into();
@@ -661,16 +663,20 @@ mod tests {
         let last = records.summaries("test", Some("2"), 2).unwrap();
         assert_eq!(last.runs[0].run_id, "0");
         assert!(last.next_cursor.is_none());
-        assert!(records
-            .summaries("test", Some("missing"), 2)
-            .unwrap()
-            .runs
-            .is_empty());
-        assert!(records
-            .summaries("test", Some("5"), 2)
-            .unwrap()
-            .runs
-            .is_empty());
+        assert!(
+            records
+                .summaries("test", Some("missing"), 2)
+                .unwrap()
+                .runs
+                .is_empty()
+        );
+        assert!(
+            records
+                .summaries("test", Some("5"), 2)
+                .unwrap()
+                .runs
+                .is_empty()
+        );
         assert_eq!(records.summaries("test", None, 0).unwrap().runs.len(), 1);
         assert_eq!(
             records

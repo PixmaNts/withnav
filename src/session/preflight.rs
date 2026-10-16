@@ -7,8 +7,8 @@ use anyhow::Context as _;
 use crate::agent::definitions::{AgentRoots, Agents};
 use crate::agent::instructions::RulesRoots;
 use crate::provider::assignments::{AgentModel, AssignmentResolver, DefaultAgentError};
-use crate::provider::catalog::{resolve_chat, ModelCatalog};
-use crate::provider::config::{load_models, ModelsConfig};
+use crate::provider::catalog::{ModelCatalog, resolve_chat};
+use crate::provider::config::{ModelsConfig, load_models};
 use crate::provider::openai::ClientCache;
 use crate::settings::Settings;
 
@@ -151,15 +151,15 @@ impl Preflight {
                     self.models_path.display()
                 ))
             })?;
-        if let Some(variant) = &assigned.variant {
-            if !chat.variants.contains_key(variant) {
-                return Err(unusable(format!(
-                    "model '{}' has invalid variant '{variant}'; offered variants: {}",
-                    assigned.name,
-                    chat.variants.keys().cloned().collect::<Vec<_>>().join(", ")
-                ))
-                .into());
-            }
+        if let Some(variant) = &assigned.variant
+            && !chat.variants.contains_key(variant)
+        {
+            return Err(unusable(format!(
+                "model '{}' has invalid variant '{variant}'; offered variants: {}",
+                assigned.name,
+                chat.variants.keys().cloned().collect::<Vec<_>>().join(", ")
+            ))
+            .into());
         }
         crate::agent::context::ContextLimits::from_resolution(
             &assigned.name.to_string(),

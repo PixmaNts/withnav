@@ -9,11 +9,11 @@ use crate::tui::{
     theme::Theme,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 /// Columns the column takes, its left border included.

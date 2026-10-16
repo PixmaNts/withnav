@@ -20,9 +20,9 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path};
 
 use nix::errno::Errno;
-use nix::fcntl::{openat, renameat, OFlag, AT_FDCWD};
-use nix::sys::stat::{fstatat, mkdirat, Mode, SFlag};
-use nix::unistd::{unlinkat, UnlinkatFlags};
+use nix::fcntl::{AT_FDCWD, OFlag, openat, renameat};
+use nix::sys::stat::{Mode, SFlag, fstatat, mkdirat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 
 use crate::error::ToolError;
 
@@ -143,7 +143,7 @@ const DIR_FLAGS: OFlag = OFlag::O_RDONLY
 fn open_dir(path: &Path, create: bool, use_openat2: bool) -> Result<OwnedFd, ToolError> {
     #[cfg(target_os = "linux")]
     if use_openat2 {
-        use nix::fcntl::{openat2, OpenHow, ResolveFlag};
+        use nix::fcntl::{OpenHow, ResolveFlag, openat2};
         let how = OpenHow::new()
             .flags(DIR_FLAGS)
             .resolve(ResolveFlag::RESOLVE_NO_SYMLINKS);

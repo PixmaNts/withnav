@@ -1379,10 +1379,12 @@ mod tests {
         }
         // Missing fields and a wrong index type are rejected.
         assert!(serde_json::from_value::<StreamDelta>(json!({"delta_type": "text"})).is_err());
-        assert!(serde_json::from_value::<StreamDelta>(
-            json!({"delta_type": "tool_call_started", "index": "0", "name": "x"})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<StreamDelta>(
+                json!({"delta_type": "tool_call_started", "index": "0", "name": "x"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

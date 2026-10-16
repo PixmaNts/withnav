@@ -12,7 +12,7 @@ use crate::provider::assignments::{
     AgentModel, AssignedModel, AssignmentResolver, DefaultAgentError, Layer, LayerAssignment,
     LayerDisabled,
 };
-use crate::provider::config::{effective_variants, load_models, ApiKind, ModelsConfig};
+use crate::provider::config::{ApiKind, ModelsConfig, effective_variants, load_models};
 use crate::provider::model_name::ModelName;
 use crate::session::store::{AgentOverride, AgentVariantOverride, StoredSession};
 use crate::settings::{AssignmentVariant, Settings};
@@ -170,19 +170,19 @@ impl Service {
             let mut offers = BTreeMap::new();
             for model in catalog.models.values() {
                 let raw = format!("{}/{}", model.provider, model.model);
-                if let Ok(name) = ModelName::parse(&raw, &catalog) {
-                    if let Ok(resolved) = catalog.resolve_name(&name) {
-                        let cached = discovery.cached(&resolved);
-                        let tiers = cached
-                            .limits
-                            .as_ref()
-                            .and_then(|l| l.effort_tiers.as_deref());
-                        if resolved.model.variants.is_some()
-                            || resolved.provider.catalog_format.is_none()
-                            || tiers.is_some()
-                        {
-                            offers.insert(raw, effective_variants(&resolved, tiers.unwrap_or(&[])));
-                        }
+                if let Ok(name) = ModelName::parse(&raw, &catalog)
+                    && let Ok(resolved) = catalog.resolve_name(&name)
+                {
+                    let cached = discovery.cached(&resolved);
+                    let tiers = cached
+                        .limits
+                        .as_ref()
+                        .and_then(|l| l.effort_tiers.as_deref());
+                    if resolved.model.variants.is_some()
+                        || resolved.provider.catalog_format.is_none()
+                        || tiers.is_some()
+                    {
+                        offers.insert(raw, effective_variants(&resolved, tiers.unwrap_or(&[])));
                     }
                 }
             }
@@ -233,12 +233,17 @@ impl Service {
                 LayerAssignment::Disabled(reason) => entry.reason = Some(layer_reason(&reason)),
                 LayerAssignment::Enabled(assigned) => {
                     if layer != Layer::Metacognition && assigned.variant.is_some() {
-                        entry.reason = Some(format!("layer '{layer}' disabled: model '{}' does not support variants on its API", assigned.name));
+                        entry.reason = Some(format!(
+                            "layer '{layer}' disabled: model '{}' does not support variants on its API",
+                            assigned.name
+                        ));
                     } else if assigned.prefer_low
                         && !snapshot.offers.contains_key(&assigned.name.to_string())
                     {
                         entry.status = LayerStatus::Usable;
-                        entry.variant_diagnostic = Some("preferred-low unresolved: no cached provider effort tiers; runtime discovery is required");
+                        entry.variant_diagnostic = Some(
+                            "preferred-low unresolved: no cached provider effort tiers; runtime discovery is required",
+                        );
                     } else {
                         match self.assignment_variant(
                             &snapshot,
@@ -303,22 +308,22 @@ impl Service {
         let wanted = snapshot.settings.default_agent().map_err(diagnostic)?;
         crate::agent::definitions::AgentId::parse(wanted)
             .map_err(|_| diagnostic("default_agent is not a valid agent id"))?;
-        if saved.is_none() {
-            if let Some(definition) = snapshot.agents.get(wanted) {
-                let configured = snapshot
-                    .settings
-                    .agent_assignment(wanted)
-                    .map_err(diagnostic)?;
-                if configured
-                    .as_ref()
-                    .map(|a| a.model.as_str())
-                    .or(definition.model.as_deref())
-                    .is_some_and(|raw| canonical_name(raw, &snapshot.catalog).is_err())
-                {
-                    return Err(diagnostic(format!(
-                        "default_agent '{wanted}' has an invalid canonical model assignment"
-                    )));
-                }
+        if saved.is_none()
+            && let Some(definition) = snapshot.agents.get(wanted)
+        {
+            let configured = snapshot
+                .settings
+                .agent_assignment(wanted)
+                .map_err(diagnostic)?;
+            if configured
+                .as_ref()
+                .map(|a| a.model.as_str())
+                .or(definition.model.as_deref())
+                .is_some_and(|raw| canonical_name(raw, &snapshot.catalog).is_err())
+            {
+                return Err(diagnostic(format!(
+                    "default_agent '{wanted}' has an invalid canonical model assignment"
+                )));
             }
         }
         let (default_agent, fallback) = match resolver.default_agent_check(&known) {
@@ -523,17 +528,17 @@ impl Service {
         } else {
             model.variant.clone()
         };
-        if let Some(name) = &variant {
-            if !offered.contains_key(name) {
-                return Err(if !snapshot.offers.contains_key(&model.name.to_string()) {
-                    "variant offer unavailable: no cached provider effort tiers".into()
-                } else {
-                    format!(
-                        "configured variant is not offered by model '{}'",
-                        model.name
-                    )
-                });
-            }
+        if let Some(name) = &variant
+            && !offered.contains_key(name)
+        {
+            return Err(if !snapshot.offers.contains_key(&model.name.to_string()) {
+                "variant offer unavailable: no cached provider effort tiers".into()
+            } else {
+                format!(
+                    "configured variant is not offered by model '{}'",
+                    model.name
+                )
+            });
         }
         Ok(variant)
     }
@@ -633,7 +638,9 @@ fn layer_reason(reason: &LayerDisabled) -> String {
 
 fn default_agent_reason(error: DefaultAgentError) -> String {
     match error {
-        DefaultAgentError::NoUsableModel { name, .. } => format!("default_agent '{name}' has no usable model: assignment is missing, invalid, ambiguous or unavailable"),
+        DefaultAgentError::NoUsableModel { name, .. } => format!(
+            "default_agent '{name}' has no usable model: assignment is missing, invalid, ambiguous or unavailable"
+        ),
         other => other.to_string(),
     }
 }
@@ -674,7 +681,7 @@ pub(super) fn saved_selection(
         Some(_) => {
             return Err(diagnostic(
                 "saved selection provenance does not match durable identity",
-            ))
+            ));
         }
         None => None,
     };
@@ -682,12 +689,12 @@ pub(super) fn saved_selection(
         .agent_overrides
         .get(row.primary_agent.as_deref().unwrap_or("build"));
     if let Some(over) = over {
-        if let Some(requested) = &over.model {
-            if canonical_name(requested, catalog).map_err(diagnostic)? != model {
-                return Err(diagnostic(
-                    "saved model override does not match durable selection",
-                ));
-            }
+        if let Some(requested) = &over.model
+            && canonical_name(requested, catalog).map_err(diagnostic)? != model
+        {
+            return Err(diagnostic(
+                "saved model override does not match durable selection",
+            ));
         }
         let matches = match &over.variant {
             AgentVariantOverride::Inherit => true,
@@ -723,7 +730,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -836,14 +843,18 @@ mod tests {
                 let source = if overridden { "override" } else { "config" };
                 assert_eq!(build["effective"]["source"], source);
                 assert_eq!(build["effective"]["variant_source"], source);
-                assert!(build["warning"]
-                    .as_str()
-                    .unwrap()
-                    .contains("mock/combo/chat"));
-                assert!(build["warning"]
-                    .as_str()
-                    .unwrap()
-                    .contains("no usable fallback"));
+                assert!(
+                    build["warning"]
+                        .as_str()
+                        .unwrap()
+                        .contains("mock/combo/chat")
+                );
+                assert!(
+                    build["warning"]
+                        .as_str()
+                        .unwrap()
+                        .contains("no usable fallback")
+                );
                 assert!(agent(&body, "lux")["effective"].is_null());
                 assert!(!agent(&body, "lux")["warning"].is_null());
                 assert!(agent(&body, "plan")["effective"].is_null());
@@ -963,10 +974,12 @@ mod tests {
         assert_eq!(body["layers"].as_array().unwrap().len(), 3);
         assert_eq!(body["layers"][0]["status"], "usable");
         assert_eq!(body["layers"][1]["status"], "disabled");
-        assert!(body["layers"][1]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("systemone"));
+        assert!(
+            body["layers"][1]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("systemone")
+        );
         assert_eq!(body["layers"][2]["variant"], "low");
         let text = body.to_string();
         for secret in [
@@ -1111,10 +1124,12 @@ mod tests {
         let (status, body) =
             get(&state, other.path(), "agents", &format!("&session_id={id}")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("different workspace"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("different workspace")
+        );
         let (status, _) = get(
             &state,
             root.path(),
@@ -1150,10 +1165,12 @@ mod tests {
             .unwrap();
         let (status, body) = get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("no durable model identity"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("no durable model identity")
+        );
     }
 
     #[tokio::test]
@@ -1210,10 +1227,12 @@ mod tests {
             assert_eq!(body["layers"][index]["reason"], error.to_string());
         }
         assert!(body["layers"][2]["variant"].is_null());
-        assert!(body["layers"][2]["variant_diagnostic"]
-            .as_str()
-            .unwrap()
-            .contains("unresolved"));
+        assert!(
+            body["layers"][2]["variant_diagnostic"]
+                .as_str()
+                .unwrap()
+                .contains("unresolved")
+        );
     }
 
     #[tokio::test]

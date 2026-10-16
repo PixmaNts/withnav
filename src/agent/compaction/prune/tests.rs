@@ -113,9 +113,11 @@ async fn batches_share_bounded_state_and_never_score_tail_or_unpaired_calls() {
             .keys()
             .filter(|key| key.starts_with("useful"))
         {
-            assert!(request
-                .questions
-                .contains_key(&key.replace("useful", "full")));
+            assert!(
+                request
+                    .questions
+                    .contains_key(&key.replace("useful", "full"))
+            );
         }
     }
     assert_eq!(
@@ -140,14 +142,18 @@ async fn pruning_thresholds_failure_and_insufficient_savings() {
         .unwrap();
     assert!(output(&stub, 1).contains("shortened"));
     assert!(output(&stub, 1).chars().count() < 5100);
-    assert!(prune(&transcript, 0, 2, None, &fake(0.5, 0.5), &cancel)
-        .await
-        .is_none());
+    assert!(
+        prune(&transcript, 0, 2, None, &fake(0.5, 0.5), &cancel)
+            .await
+            .is_none()
+    );
     let mut failed = fake(0.0, 0.0);
     failed.fail = true;
-    assert!(prune(&transcript, 0, 2, None, &failed, &cancel)
-        .await
-        .is_none());
+    assert!(
+        prune(&transcript, 0, 2, None, &failed, &cancel)
+            .await
+            .is_none()
+    );
     assert!(
         prune(&transcript, 0, 2, None, &fake(f64::NAN, 0.0), &cancel)
             .await
@@ -240,13 +246,17 @@ async fn mutation_heads_and_pinned_errors_skills_and_references_bypass_scoring()
     let ChatMessage::Assistant { tool_calls, .. } = &projection[10] else {
         panic!("call")
     };
-    assert!(tool_calls[0]
-        .function
-        .arguments
-        .contains("write body: 8000 bytes"));
-    assert!(serde_json::to_string(&transcript)
-        .unwrap()
-        .contains(&"b".repeat(8000)));
+    assert!(
+        tool_calls[0]
+            .function
+            .arguments
+            .contains("write body: 8000 bytes")
+    );
+    assert!(
+        serde_json::to_string(&transcript)
+            .unwrap()
+            .contains(&"b".repeat(8000))
+    );
 }
 
 #[tokio::test]

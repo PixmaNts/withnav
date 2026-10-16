@@ -545,8 +545,18 @@ fn builtin_definitions() -> Vec<AgentDefinition> {
             "Cartographe · The Cartographer: on-demand diagrams of modules, dependencies and data flows",
             AgentMode::Subagent,
             include_str!("builtin/cartographe.md"),
-            ["edit", "bash", "ask", "task", "steer_subagent", "decide_subagent", "intent"]
-                .into_iter().map(|name| (name.to_string(), false)).collect(),
+            [
+                "edit",
+                "bash",
+                "ask",
+                "task",
+                "steer_subagent",
+                "decide_subagent",
+                "intent",
+            ]
+            .into_iter()
+            .map(|name| (name.to_string(), false))
+            .collect(),
             AgentAccess::Full,
         ),
         make(
@@ -554,8 +564,18 @@ fn builtin_definitions() -> Vec<AgentDefinition> {
             "Sondeur · The Deep Diver: on-demand root-cause investigation with reviewed tests and profiling",
             AgentMode::Subagent,
             include_str!("builtin/sondeur.md"),
-            ["write", "edit", "ask", "task", "steer_subagent", "decide_subagent", "intent"]
-                .into_iter().map(|name| (name.to_string(), false)).collect(),
+            [
+                "write",
+                "edit",
+                "ask",
+                "task",
+                "steer_subagent",
+                "decide_subagent",
+                "intent",
+            ]
+            .into_iter()
+            .map(|name| (name.to_string(), false))
+            .collect(),
             AgentAccess::Full,
         ),
     ]

@@ -73,10 +73,10 @@ pub(crate) fn record(record: &mut RunRecord) {
             } else {
                 None
             };
-            if let Some(path) = path {
-                if !record.redacted_event_paths.contains(&path) {
-                    record.redacted_event_paths.push(path);
-                }
+            if let Some(path) = path
+                && !record.redacted_event_paths.contains(&path)
+            {
+                record.redacted_event_paths.push(path);
             }
         }
     } else if contains_secret(&record.event.payload) {
@@ -177,27 +177,70 @@ mod tests {
     #[tokio::test]
     async fn replay_rejects_redacted_event_evidence_for_every_consumer() {
         for (gate, body, reference, missing) in [
-            ("", "type='expression'\ncondition='x == \"<redacted>\"'\n[node.inputs]\nx='event.text'\n", "event.text", true),
-            ("when='x == \"<redacted>\"'\n[flow.inputs]\nx='event.text'\n", "type='expression'\ncondition='true'\n", "event.text", true),
-            ("", "type='action'\naction='log'\n[node.params]\ntext='{x}'\n[node.inputs]\nx='event.text'\n", "event.text", true),
-            ("", "type='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='event.text'\n", "event.text", true),
-            ("", "type='expression'\ncondition='x == \"captain\"'\n[node.inputs]\nx='event.author'\n", "event.author", false),
-            ("when='x == \"captain\"'\n[flow.inputs]\nx='event.author'\n", "type='expression'\ncondition='true'\n", "event.author", false),
+            (
+                "",
+                "type='expression'\ncondition='x == \"<redacted>\"'\n[node.inputs]\nx='event.text'\n",
+                "event.text",
+                true,
+            ),
+            (
+                "when='x == \"<redacted>\"'\n[flow.inputs]\nx='event.text'\n",
+                "type='expression'\ncondition='true'\n",
+                "event.text",
+                true,
+            ),
+            (
+                "",
+                "type='action'\naction='log'\n[node.params]\ntext='{x}'\n[node.inputs]\nx='event.text'\n",
+                "event.text",
+                true,
+            ),
+            (
+                "",
+                "type='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='event.text'\n",
+                "event.text",
+                true,
+            ),
+            (
+                "",
+                "type='expression'\ncondition='x == \"captain\"'\n[node.inputs]\nx='event.author'\n",
+                "event.author",
+                false,
+            ),
+            (
+                "when='x == \"captain\"'\n[flow.inputs]\nx='event.author'\n",
+                "type='expression'\ncondition='true'\n",
+                "event.author",
+                false,
+            ),
         ] {
-            let text = format!("[flow]\nversion=1\nname='secret'\non='message.received'\nblocking=true\nbudget_ms=100\nstart=['a']\n{gate}[[node]]\nid='a'\n{body}");
-            let compiled = Definition::parse(&text).unwrap().validate(
-                &crate::flows::catalogue::catalogue(),
-                &Capabilities { images: false },
-                &BTreeMap::new(),
-            ).unwrap();
+            let text = format!(
+                "[flow]\nversion=1\nname='secret'\non='message.received'\nblocking=true\nbudget_ms=100\nstart=['a']\n{gate}[[node]]\nid='a'\n{body}"
+            );
+            let compiled = Definition::parse(&text)
+                .unwrap()
+                .validate(
+                    &crate::flows::catalogue::catalogue(),
+                    &Capabilities { images: false },
+                    &BTreeMap::new(),
+                )
+                .unwrap();
             let event = Event {
                 trigger: "message.received".into(),
                 payload: serde_json::json!({"command_id":"test","author":"captain","text":"sk-123456789012345678901234"}),
             };
-            let mut outcome = run(&compiled, &event, &Inputs, &Client, RunOptions {
-                deadline: Instant::now() + Duration::from_secs(1),
-                run_id: "test".into(),
-            }, &CancellationToken::new()).await;
+            let mut outcome = run(
+                &compiled,
+                &event,
+                &Inputs,
+                &Client,
+                RunOptions {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    run_id: "test".into(),
+                },
+                &CancellationToken::new(),
+            )
+            .await;
             let live = serde_json::to_value(&outcome.trace).unwrap();
             assert!(live.get("redacted_event_paths").is_none());
             let old: RunRecord = serde_json::from_value(live).unwrap();
@@ -241,9 +284,11 @@ mod tests {
         )
         .await;
         record(&mut outcome.trace);
-        assert!(!serde_json::to_string(&outcome.trace)
-            .unwrap()
-            .contains(secret));
+        assert!(
+            !serde_json::to_string(&outcome.trace)
+                .unwrap()
+                .contains(secret)
+        );
         assert!(
             outcome.trace.nodes[0].selected_inputs.as_ref().unwrap()["args"]
                 .captured

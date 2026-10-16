@@ -1,8 +1,8 @@
 //! Descriptor-held no-follow filesystem access; paths are never reopened after validation.
 use nix::{
-    fcntl::{open, openat, renameat, Flock, FlockArg, OFlag},
-    sys::stat::{fstat, mkdirat, Mode, SFlag},
-    unistd::{getuid, unlinkat, UnlinkatFlags},
+    fcntl::{Flock, FlockArg, OFlag, open, openat, renameat},
+    sys::stat::{Mode, SFlag, fstat, mkdirat},
+    unistd::{UnlinkatFlags, getuid, unlinkat},
 };
 use std::{
     ffi::CString,
@@ -181,10 +181,11 @@ impl Directory {
         let mut names = Vec::new();
         for entry in dir.iter() {
             let entry = entry.map_err(io)?;
-            if let Ok(name) = entry.file_name().to_str() {
-                if name != "." && name != ".." {
-                    names.push(name.into());
-                }
+            if let Ok(name) = entry.file_name().to_str()
+                && name != "."
+                && name != ".."
+            {
+                names.push(name.into());
             }
             if names.len() > 4096 {
                 return Err(std::io::Error::other("too many directory entries"));
@@ -276,7 +277,7 @@ mod tests {
     use super::*;
     #[test]
     fn private_read_refuses_nonprivate_modes_and_links() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
+        use std::os::unix::fs::{PermissionsExt, symlink};
         let temp = tempfile::tempdir().unwrap();
         let dir = Directory::open(temp.path(), false).unwrap();
         dir.write("marker", b"1").unwrap();

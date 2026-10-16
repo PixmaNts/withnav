@@ -16,13 +16,13 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::context::{estimate, message_tokens, Breakdown};
+use crate::agent::context::{Breakdown, estimate, message_tokens};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
 pub mod prune;
 mod summary;
 
-pub use summary::{build_summary_request, prepare, validate_summary, PrepareInput, Prepared};
+pub use summary::{PrepareInput, Prepared, build_summary_request, prepare, validate_summary};
 
 /// The longest summary accepted, in bytes.
 pub const SUMMARY_MAX_BYTES: usize = 8 * 1024;
@@ -72,7 +72,9 @@ pub enum CompactionError {
         "nothing to compact: everything before the protected recent turns is already summarized"
     )]
     NothingToCompact,
-    #[error("the recent turns that must stay verbatim need about {needed} tokens with the summary, more than the input budget of {budget}; choose a model with a larger context window or start a new conversation")]
+    #[error(
+        "the recent turns that must stay verbatim need about {needed} tokens with the summary, more than the input budget of {budget}; choose a model with a larger context window or start a new conversation"
+    )]
     Capacity { needed: u64, budget: u64 },
     #[error(
         "the part to summarize needs about {needed} tokens, more than the input budget of {budget}"

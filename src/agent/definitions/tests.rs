@@ -100,18 +100,20 @@ fn cartographe_write_scope_rejects_other_files_and_escapes() {
         ".withnav/charts/modules.mmd",
         ".withnav/charts/flows.mermaid",
     ] {
-        assert!(role
-            .validate_write_scope("write", &serde_json::json!({"path":path}), workspace.path())
-            .is_ok());
+        assert!(
+            role.validate_write_scope("write", &serde_json::json!({"path":path}), workspace.path())
+                .is_ok()
+        );
     }
     for path in [
         "src/main.rs",
         ".withnav/charts/../../../outside.mmd",
         ".withnav/charts/code.rs",
     ] {
-        assert!(role
-            .validate_write_scope("write", &serde_json::json!({"path":path}), workspace.path())
-            .is_err());
+        assert!(
+            role.validate_write_scope("write", &serde_json::json!({"path":path}), workspace.path())
+                .is_err()
+        );
     }
     #[cfg(unix)]
     {
@@ -119,13 +121,14 @@ fn cartographe_write_scope_rejects_other_files_and_escapes() {
         fs::create_dir_all(workspace.path().join(".withnav")).unwrap();
         std::os::unix::fs::symlink(outside.path(), workspace.path().join(".withnav/charts"))
             .unwrap();
-        assert!(role
-            .validate_write_scope(
+        assert!(
+            role.validate_write_scope(
                 "write",
                 &serde_json::json!({"path":".withnav/charts/escape.mmd"}),
                 workspace.path()
             )
-            .is_err());
+            .is_err()
+        );
     }
 }
 

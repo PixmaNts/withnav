@@ -6,17 +6,17 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::event::EventEnvelope;
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
 mod common;
-use common::server::{collect_until, send_text, TestServerConfig};
+use common::server::{TestServerConfig, collect_until, send_text};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_responding_provider, sse_body, text_chunk,
-    tool_call_chunk, CapturingProvider,
+    CapturingProvider, http_sse, spawn_capturing_provider, spawn_responding_provider, sse_body,
+    text_chunk, tool_call_chunk,
 };
 
 const SUMMARY: &str = "Goal: finish the parser.\nNext: run the tests.";
@@ -211,10 +211,12 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
         .filter(|m| m["role"] == "tool")
         .collect();
     assert_eq!(tool_outputs.len(), 1, "{text:.300}");
-    assert!(tool_outputs[0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("lorem ipsum"));
+    assert!(
+        tool_outputs[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("lorem ipsum")
+    );
     assert!(next["tools"].is_array());
     // Step budget not reset: the steps counted are the turn's, the same task.
     assert_eq!(
@@ -529,10 +531,12 @@ async fn metacognition_writes_manual_rolling_summary_and_session_can_opt_out() {
                 if index == 0 { 2 } else { 3 }
             );
             if index > 0 {
-                assert!(request["messages"][1]["content"]
-                    .as_str()
-                    .unwrap()
-                    .contains(SUMMARY.split('\n').next().unwrap()));
+                assert!(
+                    request["messages"][1]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains(SUMMARY.split('\n').next().unwrap())
+                );
             }
         }
         let notices = stored(&state, id, "context.compacted").await;
@@ -560,10 +564,11 @@ async fn a_switch_whose_summary_fails_changes_nothing() {
 
     let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
-    assert!(out
-        .error
-        .unwrap()
-        .contains("compaction before the switch failed"));
+    assert!(
+        out.error
+            .unwrap()
+            .contains("compaction before the switch failed")
+    );
     assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
     assert!(stored(&state, id, "context.compacted").await.is_empty());

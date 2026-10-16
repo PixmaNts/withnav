@@ -461,9 +461,11 @@ mod tests {
             vec![],
             None,
         );
-        assert!(!serde_json::to_string(&request)
-            .unwrap()
-            .contains("answered_by"));
+        assert!(
+            !serde_json::to_string(&request)
+                .unwrap()
+                .contains("answered_by")
+        );
     }
 
     #[test]

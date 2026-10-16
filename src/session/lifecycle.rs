@@ -336,9 +336,9 @@ mod tests {
 
     use super::*;
     use crate::agent::actor::AgentActor;
+    use crate::bus::SessionBus;
     use crate::bus::event::ROOT_ACTOR_ID;
     use crate::bus::sequencer::Sequencer;
-    use crate::bus::SessionBus;
     use crate::session::actor::start_candidate;
     use crate::session::service::tests::test_service;
     use crate::tools::{Registry, ToolContext};

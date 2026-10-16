@@ -1,7 +1,7 @@
 //! The real HTTP backend contract consumed by the editor's mocked transport.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 mod common;
-use common::server::{spawn_server, TestServerConfig};
+use common::server::{TestServerConfig, spawn_server};
 
 async fn command(
     client: &reqwest::Client,

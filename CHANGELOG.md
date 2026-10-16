@@ -9,6 +9,7 @@ requests land in `develop`.
 ### Changed
 
 - `nav` with no subcommand opens the terminal client, and takes its flags (`nav --session <id>`); `nav tui` still works.
+- TUI: typing a letter or a digit while the transcript has the focus (copy mode) goes back to the message editor and types it. A selected block is copied with ctrl+shift+c; plain `y` no longer copies.
 
 ## [0.8.0] - 2026-10-15
 

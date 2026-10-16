@@ -113,7 +113,10 @@ async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
         }
         assert!(text.contains("historical request"), "{text}");
         runtime.ui.selected_block = Some("permission:R".into());
-        assert!(runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+        assert!(runtime.selection_key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
         assert!(runtime
             .state
             .notice
@@ -159,7 +162,7 @@ async fn initial_model_catalog_preview_uses_default_variant_without_sending_an_o
 }
 
 #[tokio::test]
-async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
+async fn ctrl_shift_c_copies_a_block_and_plain_y_is_never_intercepted() {
     use crate::tui::state::{Block, BlockKind, Focus};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut runtime = Runtime::new(&options(None));
@@ -170,7 +173,11 @@ async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
     });
     runtime.ui.focus = Focus::Transcript;
     runtime.ui.selected_block = Some("permission".into());
-    assert!(runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+    assert!(!runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+    assert!(runtime.selection_key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+    )));
     assert!(runtime
         .state
         .notice

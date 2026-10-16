@@ -60,3 +60,6 @@ __pycache__/
 
 # Built user guide (mdBook); see book/
 /book/build/
+*.pending-snap
+
+.codegraph/

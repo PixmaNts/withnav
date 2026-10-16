@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
 - `nav` with no subcommand opens the terminal client, and takes its flags (`nav --session <id>`); `nav tui` still works.
 
 ## [0.8.0] - 2026-10-15

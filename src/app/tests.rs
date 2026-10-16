@@ -153,6 +153,23 @@ fn bogus_subcommand_is_error() {
     assert!(result.is_err());
 }
 
+#[test]
+fn bare_nav_opens_the_terminal_client() {
+    let Commands::Tui(args) = Cli::try_parse_from(["nav"]).unwrap().into_command() else {
+        panic!("not the tui command");
+    };
+    assert!(args.session.is_none());
+    let Commands::Tui(args) = Cli::try_parse_from(["nav", "--session", "01ABC"])
+        .unwrap()
+        .into_command()
+    else {
+        panic!("not the tui command");
+    };
+    assert_eq!(args.session.as_deref(), Some("01ABC"));
+    assert!(Cli::try_parse_from(["nav", "--model", "x", "run"]).is_err());
+    assert!(Cli::try_parse_from(["nav", "tui", "--session", "01ABC"]).is_ok());
+}
+
 // --- event_to_ui render-parity ---
 
 use crate::bus::event::{

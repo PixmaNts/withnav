@@ -57,9 +57,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: PermissionCommand,
     },
+    /// Run one task and exit.
     Run(RunArgs),
+    /// The session server alone (HTTP and SSE).
     Serve(ServeArgs),
+    /// Store API keys.
     Auth(AuthArgs),
+    /// Terminal chat client; what `nav` runs when no command is given.
     Tui(TuiArgs),
     /// Serves the browser client of the conversation and opens it.
     Web(WebArgs),

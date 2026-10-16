@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::ProviderError;
 use crate::provider::model_name::ModelNameError;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn catalog() -> ModelsConfig {
     ModelsConfig::parse(&json!({
@@ -374,9 +374,11 @@ fn duplicate_identities_are_ambiguous_and_legacy_keys_are_not_resolvable() {
         other.provider = "inception".into();
         catalog.models.insert("other-provider".into(), other);
         assert!(catalog.resolve_name(&name).is_err());
-        assert!(catalog
-            .resolve_name(&ModelName::parse("inception/cc/chat", &catalog).unwrap())
-            .is_err());
+        assert!(
+            catalog
+                .resolve_name(&ModelName::parse("inception/cc/chat", &catalog).unwrap())
+                .is_err()
+        );
     }
 }
 
@@ -518,10 +520,12 @@ fn malformed_assignment_is_isolated_and_preserved_with_siblings() {
     let settings = crate::settings::load(dir.path()).unwrap();
     assert!(settings.layer_assignment(Layer::Reflex).is_err());
     assert!(settings.agent_assignment("bad").is_err());
-    assert!(settings
-        .layer_assignment(Layer::Metacognition)
-        .unwrap()
-        .is_some());
+    assert!(
+        settings
+            .layer_assignment(Layer::Metacognition)
+            .unwrap()
+            .is_some()
+    );
     assert!(settings.agent_assignment("build").unwrap().is_some());
     crate::settings::save(dir.path(), &settings).unwrap();
     let saved: Value =

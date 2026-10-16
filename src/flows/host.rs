@@ -182,7 +182,9 @@ mod tests {
             "note='guard'\n"
         };
         super::super::store::Content::Toml {
-            toml: format!("[flow]\nversion=1\nname='guard'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n{params}"),
+            toml: format!(
+                "[flow]\nversion=1\nname='guard'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n{params}"
+            ),
             templates: BTreeMap::new(),
         }
     }
@@ -255,11 +257,13 @@ mod tests {
         let generation: serde_json::Value =
             serde_json::from_str(&dir.read(&marker, 1024, true).unwrap()).unwrap();
         assert_eq!(generation["generation"], 3);
-        assert!(time::OffsetDateTime::parse(
-            generation["reloaded_at"].as_str().unwrap(),
-            &time::format_description::well_known::Rfc3339
-        )
-        .is_ok());
+        assert!(
+            time::OffsetDateTime::parse(
+                generation["reloaded_at"].as_str().unwrap(),
+                &time::format_description::well_known::Rfc3339
+            )
+            .is_ok()
+        );
     }
     #[tokio::test]
     async fn independent_hosts_revoke_workspace_runs_even_when_reload_is_invalid() {

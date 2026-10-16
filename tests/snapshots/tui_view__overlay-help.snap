@@ -26,7 +26,7 @@ expression: snapshot
             │ up / down               select transcript block                          │            
             │ drag permission         copy full review; o once / a always / r reject a │            
             │ drag / double-click     select text / word; release copies via OSC 52    │            
-            │ y / ctrl+shift+c        y copies; multi-block selections group sender na │────────────
+            │ ctrl+shift+c            multi-block selections group sender names        │────────────
             │ shift+drag              native selection; OSC 52: tmux set-clipboard on  │n 31.2k tok 
             │                                                                          │───────────┐
  alt+1…9 swi│ esc close                                                                │           │

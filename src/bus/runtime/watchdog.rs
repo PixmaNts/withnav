@@ -1,7 +1,7 @@
 //! A progress doubt holds the next provider boundary, not a human interaction.
 pub use crate::bus::event::PauseToken;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;

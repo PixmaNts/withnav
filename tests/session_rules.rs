@@ -10,8 +10,8 @@ use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
 use withnav::server::AppState;
 
 mod common;
-use common::server::{collect_until, TestServerConfig};
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
+use common::server::{TestServerConfig, collect_until};
+use common::sse::{CapturingProvider, http_sse, spawn_capturing_provider, sse_body, text_chunk};
 
 struct Env {
     _tmp: tempfile::TempDir,
@@ -132,9 +132,11 @@ async fn the_rules_message_follows_the_contract_and_precedes_history() {
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
     assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
-    assert!(sent[0]
-        .1
-        .starts_with("You are a headless Rust coding agent"));
+    assert!(
+        sent[0]
+            .1
+            .starts_with("You are a headless Rust coding agent")
+    );
     let rules = &sent[2].1;
     let global = rules
         .find(&rules_label(&env.home.join(".agents/AGENTS.md")))

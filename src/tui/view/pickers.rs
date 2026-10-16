@@ -2,15 +2,15 @@ use super::text::{columns, fit_end as fit, pad};
 use crate::tui::{
     commands,
     protocol::{ModelEntry, Overlay},
-    state::{Activity, State, UiState, VariantPick, NO_VARIANT},
+    state::{Activity, NO_VARIANT, State, UiState, VariantPick},
     theme::{Theme, ThemeId},
 };
 use ratatui::{
+    Frame,
     layout::{Alignment, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
@@ -427,7 +427,7 @@ fn keys_line(overlay: Overlay, width: usize) -> String {
             return fit(
                 "↑↓ choose · enter assigned model · F2 override · esc close",
                 width,
-            )
+            );
         }
         Overlay::Skills => &["↑↓ move", "enter fill draft", "esc close"],
         Overlay::Sessions => &["↑↓ move", "enter open", "ctrl+d delete", "esc close"],
@@ -649,7 +649,7 @@ fn theme_row(entry: ThemeId, current: ThemeId, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod skill_tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn skills_picker_renders_on_a_narrow_terminal() {
@@ -683,7 +683,7 @@ mod skill_tests {
 #[cfg(test)]
 mod size_tests {
     use super::*;
-    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     const OVERLAYS: [Overlay; 9] = [
         Overlay::Agents,

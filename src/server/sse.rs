@@ -18,8 +18,8 @@ use futures::stream::{self, Stream, StreamExt};
 use std::convert::Infallible;
 use ulid::Ulid;
 
-use crate::bus::event::EventEnvelope;
 use crate::bus::ResumeOutcome;
+use crate::bus::event::EventEnvelope;
 use crate::error::ServerError;
 use crate::server::routes::error_response;
 use crate::server::session::AppState;

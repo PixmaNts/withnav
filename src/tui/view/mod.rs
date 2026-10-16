@@ -1,6 +1,7 @@
 //! Draws the terminal UI without mutating the conversation projection.
 mod config;
 mod header;
+mod hints;
 mod markdown;
 pub mod panel;
 mod permission;
@@ -19,14 +20,18 @@ use crate::tui::{
 #[cfg(test)]
 pub(crate) use permission::test_prompt;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 pub(crate) use transcript::copy_block;
 pub(crate) use transcript::permission_sections;
 
+use hints::{
+    ARCHIVE, CHILD_PAUSED, CHILD_TRANSCRIPT, COPY_MODE, IDLE, PERMISSION, PERMISSION_ONCE,
+    QUESTION, QUESTION_CUSTOM, REJECT_MESSAGE, SUBAGENTS, TYPING, WATCHDOG_PAUSED,
+};
 /// Parsed markdown, one cache per tab conversation: block ids are only unique within a session, so
 /// two tabs never share an entry.
 #[derive(Debug, Default)]
@@ -80,198 +85,105 @@ fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>>
     spans
 }
 
-/// The keys that apply now: a permission prompt's while one waits for an answer (all three
-/// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
-/// else the everyday ones.
-fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
+/// The situation the key bar describes. `key_context` tells which one applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyContext {
+    Archive,
+    WatchdogPaused,
+    /// A child transcript whose agent waits for `continue`.
+    ChildPaused,
+    ChildTranscript,
+    /// The transcript has the focus: keys select and copy.
+    CopyMode,
+    Subagents,
+    Question,
+    QuestionCustom,
+    /// A deny message is being typed for the open permission request.
+    RejectMessage,
+    /// An open permission request with no reusable approval offered.
+    PermissionOnce,
+    Permission,
+    Idle,
+    Typing,
+}
+
+impl Hints {
+    const fn new(hints: &'static [&'static str], required: usize) -> Self {
+        Self { hints, required }
+    }
+}
+
+/// Which situation the key bar describes, the first that applies in this order.
+fn key_context(state: &State, ui: &UiState, editor: &Editor) -> KeyContext {
+    use crate::tui::state::{BlockKind, ChildStatus, Focus};
+    use KeyContext::*;
+    let empty = editor.text().is_empty();
+    let open = state.open_permission();
     if state.archive() {
-        return &[Hints {
-            hints: &[
-                "alt+w close archive",
-                "drag copy text",
-                "y copy block",
-                "page↑/↓ scroll",
-            ],
-            required: 1,
-        }];
+        return Archive;
     }
-    if state.watchdog_paused && state.open_permission().is_none() {
-        return &[Hints {
-            hints: &["alt+c continue", "esc stop"],
-            required: 1,
-        }];
-    }
-    if !state.read_only()
-        && ui.focus == crate::tui::state::Focus::Transcript
-        && state.open_permission().is_none()
-    {
-        return &[Hints {
-            hints: &[
-                "y copy block",
-                "drag copy text",
-                "shift+drag native",
-                "shift+tab write",
-                "f1 help",
-            ],
-            required: 1,
-        }];
-    }
-    if state.archive() {
-        return &[Hints {
-            hints: &[
-                "alt+w close archive",
-                "drag copy text",
-                "y copy block",
-                "page↑/↓ scroll",
-            ],
-            required: 1,
-        }];
+    if state.watchdog_paused && open.is_none() {
+        return WatchdogPaused;
     }
     if state.read_only() {
-        if matches!(
-            state.active_child_status(),
-            crate::tui::state::ChildStatus::OutOfSteps | crate::tui::state::ChildStatus::Doubt
-        ) {
-            return &[Hints {
-                hints: &[
-                    "alt+c continue",
-                    "alt+w parent",
-                    "alt+s subagents",
-                    "esc stop",
-                ],
-                required: 1,
-            }];
-        }
-        return &[Hints {
-            hints: &[
-                "alt+w parent",
-                "drag copy text",
-                "y copy block",
-                "alt+s subagents",
-                "page↑/↓ scroll",
-                "esc stop",
-                "f1 help",
-            ],
-            required: 0,
-        }];
+        return match state.active_child_status() {
+            ChildStatus::OutOfSteps | ChildStatus::Doubt => ChildPaused,
+            _ => ChildTranscript,
+        };
     }
-    if !state.children.is_empty() && state.open_permission().is_none() && editor.text().is_empty() {
-        return &[Hints {
-            hints: &[
-                "alt+s subagents",
-                "tab build/plan",
-                "drag copy text",
-                "ctrl+p palette",
-                "alt+1…9 tabs",
-                "esc stop",
-                "f1 help",
-            ],
-            required: 1,
-        }];
+    if ui.focus == Focus::Transcript && open.is_none() {
+        return CopyMode;
+    }
+    if !state.children.is_empty() && open.is_none() && empty {
+        return Subagents;
     }
     // An answered request takes no keys: the usual hints come back.
-    let answerable = state
-        .open_permission()
-        .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
-    let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
-    if answerable.is_none() && !state.read_only() {
-        if let Some(p) = state
+    let answerable =
+        open.filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
+    let Some(open) = answerable else {
+        let question = state
             .conversation
             .blocks
             .iter()
             .rev()
             .find_map(|b| match &b.kind {
-                crate::tui::state::BlockKind::Question(p) if p.answer.is_none() => Some(p),
+                BlockKind::Question(p) if p.answer.is_none() => Some(p),
                 _ => None,
-            })
-        {
-            if !p.dismissed && editor.text().is_empty() {
-                return &[Hints {
-                    hints: &["↑↓ move", "space select", "enter Send", "esc plain typing"],
-                    required: 4,
-                }];
-            }
-            if p.custom {
-                return &[Hints {
-                    hints: &["enter Send", "esc plain typing"],
-                    required: 2,
-                }];
-            }
-        }
-    }
-    match (answerable, draft) {
-        (Some(_), Some(_)) => &[
-            Hints {
-                hints: &["enter reject with this message", "esc reject without one"],
-                required: 2,
-            },
-            Hints {
-                hints: &["enter reject", "esc no message"],
-                required: 2,
-            },
-            Hints {
-                hints: &["enter reject", "esc omit"],
-                required: 2,
-            },
-        ],
+            });
+        return match question {
+            Some(p) if !p.dismissed && empty => Question,
+            Some(p) if p.custom => QuestionCustom,
+            _ if empty => Idle,
+            _ => Typing,
+        };
+    };
+    match (ui.deny_draft(&open.request_id), empty) {
+        (Some(_), _) => RejectMessage,
         // Without a server-supplied label, no reusable approval is offered.
-        (Some(open), None) if editor.text().is_empty() && !permission::offers_always(open) => &[
-            Hints {
-                hints: &["o once", "r reject", "esc stop", "ctrl+p palette"],
-                required: 2,
-            },
-            Hints {
-                hints: &["o once", "r reject", "esc stop"],
-                required: 2,
-            },
-            Hints {
-                hints: &["o", "r"],
-                required: 2,
-            },
-        ],
-        (Some(_), None) if editor.text().is_empty() => &[
-            Hints {
-                hints: &[
-                    "o once",
-                    "a always",
-                    "r reject",
-                    "esc stop",
-                    "ctrl+p palette",
-                ],
-                required: 3,
-            },
-            Hints {
-                hints: &["o once", "a always", "r reject", "esc stop"],
-                required: 3,
-            },
-            Hints {
-                hints: &["o", "a", "r"],
-                required: 3,
-            },
-        ],
-        _ if editor.text().is_empty() => &[Hints {
-            hints: &[
-                "tab build/plan",
-                "ctrl+p palette",
-                "alt+1…9 tabs",
-                "/model",
-                "/compact",
-                "esc stop",
-                "alt+r panel",
-                "f1 help",
-            ],
-            required: 0,
-        }],
-        _ => &[Hints {
-            hints: &[
-                "enter send",
-                "alt+enter newline",
-                "ctrl+p palette",
-                "esc stop",
-                "f1 help",
-            ],
-            required: 0,
-        }],
+        (None, true) if !permission::offers_always(open) => PermissionOnce,
+        (None, true) => Permission,
+        (None, false) => Typing,
+    }
+}
+
+/// The keys that apply now: a permission prompt's while one waits for an answer (all three
+/// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
+/// else the everyday ones.
+fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
+    match key_context(state, ui, editor) {
+        KeyContext::Archive => ARCHIVE,
+        KeyContext::WatchdogPaused => WATCHDOG_PAUSED,
+        KeyContext::ChildPaused => CHILD_PAUSED,
+        KeyContext::ChildTranscript => CHILD_TRANSCRIPT,
+        KeyContext::CopyMode => COPY_MODE,
+        KeyContext::Subagents => SUBAGENTS,
+        KeyContext::Question => QUESTION,
+        KeyContext::QuestionCustom => QUESTION_CUSTOM,
+        KeyContext::RejectMessage => REJECT_MESSAGE,
+        KeyContext::PermissionOnce => PERMISSION_ONCE,
+        KeyContext::Permission => PERMISSION,
+        KeyContext::Idle => IDLE,
+        KeyContext::Typing => TYPING,
     }
 }
 
@@ -437,7 +349,7 @@ fn editor_height(editor: &Editor, available_height: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use ratatui_textarea::CursorMove;
 
     #[test]

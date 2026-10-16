@@ -6,7 +6,7 @@ use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::actor::AgentActor;
-use crate::bus::event::{EventKind, SessionStart, ROOT_ACTOR_ID};
+use crate::bus::event::{EventKind, ROOT_ACTOR_ID, SessionStart};
 use crate::bus::sequencer::Candidate;
 use crate::provider::config::ResolvedModel;
 use crate::tools::{Registry, ToolContext};

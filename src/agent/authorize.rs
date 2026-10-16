@@ -6,14 +6,14 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use futures::future::BoxFuture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::actor::AgentActor;
 use crate::agent::flow_hook::{
-    captain_messages_with_cut, delegation_with_cut, recent_with_cut, FlowVerdict,
-    PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule, RunScores,
-    ToolCallContext, ToolCallFlows, ValidatedSkill,
+    FlowVerdict, PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
+    RunScores, ToolCallContext, ToolCallFlows, ValidatedSkill, captain_messages_with_cut,
+    delegation_with_cut, recent_with_cut,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
@@ -22,7 +22,7 @@ use crate::permission::{
         RuleProposal, RuleResult, Verdict,
     },
     decisions::{self, CallSnapshot, Outcome},
-    floor::{location, resolve_path, Floor, FloorContext, Location},
+    floor::{Floor, FloorContext, Location, location, resolve_path},
     rules::{Effect, RuleOrigin, RuleScope},
     shell,
 };
@@ -592,12 +592,16 @@ fn flow_trace(decision: &Decision) -> Option<Value> {
     if !decision.trace.flow_runs.is_empty() {
         trace.insert(
             "flows".into(),
-            json!(decision
-                .trace
-                .flow_runs
-                .iter()
-                .map(|run| json!({"flow": run.flow, "run_id": run.run_id, "scores": run.scores}))
-                .collect::<Vec<_>>()),
+            json!(
+                decision
+                    .trace
+                    .flow_runs
+                    .iter()
+                    .map(
+                        |run| json!({"flow": run.flow, "run_id": run.run_id, "scores": run.scores})
+                    )
+                    .collect::<Vec<_>>()
+            ),
         );
     }
     (!trace.is_empty()).then_some(Value::Object(trace))

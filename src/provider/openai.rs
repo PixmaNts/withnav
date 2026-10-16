@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ProviderError;
-use crate::provider::config::{ProviderConfig, Variant, RESERVED_VARIANT_KEYS};
 use crate::provider::Usage;
+use crate::provider::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {

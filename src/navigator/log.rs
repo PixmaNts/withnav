@@ -445,8 +445,9 @@ mod tests {
         let a = new_ulid_string();
         let b = new_ulid_string();
         assert_ne!(a, b);
-        assert!(a
-            .chars()
-            .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()));
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+        );
     }
 }

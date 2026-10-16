@@ -9,8 +9,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use super::embedded::{check_health, resolve_workspace, EmbeddedServer};
-use super::{TuiArgs, EXIT_DONE};
+use super::embedded::{EmbeddedServer, check_health, resolve_workspace};
+use super::{EXIT_DONE, TuiArgs};
 
 /// Environment variable holding the bearer token of a server given by `--url`.
 pub const TOKEN_ENV: &str = "WITHNAV_SERVER_TOKEN";
@@ -26,7 +26,7 @@ pub fn log_path() -> Option<PathBuf> {
 /// screen belongs to the UI. If the file cannot be opened, logging is off.
 /// The token and request headers are never logged by this crate.
 pub fn init_logging() {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
     let Some(file) = log_path().and_then(|path| open_log(&path).ok()) else {
         return;
     };

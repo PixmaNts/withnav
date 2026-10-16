@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use withnav::server::AppState;
 mod common;
 use common::deadline::Deadline;
@@ -475,12 +475,16 @@ async fn queued_captain_without_result_preserves_running_turn_and_budget() {
         .unwrap();
     assert!(request.contains("next turn captain"));
     let events = replay(&state, parent).bounded(file!(), line!()).await;
-    assert!(events
-        .iter()
-        .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "done"));
-    assert!(!events
-        .iter()
-        .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "interrupted"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "done")
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "interrupted")
+    );
     state.close_all().bounded(file!(), line!()).await;
     drop(stream);
 }
@@ -557,9 +561,11 @@ async fn queued_captain_precedes_mid_turn_result_steer() {
         })
         .unwrap();
     assert!(captain < notice);
-    assert!(messages
-        .iter()
-        .any(|m| m["role"] == "tool" && m["tool_call_id"] == "glob"));
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["role"] == "tool" && m["tool_call_id"] == "glob")
+    );
     state.close_all().bounded(file!(), line!()).await;
     drop(stream);
 }
@@ -633,11 +639,13 @@ async fn accepted_guidance_prevents_obsolete_final_response_terminalization() {
             .as_deref(),
         Some("revised final")
     );
-    assert!(state
-        .steer_child(parent, child, "late", false)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        state
+            .steer_child(parent, child, "late", false)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     state.close_all().bounded(file!(), line!()).await;
     drop(stream);
 }
@@ -835,33 +843,41 @@ async fn parked_permission_queues_steer_and_interrupt_cancels_without_running_ca
     .bounded(file!(), line!())
     .await
     .unwrap();
-    assert!(state
-        .steer_child(other, child, "foreign", false)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
-    assert!(state
-        .run_command(child, "compact", "")
-        .bounded(file!(), line!())
-        .await
-        .is_err());
-    assert!(state
-        .run_command(child, "model", "default")
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        state
+            .steer_child(other, child, "foreign", false)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
+    assert!(
+        state
+            .run_command(child, "compact", "")
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
+    assert!(
+        state
+            .run_command(child, "model", "default")
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     state
         .steer_child(parent, child, "queued steer", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        provider.requests.recv()
-    )
-    .bounded(file!(), line!())
-    .await
-    .is_err());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            provider.requests.recv()
+        )
+        .bounded(file!(), line!())
+        .await
+        .is_err()
+    );
     state
         .steer_child(parent, child, "replace pending", true)
         .bounded(file!(), line!())
@@ -892,11 +908,13 @@ async fn parked_permission_queues_steer_and_interrupt_cancels_without_running_ca
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(state
-        .steer_child(parent, child, "too late", false)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        state
+            .steer_child(parent, child, "too late", false)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     state.close_all().bounded(file!(), line!()).await;
     drop(stream);
 }
@@ -966,9 +984,11 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
             assert_eq!(starts, 1);
         } else {
             assert_eq!(starts, 2);
-            assert!(events
-                .iter()
-                .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "interrupted"));
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "interrupted")
+            );
         }
         state.close_all().bounded(file!(), line!()).await;
         drop(stream);
@@ -1038,18 +1058,22 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_captain_goes_fi
     stream.send(text_chunk("result")).unwrap();
     drop(stream);
     await_outbox_entry(&state, parent, child).await;
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        provider.requests.recv()
-    )
-    .bounded(file!(), line!())
-    .await
-    .is_err());
-    assert!(!replay(&state, parent)
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            provider.requests.recv()
+        )
         .bounded(file!(), line!())
         .await
-        .iter()
-        .any(|e| e.kind == "permission.resolved"));
+        .is_err()
+    );
+    assert!(
+        !replay(&state, parent)
+            .bounded(file!(), line!())
+            .await
+            .iter()
+            .any(|e| e.kind == "permission.resolved")
+    );
     state
         .send(common::server::captain_command(
             parent,

@@ -159,9 +159,11 @@ impl Service {
     /// Graceful shutdown: stop every active session (each one's fence emits
     /// its `session.end`), then shut the MCP servers down and return so axum
     /// finishes draining. Sessions stop first: an agent still running during
-    /// MCP cleanup could go on to its next queued tool call.
+    /// MCP cleanup could go on to its next queued tool call. The status bridge
+    /// stops with the sessions: nothing is left to tell.
     pub async fn close_all(&self) {
         self.stop_all_sessions().await;
+        self.mcp_bridge.shutdown().await;
         self.mcp.shutdown().await;
     }
 
@@ -336,9 +338,9 @@ mod tests {
 
     use super::*;
     use crate::agent::actor::AgentActor;
+    use crate::bus::SessionBus;
     use crate::bus::event::ROOT_ACTOR_ID;
     use crate::bus::sequencer::Sequencer;
-    use crate::bus::SessionBus;
     use crate::session::actor::start_candidate;
     use crate::session::service::tests::test_service;
     use crate::tools::{Registry, ToolContext};

@@ -8,15 +8,15 @@ use std::sync::Arc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::document::reanchor_line;
-use crate::navigator::log::{excerpt, DeliveryOutcome, LogRecord, PendingTrigger};
-use crate::navigator::lsp::protocol::{RemarkNotification, RemarkParams};
-use crate::navigator::metacognition::{RemarkContext, HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
-use crate::navigator::ports::ModelError;
 use crate::navigator::TriggerKind;
+use crate::navigator::document::reanchor_line;
+use crate::navigator::log::{DeliveryOutcome, LogRecord, PendingTrigger, excerpt};
+use crate::navigator::lsp::protocol::{RemarkNotification, RemarkParams};
+use crate::navigator::metacognition::{HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS, RemarkContext};
+use crate::navigator::ports::ModelError;
 
-use super::trigger::TriggerContext;
 use super::Runtime;
+use super::trigger::TriggerContext;
 
 impl Runtime {
     /// Delivers a `remark` branch: calls the metacognition with the rendered

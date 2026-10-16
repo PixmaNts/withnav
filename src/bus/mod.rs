@@ -92,12 +92,12 @@ impl EventRing {
         if !kind.is_durable() {
             return;
         }
-        if self.events.len() == RING_CAP {
-            if let Some(evicted) = self.events.pop_front() {
-                self.last_evicted_durable_seq =
-                    Some(self.last_evicted_durable_seq.unwrap_or(0).max(evicted.seq));
-                debug_assert!(envelope.seq > evicted.seq);
-            }
+        if self.events.len() == RING_CAP
+            && let Some(evicted) = self.events.pop_front()
+        {
+            self.last_evicted_durable_seq =
+                Some(self.last_evicted_durable_seq.unwrap_or(0).max(evicted.seq));
+            debug_assert!(envelope.seq > evicted.seq);
         }
         self.events.push_back(envelope.clone());
     }
@@ -351,8 +351,8 @@ mod tests {
             .copied()
             .filter(|k| k.is_durable())
             .collect();
-        // Only `llm.delta`, `context.updated` and `context.compacting` are live-only.
-        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 3);
+        // Only `llm.delta`, `context.updated`, `context.compacting` and `mcp.status` are live-only.
+        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 4);
 
         let mut bus = SessionBus::default();
         let mut seq: u64 = 0;
@@ -398,9 +398,11 @@ mod tests {
         );
 
         // Deltas are ABSENT: no retained event carries the llm.delta name.
-        assert!(replayed
-            .iter()
-            .all(|e| EventKind::from_wire(&e.kind) != Some(EventKind::LlmDelta)));
+        assert!(
+            replayed
+                .iter()
+                .all(|e| EventKind::from_wire(&e.kind) != Some(EventKind::LlmDelta))
+        );
 
         // A delta gap NEVER invalidates replay: a cursor sitting deep inside
         // the flood still replays the remaining durables (deltas are legal

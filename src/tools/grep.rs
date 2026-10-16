@@ -8,9 +8,9 @@ use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use super::{ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use super::{DEFAULT_MAX_OUTPUT_BYTES, ToolResult};
 use crate::error::ToolError;
-use crate::permission::floor::{sensitive_read, SENSITIVE_NAMES};
+use crate::permission::floor::{SENSITIVE_NAMES, sensitive_read};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 const MAX_ENTRIES: usize = 100_000;
@@ -695,9 +695,11 @@ mod tests {
                 .any(|line| line.contains("target") && line.contains("ignoring")),
             "target ignore evidence missing"
         );
-        assert!(!String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line.starts_with(root.join("target").to_string_lossy().as_ref())));
+        assert!(
+            !String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.starts_with(root.join("target").to_string_lossy().as_ref()))
+        );
         println!("target/ excluded by rg ignore rules before traversal");
     }
     fn fixture() -> tempfile::TempDir {

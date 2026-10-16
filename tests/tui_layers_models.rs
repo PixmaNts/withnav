@@ -3,7 +3,7 @@ use serde_json::json;
 use withnav::tui::{
     catalog::{self, Row},
     commands::{self, Routed},
-    input::{route_key, Editor},
+    input::{Editor, route_key},
     protocol::*,
     reducer,
     state::{State, UiState, VariantPick},
@@ -133,7 +133,7 @@ fn enter_and_ctrl_n_cannot_route_lower_layer_models() {
 
 #[test]
 fn mixed_catalog_picker_renders_and_routes_chat_only() {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let (mut s, mut ui) = picker_state(mixed_models());
     s.session = Some(live_session());
     ui.selection.insert(format!("{:?}", Overlay::Models), 2);
@@ -251,9 +251,11 @@ fn gateway_groups_collapse_search_reopens_and_headers_never_pick_models() {
     assert!(ui.collapsed_models.contains("omniroute"));
     assert_eq!(catalog::rows(&state.catalog, &ui).len(), 3);
     ui.filter = "combo".into();
-    assert!(catalog::rows(&state.catalog, &ui)
-        .iter()
-        .any(|r| matches!(r,Row::Model(m) if m.name=="omniroute/combo/astra")));
+    assert!(
+        catalog::rows(&state.catalog, &ui)
+            .iter()
+            .any(|r| matches!(r,Row::Model(m) if m.name=="omniroute/combo/astra"))
+    );
     assert!(state.start_model.is_none());
 }
 
@@ -390,7 +392,7 @@ fn unified_selection_replay_restores_agent_model_variant_and_override_source() {
 
 #[tokio::test]
 async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries() {
-    use axum::{extract::Query, routing::get, Json, Router};
+    use axum::{Json, Router, extract::Query, routing::get};
     use std::collections::HashMap;
     let app=Router::new()
         .route("/v1/models",get(|| async { Json(models()) }))
@@ -426,8 +428,8 @@ async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries
 }
 
 #[test]
-fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
-    use ratatui::{backend::TestBackend, Terminal};
+fn panel_shows_layer_dots_from_the_config_check_without_reflex() {
+    use ratatui::{Terminal, backend::TestBackend};
     let mut s = State::default();
     s.tabs[0].selected_model_id = Some("openai/astra".into());
     s.tabs[0].model_source = "override".into();
@@ -451,18 +453,71 @@ fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    for value in [
-        "override",
-        "Completion · FIM",
-        "Triage",
-        "usable",
-        "disabled",
-        "wrong API kind",
-        "config.json",
-    ] {
+    for value in ["override", "LAYERS", " ● instinct", "wrong API kind"] {
         assert!(text.contains(value), "{value}: {text}");
     }
+    assert!(!text.contains("reflex"), "reflex must not be shown: {text}");
     assert!(!text.contains("online"));
+}
+
+#[test]
+fn layer_dots_are_green_when_usable_red_when_disabled_and_orange_while_nav_runs() {
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
+    use withnav::tui::state::{Activity, ConnectionStatus};
+    let ui = UiState::default();
+    let theme = ui.theme.palette();
+    let mut s = State {
+        layers: serde_json::from_value::<LayersBody>(json!({"layers":[
+            {"layer":"reflex","status":"usable","model":"inception/mercury","variant":null,"reason":null},
+            {"layer":"instinct","status":"disabled","model":"gateway/instinct","variant":null,"reason":"wrong API kind"},
+            {"layer":"metacognition","status":"usable","model":"omniroute/combo/astra","variant":"low","reason":null}
+        ]})).unwrap().layers,
+        ..State::default()
+    };
+    s.connection = ConnectionStatus::Connected;
+    s.activity = Activity::Idle;
+    let draw = |s: &State| -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
+        let mut cache = withnav::tui::view::RenderCache::default();
+        terminal
+            .draw(|frame| withnav::tui::view::draw(frame, s, &ui, &Editor::new(), &mut cache))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+    // Rows as text; the `●` of the row holding `label`, searched in the right panel only.
+    let row_text =
+        |buffer: &Buffer, y: u16| -> String { (0..160).map(|x| buffer[(x, y)].symbol()).collect() };
+    let dot_fg = |buffer: &Buffer, label: &str| -> Color {
+        let y = (0..45)
+            .find(|&y| row_text(buffer, y).contains(label))
+            .unwrap_or_else(|| panic!("no row with {label:?}"));
+        let x = (160 - 36..160)
+            .find(|&x| buffer[(x, y)].symbol() == "●")
+            .unwrap_or_else(|| panic!("no ● on the row {label:?}"));
+        buffer[(x, y)].fg
+    };
+
+    let buffer = draw(&s);
+    assert_eq!(dot_fg(&buffer, " ● instinct"), theme.red, "disabled layer");
+    assert_eq!(
+        dot_fg(&buffer, " ● metacognition"),
+        theme.green,
+        "usable layer"
+    );
+    assert_eq!(dot_fg(&buffer, " ● nav"), theme.green, "nav idle");
+    let all: String = (0..45)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!all.contains("● reflex"), "reflex must not be shown: {all}");
+
+    s.activity = Activity::Running;
+    let buffer = draw(&s);
+    assert_eq!(dot_fg(&buffer, " ● nav"), theme.orange, "nav running");
+
+    s.connection = ConnectionStatus::Disconnected;
+    let buffer = draw(&s);
+    assert_eq!(dot_fg(&buffer, " ● nav"), theme.red, "nav offline");
 }
 
 fn hierarchy_models() -> ModelsBody {
@@ -476,7 +531,7 @@ fn hierarchy_models() -> ModelsBody {
 
 /// The screen's rows as drawn; the selection mark is blanked.
 fn picker_lines(state: &State, ui: &UiState, size: (u16, u16)) -> Vec<String> {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
     terminal
         .draw(|frame| {
@@ -559,9 +614,11 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
     ui.collapsed_models.insert("omniroute".into());
     let lines = picker_lines(&state, &ui, (100, 30));
     assert!(lines.iter().any(|l| l.contains("▸ omniroute")));
-    assert!(!lines
-        .iter()
-        .any(|l| l.contains(" cc") || l.contains("kimi")));
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains(" cc") || l.contains("kimi"))
+    );
 
     // A search opens every group and keeps each match at its level.
     ui.filter = "k2".into();
@@ -688,9 +745,11 @@ fn favorites_are_sorted_chat_only_and_unknown_ones_stay_hidden() {
         &keys[..3],
         ["section:favorites", "direct/solo", "omniroute/kimi/k2"]
     );
-    assert!(!keys
-        .iter()
-        .any(|k| k == "omniroute/kimi/fim" || k == "gone/model"));
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k == "omniroute/kimi/fim" || k == "gone/model")
+    );
     assert_eq!(ui.favorite_models.len(), 4, "kept in storage");
 }
 
@@ -923,9 +982,11 @@ fn favorites_rows_show_the_full_name_and_the_detail_line_follows_them() {
         .insert("omniroute/agy/gemini-3-pro".into());
     ui.selection.insert("Models".into(), 1);
     let lines = picker_lines(&state, &ui, (100, 16));
-    assert!(lines
-        .iter()
-        .any(|l| l.contains("★ omniroute/agy/gemini-3-pro")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("★ omniroute/agy/gemini-3-pro"))
+    );
     let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
     assert!(lines[keys - 1].contains("omniroute/agy/gemini-3-pro"));
 }

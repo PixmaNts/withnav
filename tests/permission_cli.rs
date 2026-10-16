@@ -166,15 +166,19 @@ fn permissions_cli_round_trip() {
         assert_eq!(rules.len(), 1);
     }
     assert_eq!(run(&["history", "--limit", "1", "--json"]).trim(), "[]");
-    assert!(!nav(
-        data.path(),
-        workspace.path(),
-        &["add", "bash", "*", "allow", "--global", "--agent", "plan"]
-    )
-    .status
-    .success());
-    assert!(!nav(data.path(), workspace.path(), &["revoke", "99999"])
+    assert!(
+        !nav(
+            data.path(),
+            workspace.path(),
+            &["add", "bash", "*", "allow", "--global", "--agent", "plan"]
+        )
         .status
-        .success());
+        .success()
+    );
+    assert!(
+        !nav(data.path(), workspace.path(), &["revoke", "99999"])
+            .status
+            .success()
+    );
     assert!(data.path().join("data/withnav/withnav.db").exists());
 }

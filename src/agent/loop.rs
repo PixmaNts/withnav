@@ -232,37 +232,37 @@ async fn run_steps_inner(
             return Ok(RunOutcome::Interrupted);
         }
 
-        if !actor.has_pending() {
-            if let Some(boundary) = actor.safe_boundary.clone() {
-                let updated = match boundary(&actor.transcript, actor.cancel.clone()).await {
-                    Ok(updated) => updated,
-                    Err(error) => {
-                        if let Some(committed) = error.committed {
-                            actor.transcript = committed;
-                        }
-                        return Err(AgentError::Tool(crate::error::ToolError::Denied {
-                            code: "safe_boundary".into(),
-                            message: error.message,
-                        }));
+        if !actor.has_pending()
+            && let Some(boundary) = actor.safe_boundary.clone()
+        {
+            let updated = match boundary(&actor.transcript, actor.cancel.clone()).await {
+                Ok(updated) => updated,
+                Err(error) => {
+                    if let Some(committed) = error.committed {
+                        actor.transcript = committed;
                     }
-                };
-                match updated {
-                    crate::agent::boundary::BoundaryResult::Unchanged => {}
-                    crate::agent::boundary::BoundaryResult::Continue(updated) => {
-                        actor.transcript = updated
+                    return Err(AgentError::Tool(crate::error::ToolError::Denied {
+                        code: "safe_boundary".into(),
+                        message: error.message,
+                    }));
+                }
+            };
+            match updated {
+                crate::agent::boundary::BoundaryResult::Unchanged => {}
+                crate::agent::boundary::BoundaryResult::Continue(updated) => {
+                    actor.transcript = updated
+                }
+                crate::agent::boundary::BoundaryResult::Interrupted => {
+                    actor.state = AgentState::Idle;
+                    return Ok(RunOutcome::Interrupted);
+                }
+                crate::agent::boundary::BoundaryResult::Watchdog(updated) => {
+                    if let Some(updated) = updated {
+                        actor.transcript = updated;
                     }
-                    crate::agent::boundary::BoundaryResult::Interrupted => {
-                        actor.state = AgentState::Idle;
-                        return Ok(RunOutcome::Interrupted);
-                    }
-                    crate::agent::boundary::BoundaryResult::Watchdog(updated) => {
-                        if let Some(updated) = updated {
-                            actor.transcript = updated;
-                        }
-                        actor.watchdog_steps_left = Some(budget - step);
-                        actor.state = AgentState::Idle;
-                        return Ok(RunOutcome::WatchdogBoundary);
-                    }
+                    actor.watchdog_steps_left = Some(budget - step);
+                    actor.state = AgentState::Idle;
+                    return Ok(RunOutcome::WatchdogBoundary);
                 }
             }
         }
@@ -356,7 +356,7 @@ async fn run_steps_inner(
                     Calls::Finished => {}
                     Calls::Interrupted => return Ok(RunOutcome::Interrupted),
                     Calls::Permission(request) => {
-                        return Ok(RunOutcome::PermissionRequired(*request))
+                        return Ok(RunOutcome::PermissionRequired(*request));
                     }
                 }
                 if actor.cancel.is_cancelled() {
@@ -696,7 +696,7 @@ async fn resolve_skill(
             }
             // Refused by a rule: the refusal is in the transcript.
             Admission::Done(_) => {
-                return Ok(continue_after(actor, remaining_calls, steps_left, observe).await?)
+                return Ok(continue_after(actor, remaining_calls, steps_left, observe).await?);
             }
         }
     }
@@ -1131,10 +1131,10 @@ async fn run_decided(
         let one = run_skill(actor, call, observe, None, previous).await;
         // A skill refused before its admission (snapshot gone, validation
         // revoked) never settles the question bypass answered: end it here.
-        if let (Some(id), Some(store)) = (previous, &actor.permission_store) {
-            if let Err(error) = store.run(move |store| store.cancel_if_pending(id)).await {
-                tracing::warn!(%error, "permission decision outcome not recorded");
-            }
+        if let (Some(id), Some(store)) = (previous, &actor.permission_store)
+            && let Err(error) = store.run(move |store| store.cancel_if_pending(id)).await
+        {
+            tracing::warn!(%error, "permission decision outcome not recorded");
         }
         return one;
     }
@@ -1411,12 +1411,11 @@ async fn execute_call(
     // The seam tests use to move a file between the check and the dispatch.
     #[cfg(test)]
     tests::before_dispatch();
-    if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo) {
-        if let Err(message) =
+    if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo)
+        && let Err(message) =
             role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)
-        {
-            return DispatchOutcome::Settled(ToolResult::error("agent_write_scope", message));
-        }
+    {
+        return DispatchOutcome::Settled(ToolResult::error("agent_write_scope", message));
     }
     if actor.cancel.is_cancelled() {
         return DispatchOutcome::Settled(ToolResult::not_started());
@@ -1462,7 +1461,10 @@ async fn execute_call(
         Err(ToolError::DestinationChanged(path)) => {
             let mut result = ToolResult::error(
                 "destination_changed",
-                format!("{} changed after it was checked; nothing was written, the call is checked again", path.display()),
+                format!(
+                    "{} changed after it was checked; nothing was written, the call is checked again",
+                    path.display()
+                ),
             );
             if let Some(note) = &note {
                 merge_approval_metadata(&mut result.metadata, note);
@@ -1869,10 +1871,12 @@ mod tests {
             for name in denied {
                 assert!(actor.registry.get(name).is_some());
                 assert!(!actor.tool_allowed(name), "{name}");
-                assert!(actor
-                    .effective_tool_schemas()
-                    .iter()
-                    .all(|schema| schema.function.name != name));
+                assert!(
+                    actor
+                        .effective_tool_schemas()
+                        .iter()
+                        .all(|schema| schema.function.name != name)
+                );
                 let call = ToolCall {
                     id: name.into(),
                     name: name.into(),
@@ -1970,9 +1974,11 @@ mod tests {
         assert!(actor.effective_skills_catalog().is_some());
         let full = policy_role(AgentAccess::Full, &[]);
         let denied = policy_role(AgentAccess::Full, &["ask", "skill"]);
-        assert!(actor
-            .effective_skills_catalog_for_role(Some(&denied))
-            .is_none());
+        assert!(
+            actor
+                .effective_skills_catalog_for_role(Some(&denied))
+                .is_none()
+        );
         actor.role = Some(denied);
         let schemas = actor.effective_tool_schemas();
         assert!(actor.components(None, &schemas).skills.is_none());
@@ -2002,20 +2008,23 @@ mod tests {
         for request in requests.iter() {
             let body: serde_json::Value =
                 serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-            assert!(body["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|tool| !matches!(tool["function"]["name"].as_str(), Some("ask" | "skill"))));
-            assert!(!body["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|message| message["role"] == "system"
+            assert!(
+                body["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|tool| !matches!(
+                        tool["function"]["name"].as_str(),
+                        Some("ask" | "skill")
+                    ))
+            );
+            assert!(!body["messages"].as_array().unwrap().iter().any(|message| {
+                message["role"] == "system"
                     && message["content"]
                         .as_str()
                         .unwrap_or("")
-                        .contains("Policy catalog marker")));
+                        .contains("Policy catalog marker")
+            }));
         }
         actor.role = Some(full);
         assert!(actor.effective_skills_catalog().is_some());

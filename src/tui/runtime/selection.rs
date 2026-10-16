@@ -27,11 +27,7 @@ impl Runtime {
             && key
                 .modifiers
                 .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        let yank = key.code == KeyCode::Char('y')
-            && key.modifiers.is_empty()
-            && (self.ui.focus == Focus::Transcript || self.state.read_only())
-            && (self.state.archive() || self.state.open_permission().is_none());
-        if !shortcut && !yank {
+        if !shortcut {
             return false;
         }
         let text = self
@@ -124,10 +120,10 @@ impl Runtime {
                 self.extend_selection();
                 self.selection.anchor = None;
                 self.selection.pointer = None;
-                if let Some((a, b)) = self.selection.range {
-                    if let Some(text) = self.cache.transcript.selected_text(a, b) {
-                        self.copy_text(&text);
-                    }
+                if let Some((a, b)) = self.selection.range
+                    && let Some(text) = self.cache.transcript.selected_text(a, b)
+                {
+                    self.copy_text(&text);
                 }
             }
             _ => return,

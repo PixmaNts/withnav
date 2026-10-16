@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
 use withnav::agent::prompt::build_request;
-use withnav::provider::catalog::{resolve_chat, ModelCatalog, ResolvedChat};
+use withnav::provider::catalog::{ModelCatalog, ResolvedChat, resolve_chat};
 use withnav::provider::client::ModelClient;
 use withnav::provider::config::{ModelsConfig, ProviderConfig};
 use withnav::provider::openai::ChatMessage;

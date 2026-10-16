@@ -78,20 +78,22 @@ mod windows_command_tests {
             windows_directory(windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW)
                 .unwrap();
         assert_eq!(program, system_dir.join("cmd.EXE"));
-        assert!(std::process::Command::new(program)
-            .args(["/d", "/c", "exit", "0"])
-            .env_clear()
-            .envs(env)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            std::process::Command::new(program)
+                .args(["/d", "/c", "exit", "0"])
+                .env_clear()
+                .envs(env)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 }
 
-use super::{tool::McpTool, Ready, Server};
+use super::{Ready, Server, tool::McpTool};
 #[cfg(unix)]
 use nix::{
-    sys::signal::{killpg, Signal},
+    sys::signal::{Signal, killpg},
     unistd::Pid,
 };
 use rmcp::ServiceExt;
@@ -123,7 +125,9 @@ pub(super) async fn supervise(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .state = "starting";
+        server.notify();
         let result = run(&server, &cancel, permit).await;
+        // Published again after `run` returned: the stderr tail is complete only now.
         publish_failure(
             &server,
             result
@@ -148,10 +152,13 @@ fn publish_failure(server: &Server, error: String) {
     {
         ready.disconnected.cancel();
     }
-    let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
-    status.state = "failed";
-    status.tool_count = 0;
-    status.error = Some(error);
+    {
+        let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
+        status.state = "failed";
+        status.tool_count = 0;
+        status.error = Some(error);
+    }
+    server.notify();
 }
 
 async fn run(
@@ -159,6 +166,11 @@ async fn run(
     cancel: &CancellationToken,
     permit: tokio::sync::SemaphorePermit<'_>,
 ) -> Result<(), String> {
+    // The startup timeout counts from here, so launching the process (slow on a busy Windows
+    // host, where it also joins a job object) is part of it: a server that hangs is marked
+    // failed `startup_timeout_ms` after it started, which is what `nav doctor` waits for.
+    let startup_deadline =
+        tokio::time::Instant::now() + Duration::from_millis(server.config.startup_timeout_ms);
     let (env, secrets) = super::config::child_env(&server.config)?;
     *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = secrets.clone();
     #[cfg(unix)]
@@ -197,6 +209,9 @@ async fn run(
     let stdin = child.stdin.take().ok_or("MCP stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("MCP stdout unavailable")?;
     let stderr = child.stderr.take();
+    // The tail is read by every status snapshot, but a new line does not announce one: a chatty
+    // server would publish to every conversation per line. Clients show the tail of a failed
+    // server, and the failure is announced once the tail is complete (after `run`).
     let drain = stderr.map(|mut stderr| {
         let server = server.clone();
         tokio::spawn(async move {
@@ -226,7 +241,7 @@ async fn run(
         };
         let (client, tools) = tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
-            result = tokio::time::timeout(Duration::from_millis(server.config.startup_timeout_ms), startup) => result.map_err(|_| "MCP startup timed out".to_string())??,
+            result = tokio::time::timeout_at(startup_deadline, startup) => result.map_err(|_| "MCP startup timed out".to_string())??,
         };
         drop(permit);
         let disconnected = CancellationToken::new();
@@ -236,6 +251,7 @@ async fn run(
             status.state = "ready";
             status.error = None;
         }
+        server.notify();
         // Keep the service handle until explicit closure; dropping it only requests cancellation.
         let close = client.cancellation_token();
         let mut waiting = Box::pin(client.waiting());
@@ -270,8 +286,15 @@ async fn run(
     }
     drop(group);
     let _ = child.wait().await;
-    if let Some(drain) = drain {
-        let _ = tokio::time::timeout(Duration::from_secs(1), drain).await;
+    if let Some(mut drain) = drain
+        && tokio::time::timeout(Duration::from_secs(1), &mut drain)
+            .await
+            .is_err()
+    {
+        // A grandchild still holds stderr open: stop reading, so nothing changes the tail
+        // after the failure below is published.
+        drain.abort();
+        let _ = drain.await;
     }
     result
 }

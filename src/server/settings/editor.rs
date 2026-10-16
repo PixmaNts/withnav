@@ -5,7 +5,7 @@ use crate::provider::{
     config::{ApiKind, ModelsConfig},
 };
 use crate::settings::{AssignmentVariant, ModelAssignment, Settings};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 pub fn keys(agents: &Agents) -> Vec<String> {
@@ -34,9 +34,11 @@ pub fn default_value(key: &str) -> Value {
         "compaction.writer" => json!("metacognition"),
         "compaction.chunk_tokens" => json!(64_000),
         "default_agent" => json!("build"),
-        "permissions.scratch_dirs" => json!(Settings::default()
-            .permissions_scratch_dirs()
-            .unwrap_or_default()),
+        "permissions.scratch_dirs" => json!(
+            Settings::default()
+                .permissions_scratch_dirs()
+                .unwrap_or_default()
+        ),
         "subagents.max_concurrent" => json!(4),
         "subagents.watchdog_interval_secs" | "agent.watchdog_interval_secs" => json!(300),
         _ => Value::Null,
@@ -101,17 +103,18 @@ pub fn choice(raw: &Value) -> Value {
 }
 
 pub fn apply(settings: &mut Settings, key: &str, mut value: Value) {
-    if (key.starts_with("agents.") || key.starts_with("layers.")) && value.is_object() {
-        if let Some(Value::Object(existing)) = settings.get_dotted(key) {
-            let mut merged = existing.clone();
-            merged.insert("model".into(), value["model"].take());
-            if let Some(variant) = value.get("variant") {
-                merged.insert("variant".into(), variant.clone());
-            } else {
-                merged.remove("variant");
-            }
-            value = Value::Object(merged);
+    if (key.starts_with("agents.") || key.starts_with("layers."))
+        && value.is_object()
+        && let Some(Value::Object(existing)) = settings.get_dotted(key)
+    {
+        let mut merged = existing.clone();
+        merged.insert("model".into(), value["model"].take());
+        if let Some(variant) = value.get("variant") {
+            merged.insert("variant".into(), variant.clone());
+        } else {
+            merged.remove("variant");
         }
+        value = Value::Object(merged);
     }
     settings.set_dotted(key, value);
 }
@@ -132,10 +135,10 @@ pub fn validate(
     let invalid = || format!("invalid value for {key}");
     match key {
         "compaction.writer" if !matches!(value.as_str(), Some("metacognition" | "session")) => {
-            return Err(invalid())
+            return Err(invalid());
         }
         "compaction.chunk_tokens" if !value.as_u64().is_some_and(|n| n > 0) => {
-            return Err(invalid())
+            return Err(invalid());
         }
         "permissions.scratch_dirs"
             if !value.as_array().is_some_and(|a| {
@@ -143,29 +146,29 @@ pub fn validate(
                     .all(|v| v.as_str().is_some_and(|p| Path::new(p).is_absolute()))
             }) =>
         {
-            return Err(invalid())
+            return Err(invalid());
         }
         "subagents.max_concurrent" if !value.as_u64().is_some_and(|n| (1..=64).contains(&n)) => {
-            return Err(invalid())
+            return Err(invalid());
         }
         "subagents.watchdog_interval_secs" | "agent.watchdog_interval_secs"
             if !value.as_u64().is_some_and(|n| n <= 31536000) =>
         {
-            return Err(invalid())
+            return Err(invalid());
         }
         "tui.theme"
             if !value.as_str().is_some_and(|v| {
                 ["ayu-dark", "ayu-light", "nord-dark", "nord-light"].contains(&v)
             }) =>
         {
-            return Err(invalid())
+            return Err(invalid());
         }
         "default_agent"
             if !agents
                 .all()
                 .any(|a| Some(a.id.as_str()) == value.as_str() && a.mode.is_primary()) =>
         {
-            return Err(invalid())
+            return Err(invalid());
         }
         _ => {}
     }

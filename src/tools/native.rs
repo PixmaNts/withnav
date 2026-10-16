@@ -3,12 +3,12 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
 use crate::tools::{
-    bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_MAX_OUTPUT_BYTES, Tool, ToolContext, ToolResult, bound_output, nofollow, validate_path,
 };
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
@@ -755,20 +755,24 @@ mod tests {
         assert!(refused.to_string().contains("sensitive search root"));
         // Arguments cannot ask for the capability.
         let forged = json!({"pattern": "needle", "path": ssh.to_str().unwrap(), "yolo": true});
-        assert!(GrepTool
-            .call(forged, CancellationToken::new(), &cx)
-            .await
-            .is_err());
+        assert!(
+            GrepTool
+                .call(forged, CancellationToken::new(), &cx)
+                .await
+                .is_err()
+        );
         let destination = ssh.canonicalize().unwrap();
         cx.binding = Some(crate::tools::DispatchBinding {
             destination,
             scratch: None,
             yolo: false,
         });
-        assert!(GrepTool
-            .call(args.clone(), CancellationToken::new(), &cx)
-            .await
-            .is_err());
+        assert!(
+            GrepTool
+                .call(args.clone(), CancellationToken::new(), &cx)
+                .await
+                .is_err()
+        );
         cx.binding.as_mut().unwrap().yolo = true;
         let res = GrepTool
             .call(args, CancellationToken::new(), &cx)
@@ -865,10 +869,12 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let cx = ctx(tmp.path());
         let resolved = validate_path(&cx.read_roots(), &link).unwrap();
-        assert!(grep_builtin("needle", &resolved)
-            .unwrap()
-            .output
-            .contains("needle"));
+        assert!(
+            grep_builtin("needle", &resolved)
+                .unwrap()
+                .output
+                .contains("needle")
+        );
     }
 
     #[tokio::test]

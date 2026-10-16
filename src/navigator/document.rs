@@ -10,11 +10,11 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::event::now_rfc3339;
-use crate::navigator::help_call::{added_help_comments, without_comments, HelpCalls};
+use crate::navigator::help_call::{HelpCalls, added_help_comments, without_comments};
 use crate::navigator::log::excerpt;
 use crate::navigator::lsp::uri::uri_to_path_str;
 use crate::navigator::metacognition::Diag;
-use crate::navigator::trigger::{TriggerKind, NO_REMARK_MS};
+use crate::navigator::trigger::{NO_REMARK_MS, TriggerKind};
 
 /// Edit summaries kept per uri in the live state.
 const LIVE_STATE_EDITS: usize = 5;
@@ -348,12 +348,12 @@ impl Documents {
                 && state.remark_cancel.is_some()
                 && state.remark_version == Some(state.version),
         };
-        if let Some(summary) = summary {
-            if let Some(doc) = self.open.get_mut(uri) {
-                doc.edits.push_back(summary);
-                while doc.edits.len() > LIVE_STATE_EDITS {
-                    doc.edits.pop_front();
-                }
+        if let Some(summary) = summary
+            && let Some(doc) = self.open.get_mut(uri)
+        {
+            doc.edits.push_back(summary);
+            while doc.edits.len() > LIVE_STATE_EDITS {
+                doc.edits.pop_front();
             }
         }
         snapshot.live_state = self.render_live_state();
@@ -438,13 +438,12 @@ pub fn first_changed_line(old: &str, new: &str) -> (usize, String) {
 /// on the right line of the current one.
 pub fn reanchor_line(old: &str, new: &str, line: u32) -> Option<u32> {
     let diff = similar::TextDiff::from_lines(old, new);
-    let anchored = diff
-        .iter_all_changes()
+
+    diff.iter_all_changes()
         .find(|c| c.old_index() == Some(line as usize))
         .filter(|c| matches!(c.tag(), similar::ChangeTag::Equal))
         .and_then(|c| c.new_index())
-        .map(|i| i as u32);
-    anchored
+        .map(|i| i as u32)
 }
 
 /// Counts added + removed lines between two texts using a line diff.
@@ -498,10 +497,10 @@ pub fn text_around_changes(old: &str, new: &str, context: usize) -> String {
     // Mark which new lines are touched (inserts or replacements).
     let mut touched = vec![false; new_line_count];
     for change in diff.iter_all_changes() {
-        if matches!(change.tag(), similar::ChangeTag::Insert) {
-            if let Some(idx) = change.new_index() {
-                touched[idx] = true;
-            }
+        if matches!(change.tag(), similar::ChangeTag::Insert)
+            && let Some(idx) = change.new_index()
+        {
+            touched[idx] = true;
         }
     }
     // Expand: any touched line taints its neighbors within `context`.

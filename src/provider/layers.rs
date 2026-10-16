@@ -117,20 +117,26 @@ mod tests {
             (Layer::Metacognition, "gateway/combo/chat", "combo/chat"),
         ] {
             assert_eq!(assign(json!(name), layer).unwrap().resolved.model.model, id);
-            assert!(assign(json!("gateway/missing"), layer)
+            assert!(
+                assign(json!("gateway/missing"), layer)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown model")
+            );
+        }
+        assert!(
+            assign(json!("gateway/combo/chat"), Layer::Instinct)
                 .unwrap_err()
                 .to_string()
-                .contains("unknown model"));
-        }
-        assert!(assign(json!("gateway/combo/chat"), Layer::Instinct)
-            .unwrap_err()
-            .to_string()
-            .contains("must use"));
+                .contains("must use")
+        );
         let dir = tempfile::tempdir().unwrap();
-        assert!(assigned(&catalog(), dir.path(), Layer::Reflex)
-            .unwrap_err()
-            .to_string()
-            .contains("missing"));
+        assert!(
+            assigned(&catalog(), dir.path(), Layer::Reflex)
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
     }
 
     #[test]
@@ -186,16 +192,20 @@ mod tests {
             assert!(assigned.variant.is_none());
             assert!(!assigned.prefer_low);
         }
-        assert!(assign(
-            json!({"model":"gateway/combo/chat","variant":"bogus"}),
-            Layer::Metacognition
-        )
-        .is_err());
-        assert!(assign(
-            json!({"model":"gateway/typesafe/jev","variant":"low"}),
-            Layer::Instinct
-        )
-        .is_err());
+        assert!(
+            assign(
+                json!({"model":"gateway/combo/chat","variant":"bogus"}),
+                Layer::Metacognition
+            )
+            .is_err()
+        );
+        assert!(
+            assign(
+                json!({"model":"gateway/typesafe/jev","variant":"low"}),
+                Layer::Instinct
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

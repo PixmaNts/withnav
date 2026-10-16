@@ -40,10 +40,12 @@ fn new_and_legacy_answers_round_trip() {
 #[test]
 fn historical_requests_need_no_always_label() {
     let mut wire = json!({"request_id":ulid::Ulid(1), "tool_call_id":"call", "tool":"bash", "arguments":"{}", "scope":{"kind":"folder","value":"/workspace"}, "agent":"build", "reason":"review"});
-    assert!(serde_json::from_value::<PermissionRequested>(wire.clone())
-        .unwrap()
-        .always_label
-        .is_none());
+    assert!(
+        serde_json::from_value::<PermissionRequested>(wire.clone())
+            .unwrap()
+            .always_label
+            .is_none()
+    );
     wire["always_label"] = json!("Always (project): bash git push *");
     let request: PermissionRequested = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), wire);

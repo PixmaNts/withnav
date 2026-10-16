@@ -1,8 +1,32 @@
+# Changelog
+
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0, a minor version may break compatibility. New entries go under `Unreleased` as pull
 requests land in `develop`.
 
 ## [Unreleased]
+
+## [0.8.1] - 2026-10-16
+
+WithNav 0.8.1 shows the MCP servers' status in the terminal client and the browser, reworks the
+terminal client's right panel, opens the terminal client when `nav` is run alone, and moves the
+code to the Rust 2024 edition.
+
+### Added
+
+- MCP server status: a live-only `mcp.status` event on every open conversation's stream and `GET /v1/mcp` report each server's state (starting, ready, failed, disabled), tool count, skipped tools, error and a short redacted stderr tail. The web UI fills its MCP SERVERS section with them; the TUI's right panel groups them with the skills under SKILLS · MCP · PLUGINS, with a coloured dot per server and the skills the model loaded in the conversation. (#44)
+
+### Changed
+
+- `nav` with no subcommand opens the terminal client, and takes its flags (`nav --session <id>`); `nav tui` still works.
+- TUI: typing a letter or a digit while the transcript has the focus (copy mode) goes back to the message editor and types it. A selected block is copied with ctrl+shift+c; plain `y` no longer copies.
+- TUI right panel: the Agents section shows the agent, its model and variant (no assignment line or role text), and the lower layers become one coloured dot each (green ready, red unavailable with the reason); Reflex is not listed, it needs the editor. Nav's dot follows the conversation (orange while it runs).
+- The code moves to the Rust 2024 edition; the minimum Rust version stays 1.89.
+
+### Fixed
+
+- A shell line WithNav cannot split, such as one with a heredoc, no longer asks the Captain because a long quoted word "cannot be resolved": a word that cannot name a file names none. (#71)
+- An MCP server's startup timeout counts from its launch, and `nav doctor` waits one second past it, so a server that hangs is reported failed instead of still starting on a slow host. (#64)
 
 ## [0.8.0] - 2026-10-15
 

@@ -3,13 +3,13 @@
 //! a window too small to hold its own reserve.
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 
 mod common;
 use common::server::{
-    collect_until, post_message_ok, request_json, spawn_server, TestServerConfig,
+    TestServerConfig, collect_until, post_message_ok, request_json, spawn_server,
 };
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_call_chunk};
 

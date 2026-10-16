@@ -6,11 +6,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
-use include_dir::{include_dir, Dir};
+use axum::extract::{Query, State};
+use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
+use include_dir::{Dir, include_dir};
 use serde::Serialize;
 use serde_json::json;
 
@@ -249,7 +249,7 @@ pub(super) async fn hide_workspace(
         Some(_) => {
             return error_response(ServerError::MalformedBody(
                 "sessions must be delete or omitted".into(),
-            ))
+            ));
         }
     };
     let mut deleted = 0;

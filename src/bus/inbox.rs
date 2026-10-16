@@ -210,31 +210,30 @@ impl ActorInbox {
         let mut outcome = BatchOutcome::default();
 
         for cmd in std::mem::take(&mut self.commands) {
-            if cmd.from_captain() {
-                if let Some(count) = &self.queued_captain {
-                    // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
-                    // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
-                    // name until the minimum moves past the rename.
-                    #[allow(deprecated)]
-                    let _ = count.fetch_update(
-                        std::sync::atomic::Ordering::AcqRel,
-                        std::sync::atomic::Ordering::Acquire,
-                        |n| Some(n.saturating_sub(1)),
-                    );
-                }
+            if cmd.from_captain()
+                && let Some(count) = &self.queued_captain
+            {
+                // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
+                // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
+                // name until the minimum moves past the rename.
+                #[allow(deprecated)]
+                let _ = count.fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |n| Some(n.saturating_sub(1)),
+                );
             }
             if actor
                 .role
                 .as_ref()
                 .is_some_and(|role| role.tools.get("skill") == Some(&false))
-            {
-                if let Some(name) = cmd.content.iter().find_map(|block| match block {
+                && let Some(name) = cmd.content.iter().find_map(|block| match block {
                     crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name),
                     _ => None,
-                }) {
-                    outcome.refused.push((cmd.command_id, format!("skill {name:?} refused: this turn's agent cannot use the skill tool; the whole message was not delivered")));
-                    continue;
-                }
+                })
+            {
+                outcome.refused.push((cmd.command_id, format!("skill {name:?} refused: this turn's agent cannot use the skill tool; the whole message was not delivered")));
+                continue;
             }
             if !cmd.from_captain() {
                 if actor.has_pending() {
@@ -473,9 +472,11 @@ mod tests {
                 let history = compaction::effective_history(&actor.transcript, Some(&compacted));
                 for expected in &batch {
                     let raw = serde_json::to_string(expected).unwrap();
-                    assert!(history
-                        .iter()
-                        .any(|message| serde_json::to_string(message).unwrap() == raw));
+                    assert!(
+                        history
+                            .iter()
+                            .any(|message| serde_json::to_string(message).unwrap() == raw)
+                    );
                 }
             }
         }

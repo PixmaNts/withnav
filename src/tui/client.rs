@@ -145,6 +145,11 @@ impl Client {
             .await
     }
 
+    /// The service's MCP servers; the `mcp.status` event carries the same body.
+    pub async fn mcp(&self) -> Result<crate::bus::event::McpStatus, String> {
+        self.json(self.get("/v1/mcp")).await
+    }
+
     pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {
         let mut body: crate::bus::event::SkillsBody = self
             .json(self.get(&format!(
@@ -517,7 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_scoped_calls_encode_the_id_in_the_path() {
-        use axum::{extract::OriginalUri, routing::any, Json, Router};
+        use axum::{Json, Router, extract::OriginalUri, routing::any};
         let (seen, mut paths) = tokio::sync::mpsc::unbounded_channel();
         let app = Router::new().fallback(any(move |uri: OriginalUri| {
             let seen = seen.clone();

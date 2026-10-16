@@ -346,6 +346,10 @@ pub enum ClientEvent {
         request: u64,
         result: Result<LayersBody, String>,
     },
+    Mcp {
+        generation: Generation,
+        result: Result<crate::bus::event::McpStatus, String>,
+    },
     Skills {
         generation: Generation,
         result: Result<crate::bus::event::SkillsBody, String>,
@@ -582,6 +586,9 @@ pub enum Effect {
     LeaveConfig,
     FetchAgents(Option<String>),
     FetchLayers,
+    /// Reads `GET /v1/mcp`: at start, and on every stream (re)connection, since the
+    /// `mcp.status` event is live-only.
+    FetchMcp,
     FetchSkills(String),
     WatchChild {
         parent_session_id: String,

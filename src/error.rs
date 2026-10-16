@@ -153,14 +153,18 @@ pub enum ServerError {
     Model(#[from] crate::error::ProviderError),
     #[error("malformed request body: {0}")]
     MalformedBody(String),
-    #[error("Chat alias '{alias}' (provider '{provider}', model '{model}') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {models_path}, or make the provider reachable and try again.")]
+    #[error(
+        "Chat alias '{alias}' (provider '{provider}', model '{model}') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {models_path}, or make the provider reachable and try again."
+    )]
     NoContextWindow {
         alias: String,
         provider: String,
         model: String,
         models_path: String,
     },
-    #[error("Session {session} was started on {saved} and alias '{alias}' now maps to {current}. A conversation never moves to another model on its own: point '{alias}' back at the saved model in {models_path}, or start a new session.")]
+    #[error(
+        "Session {session} was started on {saved} and alias '{alias}' now maps to {current}. A conversation never moves to another model on its own: point '{alias}' back at the saved model in {models_path}, or start a new session."
+    )]
     ModelIdentityChanged {
         session: String,
         alias: String,
@@ -168,11 +172,15 @@ pub enum ServerError {
         current: String,
         models_path: String,
     },
-    #[error("Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared.")]
+    #[error(
+        "Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared."
+    )]
     SavedResolutionInvalid { session: String, reason: String },
     #[error("unknown agent '{agent}': the primary agents are {available}")]
     UnknownAgent { agent: String, available: String },
-    #[error("Session {session} runs as agent '{agent}', which is not available ({reason}); add the agent back or fix its file to resume it. The conversation is kept as it is.")]
+    #[error(
+        "Session {session} runs as agent '{agent}', which is not available ({reason}); add the agent back or fix its file to resume it. The conversation is kept as it is."
+    )]
     SavedAgentUnavailable {
         session: String,
         agent: String,
@@ -185,20 +193,26 @@ pub enum ServerError {
         /// What the alias offers, worded for the reader.
         offered: String,
     },
-    #[error("alias '{alias}' has default_variant '{variant}', which it does not offer now (a generated variant comes from the provider's reported effort tiers). Fix `default_variant` for '{alias}' in {models_path}, or name a variant when creating the session.")]
+    #[error(
+        "alias '{alias}' has default_variant '{variant}', which it does not offer now (a generated variant comes from the provider's reported effort tiers). Fix `default_variant` for '{alias}' in {models_path}, or name a variant when creating the session."
+    )]
     DefaultVariantUnavailable {
         alias: String,
         variant: String,
         models_path: String,
     },
-    #[error("Session {session} runs with variant '{variant}', but alias '{alias}' no longer offers it. A conversation never changes variant on its own: add the variant back to '{alias}' in {models_path} (or make the provider report that effort tier again), or start a new session.")]
+    #[error(
+        "Session {session} runs with variant '{variant}', but alias '{alias}' no longer offers it. A conversation never changes variant on its own: add the variant back to '{alias}' in {models_path} (or make the provider report that effort tier again), or start a new session."
+    )]
     VariantUnavailable {
         session: String,
         alias: String,
         variant: String,
         models_path: String,
     },
-    #[error("cannot confirm that alias '{alias}' offers variant '{variant}': its list of variants comes from the provider's model list, which is not available and has no earlier copy. Try again when the provider is reachable.")]
+    #[error(
+        "cannot confirm that alias '{alias}' offers variant '{variant}': its list of variants comes from the provider's model list, which is not available and has no earlier copy. Try again when the provider is reachable."
+    )]
     VariantOfferUnknown { alias: String, variant: String },
     #[error("Chat alias '{alias}' cannot be used: {reason}")]
     ImpossibleBudget { alias: String, reason: String },
@@ -323,9 +337,11 @@ mod tests {
 
     #[test]
     fn error_server_variants_display_non_empty() {
-        assert!(!ServerError::SessionNotFound("s".into())
-            .to_string()
-            .is_empty());
+        assert!(
+            !ServerError::SessionNotFound("s".into())
+                .to_string()
+                .is_empty()
+        );
         assert!(!ServerError::InboxFull.to_string().is_empty());
         assert!(!ServerError::NonTextContent.to_string().is_empty());
     }

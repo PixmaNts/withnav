@@ -1,9 +1,9 @@
 //! `GET /v1/models`: canonical identities, all API kinds and safe metadata.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 mod common;
-use common::server::{spawn_server, TestServerConfig, PROVIDER};
+use common::server::{PROVIDER, TestServerConfig, spawn_server};
 
 const SECRET_SENTINEL: &str = "synthetic-secret-never-echo";
 
@@ -89,11 +89,13 @@ async fn malformed_auth_store_diagnostic_does_not_echo_its_contents() {
     .unwrap();
     let (status, body) = catalog_response(state, tmp.path()).await;
     assert_eq!(status, 200);
-    assert!(body["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|entry| entry["disabled_reason"] == "model authentication unavailable"));
+    assert!(
+        body["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["disabled_reason"] == "model authentication unavailable")
+    );
 }
 
 #[tokio::test]
@@ -116,13 +118,11 @@ async fn provider_response_diagnostic_does_not_echo_endpoint_or_key() {
         !body.to_string().contains(&provider.uri()),
         "catalog leaked provider endpoint"
     );
-    assert!(body["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|entry| entry["refresh_error"]
+    assert!(body["models"].as_array().unwrap().iter().all(|entry| {
+        entry["refresh_error"]
             .as_str()
-            .is_some_and(|reason| reason.contains("503"))));
+            .is_some_and(|reason| reason.contains("503"))
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

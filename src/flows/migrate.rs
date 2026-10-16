@@ -147,8 +147,10 @@ pub fn convert(
                     .collect();
                 let functions: Vec<_> = tree.iter_function_identifiers().collect();
                 let writes: Vec<_> = tree.iter_write_variable_identifiers().collect();
-                anyhow::ensure!(unknown.is_empty() && functions.is_empty() && writes.is_empty(),
-                    "branch {index} condition cannot be translated: unknown variables {unknown:?}; functions {functions:?}; assignments {writes:?}");
+                anyhow::ensure!(
+                    unknown.is_empty() && functions.is_empty() && writes.is_empty(),
+                    "branch {index} condition cannot be translated: unknown variables {unknown:?}; functions {functions:?}; assignments {writes:?}"
+                );
                 // Collect only referenced answers: every declared alias would otherwise
                 // multiply the input budget and require unused upstream evidence.
                 let mut aliases: BTreeMap<_, _> = tree
@@ -502,24 +504,30 @@ prompt = "remark.md"
                 errors[0].message
             );
         }
-        assert!(store
-            .reload_diagnostics()
-            .iter()
-            .any(|error| error.code == "migration"));
-        assert!(store
-            .list()
-            .unwrap()
-            .iter()
-            .any(|row| row.name == "legacy-pipeline" && row.errors == errors));
+        assert!(
+            store
+                .reload_diagnostics()
+                .iter()
+                .any(|error| error.code == "migration")
+        );
+        assert!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .any(|row| row.name == "legacy-pipeline" && row.errors == errors)
+        );
         store.reload().unwrap();
         assert_eq!(store.migration_diagnostics(), errors);
         assert_eq!(
             std::fs::read_to_string(source.join("pipeline.toml")).unwrap(),
             text
         );
-        assert!(!store
-            .snapshot()
-            .contains_key("navigator-default-diagnostics"));
+        assert!(
+            !store
+                .snapshot()
+                .contains_key("navigator-default-diagnostics")
+        );
     }
 
     #[test]

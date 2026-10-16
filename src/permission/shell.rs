@@ -741,23 +741,65 @@ mod tests {
             ("docker compose up -d", vec!["docker compose up"]),
             ("npm run build", vec!["npm run build"]),
             ("FOO=1 make check > out.log 2>&1", vec!["make check"]),
-            ("cat a | grep \"x;y\" && rm -rf build", vec!["cat", "grep", "rm"]),
+            (
+                "cat a | grep \"x;y\" && rm -rf build",
+                vec!["cat", "grep", "rm"],
+            ),
             ("echo $(git rev-parse HEAD)", vec!["echo", "git rev-parse"]),
-            ("sudo systemctl restart nginx", vec!["sudo systemctl restart"]),
+            (
+                "sudo systemctl restart nginx",
+                vec!["sudo systemctl restart"],
+            ),
             ("./script.sh a", vec!["./script.sh"]),
-            ("git -c core.editor=vim -C ../x config get user.name", vec!["git config get"]),
-            ("sudo -u root env -u OLD FOO=1 time -o timing nice -n 5 nohup command -- exec -a nav git status", vec!["sudo env time nice nohup command exec git status"]),
-            ("(git status; cargo test) |& { echo ok; pwd; } & ls\nwhoami || true", vec!["git status", "cargo test", "echo", "pwd", "ls", "whoami", "true"]),
-            ("cat <(git show HEAD) >(grep x)", vec!["cat", "git show", "grep"]),
+            (
+                "git -c core.editor=vim -C ../x config get user.name",
+                vec!["git config get"],
+            ),
+            (
+                "sudo -u root env -u OLD FOO=1 time -o timing nice -n 5 nohup command -- exec -a nav git status",
+                vec!["sudo env time nice nohup command exec git status"],
+            ),
+            (
+                "(git status; cargo test) |& { echo ok; pwd; } & ls\nwhoami || true",
+                vec![
+                    "git status",
+                    "cargo test",
+                    "echo",
+                    "pwd",
+                    "ls",
+                    "whoami",
+                    "true",
+                ],
+            ),
+            (
+                "cat <(git show HEAD) >(grep x)",
+                vec!["cat", "git show", "grep"],
+            ),
             ("echo `git status`", vec!["echo", "git status"]),
-            ("echo \"$(git status)\" '$(not executed)'", vec!["echo", "git status"]),
+            (
+                "echo \"$(git status)\" '$(not executed)'",
+                vec!["echo", "git status"],
+            ),
             ("echo a\\;b \\| c\\&d", vec!["echo"]),
-            ("echo $(git status && cargo test) `pwd`", vec!["echo", "git status", "cargo test", "pwd"]),
-            ("git push &&\n git status # trailing comment", vec!["git push", "git status"]),
+            (
+                "echo $(git status && cargo test) `pwd`",
+                vec!["echo", "git status", "cargo test", "pwd"],
+            ),
+            (
+                "git push &&\n git status # trailing comment",
+                vec!["git push", "git status"],
+            ),
         ] {
             let commands = split(line);
             assert!(commands.iter().all(|command| !command.opaque), "{line}");
-            assert_eq!(commands.iter().map(|command| command.prefix.join(" ")).collect::<Vec<_>>(), expected, "{line}");
+            assert_eq!(
+                commands
+                    .iter()
+                    .map(|command| command.prefix.join(" "))
+                    .collect::<Vec<_>>(),
+                expected,
+                "{line}"
+            );
         }
     }
 

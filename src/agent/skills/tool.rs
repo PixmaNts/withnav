@@ -11,7 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::{Resolution, Skills};
@@ -64,10 +64,10 @@ impl Tool for SkillTool {
             };
             match self.skills.resolve(name) {
                 Resolution::Unknown => {
-                    return Ok(ToolResult::error("skill_unknown", "unknown skill"))
+                    return Ok(ToolResult::error("skill_unknown", "unknown skill"));
                 }
                 Resolution::Disabled => {
-                    return Ok(ToolResult::error("skill_disabled", "disabled skill"))
+                    return Ok(ToolResult::error("skill_disabled", "disabled skill"));
                 }
                 Resolution::Ambiguous(paths) => {
                     return Ok(ToolResult::error("skill_ambiguous", {
@@ -86,7 +86,7 @@ impl Tool for SkillTool {
                         {
                             format!("ambiguous skill: {paths:?}")
                         }
-                    }))
+                    }));
                 }
                 Resolution::Found(_) => {}
             }
@@ -98,17 +98,16 @@ impl Tool for SkillTool {
                 .unwrap_or_else(|e| e.into_inner())
                 .get(name)
                 .cloned();
-            if let Some(id) = admitted {
-                if let Some(snapshot) = self
+            if let Some(id) = admitted
+                && let Some(snapshot) = self
                     .skills
                     .validation
                     .snapshots
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .get(&id)
-                {
-                    return Ok(snapshot.output.clone());
-                }
+            {
+                return Ok(snapshot.output.clone());
             }
             Ok(ToolResult::error(
                 "skill_not_validated",

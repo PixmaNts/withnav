@@ -137,16 +137,16 @@ pub(super) async fn check_health(base: &str) -> anyhow::Result<()> {
             Ok(response) if response.status().is_success() => return Ok(()),
             Ok(response) => {
                 last = format!("answered HTTP {}", response.status());
-                if let Some(body) = health_diagnostic(response).await {
-                    if let Some(message) = body.get("error").and_then(serde_json::Value::as_str) {
-                        let diagnostic: String = message
-                            .chars()
-                            .filter(|c| !c.is_control())
-                            .take(1024)
-                            .collect();
-                        last.push_str(": ");
-                        last.push_str(&diagnostic);
-                    }
+                if let Some(body) = health_diagnostic(response).await
+                    && let Some(message) = body.get("error").and_then(serde_json::Value::as_str)
+                {
+                    let diagnostic: String = message
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(1024)
+                        .collect();
+                    last.push_str(": ");
+                    last.push_str(&diagnostic);
                 }
                 break;
             }

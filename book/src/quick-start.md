@@ -82,7 +82,7 @@ In a project folder, pick one:
 
 - **VS Code:** open the folder and click the WithNav icon in the activity bar to open the Nav chat.
   See [VS Code extension](vscode.md).
-- **Terminal:** run `nav tui`.
+- **Terminal:** run `nav` (or `nav tui`).
 - **Browser:** run `nav web`.
 - **One task:** `nav run -p "explain what this repository does"`.
 

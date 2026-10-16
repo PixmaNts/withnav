@@ -121,6 +121,27 @@ export interface SkillsBody {
   disabled_reason?: string | null;
 }
 
+/** One MCP server as `GET /v1/mcp` and the `mcp.status` event report it: redacted and bounded. */
+export interface McpServerView {
+  server_id: string;
+  transport: string;
+  state: "starting" | "ready" | "failed" | "disabled" | string;
+  /** 0 unless ready. */
+  tool_count: number;
+  skipped_tools: string[];
+  skipped_more: number;
+  error: string | null;
+  stderr_tail: string;
+  stderr_truncated: boolean;
+}
+
+/** The service's MCP servers. Keep the higher `revision` of one `incarnation`. */
+export interface McpStatus {
+  incarnation: string;
+  revision: number;
+  servers: McpServerView[];
+}
+
 export interface IntentBody {
   exists: boolean;
   intent: string | null;

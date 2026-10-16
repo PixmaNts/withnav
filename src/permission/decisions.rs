@@ -2,13 +2,13 @@
 
 use std::path::PathBuf;
 
-use rusqlite::{params, Row};
+use rusqlite::{Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
     rules::Effect,
-    store::{path_text, Error, PermissionStore},
+    store::{Error, PermissionStore, path_text},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,12 +178,16 @@ mod tests {
         let id = store.record(&decision).unwrap();
         store.revoke(rule.id).unwrap();
         let answer = serde_json::json!({"answer": "once"});
-        assert!(store
-            .update_outcome(id, Outcome::Allowed, Some(&answer), Some("captain"))
-            .unwrap());
-        assert!(!store
-            .update_outcome(id + 1, Outcome::Denied, None, None)
-            .unwrap());
+        assert!(
+            store
+                .update_outcome(id, Outcome::Allowed, Some(&answer), Some("captain"))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .update_outcome(id + 1, Outcome::Denied, None, None)
+                .unwrap()
+        );
         drop(store);
         let store = PermissionStore::open(dir.path()).unwrap();
         let rows = store
@@ -199,10 +203,12 @@ mod tests {
         assert_eq!(row.outcome, Outcome::Allowed);
         assert_eq!(row.call_snapshot.arguments.len(), 4095);
         assert!(row.call_snapshot.truncated);
-        assert!(store
-            .list_decisions(&DecisionFilter::default(), 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .list_decisions(&DecisionFilter::default(), 0)
+                .unwrap()
+                .is_empty()
+        );
         for filter in [
             DecisionFilter {
                 session_id: Some("other".into()),

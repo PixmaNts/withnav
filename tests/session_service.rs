@@ -7,7 +7,7 @@ use withnav::session::Service;
 
 mod common;
 use common::server::TestServerConfig;
-use common::sse::{read_sse, SseEnd};
+use common::sse::{SseEnd, read_sse};
 
 // Given a Service over a provider nothing listens on
 // When a session is created without any router
@@ -135,7 +135,7 @@ async fn http_replay(
 //      subscription has no live receiver
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_subscription_matches_http_replay() {
-    use common::server::{create_session, post_message_ok, TestServer};
+    use common::server::{TestServer, create_session, post_message_ok};
     use common::sse::{http_sse, sse_body};
 
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;

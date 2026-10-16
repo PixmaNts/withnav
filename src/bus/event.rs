@@ -1,8 +1,8 @@
-//! Frozen `EventEnvelope` shape and the 24-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 25-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result`,
 //! `context.updated`, `context.compacting`, `session.agent_changed`, `context.compacted`,
 //! `permission.requested`, `permission.resolved`, `model.changed`,
-//! `subagent.spawned`, `subagent.done`, `subagent.watchdog` and `session.bypass`).
+//! `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass` and `mcp.status`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -25,24 +25,27 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 24 kinds: 3 session +
+/// The catalog emits EXACTLY 25 kinds: 3 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
 /// context update + context compacting + agent change + context compacted +
-/// 2 permission + model change + 3 subagent = 24. The first twelve are frozen; `command.result`,
-/// `context.updated`, `context.compacting`, `session.agent_changed`, `context.compacted`,
-/// `permission.requested`, `permission.resolved`, `model.changed`,
-/// `subagent.spawned`, `subagent.done`, `subagent.watchdog` and `session.bypass` were added without changing the
-/// envelope version.
-pub const EVENT_KIND_COUNT: usize = 24;
+/// 2 permission + model change + 3 subagent + MCP status = 25. The first twelve are frozen;
+/// `command.result`, `context.updated`, `context.compacting`, `session.agent_changed`,
+/// `context.compacted`, `permission.requested`, `permission.resolved`, `model.changed`,
+/// `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass` and `mcp.status`
+/// were added without changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 25;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
-/// `llm.delta` and `context.updated` are live-only (the latter is a
-/// recomputable gauge, readable at any time from the session's context
-/// endpoint). Kept with the catalog it guards.
+/// `llm.delta`, `context.updated`, `context.compacting` and `mcp.status` are live-only (the
+/// gauges are readable at any time: the context from the session's context endpoint, the MCP
+/// servers from `GET /v1/mcp`). Kept with the catalog it guards.
 const fn is_durable(kind: EventKind) -> bool {
     !matches!(
         kind,
-        EventKind::LlmDelta | EventKind::ContextUpdated | EventKind::ContextCompacting
+        EventKind::LlmDelta
+            | EventKind::ContextUpdated
+            | EventKind::ContextCompacting
+            | EventKind::McpStatus
     )
 }
 
@@ -81,7 +84,8 @@ impl EventKind {
             | Self::SubagentSpawned
             | Self::SubagentDone
             | Self::SubagentWatchdog
-            | Self::SessionBypass => [
+            | Self::SessionBypass
+            | Self::McpStatus => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -106,11 +110,12 @@ impl EventKind {
                 Self::SubagentDone,
                 Self::SubagentWatchdog,
                 Self::SessionBypass,
+                Self::McpStatus,
             ],
         }
     }
 
-    /// The 24 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 25 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
@@ -119,7 +124,7 @@ const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
 macro_rules! event_kinds {
     ($($variant:ident => $wire:literal),+ $(,)?) => {
-        /// Typed catalog of the 24 emitted event kinds; the wire name is the dotted
+        /// Typed catalog of the 25 emitted event kinds; the wire name is the dotted
         /// string (serialized verbatim, e.g. `"llm.delta"`).
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum EventKind {
@@ -162,6 +167,7 @@ event_kinds! {
     SubagentSpawned => "subagent.spawned",
     SubagentDone => "subagent.done",
     SubagentWatchdog => "subagent.watchdog",
+    McpStatus => "mcp.status",
 }
 
 impl EventKind {
@@ -380,6 +386,37 @@ pub struct AgentYield {
 pub struct PauseToken {
     pub incarnation: Ulid,
     pub hold_id: Ulid,
+}
+
+/// One MCP server as clients see it: redacted and bounded. Built by `mcp/`, carried by the
+/// `mcp.status` event and `GET /v1/mcp`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerView {
+    pub server_id: String,
+    /// `stdio`; another value only for a declaration that failed to parse.
+    pub transport: String,
+    /// `starting`, `ready`, `failed` or `disabled`.
+    pub state: String,
+    /// Tools a new session would get from this server; 0 unless `ready`.
+    pub tool_count: usize,
+    pub skipped_tools: Vec<String>,
+    /// Skipped tools beyond the ones listed.
+    pub skipped_more: usize,
+    pub error: Option<String>,
+    pub stderr_tail: String,
+    /// The tail was cut to its last lines.
+    pub stderr_truncated: bool,
+}
+
+/// Every MCP server of the service at one moment: the `mcp.status` payload and the
+/// `GET /v1/mcp` body. `revision` grows with each change within one `incarnation` (one service
+/// process): a client keeps the snapshot with the higher revision, and starts over when the
+/// incarnation differs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpStatus {
+    pub incarnation: Ulid,
+    pub revision: u64,
+    pub servers: Vec<McpServerView>,
 }
 
 /// Read-only catalog projection; this is an HTTP body, not a new event kind.
@@ -829,7 +866,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 24] = [
+    const KIND_NAMES: [&str; 25] = [
         "session.start",
         "session.end",
         "message.received",
@@ -854,13 +891,14 @@ mod tests {
         "subagent.done",
         "subagent.watchdog",
         "session.bypass",
+        "mcp.status",
     ];
 
     #[test]
     fn event_kind_catalog_is_exactly_the_twenty_one() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 24);
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(EVENT_KIND_COUNT, 25);
+        assert_eq!(kinds.len(), 25);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -877,9 +915,10 @@ mod tests {
     #[test]
     fn event_kind_durability_marks_only_llm_delta_and_context_updated_live_only() {
         let durable: Vec<bool> = EventKind::ALL.iter().map(|k| k.is_durable()).collect();
-        assert_eq!(durable.iter().filter(|d| !**d).count(), 3);
+        assert_eq!(durable.iter().filter(|d| !**d).count(), 4);
         assert!(!EventKind::LlmDelta.is_durable());
         assert!(!EventKind::ContextUpdated.is_durable());
+        assert!(!EventKind::McpStatus.is_durable());
         assert!(EventKind::TurnEnd.is_durable());
         assert!(EventKind::SessionStart.is_durable());
     }
@@ -1203,6 +1242,25 @@ mod tests {
             "session.bypass",
             serde_json::json!({"enabled":true,"by":"user:http"}),
         ));
+        cases.push((
+            "mcp.status",
+            serde_json::to_value(McpStatus {
+                incarnation: Ulid::generate(),
+                revision: 3,
+                servers: vec![McpServerView {
+                    server_id: "github".into(),
+                    transport: "stdio".into(),
+                    state: "failed".into(),
+                    tool_count: 0,
+                    skipped_tools: vec!["bad: invalid schema".into()],
+                    skipped_more: 0,
+                    error: Some("MCP startup timed out".into()),
+                    stderr_tail: "listening".into(),
+                    stderr_truncated: false,
+                }],
+            })
+            .unwrap(),
+        ));
         assert_eq!(cases.len(), EVENT_KIND_COUNT);
 
         for (kind, payload) in cases {
@@ -1379,10 +1437,12 @@ mod tests {
         }
         // Missing fields and a wrong index type are rejected.
         assert!(serde_json::from_value::<StreamDelta>(json!({"delta_type": "text"})).is_err());
-        assert!(serde_json::from_value::<StreamDelta>(
-            json!({"delta_type": "tool_call_started", "index": "0", "name": "x"})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<StreamDelta>(
+                json!({"delta_type": "tool_call_started", "index": "0", "name": "x"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

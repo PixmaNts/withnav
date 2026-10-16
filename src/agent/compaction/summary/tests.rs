@@ -1,7 +1,7 @@
 use super::*;
+use crate::provider::ToolCall;
 use crate::provider::openai::{RequestFunction, RequestToolCall};
 use crate::provider::test_support::{http_sse, sse_body};
-use crate::provider::ToolCall;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,7 +10,12 @@ use tokio::sync::Mutex;
 
 #[test]
 fn size_overflows_parse_gateway_openai_and_payload_limits_only() {
-    assert_eq!(overflow_limit("provider API error (status 400): Input exceeds context window: estimated 362438 input tokens, limit 128000. Reduce the prompt"), Some(Some(128000)));
+    assert_eq!(
+        overflow_limit(
+            "provider API error (status 400): Input exceeds context window: estimated 362438 input tokens, limit 128000. Reduce the prompt"
+        ),
+        Some(Some(128000))
+    );
     assert_eq!(overflow_limit("400 context_length_exceeded"), Some(None));
     assert_eq!(overflow_limit("413 message payload too large"), Some(None));
     assert_eq!(
@@ -249,15 +254,19 @@ async fn prepare_asks_the_model_once_without_tools_and_returns_a_checkpoint() {
     assert_eq!(v["model"], "m");
     assert!(v.get("tools").is_none());
     assert_eq!(v["messages"][0]["role"], "system");
-    assert!(v["messages"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Skills to reload"));
+    assert!(
+        v["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Skills to reload")
+    );
     assert_eq!(v["messages"][1]["role"], "user");
-    assert!(v["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("request 0"));
+    assert!(
+        v["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("request 0")
+    );
 }
 
 #[tokio::test]

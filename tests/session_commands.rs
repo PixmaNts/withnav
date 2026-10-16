@@ -3,15 +3,15 @@
 //! and `nav run`.
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::event::EventEnvelope;
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 
 mod common;
 use common::server::{
-    collect_until, post_message_ok, request_json, spawn_server, temp_workspace as tmp_ws,
-    TestServerConfig,
+    TestServerConfig, collect_until, post_message_ok, request_json, spawn_server,
+    temp_workspace as tmp_ws,
 };
 use common::sse::{http_sse, spawn_capturing_provider, sse_body};
 
@@ -115,9 +115,11 @@ async fn resume_resets_bypass_off_with_an_event_first() {
     );
     assert_eq!(summary.bypass_seq, resets[0].seq);
     // The earlier ON stays in the history; replay never restores it.
-    assert!(events
-        .iter()
-        .any(|e| e.kind == "session.bypass" && e.payload["enabled"] == true));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "session.bypass" && e.payload["enabled"] == true)
+    );
     state.close_session(id).await.unwrap();
 }
 
@@ -154,7 +156,9 @@ async fn help_lists_commands_and_publishes_a_result() {
         .collect();
     assert_eq!(
         names,
-        ["help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"]
+        [
+            "help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"
+        ]
     );
     assert_eq!(state.list_commands().len(), 9);
 
@@ -396,11 +400,13 @@ async fn http_endpoints_list_and_run_commands() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
     assert_eq!(body["data"]["model"], "mock/mock-model");
-    assert!(body["operation_id"]
-        .as_str()
-        .unwrap()
-        .parse::<ulid::Ulid>()
-        .is_ok());
+    assert!(
+        body["operation_id"]
+            .as_str()
+            .unwrap()
+            .parse::<ulid::Ulid>()
+            .is_ok()
+    );
     assert!(body.get("error").is_none());
 
     let (status, body) = request_json(
@@ -453,10 +459,12 @@ async fn bypass_http_requires_configured_authentication() {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["reason"], "auth_required");
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("bypass can only be changed by an authenticated client"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("bypass can only be changed by an authenticated client")
+        );
     }
     let (status, body) = request_json(
         &router,

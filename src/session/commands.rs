@@ -26,8 +26,7 @@ pub const COMMANDS: [CommandSpec; 9] = [
     },
     CommandSpec {
         name: "model",
-        description:
-            "Show the session's model alias, its context window and where the window comes from, or switch to another alias",
+        description: "Show the session's model alias, its context window and where the window comes from, or switch to another alias",
         args_hint: "[model]",
     },
     CommandSpec {
@@ -80,8 +79,7 @@ pub const ASK_PENDING_ERROR: &str =
     "the agent is waiting for an answer: reply to its question first, then run the command";
 
 /// The error text of a command sent while a tool call waits for approval.
-pub const PERMISSION_PENDING_ERROR: &str =
-    "a tool call is waiting for approval: answer the permission request (or stop the session) first, then run the command";
+pub const PERMISSION_PENDING_ERROR: &str = "a tool call is waiting for approval: answer the permission request (or stop the session) first, then run the command";
 
 /// The name as typed, without surrounding whitespace and without ONE leading
 /// `/`: the single normalisation every lookup, error and result goes through.
@@ -315,7 +313,9 @@ mod tests {
         let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
         assert_eq!(
             names,
-            ["help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"]
+            [
+                "help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"
+            ]
         );
         assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));
         assert_eq!(find("/help").map(|c| c.name), Some("help"));

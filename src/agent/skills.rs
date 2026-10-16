@@ -30,7 +30,7 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::agent::instructions::{directories_from_root, RulesRoots};
+use crate::agent::instructions::{RulesRoots, directories_from_root};
 
 mod catalog;
 pub(crate) mod frontmatter;
@@ -38,7 +38,7 @@ mod tool;
 pub mod validation;
 
 pub use catalog::{MAX_DESCRIPTION_CHARS, MAX_TOKENS};
-pub use tool::{SkillTool, MAX_BODY_BYTES, MAX_RESOURCES};
+pub use tool::{MAX_BODY_BYTES, MAX_RESOURCES, SkillTool};
 
 /// The deepest level, below a skill root, a `SKILL.md` may sit at.
 pub const MAX_DEPTH: usize = 8;
@@ -151,7 +151,7 @@ impl Skills {
         let skill = match self.resolve(name) {
             Resolution::Found(skill) if self.listed().iter().any(|s| s.name == name) => skill,
             Resolution::Disabled => {
-                return Err(format!("skill_disabled: skill {name} is disabled"))
+                return Err(format!("skill_disabled: skill {name} is disabled"));
             }
             Resolution::Ambiguous(_) => {
                 #[cfg(windows)]
@@ -321,15 +321,14 @@ impl Walk {
     fn add_root(&mut self, dir: PathBuf, rank: Rank) {
         // An absent root is normal; one reached twice (a link, a home that is
         // the worktree) keeps its best rank.
-        if let Ok(canonical) = crate::tools::canonical_path(&dir) {
-            if canonical.is_dir()
-                && !self
-                    .roots
-                    .iter()
-                    .any(|(r, _)| crate::tools::path_key(r) == crate::tools::path_key(&canonical))
-            {
-                self.roots.push((canonical, rank));
-            }
+        if let Ok(canonical) = crate::tools::canonical_path(&dir)
+            && canonical.is_dir()
+            && !self
+                .roots
+                .iter()
+                .any(|(r, _)| crate::tools::path_key(r) == crate::tools::path_key(&canonical))
+        {
+            self.roots.push((canonical, rank));
         }
     }
 

@@ -1,7 +1,7 @@
 //! Command catalog and key mapping; no I/O or rendering.
 use super::{
     protocol::{Action, Mode, Overlay},
-    state::{State, VariantPick, NO_VARIANT},
+    state::{NO_VARIANT, State, VariantPick},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy)]
@@ -177,10 +177,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "drag / double-click",
         "select text / word; release copies via OSC 52",
     ),
-    (
-        "y / ctrl+shift+c",
-        "y copies; multi-block selections group sender names",
-    ),
+    ("ctrl+shift+c", "multi-block selections group sender names"),
     (
         "shift+drag",
         "native selection; OSC 52: tmux set-clipboard on",

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::ProviderError;
 use crate::provider::config::{ProviderConfig, Variant};
 use crate::provider::openai::{ChatRequest, ClientCache};
-use crate::provider::{extract_error_message, start_and_consume, AssistantMessage, StreamDelta};
+use crate::provider::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
 
 /// The largest model list accepted.
 const MAX_CATALOG_BYTES: usize = 2_000_000;

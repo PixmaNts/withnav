@@ -32,7 +32,7 @@ async fn deletion_reply_survives_origin_tab_closure_and_missing_is_silent() {
 #[tokio::test]
 async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
     for (read_only, promptable) in [(true, true), (false, false)] {
         let mut runtime = Runtime::new(&options(None));
@@ -113,13 +113,18 @@ async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
         }
         assert!(text.contains("historical request"), "{text}");
         runtime.ui.selected_block = Some("permission:R".into());
-        assert!(runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
-        assert!(runtime
-            .state
-            .notice
-            .as_deref()
-            .unwrap()
-            .starts_with("Copied "));
+        assert!(runtime.selection_key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(
+            runtime
+                .state
+                .notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Copied ")
+        );
         for key in [KeyCode::Char('a'), KeyCode::Char('n'), KeyCode::Esc] {
             if let Some(action) = crate::tui::input::route_key(
                 KeyEvent::new(key, KeyModifiers::NONE),
@@ -127,12 +132,10 @@ async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
                 &mut runtime.ui,
                 &mut runtime.editor,
             ) {
-                assert!(crate::tui::reducer::handle_action(
-                    &mut runtime.state,
-                    &mut runtime.ui,
-                    action
-                )
-                .is_empty());
+                assert!(
+                    crate::tui::reducer::handle_action(&mut runtime.state, &mut runtime.ui, action)
+                        .is_empty()
+                );
             }
         }
         assert!(runtime.ui.child_confirm.is_none());
@@ -159,7 +162,7 @@ async fn initial_model_catalog_preview_uses_default_variant_without_sending_an_o
 }
 
 #[tokio::test]
-async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
+async fn ctrl_shift_c_copies_a_block_and_plain_y_is_never_intercepted() {
     use crate::tui::state::{Block, BlockKind, Focus};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut runtime = Runtime::new(&options(None));
@@ -170,13 +173,19 @@ async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
     });
     runtime.ui.focus = Focus::Transcript;
     runtime.ui.selected_block = Some("permission".into());
-    assert!(runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
-    assert!(runtime
-        .state
-        .notice
-        .as_deref()
-        .unwrap()
-        .starts_with("Copied "));
+    assert!(!runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+    assert!(runtime.selection_key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+    )));
+    assert!(
+        runtime
+            .state
+            .notice
+            .as_deref()
+            .unwrap()
+            .starts_with("Copied ")
+    );
     p.resolution = None;
     runtime.state.conversation.blocks[0].kind = BlockKind::Permission(p);
     runtime
@@ -191,7 +200,7 @@ async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
 async fn transcript_mouse_ignores_sidebar_and_scrolls_after_capture() {
     use crate::tui::state::{Block, BlockKind};
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let mut runtime = Runtime::new(&options(None));
     runtime.state.conversation.blocks.push(Block {
         id: "reply".into(),
@@ -240,7 +249,7 @@ async fn transcript_mouse_ignores_sidebar_and_scrolls_after_capture() {
 async fn keyboard_viewport_survives_mouse_and_wheel() {
     use crate::tui::state::{Block, BlockKind};
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let mut runtime = Runtime::new(&options(None));
     for i in 0..100 {
         runtime.state.conversation.blocks.push(Block {
@@ -369,8 +378,8 @@ async fn delete_effect_reports_errors_with_session_and_generation() {
 #[tokio::test]
 async fn delete_effect_encodes_ids_and_treats_missing_as_already_deleted() {
     use wiremock::{
-        matchers::{header, method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path},
     };
     for (status, deleted) in [(204, true), (404, false)] {
         let server = MockServer::start().await;
@@ -453,7 +462,9 @@ async fn http_effects_report_back_tagged_with_the_context_generation() {
     seen.sort_unstable();
     assert_eq!(
         seen,
-        ["created", "metadata", "models", "resumed", "sessions", "stopped"]
+        [
+            "created", "metadata", "models", "resumed", "sessions", "stopped"
+        ]
     );
 }
 

@@ -162,10 +162,10 @@ pub(crate) fn approval_text(kind: &BlockKind) -> Vec<String> {
                 ],
             ),
         ] {
-            if let Some(value) = verdicts[key].as_str() {
-                if let Some((_, label)) = values.iter().find(|(v, _)| *v == value) {
-                    evidence.push((*label).to_string());
-                }
+            if let Some(value) = verdicts[key].as_str()
+                && let Some((_, label)) = values.iter().find(|(v, _)| *v == value)
+            {
+                evidence.push((*label).to_string());
             }
         }
         if let Some(reason) = gate["reason"].as_str().filter(|s| !s.is_empty()) {

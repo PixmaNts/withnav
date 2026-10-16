@@ -1,6 +1,6 @@
 //! Offline legacy capture adapter: original question and state provenance are mandatory.
 use instinct_flow::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub fn capture(value: &Value, definition: &CompiledDefinition) -> anyhow::Result<RunRecord> {

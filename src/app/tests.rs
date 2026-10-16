@@ -95,15 +95,17 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
     ]);
     assert!(cli.is_ok());
     assert!(Cli::try_parse_from(["nav", "tui", "--model", "fast", "--session", "01ABC"]).is_err());
-    assert!(Cli::try_parse_from([
-        "nav",
-        "tui",
-        "--models",
-        "models.json",
-        "--url",
-        "http://localhost"
-    ])
-    .is_err());
+    assert!(
+        Cli::try_parse_from([
+            "nav",
+            "tui",
+            "--models",
+            "models.json",
+            "--url",
+            "http://localhost"
+        ])
+        .is_err()
+    );
     let help = Cli::command().render_long_help().to_string();
     assert!(help.contains("tui"));
 }
@@ -124,7 +126,7 @@ fn web_flags_parse() {
         "--no-open",
     ])
     .expect("parses");
-    let Commands::Web(args) = cli.command else {
+    let Commands::Web(args) = cli.into_command() else {
         panic!("not the web command");
     };
     assert_eq!(
@@ -135,7 +137,9 @@ fn web_flags_parse() {
     assert_eq!(args.port, 7399);
     assert!(args.no_open);
 
-    let Commands::Web(defaults) = Cli::try_parse_from(["nav", "web"]).expect("parses").command
+    let Commands::Web(defaults) = Cli::try_parse_from(["nav", "web"])
+        .expect("parses")
+        .into_command()
     else {
         panic!("not the web command");
     };
@@ -149,6 +153,23 @@ fn web_flags_parse() {
 fn bogus_subcommand_is_error() {
     let result = Cli::try_parse_from(["nav", "bogus-subcommand"]);
     assert!(result.is_err());
+}
+
+#[test]
+fn bare_nav_opens_the_terminal_client() {
+    let Commands::Tui(args) = Cli::try_parse_from(["nav"]).unwrap().into_command() else {
+        panic!("not the tui command");
+    };
+    assert!(args.session.is_none());
+    let Commands::Tui(args) = Cli::try_parse_from(["nav", "--session", "01ABC"])
+        .unwrap()
+        .into_command()
+    else {
+        panic!("not the tui command");
+    };
+    assert_eq!(args.session.as_deref(), Some("01ABC"));
+    assert!(Cli::try_parse_from(["nav", "--model", "x", "run"]).is_err());
+    assert!(Cli::try_parse_from(["nav", "tui", "--session", "01ABC"]).is_ok());
 }
 
 // --- event_to_ui render-parity ---

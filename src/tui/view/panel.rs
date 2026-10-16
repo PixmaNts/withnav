@@ -1,41 +1,28 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
-//! Agents (the session's agent, its role, and the agents it started), Context (the breakdown of the
-//! last snapshot and the last compaction), Skills (the catalog counts) and Changes (the files git
-//! reports). A section with nothing reported yet shows `—`; none is made up.
+//! Agents (the session's agent and the agents it started), Context (the breakdown of the
+//! last snapshot and the last compaction), Skills · MCP · Plugins (the skill catalog counts, the
+//! skills the model loaded, a dot per MCP server of the service), Layers (one dot each, from
+//! the assignment check and the conversation's activity) and Changes (the files git reports). A
+//! section with nothing reported yet shows `—`; none is made up.
 use super::text::{columns, fit_end as fit, fit_start};
+use crate::tools::ToolStatus;
 use crate::tui::{
     reducer::tokens,
-    state::{State, UiState},
+    state::{Activity, BlockKind, ConnectionStatus, State, UiState},
     theme::Theme,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 /// Columns the column takes, its left border included.
 pub const WIDTH: u16 = 36;
 /// Below this terminal width the column hides itself, unless the Captain asked for it.
 pub const MIN_TERMINAL_WIDTH: u16 = 140;
-/// The roles of the two primary agents. Their names are reserved, so no agent file replaces them;
-/// the TUI is a client and reads no agent code, and a test keeps these equal to the server's.
-pub const PRIMARY_ROLES: [(&str, &str); 2] = [
-    ("build", "Implements the task, verifies it and reports"),
-    (
-        "plan",
-        "Researches, writes markdown plans and delegates; never changes code",
-    ),
-];
-
-fn role(agent: &str) -> Option<&'static str> {
-    PRIMARY_ROLES
-        .iter()
-        .find(|(id, _)| *id == agent)
-        .map(|(_, role)| *role)
-}
 
 /// Whether the column is drawn on a terminal `width` columns wide.
 pub fn shown(ui: &UiState, width: u16) -> bool {
@@ -73,6 +60,48 @@ fn none(theme: &Theme) -> Line<'static> {
     Line::styled(" —", theme.muted())
 }
 
+/// One dot per layer: green ready, orange busy, red off. Reflex is not listed: it needs the
+/// editor's language server, which the terminal client does not run.
+fn layers(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Layers", theme)];
+    for layer in state.layers.iter().filter(|l| l.layer != "reflex") {
+        let (style, label) = if layer.status == "usable" {
+            let role = match layer.layer.as_str() {
+                "instinct" => "triage",
+                "metacognition" => "beacon",
+                other => other,
+            };
+            (theme.success(), role.to_owned())
+        } else {
+            let why = layer.reason.clone().unwrap_or_else(|| layer.status.clone());
+            (theme.error(), why)
+        };
+        lines.push(dot(&layer.layer, label, width, style, theme));
+    }
+    let (style, label) = match (state.connection, state.activity) {
+        (ConnectionStatus::Connected, Activity::Running) => (theme.warning(), "busy"),
+        (ConnectionStatus::Connected, Activity::AwaitingUser) => {
+            (theme.warning(), "waiting for you")
+        }
+        (ConnectionStatus::Connected, Activity::OutOfSteps) => (theme.warning(), "out of steps"),
+        (ConnectionStatus::Connected, _) => (theme.success(), "idle"),
+        _ => (theme.error(), "offline"),
+    };
+    lines.push(dot("nav", label.to_owned(), width, style, theme));
+    lines
+}
+
+/// ` ● name  label`, the label cut to the width that is left.
+fn dot(name: &str, label: String, width: usize, style: Style, theme: &Theme) -> Line<'static> {
+    let name = format!("{name}  ");
+    let room = width.saturating_sub(3 + columns(&name));
+    Line::from(vec![
+        Span::styled(" ● ", style),
+        Span::styled(name, theme.text()),
+        Span::styled(fit(&label, room), theme.muted()),
+    ])
+}
+
 fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let agent = state.agent_name();
     let style = super::sidebar::agent_style(agent, theme);
@@ -98,26 +127,11 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     ) {
         lines.push(Line::styled(format!(" {part}"), theme.text()));
     }
-    if let Some(entry) = state.agents.iter().find(|a| a.id == agent) {
-        if let Some(assigned) = &entry.assignment {
-            for part in wrap(
-                &format!("assigned: {}", assigned.model),
-                width.saturating_sub(2),
-            ) {
-                lines.push(Line::styled(format!(" {part}"), theme.muted()));
-            }
-        }
-        if let Some(warning) = &entry.warning {
-            for part in wrap(warning, width.saturating_sub(2)) {
-                lines.push(Line::styled(format!(" {part}"), theme.warning()));
-            }
-        }
-    }
-    // The role of build or plan; another agent's comes from its file, which the server does not
-    // send, so none is shown.
-    if let Some(description) = role(agent) {
-        for part in wrap(description, width.saturating_sub(3)) {
-            lines.push(Line::styled(format!("   {part}"), theme.muted()));
+    if let Some(entry) = state.agents.iter().find(|a| a.id == agent)
+        && let Some(warning) = &entry.warning
+    {
+        for part in wrap(warning, width.saturating_sub(2)) {
+            lines.push(Line::styled(format!(" {part}"), theme.warning()));
         }
     }
     for child in &state.children {
@@ -183,12 +197,53 @@ fn context(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     lines
 }
 
-fn skills(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines = vec![title("Skills", theme)];
+/// The skills the model loaded in this conversation: the `skill` calls that succeeded, each
+/// name once, in the order it was first loaded.
+fn loaded_skills(state: &State) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for block in &state.conversation.blocks {
+        if let BlockKind::ToolCall {
+            name, args, status, ..
+        } = &block.kind
+            && name == "skill"
+            && *status == Some(ToolStatus::Ok)
+            && let Some(skill) = args.get("name").and_then(|n| n.as_str())
+            && !names.iter().any(|n| n == skill)
+        {
+            names.push(skill.to_owned());
+        }
+    }
+    names
+}
+
+/// The colour of an MCP server's dot: green ready, orange starting, red failed, muted off.
+fn mcp_style(state: &str, theme: &Theme) -> Style {
+    match state {
+        "ready" => theme.success(),
+        "starting" => theme.warning(),
+        "failed" => theme.error(),
+        _ => theme.muted(),
+    }
+}
+
+/// Most servers listed; the others are counted on one line.
+const MCP_ROWS: usize = 10;
+
+/// What the conversation can call on beyond its built-in tools: the skills (the catalog
+/// counts and the ones the model loaded), the service's MCP servers, and the plugins (none
+/// yet). The servers' status is the service's, not this conversation's: a session keeps the
+/// tools it was created with.
+fn extensions(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Skills · MCP · Plugins", theme)];
     match &state.conversation.context {
-        None => lines.push(none(theme)),
+        None => lines.push(row("skills", "—".into(), width, theme)),
         Some(c) => {
-            lines.push(row("listed", c.skills.listed.to_string(), width, theme));
+            lines.push(row(
+                "skills listed",
+                c.skills.listed.to_string(),
+                width,
+                theme,
+            ));
             if c.skills.omitted > 0 {
                 lines.push(styled_row(
                     "omitted, no room",
@@ -196,6 +251,47 @@ fn skills(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                     width,
                     theme.warning(),
                     theme.warning(),
+                ));
+            }
+        }
+    }
+    let loaded = loaded_skills(state);
+    if !loaded.is_empty() {
+        lines.push(row("model loaded", loaded.len().to_string(), width, theme));
+        for part in wrap(&loaded.join(" · "), width.saturating_sub(3)) {
+            lines.push(Line::styled(format!("   {part}"), theme.text()));
+        }
+    }
+    match &state.mcp {
+        None => lines.push(row("mcp", "—".into(), width, theme)),
+        Some(mcp) if mcp.servers.is_empty() => {
+            lines.push(Line::styled(" no MCP server", theme.muted()));
+        }
+        Some(mcp) => {
+            let shown = if mcp.servers.len() <= MCP_ROWS {
+                mcp.servers.len()
+            } else {
+                MCP_ROWS - 1
+            };
+            for server in &mcp.servers[..shown] {
+                let label = match server.state.as_str() {
+                    "ready" if server.tool_count == 1 => "1 tool".to_owned(),
+                    "ready" => format!("{} tools", server.tool_count),
+                    "failed" => server.error.clone().unwrap_or_else(|| "failed".into()),
+                    other => other.to_owned(),
+                };
+                lines.push(dot(
+                    &format!("mcp:{}", server.server_id),
+                    label,
+                    width,
+                    mcp_style(&server.state, theme),
+                    theme,
+                ));
+            }
+            if mcp.servers.len() > shown {
+                lines.push(Line::styled(
+                    format!("   {} more", mcp.servers.len() - shown),
+                    theme.muted(),
                 ));
             }
         }
@@ -271,44 +367,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     };
     let width = usize::from(inner.width);
     let mut lines = agents(state, width, theme);
-    for section in [context(state, width, theme), skills(state, width, theme)] {
+    for section in [
+        context(state, width, theme),
+        extensions(state, width, theme),
+        layers(state, width, theme),
+    ] {
         lines.push(Line::raw(""));
         lines.extend(section);
     }
-    lines.push(Line::raw(""));
-    lines.push(title("Lower layers · config", theme));
-    for layer in &state.layers {
-        let kind = match layer.layer.as_str() {
-            "reflex" => "Completion · FIM",
-            "instinct" => "Triage",
-            "metacognition" => "Beacon",
-            _ => "Nav and the crew",
-        };
-        lines.push(Line::styled(
-            format!(" {} · {kind}", layer.layer),
-            theme.accent(),
-        ));
-        for part in wrap(
-            layer.model.as_deref().unwrap_or("unassigned"),
-            width.saturating_sub(2),
-        ) {
-            lines.push(Line::styled(format!(" {part}"), theme.text()));
-        }
-        lines.push(Line::styled(
-            format!(
-                " {} · {}",
-                layer.variant.as_deref().unwrap_or("off"),
-                layer.status
-            ),
-            theme.muted(),
-        ));
-        if let Some(reason) = &layer.reason {
-            for part in wrap(reason, width.saturating_sub(2)) {
-                lines.push(Line::styled(format!(" {part}"), theme.warning()));
-            }
-        }
-    }
-    lines.push(Line::styled(" Assignments: config.json", theme.muted()));
     let left = usize::from(inner.height).saturating_sub(lines.len() + 1);
     if let Some(section) = changes(state, width, left, theme).filter(|_| left >= 3) {
         lines.push(Line::raw(""));

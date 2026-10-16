@@ -4,10 +4,10 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 
 mod common;
 use common::server::TestServerConfig;

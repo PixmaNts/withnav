@@ -42,6 +42,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         ClientEvent::Agents { generation, .. } | ClientEvent::Layers { generation, .. } => {
             generation
         }
+        ClientEvent::Mcp { generation, .. } => generation,
         ClientEvent::ChildEnvelope { generation, .. } => generation,
         ClientEvent::Envelope { generation, .. }
         | ClientEvent::Resync { generation }
@@ -197,6 +198,29 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.generation = generation;
 }
 
+/// Keeps `snapshot` unless the one held is newer: a higher revision of the same service
+/// incarnation. A snapshot of another incarnation (the server restarted) always replaces it.
+/// The read at connection and the live event can arrive in either order; neither goes back.
+/// Server text is drawn on the terminal: control characters are removed first.
+pub(crate) fn keep_newer_mcp(s: &mut State, mut snapshot: crate::bus::event::McpStatus) {
+    let older = s.mcp.as_ref().is_some_and(|held| {
+        held.incarnation == snapshot.incarnation && held.revision > snapshot.revision
+    });
+    if older {
+        return;
+    }
+    for server in &mut snapshot.servers {
+        server.server_id = strip_controls(&server.server_id);
+        server.state = strip_controls(&server.state);
+        server.error = server.error.as_deref().map(strip_controls);
+        server.stderr_tail = strip_controls(&server.stderr_tail);
+        for skipped in &mut server.skipped_tools {
+            *skipped = strip_controls(skipped);
+        }
+    }
+    s.mcp = Some(snapshot);
+}
+
 /// Keeps what a `/variant` answer says the conversation offers.
 pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
     if let Some(offered) = data["offered"].as_array() {
@@ -345,6 +369,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         e,
         ClientEvent::Models { .. }
             | ClientEvent::Layers { .. }
+            | ClientEvent::Mcp { .. }
             | ClientEvent::Sessions { .. }
             | ClientEvent::Commands { .. }
             | ClientEvent::SettingsNotSaved { .. }
@@ -362,7 +387,8 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
     // A gauge refresh is not news: only conversation events mark a background tab unread.
     if background
         && matches!(&e, ClientEvent::Envelope { envelope, .. }
-            if envelope.kind != crate::bus::event::EventKind::ContextUpdated.as_str())
+            if envelope.kind != crate::bus::event::EventKind::ContextUpdated.as_str()
+                && envelope.kind != crate::bus::event::EventKind::McpStatus.as_str())
     {
         s.tabs[index].unread = true;
     }
@@ -416,35 +442,31 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             .flatten();
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
-            if s.read_only() && s.last_applied_seq.is_none_or(|seq| envelope.seq > seq) {
-                if let Some(id) = s
+            if s.read_only()
+                && s.last_applied_seq.is_none_or(|seq| envelope.seq > seq)
+                && let Some(id) = s
                     .session
                     .as_ref()
                     .map(|m| m.session_id.clone())
                     .or(s.resuming.clone())
+            {
+                if super::state::ChildStatus::terminal_event(&envelope).is_some()
+                    || (envelope.kind == "turn.end"
+                        && matches!(envelope.payload["outcome"].as_str(), Some("done" | "error")))
                 {
-                    if super::state::ChildStatus::terminal_event(&envelope).is_some()
-                        || (envelope.kind == "turn.end"
-                            && matches!(
-                                envelope.payload["outcome"].as_str(),
-                                Some("done" | "error")
-                            ))
-                    {
-                        effects.push(Effect::FetchChildTerminalMetadata(id.clone()));
-                    }
-                    project_child(s, &id, &envelope);
+                    effects.push(Effect::FetchChildTerminalMetadata(id.clone()));
                 }
+                project_child(s, &id, &envelope);
             }
             envelope::apply_envelope(s, envelope)?;
-            if selection_changed {
-                if let Some(id) = s
+            if selection_changed
+                && let Some(id) = s
                     .session
                     .as_ref()
                     .map(|m| m.session_id.clone())
                     .or(s.resuming.clone())
-                {
-                    effects.push(Effect::FetchAgents(Some(id)));
-                }
+            {
+                effects.push(Effect::FetchAgents(Some(id)));
             }
             let terminal = s
                 .children
@@ -510,8 +532,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         }
         ClientEvent::StreamConnected { .. } => {
             s.connection = ConnectionStatus::Connected;
-            // `context.updated` is live-only: what was missed before this subscription (a
-            // reconnect, or the gap since the session was created) is read back here.
+            // `context.updated` and `mcp.status` are live-only: what was missed before this
+            // subscription (a reconnect, or the gap since the session was created) is read back.
             s.conversation.context_epoch += 1;
             if let Some(m) = &s.session {
                 effects.push(Effect::FetchContext {
@@ -519,6 +541,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     epoch: s.conversation.context_epoch,
                 });
             }
+            effects.push(Effect::FetchMcp);
         }
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
         ClientEvent::Reconnecting { .. } => s.connection = ConnectionStatus::Reconnecting,
@@ -614,6 +637,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 s.layers = body.layers;
             }
         }
+        // A failed read keeps what is shown: the next event or reconnection brings it back.
+        ClientEvent::Mcp { result, .. } => {
+            if let Ok(snapshot) = result {
+                keep_newer_mcp(s, snapshot);
+            }
+        }
         ClientEvent::PermissionAnswered {
             request_id, result, ..
         } => {
@@ -661,11 +690,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         } => {
             if let Err(error) = result {
                 for block in &mut s.conversation.blocks {
-                    if let BlockKind::Question(p) = &mut block.kind {
-                        if p.call_id == call_id && p.answer.is_none() {
-                            p.sending = false;
-                            p.error = Some(error.clone());
-                        }
+                    if let BlockKind::Question(p) = &mut block.kind
+                        && p.call_id == call_id
+                        && p.answer.is_none()
+                    {
+                        p.sending = false;
+                        p.error = Some(error.clone());
                     }
                 }
             }
@@ -686,14 +716,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             Ok(response) => {
                 if name == "bypass" {
                     s.bypass_pending = false;
-                    if response.ok {
-                        if let Some(data) = response.data.clone() {
-                            if let Ok(r) =
-                                serde_json::from_value::<super::protocol::BypassResponse>(data)
-                            {
-                                keep_bypass(s, r.enabled, r.bypass_seq);
-                            }
-                        }
+                    if response.ok
+                        && let Some(data) = response.data.clone()
+                        && let Ok(r) =
+                            serde_json::from_value::<super::protocol::BypassResponse>(data)
+                    {
+                        keep_bypass(s, r.enabled, r.bypass_seq);
                     }
                 }
                 if name == "model" {
@@ -772,11 +800,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         tab.session
                             .as_ref()
                             .is_some_and(|m| m.session_id == entry.id)
-                    }) {
-                        if entry.bypass_seq >= tab.bypass_seq {
-                            tab.bypass = entry.bypass;
-                            tab.bypass_seq = entry.bypass_seq;
-                        }
+                    }) && entry.bypass_seq >= tab.bypass_seq
+                    {
+                        tab.bypass = entry.bypass;
+                        tab.bypass_seq = entry.bypass_seq;
                     }
                 }
                 seed_children(s);
@@ -910,10 +937,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         }
         // An older server has no endpoint: the gauge stays on the provider's count.
         ClientEvent::Context { epoch, result, .. } => {
-            if let Ok(snapshot) = result {
-                if epoch == s.conversation.context_epoch {
-                    envelope::keep_newer_context(s, snapshot);
-                }
+            if let Ok(snapshot) = result
+                && epoch == s.conversation.context_epoch
+            {
+                envelope::keep_newer_context(s, snapshot);
             }
         }
         ClientEvent::Submitted {

@@ -3,24 +3,24 @@ use std::os::unix::fs::PermissionsExt;
 mod common;
 
 use axum::{
+    Json, Router,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
 use withnav::app::{
-    doctor::{inspect, DoctorLayer, Report, Status},
     DoctorArgs,
+    doctor::{DoctorLayer, Report, Status, inspect},
 };
 
 const SECRET: &str = "secret-doctor-auth-sentinel";
@@ -401,43 +401,59 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
     let before = snapshot(root.path());
     let report = inspect(&args, &config, None, None).await;
     assert_eq!(report.exit_code(), 1, "{}", report.human());
-    assert!(check(&report, "assignment.layer.instinct")
-        .value
-        .contains("must use"));
-    assert!(check(&report, "assignment.agent.plan")
-        .value
-        .contains("invalid variant"));
-    assert!(check(&report, "assignment.agent.vigie")
-        .value
-        .contains("inherits parent"));
-    assert!(check(&report, "assignment.compaction")
-        .value
-        .contains("writer=session"));
-    assert!(check(&report, "variant.metacognition")
-        .value
-        .contains("off"));
-    assert!(report
-        .checks
-        .iter()
-        .find(|c| c.id.contains("legacy.agent.") && c.id.ends_with(".explore"))
-        .unwrap()
-        .hint
-        .as_ref()
-        .unwrap()
-        .contains("vigie"));
-    assert!(check(&report, "agent.configured.ghost")
-        .value
-        .contains("unknown"));
+    assert!(
+        check(&report, "assignment.layer.instinct")
+            .value
+            .contains("must use")
+    );
+    assert!(
+        check(&report, "assignment.agent.plan")
+            .value
+            .contains("invalid variant")
+    );
+    assert!(
+        check(&report, "assignment.agent.vigie")
+            .value
+            .contains("inherits parent")
+    );
+    assert!(
+        check(&report, "assignment.compaction")
+            .value
+            .contains("writer=session")
+    );
+    assert!(
+        check(&report, "variant.metacognition")
+            .value
+            .contains("off")
+    );
+    assert!(
+        report
+            .checks
+            .iter()
+            .find(|c| c.id.contains("legacy.agent.") && c.id.ends_with(".explore"))
+            .unwrap()
+            .hint
+            .as_ref()
+            .unwrap()
+            .contains("vigie")
+    );
+    assert!(
+        check(&report, "agent.configured.ghost")
+            .value
+            .contains("unknown")
+    );
     assert!(!serde_json::to_string(&report).unwrap().contains(SECRET));
     assert_eq!(snapshot(root.path()), before);
     assert_eq!(
         check(&report, "flows.workspace.broken.toml").status,
         Status::Failed
     );
-    assert!(!report
-        .checks
-        .iter()
-        .any(|check| check.id.contains("workspace_trust") || check.id.contains("trust_file")));
+    assert!(
+        !report
+            .checks
+            .iter()
+            .any(|check| check.id.contains("workspace_trust") || check.id.contains("trust_file"))
+    );
     // The editor server is nav lsp, including after migration of a legacy path.
     let home = root.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -650,14 +666,16 @@ async fn cli_json_exit_codes_and_trace_logs_never_include_provider_secrets() {
                         .find(|c| c["id"] == id)
                         .unwrap();
                     assert_eq!(result["status"], "warning");
-                    assert!(result["hint"]
-                        .as_str()
-                        .unwrap()
-                        .contains(if path == &legacy {
-                            "withnav"
-                        } else {
-                            ".withnav"
-                        }));
+                    assert!(
+                        result["hint"]
+                            .as_str()
+                            .unwrap()
+                            .contains(if path == &legacy {
+                                "withnav"
+                            } else {
+                                ".withnav"
+                            })
+                    );
                 }
             }
         }
@@ -679,18 +697,24 @@ async fn agent_precedence_parent_inheritance_and_invalid_default() {
     settings["agents"]["custom"] = json!({"model":"fake/chat","variant":"off"});
     std::fs::write(&config_path, settings.to_string()).unwrap();
     let report = inspect(&args, &config, None, None).await;
-    assert!(check(&report, "assignment.agent.custom")
-        .value
-        .contains("variant=off (config)"));
-    assert!(check(&report, "assignment.agent.mousse")
-        .value
-        .contains("inherits parent's"));
+    assert!(
+        check(&report, "assignment.agent.custom")
+            .value
+            .contains("variant=off (config)")
+    );
+    assert!(
+        check(&report, "assignment.agent.mousse")
+            .value
+            .contains("inherits parent's")
+    );
     settings["agents"].as_object_mut().unwrap().remove("custom");
     std::fs::write(&config_path, settings.to_string()).unwrap();
     let report = inspect(&args, &config, None, None).await;
-    assert!(check(&report, "assignment.agent.custom")
-        .value
-        .contains("unknown"));
+    assert!(
+        check(&report, "assignment.agent.custom")
+            .value
+            .contains("unknown")
+    );
     assert_eq!(report.exit_code(), 0);
     settings["default_agent"] = json!("custom");
     std::fs::write(config_path, settings.to_string()).unwrap();

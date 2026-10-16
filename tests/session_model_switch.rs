@@ -5,17 +5,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::event::EventEnvelope;
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
 mod common;
-use common::server::{collect_until, send_text, wait_for, TestServerConfig};
+use common::server::{TestServerConfig, collect_until, send_text, wait_for};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body, text_chunk,
-    tool_call_chunk, CapturingProvider,
+    CapturingProvider, http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body,
+    text_chunk, tool_call_chunk,
 };
 
 const SUMMARY: &str = "Goal: finish the parser.\nNext: run the tests.";
@@ -526,12 +526,16 @@ fn assert_projection_without_reasoning(request: &Value) {
         "{request}"
     );
     // The tool exchange is kept as a pair; the reasoning-only message is gone.
-    assert!(messages
-        .iter()
-        .any(|m| m["role"] == "assistant" && m["tool_calls"][0]["id"] == "call_1"));
-    assert!(messages
-        .iter()
-        .any(|m| m["role"] == "tool" && m["tool_call_id"] == "call_1"));
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["role"] == "assistant" && m["tool_calls"][0]["id"] == "call_1")
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["role"] == "tool" && m["tool_call_id"] == "call_1")
+    );
     assert!(
         !messages.iter().any(|m| m["role"] == "assistant"
             && m.get("tool_calls").is_none()
@@ -620,11 +624,13 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
     assert!(b.bodies().is_empty());
     let request = body(&a, 0);
     assert_eq!(request["model"], "model-a");
-    assert!(request["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|m| m.get("reasoning_content").is_some()));
+    assert!(
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m.get("reasoning_content").is_some())
+    );
 
     let retry = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(retry.ok, "{retry:?}");

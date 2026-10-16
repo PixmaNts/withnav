@@ -33,7 +33,7 @@ impl FlowEffects for Effects {
                             runtime.effects().effect(flow, run_id, action, cancel).await
                         }
                         None => Err(ApplyError("workspace stopped".into())),
-                    }
+                    };
                 }
                 "log" => return Ok(()),
                 _ => return Err(ApplyError("unknown flow effect".into())),
@@ -160,10 +160,10 @@ pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: S
             let Some(turn_id) = event.payload["turn_id"].as_str() else {
                 continue;
             };
-            if event.kind == "llm.response" {
-                if let Some(text) = event.payload["message"]["text"].as_str() {
-                    texts.insert(turn_id.to_string(), text.to_string());
-                }
+            if event.kind == "llm.response"
+                && let Some(text) = event.payload["message"]["text"].as_str()
+            {
+                texts.insert(turn_id.to_string(), text.to_string());
             }
             if event.kind != "turn.end" {
                 continue;

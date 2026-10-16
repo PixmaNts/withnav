@@ -426,9 +426,10 @@ async fn concurrent_lookup_response(
 #[tokio::test]
 async fn concurrent_resolutions_make_one_request() {
     let all = concurrent_lookup_response(200, FIXTURE, 8).await;
-    assert!(all
-        .iter()
-        .all(|d| d.limits.as_ref().and_then(|l| l.context_length) == Some(1_000_000)));
+    assert!(
+        all.iter()
+            .all(|d| d.limits.as_ref().and_then(|l| l.context_length) == Some(1_000_000))
+    );
 }
 
 #[tokio::test]
@@ -893,10 +894,12 @@ async fn a_cache_file_with_a_zero_limit_is_ignored_and_refreshed() {
     // Fresh and valid JSON, but with a window of zero.
     seed(&catalog, &base, 0, OPUS, limits(0));
     assert!(read_cache(&cache_path(&catalog, &base)).is_none());
-    assert!(catalog
-        .cached(&resolved(&base, OPUS, ApiKind::Chat, None))
-        .limits
-        .is_none());
+    assert!(
+        catalog
+            .cached(&resolved(&base, OPUS, ApiKind::Chat, None))
+            .limits
+            .is_none()
+    );
     let d = lookup(&catalog, &base, OPUS).await;
     assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
     assert_eq!(requests(&server).await, 1, "the damaged file is refreshed");
@@ -928,12 +931,16 @@ fn a_saved_resolution_needs_a_positive_window() {
     assert!(ModelResolution::from_saved(&raw(&good)).is_ok());
     let mut zero_window = good.clone();
     zero_window.bounds.context_window = 0;
-    assert!(ModelResolution::from_saved(&raw(&zero_window))
-        .unwrap_err()
-        .contains("context_window"));
+    assert!(
+        ModelResolution::from_saved(&raw(&zero_window))
+            .unwrap_err()
+            .contains("context_window")
+    );
     let mut zero_input = good;
     zero_input.bounds.max_input_tokens = Some(0);
-    assert!(ModelResolution::from_saved(&raw(&zero_input))
-        .unwrap_err()
-        .contains("max_input_tokens"));
+    assert!(
+        ModelResolution::from_saved(&raw(&zero_input))
+            .unwrap_err()
+            .contains("max_input_tokens")
+    );
 }

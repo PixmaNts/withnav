@@ -3,10 +3,10 @@ use crate::tui::{
     theme::Theme,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 pub fn number(n: Option<u64>) -> String {
@@ -52,8 +52,32 @@ fn home() -> Option<String> {
     crate::paths::home_dir().and_then(|home| home.into_os_string().into_string().ok())
 }
 
+/// The MCP servers in a few columns: `mcp 2/3` (ready over enabled), in red when one failed,
+/// orange while one starts, green when all are ready. `None` before the first status or when no
+/// server is enabled.
+fn mcp_summary(state: &State, theme: &Theme) -> Option<[Span<'static>; 2]> {
+    let servers = &state.mcp.as_ref()?.servers;
+    let enabled = servers.iter().filter(|s| s.state != "disabled").count();
+    if enabled == 0 {
+        return None;
+    }
+    let ready = servers.iter().filter(|s| s.state == "ready").count();
+    let style = if servers.iter().any(|s| s.state == "failed") {
+        theme.error()
+    } else if servers.iter().any(|s| s.state == "starting") {
+        theme.warning()
+    } else {
+        theme.success()
+    };
+    Some([
+        Span::styled("mcp ", theme.muted()),
+        Span::styled(format!("{ready}/{enabled}   "), style),
+    ])
+}
+
 /// The status line: what the conversation is doing (connection, activity, a notice), then what
-/// the session used. The model, the agent and the context gauge are in the header.
+/// the session used and the MCP servers' summary. The model, the agent and the context gauge are
+/// in the header.
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     if area.height == 0 {
         return;
@@ -102,16 +126,23 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     if let Some(notice) = state.notice.as_deref() {
         parts.push(Span::styled(format!("   {notice}"), theme.warning()));
     }
-    // Right: what the session used, when it fits.
-    let right = [
+    // Right: the MCP summary and what the session used, when they fit; on a narrow line the
+    // summary gives way first (the right panel lists the servers).
+    let session = [
         Span::styled("session ", theme.muted()),
         Span::styled(number(state.conversation.session_tokens), theme.number()),
         Span::styled(" tok ", theme.muted()),
     ];
     let used: usize = parts.iter().map(Span::width).sum();
-    let wanted: usize = right.iter().map(Span::width).sum();
     let total = usize::from(area.width);
-    if used + wanted + 2 <= total {
+    let mut right: Vec<Span> = mcp_summary(state, theme).into_iter().flatten().collect();
+    right.extend(session);
+    let fits = |right: &[Span]| used + right.iter().map(Span::width).sum::<usize>() + 2 <= total;
+    if !fits(&right) {
+        right.drain(..right.len() - 3);
+    }
+    if fits(&right) {
+        let wanted: usize = right.iter().map(Span::width).sum();
         parts.push(Span::raw(" ".repeat(total - used - wanted)));
         parts.extend(right);
     }

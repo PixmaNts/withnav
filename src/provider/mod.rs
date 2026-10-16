@@ -105,17 +105,17 @@ impl Accumulator {
                 self.finish_reason = Some(reason);
             }
             let delta = choice.delta;
-            if let Some(thinking) = delta.reasoning_content {
-                if !thinking.is_empty() {
-                    self.thinking.push_str(&thinking);
-                    on_delta(StreamDelta::Thinking { text: thinking });
-                }
+            if let Some(thinking) = delta.reasoning_content
+                && !thinking.is_empty()
+            {
+                self.thinking.push_str(&thinking);
+                on_delta(StreamDelta::Thinking { text: thinking });
             }
-            if let Some(content) = delta.content {
-                if !content.is_empty() {
-                    self.text.push_str(&content);
-                    on_delta(StreamDelta::Text { text: content });
-                }
+            if let Some(content) = delta.content
+                && !content.is_empty()
+            {
+                self.text.push_str(&content);
+                on_delta(StreamDelta::Text { text: content });
             }
             for tc in delta.tool_calls {
                 let state = self.tool_calls.entry(tc.index).or_default();
@@ -130,14 +130,14 @@ impl Accumulator {
                             name,
                         });
                     }
-                    if let Some(args) = func.arguments {
-                        if !args.is_empty() {
-                            state.arguments.push_str(&args);
-                            on_delta(StreamDelta::ToolCallArgs {
-                                index: tc.index,
-                                fragment: args,
-                            });
-                        }
+                    if let Some(args) = func.arguments
+                        && !args.is_empty()
+                    {
+                        state.arguments.push_str(&args);
+                        on_delta(StreamDelta::ToolCallArgs {
+                            index: tc.index,
+                            fragment: args,
+                        });
                     }
                 }
             }

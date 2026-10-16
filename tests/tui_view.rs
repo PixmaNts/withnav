@@ -1,14 +1,14 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 use withnav::{
     tools::ToolStatus,
     tui::{
-        input::{route_key, route_paste, Editor},
+        input::{Editor, route_key, route_paste},
         protocol::{Action, ModelEntry, Overlay, SessionListEntry, SessionMetadata},
         state::{Activity, Block, BlockKind, ConnectionStatus, State, Tab, UiState},
         theme::{Theme, ThemeId},
-        view::{self, tool, RenderCache},
+        view::{self, RenderCache, tool},
     },
 };
 
@@ -245,13 +245,15 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
     assert_eq!(action, Action::OpenChild("child-session".into()));
     handle_action(&mut s, &mut ui, action);
     assert!(s.read_only());
-    assert!(route_key(
-        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        &s,
-        &mut ui,
-        &mut editor
-    )
-    .is_none());
+    assert!(
+        route_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        )
+        .is_none()
+    );
     route_paste("can't send this".into(), &s, &mut ui, &mut editor);
     assert!(editor.text().is_empty());
     let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
@@ -260,7 +262,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
         .unwrap();
     let line = |y| row_text(&terminal, y, 60).trim_end().to_string();
     insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌◉ vigie · —");
-    insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
+    insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · alt+s subagents");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
     assert!(!(0..16).any(|y| line(y).contains("Conversations")));
     let action = route_key(
@@ -638,8 +640,10 @@ fn settings_row_server_error_and_stale_reload() {
     let text = render("settings-row-error-140", (140, 40), &s, &ui, &Editor::new());
     assert!(text.contains("! Must be between 1 and 64"));
     s.config.status = withnav::tui::config::SaveStatus::StaleReloaded(1);
-    assert!(screen_text(&s, &ui, (140, 40))
-        .contains("config.json changed elsewhere; reloaded · 1 still staged"));
+    assert!(
+        screen_text(&s, &ui, (140, 40))
+            .contains("config.json changed elsewhere; reloaded · 1 still staged")
+    );
 }
 #[test]
 fn empty_and_streaming() {
@@ -681,12 +685,14 @@ fn done_tools_and_reasoning() {
     terminal
         .draw(|f| view::draw(f, &s, &ui, &editor, &mut RenderCache::default()))
         .unwrap();
-    assert!(terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .any(|cell| cell.bg == Theme::default().selection_bg()));
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.bg == Theme::default().selection_bg())
+    );
 }
 #[test]
 fn errors_yield_and_connection() {
@@ -716,12 +722,14 @@ fn errors_yield_and_connection() {
     terminal
         .draw(|f| view::draw(f, &s, &ui, &editor, &mut RenderCache::default()))
         .unwrap();
-    assert!(terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .any(|cell| cell.fg == Theme::default().red));
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.fg == Theme::default().red)
+    );
     s.connection = ConnectionStatus::Reconnecting;
     s.activity = Activity::Stopped;
     s.delivery_uncertain = true;
@@ -1124,10 +1132,12 @@ fn overlays_sit_on_the_surface_with_an_accent_border() {
         .expect("popup corner");
     assert_eq!(corner.fg, theme.accent);
     assert!(buffer.content().iter().any(|cell| cell.bg == theme.surface));
-    assert!(buffer
-        .content()
-        .iter()
-        .any(|cell| cell.bg == theme.selection_bg_on_surface()));
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.bg == theme.selection_bg_on_surface())
+    );
 }
 
 #[test]
@@ -1892,9 +1902,10 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
         .find(|r| r.contains('▌') && r.contains("high"))
         .cloned();
     assert!(selected.is_some_and(|r| r.contains("default")), "{rows:#?}");
-    assert!(rows
-        .iter()
-        .any(|r| r.contains("off") && r.contains("no variant")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("off") && r.contains("no variant"))
+    );
     assert!(rows.iter().any(|r| r.contains("Start on variant")));
     // esc goes back to the models with the same one selected
     route_key(
@@ -1982,6 +1993,51 @@ fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
     s.activity = Activity::Idle;
     let t = cells(&s, &ui, (100, 30));
     assert!(!(0..30).any(|y| row_text(&t, y, 100).contains("applies next turn")));
+}
+
+#[test]
+fn the_status_line_sums_up_the_mcp_servers_and_gives_way_first_on_a_narrow_line() {
+    use withnav::bus::event::{McpServerView, McpStatus};
+    let server = |id: &str, state: &str| McpServerView {
+        server_id: id.into(),
+        transport: "stdio".into(),
+        state: state.into(),
+        tool_count: 0,
+        skipped_tools: vec![],
+        skipped_more: 0,
+        error: None,
+        stderr_tail: String::new(),
+        stderr_truncated: false,
+    };
+    let mut s = done();
+    let status_line = |s: &State, width: u16| {
+        let t = cells(s, &UiState::default(), (width, 30));
+        (0..30)
+            .map(|y| row_text(&t, y, width))
+            .find(|r| r.contains(" tok"))
+            .unwrap()
+    };
+    // Before any status, nothing is said.
+    assert!(!status_line(&s, 120).contains("mcp "));
+    s.mcp = Some(McpStatus {
+        incarnation: ulid::Ulid::generate(),
+        revision: 1,
+        servers: vec![
+            server("github", "ready"),
+            server("contextd", "failed"),
+            server("off", "disabled"),
+        ],
+    });
+    let line = status_line(&s, 120);
+    assert!(
+        line.contains("mcp 1/2"),
+        "disabled servers are not counted: {line}"
+    );
+    assert!(line.contains("session "), "{line}");
+    // The summary goes first when the line is short; the token count stays.
+    let narrow = status_line(&s, 32);
+    assert!(!narrow.contains("mcp "), "{narrow}");
+    assert!(narrow.contains("session "), "{narrow}");
 }
 
 #[test]
@@ -3149,21 +3205,30 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
     for want in [
         "AGENTS",
         "● ◎ Nav  in use",
-        "Implements the task, verifies",
         "rules · 2 files",
         "messages                    ~27k",
         "next request          ~41k · 21%",
         "input budget                182k",
         "compacted ×1 · ~150k → ~38k",
-        "listed                        12",
+        "skills listed                 12",
         "omitted, no room               3",
+        "mcp                            —",
         "M src/tui/view/file_0.rs",
         "CHANGES",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
-    // nothing the server does not report
-    for absent in ["INTENT", "drift", "MCP", "PLUGINS", "vigie", "review"] {
+    // nothing the server does not report: no MCP status read yet, so no server is listed
+    for absent in [
+        "INTENT",
+        "drift",
+        "mcp:",
+        "plugin:",
+        "vigie",
+        "review",
+        "Implements the task",
+        "assigned:",
+    ] {
         assert!(!shown.contains(absent), "{absent}: {shown}");
     }
 }
@@ -3177,9 +3242,77 @@ fn the_right_column_shows_a_dash_before_any_snapshot_and_no_changes_outside_git(
     };
     let shown = screen_text(&s, &ui, (160, 30));
     assert!(shown.contains("CONTEXT"), "{shown}");
-    assert!(shown.contains("SKILLS"), "{shown}");
+    assert!(shown.contains("SKILLS · MCP · PLUGINS"), "{shown}");
     assert!(shown.contains(" —"), "{shown}");
     assert!(!shown.contains("CHANGES"), "not a repository: {shown}");
+}
+
+#[test]
+fn the_right_column_lists_mcp_servers_with_their_state_and_the_skills_the_model_loaded() {
+    use withnav::bus::event::{McpServerView, McpStatus};
+    let mut s = with_panel_data();
+    let server = |id: &str, state: &str, tools: usize, error: Option<&str>| McpServerView {
+        server_id: id.into(),
+        transport: "stdio".into(),
+        state: state.into(),
+        tool_count: tools,
+        skipped_tools: vec![],
+        skipped_more: 0,
+        error: error.map(Into::into),
+        stderr_tail: String::new(),
+        stderr_truncated: false,
+    };
+    s.mcp = Some(McpStatus {
+        incarnation: ulid::Ulid::generate(),
+        revision: 2,
+        servers: vec![
+            server("github", "ready", 12, None),
+            server("codegraph", "ready", 1, None),
+            server("contextd", "failed", 0, Some("MCP startup timed out")),
+        ],
+    });
+    for (id, skill, status) in [
+        ("s1", "rust-clippy", Some(ToolStatus::Ok)),
+        ("s2", "rust-clippy", Some(ToolStatus::Ok)),
+        ("s3", "git-commit", Some(ToolStatus::Ok)),
+        ("s4", "missing", Some(ToolStatus::Error)),
+    ] {
+        s.tabs[0].conversation.blocks.push(Block {
+            id: id.into(),
+            kind: BlockKind::ToolCall {
+                id: id.into(),
+                name: "skill".into(),
+                args: json!({ "name": skill }),
+                status,
+                output: String::new(),
+                metadata: json!({}),
+                duration_ms: None,
+                exit_code: None,
+            },
+        });
+    }
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let shown = screen_text(&s, &ui, (160, 60));
+    for want in [
+        "SKILLS · MCP · PLUGINS",
+        "skills listed",
+        "model loaded                   2",
+        "rust-clippy · git-commit",
+        "● mcp:github  12 tools",
+        "● mcp:codegraph  1 tool ",
+        "● mcp:contextd  MCP startup",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    // A failed `skill` call loaded nothing (the transcript still shows the call).
+    assert!(
+        !shown.contains("rust-clippy · git-commit · missing"),
+        "{shown}"
+    );
+    assert!(shown.contains("rust-clippy · git-commit "), "{shown}");
 }
 
 #[test]

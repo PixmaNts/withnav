@@ -1,4 +1,4 @@
-use crate::app::{dispatch, init_tracing, Cli};
+use crate::app::{Cli, dispatch, init_tracing};
 use clap::Parser;
 
 pub fn main() -> anyhow::Result<()> {
@@ -16,8 +16,8 @@ pub fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    match &cli.command {
+    let command = Cli::parse().into_command();
+    match &command {
         crate::app::Commands::Lsp(_) => crate::app::lsp::init_tracing_stderr(),
         crate::app::Commands::Tui(_) => crate::app::init_tui_logging(),
         // Provider bodies and URLs can contain secrets. Doctor deliberately has
@@ -25,6 +25,6 @@ async fn run() -> anyhow::Result<()> {
         crate::app::Commands::Doctor(_) => {}
         _ => init_tracing(),
     }
-    let code = dispatch(cli).await?;
+    let code = dispatch(command).await?;
     std::process::exit(code);
 }

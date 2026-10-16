@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::navigator::ports::Answer;
@@ -11,7 +11,7 @@ use withnav::navigator::ports::Answer;
 mod common;
 use common::navigator::EditorFlowsExt;
 use common::navigator::{
-    big_edit, feed_with_session, Nav, RemarkAnswer, ScriptedCommenter, ScriptedDecision, URI,
+    Nav, RemarkAnswer, ScriptedCommenter, ScriptedDecision, URI, big_edit, feed_with_session,
 };
 
 fn triggers(nav: &Nav) -> Vec<Value> {

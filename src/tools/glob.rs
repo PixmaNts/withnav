@@ -10,11 +10,11 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use globset::{Glob, GlobBuilder};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::tools::{validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES};
+use crate::tools::{DEFAULT_MAX_OUTPUT_BYTES, Tool, ToolContext, ToolResult, validate_path};
 
 pub const GLOB_DEFAULT_LIMIT: usize = 200;
 pub const GLOB_MAX_LIMIT: usize = 1_000;
@@ -335,10 +335,10 @@ fn walk(
             }
             if kind.is_dir() {
                 stack.push(path);
-            } else if let Ok(rel) = path.strip_prefix(root) {
-                if matcher.glob.is_match(rel) {
-                    out.paths.push(super::relative_path_text(rel));
-                }
+            } else if let Ok(rel) = path.strip_prefix(root)
+                && matcher.glob.is_match(rel)
+            {
+                out.paths.push(super::relative_path_text(rel));
             }
         }
     }

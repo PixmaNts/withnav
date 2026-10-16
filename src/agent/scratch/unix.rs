@@ -15,8 +15,8 @@ pub fn prepare(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn open_checked(path: &Path, create: bool) -> Result<std::fs::File, String> {
-    use nix::fcntl::{openat, OFlag, AT_FDCWD};
-    use nix::sys::stat::{mkdirat, Mode};
+    use nix::fcntl::{AT_FDCWD, OFlag, openat};
+    use nix::sys::stat::{Mode, mkdirat};
     use std::os::fd::AsFd;
     let uid = nix::unistd::Uid::current().as_raw();
     if !path.is_absolute() {

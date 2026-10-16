@@ -14,21 +14,21 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use withnav::agent::actor::AgentActor;
-use withnav::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use withnav::agent::run_loop::{AgentEvent, RunOutcome, run_agent};
 use withnav::app::{event_to_ui, exit_code_for};
 use withnav::bus::inbox::ActorInbox;
 use withnav::bus::runtime;
 use withnav::bus::sequencer::Sequencer;
 use withnav::bus::{ResumeOutcome, SessionBus};
-use withnav::provider::config::{ProviderConfig, ReasoningHistory};
 use withnav::provider::StreamDelta;
+use withnav::provider::config::{ProviderConfig, ReasoningHistory};
 use withnav::render::UiEvent;
 use withnav::tools::bash::BashTool;
 use withnav::tools::native::ReadTool;
 use withnav::tools::{Registry, ToolContext};
 
 mod common;
-use common::sse::{http_sse, spawn_mock_provider, sse_body, MockProvider};
+use common::sse::{MockProvider, http_sse, spawn_mock_provider, sse_body};
 
 async fn scripted_actor(done: &str) -> (MockProvider, tempfile::TempDir, AgentActor) {
     let server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;

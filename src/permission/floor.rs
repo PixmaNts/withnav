@@ -203,20 +203,18 @@ fn windows_bash_spelling(path: &str, cx: &FloorContext) -> String {
         if let Some((option, value)) = path.split_once('=') {
             return format!("{option}={}", windows_bash_spelling(value, cx));
         }
-    } else if path.starts_with('-') {
-        if let Some((at, _)) = path
+    } else if path.starts_with('-')
+        && let Some((at, _)) = path
             .char_indices()
             .skip(1)
             .find(|(_, c)| matches!(c, 'o' | 'O'))
-        {
-            if !path[at + 1..].is_empty() {
-                return format!(
-                    "{}{}",
-                    &path[..at + 1],
-                    windows_bash_spelling(&path[at + 1..], cx)
-                );
-            }
-        }
+        && !path[at + 1..].is_empty()
+    {
+        return format!(
+            "{}{}",
+            &path[..at + 1],
+            windows_bash_spelling(&path[at + 1..], cx)
+        );
     }
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("//?/").unwrap_or(&path);
@@ -320,7 +318,20 @@ fn resolve(path: &str, cx: &FloorContext, follow_last: bool) -> Option<PathBuf> 
                         push_all(&mut queue, &target);
                     }
                     Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing = true,
+                    // No file can have this name: it does not exist yet, it continues
+                    // below a file, or a component is longer than a file name may be
+                    // (an opaque line's text, such as a heredoc body, scanned as one
+                    // word). Such a word names nothing, so it is never a protected file.
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound
+                                | std::io::ErrorKind::NotADirectory
+                                | std::io::ErrorKind::InvalidFilename
+                        ) =>
+                    {
+                        missing = true
+                    }
                     Err(_) => return None,
                 }
             }
@@ -440,12 +451,12 @@ fn output_targets<'a>(program: Option<&str>, words: &'a [String], opaque: bool) 
                     targets.push(value);
                 }
             }
-        } else if word.starts_with('-') {
-            if let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c)) {
-                match &word[at + 1..] {
-                    "" => targets.extend(iter.clone().next().map(String::as_str)),
-                    value => targets.push(value),
-                }
+        } else if word.starts_with('-')
+            && let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c))
+        {
+            match &word[at + 1..] {
+                "" => targets.extend(iter.clone().next().map(String::as_str)),
+                value => targets.push(value),
             }
         }
     }
@@ -1311,7 +1322,8 @@ mod tests {
             format!("python3 inspect.py \"{root}/data/withnav.db\""),
             format!("python3 inspect.py --db=\"{root}/config/config.json\""),
             // Relative to a directory the floor does not follow: the name is enough.
-            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'".to_owned(),
+            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'"
+                .to_owned(),
         ] {
             assert!(
                 matches!(bash_floor(&f.cx, &line), Floor::NamesProtected(_)),
@@ -1576,6 +1588,22 @@ mod tests {
         ] {
             assert_eq!(bash_floor(&f.cx, &line), Floor::None, "{line}");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn words_that_cannot_name_a_file_are_not_unresolved() {
+        let f = fixture();
+        // A heredoc makes the line opaque; its body is scanned as words, one of
+        // them longer than any file name.
+        let body = "x".repeat(300);
+        let line =
+            format!("python3 - <<'EOF'\ns = \"\"\"{body}\"\"\"\nopen('a.rs','w').write(s)\nEOF");
+        assert!(split(&line)[0].opaque);
+        assert_eq!(bash_floor(&f.cx, &line), Floor::None);
+        // Below a regular file nothing can exist.
+        std::fs::write(f.cx.workspace.join("a.rs"), "").unwrap();
+        assert_eq!(bash_floor(&f.cx, "rm a.rs/x"), Floor::None);
     }
 
     #[test]

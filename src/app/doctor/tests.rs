@@ -44,17 +44,19 @@ fn answers_require_every_expected_type_range_and_choice() {
 #[test]
 fn cli_flags_and_invalid_layer() {
     use clap::Parser;
-    assert!(super::super::Cli::try_parse_from([
-        "nav",
-        "doctor",
-        "--offline",
-        "--json",
-        "--layer",
-        "instinct",
-        "--workspace",
-        "/workspace"
-    ])
-    .is_ok());
+    assert!(
+        super::super::Cli::try_parse_from([
+            "nav",
+            "doctor",
+            "--offline",
+            "--json",
+            "--layer",
+            "instinct",
+            "--workspace",
+            "/workspace"
+        ])
+        .is_ok()
+    );
     assert!(super::super::Cli::try_parse_from(["nav", "doctor", "--layer", "bogus"]).is_err());
 }
 

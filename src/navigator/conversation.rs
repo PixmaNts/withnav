@@ -371,14 +371,14 @@ impl ConversationFeed {
             }
             post
         };
-        if let Some((post, text)) = flush {
-            if let Err(error) = post(text).await {
-                tracing::warn!(
-                    session = %envelope.session_id,
-                    error = %error,
-                    "queued wake delivery failed"
-                );
-            }
+        if let Some((post, text)) = flush
+            && let Err(error) = post(text).await
+        {
+            tracing::warn!(
+                session = %envelope.session_id,
+                error = %error,
+                "queued wake delivery failed"
+            );
         }
     }
 

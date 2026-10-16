@@ -16,7 +16,7 @@ use crate::navigator::{
     ServerInfoParams,
 };
 use crate::provider::auth;
-use crate::provider::catalog::{resolve_chat, ModelCatalog};
+use crate::provider::catalog::{ModelCatalog, resolve_chat};
 use crate::provider::config::ModelsConfig;
 use crate::provider::fim::InceptionFim;
 use crate::provider::openai::ClientCache;

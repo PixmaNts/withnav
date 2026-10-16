@@ -8,23 +8,23 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 use tokio::time::Instant;
 
 use withnav::provider::Usage;
 use withnav::tools::ToolStatus;
+use withnav::tui::TuiOptions;
 use withnav::tui::client::Client;
 use withnav::tui::protocol::{ClientEvent, Effect};
 use withnav::tui::runtime::Runtime;
 use withnav::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
-use withnav::tui::TuiOptions;
 
 mod common;
-use common::server::{spawn_server, TestServerConfig};
+use common::server::{TestServerConfig, spawn_server};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_responding_provider, spawn_streaming_provider,
-    sse_body, tool_call_chunk, StreamingProvider,
+    StreamingProvider, http_sse, spawn_capturing_provider, spawn_responding_provider,
+    spawn_streaming_provider, sse_body, tool_call_chunk,
 };
 
 /// The longest any single wait may take.
@@ -36,9 +36,13 @@ fn isolate_xdg() {
     static DIRS: OnceLock<tempfile::TempDir> = OnceLock::new();
     DIRS.get_or_init(|| {
         let dir = tempfile::tempdir().expect("xdg tempdir");
-        std::env::set_var("XDG_DATA_HOME", dir.path().join("data"));
-        std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
-        std::env::set_var("HOME", dir.path());
+        // SAFETY: runs once, before any server starts. Every test of this binary calls this
+        // first, and the `OnceLock` holds the others until the variables are set.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", dir.path().join("data"));
+            std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
+            std::env::set_var("HOME", dir.path());
+        }
         dir
     });
 }
@@ -717,9 +721,11 @@ async fn typed_server_commands_run_and_show_their_outcome() {
         has_final(rt, "A literal slash.")
     })
     .await;
-    assert!(user_messages(&rt)
-        .iter()
-        .any(|(_, text)| text == "/context"));
+    assert!(
+        user_messages(&rt)
+            .iter()
+            .any(|(_, text)| text == "/context")
+    );
 }
 
 fn press_tab(rt: &mut Runtime) {

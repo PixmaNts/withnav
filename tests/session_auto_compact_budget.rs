@@ -5,7 +5,7 @@
 use serde_json::json;
 
 mod common;
-use common::server::{collect_until, send_text, TestServerConfig};
+use common::server::{TestServerConfig, collect_until, send_text};
 use common::sse::{http_sse, spawn_responding_provider, sse_body, text_chunk, tool_call_chunk};
 
 const SUMMARY: &str = "Goal: keep reading.\nNext: read again.";
@@ -17,7 +17,9 @@ const SUMMARY: &str = "Goal: keep reading.\nNext: read again.";
 //      turn then yields on the step budget
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn several_automatic_compactions_do_not_renew_the_step_budget() {
-    std::env::set_var("WITHNAV_MAX_STEPS", "6");
+    // SAFETY: this binary holds this one test, and nothing that reads the environment has
+    // started yet.
+    unsafe { std::env::set_var("WITHNAV_MAX_STEPS", "6") };
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).unwrap();

@@ -325,12 +325,14 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
         .unwrap();
     drop(store);
     let recovered = HistoryStore::open(&path).unwrap();
-    assert!(recovered
-        .unconsumed_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        recovered
+            .unconsumed_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         serde_json::to_value(
             recovered
@@ -344,11 +346,13 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
         .unwrap(),
         serde_json::to_value(&transcript).unwrap()
     );
-    assert!(recovered
-        .consume_completions_committed(parent, vec![child], transcript, Some(message.clone()))
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        recovered
+            .consume_completions_committed(parent, vec![child], transcript, Some(message.clone()))
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     let replay = recovered
         .replay(parent, None, u64::MAX)
         .bounded(file!(), line!())

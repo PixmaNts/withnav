@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer};
 use withnav::server::AppState;
 
 mod common;
-use common::server::{collect_until, send_text, wait_for, TestServerConfig};
+use common::server::{TestServerConfig, collect_until, send_text, wait_for};
 use common::sse::{sse_response, wait_for_request};
 
 fn test_state(tmp: &Path, base_url: &str) -> AppState {
@@ -80,11 +80,13 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
         assert!(!tools.contains(&tool), "child {child} cannot use {tool}");
     }
     assert!(!state.history().meta(child).await.unwrap().unwrap().editor);
-    assert!(!child_body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|message| { message["content"] == withnav::navigator::COGNITION_PROMPT }));
+    assert!(
+        !child_body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| { message["content"] == withnav::navigator::COGNITION_PROMPT })
+    );
     state.close_all().await;
 }
 
@@ -253,10 +255,12 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .iter()
         .find(|e| e.kind == "message.received" && e.payload["source"] == "navigator")
         .expect("navigator-sourced message.received");
-    assert!(wake_received.payload["content"]
-        .as_str()
-        .expect("content")
-        .contains("drifts from the intent"));
+    assert!(
+        wake_received.payload["content"]
+            .as_str()
+            .expect("content")
+            .contains("drifts from the intent")
+    );
     // Turn order: the wake message precedes ITS turn (the one starting
     // after the wake's seq, not the Captain's earlier turn).
     let wake_pos = events
@@ -284,10 +288,12 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .rev()
         .find(|m| m["role"] == "user")
         .expect("a user message");
-    assert!(last_user["content"]
-        .as_str()
-        .expect("content")
-        .contains("drifts from the intent"));
+    assert!(
+        last_user["content"]
+            .as_str()
+            .expect("content")
+            .contains("drifts from the intent")
+    );
 
     // The feed digest now holds both sides, navigator included.
     wait_for("the digest to hold the wake", || {
@@ -515,10 +521,10 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         loop {
             state.history().flush().await.expect("flush");
             let sub = subscribe(&state, id).await;
-            if let withnav::bus::ResumeOutcome::Replay(all) = sub.replay {
-                if let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested") {
-                    break found;
-                }
+            if let withnav::bus::ResumeOutcome::Replay(all) = sub.replay
+                && let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested")
+            {
+                break found;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -584,20 +590,18 @@ async fn wait_for_completed_message_turn(
                         && e.payload["source"] == source
                         && e.payload["content"] == content
                 });
-                if let Some(message) = message {
-                    if let Some(start) = seen
+                if let Some(message) = message
+                    && let Some(start) = seen
                         .iter()
                         .find(|e| e.kind == "turn.start" && e.seq > message.seq)
-                    {
-                        if seen.iter().any(|e| {
-                            e.kind == "turn.end"
-                                && e.seq > start.seq
-                                && e.payload["turn_id"] == start.payload["turn_id"]
-                                && e.payload["outcome"] == "done"
-                        }) {
-                            break;
-                        }
-                    }
+                    && seen.iter().any(|e| {
+                        e.kind == "turn.end"
+                            && e.seq > start.seq
+                            && e.payload["turn_id"] == start.payload["turn_id"]
+                            && e.payload["outcome"] == "done"
+                    })
+                {
+                    break;
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

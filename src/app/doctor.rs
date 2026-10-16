@@ -11,13 +11,13 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    agent::definitions::{AgentRoots, Agents, AGENT_ALIASES},
+    agent::definitions::{AGENT_ALIASES, AgentRoots, Agents},
     error::ProviderError,
     provider::{
         assignments::{AgentModel, AssignedModel, AssignmentResolver, Layer, LayerAssignment},
         auth,
         catalog::ModelCatalog,
-        config::{effective_variants, Variant},
+        config::{Variant, effective_variants},
         openai::ClientCache,
         systemone::{Answer, DecisionRequest, Question, Questions, SystemOneClient},
     },
@@ -248,7 +248,9 @@ pub async fn inspect(
                 .max()
                 .unwrap_or(0)
                 .min(30_000);
-            let deadline = Instant::now() + Duration::from_millis(budget + 100);
+            // One second past the largest startup timeout for scheduling on a loaded host; the
+            // loop ends as soon as no server is still starting.
+            let deadline = Instant::now() + Duration::from_millis(budget + 1_000);
             while manager.statuses().iter().any(|s| s.state == "starting")
                 && Instant::now() < deadline
             {
@@ -657,21 +659,19 @@ pub async fn inspect(
             settings.compaction_chunk_tokens(),
         ) {
             (Ok(writer), Ok(chunk)) => {
-                if writer == "metacognition" {
-                    if let Some(assigned) = &mut meta {
-                        if assigned.prefer_low
-                            && catalog
-                                .cached(&assigned.resolved)
-                                .limits
-                                .is_some_and(|limits| {
-                                    limits
-                                        .effort_tiers
-                                        .is_some_and(|tiers| tiers.iter().any(|tier| tier == "low"))
-                                })
-                        {
-                            assigned.variant = Some("low".into());
-                        }
-                    }
+                if writer == "metacognition"
+                    && let Some(assigned) = &mut meta
+                    && assigned.prefer_low
+                    && catalog
+                        .cached(&assigned.resolved)
+                        .limits
+                        .is_some_and(|limits| {
+                            limits
+                                .effort_tiers
+                                .is_some_and(|tiers| tiers.iter().any(|tier| tier == "low"))
+                        })
+                {
+                    assigned.variant = Some("low".into());
                 }
                 let assigned = if writer == "session" {
                     default_model.as_ref()

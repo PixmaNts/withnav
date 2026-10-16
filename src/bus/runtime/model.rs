@@ -11,7 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
@@ -28,8 +28,7 @@ use crate::provider::config::{ProviderConfig, ReasoningHistory, Variants};
 use std::sync::Arc as StdArc;
 
 /// Why a switch refused while the agent waits for a human.
-pub const PENDING_MODEL_ERROR: &str =
-    "the agent is waiting for an answer or a decision: reply to its question or \
+pub const PENDING_MODEL_ERROR: &str = "the agent is waiting for an answer or a decision: reply to its question or \
      decide on its permission request first, then switch model";
 
 /// A boxed future, for the callbacks the service supplies.
@@ -437,7 +436,7 @@ async fn compact_for_target(
     budget: u64,
     role: Option<&Arc<crate::agent::definitions::AgentDefinition>>,
 ) -> Result<super::compact::Summarized, String> {
-    use super::compact::{summarize_with_components, summarize_written_by, Failure, Goal, Writer};
+    use super::compact::{Failure, Goal, Writer, summarize_with_components, summarize_written_by};
     use crate::agent::compaction::{Aim, CompactionError};
 
     let alias = target.alias.as_str();

@@ -3,15 +3,15 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::compaction::{
-    effective_history, project_reasoning, validate as validate_compaction, Compaction, Components,
+    Compaction, Components, effective_history, project_reasoning, validate as validate_compaction,
 };
 use crate::agent::definitions::{AgentAccess, AgentDefinition};
 use crate::agent::instructions::Instructions;
 use crate::agent::permissions::PermissionRequest;
 use crate::agent::skills::{SkillTool, Skills};
+use crate::provider::ToolCall;
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::ChatMessage;
-use crate::provider::ToolCall;
 use crate::tools::{Registry, ToolContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

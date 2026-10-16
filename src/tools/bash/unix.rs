@@ -7,7 +7,8 @@ static TRUSTED_SHELL: OnceLock<Option<PathBuf>> = OnceLock::new();
 pub fn init_shell() {
     TRUSTED_SHELL.get_or_init(|| {
         let listed = std::fs::read_to_string("/etc/shells").unwrap_or_default();
-        let found = ["/usr/bin/bash", "/bin/bash"]
+
+        ["/usr/bin/bash", "/bin/bash"]
             .into_iter()
             .chain(
                 listed
@@ -15,8 +16,7 @@ pub fn init_shell() {
                     .map(str::trim)
                     .filter(|line| line.starts_with('/') && line.ends_with("/bash")),
             )
-            .find_map(|path| trusted_launcher(std::path::Path::new(path)));
-        found
+            .find_map(|path| trusted_launcher(std::path::Path::new(path)))
     });
 }
 

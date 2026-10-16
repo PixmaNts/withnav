@@ -1,5 +1,5 @@
 //! Read-once skill versions: hashing and admission use the same bytes.
-use super::{frontmatter, Skill, MAX_BODY_BYTES};
+use super::{MAX_BODY_BYTES, Skill, frontmatter};
 use crate::{
     permission::{store::PermissionStore, validation::ValidationKind},
     tools::ToolResult,
@@ -244,12 +244,16 @@ mod projection_tests {
         let resumed: Vec<ChatMessage> =
             serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
         let projected = project_skill_history(&resumed, Some(2));
-        assert!(!serde_json::to_string(&projected[..2])
-            .unwrap()
-            .contains("SECRET SKILL BODY"));
-        assert!(serde_json::to_string(&projected[3])
-            .unwrap()
-            .contains("SECRET SKILL BODY"));
+        assert!(
+            !serde_json::to_string(&projected[..2])
+                .unwrap()
+                .contains("SECRET SKILL BODY")
+        );
+        assert!(
+            serde_json::to_string(&projected[3])
+                .unwrap()
+                .contains("SECRET SKILL BODY")
+        );
         assert!(
             !serde_json::to_string(&project_skill_history(&resumed, None))
                 .unwrap()

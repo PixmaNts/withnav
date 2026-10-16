@@ -1,5 +1,5 @@
 //! Editor flow delivery records retain the decision log without legacy evaluation fields.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 mod common;
 use common::navigator::{

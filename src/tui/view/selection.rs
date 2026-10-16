@@ -212,7 +212,7 @@ mod tests {
     }
     #[test]
     fn literal_fences_and_ellipsis_are_content_and_tabs_match_paint() {
-        use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};
+        use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
         let mut map = TranscriptMap::default();
         let rows = rows(
             Text::from(" a\tb e\u{301} 👩‍💻 界\n ```literal\n … real"),

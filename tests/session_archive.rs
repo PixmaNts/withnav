@@ -11,7 +11,7 @@ use withnav::server::routes::app as router;
 use withnav::session::store::HistoryStore;
 
 mod common;
-use common::server::{captain_command, request_json, TestServerConfig};
+use common::server::{TestServerConfig, captain_command, request_json};
 
 const REASON: &str = "Historic model identity has no proven resolution";
 
@@ -58,14 +58,16 @@ async fn pending_fresh_root_cannot_be_archived_before_publication() {
     assert!(state.session_has_runtime(id));
     state.history().flush().await.unwrap();
     assert!(!state.history().meta(id).await.unwrap().unwrap().read_only());
-    assert!(!state
-        .history()
-        .load(id)
-        .await
-        .unwrap()
-        .unwrap()
-        .envelopes
-        .is_empty());
+    assert!(
+        !state
+            .history()
+            .load(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .envelopes
+            .is_empty()
+    );
     state.close_session(id).await.unwrap();
     state.mark_archive(id, REASON).await.unwrap();
 }
@@ -316,13 +318,15 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
         &"x".repeat(513),
     ] {
         assert!(store.mark_archive(id, reason).await.is_err());
-        assert!(store
-            .meta(id)
-            .await
-            .unwrap()
-            .unwrap()
-            .resume_disabled_reason
-            .is_none());
+        assert!(
+            store
+                .meta(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .resume_disabled_reason
+                .is_none()
+        );
     }
     let unknown = Ulid::generate();
     assert!(store.mark_archive(unknown, REASON).await.is_err());
@@ -353,13 +357,14 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
             .as_deref(),
         Some(REASON)
     );
-    assert!(rows
-        .iter()
-        .find(|row| row.meta.id == normal)
-        .unwrap()
-        .meta
-        .resume_disabled_reason
-        .is_none());
+    assert!(
+        rows.iter()
+            .find(|row| row.meta.id == normal)
+            .unwrap()
+            .meta
+            .resume_disabled_reason
+            .is_none()
+    );
     store.delete(id).await.unwrap();
     assert!(!store.exists(id).await.unwrap());
     assert!(store.exists(normal).await.unwrap());

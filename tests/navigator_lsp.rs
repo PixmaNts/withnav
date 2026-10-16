@@ -5,16 +5,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use withnav::navigator;
 
 mod common;
 use common::navigator::{
-    base_text, big_edit, captain_message, feed_with_session, with_min_changed_lines, LspClient,
-    Nav, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim,
-    ScriptedReflexContext, URI,
+    LspClient, Nav, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim,
+    ScriptedReflexContext, URI, base_text, big_edit, captain_message, feed_with_session,
+    with_min_changed_lines,
 };
 
 // ---------- tests ----------
@@ -29,15 +29,18 @@ async fn failed_legacy_conversion_is_warned_once_after_initialized() {
         let store = host.store(ws.into());
         let errors = store.migration_diagnostics();
         assert_eq!(errors.len(), 1);
-        assert!(host
-            .diagnostics(ws)
-            .iter()
-            .any(|error| error.code == "migration"));
-        assert!(store
-            .list()
-            .unwrap()
-            .iter()
-            .any(|row| row.name == "legacy-pipeline" && row.errors == errors));
+        assert!(
+            host.diagnostics(ws)
+                .iter()
+                .any(|error| error.code == "migration")
+        );
+        assert!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .any(|row| row.name == "legacy-pipeline" && row.errors == errors)
+        );
         deps.startup_warnings = errors.into_iter().map(|error| error.message).collect();
         deps
     })
@@ -50,9 +53,11 @@ async fn failed_legacy_conversion_is_warned_once_after_initialized() {
     assert!(message.contains("original retained"), "{message}");
     client.notify("initialized", json!({})).await;
     let messages = client.collect_for(Duration::from_millis(100)).await;
-    assert!(messages
-        .iter()
-        .all(|message| message["method"] != "window/showMessage"));
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["method"] != "window/showMessage")
+    );
 }
 
 /// After a 5-line change and 3 s idle, one withnav/remark arrives.
@@ -693,9 +698,11 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
     client.complete(24, 1).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(model.calls(), 2);
-    assert!(model.requests()[1]
-        .conversation
-        .contains("and add a --force flag"));
+    assert!(
+        model.requests()[1]
+            .conversation
+            .contains("and add a --force flag")
+    );
     client.complete(25, 1).await;
     assert!(fim.prompts()[4].contains("REFRESHED-TWO"));
 

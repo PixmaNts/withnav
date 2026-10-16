@@ -4,12 +4,12 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 
 mod common;
-use common::server::{captain_command, request_json, stored_events as events, TestServerConfig};
+use common::server::{TestServerConfig, captain_command, request_json, stored_events as events};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_calls_chunk};
 
 use common::TestEnv as Env;
@@ -183,10 +183,12 @@ async fn a_resume_in_yolo_does_not_revive_a_pending_permission() {
     .await;
     assert_eq!(status, axum::http::StatusCode::CONFLICT);
     assert!(!target.exists(), "the lost call is not replayed");
-    assert!(events(&second, id, "tool.post_call")
-        .await
-        .iter()
-        .all(|e| e.payload["metadata"]["approved_by"] != "yolo"));
+    assert!(
+        events(&second, id, "tool.post_call")
+            .await
+            .iter()
+            .all(|e| e.payload["metadata"]["approved_by"] != "yolo")
+    );
 }
 
 async fn wait_for_kind(state: &AppState, id: ulid::Ulid, kind: &str) -> Value {
@@ -228,11 +230,13 @@ async fn an_unavailable_permission_database_starts_with_a_warning_and_yolo_is_un
     std::fs::create_dir_all(env.root.join("data/withnav.db")).unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let summary = state.session_summary(id).await.unwrap();
-    assert!(summary
-        .permissions_unavailable
-        .as_deref()
-        .unwrap()
-        .contains("withnav.db"));
+    assert!(
+        summary
+            .permissions_unavailable
+            .as_deref()
+            .unwrap()
+            .contains("withnav.db")
+    );
     state.close_session(id).await.unwrap();
     settings(&env, Some(true), plain_agents());
     let id = state.create_session(&env.ws, None, false).await.unwrap();

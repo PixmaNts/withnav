@@ -4,8 +4,8 @@ use crate::tui::{
     commands,
     protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
     state::{
-        Activity, BlockKind, State, Tab, TabView, UiState, VariantPick, DEFAULT_AGENT, MAX_TABS,
-        NO_VARIANT, PLAN_AGENT,
+        Activity, BlockKind, DEFAULT_AGENT, MAX_TABS, NO_VARIANT, PLAN_AGENT, State, Tab, TabView,
+        UiState, VariantPick,
     },
     theme::ThemeId,
 };
@@ -547,7 +547,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 .iter()
                 .any(|a| a.id == agent && matches!(a.mode.as_str(), "primary" | "all"))
             {
-                push_local(s, BlockKind::Notice(format!("agent {agent} is not available for a root conversation; choose a primary/all agent")));
+                push_local(
+                    s,
+                    BlockKind::Notice(format!(
+                        "agent {agent} is not available for a root conversation; choose a primary/all agent"
+                    )),
+                );
                 return vec![];
             }
             let Some(mut effects) = blank_tab(s, ui) else {
@@ -981,10 +986,8 @@ fn confirm_child(
             )
         }
     };
-    if allowed {
-        if let (Some(parent), Some(child)) = (&s.parent_session_id, &s.session) {
-            ui.child_confirm = Some((parent.clone(), child.session_id.clone(), control));
-        }
+    if allowed && let (Some(parent), Some(child)) = (&s.parent_session_id, &s.session) {
+        ui.child_confirm = Some((parent.clone(), child.session_id.clone(), control));
     }
     vec![]
 }

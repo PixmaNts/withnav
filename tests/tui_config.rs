@@ -1,11 +1,11 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use withnav::tui::{
     client::Client,
     config::*,
-    input::{route_key, Editor},
+    input::{Editor, route_key},
     protocol::{Action, ApiKind, ClientEvent, Effect, Generation, ModelEntry},
     reducer,
     state::{State, UiState},
@@ -456,12 +456,14 @@ fn stay_and_discard_cancel_pending_leave_write_and_discard_clears_row_errors() {
             .insert("layers.reflex".into(), "unrelated error".into());
         let request = load_request(s.config.fetch());
         action(&mut s, &mut ui, ConfigAction::Leave);
-        assert!(action(
-            &mut s,
-            &mut ui,
-            ConfigAction::ResolveLeave(LeaveChoice::Write)
-        )
-        .is_empty());
+        assert!(
+            action(
+                &mut s,
+                &mut ui,
+                ConfigAction::ResolveLeave(LeaveChoice::Write)
+            )
+            .is_empty()
+        );
         assert!(s.config.leave_after_write);
         assert!(s.config.writing.is_none());
         action(&mut s, &mut ui, ConfigAction::Leave);
@@ -489,7 +491,7 @@ fn stay_and_discard_cancel_pending_leave_write_and_discard_clears_row_errors() {
 #[tokio::test]
 async fn runtime_routes_y_to_settings_scratch_editor_and_filter_not_transcript_selection() {
     use crossterm::event::Event;
-    use withnav::tui::{runtime::Runtime, state::Focus, TuiOptions};
+    use withnav::tui::{TuiOptions, runtime::Runtime, state::Focus};
     let mut runtime = Runtime::new(&TuiOptions {
         url: "http://127.0.0.1:1".into(),
         token: None,

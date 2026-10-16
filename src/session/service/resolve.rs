@@ -14,7 +14,7 @@ use crate::bus::runtime::{ModelSwitch, ModelSwitcher, ModelTarget};
 use crate::error::ServerError;
 use crate::provider::auth;
 use crate::provider::catalog::ModelResolution;
-use crate::provider::config::{effective_variants, load_models, ResolvedModel, Variant, Variants};
+use crate::provider::config::{ResolvedModel, Variant, Variants, effective_variants, load_models};
 
 /// The identity half of a resolution (provider, model, api, endpoint) of a
 /// configured alias, for comparison with a saved one.
@@ -228,7 +228,7 @@ impl Service {
                     _ => {
                         return Err(ServerError::History(format!(
                             "default_agent '{default}' has no usable model"
-                        )))
+                        )));
                     }
                 }
             }
@@ -498,7 +498,7 @@ impl Service {
                             alias: alias.to_string(),
                             variant: name.to_string(),
                             models_path: path,
-                        })
+                        });
                     }
                     // The offer cannot be read: the session sends what it
                     // saved, or, with nothing saved, the resume waits.
@@ -533,7 +533,7 @@ impl Service {
                                 alias: alias.to_string(),
                                 variant: name.to_string(),
                                 models_path: path,
-                            })
+                            });
                         }
                     },
                 }

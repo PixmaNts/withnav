@@ -260,7 +260,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
         .unwrap();
     let line = |y| row_text(&terminal, y, 60).trim_end().to_string();
     insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌◉ vigie · —");
-    insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
+    insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · alt+s subagents");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
     assert!(!(0..16).any(|y| line(y).contains("Conversations")));
     let action = route_key(

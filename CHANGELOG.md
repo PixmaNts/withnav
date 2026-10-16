@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- TUI: typing a letter or a digit while the transcript has the focus (copy mode) goes back to the message editor and types it. A selected block is copied with ctrl+shift+c; plain `y` no longer copies.
+
 ## [0.8.0] - 2026-10-15
 
 WithNav 0.8.0 runs natively on Windows x64, connects to stdio MCP servers, and redesigns

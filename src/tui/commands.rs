@@ -1,7 +1,7 @@
 //! Command catalog and key mapping; no I/O or rendering.
 use super::{
     protocol::{Action, Mode, Overlay},
-    state::{State, VariantPick, NO_VARIANT},
+    state::{NO_VARIANT, State, VariantPick},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy)]

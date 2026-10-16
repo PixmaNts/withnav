@@ -23,7 +23,7 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
     ) -> BoxFuture<'a, Result<String, ModelError>> {
         use crate::provider::client::ModelClient;
         use crate::provider::openai::{ChatMessage, ChatRequest, StreamOptions};
-        use crate::provider::{start_and_consume, StreamDelta};
+        use crate::provider::{StreamDelta, start_and_consume};
 
         Box::pin(async move {
             let user = format!(

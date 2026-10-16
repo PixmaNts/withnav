@@ -7,11 +7,11 @@ use super::{
 };
 use crate::tui::{state::State, theme::Theme};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 fn width(spans: &[Span<'_>]) -> usize {
@@ -288,7 +288,7 @@ fn line(state: &State, theme: &Theme, total: usize) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::tui::state::{ModelSwitch, Tab};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     /// A header with everything to show: a long workspace, a dirty branch, a variant, a gauge and
     /// a switch waiting for the turn to end.

@@ -2,14 +2,14 @@
 //! model responses, scripted permission flows or the built-in flow over a
 //! fake instinct, and the decision table.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::tests::{
-    calls_chunk, make_actor, registry_gated, spawn_mock, text_chunk, tool_result_of, MockServer,
+    MockServer, calls_chunk, make_actor, registry_gated, spawn_mock, text_chunk, tool_result_of,
 };
 use super::*;
 use crate::agent::flow_hook::{
@@ -289,15 +289,17 @@ async fn a_credential_read_asks_under_bypass_and_bypass_cannot_answer_it() {
     assert!(request.requires_captain);
     assert_eq!(request.always_label, None, "never saved as a rule");
     assert!(!pending_bypass_eligible(&actor));
-    assert!(resolve_permission_with_origin(
-        &mut actor,
-        request.id,
-        PermissionDecision::AllowOnce,
-        PermissionOrigin::Bypass,
-        &mut |_| {}
-    )
-    .await
-    .is_err());
+    assert!(
+        resolve_permission_with_origin(
+            &mut actor,
+            request.id,
+            PermissionDecision::AllowOnce,
+            PermissionOrigin::Bypass,
+            &mut |_| {}
+        )
+        .await
+        .is_err()
+    );
     assert!(actor.has_pending());
     assert_eq!(flows.asked(), 0);
     assert!(decisions(&actor)[0].command_matches.is_array());
@@ -593,9 +595,11 @@ async fn yolo_skips_rules_flows_and_floor_and_says_so() {
     assert!(matches!(outcome, RunOutcome::Done(_)));
     assert_eq!(approved, [json!("yolo"), json!("yolo")]);
     assert_eq!((flows.asked(), flows.checked()), (0, 0));
-    assert!(decisions(&actor)
-        .iter()
-        .all(|row| row.approved_by.as_deref() == Some("yolo")));
+    assert!(
+        decisions(&actor)
+            .iter()
+            .all(|row| row.approved_by.as_deref() == Some("yolo"))
+    );
 }
 
 #[tokio::test]
@@ -641,15 +645,17 @@ async fn bypass_answers_a_flow_question_by_deciding_again() {
     let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
         panic!("the flow asks");
     };
-    assert!(resolve_permission_with_origin(
-        &mut actor,
-        request.id,
-        PermissionDecision::AllowAlways,
-        PermissionOrigin::Bypass,
-        &mut |_| {}
-    )
-    .await
-    .is_err());
+    assert!(
+        resolve_permission_with_origin(
+            &mut actor,
+            request.id,
+            PermissionDecision::AllowAlways,
+            PermissionOrigin::Bypass,
+            &mut |_| {}
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -967,9 +973,11 @@ async fn the_protected_checks_score_is_recorded_with_the_decision_and_the_reques
         "{gate}"
     );
     assert_eq!(gate["protected_check"]["score"], json!(0.25), "{gate}");
-    assert!(gate["protected_check"]["run_id"]
-        .as_str()
-        .is_some_and(|id| !id.is_empty()));
+    assert!(
+        gate["protected_check"]["run_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
     let rows = decisions(&actor);
     let trace = rows[0]
         .flow_trace
@@ -1172,10 +1180,12 @@ async fn the_decision_history_keeps_no_secret_and_stays_bounded() {
     }
     assert!(rows[0][0].as_deref().unwrap().contains("<redacted>"));
     assert!(rows[0][1].as_deref().unwrap().contains("<redacted>"));
-    assert!(rows[0][2]
-        .as_deref()
-        .unwrap()
-        .contains("never send <redacted>"));
+    assert!(
+        rows[0][2]
+            .as_deref()
+            .unwrap()
+            .contains("never send <redacted>")
+    );
 }
 
 /// A validated `helper` skill under an `ask` rule: the model's call waits on a
@@ -1263,9 +1273,11 @@ async fn flow_notes_reach_requests_and_model_denials() {
             };
             assert!(request.reason.contains("flow asks"), "{}", request.reason);
         } else {
-            assert!(tool_result_of(&actor, "b1")
-                .unwrap()
-                .contains("flow denied"));
+            assert!(
+                tool_result_of(&actor, "b1")
+                    .unwrap()
+                    .contains("flow denied")
+            );
         }
     }
 }
@@ -1286,9 +1298,11 @@ async fn bypass_answering_a_skill_rule_question_settles_its_pending_row() {
     .await
     .unwrap();
     assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
-    assert!(tool_result_of(&actor, "s1")
-        .unwrap()
-        .contains("HELPER BODY"));
+    assert!(
+        tool_result_of(&actor, "s1")
+            .unwrap()
+            .contains("HELPER BODY")
+    );
     let rows = skill_rows(&actor);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].request_id, Some(request.id.to_string()));
@@ -1313,9 +1327,11 @@ async fn a_deny_rule_written_while_a_skill_question_waits_settles_it_as_denied()
     )
     .await
     .unwrap();
-    assert!(!tool_result_of(&actor, "s1")
-        .unwrap()
-        .contains("HELPER BODY"));
+    assert!(
+        !tool_result_of(&actor, "s1")
+            .unwrap()
+            .contains("HELPER BODY")
+    );
     let rows = skill_rows(&actor);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].outcome, Outcome::Denied);
@@ -1352,28 +1368,34 @@ async fn unavailable_rules_disable_bypass_always_and_history_but_allow_flows() {
             assert!(request.requires_captain);
             assert!(request.always.is_empty() && request.always_label.is_none());
             assert!(!pending_bypass_eligible(&actor));
-            assert!(resolve_permission(
-                &mut actor,
-                request.id,
-                PermissionDecision::AllowAlways,
-                &mut |_| {}
-            )
-            .await
-            .is_err());
-            assert!(resolve_permission_with_origin(
-                &mut actor,
-                request.id,
-                PermissionDecision::AllowOnce,
-                PermissionOrigin::Bypass,
-                &mut |_| {}
-            )
-            .await
-            .is_err());
+            assert!(
+                resolve_permission(
+                    &mut actor,
+                    request.id,
+                    PermissionDecision::AllowAlways,
+                    &mut |_| {}
+                )
+                .await
+                .is_err()
+            );
+            assert!(
+                resolve_permission_with_origin(
+                    &mut actor,
+                    request.id,
+                    PermissionDecision::AllowOnce,
+                    PermissionOrigin::Bypass,
+                    &mut |_| {}
+                )
+                .await
+                .is_err()
+            );
         }
-        assert!(original
-            .list_decisions(&DecisionFilter::default(), 10)
-            .unwrap()
-            .is_empty());
+        assert!(
+            original
+                .list_decisions(&DecisionFilter::default(), 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
@@ -1577,13 +1599,15 @@ async fn an_always_that_cannot_be_saved_runs_once_and_records_why() {
     .unwrap();
     assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "fetched"));
     assert_eq!(approved, [json!("captain")], "the call runs once");
-    assert!(actor
-        .permission_store
-        .as_ref()
-        .unwrap()
-        .list(&RuleFilter::default())
-        .unwrap()
-        .is_empty());
+    assert!(
+        actor
+            .permission_store
+            .as_ref()
+            .unwrap()
+            .list(&RuleFilter::default())
+            .unwrap()
+            .is_empty()
+    );
     let rows = decisions(&actor);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].outcome, Outcome::Allowed);

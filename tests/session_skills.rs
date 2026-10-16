@@ -3,7 +3,7 @@
 //! result's survival across a resume are all checked end to end. The home
 //! directory is a temporary one in every test.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
 use withnav::server::AppState;
@@ -16,16 +16,18 @@ fn message_received_type_roundtrips_optional_captain_selection() {
     let mut payload = json!({"command_id":ulid::Ulid::generate(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"captain text"});
     let legacy: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert!(legacy.selected_skill.is_none());
-    assert!(serde_json::to_value(legacy)
-        .unwrap()
-        .get("selected_skill")
-        .is_none());
+    assert!(
+        serde_json::to_value(legacy)
+            .unwrap()
+            .get("selected_skill")
+            .is_none()
+    );
     payload["selected_skill"] = json!({"name":"review","origin":"captain"});
     let selected: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
     assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
     assert_eq!(serde_json::to_value(selected).unwrap(), payload);
 }
-use common::server::{captain_command, collect_until, TestServerConfig};
+use common::server::{TestServerConfig, captain_command, collect_until};
 use common::sse::CapturingProvider;
 use common::sse::{
     http_sse, spawn_capturing_provider, sse_body, text_response as answer, tool_call_chunk,
@@ -69,9 +71,12 @@ async fn yolo_loads_both_skill_paths_without_validation_requests_or_records() {
         })
         .await;
         assert!(!events.iter().any(|e| e.kind == "permission.requested"));
-        assert!(events
-            .iter()
-            .any(|e| e.kind == "tool.post_call" && e.payload["metadata"]["approved_by"] == "yolo"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == "tool.post_call"
+                    && e.payload["metadata"]["approved_by"] == "yolo")
+        );
         assert!(provider.bodies().join("\n").contains("STEP ONE"));
         let store =
             withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
@@ -113,17 +118,23 @@ async fn both_skill_paths_hold_the_snapshot_until_captain_validation() {
                 .find(|e| e.kind == "permission.requested")
                 .unwrap();
             assert_eq!(request.payload["tool"], "skill");
-            assert!(request.payload["always_label"]
-                .as_str()
-                .unwrap()
-                .contains("Always (global)"));
+            assert!(
+                request.payload["always_label"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Always (global)")
+            );
             let (_, transcript, _) = state.history().load_for_resume(id).await.unwrap().unwrap();
-            assert!(!serde_json::to_string(&transcript)
-                .unwrap()
-                .contains("STEP ONE"));
-            assert!(!withnav::agent::flow_hook::captain_messages(&transcript)
-                .join("\n")
-                .contains("STEP ONE"));
+            assert!(
+                !serde_json::to_string(&transcript)
+                    .unwrap()
+                    .contains("STEP ONE")
+            );
+            assert!(
+                !withnav::agent::flow_hook::captain_messages(&transcript)
+                    .join("\n")
+                    .contains("STEP ONE")
+            );
             if selected {
                 assert!(provider.bodies().is_empty());
             }
@@ -212,9 +223,11 @@ async fn once_is_turn_local_and_pending_resume_never_loads_the_skill() {
         .iter()
         .rposition(|m| m.is_captain_message())
         .unwrap();
-    assert!(!serde_json::to_string(&transcript[last..])
-        .unwrap()
-        .contains("STEP ONE"));
+    assert!(
+        !serde_json::to_string(&transcript[last..])
+            .unwrap()
+            .contains("STEP ONE")
+    );
     assert_eq!(provider.bodies().len(), 1);
     state.close_session(id).await.unwrap();
 }
@@ -493,10 +506,12 @@ async fn captain_selection_loads_the_skill_before_the_first_model_request() {
     }
     let sent = body(&provider, 0);
     let messages = sent["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| message["role"] == "user"
-        && message["content"]
-            .as_str()
-            .is_some_and(|text| text.starts_with("follow this workflow\n\n"))));
+    assert!(messages.iter().any(|message| {
+        message["role"] == "user"
+            && message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("follow this workflow\n\n"))
+    }));
     let selected_message = messages
         .iter()
         .filter_map(|m| m["content"].as_str())
@@ -512,10 +527,12 @@ async fn captain_selection_loads_the_skill_before_the_first_model_request() {
     let loaded: Value = serde_json::from_str(encoded).unwrap();
     assert_eq!(loaded["name"], "ask-matt");
     assert_eq!(loaded["selected_by"], "captain");
-    assert!(loaded["content"]
-        .as_str()
-        .unwrap()
-        .contains("STEP ONE: ask Matt."));
+    assert!(
+        loaded["content"]
+            .as_str()
+            .unwrap()
+            .contains("STEP ONE: ask Matt.")
+    );
     assert!(loaded["content"].as_str().unwrap().contains("checklist.md"));
     let (_, stored, _) = state
         .history()
@@ -653,17 +670,22 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
     assert!(provider.requests().is_empty());
     converse(&state, id, "allowed instruction").await;
     let sent = messages(&provider, 0);
-    assert!(sent
-        .iter()
-        .any(|(_, text)| text.contains("NO SKILL POLICY")));
+    assert!(
+        sent.iter()
+            .any(|(_, text)| text.contains("NO SKILL POLICY"))
+    );
     assert!(sent.iter().any(|(_, text)| text == "allowed instruction"));
-    assert!(!sent
-        .iter()
-        .any(|(_, text)| text.contains("keep this instruction") || text.contains("STEP ONE")));
+    assert!(
+        !sent
+            .iter()
+            .any(|(_, text)| text.contains("keep this instruction") || text.contains("STEP ONE"))
+    );
     let (_, stored, _) = state.history().load_for_resume(id).await.unwrap().unwrap();
-    assert!(!serde_json::to_string(&stored)
-        .unwrap()
-        .contains("keep this instruction"));
+    assert!(
+        !serde_json::to_string(&stored)
+            .unwrap()
+            .contains("keep this instruction")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1085,12 +1107,14 @@ async fn degraded_skill_requests_refuse_always_without_consuming_the_request() {
         .unwrap();
         drop(db);
         let id = state.create_session(&env.ws, None, false).await.unwrap();
-        assert!(state
-            .session_summary(id)
-            .await
-            .unwrap()
-            .permissions_unavailable
-            .is_some());
+        assert!(
+            state
+                .session_summary(id)
+                .await
+                .unwrap()
+                .permissions_unavailable
+                .is_some()
+        );
         let router = withnav::server::app(state.clone());
         let sub = state.subscribe(id, None).await.unwrap();
         state

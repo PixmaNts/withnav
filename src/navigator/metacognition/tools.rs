@@ -32,11 +32,12 @@ impl LlmCommenter {
             return "error: no workspace; tools are unavailable".to_string();
         };
         let mut args = tc.args.clone();
-        if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-            if !Path::new(path).is_absolute() && !path.starts_with('~') {
-                args["path"] =
-                    serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
-            }
+        if let Some(path) = args.get("path").and_then(|p| p.as_str())
+            && !Path::new(path).is_absolute()
+            && !path.starts_with('~')
+        {
+            args["path"] =
+                serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
         }
         // Reading requires the root in `validate_path`'s roots; the
         // metacognition never writes, so the workspace folders are the only

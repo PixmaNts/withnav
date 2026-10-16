@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 
-use super::embedded::{resolve_workspace, EmbeddedServer};
-use super::{WebArgs, EXIT_DONE};
+use super::embedded::{EmbeddedServer, resolve_workspace};
+use super::{EXIT_DONE, WebArgs};
 use crate::server::WebConfig;
 
 pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
@@ -34,10 +34,10 @@ pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
     .await?;
     let address = format!("{}/#token={}", server.url, server.token);
     println!("WithNav WebUI: {address}");
-    if !args.no_open {
-        if let Err(error) = open_browser(&address) {
-            println!("Could not open a browser ({error}); open the address above yourself.");
-        }
+    if !args.no_open
+        && let Err(error) = open_browser(&address)
+    {
+        println!("Could not open a browser ({error}); open the address above yourself.");
     }
     let waited = tokio::signal::ctrl_c().await;
     server.stop().await;

@@ -476,10 +476,12 @@ mod tests {
     #[test]
     fn catalog_rejects_duplicate_gateway_and_variant_keys() {
         let raw = r#"{"providers":{"p":{"base_url":"http://first"},"p":{"base_url":"http://second"}},"models":{}}"#;
-        assert!(ModelsConfig::parse(raw)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate catalog map key"));
+        assert!(
+            ModelsConfig::parse(raw)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate catalog map key")
+        );
         for second in ["high", "low"] {
             let raw = config_with(
                 "",
@@ -487,10 +489,12 @@ mod tests {
                     r#", "variants": {{"high": {{"reasoning_effort": "high"}}, "high": {{"reasoning_effort": "{second}"}}}}"#
                 ),
             );
-            assert!(ModelsConfig::parse(&raw)
-                .unwrap_err()
-                .to_string()
-                .contains("duplicate catalog map key"));
+            assert!(
+                ModelsConfig::parse(&raw)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate catalog map key")
+            );
         }
     }
 
@@ -510,10 +514,12 @@ mod tests {
     #[test]
     fn catalog_rejects_duplicate_decoded_keys() {
         let raw = r#"{"providers":{"p":{"base_url":"http://unused"}},"models":{"p/m":{"provider":"p","model":"m"},"p\/\u006d":{"provider":"p","model":"m"}}}"#;
-        assert!(ModelsConfig::parse(raw)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate catalog map key"));
+        assert!(
+            ModelsConfig::parse(raw)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate catalog map key")
+        );
     }
 
     #[test]
@@ -698,9 +704,11 @@ mod tests {
         assert_eq!(path, explicit);
         let (config, path) = load_models(None, ws.path(), cfg.path()).unwrap();
         assert_eq!(path, ws.path().join("models.json"));
-        assert!(config
-            .resolve("omniroute/opencode-go/deepseek-v4-flash")
-            .is_ok());
+        assert!(
+            config
+                .resolve("omniroute/opencode-go/deepseek-v4-flash")
+                .is_ok()
+        );
         std::fs::remove_file(ws.path().join("models.json")).unwrap();
         let (_, path) = load_models(None, ws.path(), cfg.path()).unwrap();
         assert_eq!(path, cfg.path().join("models.json"));

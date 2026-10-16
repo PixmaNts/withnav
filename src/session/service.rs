@@ -41,7 +41,7 @@ use ulid::Ulid;
 use super::actor::{build_actor, build_child_actor, start_candidate};
 use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
-use super::message::{accept, MessageAccepted};
+use super::message::{MessageAccepted, accept};
 use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
@@ -49,6 +49,7 @@ use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::instructions::Instructions;
 use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
+use crate::bus::SessionBus;
 use crate::bus::command::Command;
 use crate::bus::event::EventKind;
 use crate::bus::event::ROOT_ACTOR_ID;
@@ -56,9 +57,8 @@ use crate::bus::inbox::ActorInbox;
 use crate::bus::runtime;
 use crate::bus::sequencer::Candidate;
 use crate::bus::sequencer::Sequencer;
-use crate::bus::SessionBus;
 use crate::error::ServerError;
-use crate::provider::config::{load_models, ApiKind, ModelConfig};
+use crate::provider::config::{ApiKind, ModelConfig, load_models};
 use crate::provider::openai::ChatMessage;
 
 /// A session id on the wire and in the registry.
@@ -805,13 +805,13 @@ impl Service {
     #[doc(hidden)]
     pub fn captain_task_probe(&self, id: SessionId) -> Option<String> {
         let handle = self.handle(id)?;
-        let task = handle
+
+        handle
             .status
             .captain_task_probe
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        task
+            .clone()
     }
 
     /// The sessions the registry holds (live or stopping). Client
@@ -1225,31 +1225,31 @@ impl Service {
             self.release_child_slot(parent);
         }
         self.drain_completions(parent).await;
-        if let Some(owner) = self.handle(parent) {
-            if owner.lifecycle == Lifecycle::Active {
-                let notices = self
-                    .history
-                    .unconsumed_completions(parent)
-                    .await
-                    .map_err(ServerError::History)?;
-                let mode = notices
-                    .iter()
-                    .map(|(_, p, _)| p["delivery"].as_str().unwrap_or("next_turn"))
-                    .find(|m| *m == "interrupt")
-                    .or_else(|| {
-                        notices
-                            .iter()
-                            .map(|(_, p, _)| p["delivery"].as_str().unwrap_or("next_turn"))
-                            .find(|m| *m == "steer")
-                    })
-                    .unwrap_or("next_turn");
-                let notice = notices
-                    .iter()
-                    .find(|(_, p, _)| p["delivery"] == mode)
-                    .map(|(id, _, _)| *id)
-                    .unwrap_or(child);
-                owner.status.wake_delivery_mode(mode, notice);
-            }
+        if let Some(owner) = self.handle(parent)
+            && owner.lifecycle == Lifecycle::Active
+        {
+            let notices = self
+                .history
+                .unconsumed_completions(parent)
+                .await
+                .map_err(ServerError::History)?;
+            let mode = notices
+                .iter()
+                .map(|(_, p, _)| p["delivery"].as_str().unwrap_or("next_turn"))
+                .find(|m| *m == "interrupt")
+                .or_else(|| {
+                    notices
+                        .iter()
+                        .map(|(_, p, _)| p["delivery"].as_str().unwrap_or("next_turn"))
+                        .find(|m| *m == "steer")
+                })
+                .unwrap_or("next_turn");
+            let notice = notices
+                .iter()
+                .find(|(_, p, _)| p["delivery"] == mode)
+                .map(|(id, _, _)| *id)
+                .unwrap_or(child);
+            owner.status.wake_delivery_mode(mode, notice);
         }
         Ok(())
     }
@@ -1281,11 +1281,10 @@ impl Service {
                     }),
                 )
                 .await
+                && error != "completion already delivered"
             {
-                if error != "completion already delivered" {
-                    tracing::debug!(%error, "completion retained for parent resume");
-                    break;
-                }
+                tracing::debug!(%error, "completion retained for parent resume");
+                break;
             }
         }
     }
@@ -1595,10 +1594,9 @@ impl Service {
         for envelope in events {
             if envelope.kind == EventKind::PermissionRequested.as_str() {
                 if let Ok(request) = serde_json::from_value::<PermissionRequested>(envelope.payload)
+                    && request.child_session_id.is_none()
                 {
-                    if request.child_session_id.is_none() {
-                        open.push((request.request_id, request.tool_call_id));
-                    }
+                    open.push((request.request_id, request.tool_call_id));
                 }
             } else if let Ok(done) = serde_json::from_value::<PermissionResolved>(envelope.payload)
             {
@@ -2368,18 +2366,16 @@ impl Service {
         let mut assignment_warning = None;
         let mut provenance = resumed.as_ref().and_then(|r| r.meta.provenance.clone());
         let initial_override = {
-            if let Some(loaded) = &resumed {
-                if let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str()) {
-                    if saved
-                        .model
-                        .as_ref()
-                        .is_some_and(|model| model != &loaded.meta.model)
-                    {
-                        return Err(ServerError::History(
-                            "saved agent override disagrees with effective model".into(),
-                        ));
-                    }
-                }
+            if let Some(loaded) = &resumed
+                && let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str())
+                && saved
+                    .model
+                    .as_ref()
+                    .is_some_and(|model| model != &loaded.meta.model)
+            {
+                return Err(ServerError::History(
+                    "saved agent override disagrees with effective model".into(),
+                ));
             }
             let assignment = self.assigned_from_snapshot(
                 &captured,
@@ -2428,10 +2424,11 @@ impl Service {
                     variant: super::store::VariantSource::Parent,
                 });
             }
-            if child_parent.is_none() && *variant != VariantChoice::Default {
-                if let Some(source) = &mut provenance {
-                    source.variant = super::store::VariantSource::Override;
-                }
+            if child_parent.is_none()
+                && *variant != VariantChoice::Default
+                && let Some(source) = &mut provenance
+            {
+                source.variant = super::store::VariantSource::Override;
             }
         }
         if captured_model.is_none() && inherited.is_none() {
@@ -2646,10 +2643,10 @@ impl Service {
             let expire = resumed.is_some().then(|| session_id.to_string());
             tokio::task::spawn_blocking(move || {
                 let store = crate::permission::store::PermissionStore::open(&data_dir)?;
-                if let Some(session) = expire {
-                    if let Err(error) = store.expire_pending(&session) {
-                        tracing::warn!(%error, "pending permission decisions not expired");
-                    }
+                if let Some(session) = expire
+                    && let Err(error) = store.expire_pending(&session)
+                {
+                    tracing::warn!(%error, "pending permission decisions not expired");
                 }
                 Ok(store)
             })
@@ -3305,38 +3302,38 @@ impl Service {
                 owner.status.wake_delivery();
             }
         }
-        if let Some(watchdog) = root_watchdog {
-            if let Some(owner) = self.handle(session_id) {
-                let mut task = owner
-                    .status
-                    .root_supervisor
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if !owner.status.watchdog.supervisor_cancel.is_cancelled() {
-                    *task = watchdog.start(
-                        owner.status.clone(),
-                        owner.sequencer.clone(),
-                        owner.session_cancel.clone(),
-                    );
-                }
+        if let Some(watchdog) = root_watchdog
+            && let Some(owner) = self.handle(session_id)
+        {
+            let mut task = owner
+                .status
+                .root_supervisor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if !owner.status.watchdog.supervisor_cancel.is_cancelled() {
+                *task = watchdog.start(
+                    owner.status.clone(),
+                    owner.sequencer.clone(),
+                    owner.session_cancel.clone(),
+                );
             }
         }
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.
-        if child_parent.is_none() {
-            if let Ok(subscription) = self.subscribe(session_id, None).await {
-                self.hooks.started(
-                    StartedSession {
-                        id: session_id,
-                        editor,
-                        workspace,
-                        resumed: is_resume,
-                    },
-                    sender,
-                    subscription,
-                    cancel,
-                );
-            }
+        if child_parent.is_none()
+            && let Ok(subscription) = self.subscribe(session_id, None).await
+        {
+            self.hooks.started(
+                StartedSession {
+                    id: session_id,
+                    editor,
+                    workspace,
+                    resumed: is_resume,
+                },
+                sender,
+                subscription,
+                cancel,
+            );
         }
         Ok(session_id)
     }
@@ -3420,10 +3417,10 @@ pub(super) fn primary_list(agents: &Agents) -> String {
 
 pub(crate) mod assignment_views;
 mod resolve;
-pub(crate) use resolve::exact_variant;
+pub use resolve::CLEAR_WORD;
 pub use resolve::VariantChoice;
 use resolve::VariantStart;
-pub use resolve::CLEAR_WORD;
+pub(crate) use resolve::exact_variant;
 
 #[cfg(test)]
 pub(crate) mod tests;

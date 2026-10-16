@@ -9,18 +9,18 @@ use std::time::Duration;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 
 use super::{
+    TuiError, TuiOptions,
     client::Client,
-    input::{route_key, route_paste, Editor},
+    input::{Editor, route_key, route_paste},
     protocol::{Action, ClientEvent, Effect},
     reducer,
     state::{Activity, ConnectionStatus, State, UiState},
     terminal::TerminalGuard,
     theme::ThemeId,
     view::{self, RenderCache},
-    TuiError, TuiOptions,
 };
 pub use effects::{Context, Executor, Flow};
 
@@ -269,10 +269,11 @@ impl Runtime {
         if self.state.tabs.iter().any(|t| t.id == before) {
             self.parked.insert(before, left);
         }
-        if let Some(editor) = self.parked.remove(&self.state.id) {
-            if editor.text() == self.state.draft && editor.revision() == self.state.draft_revision {
-                self.editor = editor;
-            }
+        if let Some(editor) = self.parked.remove(&self.state.id)
+            && editor.text() == self.state.draft
+            && editor.revision() == self.state.draft_revision
+        {
+            self.editor = editor;
         }
         let open: Vec<u64> = self.state.tabs.iter().map(|t| t.id).collect();
         self.parked.retain(|id, _| open.contains(id));
@@ -433,7 +434,7 @@ async fn event_loop(runtime: &mut Runtime, guard: &mut TerminalGuard) -> Result<
 async fn termination_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let term = async {
             match signal(SignalKind::terminate()) {
                 Ok(mut sig) => {

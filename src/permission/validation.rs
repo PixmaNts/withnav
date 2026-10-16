@@ -1,7 +1,7 @@
 //! One-time Captain validation of skills and flows, bound to a hash of their content.
 
 use super::store::{Error, PermissionStore};
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -148,31 +148,41 @@ mod tests {
         let approval = store
             .validate(ValidationKind::Flow, "guard", "/flows/guard.toml", &hash)
             .unwrap();
-        assert!(inspect_valid(
-            Some(dir.path()),
-            ValidationKind::Flow,
-            &approval.location,
-            &hash
-        )
-        .unwrap());
-        assert!(!store
-            .is_valid(ValidationKind::Skill, &approval.location, &hash)
-            .unwrap());
-        assert!(!store
-            .is_valid(ValidationKind::Flow, "/other/guard.toml", &hash)
-            .unwrap());
-        assert!(!store
-            .is_valid(
+        assert!(
+            inspect_valid(
+                Some(dir.path()),
                 ValidationKind::Flow,
                 &approval.location,
-                &format!("sha256:{}", "b".repeat(64))
+                &hash
             )
-            .unwrap());
+            .unwrap()
+        );
+        assert!(
+            !store
+                .is_valid(ValidationKind::Skill, &approval.location, &hash)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .is_valid(ValidationKind::Flow, "/other/guard.toml", &hash)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .is_valid(
+                    ValidationKind::Flow,
+                    &approval.location,
+                    &format!("sha256:{}", "b".repeat(64))
+                )
+                .unwrap()
+        );
         assert!(store.revoke_validation(approval.id).unwrap());
         assert!(!store.revoke_validation(approval.id).unwrap());
-        assert!(!store
-            .is_valid(ValidationKind::Flow, &approval.location, &hash)
-            .unwrap());
+        assert!(
+            !store
+                .is_valid(ValidationKind::Flow, &approval.location, &hash)
+                .unwrap()
+        );
         assert!(store.list_validations().unwrap()[0].revoked_at.is_some());
         drop(store);
         assert_eq!(

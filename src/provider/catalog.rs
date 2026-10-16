@@ -4,7 +4,7 @@ use crate::{
     paths,
     provider::{
         client::ModelClient,
-        config::{effective_variants, ApiKind, ResolvedModel, UnknownVariant, Variant, Variants},
+        config::{ApiKind, ResolvedModel, UnknownVariant, Variant, Variants, effective_variants},
         openai::ClientCache,
     },
 };
@@ -13,8 +13,8 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };

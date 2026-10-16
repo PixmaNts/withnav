@@ -182,7 +182,7 @@ pub fn write_atomic(destination: &Path, content: &[u8]) -> Result<(), ToolError>
     std::fs::create_dir_all(parent)?;
     match std::fs::metadata(destination) {
         Ok(meta) if !meta.is_file() => {
-            return Err(ToolError::DestinationChanged(destination.to_path_buf()))
+            return Err(ToolError::DestinationChanged(destination.to_path_buf()));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn long_target_identity_is_stable_and_deny_rules_ignore_display_prefix() {
-        use crate::permission::rules::{literal, Effect, RuleOrigin, RuleScope};
+        use crate::permission::rules::{Effect, RuleOrigin, RuleScope, literal};
         let dir = tempfile::tempdir().unwrap();
         let target = dir
             .path()

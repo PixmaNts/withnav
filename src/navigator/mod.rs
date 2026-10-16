@@ -31,9 +31,9 @@ use std::sync::Arc;
 
 pub use config::NavigatorConfig;
 pub use conversation::{
-    ConversationEvent, ConversationFeed, SessionPost, WakeOutcome, NAVIGATOR_ACTOR_ID,
+    ConversationEvent, ConversationFeed, NAVIGATOR_ACTOR_ID, SessionPost, WakeOutcome,
 };
-pub use intent::{read_intent, IntentRecord};
+pub use intent::{IntentRecord, read_intent};
 pub use log::new_ulid_string;
 pub use lsp::protocol;
 pub use lsp::protocol::{
@@ -49,9 +49,9 @@ pub use ports::{
     Questions, ReflexContextModel, ReflexContextRequest,
 };
 pub use reflex::{
-    SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
+    DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES, SuggestOutcome, Suggestion,
 };
-pub use session_hooks::{NavigatorHooks, COGNITION_PROMPT};
+pub use session_hooks::{COGNITION_PROMPT, NavigatorHooks};
 pub use trigger::TriggerKind;
 
 /// Injectable editor model seams, flow factory, conversation and decision log.

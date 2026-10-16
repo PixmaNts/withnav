@@ -3,14 +3,14 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use withnav::provider::openai::ChatMessage;
 use withnav::session::store::HistoryStore;
 
 mod common;
-use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};
+use common::server::{TestServerConfig, post_create_session, post_message_ok, spawn_server};
 
 /// A provider whose stream stalls mid-turn: one content delta, then silence
 /// with the connection held open.

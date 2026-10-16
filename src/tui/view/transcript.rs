@@ -4,11 +4,11 @@ use crate::tui::{
     theme::Theme,
 };
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span, Text},
     widgets::Paragraph,
-    Frame,
 };
 
 fn clean(text: &str) -> String {
@@ -411,22 +411,22 @@ pub fn draw(
             .saturating_sub(viewport)
             .saturating_sub(usize::from(ui.scroll))
     };
-    if !ui.follow_bottom {
-        if let Some(selected) = &ui.selected_block {
-            let mut offset = 0;
-            for (block, rows, _) in &blocks {
-                let height = rows.len() + usize::from(!rows.is_empty());
-                if &block.id == selected {
-                    if offset < start {
-                        start = offset;
-                    }
-                    if offset + height > start + viewport {
-                        start = (offset + height).saturating_sub(viewport);
-                    }
-                    break;
+    if !ui.follow_bottom
+        && let Some(selected) = &ui.selected_block
+    {
+        let mut offset = 0;
+        for (block, rows, _) in &blocks {
+            let height = rows.len() + usize::from(!rows.is_empty());
+            if &block.id == selected {
+                if offset < start {
+                    start = offset;
                 }
-                offset += height;
+                if offset + height > start + viewport {
+                    start = (offset + height).saturating_sub(viewport);
+                }
+                break;
             }
+            offset += height;
         }
     }
     let mut cursor = 0usize;
@@ -635,7 +635,7 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     #[test]
     fn permission_selection_copies_full_sections_and_sender_group() {
         let mut state = State::default();
@@ -917,10 +917,11 @@ mod selection_tests {
         assert!(map.text.contains("  println!(\"界\");"));
         assert!(!map.text.contains("ASSISTANT"));
         assert!(!map.text.contains("```"));
-        assert!(map
-            .cells
-            .iter()
-            .all(|(x, y, _, _)| *x >= 28 && *x < 65 && *y >= 2 && *y < 22));
+        assert!(
+            map.cells
+                .iter()
+                .all(|(x, y, _, _)| *x >= 28 && *x < 65 && *y >= 2 && *y < 22)
+        );
         assert!(map.hit(10, 3).is_none());
     }
 

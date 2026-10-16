@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
 async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use withnav::{
         mcp::McpManager,
@@ -59,13 +59,17 @@ async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() 
     let captured: Value = serde_json::from_str(&server.bodies()[0]).unwrap();
     let tools = captured["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 8);
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["function"]["name"] == "mcp__fake__malformed"));
-    assert!(manager.statuses()[0]
-        .skipped_tools
-        .iter()
-        .any(|reason| reason.contains("malformed") && reason.contains("minLength")));
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "mcp__fake__malformed")
+    );
+    assert!(
+        manager.statuses()[0]
+            .skipped_tools
+            .iter()
+            .any(|reason| reason.contains("malformed") && reason.contains("minLength"))
+    );
     for tool in tools {
         let function = &tool["function"];
         let name = function["name"].as_str().unwrap();
@@ -75,10 +79,12 @@ async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() 
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
         );
-        assert!(function["description"]
-            .as_str()
-            .unwrap()
-            .starts_with("[mcp:fake]"));
+        assert!(
+            function["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("[mcp:fake]")
+        );
         assert_eq!(function["parameters"]["type"], "object");
     }
     let reference = tools

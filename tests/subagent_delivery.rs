@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
@@ -105,13 +105,11 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
                 .await
                 .unwrap()
                 .replay
-            {
-                if events
+                && events
                     .iter()
                     .any(|e| e.kind == "agent.yield" && e.payload["kind"] == "budget")
-                {
-                    break;
-                }
+            {
+                break;
             }
             tokio::task::yield_now().bounded(file!(), line!()).await;
         }
@@ -288,13 +286,11 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
                 .await
                 .unwrap()
                 .replay
-            {
-                if let Some(e) = events
+                && let Some(e) = events
                     .into_iter()
                     .find(|e| e.kind == "permission.requested")
-                {
-                    break e.payload["request_id"].clone();
-                }
+            {
+                break e.payload["request_id"].clone();
             }
             tokio::task::yield_now().bounded(file!(), line!()).await;
         }
@@ -466,13 +462,15 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
             .status,
         "running"
     );
-    assert!(second
-        .history()
-        .pending_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        second
+            .history()
+            .pending_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     drop(first);
     let third = AppState::new(config).unwrap();
     let link = third
@@ -692,17 +690,19 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         command.source_actor_id = "navigator:conversation".into();
         state.send(command).bounded(file!(), line!()).await.unwrap();
     }
-    assert!(outputs(
-        &state
-            .history()
-            .load(parent)
-            .bounded(file!(), line!())
-            .await
-            .unwrap()
-            .unwrap()
-            .transcript
-    )
-    .is_empty());
+    assert!(
+        outputs(
+            &state
+                .history()
+                .load(parent)
+                .bounded(file!(), line!())
+                .await
+                .unwrap()
+                .unwrap()
+                .transcript
+        )
+        .is_empty()
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), provider.requests.recv())
             .bounded(file!(), line!())
@@ -804,31 +804,39 @@ async fn parent_delete_removes_child_tree_and_notices() {
         .await
         .unwrap();
     assert!(!state.session_has_runtime(child));
-    assert!(!state
-        .history()
-        .exists(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
-    assert!(!state
-        .history()
-        .exists(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
-    assert!(state
-        .child_metadata(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_none());
-    assert!(state
-        .history()
-        .unconsumed_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        !state
+            .history()
+            .exists(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !state
+            .history()
+            .exists(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+    );
+    assert!(
+        state
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        state
+            .history()
+            .unconsumed_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(state.reserved_child_count(parent), 0);
     drop(stream);
 }
@@ -957,13 +965,12 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
                 .await
                 .unwrap()
                 .replay;
-            if let withnav::bus::ResumeOutcome::Replay(events) = replay {
-                if let Some(e) = events
+            if let withnav::bus::ResumeOutcome::Replay(events) = replay
+                && let Some(e) = events
                     .into_iter()
                     .find(|e| e.kind == "permission.requested")
-                {
-                    break e;
-                }
+            {
+                break e;
             }
             tokio::task::yield_now().bounded(file!(), line!()).await;
         }
@@ -1008,15 +1015,17 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(state
-        .answer_permission(
-            parent,
-            id,
-            withnav::agent::permissions::PermissionDecision::AllowOnce
-        )
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        state
+            .answer_permission(
+                parent,
+                id,
+                withnav::agent::permissions::PermissionDecision::AllowOnce
+            )
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     let (_, stream) = provider
         .requests
         .recv()
@@ -1090,10 +1099,9 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
                 .await
                 .unwrap()
                 .replay
+                && events.iter().any(|e| e.kind == "agent.yield")
             {
-                if events.iter().any(|e| e.kind == "agent.yield") {
-                    break;
-                }
+                break;
             }
             tokio::task::yield_now().bounded(file!(), line!()).await;
         }
@@ -1128,13 +1136,12 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
                 .await
                 .unwrap()
                 .replay
-            {
-                if let Some(e) = events.iter().find(|e| {
+                && let Some(e) = events.iter().find(|e| {
                     e.kind == "permission.requested"
                         && e.payload["child_session_id"] == child.to_string()
-                }) {
-                    break e.payload["request_id"].as_str().unwrap().parse().unwrap();
-                }
+                })
+            {
+                break e.payload["request_id"].as_str().unwrap().parse().unwrap();
             }
             tokio::task::yield_now().bounded(file!(), line!()).await;
         }
@@ -1271,12 +1278,14 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         .unwrap();
     drop(store);
     let store = withnav::session::store::HistoryStore::open(&path).unwrap();
-    assert!(store
-        .pending_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        store
+            .pending_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         store
             .unconsumed_completions(parent)
@@ -1290,15 +1299,17 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         provenance: Default::default(),
         content: "untrusted answer".into(),
     }];
-    assert!(store
-        .consume_completions(
-            parent,
-            vec![child, ulid::Ulid::generate()],
-            transcript.clone()
-        )
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        store
+            .consume_completions(
+                parent,
+                vec![child, ulid::Ulid::generate()],
+                transcript.clone()
+            )
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     assert_eq!(
         store
             .unconsumed_completions(parent)
@@ -1308,14 +1319,16 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
             .len(),
         1
     );
-    assert!(store
-        .load(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .unwrap()
-        .transcript
-        .is_empty());
+    assert!(
+        store
+            .load(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .transcript
+            .is_empty()
+    );
     store
         .consume_completions(parent, vec![child], transcript.clone())
         .bounded(file!(), line!())
@@ -1323,17 +1336,21 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         .unwrap();
     drop(store);
     let store = withnav::session::store::HistoryStore::open(&path).unwrap();
-    assert!(store
-        .unconsumed_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(store
-        .consume_completions(parent, vec![child], vec![])
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        store
+            .unconsumed_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .consume_completions(parent, vec![child], vec![])
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     assert_eq!(
         serde_json::to_value(
             store

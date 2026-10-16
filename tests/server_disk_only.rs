@@ -5,14 +5,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::event::EventEnvelope;
 use withnav::server::AppState;
 
 mod common;
-use common::server::{post_message, post_message_ok, spawn_server, TestServerConfig};
-use common::sse::{http_sse, read_sse, spawn_mock_provider, sse_body, SseEnd, SseFrame};
+use common::server::{TestServerConfig, post_message, post_message_ok, spawn_server};
+use common::sse::{SseEnd, SseFrame, http_sse, read_sse, spawn_mock_provider, sse_body};
 
 /// One finished conversation on a first server, then a second, fresh server
 /// on the same database file. Returns the second server's base URL, the

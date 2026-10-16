@@ -11,8 +11,8 @@ use std::time::Duration;
 use withnav::navigator::ports::{FimAnswer, FimModel, FimRequest, ModelError};
 use withnav::navigator::protocol::Position;
 use withnav::navigator::reflex::{
-    build_fim_request, render_context_block, ReflexService, SuggestOutcome, Suggestion,
-    DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
+    DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES, ReflexService,
+    SuggestOutcome, Suggestion, build_fim_request, render_context_block,
 };
 
 mod common;

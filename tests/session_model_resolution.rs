@@ -3,7 +3,7 @@
 //! while the session lives, served on resume when discovery is down, and
 //! never moved to another model by a retargeted alias.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use ulid::Ulid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

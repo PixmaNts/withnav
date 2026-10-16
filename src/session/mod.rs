@@ -26,12 +26,12 @@ pub mod subagents;
 mod subscription;
 
 pub use catalog::SessionListing;
-pub use commands::{route_line, CommandOutcome, CommandSpec, Routed, COMMANDS};
+pub use commands::{COMMANDS, CommandOutcome, CommandSpec, Routed, route_line};
 pub use config::SessionConfig;
 pub use hooks::{NoHooks, SessionHooks, StartedSession};
 pub use message::MessageAccepted;
 pub use sender::SessionSender;
 pub use service::{
-    Service, SessionId, SessionSummary, SkillEntry, SkillsBody, VariantChoice, CLEAR_WORD,
+    CLEAR_WORD, Service, SessionId, SessionSummary, SkillEntry, SkillsBody, VariantChoice,
 };
 pub use subscription::Subscription;

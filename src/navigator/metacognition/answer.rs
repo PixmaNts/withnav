@@ -107,10 +107,10 @@ fn extract_json(raw: &str) -> Option<&str> {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
                     let object = &trimmed[start..=i];
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(object) {
-                        if value.get("line").is_some() || value.get("silent").is_some() {
-                            candidate = Some(object);
-                        }
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(object)
+                        && (value.get("line").is_some() || value.get("silent").is_some())
+                    {
+                        candidate = Some(object);
                     }
                 }
             }

@@ -320,8 +320,10 @@ mod tests {
             "a"
         );
         manager.shutdown().await;
-        assert!(config::parse(Some(&json!({"a__b":{"command":["x"]}})))[0]
-            .1
-            .is_err());
+        assert!(
+            config::parse(Some(&json!({"a__b":{"command":["x"]}})))[0]
+                .1
+                .is_err()
+        );
     }
 }

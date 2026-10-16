@@ -5,15 +5,15 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::error::ServerError;
-use withnav::server::{app, AppState};
+use withnav::server::{AppState, app};
 use withnav::session::VariantChoice;
 
 mod common;
 use common::server::{
-    collect_until, request_json, send_text, temp_workspace as tmp_ws, wait_for, TestServerConfig,
+    TestServerConfig, collect_until, request_json, send_text, temp_workspace as tmp_ws, wait_for,
 };
 use common::sse::{http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body};
 
@@ -232,13 +232,15 @@ async fn variant_command_lists_sets_clears_and_refuses() {
     assert!(!out.ok);
     assert!(out.error.unwrap().contains("usage"));
     assert!(out.name == "variant");
-    assert!(!state
-        .run_command(id, "compact", "")
-        .await
-        .unwrap()
-        .error
-        .unwrap()
-        .is_empty());
+    assert!(
+        !state
+            .run_command(id, "compact", "")
+            .await
+            .unwrap()
+            .error
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // Given a session with a default variant

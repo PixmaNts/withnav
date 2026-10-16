@@ -58,10 +58,10 @@ pub fn validate(content: Content) -> Validation {
             (toml, Some(*definition), templates, errors)
         }
     };
-    if let Some(d) = &definition {
-        if let Err(e) = d.validate(&catalogue(), &Capabilities { images: false }, &templates) {
-            errors.extend(e);
-        }
+    if let Some(d) = &definition
+        && let Err(e) = d.validate(&catalogue(), &Capabilities { images: false }, &templates)
+    {
+        errors.extend(e);
     }
     Validation {
         valid: errors.is_empty(),
@@ -1005,10 +1005,12 @@ mod tests {
         let broken = config.join("flows/broken.toml");
         std::fs::write(&broken, "x".repeat(MAX_FLOW_BYTES + 1)).unwrap();
         assert!(writer.reload().is_err());
-        assert!(writer
-            .snapshot()
-            .values()
-            .all(|flow| flow.location == Location::Builtin));
+        assert!(
+            writer
+                .snapshot()
+                .values()
+                .all(|flow| flow.location == Location::Builtin)
+        );
         writer.reload_marker.as_ref().unwrap().publish().unwrap();
         reader.refresh();
         assert!(!reader.snapshot().contains_key("guard"));
@@ -1027,10 +1029,12 @@ mod tests {
             .execute_batch("DROP TABLE validations; CREATE TABLE validations (invalid TEXT)")
             .unwrap();
         assert!(reader.reload().is_err());
-        assert!(reader
-            .snapshot()
-            .values()
-            .all(|flow| flow.location == Location::Builtin));
+        assert!(
+            reader
+                .snapshot()
+                .values()
+                .all(|flow| flow.location == Location::Builtin)
+        );
     }
     #[test]
     fn approvals_bind_loaded_toml_templates_and_location_and_revoke_on_reload() {
@@ -1106,7 +1110,7 @@ mod tests {
     #[test]
     fn concurrent_markers_advance_monotonically_and_reject_unsafe_files() {
         #[cfg(unix)]
-        use std::os::unix::fs::{symlink, PermissionsExt};
+        use std::os::unix::fs::{PermissionsExt, symlink};
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("data");
         let markers: Vec<_> = (0..16)
@@ -1172,11 +1176,11 @@ mod tests {
     fn shared_template_modification_requires_an_unshared_write_set() {
         let temp = tempfile::tempdir().unwrap();
         let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
-        let draft = |name: &str, body: &str| {
-            Content::Toml {
-            toml: format!("[flow]\nversion=1\nname='{name}'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\nstate_template='shared.txt'\n"),
+        let draft = |name: &str, body: &str| Content::Toml {
+            toml: format!(
+                "[flow]\nversion=1\nname='{name}'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\nstate_template='shared.txt'\n"
+            ),
             templates: BTreeMap::from([("shared.txt".into(), body.into())]),
-        }
         };
         let a = store
             .save("a", Location::Global, None, draft("a", "original"))
@@ -1213,7 +1217,12 @@ mod tests {
         assert_eq!(dir.read("shared.txt", 100, false).unwrap(), "external");
     }
     fn content(name: &str, action: &str) -> Content {
-        Content::Toml {toml:format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=500\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n"),templates:BTreeMap::new()}
+        Content::Toml {
+            toml: format!(
+                "[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=500\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n"
+            ),
+            templates: BTreeMap::new(),
+        }
     }
     #[test]
     fn precedence_revocation_and_failed_reload_keep_snapshot() {

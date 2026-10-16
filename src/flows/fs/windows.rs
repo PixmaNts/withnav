@@ -177,12 +177,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = Directory::open(temp.path(), false).unwrap();
         dir.write("runs", b"original").unwrap();
-        assert!(dir
-            .append_with("runs", |file| {
+        assert!(
+            dir.append_with("runs", |file| {
                 file.write_all(b"partial")?;
                 Err(std::io::Error::other("injected write failure"))
             })
-            .is_err());
+            .is_err()
+        );
         assert_eq!(
             std::fs::read(temp.path().join("runs")).unwrap(),
             b"original"

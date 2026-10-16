@@ -7,11 +7,11 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 mod common;
-use common::server::{create_session, post_message, TestServer};
-use common::sse::{has_kind, http_sse, read_sse, sse_body, SseEnd, SseFrame};
+use common::server::{TestServer, create_session, post_message};
+use common::sse::{SseEnd, SseFrame, has_kind, http_sse, read_sse, sse_body};
 
 const DONE: &str = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
 

@@ -1,5 +1,5 @@
 //! Pure assignment resolution; callers decide how to display diagnostics and apply fallbacks.
-use super::config::{effective_variants, ApiKind, ModelsConfig, ResolvedModel};
+use super::config::{ApiKind, ModelsConfig, ResolvedModel, effective_variants};
 use super::model_name::ModelName;
 use crate::settings::{AssignmentVariant, ModelAssignment, Settings};
 
@@ -133,13 +133,13 @@ impl<'a> AssignmentResolver<'a> {
                 api_name(model.resolved.model.api)
             ));
         }
-        if let AssignmentVariant::Named(name) = &assignment.variant {
-            if !effective_variants(&model.resolved, offered).contains_key(name) {
-                return Err(format!(
-                    "model {} does not offer variant '{name}'",
-                    assignment.model
-                ));
-            }
+        if let AssignmentVariant::Named(name) = &assignment.variant
+            && !effective_variants(&model.resolved, offered).contains_key(name)
+        {
+            return Err(format!(
+                "model {} does not offer variant '{name}'",
+                assignment.model
+            ));
         }
         Ok(())
     }
@@ -158,7 +158,7 @@ impl<'a> AssignmentResolver<'a> {
                     layer,
                     model: assignment.model,
                     reason,
-                }))
+                }));
             }
         };
         if assigned.resolved.model.api != layer.required_api() {

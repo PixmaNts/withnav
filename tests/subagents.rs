@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use withnav::bus::event::EventKind;
 use withnav::server::AppState;
 use withnav::tools::Tool;
@@ -132,13 +132,14 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
     assert_child_state(&fx, child, false, !delete).await;
     assert_eq!(fx.state.reserved_child_count(parent), 0);
     if delete {
-        assert!(fx
-            .state
-            .child_metadata(child)
-            .bounded(file!(), line!())
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            fx.state
+                .child_metadata(child)
+                .bounded(file!(), line!())
+                .await
+                .unwrap()
+                .is_none()
+        );
     } else {
         assert_eq!(
             fx.state
@@ -162,14 +163,15 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
         notices[0].payload["outcome"],
         if cleanup { "failed" } else { "stopped" }
     );
-    assert!(fx
-        .state
-        .history()
-        .pending_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        fx.state
+            .history()
+            .pending_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     fx.state.close_all().bounded(file!(), line!()).await;
     provider.requests.close();
 }
@@ -254,12 +256,13 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
             .await
             .unwrap();
         fx.state.fail_child_start(publication);
-        assert!(fx
-            .state
-            .create_child_session(parent, "vigie", "inspect")
-            .bounded(file!(), line!())
-            .await
-            .is_err());
+        assert!(
+            fx.state
+                .create_child_session(parent, "vigie", "inspect")
+                .bounded(file!(), line!())
+                .await
+                .is_err()
+        );
         assert_eq!(fx.state.reserved_child_count(parent), 0);
         assert_eq!(
             fx.state
@@ -432,14 +435,15 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(fx
-        .state
-        .history()
-        .pending_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        fx.state
+            .history()
+            .pending_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         events(&fx, parent)
             .bounded(file!(), line!())
@@ -661,11 +665,13 @@ async fn paused_child_admission(resume: bool) {
         .unwrap();
     assert_eq!(listed.len(), 1, "no prepared child row was stored");
     assert_eq!(listed[0].id, parent);
-    assert!(!events(&fx, parent)
-        .bounded(file!(), line!())
-        .await
-        .iter()
-        .any(|event| event.kind == "subagent.spawned"));
+    assert!(
+        !events(&fx, parent)
+            .bounded(file!(), line!())
+            .await
+            .iter()
+            .any(|event| event.kind == "subagent.spawned")
+    );
     fx.state.close_all().bounded(file!(), line!()).await;
 }
 
@@ -851,11 +857,13 @@ async fn permission_parked_child_keeps_capacity_until_stopped() {
             .bounded(file!(), line!())
             .await;
     }
-    assert!(events(&fx, child)
-        .bounded(file!(), line!())
-        .await
-        .iter()
-        .any(|e| e.kind == "permission.requested"));
+    assert!(
+        events(&fx, child)
+            .bounded(file!(), line!())
+            .await
+            .iter()
+            .any(|e| e.kind == "permission.requested")
+    );
     assert_eq!(
         fx.state
             .child_metadata(child)
@@ -866,11 +874,13 @@ async fn permission_parked_child_keeps_capacity_until_stopped() {
             .status,
         "running"
     );
-    assert!(!events(&fx, parent)
-        .bounded(file!(), line!())
-        .await
-        .iter()
-        .any(|e| e.kind == "subagent.done"));
+    assert!(
+        !events(&fx, parent)
+            .bounded(file!(), line!())
+            .await
+            .iter()
+            .any(|e| e.kind == "subagent.done")
+    );
     assert!(matches!(
         fx.state
             .create_child_session(parent, "writer", "another")
@@ -950,9 +960,11 @@ async fn forbidden_child_calls_are_denied_before_permissions() {
     }
     assert!(!fx.ws.join("forbidden.txt").exists());
     let replay = events(&fx, child).bounded(file!(), line!()).await;
-    assert!(!replay
-        .iter()
-        .any(|e| e.kind == "permission.requested" || e.kind == "agent.yield"));
+    assert!(
+        !replay
+            .iter()
+            .any(|e| e.kind == "permission.requested" || e.kind == "agent.yield")
+    );
     let posts: Vec<_> = replay
         .iter()
         .filter(|e| e.kind == "tool.post_call")
@@ -1037,9 +1049,11 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         Err(withnav::error::ServerError::SessionNotFound(_))
     ));
     let child_events = events(&fx, child).bounded(file!(), line!()).await;
-    assert!(child_events
-        .iter()
-        .any(|e| e.kind == EventKind::SubagentSpawned.as_str()));
+    assert!(
+        child_events
+            .iter()
+            .any(|e| e.kind == EventKind::SubagentSpawned.as_str())
+    );
     let listed = fx
         .state
         .list(&fx.ws.display().to_string())
@@ -1099,12 +1113,16 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     assert_eq!(stored.child_status.as_deref(), Some("stopped"));
     assert_eq!(stored.actor_state, "stopped");
     let parent_events = events(&fx, parent).bounded(file!(), line!()).await;
-    assert!(parent_events
-        .iter()
-        .any(|e| e.kind == EventKind::SubagentSpawned.as_str()));
-    assert!(parent_events
-        .iter()
-        .any(|e| e.kind == EventKind::SubagentDone.as_str()));
+    assert!(
+        parent_events
+            .iter()
+            .any(|e| e.kind == EventKind::SubagentSpawned.as_str())
+    );
+    assert!(
+        parent_events
+            .iter()
+            .any(|e| e.kind == EventKind::SubagentDone.as_str())
+    );
 }
 
 #[tokio::test]
@@ -2032,16 +2050,17 @@ async fn failed_durable_toggle_enables_nothing_in_the_tree() {
     let fx = fixture_at(&provider.url);
     let (parent, child, _hold) = parent_with_running_child(&fx, &mut provider, false).await;
     fx.state.fail_bypass_commit();
-    assert!(fx
-        .state
-        .set_bypass(
-            parent,
-            true,
-            withnav::bus::runtime::bypass::BypassOrigin::Http
-        )
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        fx.state
+            .set_bypass(
+                parent,
+                true,
+                withnav::bus::runtime::bypass::BypassOrigin::Http
+            )
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     assert!(!bypass_of(&fx, parent).await && !bypass_of(&fx, child).await);
     assert!(bypass_events(&fx, parent).await.is_empty());
     assert!(bypass_events(&fx, child).await.is_empty());

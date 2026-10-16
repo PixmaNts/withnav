@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -713,10 +713,11 @@ async fn prose_without_tool_markup_is_not_retried() {
 
     let c = commenter(server.uri(), None);
     let cancel = tokio_util::sync::CancellationToken::new();
-    assert!(c
-        .remark(&remark_ctx(tmp.path(), vec![]), &cancel)
-        .await
-        .is_err());
+    assert!(
+        c.remark(&remark_ctx(tmp.path(), vec![]), &cancel)
+            .await
+            .is_err()
+    );
     assert_eq!(received_bodies(&server).await.len(), 1);
 }
 

@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use ulid::Ulid;
 
 use super::{HistoryStore, ListedSession, LoadedSession, StoredSession};

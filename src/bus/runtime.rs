@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub use compact::{
-    deferred_wire, CheckpointSaver, CompactReply, CompactRequest, Compacted, Control,
-    FOCUS_MAX_CHARS,
+    CheckpointSaver, CompactReply, CompactRequest, Compacted, Control, FOCUS_MAX_CHARS,
+    deferred_wire,
 };
 pub use model::{
     BoxFuture, Install, ModelReply, ModelRequest, ModelSwitch, ModelSwitcher, ModelTarget,
@@ -44,11 +44,11 @@ use ulid::Ulid;
 use crate::agent::actor::{AgentActor, AgentState};
 use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
 use crate::agent::permissions::PermissionDecision;
-use crate::agent::run_loop::{continue_run, run_agent, AgentEvent, ResolveError, RunOutcome};
+use crate::agent::run_loop::{AgentEvent, ResolveError, RunOutcome, continue_run, run_agent};
 use crate::bus::event::{
-    AgentStateChanged, AgentYield, EventKind, PermissionResolution, PermissionResolved, TaskDone,
-    TaskStatus, ToolPostCall, ToolPreCall, ToolSource, TurnEnd, TurnEndOutcome, TurnError,
-    TurnStart, ROOT_ACTOR_ID,
+    AgentStateChanged, AgentYield, EventKind, PermissionResolution, PermissionResolved,
+    ROOT_ACTOR_ID, TaskDone, TaskStatus, ToolPostCall, ToolPreCall, ToolSource, TurnEnd,
+    TurnEndOutcome, TurnError, TurnStart,
 };
 use crate::bus::inbox::{ActorInbox, Inbound};
 use crate::bus::sequencer::{Candidate, Sequencer};
@@ -1007,10 +1007,10 @@ async fn runtime_loop(
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
                 .map(|c| c.0.clone());
-            if let Some(callback) = callback {
-                if let Some(updated) = callback(&transcript, true).await? {
-                    transcript = Cow::Owned(updated);
-                }
+            if let Some(callback) = callback
+                && let Some(updated) = callback(&transcript, true).await?
+            {
+                transcript = Cow::Owned(updated);
             }
             let updated = match transcript {
                 Cow::Borrowed(_) => None,
@@ -1199,15 +1199,15 @@ async fn runtime_loop(
                     active_task_id = Some(first);
                 }
                 // Text never answers a request: it settles it as cancelled.
-                if let Some(request) = held {
-                    if actor.pending_permission().is_none() {
-                        publish_resolved(
-                            &sequencer,
-                            active_task_id,
-                            &request,
-                            PermissionResolution::Cancelled,
-                        );
-                    }
+                if let Some(request) = held
+                    && actor.pending_permission().is_none()
+                {
+                    publish_resolved(
+                        &sequencer,
+                        active_task_id,
+                        &request,
+                        PermissionResolution::Cancelled,
+                    );
                 }
                 None
             }
@@ -1258,15 +1258,13 @@ async fn runtime_loop(
                 let mut resolution = PermissionResolution::from(&decision);
                 if decision == PermissionDecision::AllowAlways
                     && answer.origin == crate::agent::permissions::PermissionOrigin::Captain
-                {
-                    if let Some(error) =
+                    && let Some(error) =
                         crate::agent::run_loop::save_pending_always(&mut actor, request.id).await
-                    {
-                        resolution = PermissionResolution::AllowAlways {
-                            always_saved: false,
-                            always_error: Some(error),
-                        };
-                    }
+                {
+                    resolution = PermissionResolution::AllowAlways {
+                        always_saved: false,
+                        always_error: Some(error),
+                    };
                 }
                 publish_resolved_with_origin(
                     &sequencer,
@@ -2156,9 +2154,12 @@ mod tests {
                 Arc::new(role),
             )));
             status.watchdog.transition(true);
-            assert!(status
-                .watchdog
-                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+            assert!(
+                status.watchdog.request_root_pause(
+                    status.watchdog.generation().unwrap(),
+                    serde_json::json!({})
+                )
+            );
             let token = status.watchdog.publish_root_hold().unwrap().token;
             status.watchdog.transition(false);
             status
@@ -2199,9 +2200,11 @@ mod tests {
                     }
                 }
                 assert_eq!(status.watchdog.root_hold().unwrap().token, token);
-                assert!(status
-                    .awaiting_fresh_captain
-                    .load(std::sync::atomic::Ordering::Acquire));
+                assert!(
+                    status
+                        .awaiting_fresh_captain
+                        .load(std::sync::atomic::Ordering::Acquire)
+                );
                 assert_eq!(status.activity.0.lock().unwrap().steps, 9);
                 assert_eq!(*status.watchdog_goal.lock().unwrap(), "old goal");
                 assert_eq!(
@@ -2220,9 +2223,11 @@ mod tests {
                 }
             }
             assert!(status.watchdog.root_hold().is_none());
-            assert!(!status
-                .awaiting_fresh_captain
-                .load(std::sync::atomic::Ordering::Acquire));
+            assert!(
+                !status
+                    .awaiting_fresh_captain
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
             assert_eq!(status.activity.0.lock().unwrap().steps, 1);
             assert_eq!(
                 *status.watchdog_goal.lock().unwrap(),
@@ -2440,9 +2445,11 @@ mod tests {
         let task = spawn_with_status(id, actor, inbox, seq, cancel.clone(), None, status.clone());
         tx.send(text_command(id, "task")).await.unwrap();
         entered.notified().await;
-        assert!(status
-            .watchdog
-            .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+        assert!(
+            status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({}))
+        );
         release.notify_one();
         while let Some(event) = live.recv().await {
             if event.kind == "turn.end" {
@@ -2507,9 +2514,12 @@ mod tests {
             delivery_entered.notified().await;
             status.wake_delivery_mode("interrupt", Ulid::generate());
             notice_entered.notified().await;
-            assert!(status
-                .watchdog
-                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+            assert!(
+                status.watchdog.request_root_pause(
+                    status.watchdog.generation().unwrap(),
+                    serde_json::json!({})
+                )
+            );
             notice_release.notify_one();
             delivery_release.notify_one();
             while let Some(event) = live.recv().await {
@@ -2522,9 +2532,11 @@ mod tests {
                 tx.send(text_command(id, "replacement task")).await.unwrap();
             } else {
                 let hold = status.watchdog.root_hold().unwrap();
-                assert!(status
-                    .watchdog
-                    .resolve_root(hold.token, || status.wake_continue()));
+                assert!(
+                    status
+                        .watchdog
+                        .resolve_root(hold.token, || status.wake_continue())
+                );
             }
             while let Some(event) = live.recv().await {
                 if event.kind == "turn.end" {
@@ -2580,9 +2592,11 @@ mod tests {
             status.request_compact(None, compact).await,
             Some(CompactReply::Deferred)
         );
-        assert!(status
-            .watchdog
-            .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+        assert!(
+            status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({}))
+        );
         release.notify_one();
         let mut terminal = Vec::new();
         while let Some(event) = live.recv().await {
@@ -2617,9 +2631,11 @@ mod tests {
         tx.send(text_command(id, "task")).await.unwrap();
         reached.notified().await;
         assert!(status.steer("accepted guidance".into(), false));
-        assert!(status
-            .watchdog
-            .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+        assert!(
+            status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({}))
+        );
         release.notify_one();
         while let Some(event) = live.recv().await {
             if event.kind == "turn.end" {
@@ -2836,9 +2852,11 @@ mod tests {
             assert!(status.steer("queued guidance".into(), false));
             let generation = status.watchdog.generation().unwrap();
             if pause {
-                assert!(status
-                    .watchdog
-                    .request_root_pause(generation, serde_json::json!({})));
+                assert!(
+                    status
+                        .watchdog
+                        .request_root_pause(generation, serde_json::json!({}))
+                );
             } else {
                 assert!(status.watchdog.stop_at_boundary(generation));
             }
@@ -3348,7 +3366,7 @@ mod tests {
 
     #[test]
     fn with_duration_merges_into_objects_and_leaves_other_shapes() {
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
         assert_eq!(
             with_duration(Value::Null, Some(7)),
             json!({"duration_ms": 7})
@@ -3462,10 +3480,12 @@ mod tests {
             .expect("turn.end present");
         assert_eq!(turn_end.payload["outcome"], "error");
         assert_eq!(turn_end.payload["error"]["code"], "provider");
-        assert!(turn_end.payload["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("model exploded"));
+        assert!(
+            turn_end.payload["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("model exploded")
+        );
         let state = envelopes
             .iter()
             .find(|e| kind_of(e) == "agent.state")

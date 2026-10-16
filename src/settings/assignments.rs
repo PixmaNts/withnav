@@ -34,17 +34,17 @@ impl Settings {
     }
 
     pub fn agent_assignment(&self, name: &str) -> Result<Option<ModelAssignment>, String> {
-        use crate::agent::definitions::{canonical_agent_id, AGENT_ALIASES};
+        use crate::agent::definitions::{AGENT_ALIASES, canonical_agent_id};
         let name = canonical_agent_id(name);
         if let Some(value) = self.assignment("agents", name, false)? {
             return Ok(Some(value));
         }
         for (old, canonical) in AGENT_ALIASES {
-            if *canonical == name {
-                if let Some(value) = self.assignment("agents", old, false)? {
-                    canonical_agent_id(old);
-                    return Ok(Some(value));
-                }
+            if *canonical == name
+                && let Some(value) = self.assignment("agents", old, false)?
+            {
+                canonical_agent_id(old);
+                return Ok(Some(value));
             }
         }
         Ok(None)

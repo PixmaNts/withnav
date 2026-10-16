@@ -203,20 +203,18 @@ fn windows_bash_spelling(path: &str, cx: &FloorContext) -> String {
         if let Some((option, value)) = path.split_once('=') {
             return format!("{option}={}", windows_bash_spelling(value, cx));
         }
-    } else if path.starts_with('-') {
-        if let Some((at, _)) = path
+    } else if path.starts_with('-')
+        && let Some((at, _)) = path
             .char_indices()
             .skip(1)
             .find(|(_, c)| matches!(c, 'o' | 'O'))
-        {
-            if !path[at + 1..].is_empty() {
-                return format!(
-                    "{}{}",
-                    &path[..at + 1],
-                    windows_bash_spelling(&path[at + 1..], cx)
-                );
-            }
-        }
+        && !path[at + 1..].is_empty()
+    {
+        return format!(
+            "{}{}",
+            &path[..at + 1],
+            windows_bash_spelling(&path[at + 1..], cx)
+        );
     }
     let path = path.replace('\\', "/");
     let path = path.strip_prefix("//?/").unwrap_or(&path);
@@ -453,12 +451,12 @@ fn output_targets<'a>(program: Option<&str>, words: &'a [String], opaque: bool) 
                     targets.push(value);
                 }
             }
-        } else if word.starts_with('-') {
-            if let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c)) {
-                match &word[at + 1..] {
-                    "" => targets.extend(iter.clone().next().map(String::as_str)),
-                    value => targets.push(value),
-                }
+        } else if word.starts_with('-')
+            && let Some((at, _)) = word.char_indices().skip(1).find(|(_, c)| short.contains(c))
+        {
+            match &word[at + 1..] {
+                "" => targets.extend(iter.clone().next().map(String::as_str)),
+                value => targets.push(value),
             }
         }
     }
@@ -1324,7 +1322,8 @@ mod tests {
             format!("python3 inspect.py \"{root}/data/withnav.db\""),
             format!("python3 inspect.py --db=\"{root}/config/config.json\""),
             // Relative to a directory the floor does not follow: the name is enough.
-            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'".to_owned(),
+            "cd ~/.local/share/withnav && sqlite3 withnav.db 'DELETE FROM permission_rules'"
+                .to_owned(),
         ] {
             assert!(
                 matches!(bash_floor(&f.cx, &line), Floor::NamesProtected(_)),

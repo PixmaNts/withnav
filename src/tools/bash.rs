@@ -6,17 +6,17 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 #[cfg(unix)]
-use nix::sys::signal::{killpg, Signal};
+use nix::sys::signal::{Signal, killpg};
 #[cfg(unix)]
 use nix::unistd::Pid;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::tools::{bash_grace_ms, bound_output, Tool, ToolContext, ToolResult, ToolStatus};
 use crate::tools::{DEFAULT_BASH_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES};
+use crate::tools::{Tool, ToolContext, ToolResult, ToolStatus, bash_grace_ms, bound_output};
 
 const READER_JOIN_DEADLINE_MS: u64 = 500;
 

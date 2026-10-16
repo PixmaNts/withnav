@@ -106,10 +106,10 @@ pub(crate) fn resolve_key_from_store(
         return Ok(entry.api_key.clone());
     }
     let env_name = api_key_env.unwrap_or("OMNIROUTE_API_KEY");
-    if let Ok(v) = std::env::var(env_name) {
-        if !v.is_empty() {
-            return Ok(v);
-        }
+    if let Ok(v) = std::env::var(env_name)
+        && !v.is_empty()
+    {
+        return Ok(v);
     }
     Err(ProviderError::MissingApiKey)
 }
@@ -238,19 +238,25 @@ mod tests {
     fn file_key_wins_over_env() {
         let tmp = tempfile::tempdir().unwrap();
         set_key(tmp.path(), "omniroute", "from-file").unwrap();
-        std::env::set_var("WITHNAV_TEST_KEY", "from-env");
+        // SAFETY: not guaranteed: other unit tests run on other threads and may read the
+        // environment meanwhile. No other test uses WITHNAV_TEST_KEY; the risk is accepted in a test.
+        unsafe { std::env::set_var("WITHNAV_TEST_KEY", "from-env") };
         let key = resolve_key(tmp.path(), "omniroute", Some("WITHNAV_TEST_KEY")).unwrap();
         assert_eq!(key, "from-file");
-        std::env::remove_var("WITHNAV_TEST_KEY");
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("WITHNAV_TEST_KEY") };
     }
 
     #[test]
     fn env_fallback_when_no_file_entry() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("WITHNAV_TEST_KEY2", "env-only");
+        // SAFETY: not guaranteed: other unit tests run on other threads and may read the
+        // environment meanwhile. No other test uses WITHNAV_TEST_KEY2; the risk is accepted in a test.
+        unsafe { std::env::set_var("WITHNAV_TEST_KEY2", "env-only") };
         let key = resolve_key(tmp.path(), "someprovider", Some("WITHNAV_TEST_KEY2")).unwrap();
         assert_eq!(key, "env-only");
-        std::env::remove_var("WITHNAV_TEST_KEY2");
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("WITHNAV_TEST_KEY2") };
     }
 
     #[test]

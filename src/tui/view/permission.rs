@@ -43,18 +43,18 @@ pub(crate) fn copy_sections(p: &PermissionPrompt, call: Option<&Value>, sent: bo
             .unwrap_or_else(|| args.to_string()),
         Some(args) if p.tool == "write" => {
             let mut args = args.clone();
-            if let Some(content) = args.get_mut("content") {
-                if let Some(text) = content.as_str() {
-                    let mut end = text.len().min(4096);
-                    while !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    *content = Value::String(if end < text.len() {
-                        format!("{}\n({} bytes omitted)", &text[..end], text.len() - end)
-                    } else {
-                        text.to_owned()
-                    });
+            if let Some(content) = args.get_mut("content")
+                && let Some(text) = content.as_str()
+            {
+                let mut end = text.len().min(4096);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
                 }
+                *content = Value::String(if end < text.len() {
+                    format!("{}\n({} bytes omitted)", &text[..end], text.len() - end)
+                } else {
+                    text.to_owned()
+                });
             }
             serde_json::to_string_pretty(&args).expect("JSON value")
         }
@@ -287,11 +287,13 @@ fn always_answer_requires_the_server_label() {
     assert!(!offers_always(&prompt));
     prompt.always_label = Some("Always (project): bash git push *".into());
     assert!(offers_always(&prompt));
-    assert!(lines(&prompt, None, Keys::Ready, &theme, 200)
-        .iter()
-        .any(|line| line
-            .to_string()
-            .contains("Always (project): bash git push *")));
+    assert!(
+        lines(&prompt, None, Keys::Ready, &theme, 200)
+            .iter()
+            .any(|line| line
+                .to_string()
+                .contains("Always (project): bash git push *"))
+    );
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.

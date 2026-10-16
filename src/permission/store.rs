@@ -159,13 +159,17 @@ mod tests {
             .unwrap();
         assert_eq!(journal, "wal");
         assert_eq!(timeout, 5000);
-        assert!(second
-            .list(&super::super::rules::RuleFilter::default())
-            .unwrap()
-            .is_empty());
-        assert!(second
-            .list_decisions(&super::super::decisions::DecisionFilter::default(), 100)
-            .unwrap()
-            .is_empty());
+        assert!(
+            second
+                .list(&super::super::rules::RuleFilter::default())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            second
+                .list_decisions(&super::super::decisions::DecisionFilter::default(), 100)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

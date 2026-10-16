@@ -12,7 +12,7 @@ use crate::error::ToolError;
 use crate::provider::ToolCall;
 #[cfg(unix)]
 use crate::tools::validate_path;
-use crate::tools::{bound_output, ToolContext};
+use crate::tools::{ToolContext, bound_output};
 
 /// The longest rendering of a call's arguments kept in a request, in bytes.
 pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;

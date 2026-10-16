@@ -183,7 +183,9 @@ fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
                         })
                         .collect();
                     if matches.len() != 1 {
-                        anyhow::bail!("select --location global or workspace for an ambiguous or missing flow");
+                        anyhow::bail!(
+                            "select --location global or workspace for an ambiguous or missing flow"
+                        );
                     }
                     matches[0].location
                 }
@@ -430,7 +432,7 @@ pub enum AuthCommand {
 }
 
 pub fn init_tracing() {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::registry()
         .with(filter)
@@ -608,19 +610,18 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     };
 
     // Bypass is on before the first prompt; no fallback if it cannot be.
-    if args.yes {
-        if let Err(e) = state
+    if args.yes
+        && let Err(e) = state
             .set_bypass(
                 session_id,
                 true,
                 crate::bus::runtime::bypass::BypassOrigin::Cli,
             )
             .await
-        {
-            eprintln!("\nerror: cannot enable bypass: {e}");
-            let _ = state.close_session(session_id).await;
-            return Ok(EXIT_ERROR);
-        }
+    {
+        eprintln!("\nerror: cannot enable bypass: {e}");
+        let _ = state.close_session(session_id).await;
+        return Ok(EXIT_ERROR);
     }
 
     post_prompt(&state, session_id, &prompt).await?;

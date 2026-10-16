@@ -232,11 +232,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 serde_json::from_value::<crate::tools::control::AskAnswer>(v["answer"].clone())
             {
                 for block in &mut s.conversation.blocks {
-                    if let BlockKind::Question(prompt) = &mut block.kind {
-                        if prompt.call_id == answer.question_call_id {
-                            prompt.answer = Some(answer.clone());
-                            prompt.sending = false;
-                        }
+                    if let BlockKind::Question(prompt) = &mut block.kind
+                        && prompt.call_id == answer.question_call_id
+                    {
+                        prompt.answer = Some(answer.clone());
+                        prompt.sending = false;
                     }
                 }
             }
@@ -250,16 +250,15 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             if matches!(
                 v["selected_skill"]["origin"].as_str(),
                 Some("driver" | "captain")
-            ) {
-                if let Some(name) = v["selected_skill"]["name"].as_str() {
-                    s.conversation.blocks.push(block(
-                        format!("skill:{}", e.seq),
-                        BlockKind::Notice(format!(
-                            "skill: {} · selected by Captain",
-                            strip_controls(name)
-                        )),
-                    ));
-                }
+            ) && let Some(name) = v["selected_skill"]["name"].as_str()
+            {
+                s.conversation.blocks.push(block(
+                    format!("skill:{}", e.seq),
+                    BlockKind::Notice(format!(
+                        "skill: {} · selected by Captain",
+                        strip_controls(name)
+                    )),
+                ));
             }
         }
         Some(EventKind::TurnStart) => {
@@ -468,12 +467,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 .and_then(|x| serde_json::from_value::<Usage>(x.clone()).ok())
             {
                 // Fallback for a final step that reported no usage of its own.
-                if let Some(key) = s.conversation.last_response_step.clone() {
-                    if turn.as_deref().is_none_or(|t| key.1 == t)
-                        && !s.conversation.counted_steps.contains(&key)
-                    {
-                        count_usage(s, key, u);
-                    }
+                if let Some(key) = s.conversation.last_response_step.clone()
+                    && turn.as_deref().is_none_or(|t| key.1 == t)
+                    && !s.conversation.counted_steps.contains(&key)
+                {
+                    count_usage(s, key, u);
                 }
             }
             if let Some(t) = &turn {
@@ -715,10 +713,12 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                     // This tab's own switch, accepted: it waits for its operation (a replay of
                     // an acceptance already settled marks nothing).
                     let settled = op.as_ref().is_some_and(|o| s.settled_model_ops.contains(o));
-                    if let Some(m) = s.model_switch.as_mut() {
-                        if op.is_some() && m.operation_id == op && !settled {
-                            m.deferred = true;
-                        }
+                    if let Some(m) = s.model_switch.as_mut()
+                        && op.is_some()
+                        && m.operation_id == op
+                        && !settled
+                    {
+                        m.deferred = true;
                     }
                     // Named only when it is this tab's switch, known by its operation id, or
                     // when the server names the model_id; otherwise (another client's switch, or
@@ -753,25 +753,24 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 && s.model_seq.is_none_or(|held| e.seq >= held)
                 && v["data"]["agent"].as_str() == Some(s.agent_name())
                 && v["data"]["model"].as_str() == s.selected_model_id.as_deref()
+                && let Some(data) = v.get("data")
             {
-                if let Some(data) = v.get("data") {
-                    if let Some(variant) = data.get("variant") {
-                        s.variant = variant.as_str().map(strip_controls);
-                        s.variant_seq = Some(e.seq);
-                        s.model_seq = Some(e.seq);
-                        s.variant_source = v["data"]["variant_source"]
-                            .as_str()
-                            .map(strip_controls)
-                            .unwrap_or_default();
-                        let variant = s.variant.clone();
-                        let source = s.variant_source.clone();
-                        if let Some(effective) = s.effective.as_mut() {
-                            effective.selection.variant = variant;
-                            effective.selection.variant_source = source;
-                        }
+                if let Some(variant) = data.get("variant") {
+                    s.variant = variant.as_str().map(strip_controls);
+                    s.variant_seq = Some(e.seq);
+                    s.model_seq = Some(e.seq);
+                    s.variant_source = v["data"]["variant_source"]
+                        .as_str()
+                        .map(strip_controls)
+                        .unwrap_or_default();
+                    let variant = s.variant.clone();
+                    let source = s.variant_source.clone();
+                    if let Some(effective) = s.effective.as_mut() {
+                        effective.selection.variant = variant;
+                        effective.selection.variant_source = source;
                     }
-                    super::set_variant_offer(s, data);
                 }
+                super::set_variant_offer(s, data);
             }
             let text = super::command::outcome_text(
                 &name,
@@ -913,10 +912,10 @@ fn interrupt_block(b: &mut Block) {
 }
 
 fn set_tool_status_if_pending(b: &mut Block, value: ToolStatus) {
-    if let BlockKind::ToolCall { status, .. } = &mut b.kind {
-        if status.is_none() {
-            *status = Some(value);
-        }
+    if let BlockKind::ToolCall { status, .. } = &mut b.kind
+        && status.is_none()
+    {
+        *status = Some(value);
     }
 }
 
@@ -944,11 +943,13 @@ fn settle_turn_tools(s: &mut State, actor: &str, turn: &str, outcome: &str) {
             if let Some(b) = s.conversation.blocks.iter_mut().find(|b| b.id == bid) {
                 // An `ask` has no pre/post pair: yielding is its execution, the question shows in
                 // the yield block.
-                if let BlockKind::ToolCall { name, status, .. } = &mut b.kind {
-                    if yielded && name == "ask" && status.is_none() {
-                        *status = Some(ToolStatus::Ok);
-                        continue;
-                    }
+                if let BlockKind::ToolCall { name, status, .. } = &mut b.kind
+                    && yielded
+                    && name == "ask"
+                    && status.is_none()
+                {
+                    *status = Some(ToolStatus::Ok);
+                    continue;
                 }
                 interrupt_block(b);
             }

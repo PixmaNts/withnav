@@ -4,17 +4,17 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::event::EventEnvelope;
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
 mod common;
-use common::server::{collect_until, send_text, temp_workspace as tmp_ws, TestServerConfig};
+use common::server::{TestServerConfig, collect_until, send_text, temp_workspace as tmp_ws};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body, text_response as answer,
-    tool_call_chunk, CapturingProvider,
+    CapturingProvider, http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body,
+    text_response as answer, tool_call_chunk,
 };
 
 /// A window small enough that four long turns overrun its budget.
@@ -219,10 +219,12 @@ async fn compact_during_a_turn_runs_after_it() {
         .unwrap();
     assert!(end < compacted, "after the turn: {kinds:?}");
     assert_eq!(provider.bodies().len(), 2);
-    assert!(serde_json::from_str::<Value>(&provider.bodies()[1])
-        .unwrap()
-        .get("tools")
-        .is_none());
+    assert!(
+        serde_json::from_str::<Value>(&provider.bodies()[1])
+            .unwrap()
+            .get("tools")
+            .is_none()
+    );
 }
 
 // Given an agent waiting on its `ask`
@@ -373,10 +375,12 @@ async fn a_deferred_compact_is_cancelled_with_its_own_id_when_the_session_stops(
     for r in &results {
         assert_eq!(r.payload["operation_id"], accepted.operation_id.to_string());
     }
-    assert!(results[1].payload["error"]
-        .as_str()
-        .unwrap()
-        .contains("nothing was compacted"));
+    assert!(
+        results[1].payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("nothing was compacted")
+    );
     let sub = state.subscribe(id, None).await.unwrap();
     let withnav::bus::ResumeOutcome::Replay(all) = sub.replay else {
         panic!("replay expected")
@@ -420,10 +424,12 @@ async fn a_deferred_compact_refused_after_an_ask_keeps_its_operation_id() {
         results[1].payload["operation_id"],
         accepted.operation_id.to_string()
     );
-    assert!(results[1].payload["error"]
-        .as_str()
-        .unwrap()
-        .contains("waiting for an answer"));
+    assert!(
+        results[1].payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("waiting for an answer")
+    );
     assert_eq!(provider.bodies().len(), 1, "no summary request");
     assert!(stored(&state, id, "context.compacted").await.is_empty());
 }

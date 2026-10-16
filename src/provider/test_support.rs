@@ -12,8 +12,8 @@ pub(crate) async fn layer_chat_fixture(
 ) {
     use serde_json::json;
     use wiremock::{
-        matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
     };
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;

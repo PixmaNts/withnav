@@ -206,18 +206,16 @@ pub fn app(state: AppState) -> Router {
                 let path = request.uri().path();
                 let public =
                     path == "/v1/health" || (web && crate::server::web::is_public_asset_path(path));
-                if !public {
-                    if let Some(token) = token {
-                        use axum::http::header::AUTHORIZATION;
-                        let expected = format!("Bearer {token}");
-                        if request
-                            .headers()
-                            .get(AUTHORIZATION)
-                            .and_then(|v| v.to_str().ok())
-                            != Some(&expected)
-                        {
-                            return StatusCode::UNAUTHORIZED.into_response();
-                        }
+                if !public && let Some(token) = token {
+                    use axum::http::header::AUTHORIZATION;
+                    let expected = format!("Bearer {token}");
+                    if request
+                        .headers()
+                        .get(AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        != Some(&expected)
+                    {
+                        return StatusCode::UNAUTHORIZED.into_response();
                     }
                 }
                 next.run(request).await
@@ -1059,7 +1057,7 @@ async fn continue_child(
         Some(value) if !value.is_null() => match serde_json::from_value(value) {
             Ok(token) => Some(token),
             Err(_) => {
-                return error_response(ServerError::MalformedBody("invalid pause token".into()))
+                return error_response(ServerError::MalformedBody("invalid pause token".into()));
             }
         },
         _ => None,

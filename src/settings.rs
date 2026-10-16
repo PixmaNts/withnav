@@ -302,7 +302,7 @@ pub fn load_with_revision(config_dir: &Path) -> Result<(Settings, String), Setti
     let bytes = match std::fs::read(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Settings::default(), "absent".into()))
+            return Ok((Settings::default(), "absent".into()));
         }
         Err(source) => return Err(SettingsError::Read { path, source }),
     };

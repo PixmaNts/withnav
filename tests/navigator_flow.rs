@@ -11,7 +11,7 @@ use withnav::navigator::{Metacognition, ModelError, Remark, RemarkContext};
 
 mod common;
 use common::navigator::{
-    big_edit, Nav, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, URI,
+    Nav, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, URI, big_edit,
 };
 
 struct ObservedCommenter {
@@ -142,9 +142,11 @@ async fn newer_text_still_supersedes_the_remark_in_flight() {
     let mut seen = Vec::new();
     let remark = client.expect("withnav/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "new");
-    assert!(triggers(&client)
-        .iter()
-        .any(|r| r["delivered"] == "cancelled"));
+    assert!(
+        triggers(&client)
+            .iter()
+            .any(|r| r["delivered"] == "cancelled")
+    );
 }
 
 /// Closing the document cancels the remark in flight, deduplication or not.
@@ -167,9 +169,11 @@ async fn closing_cancels_the_deduplicated_remark() {
     client.expect("withnav/clear", &mut seen).await;
     gate.cancel();
     expect_finished_without_remark(&mut client).await;
-    assert!(triggers(&client)
-        .iter()
-        .any(|r| r["delivered"] == "cancelled"));
+    assert!(
+        triggers(&client)
+            .iter()
+            .any(|r| r["delivered"] == "cancelled")
+    );
     assert_eq!(mock.calls(), 1);
 }
 

@@ -9,12 +9,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use withnav::server::{app, AppState, ServerConfig};
+use withnav::server::{AppState, ServerConfig, app};
 
 mod common;
-use common::server::{request_json, text_command, TestServerConfig};
+use common::server::{TestServerConfig, request_json, text_command};
 
 /// SIGTERM is PROCESS-GLOBAL: the real-signal test must not fire while
 /// another test's server (which installs its own shutdown_signal handler)

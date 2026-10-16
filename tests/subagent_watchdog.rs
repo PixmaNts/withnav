@@ -1,12 +1,12 @@
 use futures::future::BoxFuture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use withnav::session::subagents::watchdog::{Evidence, JudgeError, Verdict};
 use withnav::session::SessionId;
+use withnav::session::subagents::watchdog::{Evidence, JudgeError, Verdict};
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
@@ -108,19 +108,23 @@ async fn verdict_for_a_turn_that_parked_on_permission_is_discarded() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(!service
-        .history()
-        .replay(parent, None, u64::MAX)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .iter()
-        .any(|e| e.kind == "subagent.watchdog"));
-    assert!(service
-        .decide_subagent(parent, child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        !service
+            .history()
+            .replay(parent, None, u64::MAX)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "subagent.watchdog")
+    );
+    assert!(
+        service
+            .decide_subagent(parent, child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     service.close_all().bounded(file!(), line!()).await;
 }
 
@@ -233,9 +237,11 @@ async fn doubt_boundary_keeps_steer_queued_until_the_decision() {
         .unwrap()
         .unwrap()
         .transcript;
-    assert!(!serde_json::to_string(&transcript)
-        .unwrap()
-        .contains("queued after doubt"));
+    assert!(
+        !serde_json::to_string(&transcript)
+            .unwrap()
+            .contains("queued after doubt")
+    );
     f.service
         .decide_subagent(f.parent, f.child, false, None)
         .bounded(file!(), line!())
@@ -272,12 +278,13 @@ async fn doubt_boundary_interrupt_cancels_hold_and_runs_replacement_without_pend
         .await
         .unwrap();
     assert!(request.contains("replacement after doubt"));
-    assert!(f
-        .service
-        .decide_subagent(f.parent, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        f.service
+            .decide_subagent(f.parent, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     f.service
         .history()
         .flush()
@@ -445,12 +452,13 @@ async fn doubt_boundary_captain_continue_releases_the_same_turn() {
         .await
         .unwrap();
     assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
-    assert!(f
-        .service
-        .decide_subagent(f.parent, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        f.service
+            .decide_subagent(f.parent, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     drop(child_stream);
     drop(parent_stream);
     f.close().await;
@@ -470,22 +478,24 @@ async fn watchdog_teardown_blocks_delete(delete_parent: bool) {
             .await
             .is_err()
     );
-    assert!(f
-        .service
-        .history()
-        .exists(f.child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
+    assert!(
+        f.service
+            .history()
+            .exists(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+    );
     barrier.release.notify_one();
     deletion.bounded(file!(), line!()).await.unwrap().unwrap();
-    assert!(!f
-        .service
-        .history()
-        .exists(f.child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap());
+    assert!(
+        !f.service
+            .history()
+            .exists(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+    );
     f.close().await;
 }
 
@@ -660,9 +670,11 @@ async fn failed_stop_write_restores_doubt_and_captain_continue_releases_waiter()
         .bounded(file!(), line!())
         .await
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("injected watchdog terminal write failure"));
+    assert!(
+        error
+            .to_string()
+            .contains("injected watchdog terminal write failure")
+    );
     assert!(f.provider.requests.try_recv().is_err());
     f.service
         .continue_child(f.parent, f.child)
@@ -783,9 +795,11 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
     let stopping = service.clone();
     let mut stop = tokio::spawn(async move { stopping.close_session(parent).await });
     tool.cancelled.notified().bounded(file!(), line!()).await;
-    assert!(tokio::time::timeout(Duration::from_millis(30), &mut stop)
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut stop)
+            .await
+            .is_err()
+    );
     assert_eq!(service.reserved_child_count(parent), 1);
     assert_eq!(
         service
@@ -797,13 +811,15 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
             .status,
         "running"
     );
-    assert!(service
-        .history()
-        .unconsumed_completions(parent)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        service
+            .history()
+            .unconsumed_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     tool.release.notify_one();
     stop.bounded(file!(), line!()).await.unwrap().unwrap();
     assert!(tool.ended.load(std::sync::atomic::Ordering::Acquire));
@@ -1003,25 +1019,29 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
             .status,
         "running"
     );
-    assert!(service
-        .create_child_session(parent, "vigie", "replacement")
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        service
+            .create_child_session(parent, "vigie", "replacement")
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     service
         .history()
         .flush()
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(!service
-        .history()
-        .replay(parent, None, u64::MAX)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .iter()
-        .any(|e| e.kind == "subagent.done"));
+    assert!(
+        !service
+            .history()
+            .replay(parent, None, u64::MAX)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "subagent.done")
+    );
     assert!(provider.requests.try_recv().is_err());
     tool.release.notify_one();
     let (_, parent_stream) = provider
@@ -1226,10 +1246,12 @@ async fn stuck_stops_with_partial_output_and_wakes_parent() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].payload["watchdog"], true);
     assert_eq!(messages[0].payload["outcome"], "stopped");
-    assert!(messages[0].payload["content"]
-        .as_str()
-        .unwrap()
-        .contains("stopped by watchdog"));
+    assert!(
+        messages[0].payload["content"]
+            .as_str()
+            .unwrap()
+            .contains("stopped by watchdog")
+    );
     drop(parent_stream);
     f.close().await;
 }
@@ -1305,11 +1327,12 @@ async fn one_failure_is_silent_two_failures_park_and_stop_decision_delivers_part
     f.tick(300).await;
     f.checked.recv().bounded(file!(), line!()).await.unwrap();
     let waiter = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
-    assert!(!f
-        .events()
-        .await
-        .iter()
-        .any(|e| e.kind == "subagent.watchdog"));
+    assert!(
+        !f.events()
+            .await
+            .iter()
+            .any(|e| e.kind == "subagent.watchdog")
+    );
     assert!(f.provider.requests.try_recv().is_err());
     *f.clock.now.lock().unwrap() += Duration::from_secs(300);
     waiter.send(()).unwrap();
@@ -1349,35 +1372,39 @@ async fn ownership_wrong_state_and_root_only_schema_are_enforced() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(f
-        .service
-        .decide_subagent(foreign, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("read-only"));
-    assert!(f
-        .service
-        .decide_subagent(f.child, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
-    assert!(f
-        .service
-        .decide_subagent(f.parent, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("watchdog doubt"));
+    assert!(
+        f.service
+            .decide_subagent(foreign, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("read-only")
+    );
+    assert!(
+        f.service
+            .decide_subagent(f.child, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
+    assert!(
+        f.service
+            .decide_subagent(f.parent, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("watchdog doubt")
+    );
     // The child's first provider request has no root-only decision schema.
-    assert!(f
-        .service
-        .continue_child(f.parent, f.child)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        f.service
+            .continue_child(f.parent, f.child)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     f.close().await;
 }
 
@@ -1413,12 +1440,13 @@ async fn doubt_is_skipped_on_later_ticks_and_captain_continue_resumes() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    assert!(f
-        .service
-        .decide_subagent(f.parent, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        f.service
+            .decide_subagent(f.parent, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     drop(child_stream);
     drop(parent_stream);
     f.service.close_all().bounded(file!(), line!()).await;
@@ -1520,12 +1548,13 @@ async fn budget_parked_child_is_skipped_without_asking_instinct() {
     waiter.send(()).unwrap();
     let _next = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
     assert!(f.checked.try_recv().is_err());
-    assert!(f
-        .service
-        .decide_subagent(f.parent, f.child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        f.service
+            .decide_subagent(f.parent, f.child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     f.service.close_all().bounded(file!(), line!()).await;
 }
 
@@ -1603,11 +1632,13 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
     waiter.send(()).unwrap();
     let _next = sleeps.recv().bounded(file!(), line!()).await.unwrap();
     assert!(checked.try_recv().is_err());
-    assert!(service
-        .decide_subagent(parent, child, false, None)
-        .bounded(file!(), line!())
-        .await
-        .is_err());
+    assert!(
+        service
+            .decide_subagent(parent, child, false, None)
+            .bounded(file!(), line!())
+            .await
+            .is_err()
+    );
     assert!(!ws.join("new.txt").exists());
     service.close_all().bounded(file!(), line!()).await;
 }
@@ -1658,10 +1689,12 @@ async fn instinct_wire_uses_a_separate_choice_question_and_rejects_invalid_answe
     let request: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(request["questions"].as_object().unwrap().len(), 1);
     assert_eq!(request["questions"]["subagent_progress"]["type"], "choice");
-    assert!(request["questions"]["subagent_progress"]["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("UNTRUSTED"));
+    assert!(
+        request["questions"]["subagent_progress"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("UNTRUSTED")
+    );
     let state: Value = serde_json::from_str(request["state"].as_str().unwrap()).unwrap();
     assert_eq!(state["untrusted_evidence"]["goal"], evidence.goal);
     server.reset().bounded(file!(), line!()).await;

@@ -1,4 +1,4 @@
-use crate::app::{dispatch, init_tracing, Cli};
+use crate::app::{Cli, dispatch, init_tracing};
 use clap::Parser;
 
 pub fn main() -> anyhow::Result<()> {

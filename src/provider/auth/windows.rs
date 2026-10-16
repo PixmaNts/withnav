@@ -103,7 +103,10 @@ pub(super) fn protect(path: &Path) -> Result<(), ProviderError> {
 pub(super) fn check_perms_or_fail(path: &Path) -> Result<(), ProviderError> {
     let allowed = [current_sid()?, "S-1-5-18".into(), "S-1-5-32-544".into()];
     let insecure = || {
-        ProviderError::Auth(format!("auth.json at {} has insecure permissions; restrict its DACL to the current user, SYSTEM and Administrators", path.display()))
+        ProviderError::Auth(format!(
+            "auth.json at {} has insecure permissions; restrict its DACL to the current user, SYSTEM and Administrators",
+            path.display()
+        ))
     };
     unsafe {
         let mut sd = ptr::null_mut();
@@ -195,9 +198,11 @@ mod tests {
                 0
             );
         }
-        assert!(super::super::load_store(root.path())
-            .unwrap_err()
-            .to_string()
-            .contains("insecure permissions"));
+        assert!(
+            super::super::load_store(root.path())
+                .unwrap_err()
+                .to_string()
+                .contains("insecure permissions")
+        );
     }
 }

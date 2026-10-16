@@ -5,7 +5,7 @@ use std::time::Duration;
 use withnav::server::AppState;
 
 mod common;
-use common::server::{captain_command, stored_events, wait_for, TestServerConfig};
+use common::server::{TestServerConfig, captain_command, stored_events, wait_for};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_response, tool_calls_chunk};
 
 /// A newline, a double quote and a backslash all change representation in JSON text.
@@ -63,10 +63,12 @@ async fn escaped_secrets_never_reach_provider_events_or_store() {
     let posts = stored_events(&state, id, "tool.post_call").await;
     assert_eq!(posts.len(), 2, "{posts:?}");
     for post in &posts {
-        assert!(post.payload["output"]
-            .as_str()
-            .unwrap()
-            .contains("[redacted]"));
+        assert!(
+            post.payload["output"]
+                .as_str()
+                .unwrap()
+                .contains("[redacted]")
+        );
     }
     let first = provider.bodies()[0].clone();
     assert!(first.contains("mcp__fake__described"));

@@ -18,12 +18,13 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tower_lsp_server::Client;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams,
 };
-use tower_lsp_server::Client;
 
+use crate::navigator::TriggerKind;
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::Documents;
 use crate::navigator::log::{LogRecord, NavLog};
@@ -34,7 +35,6 @@ use crate::navigator::lsp::protocol::{
 };
 use crate::navigator::metacognition::Diag;
 use crate::navigator::reflex::{ReflexContext, ReflexService};
-use crate::navigator::TriggerKind;
 use crate::navigator::{ConversationEvent, Metacognition, NavigatorDeps};
 
 pub(crate) struct Runtime {
@@ -294,12 +294,12 @@ impl Runtime {
     /// Releases the remark handle, unless a newer remark already replaced it.
     async fn end_remark(&self, uri: &str, cancel: &CancellationToken) {
         let mut state = self.documents.lock().await;
-        if let Some(doc) = state.get_mut(uri) {
-            if !cancel.is_cancelled() {
-                doc.remark_cancel = None;
-                doc.remark_version = None;
-                doc.help.end();
-            }
+        if let Some(doc) = state.get_mut(uri)
+            && !cancel.is_cancelled()
+        {
+            doc.remark_cancel = None;
+            doc.remark_version = None;
+            doc.help.end();
         }
     }
 

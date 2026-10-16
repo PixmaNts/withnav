@@ -3,7 +3,7 @@ use serde_json::json;
 use withnav::tui::{
     catalog::{self, Row},
     commands::{self, Routed},
-    input::{route_key, Editor},
+    input::{Editor, route_key},
     protocol::*,
     reducer,
     state::{State, UiState, VariantPick},
@@ -133,7 +133,7 @@ fn enter_and_ctrl_n_cannot_route_lower_layer_models() {
 
 #[test]
 fn mixed_catalog_picker_renders_and_routes_chat_only() {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let (mut s, mut ui) = picker_state(mixed_models());
     s.session = Some(live_session());
     ui.selection.insert(format!("{:?}", Overlay::Models), 2);
@@ -251,9 +251,11 @@ fn gateway_groups_collapse_search_reopens_and_headers_never_pick_models() {
     assert!(ui.collapsed_models.contains("omniroute"));
     assert_eq!(catalog::rows(&state.catalog, &ui).len(), 3);
     ui.filter = "combo".into();
-    assert!(catalog::rows(&state.catalog, &ui)
-        .iter()
-        .any(|r| matches!(r,Row::Model(m) if m.name=="omniroute/combo/astra")));
+    assert!(
+        catalog::rows(&state.catalog, &ui)
+            .iter()
+            .any(|r| matches!(r,Row::Model(m) if m.name=="omniroute/combo/astra"))
+    );
     assert!(state.start_model.is_none());
 }
 
@@ -390,7 +392,7 @@ fn unified_selection_replay_restores_agent_model_variant_and_override_source() {
 
 #[tokio::test]
 async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries() {
-    use axum::{extract::Query, routing::get, Json, Router};
+    use axum::{Json, Router, extract::Query, routing::get};
     use std::collections::HashMap;
     let app=Router::new()
         .route("/v1/models",get(|| async { Json(models()) }))
@@ -427,7 +429,7 @@ async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries
 
 #[test]
 fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let mut s = State::default();
     s.tabs[0].selected_model_id = Some("openai/astra".into());
     s.tabs[0].model_source = "override".into();
@@ -476,7 +478,7 @@ fn hierarchy_models() -> ModelsBody {
 
 /// The screen's rows as drawn; the selection mark is blanked.
 fn picker_lines(state: &State, ui: &UiState, size: (u16, u16)) -> Vec<String> {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
     terminal
         .draw(|frame| {
@@ -559,9 +561,11 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
     ui.collapsed_models.insert("omniroute".into());
     let lines = picker_lines(&state, &ui, (100, 30));
     assert!(lines.iter().any(|l| l.contains("▸ omniroute")));
-    assert!(!lines
-        .iter()
-        .any(|l| l.contains(" cc") || l.contains("kimi")));
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains(" cc") || l.contains("kimi"))
+    );
 
     // A search opens every group and keeps each match at its level.
     ui.filter = "k2".into();
@@ -688,9 +692,11 @@ fn favorites_are_sorted_chat_only_and_unknown_ones_stay_hidden() {
         &keys[..3],
         ["section:favorites", "direct/solo", "omniroute/kimi/k2"]
     );
-    assert!(!keys
-        .iter()
-        .any(|k| k == "omniroute/kimi/fim" || k == "gone/model"));
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k == "omniroute/kimi/fim" || k == "gone/model")
+    );
     assert_eq!(ui.favorite_models.len(), 4, "kept in storage");
 }
 
@@ -923,9 +929,11 @@ fn favorites_rows_show_the_full_name_and_the_detail_line_follows_them() {
         .insert("omniroute/agy/gemini-3-pro".into());
     ui.selection.insert("Models".into(), 1);
     let lines = picker_lines(&state, &ui, (100, 16));
-    assert!(lines
-        .iter()
-        .any(|l| l.contains("★ omniroute/agy/gemini-3-pro")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("★ omniroute/agy/gemini-3-pro"))
+    );
     let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
     assert!(lines[keys - 1].contains("omniroute/agy/gemini-3-pro"));
 }

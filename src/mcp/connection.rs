@@ -78,20 +78,22 @@ mod windows_command_tests {
             windows_directory(windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW)
                 .unwrap();
         assert_eq!(program, system_dir.join("cmd.EXE"));
-        assert!(std::process::Command::new(program)
-            .args(["/d", "/c", "exit", "0"])
-            .env_clear()
-            .envs(env)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            std::process::Command::new(program)
+                .args(["/d", "/c", "exit", "0"])
+                .env_clear()
+                .envs(env)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 }
 
-use super::{tool::McpTool, Ready, Server};
+use super::{Ready, Server, tool::McpTool};
 #[cfg(unix)]
 use nix::{
-    sys::signal::{killpg, Signal},
+    sys::signal::{Signal, killpg},
     unistd::Pid,
 };
 use rmcp::ServiceExt;

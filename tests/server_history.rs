@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use withnav::bus::event::{EventEnvelope, EventKind};
 use withnav::navigator::COGNITION_PROMPT;
@@ -17,10 +17,10 @@ use withnav::server::AppState;
 
 mod common;
 use common::server::{
-    collect_until, list_sessions, post_create_session, post_message_ok, spawn_server,
-    TestServerConfig,
+    TestServerConfig, collect_until, list_sessions, post_create_session, post_message_ok,
+    spawn_server,
 };
-use common::sse::{spawn_capturing_provider, text_response as done_response, CapturingProvider};
+use common::sse::{CapturingProvider, spawn_capturing_provider, text_response as done_response};
 
 /// A state over a `cognition`-aliased mock provider at `base_url`, with
 /// history persisted to `history_db`.
@@ -233,9 +233,11 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
             replay_max <= original_max + 1,
             "stored seqs preserved: {replay_max} <= {original_max} + 1"
         );
-        assert!(replay
-            .iter()
-            .any(|e| e.kind == "session.bypass" && e.payload["by"] == "system:resume"));
+        assert!(
+            replay
+                .iter()
+                .any(|e| e.kind == "session.bypass" && e.payload["by"] == "system:resume")
+        );
     } else {
         panic!("expected replay, got {:?}", sub2.replay);
     }

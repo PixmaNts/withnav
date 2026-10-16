@@ -2,7 +2,7 @@
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use ulid::Ulid;
 use withnav::tui::protocol::{ContextSnapshot, ModelIdentity};
 use withnav::{
@@ -57,11 +57,11 @@ fn choice_answers_retry_refusals_and_replay_by_call_id() {
     event.payload =
         json!({"source":"user:http","content":"Leave open\nAfter review","answer":answer});
     feed(&mut s, &[event]);
-    assert!(s
-        .conversation
-        .blocks
-        .iter()
-        .any(|b| matches!(&b.kind, BlockKind::Question(p) if p.answer.as_ref() == Some(&answer))));
+    assert!(
+        s.conversation.blocks.iter().any(
+            |b| matches!(&b.kind, BlockKind::Question(p) if p.answer.as_ref() == Some(&answer))
+        )
+    );
 }
 
 #[test]
@@ -166,11 +166,12 @@ fn bypass_is_acknowledged_pending_and_scoped_to_the_tab() {
         .unwrap();
     }
     assert!(s.bypass);
-    assert!(!s
-        .conversation
-        .blocks
-        .iter()
-        .any(|b| b.id.starts_with("bypass:")));
+    assert!(
+        !s.conversation
+            .blocks
+            .iter()
+            .any(|b| b.id.starts_with("bypass:"))
+    );
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert!(!s.bypass);
     assert!(s.tabs.iter().any(|tab| tab.bypass));
@@ -504,12 +505,12 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
 #[tokio::test]
 async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     use wiremock::{
-        matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
     };
     use withnav::tui::{
         client::Client,
@@ -858,16 +859,18 @@ fn startup_child_metadata_opens_read_only_without_resume() {
         session_id: "child".into(),
         cursor: None
     }));
-    assert!(!effects
-        .iter()
-        .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_))));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_)))
+    );
 }
 
 #[tokio::test]
 async fn child_controls_and_permission_answers_use_the_owner_routes() {
     use wiremock::{
-        matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{body_json, method, path},
     };
     use withnav::tui::client::Client;
     let server = MockServer::start().await;
@@ -897,11 +900,13 @@ async fn child_controls_and_permission_answers_use_the_owner_routes() {
         .await;
     let client = Client::new(server.uri(), None);
     assert!(client.stop("child").await.unwrap().accepted);
-    assert!(client
-        .continue_child("parent", "child")
-        .await
-        .unwrap_err()
-        .contains("child_not_parked"));
+    assert!(
+        client
+            .continue_child("parent", "child")
+            .await
+            .unwrap_err()
+            .contains("child_not_parked")
+    );
     client
         .answer_permission(
             "parent",
@@ -1072,21 +1077,25 @@ fn opening_and_closing_a_child_never_resumes_or_writes_to_it() {
         session_id: id.clone(),
         cursor: None
     }));
-    assert!(!effects
-        .iter()
-        .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_))));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_)))
+    );
     assert!(s.read_only());
     assert!(handle_action(&mut s, &mut ui, Action::Submit("hello".into())).is_empty());
-    assert!(handle_action(
-        &mut s,
-        &mut ui,
-        Action::RunCommand {
-            name: "compact".into(),
-            arguments: String::new(),
-            revision: None
-        }
-    )
-    .is_empty());
+    assert!(
+        handle_action(
+            &mut s,
+            &mut ui,
+            Action::RunCommand {
+                name: "compact".into(),
+                arguments: String::new(),
+                revision: None
+            }
+        )
+        .is_empty()
+    );
     handle_action(&mut s, &mut ui, Action::CloseTab);
     assert_eq!(s.active, 0);
     assert_eq!(s.session.as_ref().unwrap().session_id, Ulid(1).to_string());
@@ -1177,11 +1186,12 @@ fn child_permission_is_labelled_and_answered_on_the_parent() {
         json!({"request_id":"request-1","tool_call_id":"child-call","tool":"bash","arguments":"{\"command\":\"cargo test\"}","scope":{"kind":"folder","value":"/ws"},"agent":"vigie","reason":"needs approval","child_session_id":Ulid(2)}),
     );
     assert_eq!(s.children[0].status, ChildStatus::Permission);
-    assert!(s
-        .open_permission()
-        .unwrap()
-        .reason
-        .contains("subagent vigie"));
+    assert!(
+        s.open_permission()
+            .unwrap()
+            .reason
+            .contains("subagent vigie")
+    );
     let answer = PermissionAnswer {
         decision: "allow_once".into(),
         message: None,
@@ -2071,11 +2081,11 @@ fn duplicate_seqs_cursor_zero_and_gaps() {
 fn resync_resets_projection_and_stale_generation_is_dropped() {
     let mut s = run("tools_replay");
     let before = s.conversation.blocks.clone();
-    let gen = s.generation.clone();
+    let gene = s.generation.clone();
     let effects = update(
         &mut s,
         ClientEvent::Resync {
-            generation: gen.clone(),
+            generation: gene.clone(),
         },
     )
     .unwrap();
@@ -2129,20 +2139,22 @@ fn yield_and_answer_including_ask() {
     let mut s = st();
     feed(&mut s, &live[..6]); // through turn.end yielded
     assert_eq!(s.activity, Activity::AwaitingUser);
-    assert!(s
-        .conversation
-        .blocks
-        .iter()
-        .any(|b| b.kind == BlockKind::YieldQuestion("insert SD card".into())));
+    assert!(
+        s.conversation
+            .blocks
+            .iter()
+            .any(|b| b.kind == BlockKind::YieldQuestion("insert SD card".into()))
+    );
     // the ask call had no pre/post pair: it is not left "running"
     assert_eq!(tool(&s, "a1").status, Some(ToolStatus::Ok));
     feed(&mut s, &live[6..]);
     assert_eq!(s.activity, Activity::Idle);
-    assert!(s
-        .conversation
-        .blocks
-        .iter()
-        .any(|b| matches!(&b.kind, BlockKind::Message { text, .. } if text == "done")));
+    assert!(
+        s.conversation
+            .blocks
+            .iter()
+            .any(|b| matches!(&b.kind, BlockKind::Message { text, .. } if text == "done"))
+    );
     assert_eq!(steps(&s).last().unwrap().0, "thanks");
 }
 
@@ -2277,17 +2289,17 @@ fn new_conversation_opens_a_tab_with_its_own_cursor_and_generation() {
 fn pick_model_with_a_session_opens_a_tab_without_one_it_does_not() {
     let mut s = run("turn_replay");
     models_now(&mut s, None).unwrap();
-    let gen = s.generation.clone();
+    let gene = s.generation.clone();
     let fx = handle_action(&mut s, &mut ui(), Action::PickModel("b".into()));
     assert!(fx.is_empty());
     assert_eq!(
         (s.generation.clone(), s.conversation.blocks.is_empty()),
-        (gen.clone(), false)
+        (gene.clone(), false)
     ); // no session: untouched
     with_session(&mut s, "S1");
     handle_action(&mut s, &mut ui(), Action::PickModel("a".into()));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
-    assert_ne!(s.generation, gen);
+    assert_ne!(s.generation, gene);
     assert_eq!(s.last_applied_seq, None);
     assert!(s.conversation.blocks.is_empty());
     assert_eq!(s.selected_model_id.as_deref(), Some("a"));
@@ -2298,12 +2310,12 @@ fn pick_model_with_a_session_opens_a_tab_without_one_it_does_not() {
 fn resume_other_id_opens_a_tab_same_stopped_id_keeps_cursor() {
     let mut s = run("stopped");
     with_session(&mut s, "S1");
-    let gen = s.generation.clone();
+    let gene = s.generation.clone();
     let fx = handle_action(&mut s, &mut ui(), Action::ResumeSession("S1".into()));
     assert_eq!(fx, vec![Effect::Resume("S1".into())]);
     assert_eq!(
         (s.generation.clone(), s.last_applied_seq),
-        (gen.clone(), Some(5))
+        (gene.clone(), Some(5))
     );
     assert!(!s.conversation.blocks.is_empty());
     let fx = resumed_now(&mut s, "S1").unwrap();
@@ -2315,7 +2327,7 @@ fn resume_other_id_opens_a_tab_same_stopped_id_keeps_cursor() {
     let fx = handle_action(&mut s, &mut ui(), Action::ResumeSession("S2".into()));
     assert_eq!(fx.last(), Some(&Effect::FetchMetadata("S2".into())));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
-    assert_ne!(s.generation, gen);
+    assert_ne!(s.generation, gene);
     assert_eq!(s.last_applied_seq, None);
     let fx = resumed_now(&mut s, "S2").unwrap();
     assert!(fx.contains(&Effect::Subscribe {
@@ -2355,11 +2367,11 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
     s.pending_submit_text = Some("draft".into());
     s.notice = Some("note".into());
     s.workspace = "/ws".into();
-    let gen = s.generation.clone();
+    let gene = s.generation.clone();
     let fx = update(
         &mut s,
         ClientEvent::Resync {
-            generation: gen.clone(),
+            generation: gene.clone(),
         },
     )
     .unwrap();
@@ -2370,7 +2382,7 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
             cursor: None
         }]
     );
-    assert_eq!(s.generation, gen); // same stream replays: no bump
+    assert_eq!(s.generation, gene); // same stream replays: no bump
     assert_eq!(s.catalog.len(), 2);
     assert_eq!(s.selected_model_id.as_deref(), Some("a"));
     assert_eq!(s.sessions.len(), 1);
@@ -2649,11 +2661,12 @@ fn bug10_tool_fragments_are_keyed_by_index_and_never_rendered() {
         s.conversation.pending_tool_fragments["0"],
         "{\"path\":\"a.rs\"}"
     );
-    assert!(!s
-        .conversation
-        .blocks
-        .iter()
-        .any(|b| matches!(b.kind, BlockKind::ToolCall { .. })));
+    assert!(
+        !s.conversation
+            .blocks
+            .iter()
+            .any(|b| matches!(b.kind, BlockKind::ToolCall { .. }))
+    );
     feed(&mut s, &live[9..10]); // llm.response
     assert!(s.conversation.pending_tool_fragments.is_empty());
     let tools: Vec<_> = ids(&s)
@@ -3622,7 +3635,7 @@ fn context_compacted_pushes_a_one_line_notice() {
 
 #[test]
 fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
-    use withnav::tui::commands::{route, Routed};
+    use withnav::tui::commands::{Routed, route};
     let server = |name: &str, arguments: &str| Routed::Server {
         name: name.into(),
         arguments: arguments.into(),
@@ -4015,10 +4028,12 @@ fn the_variant_picked_with_a_model_is_sent_when_the_conversation_starts() {
     let Effect::Create(request) = &fx[0] else {
         panic!("{fx:?}")
     };
-    assert!(serde_json::to_value(request)
-        .unwrap()
-        .get("variant")
-        .is_none());
+    assert!(
+        serde_json::to_value(request)
+            .unwrap()
+            .get("variant")
+            .is_none()
+    );
 }
 
 #[test]
@@ -4036,7 +4051,7 @@ fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
 #[test]
 fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use withnav::tui::input::{route_key, Editor};
+    use withnav::tui::input::{Editor, route_key};
     let (mut s, mut ui) = (with_variants(), ui());
     s.selected_model_id = Some("opus".into());
     created_now(&mut s, "S1").unwrap();
@@ -4245,7 +4260,7 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
 
 #[test]
 fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
-    use withnav::tui::commands::{route, Routed};
+    use withnav::tui::commands::{Routed, route};
     let mode = Mode::NextTurn;
     // only a slash in the first column makes a command
     assert_eq!(route("  /stop", mode), Routed::Message("  /stop".into()));
@@ -5364,10 +5379,12 @@ fn events_replays_and_a_resync_never_send_a_command() {
     );
     for e in &script.out {
         let ev = envelope(&s, e);
-        assert!(update(&mut s, ev)
-            .unwrap()
-            .iter()
-            .all(|fx| matches!(fx, Effect::FetchAgents(_))));
+        assert!(
+            update(&mut s, ev)
+                .unwrap()
+                .iter()
+                .all(|fx| matches!(fx, Effect::FetchAgents(_)))
+        );
     }
 }
 
@@ -5499,14 +5516,16 @@ fn approval_evidence_survives_live_and_replay() {
                 .iter()
                 .find(|b| matches!(b.kind, BlockKind::ToolCall { .. }))
                 .unwrap();
-            assert!(withnav::tui::view::tool::header(
-                &block.kind,
-                0,
-                &withnav::tui::theme::ThemeId::default().palette()
-            )
-            .spans
-            .iter()
-            .any(|span| span.content.contains("auto · instinct")));
+            assert!(
+                withnav::tui::view::tool::header(
+                    &block.kind,
+                    0,
+                    &withnav::tui::theme::ThemeId::default().palette()
+                )
+                .spans
+                .iter()
+                .any(|span| span.content.contains("auto · instinct"))
+            );
         }
     }
 }

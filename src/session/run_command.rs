@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
-use super::service::{exact_variant, Service, SessionHandle, SessionId, VariantChoice, CLEAR_WORD};
+use super::service::{CLEAR_WORD, Service, SessionHandle, SessionId, VariantChoice, exact_variant};
 use crate::agent::selection::SwitchError;
 use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
 use crate::bus::runtime::{CompactReply, ModelReply};
@@ -143,10 +143,10 @@ impl Service {
             .await
             .is_err()
         {
-            if let Some(id) = created {
-                if let Err(err) = self.close_session_gated(id).await {
-                    tracing::warn!(session_id = %id, error = %err, "closing the session of a failed /new");
-                }
+            if let Some(id) = created
+                && let Err(err) = self.close_session_gated(id).await
+            {
+                tracing::warn!(session_id = %id, error = %err, "closing the session of a failed /new");
             }
             return Err(ServerError::SessionStopping);
         }
@@ -368,7 +368,7 @@ impl Service {
                 return Err(CommandFailure::Refused(format!(
                     "unknown agent {wanted}; the primary agents are {}",
                     super::service::primary_list(selection.agents())
-                )))
+                )));
             }
         };
         if target.id == current.id {
@@ -400,12 +400,12 @@ impl Service {
         // The gauge counts the new role at once, not at the next turn.
         handle.lock_selected().agent = target.id.to_string();
         handle.lock_selected().role = target.clone();
-        if let Some(snapshot) = handle.status.set_context_role(&target) {
-            if let Ok(payload) = serde_json::to_value(&snapshot) {
-                let _ = handle
-                    .sequencer
-                    .publish(Candidate::new(EventKind::ContextUpdated, payload));
-            }
+        if let Some(snapshot) = handle.status.set_context_role(&target)
+            && let Ok(payload) = serde_json::to_value(&snapshot)
+        {
+            let _ = handle
+                .sequencer
+                .publish(Candidate::new(EventKind::ContextUpdated, payload));
         }
         let payload = serde_json::to_value(SessionAgentChanged {
             agent: target.id.to_string(),
@@ -529,12 +529,12 @@ impl Service {
         };
         // The gauge shows the variant that is selected, even when it applies
         // from the next turn.
-        if let Some(snapshot) = snapshot {
-            if let Ok(payload) = serde_json::to_value(&snapshot) {
-                let _ = handle
-                    .sequencer
-                    .publish(Candidate::new(EventKind::ContextUpdated, payload));
-            }
+        if let Some(snapshot) = snapshot
+            && let Ok(payload) = serde_json::to_value(&snapshot)
+        {
+            let _ = handle
+                .sequencer
+                .publish(Candidate::new(EventKind::ContextUpdated, payload));
         }
         Ok(Done::data(json!({
             "variant": name,

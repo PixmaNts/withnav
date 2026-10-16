@@ -1,3 +1,5 @@
+# Changelog
+
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0, a minor version may break compatibility. New entries go under `Unreleased` as pull
 requests land in `develop`.
@@ -6,6 +8,7 @@ requests land in `develop`.
 
 ### Changed
 
+- `nav` with no subcommand opens the terminal client, and takes its flags (`nav --session <id>`); `nav tui` still works.
 - TUI: typing a letter or a digit while the transcript has the focus (copy mode) goes back to the message editor and types it. A selected block is copied with ctrl+shift+c; plain `y` no longer copies.
 
 ## [0.8.0] - 2026-10-15

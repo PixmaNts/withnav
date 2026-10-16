@@ -23,11 +23,22 @@ pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
     name = "nav",
     version,
     about = "WithNav: you set the course, Nav lights the way. A pair-programming crew for your code",
-    propagate_version = true
+    propagate_version = true,
+    args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+    /// Without a subcommand, `nav` opens the terminal client with these flags.
+    #[command(flatten)]
+    pub tui: TuiArgs,
+}
+
+impl Cli {
+    /// The command to run: the subcommand given, else the terminal client.
+    pub fn into_command(self) -> Commands {
+        self.command.unwrap_or(Commands::Tui(self.tui))
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -46,9 +57,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: PermissionCommand,
     },
+    /// Run one task and exit.
     Run(RunArgs),
+    /// The session server alone (HTTP and SSE).
     Serve(ServeArgs),
+    /// Store API keys.
     Auth(AuthArgs),
+    /// Terminal chat client; what `nav` runs when no command is given.
     Tui(TuiArgs),
     /// Serves the browser client of the conversation and opens it.
     Web(WebArgs),
@@ -428,8 +443,8 @@ pub fn init_tracing() {
         .try_init();
 }
 
-pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
-    match cli.command {
+pub async fn dispatch(command: Commands) -> anyhow::Result<i32> {
+    match command {
         Commands::Doctor(args) => doctor::command(args).await,
         Commands::Permissions { command } => {
             tokio::task::spawn_blocking(move || permissions_command(command)).await?

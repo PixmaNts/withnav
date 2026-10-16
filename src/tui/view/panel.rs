@@ -1,12 +1,14 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
 //! Agents (the session's agent and the agents it started), Context (the breakdown of the
-//! last snapshot and the last compaction), Skills (the catalog counts), Layers (one dot each, from
+//! last snapshot and the last compaction), Skills · MCP · Plugins (the skill catalog counts, the
+//! skills the model loaded, a dot per MCP server of the service), Layers (one dot each, from
 //! the assignment check and the conversation's activity) and Changes (the files git reports). A
 //! section with nothing reported yet shows `—`; none is made up.
 use super::text::{columns, fit_end as fit, fit_start};
+use crate::tools::ToolStatus;
 use crate::tui::{
     reducer::tokens,
-    state::{Activity, ConnectionStatus, State, UiState},
+    state::{Activity, BlockKind, ConnectionStatus, State, UiState},
     theme::Theme,
 };
 use ratatui::{
@@ -195,12 +197,53 @@ fn context(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     lines
 }
 
-fn skills(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines = vec![title("Skills", theme)];
+/// The skills the model loaded in this conversation: the `skill` calls that succeeded, each
+/// name once, in the order it was first loaded.
+fn loaded_skills(state: &State) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for block in &state.conversation.blocks {
+        if let BlockKind::ToolCall {
+            name, args, status, ..
+        } = &block.kind
+            && name == "skill"
+            && *status == Some(ToolStatus::Ok)
+            && let Some(skill) = args.get("name").and_then(|n| n.as_str())
+            && !names.iter().any(|n| n == skill)
+        {
+            names.push(skill.to_owned());
+        }
+    }
+    names
+}
+
+/// The colour of an MCP server's dot: green ready, orange starting, red failed, muted off.
+fn mcp_style(state: &str, theme: &Theme) -> Style {
+    match state {
+        "ready" => theme.success(),
+        "starting" => theme.warning(),
+        "failed" => theme.error(),
+        _ => theme.muted(),
+    }
+}
+
+/// Most servers listed; the others are counted on one line.
+const MCP_ROWS: usize = 10;
+
+/// What the conversation can call on beyond its built-in tools: the skills (the catalog
+/// counts and the ones the model loaded), the service's MCP servers, and the plugins (none
+/// yet). The servers' status is the service's, not this conversation's: a session keeps the
+/// tools it was created with.
+fn extensions(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Skills · MCP · Plugins", theme)];
     match &state.conversation.context {
-        None => lines.push(none(theme)),
+        None => lines.push(row("skills", "—".into(), width, theme)),
         Some(c) => {
-            lines.push(row("listed", c.skills.listed.to_string(), width, theme));
+            lines.push(row(
+                "skills listed",
+                c.skills.listed.to_string(),
+                width,
+                theme,
+            ));
             if c.skills.omitted > 0 {
                 lines.push(styled_row(
                     "omitted, no room",
@@ -208,6 +251,46 @@ fn skills(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                     width,
                     theme.warning(),
                     theme.warning(),
+                ));
+            }
+        }
+    }
+    let loaded = loaded_skills(state);
+    if !loaded.is_empty() {
+        lines.push(row("model loaded", loaded.len().to_string(), width, theme));
+        for part in wrap(&loaded.join(" · "), width.saturating_sub(3)) {
+            lines.push(Line::styled(format!("   {part}"), theme.text()));
+        }
+    }
+    match &state.mcp {
+        None => lines.push(row("mcp", "—".into(), width, theme)),
+        Some(mcp) if mcp.servers.is_empty() => {
+            lines.push(Line::styled(" no MCP server", theme.muted()));
+        }
+        Some(mcp) => {
+            let shown = if mcp.servers.len() <= MCP_ROWS {
+                mcp.servers.len()
+            } else {
+                MCP_ROWS - 1
+            };
+            for server in &mcp.servers[..shown] {
+                let label = match server.state.as_str() {
+                    "ready" => format!("{} tools", server.tool_count),
+                    "failed" => server.error.clone().unwrap_or_else(|| "failed".into()),
+                    other => other.to_owned(),
+                };
+                lines.push(dot(
+                    &format!("mcp:{}", server.server_id),
+                    label,
+                    width,
+                    mcp_style(&server.state, theme),
+                    theme,
+                ));
+            }
+            if mcp.servers.len() > shown {
+                lines.push(Line::styled(
+                    format!("   {} more", mcp.servers.len() - shown),
+                    theme.muted(),
                 ));
             }
         }
@@ -285,7 +368,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let mut lines = agents(state, width, theme);
     for section in [
         context(state, width, theme),
-        skills(state, width, theme),
+        extensions(state, width, theme),
         layers(state, width, theme),
     ] {
         lines.push(Line::raw(""));

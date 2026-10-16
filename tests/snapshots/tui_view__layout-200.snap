@@ -19,9 +19,10 @@ expression: snapshot
                      │                                                                                                                                              │  input budget                182k 
                      │                                                                                                                                              │  compacted ×1 · ~150k → ~38k      
                      │                                                                                                                                              │                                   
-                     │                                                                                                                                              │ SKILLS                            
-                     │                                                                                                                                              │  listed                        12 
+                     │                                                                                                                                              │ SKILLS · MCP · PLUGINS            
+                     │                                                                                                                                              │  skills listed                 12 
                      │                                                                                                                                              │  omitted, no room               3 
+                     │                                                                                                                                              │  mcp                            — 
                      │                                                                                                                                              │                                   
                      │                                                                                                                                              │ LAYERS                            
                      │                                                                                                                                              │  ● nav  idle                      
@@ -34,8 +35,7 @@ expression: snapshot
                      │                                                                                                                                              │  M src/tui/view/file_4.rs         
                      │                                                                                                                                              │  A src/tui/view/file_5.rs         
                      │                                                                                                                                              │  D src/tui/view/file_6.rs         
-                     │                                                                                                                                              │  ? src/tui/view/file_7.rs         
-                     │                                                                                                                                              │    6 more                         
+                     │                                                                                                                                              │    7 more                         
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │ ready                                                                                                                                                          session 31.2k tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

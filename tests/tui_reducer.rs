@@ -3068,11 +3068,11 @@ fn a_malformed_context_payload_is_a_protocol_error() {
 fn every_stream_connection_reads_the_context_back() {
     let mut s = st();
     models_now(&mut s, Some("a".into())).unwrap();
-    // Before a session exists there is nothing to fetch.
+    // Before a session exists there is no context to fetch; the MCP servers are read anyway.
     let connected = ClientEvent::StreamConnected {
         generation: s.generation.clone(),
     };
-    assert!(update(&mut s, connected).unwrap().is_empty());
+    assert_eq!(update(&mut s, connected).unwrap(), vec![Effect::FetchMcp]);
     let created = ClientEvent::Created {
         generation: s.generation.clone(),
         result: Ok(CreateSessionResponse {
@@ -3087,7 +3087,7 @@ fn every_stream_connection_reads_the_context_back() {
         generation: s.generation.clone(),
     };
     let effects = update(&mut s, connected).unwrap();
-    assert_eq!(effects, vec![fetch("s1", &s)]);
+    assert_eq!(effects, vec![fetch("s1", &s), Effect::FetchMcp]);
 }
 
 #[test]
@@ -3124,7 +3124,7 @@ fn a_snapshot_missed_during_a_disconnect_is_read_back_on_reconnect() {
         generation: s.generation.clone(),
     };
     let effects = update(&mut s, connected).unwrap();
-    assert_eq!(effects, vec![fetch("s1", &s)]);
+    assert_eq!(effects, vec![fetch("s1", &s), Effect::FetchMcp]);
     let fetched = ClientEvent::Context {
         generation: s.generation.clone(),
         epoch: s.conversation.context_epoch,
@@ -3289,7 +3289,7 @@ fn a_fetch_issued_before_a_resume_and_answered_after_it_is_dropped() {
         generation: s.generation.clone(),
     };
     let effects = update(&mut s, connected).unwrap();
-    assert_eq!(effects, vec![fetch("s1", &s)]);
+    assert_eq!(effects, vec![fetch("s1", &s), Effect::FetchMcp]);
     let fresh = ClientEvent::Context {
         generation: s.generation.clone(),
         epoch: s.conversation.context_epoch,
@@ -3383,16 +3383,19 @@ fn each_tab_keeps_its_own_context_epoch() {
     // the active tab reconnects: only its epoch moves, and its fetch names its session
     let generation = s.generation.clone();
     let fx = update(&mut s, ClientEvent::StreamConnected { generation }).unwrap();
-    assert_eq!(fx, vec![fetch("S2", &s)]);
+    assert_eq!(fx, vec![fetch("S2", &s), Effect::FetchMcp]);
     assert_eq!(s.tabs[0].conversation.context_epoch, before);
     // the background tab reconnects: its fetch names its own session
     let fx = update(&mut s, ClientEvent::StreamConnected { generation: first }).unwrap();
     assert_eq!(
         fx,
-        vec![Effect::FetchContext {
-            session_id: "S1".into(),
-            epoch: s.tabs[0].conversation.context_epoch,
-        }]
+        vec![
+            Effect::FetchContext {
+                session_id: "S1".into(),
+                epoch: s.tabs[0].conversation.context_epoch,
+            },
+            Effect::FetchMcp,
+        ]
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before + 1);
 }
@@ -5577,4 +5580,116 @@ fn an_unsaved_always_says_it_ran_once() {
         .unwrap();
     assert!(prompt.always_saved);
     assert_eq!(prompt.message, None);
+}
+
+fn mcp_status(incarnation: Ulid, revision: u64, state: &str) -> McpStatus {
+    McpStatus {
+        incarnation,
+        revision,
+        servers: vec![McpServerView {
+            server_id: "github".into(),
+            transport: "stdio".into(),
+            state: state.into(),
+            tool_count: if state == "ready" { 12 } else { 0 },
+            skipped_tools: vec![],
+            skipped_more: 0,
+            error: None,
+            stderr_tail: String::new(),
+            stderr_truncated: false,
+        }],
+    }
+}
+
+#[test]
+fn mcp_status_keeps_the_newest_revision_from_the_read_or_the_stream() {
+    let mut s = subagent_parent();
+    let incarnation = Ulid::generate();
+    // The live event (revision 5) arrives before the read at connection (revision 4).
+    let mut script = Script::new();
+    script.seq = s.last_applied_seq.unwrap_or(0) + 1;
+    script.raw(
+        "mcp.status",
+        serde_json::to_value(mcp_status(incarnation, 5, "failed")).unwrap(),
+    );
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation: generation.clone(),
+            result: Ok(mcp_status(incarnation, 4, "starting")),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.mcp.as_ref().unwrap().servers[0].state, "failed");
+    assert_eq!(s.mcp.as_ref().unwrap().revision, 5);
+    // A restarted service starts its revisions over: its snapshot replaces the old one.
+    update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation: generation.clone(),
+            result: Ok(mcp_status(Ulid::generate(), 1, "ready")),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.mcp.as_ref().unwrap().servers[0].state, "ready");
+    // A failed read keeps what is shown.
+    update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation,
+            result: Err("connection refused".into()),
+        },
+    )
+    .unwrap();
+    assert!(s.mcp.is_some());
+    // Never a block in the transcript.
+    assert!(
+        !s.conversation
+            .blocks
+            .iter()
+            .any(|b| matches!(&b.kind, BlockKind::Notice(t) if t.contains("mcp")))
+    );
+}
+
+#[test]
+fn a_stream_connection_reads_the_mcp_status_again_and_an_mcp_event_marks_no_tab_unread() {
+    let mut s = subagent_parent();
+    let generation = s.generation.clone();
+    let effects = update(&mut s, ClientEvent::StreamConnected { generation }).unwrap();
+    assert!(effects.iter().any(|e| matches!(e, Effect::FetchMcp)));
+    // Another tab in front: the gauge on this one is not news.
+    let mut ui = UiState::default();
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    let background = s.tabs.iter().position(|t| t.session.is_some()).unwrap();
+    assert_ne!(background, s.active);
+    let mut script = Script::new();
+    script.seq = s.tabs[background].last_applied_seq.unwrap_or(0) + 1;
+    script.raw(
+        "mcp.status",
+        serde_json::to_value(mcp_status(Ulid::generate(), 1, "ready")).unwrap(),
+    );
+    for envelope in script.out {
+        let generation = s.tabs[background].generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    assert!(!s.tabs[background].unread);
+    assert_eq!(s.mcp.as_ref().unwrap().servers[0].state, "ready");
 }

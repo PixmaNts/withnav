@@ -37,7 +37,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and process-group supervision (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`) | permission policy (an MCP tool is decided like any other), session persistence, HTTP transport, live refresh |
+| `mcp/` | global stdio MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and process-group supervision (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, HTTP transport, publishing to sessions (`session/mcp.rs`), live refresh |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
@@ -379,6 +379,15 @@ keeping the first and reporting skipped definitions. No workspace MCP
 configuration is loaded. Config changes require a service restart; new sessions snapshot only
 currently ready tools, and existing registries stay frozen, including across connection restarts.
 
+Clients see the servers' status, never their configuration. `McpManager::status_snapshot` builds
+one `{incarnation, revision, servers}` value: redacted, with bounded errors, skipped tools and
+stderr tail, and a tool count of 0 unless the server is ready. Each state change bumps a `watch`
+channel; `session/mcp.rs` (the service's bridge task) wakes on it, builds one snapshot and
+publishes it as the live-only `mcp.status` event to every live session. Changes close together are
+sent once, as the latest snapshot. The event is not replayed, so a client reads `GET /v1/mcp` when
+its stream connects and keeps the higher revision of one incarnation, whichever arrives first. The
+status is the service's: a conversation keeps the tools it was created with.
+
 WithNav writes the new paths below. During 0.7, absent `.withnav/` directories
 fall back to `.navai/` then `.navigator/`; old config/data paths and `navai.db` /
 `navai.jsonl` migrate without overwriting new files. `NAVAI_*` remains a warned
@@ -404,7 +413,7 @@ the model call. Its payload keeps `{command_id, source, target, mode, content}` 
 `source: "subagent"`, plus `child_session_id`, `agent`, `outcome`; watchdog deliveries add
 `watchdog: true` and doubt notices include `verdict`. Content is the same bounded untrusted JSON
 text stored in the transcript. A crash before emission therefore replays the committed event
-without consuming or delivering the message twice. No new event kind is added (22 total).
+without consuming or delivering the message twice. No new event kind is added.
 It never injects through navigator commands or changes the Captain task. The runtime's existing
 control channel carries delivery wakes: idle parents run immediately, busy parents wait until the
 boundary, and pending interactions cannot be answered by a result. Stopped parents have no wake;
@@ -446,7 +455,7 @@ metacognition call within 20 seconds; undecidable reviews ask the Captain. Notic
 awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
 incarnation plus unique hold id. Continue consumes the matching token atomically and sequences
 resolution; restart/stop expires it. A Captain message supersedes it and records interruption;
-autonomous inputs cannot release it or renew a parked budget. The event catalog remains 22 kinds.
+autonomous inputs cannot release it or renew a parked budget. No new event kind is added.
 The typed boundary result carries the settled transcript on every watchdog exit and keeps the
 remaining steps. Interrupt-delivery checks revalidate the hold after awaiting notice eligibility.
 Recovery installs an awaiting-fresh-Captain gate; neither delivery wakes nor delegated provenance
@@ -487,7 +496,8 @@ child CAS and bounded partial text before releasing capacity, without taking lif
 `tools/decide_subagent.rs` is installed beside root `task` only;
 `decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
 The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
-as before; no supervision state is restored. The event catalog has 24 kinds.
+as before; no supervision state is restored. The event catalog (`bus/event.rs`,
+`EVENT_KIND_COUNT`) has 25 kinds; `mcp.status` is the latest.
 
 | Path | What | Written by |
 | --- | --- | --- |

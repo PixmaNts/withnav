@@ -4,11 +4,11 @@
 // with `POST /v1/sessions` when the first message goes out.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { HttpError } from "../api/http";
-import { keys, useAgents, useContextSnapshot, useModels, useSessionSummary } from "../api/queries";
-import type { AgentEntry, ContentBlock, Envelope, ModelEntry } from "../api/types";
+import { keepMcpStatus, keys, useAgents, useContextSnapshot, useModels, useSessionSummary } from "../api/queries";
+import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry } from "../api/types";
 import { useSessionStream } from "./useSessionStream";
 
 export interface Draft {
@@ -30,6 +30,11 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   const stopped = summary.data?.actor_state === "stopped";
   const onEnvelope = useCallback(
     (envelope: Envelope) => {
+      // The servers are the service's: the event updates the one shared query.
+      if (envelope.kind === "mcp.status" && envelope.payload && Array.isArray(envelope.payload.servers)) {
+        keepMcpStatus(qc, envelope.payload as McpStatus);
+        return;
+      }
       if ((envelope.kind === "session.bypass" || envelope.kind === "session.end") && sessionId) {
         const enabled = envelope.kind === "session.bypass" ? envelope.payload?.enabled : false;
         if (typeof enabled === "boolean") {
@@ -51,6 +56,10 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
     [qc, workspace, sessionId],
   );
   const stream = useSessionStream(sessionId, { ready: !!summary.data, once: stopped, bypass: summary.data?.bypass, bypassSeq: summary.data?.bypass_seq, onEnvelope });
+  // `mcp.status` is live-only: what changed before this subscription is read back once it is live.
+  useEffect(() => {
+    if (stream.status === "live") void qc.invalidateQueries({ queryKey: keys.mcp });
+  }, [stream.status, qc]);
   const [bypassPending, setBypassPending] = useState(false);
   const bypassGuard = useRef(false);
   const agents = useAgents(workspace, sessionId);

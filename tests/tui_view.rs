@@ -1996,6 +1996,51 @@ fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
 }
 
 #[test]
+fn the_status_line_sums_up_the_mcp_servers_and_gives_way_first_on_a_narrow_line() {
+    use withnav::bus::event::{McpServerView, McpStatus};
+    let server = |id: &str, state: &str| McpServerView {
+        server_id: id.into(),
+        transport: "stdio".into(),
+        state: state.into(),
+        tool_count: 0,
+        skipped_tools: vec![],
+        skipped_more: 0,
+        error: None,
+        stderr_tail: String::new(),
+        stderr_truncated: false,
+    };
+    let mut s = done();
+    let status_line = |s: &State, width: u16| {
+        let t = cells(s, &UiState::default(), (width, 30));
+        (0..30)
+            .map(|y| row_text(&t, y, width))
+            .find(|r| r.contains(" tok"))
+            .unwrap()
+    };
+    // Before any status, nothing is said.
+    assert!(!status_line(&s, 120).contains("mcp "));
+    s.mcp = Some(McpStatus {
+        incarnation: ulid::Ulid::generate(),
+        revision: 1,
+        servers: vec![
+            server("github", "ready"),
+            server("contextd", "failed"),
+            server("off", "disabled"),
+        ],
+    });
+    let line = status_line(&s, 120);
+    assert!(
+        line.contains("mcp 1/2"),
+        "disabled servers are not counted: {line}"
+    );
+    assert!(line.contains("session "), "{line}");
+    // The summary goes first when the line is short; the token count stays.
+    let narrow = status_line(&s, 32);
+    assert!(!narrow.contains("mcp "), "{narrow}");
+    assert!(narrow.contains("session "), "{narrow}");
+}
+
+#[test]
 fn the_status_line_reads_model_variant_and_gauge() {
     let mut s = done();
     s.variant = Some("high".into());
@@ -3165,19 +3210,20 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         "next request          ~41k · 21%",
         "input budget                182k",
         "compacted ×1 · ~150k → ~38k",
-        "listed                        12",
+        "skills listed                 12",
         "omitted, no room               3",
+        "mcp                            —",
         "M src/tui/view/file_0.rs",
         "CHANGES",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
-    // nothing the server does not report
+    // nothing the server does not report: no MCP status read yet, so no server is listed
     for absent in [
         "INTENT",
         "drift",
-        "MCP",
-        "PLUGINS",
+        "mcp:",
+        "plugin:",
         "vigie",
         "review",
         "Implements the task",
@@ -3196,9 +3242,75 @@ fn the_right_column_shows_a_dash_before_any_snapshot_and_no_changes_outside_git(
     };
     let shown = screen_text(&s, &ui, (160, 30));
     assert!(shown.contains("CONTEXT"), "{shown}");
-    assert!(shown.contains("SKILLS"), "{shown}");
+    assert!(shown.contains("SKILLS · MCP · PLUGINS"), "{shown}");
     assert!(shown.contains(" —"), "{shown}");
     assert!(!shown.contains("CHANGES"), "not a repository: {shown}");
+}
+
+#[test]
+fn the_right_column_lists_mcp_servers_with_their_state_and_the_skills_the_model_loaded() {
+    use withnav::bus::event::{McpServerView, McpStatus};
+    let mut s = with_panel_data();
+    let server = |id: &str, state: &str, tools: usize, error: Option<&str>| McpServerView {
+        server_id: id.into(),
+        transport: "stdio".into(),
+        state: state.into(),
+        tool_count: tools,
+        skipped_tools: vec![],
+        skipped_more: 0,
+        error: error.map(Into::into),
+        stderr_tail: String::new(),
+        stderr_truncated: false,
+    };
+    s.mcp = Some(McpStatus {
+        incarnation: ulid::Ulid::generate(),
+        revision: 2,
+        servers: vec![
+            server("github", "ready", 12, None),
+            server("contextd", "failed", 0, Some("MCP startup timed out")),
+        ],
+    });
+    for (id, skill, status) in [
+        ("s1", "rust-clippy", Some(ToolStatus::Ok)),
+        ("s2", "rust-clippy", Some(ToolStatus::Ok)),
+        ("s3", "git-commit", Some(ToolStatus::Ok)),
+        ("s4", "missing", Some(ToolStatus::Error)),
+    ] {
+        s.tabs[0].conversation.blocks.push(Block {
+            id: id.into(),
+            kind: BlockKind::ToolCall {
+                id: id.into(),
+                name: "skill".into(),
+                args: json!({ "name": skill }),
+                status,
+                output: String::new(),
+                metadata: json!({}),
+                duration_ms: None,
+                exit_code: None,
+            },
+        });
+    }
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let shown = screen_text(&s, &ui, (160, 60));
+    for want in [
+        "SKILLS · MCP · PLUGINS",
+        "skills listed",
+        "model loaded                   2",
+        "rust-clippy · git-commit",
+        "● mcp:github  12 tools",
+        "● mcp:contextd  MCP startup",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    // A failed `skill` call loaded nothing (the transcript still shows the call).
+    assert!(
+        !shown.contains("rust-clippy · git-commit · missing"),
+        "{shown}"
+    );
+    assert!(shown.contains("rust-clippy · git-commit "), "{shown}");
 }
 
 #[test]

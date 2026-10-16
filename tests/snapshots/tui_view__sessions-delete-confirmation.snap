@@ -12,12 +12,12 @@ expression: snapshot
                      │                                                                                                      │ CONTEXT                           
                      │                                                                                                      │  —                                
                      │                                                                                                      │                                   
-                     │                                                                                                      │ SKILLS                            
-                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  —                                
-                     │                    │ ❯ filter…                                                                │      │                                   
-                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ LAYERS                            
-                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  ● nav  idle                      
-                     │                    │                                                                          │      │                                   
+                     │                                                                                                      │ SKILLS · MCP · PLUGINS            
+                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  skills                         — 
+                     │                    │ ❯ filter…                                                                │      │  mcp                            — 
+                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │                                   
+                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │ LAYERS                            
+                     │                    │                                                                          │      │  ● nav  idle                      
                      │                    │ enter delete permanently  esc cancel                                     │      │                                   
                      │                    └──────────────────────────────────────────────────────────────────────────┘      │                                   
                      │                                                                                                      │                                   

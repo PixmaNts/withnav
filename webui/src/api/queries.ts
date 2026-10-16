@@ -1,5 +1,6 @@
-import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api } from "./client";
+import type { McpStatus } from "./types";
 
 // Query keys in one place, so mutations invalidate exactly what they change.
 export const keys = {
@@ -14,6 +15,7 @@ export const keys = {
   context: (id: string) => ["context", id] as const,
   settings: (ws: string) => ["settings", ws] as const,
   layers: (ws: string) => ["layers", ws] as const,
+  mcp: ["mcp"] as const,
 };
 
 /** Everything a workspace removal or reopening changes: the list and every session list. */
@@ -56,3 +58,30 @@ export const useSettings = (ws: string | null) =>
   useQuery({ queryKey: keys.settings(ws ?? ""), queryFn: () => api.settings(ws!), enabled: !!ws, retry: false });
 export const useLayers = (ws: string | null) =>
   useQuery({ queryKey: keys.layers(ws ?? ""), queryFn: () => api.layers(ws!), enabled: !!ws, retry: false });
+
+/** True when `next` may replace `held`: another service incarnation, or a revision not older. */
+export const newerMcp = (held: McpStatus | undefined, next: McpStatus): boolean =>
+  !held || held.incarnation !== next.incarnation || next.revision >= held.revision;
+
+/**
+ * The service's MCP servers. Read at start and every 30 s; an open conversation's stream also
+ * brings each change as `mcp.status` (see {@link keepMcpStatus}), and a read never replaces a
+ * newer event.
+ */
+export const useMcp = () => {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: keys.mcp,
+    queryFn: async () => {
+      const next = await api.mcp();
+      const held = qc.getQueryData<McpStatus>(keys.mcp);
+      return held && !newerMcp(held, next) ? held : next;
+    },
+    refetchInterval: 30_000,
+    retry: false,
+  });
+};
+
+/** Applies an `mcp.status` payload to the cache, unless the one held is newer. */
+export const keepMcpStatus = (qc: QueryClient, next: McpStatus) =>
+  qc.setQueryData<McpStatus>(keys.mcp, (held) => (newerMcp(held, next) ? next : held));

@@ -12,6 +12,7 @@ mod flows;
 mod hooks;
 mod instance;
 mod lifecycle;
+mod mcp;
 mod message;
 pub mod preflight;
 mod rules_log;

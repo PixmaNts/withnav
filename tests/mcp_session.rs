@@ -233,3 +233,56 @@ async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
     assert!(!tools.iter().any(|t| t.starts_with("mcp__")), "{tools:?}");
     state.service().close_all().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snapshot() {
+    let env = common::TestEnv::new();
+    let provider = spawn_capturing_provider(vec![]).await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url)
+        .rules_home(&env.home)
+        .config();
+    // The server answers after a delay, so it turns ready while the session is open.
+    with_mcp(
+        &cfg,
+        json!({"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"},"startup_timeout_ms":5000}),
+        false,
+    );
+    let state = AppState::new(cfg).unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+    let events = common::server::collect_until(sub, |e| {
+        e.kind == "mcp.status" && e.payload["servers"][0]["state"] == "ready"
+    })
+    .await;
+    let statuses: Vec<_> = events.iter().filter(|e| e.kind == "mcp.status").collect();
+    let last = &statuses.last().unwrap().payload;
+    assert_eq!(last["servers"][0]["server_id"], "fake");
+    assert_eq!(last["servers"][0]["transport"], "stdio");
+    assert!(
+        last["servers"][0]["tool_count"].as_u64().unwrap() > 0,
+        "{last}"
+    );
+    // Revisions never go back within one incarnation (a change seen twice may repeat one).
+    let revisions: Vec<u64> = statuses
+        .iter()
+        .map(|e| e.payload["revision"].as_u64().unwrap())
+        .collect();
+    assert!(revisions.windows(2).all(|w| w[0] <= w[1]), "{revisions:?}");
+    // Live-only: never stored, so a resumed conversation does not replay stale servers.
+    assert!(
+        common::server::stored_events(&state, id, "mcp.status")
+            .await
+            .is_empty()
+    );
+
+    let router = withnav::server::app(state.clone());
+    let (status, body) = common::server::request_json(&router, "GET", "/v1/mcp", None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["incarnation"], last["incarnation"]);
+    assert!(
+        body["revision"].as_u64() >= last["revision"].as_u64(),
+        "{body}"
+    );
+    assert_eq!(body["servers"][0]["state"], "ready");
+    state.service().close_all().await;
+}

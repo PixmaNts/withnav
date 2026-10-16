@@ -3,6 +3,10 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
+//! - `GET  /v1/mcp`           -> `{incarnation,revision,servers:[{server_id,transport,state,tool_count,skipped_tools,skipped_more,error,stderr_tail,stderr_truncated}]}`;
+//!   the service's MCP servers (global, not per workspace). `state` is starting/ready/failed/disabled;
+//!   `tool_count` is 0 unless ready; text is redacted and bounded. Keep the highest `revision` of one
+//!   `incarnation`; the live-only `mcp.status` event carries the same body.
 //! - `GET /v1/layers?workspace=` -> `{layers:[{layer,status,model,variant,gateway,upstream_id,api,reason,variant_diagnostic?}]}`; exactly three lower layers, usable means validated assignment/API, not connectivity. Cached-only unresolved preferred-low is explicit, never a resolved runtime variant.
 //! - `GET /v1/agents?workspace=&session_id=` -> `{default_agent,agents:[{id,description,mode,assignment,effective,override?,warning,inherits_parent}]}`; canonical model identities and sanitized source/variant summaries only.
 //!   Session definitions are pinned for live sessions; base assignments project current config.
@@ -158,6 +162,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/health", get(health))
         .merge(super::flows::router())
         .route("/v1/models", get(list_models))
+        .route("/v1/mcp", get(mcp_status))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
         .route(
@@ -321,6 +326,12 @@ async fn shutdown_signal(state: AppState) {
 
 async fn health() -> Json<HealthBody> {
     Json(HealthBody { status: "ok" })
+}
+
+/// `GET /v1/mcp`: the MCP servers' status, for a client that connects after the last
+/// `mcp.status` event (that event is live-only).
+async fn mcp_status(State(state): State<AppState>) -> Json<crate::mcp::McpSnapshot> {
+    Json(state.service().mcp_status())
 }
 
 #[derive(Deserialize)]

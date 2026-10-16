@@ -12,12 +12,12 @@ expression: snapshot
                      │ │  The parser treats an empty argument as a missing value.                       │ CONTEXT                           
                      │ │                                                                                │  —                                
                      │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                            │                                   
-                     │ │                                                                                │ SKILLS                            
-                     │ │ ◎ Nav                                                                          │  —                                
-                     │ │  I found the failing test. The empty argument is discarded.                    │                                   
-                     │ │                                                                                │ LAYERS                            
+                     │ │                                                                                │ SKILLS · MCP · PLUGINS            
+                     │ │ ◎ Nav                                                                          │  skills                         — 
+                     │ │  I found the failing test. The empty argument is discarded.                    │  mcp                            — 
+                     │ │                                                                                │                                   
+                     │                                                                                  │ LAYERS                            
                      │                                                                                  │  ● nav  busy                      
-                     │                                                                                  │                                   
                      │                                                                                  │                                   
                      │                                                                                  │                                   
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

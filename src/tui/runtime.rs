@@ -108,6 +108,7 @@ impl Runtime {
             Effect::FetchModels,
             Effect::FetchAgents(None),
             Effect::FetchLayers,
+            Effect::FetchMcp,
             Effect::ListSessions,
             Effect::FetchCommands,
         ]);

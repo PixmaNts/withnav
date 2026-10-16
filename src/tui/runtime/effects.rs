@@ -304,6 +304,15 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchMcp => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::Mcp {
+                        generation,
+                        result: client.mcp().await,
+                    }
+                });
+            }
             Effect::FetchSkills(session_id) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

@@ -1,0 +1,18 @@
+[package]
+name = "withnav-sketch"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Compile-checked prototype of the WithNav v1 target design (pipeline, authorization, wire contract)."
+
+# Not part of the root workspace: this sketch builds on its own.
+[workspace]
+
+[dependencies]
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

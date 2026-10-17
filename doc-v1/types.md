@@ -120,7 +120,11 @@ pub enum ModelEvent {
 ```
 
 Host-owned values have **private constructors** (only `engine`/`runtime` can build them):
-`Origin::Captain`, `ExecutionPermit`, `CaptainEvidence`, `Control` (yolo/bypass/normal).
+`ExecutionPermit`, `CaptainEvidence`, `Control` (yolo/bypass/normal), and `Origin`.
+A Rust enum cannot hide one variant, so `Origin` is a newtype with a private field
+(`pub struct Origin(OriginKind)`, read through `origin.kind()`); a plain `pub enum` would let any
+crate write `Origin::Captain`. `ExecutionPermit`'s private field is proven by a `compile_fail` test
+in [`sketch/`](sketch/).
 A JSON argument or a plugin patch cannot forge them.
 
 ## 3. Turn and tool-call state

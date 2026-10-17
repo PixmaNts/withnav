@@ -93,6 +93,25 @@ Runner rules:
    a config reload applies to the next turn.
 6. Each stage run yields a `StageObservation {stage, version, chain, duration, outcome, ids}`
    → telemetry, redacted before export.
+7. A patch knows how to apply itself: `trait Patch<I>: Default { fn apply(self, &mut I) }`.
+   `Default` is the no-op, also used when a stage with a "skip" failure policy fails. A patch type
+   only exposes what may change (`ResultPatch` has the presented text, not the status or the id).
+
+What the compile-checked [`sketch/`](sketch/) taught (15 tests + 1 compile-fail, all green):
+
+- **One typed list per slot, not one `Vec<Stage>`.** `Stage<I, P>` is generic, so `PipelinePlan`
+  holds a typed field per slot. The compiler cannot stop a stage registered in the wrong slot
+  (the slot is data in its descriptor): the plan builder refuses it at load.
+- **`tool.authorize` is not an ordinary chain.** It interleaves the built-in flows (`FlowAnswer`,
+  may allow) with reviewers (`Restriction`, may not), so its slot is
+  `enum ReviewStage { Flow(..), Reviewer(..) }` and the authorizer drives the runner step by step.
+- **A reviewer's `Halt` maps to escalation:** `Reject` → Deny; `Yield`, `Cancel` and any stage error
+  → Ask the Captain. Never Run.
+- **Order inside the review slot does not change safety:** reviewers only escalate and flows only
+  answer where the rule asks, so any order gives the same strictest result (tested both ways).
+- **The review input is shared, not cloned:** `Arc<PermissionView>`, the call's arguments can be big.
+- **Not proven by the sketch:** the atomic `Store::commit`, resuming a held call after an answer,
+  cancellation end to end. They belong to the storage and runtime steps of the migration.
 
 ## 4. Configuration
 

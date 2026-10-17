@@ -99,11 +99,14 @@ Runner rules:
 ```jsonc
 // config.json
 "pipeline": {
-  "tool.prepare": ["plugin:rtk-rewrite"],
-  "tool.authorize.review": ["flows", "plugin:secret-scan"],
-  "tool.result": ["redaction", "plugin:output-trim"]
+  "tool.prepare.rewrite": ["plugin:rtk-rewrite"],
+  "tool.authorize.review": ["plugin:secret-scan"],   // after the built-in flows, restrict only
+  "tool.result.present": ["plugin:output-trim"]       // inside the host's mandatory redaction
 }
 ```
+
+`tool.authorize.flows` is built-in only (the instinct flows, ADR 0015 authority) and is configured
+through the flow store, not here. Full slot catalog: [events-and-hooks.md §4](events-and-hooks.md#4-v1-hook-catalog).
 
 A slot list may enable, disable and reorder stages **inside** its slot. Naming a host step or a
 stage from another chain is a config error at load, not at run time.

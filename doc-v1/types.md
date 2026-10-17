@@ -190,10 +190,13 @@ pub mod v1 {
         #[serde(rename = "llm.delta")]        LlmDelta(LlmDelta),
         #[serde(rename = "tool.pre_call")]    ToolPreCall(ToolPreCall),
         // … the 25 current kinds, same wire names
-        #[serde(other)] Unknown,              // old clients keep working
+        // + Unknown { kind, raw }: decoded by a hand-written fallback, keeps the payload
     }
 }
 ```
+
+Wire keys stay exactly as today (`schema_version`, `occurred_at`, `causation_id`…); the short names
+above are illustrative. Full catalog: [events-and-hooks.md](events-and-hooks.md).
 
 - Same JSON as today: the move is a typing exercise, not a protocol change.
 - TS types for `webui/` and `vscode-withnav/` generated with `ts-rs` from this crate (no hand copies).

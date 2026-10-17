@@ -12,6 +12,7 @@ Still **one process, one binary** (`nav`): modular, not distributed.
 | [providers.md](providers.md) | the four wire families (Chat Completions, Responses, Anthropic, Gemini) behind one port |
 | [events-and-hooks.md](events-and-hooks.md) | the 25 events typed, today's interception points, the v1 hook catalog, schema evolution |
 | [plugins-and-telemetry.md](plugins-and-telemetry.md) | plugin manifest, lifecycle, stdio protocol; spans, metrics, logs, audit |
+| [sketch/](sketch/) | standalone Rust crate that compiles the core, api and engine design (`cargo test`) |
 | [migration.md](migration.md) | shippable steps, risks, open questions |
 
 Current state for comparison: [`../doc-pré-v1/`](../doc-pré-v1/README.md).

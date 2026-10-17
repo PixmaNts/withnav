@@ -9,6 +9,9 @@ Still **one process, one binary** (`nav`): modular, not distributed.
 | [data-flow.md](data-flow.md) | a Captain message from client to LLM and back, events |
 | [pipeline.md](pipeline.md) | the stackable processing chains (pre-call, permission, flow, result…) |
 | [types.md](types.md) | ports (traits) and core data structures |
+| [providers.md](providers.md) | the four wire families (Chat Completions, Responses, Anthropic, Gemini) behind one port |
+| [events-and-hooks.md](events-and-hooks.md) | the 25 events typed, today's interception points, the v1 hook catalog, schema evolution |
+| [plugins-and-telemetry.md](plugins-and-telemetry.md) | plugin manifest, lifecycle, stdio protocol; spans, metrics, logs, audit |
 | [migration.md](migration.md) | shippable steps, risks, open questions |
 
 Current state for comparison: [`../doc-pré-v1/`](../doc-pré-v1/README.md).

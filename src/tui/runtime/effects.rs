@@ -8,10 +8,13 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::tui::{
-    client::Client,
     input::Editor,
     protocol::{ClientEvent, Effect, Generation, SubmitRequest, SubmitResponse},
-    stream,
+    reducer::strip_controls,
+};
+use withnav_client::{
+    client::Client,
+    stream::{self, StreamEvent},
 };
 
 /// What the loop does after an effect ran.
@@ -226,7 +229,6 @@ impl Executor {
                     self.client.clone(),
                     child_session_id.clone(),
                     None,
-                    generation.clone(),
                     cancel.clone(),
                 );
                 let (tx, stop, child, tag) = (
@@ -239,7 +241,7 @@ impl Executor {
                     loop {
                         let next = tokio::select! { _ = stop.cancelled() => break, next = events.next() => next };
                         match next {
-                            Some(ClientEvent::Envelope { envelope, .. }) => {
+                            Some(StreamEvent::Envelope(envelope)) => {
                                 if tx
                                     .send(ClientEvent::ChildEnvelope {
                                         generation: tag.clone(),
@@ -316,10 +318,14 @@ impl Executor {
             Effect::FetchSkills(session_id) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
-                    ClientEvent::Skills {
-                        generation,
-                        result: client.skills(&session_id).await,
-                    }
+                    let result = client.skills(&session_id).await.map(|mut body| {
+                        for skill in &mut body.skills {
+                            skill.name = strip_controls(&skill.name);
+                            skill.description = strip_controls(&skill.description);
+                        }
+                        body
+                    });
+                    ClientEvent::Skills { generation, result }
                 });
             }
             Effect::ListSessions => {
@@ -621,14 +627,8 @@ impl Executor {
             !gone
         });
         let cancel = CancellationToken::new();
-        let mut events = stream::subscribe(
-            self.client.clone(),
-            session_id,
-            cursor,
-            generation.clone(),
-            cancel.clone(),
-        );
-        let (tx, stop) = (self.tx.clone(), cancel.clone());
+        let mut events = stream::subscribe(self.client.clone(), session_id, cursor, cancel.clone());
+        let (tx, stop, tag) = (self.tx.clone(), cancel.clone(), generation.clone());
         tokio::spawn(async move {
             loop {
                 let next = tokio::select! {
@@ -637,7 +637,7 @@ impl Executor {
                 };
                 match next {
                     Some(event) => {
-                        if tx.send(event).await.is_err() {
+                        if tx.send(client_event(&tag, event)).await.is_err() {
                             break;
                         }
                     }
@@ -663,6 +663,25 @@ impl Executor {
 impl Drop for Executor {
     fn drop(&mut self) {
         self.cancel_streams();
+    }
+}
+
+/// A stream report as the event the reducer applies, tagged with the tab's `generation`.
+fn client_event(generation: &Generation, event: StreamEvent) -> ClientEvent {
+    let generation = generation.clone();
+    match event {
+        StreamEvent::Connected => ClientEvent::StreamConnected { generation },
+        StreamEvent::Envelope(envelope) => ClientEvent::Envelope {
+            generation,
+            envelope,
+        },
+        StreamEvent::Resync => ClientEvent::Resync { generation },
+        StreamEvent::Disconnected => ClientEvent::StreamDisconnected { generation },
+        StreamEvent::Reconnecting => ClientEvent::Reconnecting { generation },
+        StreamEvent::ProtocolError(message) => ClientEvent::ProtocolError {
+            generation,
+            message,
+        },
     }
 }
 
@@ -916,8 +935,8 @@ pub(super) enum SubmitFailure {
 }
 
 /// The one place that adapts the client's send error to `SubmitFailure`.
-pub(super) fn classify_send_error(err: crate::tui::client::SendError) -> SubmitFailure {
-    use crate::tui::client::SendError;
+pub(super) fn classify_send_error(err: withnav_client::client::SendError) -> SubmitFailure {
+    use withnav_client::client::SendError;
     match err {
         SendError::Rejected(m) => SubmitFailure::Rejected(m),
         SendError::Uncertain(m) => SubmitFailure::Uncertain(m),
@@ -941,5 +960,60 @@ pub(super) fn submit_event(
             }),
         },
         Err(SubmitFailure::Uncertain(_)) => ClientEvent::DeliveryUncertain { generation },
+    }
+}
+
+#[cfg(test)]
+mod stream_event_tests {
+    use super::*;
+    use serde_json::json;
+    use ulid::Ulid;
+    use withnav_client_api::event::{EventEnvelope, EventKind};
+
+    /// Every stream report must reach the reducer tagged with the subscriber's generation, or a
+    /// stale stream could apply events to a tab that has moved on.
+    #[test]
+    fn every_stream_event_carries_the_subscribers_generation() {
+        let tag = Generation(7);
+        let envelope = EventEnvelope::new(Ulid::generate(), 3, EventKind::TurnStart, json!({}));
+
+        assert_eq!(
+            client_event(&tag, StreamEvent::Connected),
+            ClientEvent::StreamConnected {
+                generation: Generation(7)
+            }
+        );
+        assert_eq!(
+            client_event(&tag, StreamEvent::Envelope(envelope.clone())),
+            ClientEvent::Envelope {
+                generation: Generation(7),
+                envelope
+            }
+        );
+        assert_eq!(
+            client_event(&tag, StreamEvent::Resync),
+            ClientEvent::Resync {
+                generation: Generation(7)
+            }
+        );
+        assert_eq!(
+            client_event(&tag, StreamEvent::Disconnected),
+            ClientEvent::StreamDisconnected {
+                generation: Generation(7)
+            }
+        );
+        assert_eq!(
+            client_event(&tag, StreamEvent::Reconnecting),
+            ClientEvent::Reconnecting {
+                generation: Generation(7)
+            }
+        );
+        assert_eq!(
+            client_event(&tag, StreamEvent::ProtocolError("bad frame".into())),
+            ClientEvent::ProtocolError {
+                generation: Generation(7),
+                message: "bad frame".into()
+            }
+        );
     }
 }

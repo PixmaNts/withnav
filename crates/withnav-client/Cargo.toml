@@ -1,0 +1,23 @@
+[package]
+name = "withnav-client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "HTTP and SSE client of the WithNav session server: requests, event stream, reconnect"
+
+# No terminal code, and never the server: it talks to it over the wire contract only.
+[dependencies]
+withnav-client-api = { path = "../withnav-client-api" }
+tokio = { workspace = true, features = ["time", "sync", "rt"] }
+tokio-util.workspace = true
+reqwest = { workspace = true, features = ["rustls", "query", "json", "stream", "gzip", "deflate", "brotli"] }
+eventsource-stream.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+axum = "0.8.9"

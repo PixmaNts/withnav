@@ -409,7 +409,7 @@ async fn target_http_catalog_agents_and_layers_use_workspace_and_session_queries
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let client = withnav::tui::client::Client::new(format!("http://{address}"), None);
+    let client = withnav_client::client::Client::new(format!("http://{address}"), None);
     assert_eq!(
         client.models("/project").await.unwrap().models[0].name,
         "omniroute/combo/astra"

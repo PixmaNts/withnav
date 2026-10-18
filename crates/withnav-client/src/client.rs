@@ -4,11 +4,19 @@
 //! and the server's error body. Submitting a message is the one call whose
 //! failure has two meanings, so it returns a [`SendError`]: the request was
 //! refused, or it may have reached the server. Nothing here retries.
-use super::protocol::*;
-use crate::tui::protocol::ContextSnapshot;
 use serde::de::DeserializeOwned;
 use std::error::Error as _;
 use std::time::Duration;
+use withnav_client_api::{
+    event::{McpStatus, PauseToken, SkillsBody},
+    protocol::{
+        AgentsBody, BypassResponse, CommandRequest, CommandResponse, CommandsBody, ContextSnapshot,
+        CreateSessionRequest, CreateSessionResponse, LayersBody, ModelsBody, PermissionAnswer,
+        SessionListBody, SessionMetadata, StopResponse, SubmitRequest, SubmitResponse,
+    },
+    settings::{GatewayTest, SettingsBody, SettingsError, WriteRequest},
+    tools::AskAnswer,
+};
 
 /// How long a short request (everything but the event stream) may take.
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -29,6 +37,14 @@ pub enum SendError {
     /// before checking the conversation.
     #[error("{0}")]
     Uncertain(String),
+}
+
+/// Why a permission answer was not taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerError {
+    /// The request is no longer waiting (answered, cancelled, expired).
+    Stale,
+    Other(String),
 }
 
 /// Why opening the event stream failed.
@@ -56,7 +72,7 @@ impl Client {
         )
         .await
     }
-    pub async fn settings(&self, workspace: &str) -> Result<super::config::SettingsBody, String> {
+    pub async fn settings(&self, workspace: &str) -> Result<SettingsBody, String> {
         self.json(self.get("/v1/settings").query(&[("workspace", workspace)]))
             .await
     }
@@ -64,9 +80,9 @@ impl Client {
     pub async fn write_setting(
         &self,
         workspace: &str,
-        request: &super::config::WriteRequest,
-    ) -> Result<super::config::SettingsBody, super::config::SettingsError> {
-        use super::config::SettingsError;
+        request: &WriteRequest,
+    ) -> Result<SettingsBody, SettingsError> {
+        use SettingsError;
         let response = self
             .authorized(self.http.put(format!("{}/v1/settings", self.base_url)))
             .query(&[("workspace", workspace)])
@@ -95,11 +111,7 @@ impl Client {
         Err(SettingsError::Other(status_message(status, &text)))
     }
 
-    pub async fn test_gateway(
-        &self,
-        workspace: &str,
-        name: &str,
-    ) -> Result<super::config::GatewayTest, String> {
+    pub async fn test_gateway(&self, workspace: &str, name: &str) -> Result<GatewayTest, String> {
         self.json(
             self.post(&format!("/v1/gateways/{}/test", encode_segment(name)))
                 .query(&[("workspace", workspace)]),
@@ -146,22 +158,16 @@ impl Client {
     }
 
     /// The service's MCP servers; the `mcp.status` event carries the same body.
-    pub async fn mcp(&self) -> Result<crate::bus::event::McpStatus, String> {
+    pub async fn mcp(&self) -> Result<McpStatus, String> {
         self.json(self.get("/v1/mcp")).await
     }
 
-    pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {
-        let mut body: crate::bus::event::SkillsBody = self
-            .json(self.get(&format!(
-                "/v1/sessions/{}/skills",
-                encode_segment(session_id)
-            )))
-            .await?;
-        for skill in &mut body.skills {
-            skill.name = crate::tui::reducer::strip_controls(&skill.name);
-            skill.description = crate::tui::reducer::strip_controls(&skill.description);
-        }
-        Ok(body)
+    pub async fn skills(&self, session_id: &str) -> Result<SkillsBody, String> {
+        self.json(self.get(&format!(
+            "/v1/sessions/{}/skills",
+            encode_segment(session_id)
+        )))
+        .await
     }
 
     pub async fn sessions(&self, workspace: &str) -> Result<SessionListBody, String> {
@@ -230,7 +236,7 @@ impl Client {
     pub async fn answer_question(
         &self,
         id: &str,
-        answer: crate::tools::control::AskAnswer,
+        answer: AskAnswer,
     ) -> Result<SubmitResponse, SendError> {
         self.send(
             id,
@@ -322,7 +328,7 @@ impl Client {
         &self,
         parent: &str,
         child: &str,
-        token: Option<crate::bus::event::PauseToken>,
+        token: Option<PauseToken>,
     ) -> Result<(), String> {
         let path = format!(
             "/v1/sessions/{}/children/{}/continue",

@@ -10,5 +10,6 @@ description = "Wire contract of the WithNav session server: event envelope, payl
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 ulid.workspace = true
 time = { workspace = true, features = ["formatting", "parsing"] }

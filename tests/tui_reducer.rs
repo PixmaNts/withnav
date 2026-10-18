@@ -513,10 +513,10 @@ async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives()
         matchers::{method, path},
     };
     use withnav::tui::{
-        client::Client,
         input::Editor,
         runtime::{Context, Executor},
     };
+    use withnav_client::client::Client;
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     let count = attempts.clone();
@@ -767,10 +767,10 @@ fn a_terminal_list_status_updates_a_child_without_an_open_parent() {
 #[tokio::test]
 async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completion() {
     use withnav::tui::{
-        client::Client,
         input::Editor,
         runtime::{Context, Executor},
     };
+    use withnav_client::client::Client;
     let mut s = subagent_parent();
     s.tabs[0].id = 11;
     s.tabs.push(Tab {
@@ -872,7 +872,7 @@ async fn child_controls_and_permission_answers_use_the_owner_routes() {
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, method, path},
     };
-    use withnav::tui::client::Client;
+    use withnav_client::client::Client;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/sessions/child/stop"))

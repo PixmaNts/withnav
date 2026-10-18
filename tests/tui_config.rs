@@ -3,7 +3,6 @@ mod common;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 use withnav::tui::{
-    client::Client,
     config::*,
     input::{Editor, route_key},
     protocol::{Action, ApiKind, ClientEvent, Effect, Generation, ModelEntry},
@@ -11,6 +10,7 @@ use withnav::tui::{
     state::{State, UiState},
     theme::ThemeId,
 };
+use withnav_client::client::Client;
 
 fn body(revision: &str) -> SettingsBody {
     serde_json::from_value(json!({"revision": revision, "paths": {"config":"/cfg/config.json","models":null,"agents":[]}, "gateways":[], "fields": [

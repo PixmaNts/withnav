@@ -12,19 +12,15 @@ use tokio_util::sync::CancellationToken;
 
 use withnav::bus::command::ContentBlock;
 use withnav::bus::event::{EventEnvelope, EventKind};
-use withnav::tui::client::{Client, SendError};
-use withnav::tui::protocol::{ClientEvent, CreateSessionRequest, Generation, SubmitRequest};
-use withnav::tui::stream::{EventStream, subscribe};
+use withnav::tui::protocol::{CreateSessionRequest, SubmitRequest};
+use withnav_client::client::{Client, SendError};
+use withnav_client::stream::{EventStream, StreamEvent, subscribe};
 
 mod common;
 use common::server::{CuttableProxy, TestServer, TestServerConfig, spawn_server};
 use common::sse::{http_sse, sse_body, text_chunk, tool_call_chunk};
 
 const WAIT: Duration = Duration::from_secs(15);
-
-fn generation() -> Generation {
-    Generation(7)
-}
 
 fn answer(text: &str) -> Vec<u8> {
     http_sse(&sse_body(&[&text_chunk(text)]))
@@ -117,24 +113,18 @@ async fn create(client: &Client, server: &TestServer) -> String {
 
 fn open(client: &Client, id: &str, cursor: Option<u64>) -> (EventStream, CancellationToken) {
     let cancel = CancellationToken::new();
-    let stream = subscribe(
-        client.clone(),
-        id.to_string(),
-        cursor,
-        generation(),
-        cancel.clone(),
-    );
+    let stream = subscribe(client.clone(), id.to_string(), cursor, cancel.clone());
     (stream, cancel)
 }
 
-async fn next(stream: &mut EventStream) -> Option<ClientEvent> {
+async fn next(stream: &mut EventStream) -> Option<StreamEvent> {
     tokio::time::timeout(WAIT, stream.next())
         .await
         .expect("timed out waiting for a stream event")
 }
 
 /// Pulls events until `pred` holds for one, returning all seen including it.
-async fn until(stream: &mut EventStream, pred: impl Fn(&ClientEvent) -> bool) -> Vec<ClientEvent> {
+async fn until(stream: &mut EventStream, pred: impl Fn(&StreamEvent) -> bool) -> Vec<StreamEvent> {
     let mut seen = Vec::new();
     loop {
         let event = next(stream)
@@ -148,21 +138,21 @@ async fn until(stream: &mut EventStream, pred: impl Fn(&ClientEvent) -> bool) ->
     }
 }
 
-fn is_kind(event: &ClientEvent, kind: &str) -> bool {
-    matches!(event, ClientEvent::Envelope { envelope, .. } if envelope.kind == kind)
+fn is_kind(event: &StreamEvent, kind: &str) -> bool {
+    matches!(event, StreamEvent::Envelope(envelope) if envelope.kind == kind)
 }
 
-fn envelopes(events: &[ClientEvent]) -> Vec<&EventEnvelope> {
+fn envelopes(events: &[StreamEvent]) -> Vec<&EventEnvelope> {
     events
         .iter()
         .filter_map(|e| match e {
-            ClientEvent::Envelope { envelope, .. } => Some(envelope),
+            StreamEvent::Envelope(envelope) => Some(envelope),
             _ => None,
         })
         .collect()
 }
 
-fn seqs(events: &[ClientEvent]) -> Vec<u64> {
+fn seqs(events: &[StreamEvent]) -> Vec<u64> {
     envelopes(events).iter().map(|e| e.seq).collect()
 }
 
@@ -220,9 +210,7 @@ async fn create_subscribe_send_delivers_envelopes_in_seq_order() {
     let first = next(&mut stream).await.expect("first event");
     assert_eq!(
         first,
-        ClientEvent::StreamConnected {
-            generation: generation()
-        },
+        StreamEvent::Connected,
         "the connection is reported before any envelope"
     );
 
@@ -244,10 +232,6 @@ async fn create_subscribe_send_delivers_envelopes_in_seq_order() {
             "missing {kind}: {events:?}"
         );
     }
-    assert!(events.iter().all(|e| match e {
-        ClientEvent::Envelope { generation: g, .. } => *g == generation(),
-        _ => true,
-    }));
     cancel.cancel();
 }
 
@@ -288,14 +272,11 @@ async fn a_lost_connection_reconnects_without_duplicates() {
     let mut all = until(&mut stream, |e| is_kind(e, "turn.end")).await;
 
     proxy.cut();
-    let after_cut = until(&mut stream, |e| {
-        matches!(e, ClientEvent::StreamConnected { .. })
-    })
-    .await;
+    let after_cut = until(&mut stream, |e| matches!(e, StreamEvent::Connected)).await;
     assert!(
         after_cut
             .iter()
-            .any(|e| matches!(e, ClientEvent::Reconnecting { .. })),
+            .any(|e| matches!(e, StreamEvent::Reconnecting)),
         "the loss is reported: {after_cut:?}"
     );
     all.extend(after_cut);
@@ -304,7 +285,7 @@ async fn a_lost_connection_reconnects_without_duplicates() {
     direct.send(&id, submit("second")).await.expect("send");
     let rest = until(&mut stream, |e| {
         is_kind(e, "turn.end")
-            && matches!(e, ClientEvent::Envelope { envelope, .. } if envelope.seq > first_turn_end)
+            && matches!(e, StreamEvent::Envelope(envelope) if envelope.seq > first_turn_end)
     })
     .await;
     all.extend(rest);
@@ -326,21 +307,14 @@ async fn a_cursor_beyond_the_head_yields_resync_then_a_full_replay() {
     let id = create(&client, &server).await;
 
     let (mut stream, cancel) = open(&client, &id, Some(100_000));
-    let events = until(&mut stream, |e| matches!(e, ClientEvent::Envelope { .. })).await;
-    let g = generation();
+    let events = until(&mut stream, |e| matches!(e, StreamEvent::Envelope(_))).await;
     assert_eq!(
         events[..events.len() - 1],
         [
-            ClientEvent::StreamConnected {
-                generation: g.clone()
-            },
-            ClientEvent::Resync {
-                generation: g.clone()
-            },
-            ClientEvent::Reconnecting {
-                generation: g.clone()
-            },
-            ClientEvent::StreamConnected { generation: g },
+            StreamEvent::Connected,
+            StreamEvent::Resync,
+            StreamEvent::Reconnecting,
+            StreamEvent::Connected,
         ]
     );
     assert_eq!(
@@ -363,15 +337,10 @@ async fn a_wrong_token_ends_the_stream_without_a_reconnect_loop() {
     let id = create(&right, &server).await;
     let (mut stream, _cancel) = open(&wrong, &id, None);
     match next(&mut stream).await.expect("protocol error") {
-        ClientEvent::ProtocolError { message, .. } => assert!(message.contains("401"), "{message}"),
+        StreamEvent::ProtocolError(message) => assert!(message.contains("401"), "{message}"),
         other => panic!("expected a protocol error, got {other:?}"),
     }
-    assert_eq!(
-        next(&mut stream).await,
-        Some(ClientEvent::StreamDisconnected {
-            generation: generation()
-        })
-    );
+    assert_eq!(next(&mut stream).await, Some(StreamEvent::Disconnected));
     assert_eq!(next(&mut stream).await, None, "no reconnect attempts");
 }
 
@@ -383,12 +352,12 @@ async fn an_unknown_session_ends_the_stream_with_the_reason() {
 
     let (mut stream, _cancel) = open(&client, &missing, None);
     match next(&mut stream).await.expect("protocol error") {
-        ClientEvent::ProtocolError { message, .. } => assert!(message.contains("404"), "{message}"),
+        StreamEvent::ProtocolError(message) => assert!(message.contains("404"), "{message}"),
         other => panic!("expected a protocol error, got {other:?}"),
     }
     assert!(matches!(
         next(&mut stream).await,
-        Some(ClientEvent::StreamDisconnected { .. })
+        Some(StreamEvent::Disconnected)
     ));
     assert_eq!(next(&mut stream).await, None);
 
@@ -408,10 +377,7 @@ async fn stop_ends_the_stream_and_the_same_id_resumes() {
 
     let stopped = client.stop(&id).await.expect("stop");
     assert!(stopped.accepted);
-    let tail = until(&mut stream, |e| {
-        matches!(e, ClientEvent::StreamDisconnected { .. })
-    })
-    .await;
+    let tail = until(&mut stream, |e| matches!(e, StreamEvent::Disconnected)).await;
     let end_seq = envelopes(&tail)
         .iter()
         .find(|e| e.kind == "session.end")
@@ -433,7 +399,7 @@ async fn stop_ends_the_stream_and_the_same_id_resumes() {
     client.send(&id, submit("second")).await.expect("send");
     let events = until(&mut stream, |e| {
         is_kind(e, "turn.end")
-            && matches!(e, ClientEvent::Envelope { envelope, .. } if envelope.seq > end_seq)
+            && matches!(e, StreamEvent::Envelope(envelope) if envelope.seq > end_seq)
     })
     .await;
     assert_strictly_increasing(&seqs(&events));
@@ -557,23 +523,17 @@ async fn undecodable_frames_are_reported_and_the_stream_keeps_going() {
     let client = Client::new(base, None);
     let (mut stream, cancel) = open(&client, "01ARZ3NDEKTSV4RRFFQ69G5FAV", None);
 
-    let events = until(&mut stream, |e| {
-        matches!(e, ClientEvent::Reconnecting { .. })
-    })
-    .await;
-    assert!(matches!(events[0], ClientEvent::StreamConnected { .. }));
+    let events = until(&mut stream, |e| matches!(e, StreamEvent::Reconnecting)).await;
+    assert!(matches!(events[0], StreamEvent::Connected));
     assert_eq!(seqs(&events), vec![0, 1]);
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, ClientEvent::ProtocolError { message, .. } if message.contains("undecodable"))),
+        events.iter().any(
+            |e| matches!(e, StreamEvent::ProtocolError(message) if message.contains("undecodable"))
+        ),
         "{events:?}"
     );
 
-    until(&mut stream, |e| {
-        matches!(e, ClientEvent::StreamConnected { .. })
-    })
-    .await;
+    until(&mut stream, |e| matches!(e, StreamEvent::Connected)).await;
     let heads = heads.lock().expect("heads").clone();
     assert!(
         !heads[0].to_lowercase().contains("last-event-id"),

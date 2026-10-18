@@ -9,13 +9,7 @@ pub use withnav_client_api::protocol::{
 };
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Generation(pub u64);
-/// Why a permission answer was not taken.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AnswerError {
-    /// The request is no longer waiting (answered, cancelled, expired).
-    Stale,
-    Other(String),
-}
+pub use withnav_client::client::AnswerError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
     BypassSet {

@@ -4,17 +4,34 @@
 //! feeds a bounded channel; the returned stream reads that channel. Dropping
 //! the stream or cancelling the token stops the task, including while it waits
 //! on the network or sleeps between attempts.
-use super::client::{Client, OpenError};
-use super::protocol::{ClientEvent, Generation};
-use crate::bus::event::EventEnvelope;
+use crate::client::{Client, OpenError};
 use eventsource_stream::Eventsource;
-use futures::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use withnav_client_api::event::EventEnvelope;
 
-pub type EventStream = Pin<Box<dyn Stream<Item = ClientEvent> + Send>>;
+pub type EventStream = Pin<Box<dyn Stream<Item = StreamEvent> + Send>>;
+
+/// What a subscription reports, in the order it happens.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamEvent {
+    /// A connection was established (also after each reconnect).
+    Connected,
+    /// One decoded event of the session.
+    Envelope(EventEnvelope),
+    /// The server rejected the cursor: the consumer must reset what it built from earlier
+    /// events, since the next connection replays the whole history.
+    Resync,
+    /// The stream ended for good (`session.end`, or a fatal answer).
+    Disconnected,
+    /// The connection was lost; another attempt follows after a wait.
+    Reconnecting,
+    /// A frame or an answer that could not be understood or accepted.
+    ProtocolError(String),
+}
 
 /// First wait before a reconnect attempt.
 const BACKOFF_START: Duration = Duration::from_millis(250);
@@ -27,7 +44,7 @@ const SESSION_END_KIND: &str = "session.end";
 /// The SSE event name of the cursor-rejected control frame.
 const RESYNC_EVENT: &str = "resync";
 
-/// Streams a session's events as [`ClientEvent`]s tagged with `generation`.
+/// Streams a session's events as [`StreamEvent`]s.
 ///
 /// `cursor` is the last applied seq (`Some(0)` is a real cursor, `None` asks
 /// for the full history). The stream reconnects on its own after a lost
@@ -37,7 +54,6 @@ pub fn subscribe(
     client: Client,
     session_id: String,
     cursor: Option<u64>,
-    generation: Generation,
     cancel: CancellationToken,
 ) -> EventStream {
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
@@ -47,11 +63,10 @@ pub fn subscribe(
         client,
         session_id,
         cursor,
-        generation,
         stop,
         tx,
     }));
-    Box::pin(futures::stream::unfold(
+    Box::pin(futures_util::stream::unfold(
         (rx, guard),
         |(mut rx, guard)| async move { rx.recv().await.map(|event| (event, (rx, guard))) },
     ))
@@ -61,9 +76,8 @@ struct Connection {
     client: Client,
     session_id: String,
     cursor: Option<u64>,
-    generation: Generation,
     stop: CancellationToken,
-    tx: mpsc::Sender<ClientEvent>,
+    tx: mpsc::Sender<StreamEvent>,
 }
 
 /// How one connection ended.
@@ -86,20 +100,12 @@ async fn run(mut conn: Connection) {
         };
         match opened {
             Ok(response) => {
-                if !conn
-                    .emit(ClientEvent::StreamConnected {
-                        generation: conn.generation.clone(),
-                    })
-                    .await
-                {
+                if !conn.emit(StreamEvent::Connected).await {
                     return;
                 }
                 match conn.read(response).await {
                     Ended::SessionEnd => {
-                        conn.emit(ClientEvent::StreamDisconnected {
-                            generation: conn.generation.clone(),
-                        })
-                        .await;
+                        conn.emit(StreamEvent::Disconnected).await;
                         return;
                     }
                     Ended::Stopped => return,
@@ -113,20 +119,12 @@ async fn run(mut conn: Connection) {
             Err(OpenError::Fatal(message)) => {
                 conn.protocol_error(format!("event stream refused: {message}"))
                     .await;
-                conn.emit(ClientEvent::StreamDisconnected {
-                    generation: conn.generation.clone(),
-                })
-                .await;
+                conn.emit(StreamEvent::Disconnected).await;
                 return;
             }
             Err(OpenError::Transient(_)) => {}
         }
-        if !conn
-            .emit(ClientEvent::Reconnecting {
-                generation: conn.generation.clone(),
-            })
-            .await
-        {
+        if !conn.emit(StreamEvent::Reconnecting).await {
             return;
         }
         tokio::select! {
@@ -139,7 +137,7 @@ async fn run(mut conn: Connection) {
 
 impl Connection {
     /// Sends `event` to the consumer; false when it is gone or cancelled.
-    async fn emit(&self, event: ClientEvent) -> bool {
+    async fn emit(&self, event: StreamEvent) -> bool {
         tokio::select! {
             _ = self.stop.cancelled() => false,
             sent = self.tx.send(event) => sent.is_ok(),
@@ -147,11 +145,7 @@ impl Connection {
     }
 
     async fn protocol_error(&self, message: String) -> bool {
-        self.emit(ClientEvent::ProtocolError {
-            generation: self.generation.clone(),
-            message,
-        })
-        .await
+        self.emit(StreamEvent::ProtocolError(message)).await
     }
 
     /// Decodes frames from `response` until it ends, delivering each one.
@@ -172,22 +166,14 @@ impl Connection {
                     // The server rejected the cursor; the consumer resets its
                     // projection, so the next connection replays everything.
                     self.cursor = None;
-                    self.emit(ClientEvent::Resync {
-                        generation: self.generation.clone(),
-                    })
-                    .await
+                    self.emit(StreamEvent::Resync).await
                 }
                 "message" => match serde_json::from_str::<EventEnvelope>(&frame.data) {
                     Ok(envelope) => {
                         let ended = envelope.kind == SESSION_END_KIND;
                         self.cursor =
                             Some(self.cursor.map_or(envelope.seq, |c| c.max(envelope.seq)));
-                        let sent = self
-                            .emit(ClientEvent::Envelope {
-                                generation: self.generation.clone(),
-                                envelope,
-                            })
-                            .await;
+                        let sent = self.emit(StreamEvent::Envelope(envelope)).await;
                         if sent && ended {
                             return Ended::SessionEnd;
                         }
@@ -213,7 +199,7 @@ mod tests {
 
     /// Decodes `raw` the way `Connection::read` does, without a server.
     async fn decode(raw: &'static str) -> Vec<(String, String)> {
-        let chunks = futures::stream::iter([Ok::<_, std::io::Error>(raw.as_bytes().to_vec())]);
+        let chunks = futures_util::stream::iter([Ok::<_, std::io::Error>(raw.as_bytes().to_vec())]);
         chunks
             .eventsource()
             .filter_map(|f| async { f.ok() })

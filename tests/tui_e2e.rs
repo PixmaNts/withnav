@@ -15,10 +15,10 @@ use tokio::time::Instant;
 use withnav::provider::Usage;
 use withnav::tools::ToolStatus;
 use withnav::tui::TuiOptions;
-use withnav::tui::client::Client;
 use withnav::tui::protocol::{ClientEvent, Effect};
 use withnav::tui::runtime::Runtime;
 use withnav::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
+use withnav_client::client::Client;
 
 mod common;
 use common::server::{TestServerConfig, spawn_server};

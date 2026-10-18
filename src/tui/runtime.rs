@@ -13,7 +13,6 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use super::{
     TuiError, TuiOptions,
-    client::Client,
     input::{Editor, route_key, route_paste},
     protocol::{Action, ClientEvent, Effect},
     reducer,
@@ -23,6 +22,7 @@ use super::{
     view::{self, RenderCache},
 };
 pub use effects::{Context, Executor, Flow};
+use withnav_client::client::Client;
 
 /// Capacity of the channel the effect tasks and the stream report on. Senders
 /// wait when it is full; the loop itself never waits on it.

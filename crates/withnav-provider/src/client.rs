@@ -8,10 +8,10 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use crate::provider::config::{ProviderConfig, Variant};
-use crate::provider::error::ProviderError;
-use crate::provider::openai::{ChatRequest, ClientCache};
-use crate::provider::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
+use crate::config::{ProviderConfig, Variant};
+use crate::error::ProviderError;
+use crate::openai::{ChatRequest, ClientCache};
+use crate::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
 
 /// The largest model list accepted.
 const MAX_CATALOG_BYTES: usize = 2_000_000;
@@ -55,16 +55,15 @@ impl ModelClient {
         })
     }
 
-    pub(crate) fn post(&self, endpoint: &str) -> reqwest::RequestBuilder {
+    /// A POST to `{base_url}/{endpoint}` carrying the bearer key.
+    pub fn post(&self, endpoint: &str) -> reqwest::RequestBuilder {
         self.http
             .post(format!("{}/{}", self.base_url, endpoint))
             .bearer_auth(&self.api_key)
     }
 
-    pub(crate) fn prepare_request(
-        &self,
-        mut req: reqwest::RequestBuilder,
-    ) -> reqwest::RequestBuilder {
+    /// Add the provider's configured extra headers to a request.
+    pub fn prepare_request(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         for (k, v) in &self.headers {
             req = req.header(k, v);
         }

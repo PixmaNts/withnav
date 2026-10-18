@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::provider::Usage;
-use crate::provider::client::ModelClient;
-use crate::provider::config::{ProviderConfig, ResolvedModel};
-use crate::provider::error::ProviderError;
-use crate::provider::openai::ClientCache;
+use crate::Usage;
+use crate::client::ModelClient;
+use crate::config::{ProviderConfig, ResolvedModel};
+use crate::error::ProviderError;
+use crate::openai::ClientCache;
 
 /// Wall-clock deadline of one reflex call, covering send and body. Applied
 /// by clamping the provider's configured `request_timeout_ms` when the
@@ -147,7 +147,7 @@ impl InceptionFim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::config::{ApiKind, ModelConfig, ReasoningHistory};
+    use crate::config::{ApiKind, ModelConfig, ReasoningHistory};
 
     fn resolved_with_timeout(base_url: &str, request_timeout_ms: u64) -> ResolvedModel {
         ResolvedModel {

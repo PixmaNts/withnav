@@ -3,7 +3,7 @@ use futures_util::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::provider::error::SseError;
+use crate::error::SseError;
 
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 

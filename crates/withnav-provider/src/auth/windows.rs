@@ -1,5 +1,5 @@
 //! Credential files carry a protected DACL before any secret is written.
-use crate::provider::error::ProviderError;
+use crate::error::ProviderError;
 use std::{ffi::c_void, os::windows::ffi::OsStrExt, path::Path, ptr};
 use windows_sys::Win32::{
     Foundation::*,

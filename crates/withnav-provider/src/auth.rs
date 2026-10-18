@@ -40,7 +40,7 @@ pub fn load_store(config_dir: &Path) -> Result<AuthStore, ProviderError> {
 }
 
 /// Read one permission-checked snapshot for typed credentials and diagnostics.
-pub(crate) fn load_store_with_document(
+pub fn load_store_with_document(
     config_dir: &Path,
 ) -> Result<(AuthStore, serde_json::Value), ProviderError> {
     let Some(text) = read_store(config_dir)? else {
@@ -93,7 +93,8 @@ pub fn resolve_key(
     resolve_key_from_store(&store, provider_name, api_key_env)
 }
 
-pub(crate) fn resolve_key_from_store(
+/// Resolve a provider's key from an already loaded store, falling back to the named environment variable.
+pub fn resolve_key_from_store(
     store: &AuthStore,
     provider_name: &str,
     api_key_env: Option<&str>,

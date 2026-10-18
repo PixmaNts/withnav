@@ -1,5 +1,5 @@
 //! Lazy, metadata-only provider model catalog with a durable stale fallback.
-use crate::provider::{
+use crate::{
     client::ModelClient,
     config::{ApiKind, ResolvedModel, UnknownVariant, Variant, Variants, effective_variants},
     dirs,
@@ -190,7 +190,7 @@ impl ModelCatalog {
     }
     /// Allow failed endpoints to retry without discarding cached metadata.
     #[cfg(debug_assertions)]
-    pub(crate) fn expire_failures(&self) {
+    pub fn expire_failures(&self) {
         let endpoints = self.endpoints.lock().expect("catalog endpoints poisoned");
         for endpoint in endpoints.values() {
             let mut mem = endpoint.mem.lock().expect("catalog state poisoned");
@@ -561,7 +561,7 @@ fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
     let reported = source.iter().filter_map(|v| v.as_str());
     for tier in reported {
         let plain = !tier.is_empty()
-            && tier != crate::provider::CLEAR_WORD
+            && tier != crate::CLEAR_WORD
             && tier.len() <= 32
             && tier
                 .chars()
@@ -684,7 +684,7 @@ pub fn api_name(api: ApiKind) -> String {
 }
 /// A base URL without userinfo, query or fragment, so no credential reaches
 /// the database.
-pub(crate) fn endpoint_without_credentials(base_url: &str) -> String {
+pub fn endpoint_without_credentials(base_url: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(base_url.trim_end_matches('/')) else {
         return "(unparseable endpoint)".into();
     };

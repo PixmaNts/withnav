@@ -4,6 +4,8 @@ pub mod assignments;
 pub mod bus;
 pub mod error;
 pub mod flows;
+#[cfg(test)]
+pub(crate) mod layer_fixture;
 pub mod layers;
 pub mod mcp;
 pub mod navigator;

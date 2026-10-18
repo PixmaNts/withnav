@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::provider::error::{ConfigError, ProviderError};
+use crate::error::{ConfigError, ProviderError};
 
 /// Reject repeated catalog keys before a map can discard either declaration.
 fn deserialize_unique_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
@@ -283,7 +283,7 @@ impl ModelsConfig {
                         "model '{alias}': variant name {name:?} must be 1-64 characters without whitespace"
                     )));
                 }
-                if name == crate::provider::CLEAR_WORD {
+                if name == crate::CLEAR_WORD {
                     return Err(ConfigError::Invalid(format!(
                         "model '{alias}': a variant cannot be named '{name}': that word clears the variant"
                     )));
@@ -433,7 +433,7 @@ pub fn load_models(
 
 /// Diagnostic views share the same bytes. Keep the typed raw-text parse: parsing
 /// through Value first would discard duplicate keys before catalogue validation.
-pub(crate) fn load_models_with_document(
+pub fn load_models_with_document(
     workspace: &Path,
     config_dir: &Path,
 ) -> Result<(ModelsConfig, PathBuf, Value), ConfigError> {
@@ -453,7 +453,7 @@ pub(crate) fn load_models_with_document(
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/models.json");
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/models.json");
 
     #[test]
     fn catalog_rejects_duplicate_model_keys_even_with_identical_metadata() {
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn repo_models_json_is_strict_and_resolves_both_aliases() {
-        let repo_models = include_str!("../../models.example.json");
+        let repo_models = include_str!("../../../models.example.json");
         let cfg = ModelsConfig::parse(repo_models).expect("repo models.json must be strict JSON");
         let fast = cfg.resolve("omniroute/combo/deepseek-v4-flash").unwrap();
         let default = cfg.resolve("omniroute/cc/claude-opus-5-5").unwrap();
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn repo_models_json_has_no_deprecated_setting() {
-        let cfg = ModelsConfig::parse(include_str!("../../models.example.json")).unwrap();
+        let cfg = ModelsConfig::parse(include_str!("../../../models.example.json")).unwrap();
         assert!(cfg.deprecations().is_empty(), "{:?}", cfg.deprecations());
     }
 }

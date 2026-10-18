@@ -52,6 +52,7 @@ withnav-client-api = { path = "crates/withnav-client-api" }
 withnav-client = { path = "crates/withnav-client" }
 withnav-client-state = { path = "crates/withnav-client-state" }
 withnav-tui = { path = "crates/withnav-tui" }
+withnav-provider = { path = "crates/withnav-provider" }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",
@@ -101,6 +102,7 @@ encoding_rs = "0.8.42"
 include_dir = "0.7"
 
 [dev-dependencies]
+withnav-provider = { path = "crates/withnav-provider", features = ["test-support"] }
 # The terminal client tests that start a real server drive its runtime with key events.
 ratatui.workspace = true
 crossterm.workspace = true

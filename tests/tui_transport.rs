@@ -12,9 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 use withnav::bus::command::ContentBlock;
 use withnav::bus::event::{EventEnvelope, EventKind};
-use withnav::tui::protocol::{CreateSessionRequest, SubmitRequest};
 use withnav_client::client::{Client, SendError};
 use withnav_client::stream::{EventStream, StreamEvent, subscribe};
+use withnav_tui::protocol::{CreateSessionRequest, SubmitRequest};
 
 mod common;
 use common::server::{CuttableProxy, TestServer, TestServerConfig, spawn_server};
@@ -656,7 +656,7 @@ async fn answering(status: &'static str, body: &'static str) -> (String, Arc<Mut
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_permission_answer_posts_the_decision_and_reads_a_stale_reply() {
-    use withnav::tui::protocol::{AnswerError, PermissionAnswer};
+    use withnav_tui::protocol::{AnswerError, PermissionAnswer};
     let deny = PermissionAnswer {
         decision: "deny".into(),
         message: Some("not now".into()),

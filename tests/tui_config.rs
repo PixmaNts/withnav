@@ -2,7 +2,8 @@ mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
-use withnav::tui::{
+use withnav_client::client::Client;
+use withnav_tui::{
     config::*,
     input::{Editor, route_key},
     protocol::{Action, ApiKind, ClientEvent, Effect, Generation, ModelEntry},
@@ -10,7 +11,6 @@ use withnav::tui::{
     state::{State, UiState},
     theme::ThemeId,
 };
-use withnav_client::client::Client;
 
 fn body(revision: &str) -> SettingsBody {
     serde_json::from_value(json!({"revision": revision, "paths": {"config":"/cfg/config.json","models":null,"agents":[]}, "gateways":[], "fields": [
@@ -107,10 +107,10 @@ fn picker_filters_api_and_stages_assignment() {
     action(&mut s, &mut ui, ConfigAction::Jump(Section::Layers));
     action(&mut s, &mut ui, ConfigAction::Edit);
     assert_eq!(ui.settings_target.as_ref().unwrap().api, ApiKind::Fim);
-    let names: Vec<_> = withnav::tui::catalog::rows(&s.catalog, &ui)
+    let names: Vec<_> = withnav_tui::catalog::rows(&s.catalog, &ui)
         .iter()
         .filter_map(|r| match r {
-            withnav::tui::catalog::Row::Model(m) => Some(m.name.clone()),
+            withnav_tui::catalog::Row::Model(m) => Some(m.name.clone()),
             _ => None,
         })
         .collect();
@@ -172,7 +172,7 @@ async fn write_carries_revision_and_theme_applies_live() {
         .collect();
     assert_eq!(requests[0]["revision"], "r0");
     assert_eq!(requests[1]["revision"], "r1");
-    let mut runtime = withnav::tui::runtime::Runtime::new(&withnav::tui::TuiOptions {
+    let mut runtime = withnav_tui::runtime::Runtime::new(&withnav_tui::TuiOptions {
         url: client.base_url,
         token: None,
         workspace: "/workspace".into(),
@@ -180,6 +180,7 @@ async fn write_carries_revision_and_theme_applies_live() {
         initial_session: None,
         embedded: false,
         config_dir: None,
+        host: std::sync::Arc::new(withnav::app::tui::Host),
     });
     runtime.run_effects(effects);
     assert_eq!(runtime.ui.theme, ThemeId::NordDark);
@@ -491,7 +492,7 @@ fn stay_and_discard_cancel_pending_leave_write_and_discard_clears_row_errors() {
 #[tokio::test]
 async fn runtime_routes_y_to_settings_scratch_editor_and_filter_not_transcript_selection() {
     use crossterm::event::Event;
-    use withnav::tui::{TuiOptions, runtime::Runtime, state::Focus};
+    use withnav_tui::{TuiOptions, runtime::Runtime, state::Focus};
     let mut runtime = Runtime::new(&TuiOptions {
         url: "http://127.0.0.1:1".into(),
         token: None,
@@ -500,6 +501,7 @@ async fn runtime_routes_y_to_settings_scratch_editor_and_filter_not_transcript_s
         initial_session: None,
         embedded: false,
         config_dir: None,
+        host: std::sync::Arc::new(withnav::app::tui::Host),
     });
     runtime.state.config.body = Some(body("r0"));
     runtime.ui.screen = Screen::Config;

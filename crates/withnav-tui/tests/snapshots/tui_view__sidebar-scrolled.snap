@@ -1,0 +1,18 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ withnav                                     ▌◎ build  — · assigned · — / — 
+ 6 starting…         │──────────────────────────────────────────────────────────────────────────────
+   ◎ Nav · idle      │                                                                              
+ 7 starting…         │                                                                              
+   ◎ Nav · idle      │                                                                              
+ 8 starting…         │                                                                              
+   ◎ Nav · idle      │                                                                              
+▌9 starting…         │                                                                              
+▌  ◎ Nav · idle      │──────────────────────────────────────────────────────────────────────────────
+                     │ ready   offline                                                session — tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

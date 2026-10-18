@@ -4141,7 +4141,6 @@ dependencies = [
  "directories",
  "encoding_rs",
  "evalexpr",
- "eventsource-stream",
  "flate2",
  "futures",
  "futures-util",
@@ -4157,7 +4156,6 @@ dependencies = [
  "nix",
  "proptest",
  "ratatui",
- "ratatui-textarea",
  "regex",
  "reqwest",
  "rmcp",
@@ -4177,14 +4175,13 @@ dependencies = [
  "tower-lsp-server",
  "tracing",
  "tracing-subscriber",
- "tui-markdown",
  "ulid",
- "unicode-segmentation",
  "windows-sys 0.61.2",
  "wiremock",
  "withnav-client",
  "withnav-client-api",
  "withnav-client-state",
+ "withnav-tui",
 ]
 
 [[package]]
@@ -4223,6 +4220,32 @@ dependencies = [
  "thiserror",
  "ulid",
  "withnav-client-api",
+]
+
+[[package]]
+name = "withnav-tui"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "crossterm",
+ "futures-util",
+ "insta",
+ "ratatui",
+ "ratatui-textarea",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tui-markdown",
+ "ulid",
+ "unicode-segmentation",
+ "wiremock",
+ "withnav-client",
+ "withnav-client-api",
+ "withnav-client-state",
 ]
 
 [[package]]

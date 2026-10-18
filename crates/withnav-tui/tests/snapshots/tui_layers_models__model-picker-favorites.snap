@@ -1,0 +1,25 @@
+---
+source: crates/withnav-tui/tests/tui_layers_models.rs
+assertion_line: 885
+expression: "lines.join(\"\\n\")"
+---
+ ◆ withnav                    ◎ build  — · assigned · — / — 
+────────────────────────────────────────────────────────────
+  ┌─────────────────── Choose a model ───────────────────┐  
+  │ ❯ filter models…                                     │  
+  │ ★ Favorites                                          │  
+  │ ★ direct/solo                                 200k   │  
+  │ ★ omniroute/kimi/k2                           200k   │  
+  │ ▾ direct                                             │  
+  │ ★ solo                                        200k   │  
+  │ ▾ omniroute                                          │  
+  │   ▾ cc                                               │  
+  │     claude-opus                               200k   │  
+  │   ▾ kimi                                             │  
+  │   ★ k2                                        200k   │  
+──│                                                      │──
+ r│ ↑↓ move  ←→ fold  alt+a all  ctrl+f fav  esc close   │k 
+┌ └──────────────────────────────────────────────────────┘─┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

@@ -65,7 +65,7 @@ export function groupKeys(models: ModelEntry[]): string[] {
 /**
  * The canonical name without the `gateway/provider_group/` prefix the group headers already show
  * (`gateway/` for a direct gateway); the full name when the prefix does not match. Same rule as
- * the terminal and VS Code pickers (`src/tui/catalog.rs::short_name`).
+ * the terminal and VS Code pickers (`crates/withnav-tui/src/catalog.rs::short_name`).
  */
 export function shortName(m: Pick<ModelEntry, "name" | "gateway" | "provider_group">): string {
   const prefix = m.provider_group && m.provider_group !== m.gateway ? `${m.gateway}/${m.provider_group}/` : `${m.gateway}/`;

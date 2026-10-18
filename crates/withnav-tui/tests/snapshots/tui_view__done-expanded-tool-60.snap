@@ -1,0 +1,24 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ ◆ withnav    ▌◎ build  cognition · assigned · 12.4k / 200k 
+────────────────────────────────────────────────────────────
+ │ ◎ Nav                                                    
+ │ ▸ Reasoning                                              
+ │  The parser treats an empty argument as a missing value. 
+ │                                                          
+ │ ▾ × bash cargo test parser  error  1.42 s  exit 101      
+ │   test parser::empty_argument ... FAILED                 
+ │   expected Some(""), got None                            
+ │                                                          
+ │ ◎ Nav                                                    
+ │  I found the failing test. The empty argument is         
+ │ discarded.                                               
+ │                                                          
+────────────────────────────────────────────────────────────
+ ready                                    session 31.2k tok 
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

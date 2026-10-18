@@ -7,7 +7,7 @@
 //! between clients, run a server and point each client at it with `--url`.
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::embedded::{EmbeddedServer, check_health, resolve_workspace};
 use super::{EXIT_DONE, TuiArgs};
@@ -16,6 +16,64 @@ use super::{EXIT_DONE, TuiArgs};
 pub const TOKEN_ENV: &str = "WITHNAV_SERVER_TOKEN";
 /// The former name of [`TOKEN_ENV`], still read when the new one is unset.
 const LEGACY_TOKEN_ENV: &str = "RUST_AGENT_SERVER_TOKEN";
+
+/// What the terminal client takes from this crate: the settings file, the git reader and the
+/// home folder. The settings format and the git limits are the server's own.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Host;
+
+// The panel is laid out for as many files as the reader keeps.
+const _: () = assert!(withnav_tui::MAX_FILES == crate::workspace::git::MAX_FILES);
+
+impl withnav_tui::TuiHost for Host {
+    fn load_theme(&self, config_dir: &Path) -> Result<Option<String>, String> {
+        crate::settings::load(config_dir)
+            .map(|settings| settings.tui_theme().map(str::to_owned))
+            .map_err(|err| err.to_string())
+    }
+
+    fn save_theme(&self, config_dir: &Path, id: &str) -> Result<(), String> {
+        crate::settings::save_tui_theme(config_dir, id).map_err(|err| err.to_string())
+    }
+
+    fn load_favorite_models(&self, config_dir: &Path) -> Result<Vec<String>, String> {
+        crate::settings::load(config_dir)
+            .map(|settings| settings.tui_favorite_models())
+            .map_err(|err| err.to_string())
+    }
+
+    fn save_favorite_models(&self, config_dir: &Path, names: &[String]) -> Result<(), String> {
+        crate::settings::save_tui_favorite_models(config_dir, names).map_err(|err| err.to_string())
+    }
+
+    fn read_git(
+        &self,
+        workspace: &Path,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<withnav_tui::GitStatus>> + Send + '_>,
+    > {
+        let workspace = workspace.to_path_buf();
+        Box::pin(async move {
+            let status = crate::workspace::git::read(&workspace).await?;
+            Some(withnav_tui::GitStatus {
+                branch: status.branch,
+                dirty: status.dirty,
+                files: status
+                    .files
+                    .into_iter()
+                    .map(|change| withnav_tui::Change {
+                        mark: change.mark,
+                        path: change.path,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn home_dir(&self) -> Option<PathBuf> {
+        crate::paths::home_dir()
+    }
+}
 
 /// The log file of the terminal client, `<data dir>/tui.log`.
 pub fn log_path() -> Option<PathBuf> {
@@ -79,7 +137,7 @@ async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::R
         eprintln!("warning: {LEGACY_TOKEN_ENV} is deprecated, use {TOKEN_ENV}");
     }
     check_health(&url).await?;
-    crate::tui::run(crate::tui::TuiOptions {
+    withnav_tui::run(withnav_tui::TuiOptions {
         url,
         token,
         workspace,
@@ -87,6 +145,7 @@ async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::R
         initial_session: args.session,
         embedded: false,
         config_dir: crate::provider::auth::default_config_dir(),
+        host: Arc::new(Host),
     })
     .await?;
     Ok(())
@@ -113,7 +172,7 @@ async fn run_embedded(args: TuiArgs, workspace: PathBuf) -> anyhow::Result<()> {
         0,
     )
     .await?;
-    let result = crate::tui::run(crate::tui::TuiOptions {
+    let result = withnav_tui::run(withnav_tui::TuiOptions {
         url: server.url.clone(),
         token: Some(server.token.clone()),
         workspace,
@@ -121,6 +180,7 @@ async fn run_embedded(args: TuiArgs, workspace: PathBuf) -> anyhow::Result<()> {
         initial_session: args.session,
         embedded: true,
         config_dir: crate::provider::auth::default_config_dir(),
+        host: Arc::new(Host),
     })
     .await;
     server.stop().await;

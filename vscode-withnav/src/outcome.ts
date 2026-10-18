@@ -1,6 +1,6 @@
 // A server command's outcome as the short text the transcript shows: the
 // client's own wording over the `command.result` data, like the terminal
-// client (`src/tui/reducer/command.rs`). Selection switches return null: their
+// client (`crates/withnav-client-state/src/command.rs`). Selection switches return null: their
 // `model.changed` event already says what changed.
 
 import { tokens } from "./contextMeter";

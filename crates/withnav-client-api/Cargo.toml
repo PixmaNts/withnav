@@ -1,0 +1,14 @@
+[package]
+name = "withnav-client-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Wire contract of the WithNav session server: event envelope, payloads and HTTP bodies"
+
+# Data only: no runtime, no HTTP stack, no terminal code.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ulid.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }

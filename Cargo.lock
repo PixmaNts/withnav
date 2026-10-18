@@ -4182,6 +4182,17 @@ dependencies = [
  "unicode-segmentation",
  "windows-sys 0.61.2",
  "wiremock",
+ "withnav-client-api",
+]
+
+[[package]]
+name = "withnav-client-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "time",
+ "ulid",
 ]
 
 [[package]]

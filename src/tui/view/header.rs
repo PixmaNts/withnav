@@ -287,23 +287,26 @@ fn line(state: &State, theme: &Theme, total: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::state::{ModelSwitch, Tab};
+    use crate::tui::state::{ModelSwitch, SessionState, Tab};
     use ratatui::{Terminal, backend::TestBackend};
 
     /// A header with everything to show: a long workspace, a dirty branch, a variant, a gauge and
     /// a switch waiting for the turn to end.
     fn busy() -> State {
         let tab = Tab {
-            selected_model_id: Some("omniroute/combo/deepseek-v4-flash".into()),
-            context_window: Some(200_000),
-            variant: Some("high".into()),
-            model_switch: Some(ModelSwitch {
-                agent: "build".into(),
-                model_id: "cc/claude-opus-5-5".into(),
-                token: 1,
-                operation_id: Some("op".into()),
-                deferred: true,
-            }),
+            projection: SessionState {
+                selected_model_id: Some("omniroute/combo/deepseek-v4-flash".into()),
+                context_window: Some(200_000),
+                variant: Some("high".into()),
+                model_switch: Some(ModelSwitch {
+                    agent: "build".into(),
+                    model_id: "cc/claude-opus-5-5".into(),
+                    token: 1,
+                    operation_id: Some("op".into()),
+                    deferred: true,
+                }),
+                ..Default::default()
+            },
             git: Some(crate::workspace::git::GitStatus {
                 branch: Some("fix/header-overflows-on-narrow-terminals".into()),
                 dirty: 12,

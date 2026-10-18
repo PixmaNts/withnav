@@ -333,9 +333,12 @@ fn tool_block(status: Option<ToolStatus>) -> Block {
 fn state() -> State {
     let tab = Tab {
         connection: ConnectionStatus::Connected,
-        selected_model_id: Some("cognition".into()),
-        selected_model_name: Some("cc/claude-opus-5-5".into()),
-        context_window: Some(200_000),
+        projection: withnav::tui::state::SessionState {
+            selected_model_id: Some("cognition".into()),
+            selected_model_name: Some("cc/claude-opus-5-5".into()),
+            context_window: Some(200_000),
+            ..Default::default()
+        },
         session: Some(SessionMetadata {
             yolo: false,
             permissions_unavailable: None,

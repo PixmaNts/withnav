@@ -130,7 +130,6 @@ pub fn tokens(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::tokens;
-    use crate::tui::view::status::number;
 
     #[test]
     fn a_million_is_never_shown_as_a_thousand_k() {
@@ -138,9 +137,5 @@ mod tests {
         assert_eq!(tokens(999_500), "1M");
         assert_eq!(tokens(1_000_000), "1M");
         assert_eq!(tokens(1_500_000), "1.5M");
-        assert_eq!(number(Some(1_000_000)), "1M");
-        assert_eq!(number(Some(999_950)), "1M");
-        assert_eq!(number(Some(999_900)), "999.9k");
-        assert_eq!(number(Some(200_000)), "200k");
     }
 }

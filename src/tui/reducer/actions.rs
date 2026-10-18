@@ -4,8 +4,8 @@ use crate::tui::{
     commands,
     protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
     state::{
-        Activity, BlockKind, DEFAULT_AGENT, MAX_TABS, NO_VARIANT, PLAN_AGENT, State, Tab, TabView,
-        UiState, VariantPick,
+        Activity, BlockKind, DEFAULT_AGENT, MAX_TABS, NO_VARIANT, PLAN_AGENT, SessionState, State,
+        Tab, TabView, UiState, VariantPick,
     },
     theme::ThemeId,
 };
@@ -121,7 +121,10 @@ fn open_tab(s: &mut State, ui: &mut UiState) -> Option<Vec<Effect>> {
     let tab = Tab {
         id,
         generation,
-        agent: Some(s.default_agent.clone()),
+        projection: SessionState {
+            agent: Some(s.default_agent.clone()),
+            ..SessionState::default()
+        },
         view: TabView {
             follow_bottom: true,
             ..TabView::default()

@@ -1,23 +1,12 @@
 //! Data-only conversation projections (one per tab) and presentation state; no I/O or terminal
 //! access.
 use super::protocol::{Generation, ModelEntry, SessionListEntry};
-use crate::{bus::event::EventEnvelope, provider::Usage, tools::ToolStatus};
-use serde_json::Value;
 use std::collections::HashMap;
+pub use withnav_client_state::{
+    Activity, Block, BlockKind, ChildAgent, ChildStatus, Conversation, DEFAULT_AGENT, ModelSwitch,
+    PermissionPrompt, QuestionPrompt, SessionState, SkillScript,
+};
 
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct SkillScript {
-    pub skill: String,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Activity {
-    #[default]
-    Idle,
-    Running,
-    AwaitingUser,
-    OutOfSteps,
-    Stopped,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectionStatus {
     #[default]
@@ -25,127 +14,6 @@ pub enum ConnectionStatus {
     Connecting,
     Connected,
     Reconnecting,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub enum BlockKind {
-    Message {
-        source: String,
-        text: String,
-    },
-    AssistantStep {
-        text: String,
-        thinking: String,
-        revision: u64,
-    },
-    ToolCall {
-        id: String,
-        name: String,
-        args: Value,
-        status: Option<ToolStatus>,
-        output: String,
-        metadata: Value,
-        duration_ms: Option<u64>,
-        exit_code: Option<i32>,
-    },
-    YieldQuestion(String),
-    Question(QuestionPrompt),
-    Error(String),
-    Notice(String),
-    /// A gated tool call waiting for the Captain's decision, then how it ended.
-    Permission(PermissionPrompt),
-    /// The outcome of a server command: its name, whether it ran, and what it answered.
-    Command {
-        name: String,
-        ok: bool,
-        text: String,
-    },
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct QuestionPrompt {
-    pub text: String,
-    pub call_id: String,
-    pub choices: crate::tools::control::AskChoices,
-    pub answer: Option<crate::tools::control::AskAnswer>,
-    pub cursor: usize,
-    pub selected: Vec<usize>,
-    pub sending: bool,
-    pub dismissed: bool,
-    pub custom: bool,
-    pub error: Option<String>,
-}
-/// What a permission request asks and, once it ended, how.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PermissionPrompt {
-    pub always_label: Option<String>,
-    pub skill_script: Option<Box<SkillScript>>,
-    pub child_session_id: Option<String>,
-    pub request_id: String,
-    pub tool_call_id: String,
-    pub tool: String,
-    /// The call's arguments as JSON text, cut by the server to 4 KiB.
-    pub arguments: String,
-    /// `folder` or `origin`.
-    pub scope_kind: String,
-    /// The folder path or the `scheme://host[:port]` origin.
-    pub scope: String,
-    pub agent: String,
-    pub reason: String,
-    /// `None` while open; then `allow_once`, `allow_folder`, `deny`, `cancelled` or `expired`.
-    pub resolution: Option<String>,
-    /// What a denial told the model, or why an "Always" answer was not saved.
-    pub message: Option<String>,
-    /// False when an "Always" answer could not save its rules: the call ran once.
-    pub always_saved: bool,
-    /// The server said the request was no longer waiting (409) before its `permission.resolved`
-    /// arrived: it takes no answer, and how it ended is not known yet.
-    pub stale: bool,
-}
-
-impl PermissionPrompt {
-    /// Whether the request still waits for an answer: every "open" check goes through here.
-    pub fn is_open(&self) -> bool {
-        self.resolution.is_none() && !self.stale
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Block {
-    pub id: String,
-    pub kind: BlockKind,
-}
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Conversation {
-    pub blocks: Vec<Block>,
-    pub steps: HashMap<(String, String, String), String>,
-    pub tools_by_turn: HashMap<(String, String), Vec<String>>,
-    pub usage_by_step: HashMap<(String, String, String), Usage>,
-    pub context_tokens: Option<u64>,
-    /// The server's estimate of the next request, from `context.updated` or
-    /// `GET /context`; the status line shows it. `context_tokens` stays the
-    /// provider's last prompt count.
-    pub context: Option<crate::tui::protocol::ContextSnapshot>,
-    /// Bumped on every resume and every stream (re)connection: a context fetch answered
-    /// under an older epoch is dropped.
-    pub context_epoch: u64,
-    /// The runtime incarnations the gauge has moved past (the last few): a snapshot of one
-    /// of them is never accepted again.
-    pub retired_incarnations: std::collections::VecDeque<ulid::Ulid>,
-    pub completion_tokens: Option<u64>,
-    pub session_tokens: Option<u64>,
-    pub missing_usage: bool,
-    pub current_turn: Option<String>,
-    pub current_step: Option<(String, String, String)>,
-    pub step_blocks: HashMap<(String, String, String), String>,
-    pub step_turns: HashMap<(String, String, String), String>,
-    pub counted_steps: std::collections::HashSet<(String, String, String)>,
-    pub pending_tools: HashMap<String, String>,
-    pub pending_tool_fragments: HashMap<String, String>,
-    /// Block ids of the permission requests still open, oldest first.
-    pub open_permissions: Vec<String>,
-    /// Key of the last `llm.response` seen (the turn-end usage fallback).
-    pub last_response_step: Option<(String, String, String)>,
-    /// The last `context.compacted` of the conversation, if any.
-    pub last_compaction: Option<crate::bus::event::ContextCompacted>,
 }
 /// The most conversations open at once; a tenth is refused.
 pub const MAX_TABS: usize = 9;
@@ -164,15 +32,15 @@ pub struct TabView {
 /// no other tab.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tab {
-    pub bypass: bool,
-    pub bypass_seq: u64,
+    /// What the event stream says about the conversation. The tab reads and writes it through
+    /// `Deref`; everything else in the tab is terminal-side.
+    pub projection: SessionState,
+    /// `/variant` was asked to open its list: the server's answer opens it.
+    pub variant_list_wanted: bool,
     pub bypass_pending: bool,
     pub default_agent: Option<String>,
     pub agents: Vec<super::protocol::AgentEntry>,
     pub agents_request: u64,
-    pub effective: Option<super::protocol::ModelIdentity>,
-    pub model_source: String,
-    pub variant_source: String,
     pub start_model: Option<String>,
     pub skills: crate::bus::event::SkillsBody,
     /// Stable for the life of the tab, unlike `generation`.
@@ -184,49 +52,17 @@ pub struct Tab {
     pub resuming: Option<String>,
     /// Metadata must establish whether this session accepts prompts before a resume is sent.
     pub inspecting: bool,
-    pub selected_model_id: Option<String>,
-    pub selected_model_name: Option<String>,
-    pub context_window: Option<u64>,
-    pub conversation: Conversation,
-    pub activity: Activity,
-    pub last_applied_seq: Option<u64>,
     pub generation: Generation,
     pub pending_submit: Option<u64>,
     pub delivery_uncertain: bool,
     pub pending_submit_text: Option<String>,
     pub pending_model_pick: bool,
     pub editor_revision: u64,
-    /// The primary agent the conversation runs as, or starts as; `None` is build.
-    pub agent: Option<String>,
-    /// The model variant the conversation runs with, or starts with; `None` is none.
-    pub variant: Option<String>,
-    /// The variants the conversation's server offers (`/variant` answered `offered`); `None` until
-    /// asked. The `/variant` list shows these, not the catalog's.
-    pub variant_offer: Option<Vec<String>>,
-    /// `/variant` was asked to open its list: the server's answer opens it.
-    pub variant_list_wanted: bool,
-    /// The seq of the last event that set `agent` / `variant`: a session summary read at an
-    /// older seq does not overwrite them.
-    pub agent_seq: Option<u64>,
-    pub variant_seq: Option<u64>,
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
     /// the model_id's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,
-    /// The last `/model` this client sent, from the send until the server settles it: the header
-    /// shows `→ model_id (after this turn)` once it is accepted for after the running turn.
-    pub model_switch: Option<ModelSwitch>,
     /// The last token given to a command request of this tab.
     pub command_token: u64,
-    /// The `/model` operations the stream reported as settled (done, refused, cancelled, or
-    /// carried by a `model.changed`), the last few: an HTTP answer arriving after its own result
-    /// does not mark a settled switch as waiting.
-    pub settled_model_ops: std::collections::VecDeque<String>,
-    /// The seq of the last `model.changed`: a session summary read at an older seq does not
-    /// overwrite the model.
-    pub model_seq: Option<u64>,
-    /// The request an answer was sent for, until `permission.resolved` ends it (or the answer
-    /// did not reach the server): its keys are ignored meanwhile, another request's are not.
-    pub answered_permission: Option<String>,
     /// Something arrived while another tab was shown.
     pub unread: bool,
     /// The editor text while another tab is shown, and the editor revision it was saved at.
@@ -234,15 +70,10 @@ pub struct Tab {
     pub draft_revision: u64,
     /// The transcript position while another tab is shown.
     pub view: TabView,
-    /// Agents started by this conversation, shown under it; empty until the server reports them.
-    pub children: Vec<ChildAgent>,
     /// Read-only transcript opened from a parent's reported child link.
     pub parent_session_id: Option<String>,
     pub child_status: ChildStatus,
     pub child_status_seq: Option<u64>,
-    /// A watchdog doubt or renewable step budget, never an ask or permission.
-    pub watchdog_paused: bool,
-    pub pause_token: Option<crate::bus::event::PauseToken>,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<crate::workspace::git::GitStatus>,
@@ -251,8 +82,6 @@ pub struct Tab {
     pub git_again: bool,
 }
 
-/// The agent a conversation runs as when nothing else is known.
-pub const DEFAULT_AGENT: &str = "build";
 /// The other primary agent the build/plan switch goes to.
 pub const PLAN_AGENT: &str = "plan";
 
@@ -272,25 +101,9 @@ impl Tab {
                 .is_some_and(|m| !m.promptable || m.read_only)
     }
 
-    /// The oldest permission request still open, if any.
-    pub fn open_permission(&self) -> Option<&PermissionPrompt> {
-        self.conversation.open_permissions.iter().find_map(|id| {
-            self.conversation.blocks.iter().find_map(|b| match &b.kind {
-                BlockKind::Permission(p) if &b.id == id && p.is_open() => Some(p),
-                _ => None,
-            })
-        })
-    }
-
     /// The primary agent's name for display.
     pub fn agent_name(&self) -> &str {
-        if let Some(effective) = &self.effective {
-            return &effective.agent;
-        }
-        self.agent
-            .as_deref()
-            .or(self.default_agent.as_deref())
-            .unwrap_or(DEFAULT_AGENT)
+        self.projection.agent_name_or(self.default_agent.as_deref())
     }
 
     /// True when the tab holds nothing yet: no session, nothing being created or resumed, no block.
@@ -302,109 +115,16 @@ impl Tab {
     }
 }
 
-/// A `/model` this client sent and the server has not settled.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ModelSwitch {
-    pub agent: String,
-    pub model_id: String,
-    /// The token of the request that asked for it: only its HTTP answer binds the operation.
-    pub token: u64,
-    /// The operation the server gave the command; `None` until its HTTP answer.
-    pub operation_id: Option<String>,
-    /// The server accepted it for after the running turn.
-    pub deferred: bool,
-}
-
-impl Tab {
-    /// The model_id a switch accepted for after this turn goes to, while it waits.
-    pub fn pending_model(&self) -> Option<&str> {
-        self.model_switch
-            .as_ref()
-            .filter(|m| m.deferred)
-            .map(|m| m.model_id.as_str())
+impl std::ops::Deref for Tab {
+    type Target = SessionState;
+    fn deref(&self) -> &SessionState {
+        &self.projection
     }
 }
 
-/// An agent working for a tab's conversation, drawn nested under it.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ChildAgent {
-    pub session_id: String,
-    pub name: String,
-    pub goal: String,
-    pub status: ChildStatus,
-    pub delivery: Option<String>,
-    pub reason: Option<String>,
-    /// A sequenced parent event takes precedence over a session-list snapshot.
-    pub event_seq: Option<u64>,
-    pub child_seq: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ChildStatus {
-    #[default]
-    Unknown,
-    Running,
-    Permission,
-    OutOfSteps,
-    Doubt,
-    Done,
-    Failed,
-    Stopped,
-}
-
-impl ChildStatus {
-    pub fn terminal_event(event: &EventEnvelope) -> Option<Self> {
-        match event.kind.as_str() {
-            "session.end" => Some(Self::Stopped),
-            _ => None,
-        }
-    }
-
-    pub fn project(status: &mut Self, seq: &mut Option<u64>, event: &EventEnvelope) {
-        if status.terminal() || seq.is_some_and(|held| event.seq <= held) {
-            return;
-        }
-        *seq = Some(event.seq);
-        if let Some(terminal) = Self::terminal_event(event) {
-            *status = terminal;
-            return;
-        }
-        *status = match event.kind.as_str() {
-            "turn.start" => Self::Running,
-            "agent.yield" if event.payload["kind"] == "budget" => Self::OutOfSteps,
-            "permission.requested" => Self::Permission,
-            "permission.resolved" => Self::Running,
-            _ => *status,
-        };
-    }
-    pub fn from_wire(status: &str) -> Self {
-        match status {
-            "running" | "active" => Self::Running,
-            "waiting_for_permission" | "permission" => Self::Permission,
-            "out_of_steps" | "step_budget_exhausted" | "parked" => Self::OutOfSteps,
-            "doubt" => Self::Doubt,
-            "done" => Self::Done,
-            "failed" => Self::Failed,
-            "stopped" => Self::Stopped,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Unknown => "—",
-            Self::Running => "running",
-            Self::Permission => "waiting for permission",
-            Self::OutOfSteps => "out of steps",
-            Self::Doubt => "in doubt",
-            Self::Done => "done",
-            Self::Failed => "failed",
-            Self::Stopped => "stopped",
-        }
-    }
-
-    pub fn terminal(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Stopped)
+impl std::ops::DerefMut for Tab {
+    fn deref_mut(&mut self) -> &mut SessionState {
+        &mut self.projection
     }
 }
 

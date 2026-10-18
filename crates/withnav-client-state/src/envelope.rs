@@ -8,19 +8,25 @@
 //! `yielded`, its question is shown by the yield block) and at `session.end`; running tools at `turn.end`
 //! (`interrupted`, `error`) and `session.end`. No new state: `Interrupted` is reused. Streamed tool-call fragments are never rendered ("preparing" is not shown): they
 //! are only buffered per index until the step's `llm.response` replaces them.
-use super::{block, text::strip_controls};
-use crate::tui::protocol::{ContextSnapshot, ModelChanged};
 use crate::{
-    bus::event::{EventEnvelope, EventKind},
-    provider::{StreamDelta, ToolCall, Usage},
-    tools::ToolStatus,
-    tui::{
-        protocol::ProtocolError,
-        state::{Activity, Block, BlockKind, ChildAgent, ChildStatus, PermissionPrompt, State},
+    ProtocolError,
+    children::{ChildAgent, ChildStatus},
+    command::{outcome_text, tokens},
+    conversation::{Activity, Block, BlockKind, PermissionPrompt, QuestionPrompt, block},
+    projection::{
+        SessionState, apply_selection, clear_answered, keep_bypass, keep_newer_context,
+        keep_newer_mcp, set_variant_offer, settle_model_op,
     },
+    text::strip_controls,
 };
 use serde::Deserialize;
 use serde_json::Value;
+use withnav_client_api::{
+    event::{EventEnvelope, EventKind, McpStatus},
+    protocol::{ModelChanged, ModelEntry},
+    provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
+    tools::{AskAnswer, AskChoices, ToolStatus},
+};
 
 type StepKey = (String, String, String);
 
@@ -30,6 +36,21 @@ mod tests {
     use serde_json::json;
     use ulid::Ulid;
 
+    fn apply(state: &mut SessionState, envelope: EventEnvelope) -> Result<(), ProtocolError> {
+        let mut mcp = None;
+        apply_envelope(
+            state,
+            envelope,
+            EnvelopeContext {
+                own_session: None,
+                read_only: false,
+                default_agent: None,
+                catalog: &[],
+                mcp: &mut mcp,
+            },
+        )
+    }
+
     #[test]
     fn turn_boundaries_discard_unfinished_tool_arguments() {
         for (kind, payload) in [
@@ -38,12 +59,12 @@ mod tests {
             (EventKind::TurnEnd, json!({"outcome":"error"})),
             (EventKind::SessionEnd, json!({})),
         ] {
-            let mut state = State::default();
+            let mut state = SessionState::default();
             state
                 .conversation
                 .pending_tool_fragments
                 .insert("0".into(), "unfinished".into());
-            apply_envelope(
+            apply(
                 &mut state,
                 EventEnvelope::new(Ulid::generate(), 1, kind, payload),
             )
@@ -55,7 +76,7 @@ mod tests {
     #[test]
     fn budget_yield_stays_out_of_steps_through_turn_end_and_agent_state() {
         for kind in [Some("budget"), Some("choice"), None] {
-            let mut state = State::default();
+            let mut state = SessionState::default();
             let session = Ulid::generate();
             for (seq, event, payload) in [
                 (
@@ -66,8 +87,7 @@ mod tests {
                 (2, EventKind::TurnEnd, json!({"outcome":"yielded"})),
                 (3, EventKind::AgentState, json!({"to":"yielded"})),
             ] {
-                apply_envelope(&mut state, EventEnvelope::new(session, seq, event, payload))
-                    .unwrap();
+                apply(&mut state, EventEnvelope::new(session, seq, event, payload)).unwrap();
                 assert_eq!(
                     state.activity,
                     if kind == Some("budget") {
@@ -99,7 +119,7 @@ struct DeltaPayload {
 struct ResponsePayload {
     turn_id: String,
     step_id: String,
-    message: crate::provider::AssistantMessage,
+    message: AssistantMessage,
     usage: Option<Usage>,
 }
 
@@ -115,7 +135,25 @@ struct ToolPatch {
     exit_code: Option<i32>,
 }
 
-pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), ProtocolError> {
+/// What `apply_envelope` reads from the client around the projection it updates.
+pub struct EnvelopeContext<'a> {
+    /// The conversation's own session id, or the one being resumed.
+    pub own_session: Option<&'a str>,
+    /// Whether the transcript is read-only (an archive or a child's view).
+    pub read_only: bool,
+    /// The primary agent the server reported as default, when known.
+    pub default_agent: Option<&'a str>,
+    /// The model catalogue, for the context window of a newly selected model.
+    pub catalog: &'a [ModelEntry],
+    /// The service-wide MCP gauge, shared by every conversation.
+    pub mcp: &'a mut Option<McpStatus>,
+}
+
+pub fn apply_envelope(
+    s: &mut SessionState,
+    e: EventEnvelope,
+    ctx: EnvelopeContext<'_>,
+) -> Result<(), ProtocolError> {
     if e.schema_version != 1 {
         return Err(ProtocolError(format!(
             "unsupported schema {}",
@@ -132,7 +170,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     if e.kind == "session.bypass" {
         let enabled = e.payload["enabled"].as_bool().ok_or_else(bad)?;
         if e.seq > s.bypass_seq {
-            super::keep_bypass(s, enabled, e.seq);
+            keep_bypass(s, enabled, e.seq);
         }
         return Ok(());
     }
@@ -140,7 +178,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     // payload this client cannot read is left aside: it is not worth a resync.
     if kind == Some(EventKind::McpStatus) {
         if let Ok(snapshot) = serde_json::from_value(e.payload) {
-            super::keep_newer_mcp(s, snapshot);
+            keep_newer_mcp(ctx.mcp, snapshot);
         }
         return Ok(());
     }
@@ -149,11 +187,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         "subagent.spawned" | "subagent.done" | "subagent.watchdog"
     ) {
         let v = &e.payload;
-        let own = s
-            .session
-            .as_ref()
-            .map(|m| m.session_id.as_str())
-            .or(s.resuming.as_deref());
+        let own = ctx.own_session;
         if e.kind != "subagent.watchdog"
             && (v["parent_session_id"].as_str() != own || own.is_none())
         {
@@ -236,9 +270,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             let source = v["source"].as_str().ok_or_else(bad)?.to_string();
             let text = v["content"].as_str().ok_or_else(bad)?;
-            if let Ok(answer) =
-                serde_json::from_value::<crate::tools::control::AskAnswer>(v["answer"].clone())
-            {
+            if let Ok(answer) = serde_json::from_value::<AskAnswer>(v["answer"].clone()) {
                 for block in &mut s.conversation.blocks {
                     if let BlockKind::Question(prompt) = &mut block.kind
                         && prompt.call_id == answer.question_call_id
@@ -397,7 +429,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 .and_then(|token| serde_json::from_value(token.clone()).ok());
             let q = v["question"].as_str().ok_or_else(bad)?;
             let budget = v["kind"].as_str() == Some("budget");
-            let child = s.read_only();
+            let child = ctx.read_only;
             s.activity = if budget {
                 Activity::OutOfSteps
             } else {
@@ -419,24 +451,20 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 } else {
                     match (
                         v["question_call_id"].as_str(),
-                        serde_json::from_value::<crate::tools::control::AskChoices>(
-                            v["choices"].clone(),
-                        ),
+                        serde_json::from_value::<AskChoices>(v["choices"].clone()),
                     ) {
-                        (Some(call_id), Ok(choices)) => {
-                            BlockKind::Question(crate::tui::state::QuestionPrompt {
-                                text: strip_controls(q),
-                                call_id: call_id.into(),
-                                choices,
-                                answer: None,
-                                cursor: 0,
-                                selected: vec![],
-                                sending: false,
-                                dismissed: false,
-                                custom: false,
-                                error: None,
-                            })
-                        }
+                        (Some(call_id), Ok(choices)) => BlockKind::Question(QuestionPrompt {
+                            text: strip_controls(q),
+                            call_id: call_id.into(),
+                            choices,
+                            answer: None,
+                            cursor: 0,
+                            selected: vec![],
+                            sending: false,
+                            dismissed: false,
+                            custom: false,
+                            error: None,
+                        }),
                         _ => BlockKind::YieldQuestion(strip_controls(q)),
                     }
                 },
@@ -603,7 +631,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let resolution = strip_controls(v["resolution"].as_str().ok_or_else(bad)?);
             let id = format!("permission:{request_id}");
             s.conversation.open_permissions.retain(|open| open != &id);
-            super::clear_answered(s, request_id);
+            clear_answered(s, request_id);
             if let Some(Block {
                 kind: BlockKind::Permission(prompt),
                 ..
@@ -624,7 +652,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::ContextCompacted) => {
             let v = e.payload;
             s.conversation.last_compaction = serde_json::from_value(v.clone()).ok();
-            let tokens = |key: &str| super::tokens(v[key].as_u64().unwrap_or(0));
+            let tokens = |key: &str| tokens(v[key].as_u64().unwrap_or(0));
             let writer = v["written_by"]["model"]
                 .as_str()
                 .map(|model| format!(" by {}", strip_controls(model)))
@@ -652,7 +680,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let new = &changed.new;
             let current = s.model_seq.is_none_or(|held| e.seq >= held);
             if current {
-                super::apply_selection(s, new.clone(), e.seq, Some(changed.window));
+                apply_selection(s, new.clone(), e.seq, Some(changed.window), ctx.catalog);
                 s.model_switch = s
                     .model_switch
                     .take()
@@ -660,7 +688,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             }
             // Only the switch this selection came from stops waiting.
             if let Some(op) = changed.operation_id {
-                super::settle_model_op(s, &op.to_string());
+                settle_model_op(s, &op.to_string());
             }
             if changed.reason != "initial" {
                 let from = changed
@@ -672,7 +700,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 if let Some(variant) = &s.variant {
                     text.push_str(&format!(" · {variant}"));
                 }
-                text.push_str(&format!(" · {}", super::tokens(changed.window)));
+                text.push_str(&format!(" · {}", tokens(changed.window)));
                 s.conversation
                     .blocks
                     .push(block(format!("notice:{}", e.seq), BlockKind::Notice(text)));
@@ -712,7 +740,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 let made = ok && data.is_some_and(|d| d["changed"].as_bool() == Some(true));
                 let op = v["operation_id"].as_str().map(str::to_string);
                 if let (false, Some(op)) = (deferred, op.as_deref()) {
-                    super::settle_model_op(s, op);
+                    settle_model_op(s, op);
                 }
                 if made {
                     return Ok(());
@@ -759,7 +787,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             if name == "variant"
                 && ok
                 && s.model_seq.is_none_or(|held| e.seq >= held)
-                && v["data"]["agent"].as_str() == Some(s.agent_name())
+                && v["data"]["agent"].as_str() == Some(s.agent_name_or(ctx.default_agent))
                 && v["data"]["model"].as_str() == s.selected_model_id.as_deref()
                 && let Some(data) = v.get("data")
             {
@@ -778,9 +806,9 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                         effective.selection.variant_source = source;
                     }
                 }
-                super::set_variant_offer(s, data);
+                set_variant_offer(s, data);
             }
-            let text = super::command::outcome_text(
+            let text = outcome_text(
                 &name,
                 ok,
                 v.get("data").filter(|d| !d.is_null()),
@@ -826,7 +854,7 @@ fn error_text(code: &str, message: &str) -> String {
     cut
 }
 
-fn step_block_id(s: &mut State, key: &StepKey, step_id: &str) -> String {
+fn step_block_id(s: &mut SessionState, key: &StepKey, step_id: &str) -> String {
     s.conversation
         .step_blocks
         .entry(key.clone())
@@ -851,61 +879,7 @@ fn upsert(v: &mut Vec<Block>, id: String, kind: BlockKind) {
     }
 }
 
-/// How many retired incarnations the conversation remembers.
-const RETIRED_INCARNATIONS: usize = 8;
-
-/// What a resync keeps of the gauge.
-pub(super) struct ContextKept {
-    snapshot: Option<ContextSnapshot>,
-    epoch: u64,
-    retired: std::collections::VecDeque<ulid::Ulid>,
-}
-
-pub(super) fn take_context(s: &mut State) -> ContextKept {
-    ContextKept {
-        snapshot: s.conversation.context.take(),
-        epoch: s.conversation.context_epoch,
-        retired: std::mem::take(&mut s.conversation.retired_incarnations),
-    }
-}
-
-pub(super) fn restore_context(s: &mut State, kept: ContextKept) {
-    s.conversation.context = kept.snapshot;
-    s.conversation.context_epoch = kept.epoch;
-    s.conversation.retired_incarnations = kept.retired;
-}
-
-/// Shows `snapshot` unless it is stale. Incarnation ids carry no order, so staleness is
-/// decided here: within the incarnation shown, a lower revision is stale; a snapshot of a
-/// new incarnation replaces the one shown, which is then retired; a snapshot of one of the
-/// last eight retired incarnations is never shown again, however late it arrives (an older
-/// HTTP answer is also dropped by its fetch epoch).
-pub(super) fn keep_newer_context(s: &mut State, snapshot: ContextSnapshot) {
-    let conversation = &mut s.conversation;
-    if conversation
-        .retired_incarnations
-        .contains(&snapshot.incarnation)
-    {
-        return;
-    }
-    if let Some(held) = &conversation.context {
-        if held.incarnation == snapshot.incarnation {
-            if snapshot.revision < held.revision {
-                return;
-            }
-        } else {
-            conversation
-                .retired_incarnations
-                .push_back(held.incarnation);
-            while conversation.retired_incarnations.len() > RETIRED_INCARNATIONS {
-                conversation.retired_incarnations.pop_front();
-            }
-        }
-    }
-    conversation.context = Some(snapshot);
-}
-
-fn count_usage(s: &mut State, key: StepKey, u: Usage) {
+fn count_usage(s: &mut SessionState, key: StepKey, u: Usage) {
     if s.conversation.counted_steps.insert(key.clone()) {
         s.conversation.session_tokens =
             Some(s.conversation.session_tokens.unwrap_or(0) + u.total_tokens);
@@ -928,7 +902,7 @@ fn set_tool_status_if_pending(b: &mut Block, value: ToolStatus) {
 }
 
 /// Settles the unfinished tools of `(actor, turn)` per the module rules.
-fn settle_turn_tools(s: &mut State, actor: &str, turn: &str, outcome: &str) {
+fn settle_turn_tools(s: &mut SessionState, actor: &str, turn: &str, outcome: &str) {
     let all = matches!(outcome, "interrupted" | "error");
     if !all && !matches!(outcome, "done" | "yielded") {
         return;
@@ -966,7 +940,7 @@ fn settle_turn_tools(s: &mut State, actor: &str, turn: &str, outcome: &str) {
 }
 
 /// Whether an open permission request holds the tool call `call_id`.
-fn open_permission_for(s: &State, call_id: &str) -> bool {
+fn open_permission_for(s: &SessionState, call_id: &str) -> bool {
     s.conversation.blocks.iter().any(
         |b| matches!(&b.kind, BlockKind::Permission(p) if p.is_open() && p.tool_call_id == call_id),
     )
@@ -975,7 +949,7 @@ fn open_permission_for(s: &State, call_id: &str) -> bool {
 /// Settles the tools a permission request held, when the server sends no `tool.post_call` for
 /// them: a denied call is `Denied`; on a cancel or an expiry it and the calls behind it (still
 /// planned in the same turn) are `Interrupted`. An allowed call runs and reports itself.
-fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
+fn settle_held_tools(s: &mut SessionState, call_id: &str, resolution: &str) {
     let ids: Vec<String> = match resolution {
         "deny" | "reject" => vec![call_id.to_string()],
         "cancelled" | "expired" => s
@@ -1003,7 +977,7 @@ fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
 }
 
 /// Creates or updates `tool:<id>`, owned by `(actor, turn)`; absent patch fields keep their value.
-fn tool_merge(s: &mut State, actor: &str, turn: &str, id: String, p: ToolPatch) {
+fn tool_merge(s: &mut SessionState, actor: &str, turn: &str, id: String, p: ToolPatch) {
     if !s
         .conversation
         .tools_by_turn

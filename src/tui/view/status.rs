@@ -148,3 +148,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     }
     frame.render_widget(Paragraph::new(Line::from(parts)), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::number;
+
+    #[test]
+    fn a_million_is_never_shown_as_a_thousand_k_in_the_status_line() {
+        assert_eq!(number(Some(1_000_000)), "1M");
+        assert_eq!(number(Some(999_950)), "1M");
+        assert_eq!(number(Some(999_900)), "999.9k");
+        assert_eq!(number(Some(200_000)), "200k");
+    }
+}

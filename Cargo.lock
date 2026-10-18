@@ -4184,6 +4184,7 @@ dependencies = [
  "wiremock",
  "withnav-client",
  "withnav-client-api",
+ "withnav-client-state",
 ]
 
 [[package]]
@@ -4211,6 +4212,17 @@ dependencies = [
  "thiserror",
  "time",
  "ulid",
+]
+
+[[package]]
+name = "withnav-client-state"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ulid",
+ "withnav-client-api",
 ]
 
 [[package]]

@@ -368,6 +368,4 @@ pub enum Effect {
         revision: u64,
     },
 }
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("protocol error: {0}")]
-pub struct ProtocolError(pub String);
+pub use withnav_client_state::ProtocolError;

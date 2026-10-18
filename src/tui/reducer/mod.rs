@@ -17,19 +17,21 @@
 //!   the replayed envelopes carry the current generation and must be applied.
 //! - `Effect::SendAt { revision }` must be echoed in `ClientEvent::Submitted { revision }`.
 mod actions;
-mod command;
-mod envelope;
-mod text;
 
 pub use actions::{handle_action, occupied, short_id, show_variants, switch_blocked};
-pub use command::{outcome_text, tokens};
-pub use text::strip_controls;
+pub use withnav_client_state::{outcome_text, strip_controls, tokens};
+
+use withnav_client_state::{
+    EnvelopeContext, apply_envelope, apply_selection, block, clear_answered, keep_bypass,
+    keep_newer_context, keep_newer_mcp, model_answered, restore_context, set_variant_offer,
+    take_context,
+};
 
 use super::{
     protocol::{
         AnswerError, ClientEvent, Effect, Generation, ProtocolError, SessionMetadata, SubmitRequest,
     },
-    state::{Activity, Block, BlockKind, ConnectionStatus, State},
+    state::{Activity, BlockKind, ConnectionStatus, State},
 };
 
 /// The generation an event is tagged with: the tab it belongs to.
@@ -71,20 +73,6 @@ pub fn generation(e: &ClientEvent) -> &Generation {
     }
 }
 
-fn keep_bypass(s: &mut State, enabled: bool, seq: u64) {
-    if seq >= s.bypass_seq {
-        s.bypass = enabled;
-        s.bypass_seq = seq;
-    }
-}
-
-pub(crate) fn block(id: impl Into<String>, kind: BlockKind) -> Block {
-    Block {
-        id: id.into(),
-        kind,
-    }
-}
-
 /// Asks for a read of the workspace's git state, unless one is running: then one more is
 /// asked for when it returns, so reads never pile up.
 pub(crate) fn read_git(s: &mut State) -> Option<Effect> {
@@ -94,59 +82,6 @@ pub(crate) fn read_git(s: &mut State) -> Option<Effect> {
     }
     s.git_reading = true;
     Some(Effect::ReadGit)
-}
-
-/// The settled `/model` operations kept, at most.
-const SETTLED_MODEL_OPS: usize = 16;
-
-/// Records that the `/model` operation `id` is settled; ends the switch waiting on it.
-pub(crate) fn settle_model_op(s: &mut State, id: &str) {
-    if !s.settled_model_ops.iter().any(|o| o == id) {
-        s.settled_model_ops.push_back(id.to_string());
-        while s.settled_model_ops.len() > SETTLED_MODEL_OPS {
-            s.settled_model_ops.pop_front();
-        }
-    }
-    if s.model_switch
-        .as_ref()
-        .is_some_and(|m| m.operation_id.as_deref() == Some(id))
-    {
-        s.model_switch = None;
-    }
-}
-
-/// The HTTP answer to this client's `/model` request `token`: it names the operation the switch
-/// waits on. An acceptance for after the turn waits for that operation to settle on the stream,
-/// unless it already did; anything else is settled now. The answer to an older request, replaced
-/// since, changes nothing.
-fn model_answered(s: &mut State, token: u64, response: &crate::tui::protocol::CommandResponse) {
-    let id = response.operation_id.clone();
-    let deferred = response.ok
-        && response
-            .data
-            .as_ref()
-            .is_some_and(|d| d["accepted"].as_bool() == Some(true) && d["applies"] == "after_turn");
-    let settled = s.settled_model_ops.contains(&id);
-    let Some(switch) = s
-        .model_switch
-        .as_mut()
-        .filter(|m| m.token == token && m.operation_id.is_none())
-    else {
-        return;
-    };
-    if deferred && !settled {
-        switch.operation_id = Some(id);
-        switch.deferred = true;
-    } else {
-        s.model_switch = None;
-    }
-}
-
-/// Forgets that an answer was sent for `request_id`, if it was the one.
-pub(crate) fn clear_answered(s: &mut State, request_id: &str) {
-    if s.answered_permission.as_deref() == Some(request_id) {
-        s.answered_permission = None;
-    }
 }
 
 /// Appends a reducer-made block with a unique, stable id (`local:<n>`).
@@ -198,42 +133,6 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.generation = generation;
 }
 
-/// Keeps `snapshot` unless the one held is newer: a higher revision of the same service
-/// incarnation. A snapshot of another incarnation (the server restarted) always replaces it.
-/// The read at connection and the live event can arrive in either order; neither goes back.
-/// Server text is drawn on the terminal: control characters are removed first.
-pub(crate) fn keep_newer_mcp(s: &mut State, mut snapshot: crate::bus::event::McpStatus) {
-    let older = s.mcp.as_ref().is_some_and(|held| {
-        held.incarnation == snapshot.incarnation && held.revision > snapshot.revision
-    });
-    if older {
-        return;
-    }
-    for server in &mut snapshot.servers {
-        server.server_id = strip_controls(&server.server_id);
-        server.state = strip_controls(&server.state);
-        server.error = server.error.as_deref().map(strip_controls);
-        server.stderr_tail = strip_controls(&server.stderr_tail);
-        for skipped in &mut server.skipped_tools {
-            *skipped = strip_controls(skipped);
-        }
-    }
-    s.mcp = Some(snapshot);
-}
-
-/// Keeps what a `/variant` answer says the conversation offers.
-pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
-    if let Some(offered) = data["offered"].as_array() {
-        s.variant_offer = Some(
-            offered
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(text::strip_controls)
-                .collect(),
-        );
-    }
-}
-
 /// Refreshes the display name and context window from the catalog for the selected model_id, for a
 /// tab whose conversation has not reported its selection yet. Once a `model.changed` committed it,
 /// the server's identity and window stay: the catalog only fills the picker.
@@ -245,38 +144,6 @@ pub(crate) fn refresh_model(s: &mut State) {
         ..
     } = s;
     refresh_tab_model(catalog, &mut tabs[*active]);
-}
-
-pub(super) fn apply_selection(
-    s: &mut State,
-    selection: super::protocol::ModelIdentity,
-    seq: u64,
-    window: Option<u64>,
-) {
-    if s.model_seq.is_some_and(|held| seq < held) {
-        return;
-    }
-    let agent = strip_controls(&selection.agent);
-    let model = strip_controls(&selection.selection.model);
-    let committed_window = (s.selected_model_id.as_deref() == Some(model.as_str()))
-        .then_some(s.context_window)
-        .flatten();
-    s.agent = Some(agent);
-    s.selected_model_id = Some(model.clone());
-    s.selected_model_name = Some(model.clone());
-    s.variant = selection.selection.variant.as_deref().map(strip_controls);
-    s.model_source = strip_controls(&selection.selection.source);
-    s.variant_source = strip_controls(&selection.selection.variant_source);
-    s.context_window = window.or(committed_window).or_else(|| {
-        s.catalog
-            .iter()
-            .find(|entry| entry.name == model)
-            .and_then(|entry| entry.context_window)
-    });
-    s.model_seq = Some(seq);
-    s.agent_seq = Some(seq);
-    s.variant_seq = Some(seq);
-    s.effective = Some(selection);
 }
 
 fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::state::Tab) {
@@ -458,7 +325,31 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 project_child(s, &id, &envelope);
             }
-            envelope::apply_envelope(s, envelope)?;
+            let own_session = s
+                .session
+                .as_ref()
+                .map(|m| m.session_id.clone())
+                .or(s.resuming.clone());
+            let read_only = s.read_only();
+            let default_agent = s.tabs[s.active].default_agent.clone();
+            let State {
+                tabs,
+                active,
+                mcp,
+                catalog,
+                ..
+            } = s;
+            apply_envelope(
+                &mut tabs[*active].projection,
+                envelope,
+                EnvelopeContext {
+                    own_session: own_session.as_deref(),
+                    read_only,
+                    default_agent: default_agent.as_deref(),
+                    catalog,
+                    mcp,
+                },
+            )?;
             if selection_changed
                 && let Some(id) = s
                     .session
@@ -511,7 +402,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             // Keeps catalog, model, session list, pending submit, notice and the session itself.
             // The gauge is server state, not derived from the replay (`context.updated` is
             // live-only), so it stays; the reconnect that follows refreshes it.
-            let context = envelope::take_context(s);
+            let context = take_context(s);
             let children = std::mem::take(&mut s.children);
             reset_projection(s);
             s.children = children;
@@ -520,7 +411,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             if let Some(m) = s.model_switch.as_mut() {
                 m.deferred = false;
             }
-            envelope::restore_context(s, context);
+            restore_context(s, context);
             effects.push(Effect::Subscribe {
                 session_id: s
                     .session
@@ -640,7 +531,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         // A failed read keeps what is shown: the next event or reconnection brings it back.
         ClientEvent::Mcp { result, .. } => {
             if let Ok(snapshot) = result {
-                keep_newer_mcp(s, snapshot);
+                keep_newer_mcp(&mut s.mcp, snapshot);
             }
         }
         ClientEvent::PermissionAnswered {
@@ -738,7 +629,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                             .data
                             .as_ref()
                             .and_then(|d| d["variant"].as_str())
-                            .map(text::strip_controls);
+                            .map(strip_controls);
                         effects.push(Effect::ShowVariants { current });
                     }
                 }
@@ -909,10 +800,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 // Only reached for the current generation, so `m` describes this conversation.
                 // A summary read before a change the stream already confirmed is older than it.
+                let agent = m.agent.clone().unwrap_or_else(|| s.default_agent.clone());
                 apply_selection(
-                    s,
+                    &mut s.tabs[s.active].projection,
                     super::protocol::ModelIdentity {
-                        agent: m.agent.clone().unwrap_or_else(|| s.default_agent.clone()),
+                        agent,
                         selection: super::protocol::Selection {
                             model: m.model.clone(),
                             variant: m.variant.clone(),
@@ -922,6 +814,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     },
                     m.current_seq,
                     None,
+                    &s.catalog,
                 );
                 keep_bypass(s, m.bypass, m.bypass_seq);
                 s.session = Some(m);
@@ -940,7 +833,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             if let Ok(snapshot) = result
                 && epoch == s.conversation.context_epoch
             {
-                envelope::keep_newer_context(s, snapshot);
+                keep_newer_context(s, snapshot);
             }
         }
         ClientEvent::Submitted {
@@ -1095,7 +988,12 @@ fn seed_children(s: &mut State) {
             .iter()
             .filter(|e| e.parent_session_id.as_ref() == Some(parent))
         {
-            if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == entry.id) {
+            if let Some(child) = tab
+                .projection
+                .children
+                .iter_mut()
+                .find(|c| c.session_id == entry.id)
+            {
                 if (child.event_seq.is_none()
                     && child.child_seq.is_none()
                     && !child.status.terminal())
@@ -1109,7 +1007,7 @@ fn seed_children(s: &mut State) {
                     );
                 }
             } else {
-                tab.children.push(super::state::ChildAgent {
+                tab.projection.children.push(super::state::ChildAgent {
                     session_id: entry.id.clone(),
                     name: entry.agent.clone().unwrap_or_default(),
                     status: super::state::ChildStatus::from_wire(

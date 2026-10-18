@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::ProviderError;
+use super::error::ProviderError;
 
 #[cfg(windows)]
 mod windows;
@@ -25,11 +25,7 @@ pub struct AuthStore {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
-    if let Some(path) = crate::paths::root_override("WITHNAV_CONFIG_DIR") {
-        return Some(path);
-    }
-    directories::ProjectDirs::from("", "", crate::paths::APP_NAME)
-        .map(|p| p.config_dir().to_path_buf())
+    super::dirs::config_dir()
 }
 
 fn auth_path(config_dir: &Path) -> PathBuf {

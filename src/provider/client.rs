@@ -8,8 +8,8 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::ProviderError;
 use crate::provider::config::{ProviderConfig, Variant};
+use crate::provider::error::ProviderError;
 use crate::provider::openai::{ChatRequest, ClientCache};
 use crate::provider::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
 

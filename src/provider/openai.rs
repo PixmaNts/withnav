@@ -3,9 +3,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::ProviderError;
 use crate::provider::Usage;
 use crate::provider::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
+use crate::provider::error::ProviderError;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {

@@ -4,17 +4,17 @@ use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::{ProviderError, SseError};
+use crate::provider::error::{ProviderError, SseError};
 use crate::provider::openai::ChatChunk;
 use crate::provider::sse::SseEventStream;
 
-pub mod assignments;
 pub mod auth;
 pub mod catalog;
 pub mod client;
 pub mod config;
+pub mod dirs;
+pub mod error;
 pub mod fim;
-pub mod layers;
 pub mod model_name;
 pub mod openai;
 pub mod sse;
@@ -22,7 +22,13 @@ pub mod systemone;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use crate::{assignments, layers};
 pub use withnav_client_api::provider::{AssistantMessage, StreamDelta, ToolCall, Usage};
+
+/// The word that clears the variant in text interfaces (`/variant off`,
+/// `nav run --variant off`). Config loading refuses a variant of that name,
+/// so it never collides with an offered one.
+pub const CLEAR_WORD: &str = "off";
 
 const DONE_SENTINEL: &str = "[DONE]";
 

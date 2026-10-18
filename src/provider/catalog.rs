@@ -1,12 +1,10 @@
 //! Lazy, metadata-only provider model catalog with a durable stale fallback.
-use crate::{
+use crate::provider::{
+    client::ModelClient,
+    config::{ApiKind, ResolvedModel, UnknownVariant, Variant, Variants, effective_variants},
+    dirs,
     error::ProviderError,
-    paths,
-    provider::{
-        client::ModelClient,
-        config::{ApiKind, ResolvedModel, UnknownVariant, Variant, Variants, effective_variants},
-        openai::ClientCache,
-    },
+    openai::ClientCache,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -181,7 +179,7 @@ impl ModelCatalog {
         }
     }
     pub fn system() -> Self {
-        Self::new(paths::data_dir())
+        Self::new(dirs::data_dir())
     }
     /// Read existing metadata and refresh in memory only; never create cache files.
     pub fn read_only(data_dir: Option<PathBuf>) -> Self {
@@ -563,7 +561,7 @@ fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
     let reported = source.iter().filter_map(|v| v.as_str());
     for tier in reported {
         let plain = !tier.is_empty()
-            && tier != crate::session::CLEAR_WORD
+            && tier != crate::provider::CLEAR_WORD
             && tier.len() <= 32
             && tier
                 .chars()

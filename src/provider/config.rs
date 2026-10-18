@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::{ConfigError, ProviderError};
+use crate::provider::error::{ConfigError, ProviderError};
 
 /// Reject repeated catalog keys before a map can discard either declaration.
 fn deserialize_unique_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
@@ -283,7 +283,7 @@ impl ModelsConfig {
                         "model '{alias}': variant name {name:?} must be 1-64 characters without whitespace"
                     )));
                 }
-                if name == crate::session::CLEAR_WORD {
+                if name == crate::provider::CLEAR_WORD {
                     return Err(ConfigError::Invalid(format!(
                         "model '{alias}': a variant cannot be named '{name}': that word clears the variant"
                     )));

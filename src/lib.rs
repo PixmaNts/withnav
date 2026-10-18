@@ -1,8 +1,10 @@
 pub mod agent;
 pub mod app;
+pub mod assignments;
 pub mod bus;
 pub mod error;
 pub mod flows;
+pub mod layers;
 pub mod mcp;
 pub mod navigator;
 pub mod paths;

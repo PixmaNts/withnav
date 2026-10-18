@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::error::ProviderError;
 use crate::provider::client::ModelClient;
 use crate::provider::config::{ModelConfig, ProviderConfig};
+use crate::provider::error::ProviderError;
 use crate::provider::openai::ClientCache;
 
 /// The instinct's wall-clock budget for one System One call, covering send

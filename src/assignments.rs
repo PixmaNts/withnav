@@ -1,6 +1,6 @@
 //! Pure assignment resolution; callers decide how to display diagnostics and apply fallbacks.
-use super::config::{ApiKind, ModelsConfig, ResolvedModel, effective_variants};
-use super::model_name::ModelName;
+use crate::provider::config::{ApiKind, ModelsConfig, ResolvedModel, effective_variants};
+use crate::provider::model_name::ModelName;
 use crate::settings::{AssignmentVariant, ModelAssignment, Settings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

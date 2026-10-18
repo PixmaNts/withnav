@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::error::ProviderError;
 use crate::provider::Usage;
 use crate::provider::client::ModelClient;
 use crate::provider::config::{ProviderConfig, ResolvedModel};
+use crate::provider::error::ProviderError;
 use crate::provider::openai::ClientCache;
 
 /// Wall-clock deadline of one reflex call, covering send and body. Applied

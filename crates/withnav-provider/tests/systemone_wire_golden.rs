@@ -1,5 +1,5 @@
 //! Wire-golden lock for the System One endpoint: request body and auth
-//! against a scripted mock (same technique as `tests/phase1_wire_golden.rs`),
+//! against a scripted mock (same technique as the root crate's `tests/phase1_wire_golden.rs`),
 //! with the answer shape from
 //! `tests/fixtures/navigator/systemone_multi.json`.
 
@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use withnav::error::ProviderError;
-use withnav::provider::config::{ApiKind, ModelConfig, ProviderConfig};
-use withnav::provider::openai::ClientCache;
-use withnav::provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
+use withnav_provider::config::{ApiKind, ModelConfig, ProviderConfig};
+use withnav_provider::error::ProviderError;
+use withnav_provider::openai::ClientCache;
+use withnav_provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
 
-const FIXTURE_RESPONSE: &str = include_str!("fixtures/navigator/systemone_multi.json");
+const FIXTURE_RESPONSE: &str =
+    include_str!("../../../tests/fixtures/navigator/systemone_multi.json");
 
 fn provider_at(base: String) -> ProviderConfig {
     ProviderConfig {
@@ -59,7 +60,7 @@ fn client_for(
     cache: std::sync::Arc<ClientCache>,
 ) -> (tempfile::TempDir, SystemOneClient) {
     let tmp = tempfile::tempdir().unwrap();
-    withnav::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
+    withnav_provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
     let client = SystemOneClient::new(
         "omniroute",
         &provider_at(server.uri().to_string() + "/v1"),

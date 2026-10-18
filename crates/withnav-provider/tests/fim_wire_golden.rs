@@ -9,13 +9,13 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use withnav::error::ProviderError;
-use withnav::provider::auth;
-use withnav::provider::config::{
+use withnav_provider::auth;
+use withnav_provider::config::{
     ApiKind, ModelConfig, ModelsConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
-use withnav::provider::fim::InceptionFim;
-use withnav::provider::openai::ClientCache;
+use withnav_provider::error::ProviderError;
+use withnav_provider::fim::InceptionFim;
+use withnav_provider::openai::ClientCache;
 
 fn resolved(base_url: String) -> ResolvedModel {
     ResolvedModel {
@@ -217,7 +217,7 @@ async fn cancelled_call_stops_waiting() {
 /// engine expects (inception provider, mercury-edit-2, fim api kind).
 #[test]
 fn repo_models_json_resolves_the_reflex_alias() {
-    let cfg = ModelsConfig::parse(include_str!("../models.example.json")).unwrap();
+    let cfg = ModelsConfig::parse(include_str!("../../../models.example.json")).unwrap();
     let r = cfg.resolve("inception/mercury-edit-2").unwrap();
     assert_eq!(r.provider_name, "inception");
     assert_eq!(r.model.model, "mercury-edit-2");

@@ -1,5 +1,5 @@
 // How a typed line is sent, with the server's rule (same as the terminal
-// client, `src/tui/commands.rs::route`): only a line whose very first
+// client, `crates/withnav-tui/src/commands.rs::route`): only a line whose very first
 // character is `/` is a command, `//text` sends the literal `/text`, the name
 // runs to the first whitespace and the rest, trimmed, is the arguments.
 // `/skill <name> [request]` is a message carrying a skill selection.

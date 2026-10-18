@@ -331,16 +331,6 @@ fn a_new_usage_alone_makes_a_new_snapshot() {
 }
 
 #[test]
-fn tokens_are_shown_in_thousands_with_separators() {
-    assert_eq!(tokens_k(0), "0");
-    assert_eq!(tokens_k(999), "999");
-    assert_eq!(tokens_k(1_000), "1k");
-    assert_eq!(tokens_k(41_600), "42k");
-    assert_eq!(tokens_k(1_000_000), "1,000k");
-    assert_eq!(tokens_k(12_345_678), "12,346k");
-}
-
-#[test]
 fn the_text_view_shows_the_gauge_and_every_category() {
     let history = vec![user(&"x".repeat(168_000))];
     let b = estimate(Some("role"), Some("rules"), None, &history, &tool_defs());

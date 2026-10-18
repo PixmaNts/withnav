@@ -1,0 +1,34 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ withnav  ~/dev/project       ▌◎ build  cognition · assigned · 12.4k / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  ◎ Nav · idle      │ │ ▸ Captain                                                                  
+                     │ │  Explain the failure, then fix it.                                         
+                     │ │                                                                            
+                     │ │ ◎ Nav                                                                      
+                     │ │ ▸ Reasoning                                                                
+                     │ │  The parser treats an empty argument as a missing value.                   
+            ┌───────────────────────────────── Theme ──────────────────────────────────┐            
+            │ ❯ filter…                                                                │            
+            │▌  Ayu Dark      ayu-dark     Aa  ■■■■■■                                  │            
+            │   Ayu Light     ayu-light    Aa  ■■■■■■                                  │            
+            │   Nord Dark     nord-dark    Aa  ■■■■■■                                  │            
+            │   Nord Light    nord-light   Aa  ■■■■■■                                  │            
+            │ ● Tide Dark     tide-dark    Aa  ■■■■■■                                  │            
+            │   Tide Light    tide-light   Aa  ■■■■■■                                  │            
+            │   Moss Dark     moss-dark    Aa  ■■■■■■                                  │            
+            │   Moss Light    moss-light   Aa  ■■■■■■                                  │            
+            │                                                                          │            
+            │ ↑↓ preview  enter keep  esc put back                                     │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ ready                                                      session 31.2k tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

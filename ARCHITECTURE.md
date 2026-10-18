@@ -24,12 +24,42 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
    ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
+
+nav tui   (the terminal client; an HTTP + SSE client of a session server, embedded or `--url`)
+   └─ withnav-tui → withnav-client (HTTP + SSE) → withnav-client-api (wire contract)
+                 └→ withnav-client-state (events → conversation state)
 ```
 
 The single binary, `nav` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
 `lsp` (the editor server above, or offline `lsp replay`), `run` (one task in a terminal),
 `serve` (the session server alone), `auth`, `tui` (the terminal
-chat client, below) and `web` (the browser chat client, below). `nav run` exits 3 when permission is required and 130 when interrupted.
+chat client, a separate crate: see Workspace crates) and `web` (the browser chat client, below). `nav run` exits 3 when permission is required and 130 when interrupted.
+
+## Workspace crates
+
+The root package `withnav` is the server, the engine and the `nav` binary. The terminal client is
+split into four crates under `crates/` so that a change to it rebuilds and tests without the
+server (`cargo test -p withnav-tui` does not compile `withnav`).
+
+| Crate | Owns | Depends on (normal dependencies) |
+| --- | --- | --- |
+| `withnav-client-api` | the wire contract: the event envelope and every payload (`event.rs`), the HTTP request and response bodies (`protocol.rs`), the settings bodies (`settings.rs`), and the value types they refer to (`provider.rs`, `tools.rs`, `permissions.rs`, `command.rs`). Data only. | `serde`, `serde_json`, `ulid`, `time`, `thiserror`; no tokio, no reqwest, no ratatui |
+| `withnav-client` | the Rust HTTP client of the session server (`client.rs`) and the SSE subscription with reconnect and `Last-Event-ID` resume (`stream.rs`, which yields its own `StreamEvent`) | `withnav-client-api`, `reqwest`, `tokio`, `eventsource-stream` |
+| `withnav-client-state` | what a client keeps of one conversation, rebuilt from the events: blocks, activity, the model selection, child agents, pending requests (`apply_envelope`, `SessionState`); no I/O, no terminal | `withnav-client-api`; no tokio, no reqwest, no ratatui |
+| `withnav-tui` | the ratatui client: input and editor, reducer, views, themes, the settings screen, the runtime loop and the effects | `withnav-client`, `withnav-client-state`, `withnav-client-api`, `ratatui`, `crossterm`; never `withnav` |
+| `withnav` (root) | everything else, and `nav tui` (`src/app/tui.rs`), which starts the embedded server and calls `withnav_tui::run` | all of the above |
+
+Dependencies point one way: `withnav` → `withnav-tui` → `withnav-client`, `withnav-client-state` →
+`withnav-client-api`. A crate never imports one that depends on it, and `withnav-tui` never imports the
+root (`cargo tree -p withnav-tui -e normal` shows no `withnav v`). The server and the root keep their own
+copies of the route bodies; the root re-exports the moved wire types at their old paths
+(`bus::event`, `provider`, `tools::ToolStatus`, `agent::permissions`) so server code is unchanged.
+
+What the terminal client needs from the machine goes through the `TuiHost` trait in `TuiOptions`,
+implemented by `Host` in `src/app/tui.rs`: the saved theme and favourite models (`settings::load`,
+`save_tui_theme`, `save_tui_favorite_models`), the workspace's git state (`workspace::git::read`,
+converted to the TUI's own `GitStatus` and `Change`) and the home folder (`paths::home_dir`). The
+settings file format and its atomic save stay in `settings.rs`; the TUI never opens the file.
 
 ## Modules
 
@@ -48,7 +78,7 @@ Dependencies point down this list. A module never imports one above it.
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
-| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel and by `GET /v1/workspaces` | sessions, HTTP |
+| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the Captain perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -68,10 +98,11 @@ Dependencies point down this list. A module never imports one above it.
 | `models.rs` | adapters from the provider clients to those seams |
 | `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
 
-### Inside `tui/`
+### Inside `crates/withnav-tui/`
 
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
-imports the serialized bus types and no runtime internals. Several conversations can be open at
+imports the wire types of `withnav-client-api` and no server internals. Paths below are under
+`crates/withnav-tui/src/` unless a crate is named. Several conversations can be open at
 once; each is shown in the left sidebar and streams in the background.
 
 Subagents are real, read-only child sessions nested under their parent. Parent events reconstruct
@@ -89,22 +120,24 @@ are read without depending on a newer server event enum. Missing data is not gue
 
 | File | Responsibility |
 | --- | --- |
-| `mod.rs` | `TuiOptions`, `TuiError`, `run` |
+| `lib.rs` | `TuiOptions`, `TuiHost` (settings, git, home folder: implemented by the root), `TuiError`, `run` |
+| `git.rs` | `GitStatus`, `Change` and `MAX_FILES`: the TUI's own shape of the workspace's git state, converted by the host |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
 | `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar and right column shown); data only |
-| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
+| `withnav-client/src/client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `config.rs` | Settings HTTP wire types and data-only editing state: six ordered sections, rows, summaries, filtering, staged changes, sequential revision-carrying writes, stale reload and validation errors. `State.config` owns it; `UiState.screen == Screen::Config` routes to Settings instead of the session transcript. `UiState.settings_target` gives the shared model picker its settings key, API filter and title. No server/settings internals or rendering. |
-| `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
+| `withnav-client/src/stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
-| `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
+| `withnav-client-state/src/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
+| `withnav-client-state/src/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
 | `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, agent/model/variant picks: live `/model <gateway/id>` changes the current agent's model (server applies target default variant), refused with a reason while an interaction waits; empty tabs choose an agent and optional overrides for creation |
-| `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
+| `withnav-client-state/src/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s; the open permission request's `y`/`a`/`n` and deny message; the second enter before text that would cancel it |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map; `palette`, the client's and the server's commands in one list; `route`, the server's prefix rule (a slash in the first column, `//text` is the literal `/text`) with the client's own commands kept local and their arguments checked; `variant_choices`, the rows of the variant list |
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
-| `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
+| `runtime/tests.rs`, `test_host.rs` | executor and loop tests with no terminal and a dead server; a host that keeps the theme and favourites in a `config.json` so saves can be observed |
+| `tests/` | reducer fixtures (`fixtures/tui/*.jsonl`), render snapshots (`snapshots/`), wire-shape and selection tests: they build state and render, no server. Tests that start a real server stay in the root `tests/` (`tui_e2e.rs`, `tui_transport.rs`, `tui_bypass.rs`, `tui_config.rs`, `tui_cli.rs`) |
 | `terminal.rs` | raw mode, alternate screen, bracketed paste and mouse capture, restored on exit and on panic |
 | `theme.rs` | the eight themes (Tide Dark by default) (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
@@ -117,7 +150,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
-| `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
+| `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten` (the home folder comes from `State.home`, set from the host), shared with the header |
 | `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. `ctrl+f` marks a favorite; favorites (`tui.favorite_models` in `config.json`) are listed first in an always-open section that is also kept in each model's group. |
 
 ### The browser client (`nav web`)
@@ -508,7 +541,7 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `<workspace>/.withnav/intent.md` | intent, plan, decisions | the cognition and the Captain |
 | `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
-| `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
+| `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `provider/catalog.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
@@ -707,8 +740,8 @@ the later 0.6 scope, not this contract.
   `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
-- A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `tui`.
-- `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.
+- A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `withnav-tui`.
+- `crates/withnav-tui` is a server client: HTTP + SSE only, through `withnav-client`. It shares the wire types of `withnav-client-api` and never depends on the root package: anything it needs from the machine is a method of `TuiHost`. A type that must be on the wire goes in `withnav-client-api`; per-conversation state derived from events goes in `withnav-client-state`.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.

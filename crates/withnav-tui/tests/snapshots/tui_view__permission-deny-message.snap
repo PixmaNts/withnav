@@ -1,0 +1,34 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ withnav  ~/dev/project       ▌◎ build  cognition · assigned · 12.4k / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  ◎ Nav · waiting   │ │ ▸ Captain                                                                  
+                     │ │  Explain the failure, then fix it.                                         
+                     │ │                                                                            
+                     │ │ ◎ Nav                                                                      
+                     │ │ ▸ Reasoning                                                                
+                     │ │  The parser treats an empty argument as a missing value.                   
+                     │ │                                                                            
+                     │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
+                     │ │                                                                            
+                     │ │ ◎ Nav                                                                      
+                     │ │  I found the failing test. The empty argument is discarded.                
+                     │ │                                                                            
+                     │ │ PERMISSION · build wants to run bash in /ws                                
+                     │ │  it changes files                                                          
+                     │ │  $ rm -rf target                                                           
+                     │ │  reject with a message: use cargo clean▏                                   
+                     │ │  enter send · esc reject without a message                                 
+                     │ │                                                                            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ permission needed                                          session 31.2k tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter reject with this message · esc reject without one

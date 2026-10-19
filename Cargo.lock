@@ -4211,6 +4211,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror",
  "tokio",
  "tokio-util",

@@ -45,10 +45,10 @@ server (`cargo test -p withnav-tui` does not compile `withnav`); the model acces
 | Crate | Owns | Depends on (normal dependencies) |
 | --- | --- | --- |
 | `withnav-client-api` | the wire contract: the event envelope and every payload (`event.rs`), the HTTP request and response bodies (`protocol.rs`), the settings bodies (`settings.rs`), and the value types they refer to (`provider.rs`, `tools.rs`, `permissions.rs`, `command.rs`). Data only. | `serde`, `serde_json`, `ulid`, `time`, `thiserror`; no tokio, no reqwest, no ratatui |
-| `withnav-client` | the Rust HTTP client of the session server (`client.rs`) and the SSE subscription with reconnect and `Last-Event-ID` resume (`stream.rs`, which yields its own `StreamEvent`) | `withnav-client-api`, `reqwest`, `tokio`, `eventsource-stream` |
+| `withnav-client` | the Rust HTTP client of the session server (`client.rs`) and the SSE subscription with reconnect and `Last-Event-ID` resume (`stream.rs`, which yields its own `StreamEvent`) | `withnav-client-api`, `reqwest`, `tokio`, `sse-stream` |
 | `withnav-client-state` | what a client keeps of one conversation, rebuilt from the events: blocks, activity, the model selection, child agents, pending requests (`apply_envelope`, `SessionState`); no I/O, no terminal | `withnav-client-api`; no tokio, no reqwest, no ratatui |
 | `withnav-tui` | the ratatui client: input and editor, reducer, views, themes, the settings screen, the runtime loop and the effects | `withnav-client`, `withnav-client-state`, `withnav-client-api`, `ratatui`, `crossterm`; never `withnav` |
-| `withnav-provider` | the model access layer: the `models.json` catalogue and its model-list cache (`config.rs`, `catalog.rs`), canonical identities (`model_name.rs`), keys (`auth.rs`, with `auth/windows.rs` for the credential-file DACL), the config and data directories and their `WITHNAV_CONFIG_DIR` / `WITHNAV_DATA_DIR` overrides (`dirs.rs`), one `ModelClient` per endpoint (`client.rs`, `openai.rs`), the chat SSE decoder (`sse.rs`, `lib.rs`), the FIM and System One wire clients (`fim.rs`, `systemone.rs`), the provider errors (`error.rs`). The `test-support` feature exposes `test_support` (scripted SSE bodies) to other crates' tests. | `withnav-client-api`, `instinct-flow`, `reqwest`, `tokio`, `serde_json`; no `withnav`, no axum, no rusqlite, no ratatui |
+| `withnav-provider` | the model access layer: the `models.json` catalogue and its model-list cache (`config.rs`, `catalog.rs`), canonical identities (`model_name.rs`), keys (`auth.rs`, with `auth/windows.rs` for the credential-file DACL), the config and data directories and their `WITHNAV_CONFIG_DIR` / `WITHNAV_DATA_DIR` overrides (`dirs.rs`), one `ModelClient` per endpoint (`client.rs`, `openai.rs`), the chat SSE adapter over `sse-stream` (`sse.rs`: delivers an unterminated last event, fails an event past `MAX_FRAME_BYTES`, 4 MiB) and the chat-completion accumulator (`lib.rs`), the FIM and System One wire clients (`fim.rs`, `systemone.rs`), the provider errors (`error.rs`). The `test-support` feature exposes `test_support` (scripted SSE bodies) to other crates' tests. | `withnav-client-api`, `instinct-flow`, `reqwest`, `sse-stream`, `tokio`, `serde_json`; no `withnav`, no axum, no rusqlite, no ratatui |
 | `withnav` (root) | everything else, and `nav tui` (`src/app/tui.rs`), which starts the embedded server and calls `withnav_tui::run` | all of the above |
 
 Dependencies point one way: `withnav` → `withnav-tui` → `withnav-client`, `withnav-client-state` →
@@ -628,6 +628,16 @@ sources rather than deriving assignments themselves. Configuration editors and f
 the later 0.6 scope, not this contract.
 
 ## Where new code goes
+
+- Images in conversations: the bytes live in the `attachments` table of `withnav.db`
+  (`session/attachments.rs`: magic-byte and header check, size and side limits, per-session quota,
+  `resolve_command_images` for admission, `SessionLoader` for requests), never in the transcript or
+  events, which carry `ImageRef` (`withnav-client-api`'s `attachment.rs`) only. Upload and download
+  routes live in `server/routes.rs`; admission fills the metadata by `(session, id)` in
+  `Service::send` before anything is sequenced. Per request, `agent/images.rs` plans which images are
+  sent and which become placeholders (model without `images`, request budget), the session's loader
+  fetches the bytes into the request-only `ChatRequest.images`, and `withnav-provider`'s `openai.rs`
+  serializes them as `image_url` parts. The transcript is never changed by that projection.
 
 - MCP configuration and environment isolation belong in `mcp/config.rs`; transport supervision
   and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result

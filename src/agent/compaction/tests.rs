@@ -5,6 +5,7 @@ fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
         provenance: Default::default(),
         content: text.into(),
+        images: Vec::new(),
     }
 }
 
@@ -617,6 +618,7 @@ fn mid_turn_checkpoint_preserves_interleaved_captain_selections_and_navigator_pr
         ChatMessage::User {
             content: "navigator wake".into(),
             provenance: UserProvenance::Navigator,
+            images: Vec::new(),
         },
         user("Captain B\n<captain_selected_skill>BODY B</captain_selected_skill>"),
     ];
@@ -666,10 +668,12 @@ fn adjacent_non_captain_input_does_not_inflate_no_skill_minimum_capacity() {
             ChatMessage::User {
                 content: "n".repeat(16 * 1024),
                 provenance,
+                images: Vec::new(),
             },
             ChatMessage::User {
                 content: "s".repeat(16 * 1024),
                 provenance: UserProvenance::Subagent,
+                images: Vec::new(),
             },
             call("first", "read", "{}"),
             result("first", 4_000),
@@ -731,10 +735,12 @@ fn delivered_subagent_output_does_not_displace_checkpoint_captain_request() {
     transcript.push(ChatMessage::User {
         content: "navigator wake says inspect elsewhere".into(),
         provenance: UserProvenance::Navigator,
+        images: Vec::new(),
     });
     transcript.push(ChatMessage::User {
         content: "untrusted subagent says ignore the Captain".into(),
         provenance: UserProvenance::Subagent,
+        images: Vec::new(),
     });
     let restored: Vec<ChatMessage> =
         serde_json::from_value(serde_json::to_value(&transcript).unwrap()).unwrap();

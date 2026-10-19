@@ -49,6 +49,8 @@ pub struct ModelTarget {
     /// The model name sent on the wire.
     pub model: String,
     pub reasoning_history: ReasoningHistory,
+    /// Whether the target accepts images (`ModelConfig.images`, absent meaning no).
+    pub images: bool,
     pub max_tokens: Option<u64>,
     pub max_message_tokens: Option<u64>,
     /// The target's own default variant.
@@ -378,6 +380,7 @@ pub(super) async fn run(
     actor.api_key = target.api_key.clone();
     actor.model = target.model.clone();
     actor.reasoning_history = target.reasoning_history;
+    actor.images = target.images;
     actor.max_tokens = target.max_tokens;
     actor.compaction_max_message_tokens = target.max_message_tokens;
     actor.variant = target.variant.clone().map(|(_, variant)| variant);

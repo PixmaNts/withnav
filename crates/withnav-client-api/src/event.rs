@@ -292,6 +292,10 @@ pub struct MessageReceived {
     pub target: String,
     pub mode: String,
     pub content: String,
+    /// The images the Captain attached, as references (metadata only, never bytes). Omitted
+    /// when there are none, so every event without images is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachment::ImageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1034,6 +1038,7 @@ mod tests {
                     target: ROOT_ACTOR_ID.into(),
                     mode: "next-turn".into(),
                     content: "héllo".into(),
+                    images: vec![],
                 })
                 .unwrap(),
             ),

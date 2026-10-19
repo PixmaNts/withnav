@@ -28,6 +28,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n} {}", "word ".repeat(1200))),
@@ -276,6 +277,7 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some("word ".repeat(6000)),

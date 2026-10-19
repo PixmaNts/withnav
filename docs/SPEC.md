@@ -1791,6 +1791,7 @@ Model fields:
 - `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins over a discovered one. It does not always avoid the network: an alias on a provider with `catalog_format` and no `variants` of its own still fetches the model list, to generate its variants from the effort tiers. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`nav run` prints it and exits 1).
 - `max_input_tokens`, `max_output_tokens`: optional limits. They feed the context budget (section 24).
 - `supports_tools`, `supports_parallel_tool_calls`: capability flags. Tool calls are executed serially.
+- `images`: whether the model accepts image input. Absent means `false`; the model then gets a text placeholder in place of each image.
 - `default_variant`: the variant a new conversation starts with.
 - `variants`: named request overrides, each a JSON object merged shallowly into the chat request (`{"high": {"reasoning_effort": "high"}}`). Omitted: generated from the provider's effort tiers when `catalog_format` is `omniroute`. `{}`: none. A variant may not set a key the request owns (`model`, `messages`, `tools`, `stream`, `max_tokens`, `temperature` and a few more), and may not be named `off`, the word that clears the variant.
 - `reasoning_history`: `preserve` (default) or `omit`, whether earlier reasoning is sent back.

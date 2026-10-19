@@ -1322,6 +1322,7 @@ impl Script {
                 target: ROOT_ACTOR_ID.into(),
                 mode: "next-turn".into(),
                 content: text.into(),
+                images: vec![],
             },
         )
     }
@@ -5697,4 +5698,213 @@ fn a_stream_connection_reads_the_mcp_status_again_and_an_mcp_event_marks_no_tab_
     }
     assert!(!s.tabs[background].unread);
     assert_eq!(s.mcp.as_ref().unwrap().servers[0].state, "ready");
+}
+
+fn attachment(name: &str, size: u64) -> PendingAttachment {
+    PendingAttachment {
+        path: format!("/ws/{name}").into(),
+        name: name.into(),
+        size,
+    }
+}
+
+fn checked_now(s: &mut State, result: Result<PendingAttachment, String>) {
+    let ev = ClientEvent::AttachmentChecked {
+        generation: s.generation.clone(),
+        result,
+    };
+    update(s, ev).unwrap();
+}
+
+fn notice_texts(s: &State) -> Vec<String> {
+    s.conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Notice(text) | BlockKind::Error(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn accepted() -> Result<SubmitResponse, String> {
+    Ok(SubmitResponse {
+        command_id: "c".into(),
+        accepted: true,
+        actor_state: "idle".into(),
+        notice: None,
+    })
+}
+
+#[test]
+fn attach_asks_the_runtime_to_look_at_the_file_and_a_good_one_becomes_a_chip() {
+    use withnav_tui::commands::{Routed, route};
+    let mut s = st();
+    let Routed::Local(action) = route("/attach shots/bug.png", Mode::NextTurn) else {
+        panic!("/attach is the client's own command")
+    };
+    assert_eq!(action, Action::Attach("shots/bug.png".into()));
+    let fx = handle_action(&mut s, &mut ui(), action);
+    assert_eq!(
+        fx,
+        vec![Effect::CheckAttachment {
+            path: "shots/bug.png".into()
+        }]
+    );
+    checked_now(&mut s, Ok(attachment("bug.png", 120_000)));
+    assert_eq!(s.pending_attachments, vec![attachment("bug.png", 120_000)]);
+    assert!(
+        notice_texts(&s)
+            .iter()
+            .any(|n| n.contains("[image bug.png, 120 KB]"))
+    );
+    // A refused file adds nothing and says why.
+    checked_now(&mut s, Err("4.2 MB is over the 3.9 MB limit".into()));
+    assert_eq!(s.pending_attachments.len(), 1);
+    assert!(
+        notice_texts(&s)
+            .last()
+            .unwrap()
+            .contains("over the 3.9 MB limit")
+    );
+}
+
+#[test]
+fn bare_attach_explains_itself_and_clear_drops_the_chips() {
+    use withnav_tui::commands::{Routed, route};
+    assert!(matches!(
+        route("/attach", Mode::NextTurn),
+        Routed::Refused(why) if why.contains("/attach <path")
+    ));
+    assert_eq!(
+        route("/attach clear", Mode::NextTurn),
+        Routed::Local(Action::ClearAttachments)
+    );
+    let mut s = st();
+    s.pending_attachments = vec![attachment("a.png", 10), attachment("b.png", 20)];
+    handle_action(&mut s, &mut ui(), Action::ClearAttachments);
+    assert!(s.pending_attachments.is_empty());
+}
+
+#[test]
+fn a_message_with_images_uploads_after_the_conversation_exists_and_keeps_the_chips_until_acknowledged()
+ {
+    let mut s = st();
+    s.pending_attachments = vec![attachment("a.png", 10), attachment("b.png", 20)];
+    // No conversation yet: it is created first, nothing is uploaded.
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "what is wrong here?".into(),
+            revision: 3,
+        },
+    );
+    assert!(matches!(fx[0], Effect::Create(_)));
+    let fx = created_now(&mut s, "S1").unwrap();
+    let Effect::SendWithAttachments {
+        request,
+        revision,
+        attachments,
+    } = fx.last().unwrap().clone()
+    else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(revision, 3);
+    assert_eq!(attachments, s.pending_attachments);
+    assert_eq!(
+        request.content,
+        vec![withnav_client_api::command::ContentBlock::Text {
+            text: "what is wrong here?".into()
+        }]
+    );
+    // In flight: the chips are still there and another send is refused.
+    assert_eq!(s.pending_attachments.len(), 2);
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "again".into(),
+            revision: 4,
+        },
+    );
+    assert!(fx.is_empty());
+    // Acknowledged: the chips go and the transcript echoes them.
+    submitted_now(&mut s, 3, accepted()).unwrap();
+    assert!(s.pending_attachments.is_empty());
+    assert!(
+        notice_texts(&s)
+            .iter()
+            .any(|n| n.contains("[image a.png, 10 B] [image b.png, 20 B]"))
+    );
+}
+
+#[test]
+fn a_failed_send_keeps_the_images_for_another_try() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "x".into(),
+            revision: 1,
+        },
+    );
+    assert!(matches!(&fx[0], Effect::SendWithAttachments { .. }));
+    submitted_now(&mut s, 1, Err("HTTP 400: unknown attachment".into())).unwrap();
+    assert_eq!(s.pending_attachments, vec![attachment("a.png", 10)]);
+    assert!(
+        notice_texts(&s)
+            .last()
+            .unwrap()
+            .contains("unknown attachment")
+    );
+    // Retry is allowed again and carries the same image.
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "x".into(),
+            revision: 1,
+        },
+    );
+    assert!(
+        matches!(&fx[0], Effect::SendWithAttachments { attachments, .. } if attachments.len() == 1)
+    );
+}
+
+#[test]
+fn a_message_of_images_only_carries_no_empty_text_block() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: String::new(),
+            revision: 1,
+        },
+    );
+    let Effect::SendWithAttachments { request, .. } = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert!(request.content.is_empty());
+}
+
+#[test]
+fn enter_on_an_empty_message_sends_when_images_wait() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use withnav_tui::input::{Editor, route_key};
+    let mut s = st();
+    let mut editor = Editor::new();
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(route_key(enter, &s, &mut ui(), &mut editor), None);
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    assert!(matches!(
+        route_key(enter, &s, &mut ui(), &mut editor),
+        Some(Action::SubmitAt { .. })
+    ));
 }

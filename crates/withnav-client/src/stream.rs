@@ -5,8 +5,8 @@
 //! the stream or cancelling the token stops the task, including while it waits
 //! on the network or sleeps between attempts.
 use crate::client::{Client, OpenError};
-use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
+use sse_stream::{Sse, SseByteStream};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -43,6 +43,8 @@ const CHANNEL_CAPACITY: usize = 256;
 const SESSION_END_KIND: &str = "session.end";
 /// The SSE event name of the cursor-rejected control frame.
 const RESYNC_EVENT: &str = "resync";
+/// The event name a frame without an `event:` field (or with an empty one) has, per the SSE spec.
+const DEFAULT_EVENT: &str = "message";
 
 /// Streams a session's events as [`StreamEvent`]s.
 ///
@@ -150,7 +152,10 @@ impl Connection {
 
     /// Decodes frames from `response` until it ends, delivering each one.
     async fn read(&mut self, response: reqwest::Response) -> Ended {
-        let mut frames = response.bytes_stream().eventsource();
+        let mut frames = SseByteStream::new(response.bytes_stream()).filter_map(|f| {
+            // Blocks with no or empty `data` (a lone `id:` or `retry:`) are not dispatched.
+            futures_util::future::ready(f.map(frame_parts).transpose())
+        });
         let mut delivered = false;
         loop {
             let frame = tokio::select! {
@@ -161,14 +166,15 @@ impl Connection {
                 return Ended::Lost { delivered };
             };
             delivered = true;
-            let keep_going = match frame.event.as_str() {
+            let (event, data) = frame;
+            let keep_going = match event.as_str() {
                 RESYNC_EVENT => {
                     // The server rejected the cursor; the consumer resets its
                     // projection, so the next connection replays everything.
                     self.cursor = None;
                     self.emit(StreamEvent::Resync).await
                 }
-                "message" => match serde_json::from_str::<EventEnvelope>(&frame.data) {
+                DEFAULT_EVENT => match serde_json::from_str::<EventEnvelope>(&data) {
                     Ok(envelope) => {
                         let ended = envelope.kind == SESSION_END_KIND;
                         self.cursor =
@@ -182,7 +188,7 @@ impl Connection {
                     Err(e) => self.protocol_error(format!("undecodable event: {e}")).await,
                 },
                 other => {
-                    self.protocol_error(format!("unexpected event \"{other}\": {}", frame.data))
+                    self.protocol_error(format!("unexpected event \"{other}\": {data}"))
                         .await
                 }
             };
@@ -193,17 +199,24 @@ impl Connection {
     }
 }
 
+/// The event name and data of a frame, or `None` when its data is missing or empty: the SSE spec
+/// dispatches no event then. A missing or empty `event:` field reads as `message`, so data frames
+/// and `resync` are told apart as the spec says.
+fn frame_parts(frame: Sse) -> Option<(String, String)> {
+    let data = frame.data.filter(|d| !d.is_empty())?;
+    let event = frame.event.filter(|e| !e.is_empty());
+    Some((event.unwrap_or_else(|| DEFAULT_EVENT.to_string()), data))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Decodes `raw` the way `Connection::read` does, without a server.
     async fn decode(raw: &'static str) -> Vec<(String, String)> {
-        let chunks = futures_util::stream::iter([Ok::<_, std::io::Error>(raw.as_bytes().to_vec())]);
-        chunks
-            .eventsource()
-            .filter_map(|f| async { f.ok() })
-            .map(|f| (f.event, f.data))
+        let chunks = futures_util::stream::iter([Ok::<_, std::io::Error>(raw.as_bytes())]);
+        SseByteStream::new(chunks)
+            .filter_map(|f| async { f.ok().and_then(frame_parts) })
             .collect()
             .await
     }
@@ -211,7 +224,7 @@ mod tests {
     #[tokio::test]
     async fn decoder_distinguishes_resync_from_data_frames() {
         let frames = decode(
-            ": keep-alive\n\nevent: resync\ndata: cursor out of range; reload\n\nid: 3\ndata: {}\n\n",
+            ": keep-alive\n\nid: 2\n\nevent: resync\ndata: cursor out of range; reload\n\nid: 3\ndata: {}\n\n",
         )
         .await;
         assert_eq!(

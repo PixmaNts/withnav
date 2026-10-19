@@ -23,7 +23,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 evalexpr = "13.1.0"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
-eventsource-stream = "0.2.3"
+sse-stream = { version = "0.3", default-features = true }
 tracing = "0.1"
 
 [package]
@@ -100,6 +100,8 @@ htmd = "0.5"
 html2text = "0.17"
 encoding_rs = "0.8.42"
 include_dir = "0.7"
+# Image type and dimensions from the header alone, for uploaded attachments (never decodes pixels).
+imagesize = "0.15"
 
 [dev-dependencies]
 withnav-provider = { path = "crates/withnav-provider", features = ["test-support"] }

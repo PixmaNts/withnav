@@ -1537,6 +1537,7 @@ async fn live_layer(
                     messages: vec![crate::provider::openai::ChatMessage::User {
                         content: "Reply with OK only.".into(),
                         provenance: Default::default(),
+                        images: Vec::new(),
                     }],
                     tools: vec![],
                     stream: true,
@@ -1544,6 +1545,7 @@ async fn live_layer(
                     max_tokens: Some(64),
                     temperature: None,
                     extra: Default::default(),
+                    images: Default::default(),
                 };
                 let answer = tokio::time::timeout(
                     CHAT_TIMEOUT,

@@ -119,6 +119,13 @@ pub struct AgentActor {
     pub api_key: String,
     pub model: String,
     pub reasoning_history: ReasoningHistory,
+    /// Whether the model accepts images (`ModelConfig.images`, absent meaning no). When it does
+    /// not, every image goes out as a text placeholder.
+    pub images: bool,
+    /// Reads the bytes of the images a request sends. The session installs one bound to its own
+    /// id; without one (a run outside a session, a child) images go out as `unavailable`
+    /// placeholders.
+    pub attachment_loader: Option<crate::agent::images::SharedLoader>,
     /// Transcript messages before this index were written by a model the
     /// session no longer talks to: the request projection drops their
     /// reasoning (it is only replayed to the model that produced it). The
@@ -266,6 +273,8 @@ impl AgentActor {
             api_key,
             model,
             reasoning_history,
+            images: false,
+            attachment_loader: None,
             reasoning_floor: 0,
             max_tokens,
             input_budget: None,
@@ -419,9 +428,25 @@ impl AgentActor {
             role.as_deref(),
             self.rules.message(),
             self.effective_skills_catalog(),
-            &self.effective_history_at(floor),
+            &self.request_history(self.effective_history_at(floor)),
             &self.effective_tool_schemas(),
         )
+    }
+
+    /// `history` as a request would carry it: images the model cannot see, or that exceed the
+    /// request budget, replaced by text. Without a loader no image can be sent, so each counts
+    /// as its `unavailable` placeholder. Request-scoped: the transcript is never changed.
+    pub fn request_history(&self, history: Vec<ChatMessage>) -> Vec<ChatMessage> {
+        let plan = crate::agent::images::plan(&history, self.images);
+        if !plan.sends_any() {
+            return plan.apply(&history);
+        }
+        let unavailable = if self.attachment_loader.is_some() {
+            Default::default()
+        } else {
+            plan.send_ids(&history).into_iter().collect()
+        };
+        plan.apply_excluding(&history, &unavailable)
     }
 
     /// Whether the actor waits for an answer or a decision.
@@ -554,14 +579,35 @@ impl AgentActor {
         text: impl Into<String>,
         provenance: crate::provider::openai::UserProvenance,
     ) {
+        self.push_user_with_images_in_current_turn(text, provenance, Vec::new());
+    }
+
+    /// [`AgentActor::push_user_in_current_turn`] for a message that carries images.
+    ///
+    /// A pending `ask` is answered by the text alone, as a `Tool` result; the images then go in
+    /// a separate user message right after it. Attached to the `Tool` answer they would read as
+    /// tool output, and the answer's provenance is what permission evidence trusts.
+    pub fn push_user_with_images_in_current_turn(
+        &mut self,
+        text: impl Into<String>,
+        provenance: crate::provider::openai::UserProvenance,
+        images: Vec<crate::provider::openai::ImageRef>,
+    ) {
         let text = text.into();
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
                 self.transcript.push(ChatMessage::Tool {
                     tool_call_id,
                     content: text,
-                    answered_by: Some(provenance),
+                    answered_by: Some(provenance.clone()),
                 });
+                if !images.is_empty() {
+                    self.transcript.push(ChatMessage::User {
+                        provenance,
+                        content: String::new(),
+                        images,
+                    });
+                }
             }
             Some(PendingInteraction::Permission {
                 request,
@@ -574,11 +620,13 @@ impl AgentActor {
                 self.transcript.push(ChatMessage::User {
                     provenance,
                     content: text,
+                    images,
                 });
             }
             None => self.transcript.push(ChatMessage::User {
                 provenance,
                 content: text,
+                images,
             }),
         }
     }

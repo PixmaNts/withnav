@@ -6,6 +6,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF or WebP
+  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model marked `"images": true`
+  in `models.json` sees it; any other model gets a short note saying an image was shown.
+
 ## [0.8.1] - 2026-10-16
 
 WithNav 0.8.1 shows the MCP servers' status in the terminal client and the browser, reworks the

@@ -27,6 +27,9 @@ pub enum ContentBlock {
     Text {
         text: String,
     },
+    /// A Captain image, uploaded first to the session's attachment route. The client sends only
+    /// `attachment_id`; admission fills the metadata from the stored row.
+    Image(crate::attachment::ImageRef),
     Thinking {
         text: String,
     },
@@ -59,6 +62,18 @@ mod tests {
             (
                 ContentBlock::Text { text: "hi".into() },
                 serde_json::json!({"type": "text", "text": "hi"}),
+            ),
+            (
+                ContentBlock::Image(crate::attachment::ImageRef {
+                    attachment_id: "a1".into(),
+                    media_type: "image/png".into(),
+                    name: "shot.png".into(),
+                    size: 10,
+                    width: 2,
+                    height: 3,
+                }),
+                serde_json::json!({"type": "image", "attachment_id": "a1", "media_type": "image/png",
+                    "name": "shot.png", "size": 10, "width": 2, "height": 3}),
             ),
             (
                 ContentBlock::Thinking { text: "hm".into() },

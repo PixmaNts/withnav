@@ -153,7 +153,7 @@ impl ModelClient {
             let status = response.status();
             if !status.is_success() {
                 let text = super::read_error_body(response, cancel).await?;
-                let message = extract_error_message(&text).unwrap_or(text);
+                let message = crate::scrub_data_urls(&extract_error_message(&text).unwrap_or(text));
                 return Err(ProviderError::Api {
                     status: status.as_u16(),
                     message,
@@ -313,6 +313,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             extra: Default::default(),
+            images: Default::default(),
         };
         let started = Instant::now();
         let err = client_at(addr)

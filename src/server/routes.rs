@@ -55,6 +55,14 @@
 //!   from `.withnav/intent.md` (nullable strings; 400 without an absolute `workspace`)
 //! - Every other path, only when started by `nav web` (`ServerConfig.web`): the embedded browser
 //!   client's files, `index.html` for unknown non-`/v1/` paths; no token needed, unknown `/v1/` paths stay 404.
+//! - `POST /v1/sessions/:id/attachments?name=<file name>` raw image bytes -> the stored `ImageRef`
+//!   `{attachment_id, media_type, name, size, width, height}`. PNG, JPEG, GIF and WebP are
+//!   identified from the bytes (name and `Content-Type` are ignored), at most 3.75 MiB and 8000 px a
+//!   side, 64 per session. Errors keep the `{"error", "reason"}` shape: 404 `unknown_session`,
+//!   413 `too_large`, 415 `unsupported_type`, 400 `invalid_image`/`too_wide`, 409 `quota`,
+//!   503 `attachments_unavailable`.
+//! - `GET /v1/sessions/:id/attachments/:attachment_id` -> the bytes with the stored `Content-Type`,
+//!   `X-Content-Type-Options: nosniff`; 404 unless the image belongs to that session.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
 //!   (a command that cannot run is 200 with `ok:false` and an `error`; the same
@@ -64,7 +72,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -174,6 +182,16 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
+        .route(
+            "/v1/sessions/{id}/attachments",
+            post(upload_attachment).layer(DefaultBodyLimit::max(
+                crate::session::attachments::MAX_IMAGE_BYTES + UPLOAD_BODY_SLACK,
+            )),
+        )
+        .route(
+            "/v1/sessions/{id}/attachments/{attachment_id}",
+            get(get_attachment),
+        )
         .route(
             "/v1/sessions/{parent}/children/{child}/continue",
             post(continue_child),
@@ -1041,6 +1059,132 @@ async fn answer_permission(
     }
 }
 
+/// Room above the image cap for whatever framing a client adds; the image itself is judged by
+/// `inspect`, which names the real limit in its error.
+const UPLOAD_BODY_SLACK: usize = 64 * 1024;
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    name: Option<String>,
+}
+
+/// An attachment failure as a status plus the shared `{error, reason}` body.
+fn attachment_error_response(error: crate::session::attachments::AttachmentError) -> Response {
+    use crate::session::attachments::AttachmentError as E;
+    let (status, reason) = match &error {
+        E::UnknownSession | E::Unknown(_) => (StatusCode::NOT_FOUND, "unknown_session"),
+        E::TooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
+        E::Unsupported(_) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_type"),
+        E::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_image"),
+        E::TooWide { .. } => (StatusCode::BAD_REQUEST, "too_wide"),
+        E::Quota(_) => (StatusCode::CONFLICT, "quota"),
+        E::Db(_) => (StatusCode::INTERNAL_SERVER_ERROR, "attachments_failed"),
+    };
+    let reason = if matches!(error, E::Unknown(_)) {
+        "unknown_attachment"
+    } else {
+        reason
+    };
+    (
+        status,
+        Json(json!({ "error": error.to_string(), "reason": reason })),
+    )
+        .into_response()
+}
+
+fn attachments_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": "image attachments are unavailable: the conversation database could not be opened",
+            "reason": "attachments_unavailable",
+        })),
+    )
+        .into_response()
+}
+
+/// `POST /v1/sessions/{id}/attachments`: the raw bytes of one image. The bearer middleware has
+/// already run, so an unauthenticated client never gets its body read.
+async fn upload_attachment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<UploadQuery>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    let Ok(session) = parse_session_id(id) else {
+        return attachment_error_response(
+            crate::session::attachments::AttachmentError::UnknownSession,
+        );
+    };
+    let Some(store) = state.attachments() else {
+        return attachments_unavailable();
+    };
+    let bytes = match body {
+        Ok(bytes) => bytes,
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return attachment_error_response(
+                crate::session::attachments::AttachmentError::TooLarge {
+                    size: crate::session::attachments::MAX_IMAGE_BYTES + 1,
+                    max: crate::session::attachments::MAX_IMAGE_BYTES,
+                },
+            );
+        }
+        Err(rejection) => {
+            return error_response(ServerError::MalformedBody(rejection.body_text()));
+        }
+    };
+    let session = session.to_string();
+    let stored =
+        tokio::task::spawn_blocking(move || store.insert(&session, query.name.as_deref(), &bytes))
+            .await;
+    match stored {
+        Ok(Ok(image)) => Json(image).into_response(),
+        Ok(Err(error)) => attachment_error_response(error),
+        Err(error) => attachment_error_response(crate::session::attachments::AttachmentError::Db(
+            error.to_string(),
+        )),
+    }
+}
+
+/// `GET /v1/sessions/{id}/attachments/{attachment_id}`: the stored bytes. `nosniff` keeps a
+/// browser from reinterpreting them; the type is the one detected at upload, never the client's.
+async fn get_attachment(
+    State(state): State<AppState>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Response {
+    let Ok(session) = parse_session_id(id) else {
+        return attachment_error_response(
+            crate::session::attachments::AttachmentError::UnknownSession,
+        );
+    };
+    let Some(store) = state.attachments() else {
+        return attachments_unavailable();
+    };
+    let session = session.to_string();
+    let loaded = tokio::task::spawn_blocking(move || store.load(&session, &attachment_id)).await;
+    match loaded {
+        Ok(Ok((image, bytes))) => (
+            [
+                (axum::http::header::CONTENT_TYPE, image.media_type),
+                (
+                    axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                    "nosniff".to_string(),
+                ),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "private, max-age=3600".to_string(),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(error)) => attachment_error_response(error),
+        Err(error) => attachment_error_response(crate::session::attachments::AttachmentError::Db(
+            error.to_string(),
+        )),
+    }
+}
+
 async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
@@ -1187,6 +1331,117 @@ mod tests {
         })
         .expect("state over a temp database");
         (dir, state)
+    }
+
+    async fn call(
+        state: &AppState,
+        method: &str,
+        uri: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let response = app(state.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        let (parts, body) = response.into_parts();
+        (
+            parts.status,
+            parts.headers,
+            body.collect().await.expect("body").to_bytes().to_vec(),
+        )
+    }
+
+    // Given a stored session
+    // When an image is uploaded and read back, and others are refused
+    // Then the row round-trips with nosniff and every refusal has its status and reason
+    #[tokio::test]
+    async fn attachments_upload_download_and_refusals() {
+        let (_dir, state) = test_state();
+        let session = Ulid::generate();
+        state
+            .history()
+            .record_session(session, "/w", "m", false)
+            .await
+            .expect("record");
+        let png = crate::session::attachments::fixtures::png(7, 9);
+
+        let uri = format!("/v1/sessions/{session}/attachments?name=dir%2Fshot.jpg");
+        let (status, _, body) = call(&state, "POST", &uri, png.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let image: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(image["media_type"], "image/png");
+        assert_eq!(image["name"], "shot.jpg");
+        assert_eq!(
+            (image["width"].as_u64(), image["height"].as_u64()),
+            (Some(7), Some(9))
+        );
+        let id = image["attachment_id"].as_str().expect("id");
+
+        let (status, headers, body) = call(
+            &state,
+            "GET",
+            &format!("/v1/sessions/{session}/attachments/{id}"),
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, png);
+        assert_eq!(headers["content-type"], "image/png");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+
+        let other = Ulid::generate();
+        let (status, _, _) = call(
+            &state,
+            "GET",
+            &format!("/v1/sessions/{other}/attachments/{id}"),
+            vec![],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let cases: [(String, Vec<u8>, StatusCode, &str); 4] = [
+            (
+                format!("/v1/sessions/{other}/attachments"),
+                png.clone(),
+                StatusCode::NOT_FOUND,
+                "unknown_session",
+            ),
+            (
+                uri.clone(),
+                b"<svg xmlns='x'/>".to_vec(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_type",
+            ),
+            (
+                uri.clone(),
+                crate::session::attachments::fixtures::png(9000, 1),
+                StatusCode::BAD_REQUEST,
+                "too_wide",
+            ),
+            (
+                uri.clone(),
+                vec![0; crate::session::attachments::MAX_IMAGE_BYTES + 1],
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "unsupported_type",
+            ),
+        ];
+        for (uri, body, expected, reason) in cases {
+            let (status, _, body) = call(&state, "POST", &uri, body).await;
+            assert_eq!(status, expected, "{reason}");
+            let value: serde_json::Value = serde_json::from_slice(&body).expect("json error body");
+            assert!(value.get("error").is_some());
+            if expected != StatusCode::PAYLOAD_TOO_LARGE {
+                assert_eq!(value["reason"], reason);
+            } else {
+                assert_eq!(value["reason"], "too_large");
+            }
+        }
     }
 
     // Given a session POST with a malformed body

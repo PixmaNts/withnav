@@ -1,5 +1,5 @@
 //! UI action → effects.
-use super::{push_local, refresh_model, send_effect, start_conversation};
+use super::{push_local, refresh_model, send_for_tab, start_conversation};
 use crate::{
     commands,
     protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
@@ -16,6 +16,17 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
             s,
             BlockKind::Notice(
                 "this subagent is read-only; return to its parent to send a message".into(),
+            ),
+        );
+        return vec![];
+    }
+    if s.attachments_sending > 0 {
+        // The images of the message in flight are still in the tab until the server takes it;
+        // a second send would carry them twice.
+        push_local(
+            s,
+            BlockKind::Notice(
+                "the previous message and its images are still being sent; wait for it".into(),
             ),
         );
         return vec![];
@@ -43,7 +54,7 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
             s.resuming = Some(id.clone());
             vec![Effect::Resume(id)]
         }
-        Some(_) => vec![send_effect(text, revision)],
+        Some(_) => vec![send_for_tab(s, text, revision)],
         None => {
             s.pending_submit_text = Some(text);
             s.pending_submit = Some(revision);
@@ -818,6 +829,44 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 }
                 _ => {}
             }
+            vec![]
+        }
+        Action::Attach(path) => {
+            if s.read_only() {
+                push_local(
+                    s,
+                    BlockKind::Notice(
+                        "this subagent is read-only; return to its parent to attach images".into(),
+                    ),
+                );
+                return vec![];
+            }
+            if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
+                push_local(
+                    s,
+                    BlockKind::Notice(format!(
+                        "a message carries at most {} images; send it or use /attach clear",
+                        crate::state::MAX_ATTACHMENTS
+                    )),
+                );
+                return vec![];
+            }
+            vec![Effect::CheckAttachment { path }]
+        }
+        Action::ClearAttachments => {
+            // The images of a message in flight leave with its acknowledgement, not before.
+            let kept = s.attachments_sending.min(s.pending_attachments.len());
+            let dropped = s.pending_attachments.len() - kept;
+            s.pending_attachments.truncate(kept);
+            let text = match (dropped, kept) {
+                (0, 0) => "no images attached".to_string(),
+                (0, _) => "the images being sent cannot be dropped".to_string(),
+                (n, _) => format!(
+                    "dropped {n} attached image{}",
+                    if n == 1 { "" } else { "s" }
+                ),
+            };
+            push_local(s, BlockKind::Notice(text));
             vec![]
         }
         Action::ShowNotice(text) => {

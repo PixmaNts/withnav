@@ -44,6 +44,7 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
                     ChatMessage::User {
                         provenance: Default::default(),
                         content: user,
+                        images: Vec::new(),
                     },
                 ],
                 tools: Vec::new(),
@@ -59,6 +60,7 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
                     .or(Some(REFLEX_CONTEXT_MAX_TOKENS)),
                 temperature: Some(0.2),
                 extra: self.variant.clone().unwrap_or_default(),
+                images: Default::default(),
             };
             let client = ModelClient::new(
                 &self.resolved.provider_name,

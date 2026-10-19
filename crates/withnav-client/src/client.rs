@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 use std::error::Error as _;
 use std::time::Duration;
 use withnav_client_api::{
+    attachment::ImageRef,
     event::{McpStatus, PauseToken, SkillsBody},
     protocol::{
         AgentsBody, BypassResponse, CommandRequest, CommandResponse, CommandsBody, ContextSnapshot,
@@ -230,6 +231,24 @@ impl Client {
                 describe(&e)
             ))
         })
+    }
+
+    /// Uploads one image as raw bytes to the session's attachment store and returns its
+    /// reference. Raw bytes (not JSON or base64) keep the body at the file's size; the server
+    /// detects the type from the bytes and ignores the `Content-Type`. Never retried.
+    pub async fn upload_attachment(
+        &self,
+        session_id: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<ImageRef, String> {
+        let path = format!("/v1/sessions/{}/attachments", encode_segment(session_id));
+        let request = self
+            .post(&path)
+            .query(&[("name", name)])
+            .header("content-type", "application/octet-stream")
+            .body(bytes);
+        self.json(request).await
     }
 
     /// Sends a structured question answer through the ordinary Captain-message ingress.
@@ -547,5 +566,53 @@ mod tests {
         assert_eq!(paths.recv().await.unwrap(), "/v1/sessions/a%2Fb%20c/skills");
         client.set_bypass("a/b c", true).await.unwrap();
         assert_eq!(paths.recv().await.unwrap(), "/v1/sessions/a%2Fb%20c/bypass");
+    }
+
+    #[tokio::test]
+    async fn upload_posts_raw_bytes_with_the_name_in_the_query() {
+        use axum::{
+            Json, Router, body::Bytes, extract::OriginalUri, http::HeaderMap, routing::post,
+        };
+        let (seen, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().fallback(post(
+            move |uri: OriginalUri, headers: HeaderMap, body: Bytes| {
+                let seen = seen.clone();
+                async move {
+                    if body.is_empty() {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({"error": "empty image"})),
+                        );
+                    }
+                    let auth = headers["authorization"].to_str().unwrap().to_owned();
+                    seen.send((uri.0.to_string(), auth, body.to_vec())).unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        Json(
+                            serde_json::json!({"attachment_id": "a1", "media_type": "image/png",
+                            "name": "my shot.png", "size": 3, "width": 1, "height": 1}),
+                        ),
+                    )
+                }
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Client::new(url, Some("tok".into()));
+
+        let image = client
+            .upload_attachment("s/1", "my shot.png", vec![1, 2, 3])
+            .await
+            .unwrap();
+        assert_eq!(image.attachment_id, "a1");
+        assert_eq!(image.size, 3);
+        let (uri, auth, body) = requests.recv().await.unwrap();
+        assert_eq!(uri, "/v1/sessions/s%2F1/attachments?name=my+shot.png");
+        assert_eq!(auth, "Bearer tok");
+        assert_eq!(body, vec![1, 2, 3]);
+
+        let refused = client.upload_attachment("s", "x.png", vec![]).await;
+        assert_eq!(refused.unwrap_err(), "HTTP 400 Bad Request: empty image");
     }
 }

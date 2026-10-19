@@ -262,6 +262,7 @@ mod tests {
                             flow,
                             run_id,
                         },
+                    ..
                 } => Some((content, flow, run_id)),
                 _ => None,
             })

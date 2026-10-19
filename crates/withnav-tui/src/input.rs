@@ -501,7 +501,8 @@ pub fn route_key(
     }
     if key.code == KeyCode::Enter && !alt && !key.modifiers.contains(KeyModifiers::SHIFT) {
         let text = editor.text();
-        if text.trim().is_empty() {
+        // A message may be images only.
+        if text.trim().is_empty() && state.pending_attachments.is_empty() {
             return None;
         }
         return Some(match commands::route(&text, ui.mode) {

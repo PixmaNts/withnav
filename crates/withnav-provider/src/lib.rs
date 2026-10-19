@@ -6,7 +6,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{ProviderError, SseError};
 use crate::openai::ChatChunk;
-use crate::sse::SseEventStream;
 
 pub mod auth;
 pub mod catalog;
@@ -56,7 +55,7 @@ impl Accumulator {
         if let Some(err) = chunk.error {
             return Err(ProviderError::Api {
                 status: 0,
-                message: err.message,
+                message: scrub_data_urls(&err.message),
                 partial: Some(Box::new(self.snapshot())),
             });
         }
@@ -174,7 +173,8 @@ where
                             Err(e) => {
                                 // Response stream chunks contain no request credentials;
                                 // still cap the excerpt to avoid dumping a whole response.
-                                let excerpt: String = payload.chars().take(200).collect();
+                                let excerpt: String =
+                                    scrub_data_urls(&payload).chars().take(200).collect();
                                 return Err(ProviderError::Api {
                                     status: 0,
                                     message: format!("malformed SSE JSON: {e}; frame: {excerpt}"),
@@ -239,7 +239,7 @@ pub async fn start_and_consume(
     let status = response.status();
     if !status.is_success() {
         let body = read_error_body(response, cancel).await?;
-        let message = extract_error_message(&body).unwrap_or(body);
+        let message = scrub_data_urls(&extract_error_message(&body).unwrap_or(body));
         return Err(ProviderError::Api {
             status: status.as_u16(),
             message,
@@ -257,13 +257,76 @@ pub async fn start_and_consume(
         return Err(ProviderError::WrongContentType(content_type));
     }
 
-    let events = SseEventStream::new(Box::pin(response.bytes_stream()));
+    let events = sse::decode_events(Box::pin(response.bytes_stream()));
     consume_event_stream(events, cancel, on_delta).await
+}
+
+/// Replaces the payload of every `data:<type>;base64,<run>` in `text` by `…[N chars]`.
+///
+/// Some upstreams echo the request in their error body, and an image in the request is megabytes
+/// of base64: left in, it would travel into events, logs and the stored transcript through the
+/// error message. Short runs stay, so an ordinary mention of a data URL is still readable.
+pub fn scrub_data_urls(text: &str) -> String {
+    const MARKER: &str = ";base64,";
+    const KEEP_UP_TO: usize = 64;
+    let mut out = String::with_capacity(text.len().min(4096));
+    let mut rest = text;
+    while let Some(at) = rest.find(MARKER) {
+        let start = at + MARKER.len();
+        out.push_str(&rest[..start]);
+        let run = rest[start..]
+            .bytes()
+            .take_while(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_')
+            })
+            .count();
+        if run > KEEP_UP_TO {
+            out.push_str(&format!("…[{run} chars]"));
+        } else {
+            out.push_str(&rest[start..start + run]);
+        }
+        rest = &rest[start + run..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn extract_error_message(body: &str) -> Option<String> {
     let v: Value = serde_json::from_str(body).ok()?;
     v.get("error")?.get("message")?.as_str().map(String::from)
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::scrub_data_urls;
+
+    #[test]
+    fn a_long_data_url_payload_is_replaced_by_its_length() {
+        let payload = "A".repeat(5000);
+        let body = format!(r#"bad request: {{"url":"data:image/png;base64,{payload}"}} end"#);
+        let scrubbed = scrub_data_urls(&body);
+        assert_eq!(
+            scrubbed,
+            r#"bad request: {"url":"data:image/png;base64,…[5000 chars]"} end"#
+        );
+    }
+
+    #[test]
+    fn every_data_url_is_scrubbed_and_short_ones_stay() {
+        let long = "Qm9v".repeat(100);
+        let body = format!(
+            "data:image/png;base64,{long} data:text/plain;base64,aGk= data:image/jpeg;base64,{long}"
+        );
+        let scrubbed = scrub_data_urls(&body);
+        assert_eq!(scrubbed.matches("…[400 chars]").count(), 2);
+        assert!(scrubbed.contains("data:text/plain;base64,aGk="));
+        assert!(!scrubbed.contains("Qm9v"));
+    }
+
+    #[test]
+    fn text_without_data_urls_is_unchanged() {
+        assert_eq!(scrub_data_urls("rate limited"), "rate limited");
+    }
 }
 
 #[cfg(test)]

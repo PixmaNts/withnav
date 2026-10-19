@@ -57,6 +57,7 @@ fn persisted_flow_notes_remain_untrusted_in_summary_input() {
             flow: "turn-review".into(),
             run_id: "capture".into(),
         },
+        images: Vec::new(),
     }];
     let restored: Vec<ChatMessage> =
         serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
@@ -96,6 +97,7 @@ fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
         provenance: Default::default(),
         content: text.into(),
+        images: Vec::new(),
     }
 }
 
@@ -479,4 +481,43 @@ fn the_summarizer_gets_the_transcript_as_json_so_text_cannot_spoof_a_role() {
     assert!(!content.contains("\n[system]\n") && !content.contains("\n[assistant]\n"));
     // An earlier summary is data too.
     assert!(doc["earlier_summary"].is_null());
+}
+
+#[test]
+fn a_captain_image_is_summarized_as_a_note_without_bytes_and_keeps_its_role() {
+    let transcript = vec![ChatMessage::User {
+        provenance: Default::default(),
+        content: "why is this blurry?".into(),
+        images: vec![crate::provider::openai::ImageRef {
+            attachment_id: "a1".into(),
+            media_type: "image/png".into(),
+            name: "shot.png".into(),
+            size: 120_000,
+            width: 800,
+            height: 600,
+        }],
+    }];
+    let rendered = render_part(None, &transcript, 0, 1, &HashSet::new());
+    let document: serde_json::Value = serde_json::from_str(
+        rendered
+            .strip_prefix("The conversation to summarize, as JSON:\n\n")
+            .unwrap(),
+    )
+    .unwrap();
+    let message = &document["messages"][0];
+    assert_eq!(message["role"], "user");
+    assert_eq!(message["text"], "why is this blurry?");
+    assert_eq!(
+        message["images"],
+        serde_json::json!([{
+            "attachment_id": "a1",
+            "name": "shot.png",
+            "media_type": "image/png",
+            "note": "visual content not supplied to the summarizer",
+        }])
+    );
+    assert!(!rendered.contains("base64"));
+    // A message without images renders exactly as before.
+    let plain = render_part(None, &[user("hi")], 0, 1, &HashSet::new());
+    assert!(!plain.contains("images"));
 }

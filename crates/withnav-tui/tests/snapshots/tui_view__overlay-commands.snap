@@ -8,13 +8,13 @@ expression: snapshot
                      │ │  Explain the failure, then fix it.                                         
                      │ │                                                                            
                      │ │ ◎ Nav                                                                      
-                     │ │ ▸ Reasoning                                                                
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
             │▌/config               edit settings in config.json                       │            
             │ /new [agent]          Voyage · Session — new conversation in a new tab   │            
             │ /sessions             Voyage · Session — browse conversations            │            
             │ /model [model_id]     switch this conversation's model                   │            
+            │ /attach <path>|clear  attach an image to your next message (or clear)    │            
             │ /skills               choose a skill to load for your next message       │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            

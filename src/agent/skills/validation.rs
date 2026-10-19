@@ -227,18 +227,22 @@ mod projection_tests {
             ChatMessage::User {
                 content: format!("old request\n{block}"),
                 provenance: UserProvenance::Captain,
+                images: Vec::new(),
             },
             ChatMessage::User {
                 content: block.into(),
                 provenance: UserProvenance::Navigator,
+                images: Vec::new(),
             },
             ChatMessage::User {
                 content: "new request".into(),
                 provenance: UserProvenance::Captain,
+                images: Vec::new(),
             },
             ChatMessage::User {
                 content: block.into(),
                 provenance: UserProvenance::Navigator,
+                images: Vec::new(),
             },
         ];
         let resumed: Vec<ChatMessage> =

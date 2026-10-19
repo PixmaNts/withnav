@@ -1,30 +1,102 @@
 use std::time::Duration;
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use withnav_client_api::attachment::ImageRef;
 
 use crate::Usage;
 use crate::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
 use crate::error::ProviderError;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
-    #[serde(serialize_with = "serialize_wire_messages")]
     pub messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
     pub stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// The selected variant's override object, merged shallowly into the
     /// body. Empty (the default) adds nothing to the wire bytes.
-    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, Value>,
+    /// Bytes of the images this request sends, by attachment id. Request-scoped: filled by the
+    /// agent just before the call and dropped with it, never stored in the transcript.
+    pub images: HashMap<String, ImagePayload>,
+}
+
+/// The body that goes on the wire. `ChatRequest` is not `Serialize` itself because the message
+/// list needs the image payload map that sits beside it, which a per-field serializer cannot see.
+#[derive(Serialize)]
+struct WireRequest<'a> {
+    model: &'a str,
+    messages: WireMessages<'a>,
+    #[serde(skip_serializing_if = "<[ToolDef]>::is_empty")]
+    tools: &'a [ToolDef],
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: &'a Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    extra: &'a serde_json::Map<String, Value>,
+}
+
+impl Serialize for ChatRequest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        WireRequest {
+            model: &self.model,
+            messages: WireMessages {
+                messages: &self.messages,
+                images: &self.images,
+            },
+            tools: &self.tools,
+            stream: self.stream,
+            stream_options: &self.stream_options,
+            max_tokens: self.max_tokens,
+            temperature: self.temperature,
+            extra: &self.extra,
+        }
+        .serialize(serializer)
+    }
+}
+
+/// An image's bytes for one request, base64 encoded. Deliberately not `Serialize`/`Deserialize`
+/// and with a `Debug` that prints only the length: a payload is megabytes, and one that reached a
+/// log, an event or a stored transcript would carry the Captain's screenshot with it.
+#[derive(Clone)]
+pub struct ImagePayload {
+    pub media_type: String,
+    pub base64: String,
+}
+
+impl ImagePayload {
+    pub fn from_bytes(media_type: impl Into<String>, bytes: &[u8]) -> Self {
+        use base64::Engine as _;
+        Self {
+            media_type: media_type.into(),
+            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.base64)
+    }
+}
+
+impl std::fmt::Debug for ImagePayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ImagePayload({}, {} base64 chars)",
+            self.media_type,
+            self.base64.len()
+        )
+    }
 }
 
 impl ChatRequest {
@@ -54,6 +126,10 @@ pub enum ChatMessage {
         content: String,
         #[serde(default, skip_serializing_if = "UserProvenance::is_captain")]
         provenance: UserProvenance,
+        /// Images attached to this message, by reference. Metadata only: the bytes stay in the
+        /// attachment store and are added to a request when the model can see them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageRef>,
     },
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,40 +190,103 @@ impl ChatMessage {
     }
 }
 
-fn serialize_wire_messages<S: serde::Serializer>(
-    messages: &[ChatMessage],
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    use serde::ser::{SerializeSeq, SerializeStruct};
-    struct Wire<'a>(&'a ChatMessage);
-    impl Serialize for Wire<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            if let ChatMessage::User { content, .. } = self.0 {
+struct WireMessages<'a> {
+    messages: &'a [ChatMessage],
+    images: &'a HashMap<String, ImagePayload>,
+}
+
+impl Serialize for WireMessages<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(self.messages.len()))?;
+        for message in self.messages {
+            sequence.serialize_element(&Wire {
+                message,
+                images: self.images,
+            })?;
+        }
+        sequence.end()
+    }
+}
+
+/// One message as the provider sees it: provenance and `answered_by` stripped. A user message
+/// with images carries `content` as an array of parts; one without keeps the plain string, so
+/// every request without images is byte-identical to what it was before images existed.
+struct Wire<'a> {
+    message: &'a ChatMessage,
+    images: &'a HashMap<String, ImagePayload>,
+}
+
+impl Serialize for Wire<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self.message {
+            ChatMessage::User {
+                content, images, ..
+            } if !images.is_empty() => {
+                let mut object = serializer.serialize_struct("ChatMessage", 2)?;
+                object.serialize_field("role", "user")?;
+                object.serialize_field(
+                    "content",
+                    &UserParts {
+                        text: content,
+                        images,
+                        payloads: self.images,
+                    },
+                )?;
+                object.end()
+            }
+            ChatMessage::User { content, .. } => {
                 let mut object = serializer.serialize_struct("ChatMessage", 2)?;
                 object.serialize_field("role", "user")?;
                 object.serialize_field("content", content)?;
                 object.end()
-            } else if let ChatMessage::Tool {
+            }
+            ChatMessage::Tool {
                 tool_call_id,
                 content,
                 ..
-            } = self.0
-            {
+            } => {
                 let mut object = serializer.serialize_struct("ChatMessage", 3)?;
                 object.serialize_field("role", "tool")?;
                 object.serialize_field("tool_call_id", tool_call_id)?;
                 object.serialize_field("content", content)?;
                 object.end()
-            } else {
-                self.0.serialize(serializer)
             }
+            other => other.serialize(serializer),
         }
     }
-    let mut sequence = serializer.serialize_seq(Some(messages.len()))?;
-    for message in messages {
-        sequence.serialize_element(&Wire(message))?;
+}
+
+struct UserParts<'a> {
+    text: &'a str,
+    images: &'a [ImageRef],
+    payloads: &'a HashMap<String, ImagePayload>,
+}
+
+impl Serialize for UserParts<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut parts = serializer.serialize_seq(None)?;
+        if !self.text.is_empty() {
+            parts.serialize_element(&serde_json::json!({"type": "text", "text": self.text}))?;
+        }
+        for image in self.images {
+            match self.payloads.get(&image.attachment_id) {
+                Some(payload) => parts.serialize_element(&serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {"url": payload.data_url()},
+                }))?,
+                // The agent never sends a reference it has no bytes for; if one slips through,
+                // a visible placeholder is better than a request the provider rejects.
+                None => parts.serialize_element(&serde_json::json!({
+                    "type": "text",
+                    "text": format!("[image {} unavailable]", image.label()),
+                }))?,
+            }
+        }
+        parts.end()
     }
-    sequence.end()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,6 +504,107 @@ impl ClientCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn image(id: &str) -> ImageRef {
+        ImageRef {
+            attachment_id: id.into(),
+            media_type: "image/png".into(),
+            name: "shot.png".into(),
+            size: 3,
+            width: 1,
+            height: 1,
+        }
+    }
+
+    fn request(messages: Vec<ChatMessage>, images: HashMap<String, ImagePayload>) -> ChatRequest {
+        ChatRequest {
+            model: "m".into(),
+            messages,
+            tools: vec![],
+            stream: true,
+            stream_options: None,
+            max_tokens: None,
+            temperature: None,
+            extra: Default::default(),
+            images,
+        }
+    }
+
+    fn user(content: &str, images: Vec<ImageRef>) -> ChatMessage {
+        ChatMessage::User {
+            content: content.into(),
+            provenance: UserProvenance::Captain,
+            images,
+        }
+    }
+
+    #[test]
+    fn a_user_message_with_images_serializes_text_then_data_urls_in_order() {
+        let payloads = HashMap::from([
+            (
+                "a".to_string(),
+                ImagePayload::from_bytes("image/png", b"one"),
+            ),
+            (
+                "b".to_string(),
+                ImagePayload::from_bytes("image/jpeg", b"two"),
+            ),
+        ]);
+        let body = serde_json::to_value(request(
+            vec![user("look", vec![image("a"), image("b")])],
+            payloads,
+        ))
+        .unwrap();
+        assert_eq!(
+            body["messages"][0],
+            serde_json::json!({"role": "user", "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,b25l"}},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,dHdv"}},
+            ]})
+        );
+    }
+
+    #[test]
+    fn empty_text_omits_the_text_part_and_a_missing_payload_is_a_visible_placeholder() {
+        let body =
+            serde_json::to_value(request(vec![user("", vec![image("gone")])], HashMap::new()))
+                .unwrap();
+        assert_eq!(
+            body["messages"][0]["content"],
+            serde_json::json!([{"type": "text", "text": "[image shot.png, image/png, 3 B unavailable]"}])
+        );
+    }
+
+    #[test]
+    fn a_message_without_images_keeps_its_plain_string_content() {
+        let with_map =
+            HashMap::from([("a".to_string(), ImagePayload::from_bytes("image/png", b"x"))]);
+        let body = serde_json::to_string(&request(vec![user("hi", vec![])], with_map)).unwrap();
+        assert_eq!(
+            body,
+            r#"{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}"#
+        );
+    }
+
+    #[test]
+    fn an_image_payload_never_prints_its_bytes() {
+        let payload = ImagePayload::from_bytes("image/png", &[7u8; 300]);
+        let shown = format!("{payload:?}");
+        assert!(!shown.contains(&payload.base64[..40]));
+        assert!(shown.contains("400"));
+    }
+
+    #[test]
+    fn image_references_round_trip_through_the_transcript_and_stay_out_when_empty() {
+        let with = user("x", vec![image("a")]);
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["images"][0]["attachment_id"], "a");
+        let back: ChatMessage = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ChatMessage::User { images, .. } if images.len() == 1));
+        let without = serde_json::to_value(user("x", vec![])).unwrap();
+        assert!(without.get("images").is_none());
+    }
 
     #[test]
     fn deserialize_reasoning_chunk() {

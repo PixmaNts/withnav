@@ -629,6 +629,16 @@ the later 0.6 scope, not this contract.
 
 ## Where new code goes
 
+- Images in conversations: the bytes live in the `attachments` table of `withnav.db`
+  (`session/attachments.rs`: magic-byte and header check, size and side limits, per-session quota,
+  `resolve_command_images` for admission, `SessionLoader` for requests), never in the transcript or
+  events, which carry `ImageRef` (`withnav-client-api`'s `attachment.rs`) only. Upload and download
+  routes live in `server/routes.rs`; admission fills the metadata by `(session, id)` in
+  `Service::send` before anything is sequenced. Per request, `agent/images.rs` plans which images are
+  sent and which become placeholders (model without `images`, request budget), the session's loader
+  fetches the bytes into the request-only `ChatRequest.images`, and `withnav-provider`'s `openai.rs`
+  serializes them as `image_url` parts. The transcript is never changed by that projection.
+
 - MCP configuration and environment isolation belong in `mcp/config.rs`; transport supervision
   and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result
   conversion in `mcp/tool.rs`. The session service owns one manager and `session/actor.rs`

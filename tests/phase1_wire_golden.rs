@@ -94,11 +94,25 @@ fn lock_fixture(name: &str, bodies: &[String]) {
     let bytes = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("required golden fixture {}: {e}", path.display()));
     let locked: Vec<String> = serde_json::from_slice(&bytes).unwrap();
+    let expected: Vec<String> = locked.iter().map(|body| expected_wire(body)).collect();
     assert_eq!(
-        locked.as_slice(),
+        expected.as_slice(),
         bodies,
         "wire bodies drifted from locked fixture {name}"
     );
+}
+
+/// The bytes a locked fixture body is expected to match. The built-in client writes
+/// fields in declaration order. The genai transport writes the same JSON value with
+/// object keys sorted. Its expected bytes are the fixture's value re-serialized, so
+/// the fixture stays the reference and any other drift still fails.
+fn expected_wire(locked: &str) -> String {
+    if withnav::provider::client::GENAI_CHAT {
+        let value: serde_json::Value = serde_json::from_str(locked).expect("fixture is JSON");
+        serde_json::to_string(&value).unwrap()
+    } else {
+        locked.to_string()
+    }
 }
 
 async fn run_once(actor: &mut AgentActor) -> RunOutcome {

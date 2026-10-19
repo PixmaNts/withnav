@@ -12,7 +12,6 @@ withnav-client-api = { path = "../withnav-client-api" }
 tokio = { workspace = true, features = ["time", "sync", "rt"] }
 tokio-util.workspace = true
 reqwest = { workspace = true, features = ["rustls", "query", "json", "stream", "gzip", "deflate", "brotli"] }
-eventsource-stream.workspace = true
 sse-stream.workspace = true
 futures-util.workspace = true
 serde.workspace = true

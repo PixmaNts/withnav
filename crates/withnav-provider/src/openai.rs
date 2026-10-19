@@ -3,9 +3,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::Usage;
+use crate::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
 use crate::error::ProviderError;
-use crate::provider::Usage;
-use crate::provider::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn deserialize_reasoning_chunk() {
-        let raw = include_str!("../../tests/fixtures/chunks/reasoning.json");
+        let raw = include_str!("../../../tests/fixtures/chunks/reasoning.json");
         let chunk: ChatChunk = serde_json::from_str(raw).unwrap();
         assert_eq!(
             chunk.choices[0].delta.reasoning_content.as_deref(),
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn deserialize_toolcall_first_fragment() {
-        let raw = include_str!("../../tests/fixtures/chunks/toolcall_first.json");
+        let raw = include_str!("../../../tests/fixtures/chunks/toolcall_first.json");
         let chunk: ChatChunk = serde_json::from_str(raw).unwrap();
         let tc = &chunk.choices[0].delta.tool_calls[0];
         assert_eq!(tc.index, 0);
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn deserialize_toolcall_args_fragment_has_no_id_or_name() {
-        let raw = include_str!("../../tests/fixtures/chunks/toolcall_args.json");
+        let raw = include_str!("../../../tests/fixtures/chunks/toolcall_args.json");
         let chunk: ChatChunk = serde_json::from_str(raw).unwrap();
         let tc = &chunk.choices[0].delta.tool_calls[0];
         assert_eq!(tc.index, 0);
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn deserialize_final_usage_chunk() {
-        let raw = include_str!("../../tests/fixtures/chunks/final_usage.json");
+        let raw = include_str!("../../../tests/fixtures/chunks/final_usage.json");
         let chunk: ChatChunk = serde_json::from_str(raw).unwrap();
         assert_eq!(
             chunk.choices[0].finish_reason.as_deref(),

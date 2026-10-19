@@ -1,0 +1,48 @@
+[package]
+name = "withnav-provider"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Model access layer of WithNav: models.json catalogue, API keys, one HTTP client per endpoint, chat SSE, FIM and System One wire clients"
+
+# Never the server: it knows nothing of sessions, settings.json or the event bus. The root crate
+# depends on it and reads `config.json` itself to decide which model each layer uses.
+[dependencies]
+withnav-client-api = { path = "../withnav-client-api" }
+instinct-flow = { path = "../instinct-flow" }
+tokio = { workspace = true, features = ["time", "sync", "fs", "io-util"] }
+tokio-util.workspace = true
+reqwest = { workspace = true, features = ["rustls", "query", "json", "stream", "gzip", "deflate", "brotli"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+futures-util.workspace = true
+futures = "0.3"
+bytes = "1"
+directories = "6.0.0"
+tempfile = "3"
+wiremock = { version = "0.6", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+wiremock = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+axum = "0.8.9"
+proptest = "1"
+insta = "1.48"
+
+[features]
+# Scripted-provider helpers (SSE bodies, raw HTTP responses) for the unit tests of crates that
+# depend on this one.
+test-support = ["dep:wiremock"]

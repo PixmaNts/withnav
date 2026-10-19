@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::ProviderError;
+use super::error::ProviderError;
 
 #[cfg(windows)]
 mod windows;
@@ -25,11 +25,7 @@ pub struct AuthStore {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
-    if let Some(path) = crate::paths::root_override("WITHNAV_CONFIG_DIR") {
-        return Some(path);
-    }
-    directories::ProjectDirs::from("", "", crate::paths::APP_NAME)
-        .map(|p| p.config_dir().to_path_buf())
+    super::dirs::config_dir()
 }
 
 fn auth_path(config_dir: &Path) -> PathBuf {
@@ -44,7 +40,7 @@ pub fn load_store(config_dir: &Path) -> Result<AuthStore, ProviderError> {
 }
 
 /// Read one permission-checked snapshot for typed credentials and diagnostics.
-pub(crate) fn load_store_with_document(
+pub fn load_store_with_document(
     config_dir: &Path,
 ) -> Result<(AuthStore, serde_json::Value), ProviderError> {
     let Some(text) = read_store(config_dir)? else {
@@ -97,7 +93,8 @@ pub fn resolve_key(
     resolve_key_from_store(&store, provider_name, api_key_env)
 }
 
-pub(crate) fn resolve_key_from_store(
+/// Resolve a provider's key from an already loaded store, falling back to the named environment variable.
+pub fn resolve_key_from_store(
     store: &AuthStore,
     provider_name: &str,
     api_key_env: Option<&str>,

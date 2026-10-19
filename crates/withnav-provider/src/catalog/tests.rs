@@ -49,11 +49,11 @@ fn oversized_cache_is_ignored() {
     file.as_file().set_len(100 * 1024 * 1024).unwrap();
     assert!(read_cache(file.path()).is_none());
 }
-use crate::provider::config::{ModelConfig, ProviderConfig, ReasoningHistory};
+use crate::config::{ModelConfig, ProviderConfig, ReasoningHistory};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const FIXTURE: &str = include_str!("../../../tests/fixtures/omni-models.json");
+const FIXTURE: &str = include_str!("../../../../tests/fixtures/omni-models.json");
 
 fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> ResolvedModel {
     ResolvedModel {
@@ -866,7 +866,7 @@ async fn a_generated_default_is_resolved_and_one_the_catalog_dropped_is_reported
         )
     };
     let mut r = resolved("", "m", ApiKind::Chat, None);
-    r.provider.catalog_format = Some(crate::provider::config::CatalogFormat::Omniroute);
+    r.provider.catalog_format = Some(crate::config::CatalogFormat::Omniroute);
     r.model.default_variant = Some("max".into());
     for (reported, expected) in [(r#"["low","max"]"#, true), (r#"["low"]"#, false)] {
         let (dir, server) = (tempfile::tempdir().unwrap(), serve(&tiers(reported)).await);

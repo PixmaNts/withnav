@@ -7,11 +7,6 @@
 
 use std::path::PathBuf;
 
-use directories::ProjectDirs;
-
-/// The application name every dir is derived from.
-pub(crate) const APP_NAME: &str = "withnav";
-
 /// The user's home folder: `HOME`, and on Windows, where it is usually unset, the
 /// profile folder from the Known Folder API.
 pub fn home_dir() -> Option<PathBuf> {
@@ -22,26 +17,7 @@ pub fn home_dir() -> Option<PathBuf> {
     home
 }
 
-/// WithNav's data dir (`~/.local/share/withnav` on Linux), when the home
-/// directory can be resolved.
-pub fn data_dir() -> Option<PathBuf> {
-    if let Some(path) = root_override("WITHNAV_DATA_DIR") {
-        return Some(path);
-    }
-    ProjectDirs::from("", "", APP_NAME).map(|dirs| dirs.data_dir().to_path_buf())
-}
-
-/// Resolve portable/test roots against the process directory, never a tool's workspace.
-pub(crate) fn root_override(name: &str) -> Option<PathBuf> {
-    let value = std::env::var_os(name).filter(|value| !value.is_empty())?;
-    let path = PathBuf::from(value);
-    Some(if path.is_absolute() {
-        path
-    } else {
-        std::path::absolute(path)
-            .expect("cannot resolve relative WithNav root override: process directory unavailable")
-    })
-}
+pub use crate::provider::dirs::data_dir;
 
 /// The conversation-history database, `<data_dir>/withnav.db`.
 pub fn history_db() -> Option<PathBuf> {

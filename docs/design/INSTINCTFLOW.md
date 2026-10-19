@@ -20,7 +20,7 @@ Top bar → three columns: flow list (220px) · canvas (flex) · inspector (340p
 
 ### Node types
 - **Trigger** — event + filter expression; inspector lists events with "can block" / "async only" **(proposal: blocking allowed on `message.received`, `turn.start`, `tool.pre_call`, `permission.requested`, `subagent.spawned`)** and shows the sample event JSON.
-- **Decision** (the three System One types, `src/provider/systemone.rs`):
+- **Decision** (the three System One types, `crates/withnav-provider/src/systemone.rs`):
   - `noul` — instructions; threshold slider; ports `yes ≥ t`, `no`.
   - `choice` — instructions + options (name → criteria); **one port per option**; run shows probability bars.
   - `score` — instructions + 2–10 ordered levels; "at least level" threshold; ports `≥ level`, `below`.

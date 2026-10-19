@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::client::ModelClient;
+use crate::config::{ModelConfig, ProviderConfig};
 use crate::error::ProviderError;
-use crate::provider::client::ModelClient;
-use crate::provider::config::{ModelConfig, ProviderConfig};
-use crate::provider::openai::ClientCache;
+use crate::openai::ClientCache;
 
 /// The instinct's wall-clock budget for one System One call, covering send
 /// and body (spec: ~2 s).
@@ -148,16 +148,13 @@ impl SystemOneClient {
         config_dir: &std::path::Path,
         cache: std::sync::Arc<ClientCache>,
     ) -> Result<Self, ProviderError> {
-        let api_key = crate::provider::auth::resolve_key(
-            config_dir,
-            provider_name,
-            provider.api_key_env.as_deref(),
-        )?;
+        let api_key =
+            crate::auth::resolve_key(config_dir, provider_name, provider.api_key_env.as_deref())?;
         Self::with_key(provider_name, provider, model, api_key, cache)
     }
 
     /// Construct from credentials already resolved from a configuration snapshot.
-    pub(crate) fn with_key(
+    pub fn with_key(
         provider_name: &str,
         provider: &ProviderConfig,
         model: &ModelConfig,
@@ -196,7 +193,7 @@ impl SystemOneClient {
     /// Resolves the `instinct` alias from a loaded models config and builds
     /// the client for it.
     pub fn from_alias(
-        models: &crate::provider::config::ModelsConfig,
+        models: &crate::config::ModelsConfig,
         alias: &str,
         config_dir: &std::path::Path,
         cache: std::sync::Arc<ClientCache>,
@@ -270,7 +267,7 @@ mod tests {
     #[test]
     fn response_parses_the_captured_fixture_shape() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/navigator/systemone_multi.json"
+            "../../../tests/fixtures/navigator/systemone_multi.json"
         ))
         .unwrap();
         let parsed: DecisionResponse = serde_json::from_value(fixture["response"].clone()).unwrap();

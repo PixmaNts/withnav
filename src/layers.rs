@@ -3,12 +3,8 @@
 //! later pass a shared assignment snapshot; there is no global reload mechanism here.
 use std::{path::Path, sync::Arc};
 
-use super::{
-    assignments::{AssignedModel, AssignmentResolver, Layer, LayerAssignment},
-    config::ModelsConfig,
-    openai::ClientCache,
-    systemone::SystemOneClient,
-};
+use crate::assignments::{AssignedModel, AssignmentResolver, Layer, LayerAssignment};
+use crate::provider::{config::ModelsConfig, openai::ClientCache, systemone::SystemOneClient};
 
 /// Loads one layer from config.json and validates its catalog identity and API.
 pub fn assigned(
@@ -68,8 +64,8 @@ pub fn available_instinct(
 /// Resolves the assignment against the runtime offer, preserving explicit off.
 pub fn chat_variant(
     assigned: &AssignedModel,
-    chat: &super::catalog::ResolvedChat,
-) -> anyhow::Result<Option<super::config::Variant>> {
+    chat: &crate::provider::catalog::ResolvedChat,
+) -> anyhow::Result<Option<crate::provider::config::Variant>> {
     let name = if assigned.prefer_low && chat.variants.contains_key("low") {
         Some("low")
     } else {

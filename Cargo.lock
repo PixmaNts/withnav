@@ -4181,6 +4181,7 @@ dependencies = [
  "withnav-client",
  "withnav-client-api",
  "withnav-client-state",
+ "withnav-provider",
  "withnav-tui",
 ]
 
@@ -4219,6 +4220,33 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ulid",
+ "withnav-client-api",
+]
+
+[[package]]
+name = "withnav-provider"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "directories",
+ "futures",
+ "futures-util",
+ "insta",
+ "instinct-flow",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.2",
+ "wiremock",
  "withnav-client-api",
 ]
 

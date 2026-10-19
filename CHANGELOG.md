@@ -73,6 +73,11 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 ### Fixed
 
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
+### Added
+
+- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF or WebP
+  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model marked `"images": true`
+  in `models.json` sees it; any other model gets a short note saying an image was shown.
 
 ## [0.8.1] - 2026-10-16
 

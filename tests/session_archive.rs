@@ -293,6 +293,7 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
     let transcript = vec![ChatMessage::User {
         content: "original transcript".into(),
         provenance: Default::default(),
+        images: Vec::new(),
     }];
     store.save_transcript(id, transcript.clone());
     let event = EventEnvelope::new(
@@ -392,6 +393,7 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
         vec![ChatMessage::User {
             content: "historic transcript".into(),
             provenance: Default::default(),
+            images: Vec::new(),
         }],
     );
     let event = EventEnvelope::new(

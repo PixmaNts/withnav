@@ -79,6 +79,7 @@ fn build_actor_with_policy(
         readable_roots: Vec::new(),
     };
     let max_message_tokens = resolved.model.max_message_tokens;
+    let images = resolved.model.images.unwrap_or(false);
     let mut actor = AgentActor::new(
         build_registry(allowed_tools, read_only, mcp),
         tool_context,
@@ -90,6 +91,7 @@ fn build_actor_with_policy(
         cancel,
     );
     actor.compaction_max_message_tokens = max_message_tokens;
+    actor.images = images;
     actor
 }
 

@@ -95,6 +95,7 @@ async fn send(variant: Option<&withnav::provider::config::Variant>) -> String {
         vec![ChatMessage::User {
             provenance: Default::default(),
             content: "hello".into(),
+            images: Vec::new(),
         }],
         Vec::new(),
         Some(256),

@@ -181,6 +181,7 @@ fn chunk_end(
         let message = ChatMessage::User {
             provenance: Default::default(),
             content: render_part(None, transcript, first, next - first, elided),
+            images: Vec::new(),
         };
         let needed = message_tokens(&message);
         if needed > cap {
@@ -223,6 +224,7 @@ async fn rolling_summary(
     let whole = ChatMessage::User {
         provenance: Default::default(),
         content: render_part(None, input.transcript, first, end - first, &elided),
+        images: Vec::new(),
     };
     if message_tokens(&whole) > input.source_budget {
         for &index in &planned.prefix_elidable {
@@ -230,6 +232,7 @@ async fn rolling_summary(
             let reduced = ChatMessage::User {
                 provenance: Default::default(),
                 content: render_part(None, input.transcript, first, end - first, &elided),
+                images: Vec::new(),
             };
             if message_tokens(&reduced) <= input.source_budget {
                 break;
@@ -279,16 +282,19 @@ async fn rolling_summary(
                 ),
                 temperature: None,
                 extra: Default::default(),
+                images: Default::default(),
             };
             if let Some(earlier) = &summary {
                 request.messages.push(ChatMessage::User {
                     provenance: Default::default(),
                     content: render_part(Some(earlier), &[], 0, 0, &HashSet::new()),
+                    images: Vec::new(),
                 });
             }
             request.messages.push(ChatMessage::User {
                 provenance: Default::default(),
                 content: render_part(None, input.transcript, first, next - first, &elided),
+                images: Vec::new(),
             });
             let needed = request.messages.iter().map(message_tokens).sum();
             if needed > input.source_budget {
@@ -336,6 +342,7 @@ async fn rolling_summary(
                     let size = message_tokens(&ChatMessage::User {
                         provenance: Default::default(),
                         content: render_part(None, input.transcript, first, next - first, &elided),
+                        images: Vec::new(),
                     });
                     next =
                         chunk_end(input.transcript, first, next, size / 2, &elided).unwrap_or(next);
@@ -420,6 +427,7 @@ pub fn build_summary_request(
                 part.len(),
                 &elided,
             ),
+            images: Vec::new(),
         };
         let needed = message_tokens(&system) + message_tokens(&user);
         if needed <= input.source_budget {
@@ -434,6 +442,7 @@ pub fn build_summary_request(
                 max_tokens: input.max_tokens,
                 temperature: None,
                 extra: Default::default(),
+                images: Default::default(),
             });
         }
         match cut.next() {
@@ -471,12 +480,31 @@ fn render_part(
             ChatMessage::User {
                 content,
                 provenance: provenance @ crate::provider::openai::UserProvenance::Flow { .. },
+                ..
             } => {
                 messages.push(json!({"role": "flow_note", "untrusted": true,
                     "provenance": provenance, "text": content}));
             }
-            ChatMessage::User { content, .. } => {
-                messages.push(json!({"role": "user", "text": content}))
+            ChatMessage::User {
+                content, images, ..
+            } => {
+                let mut message = json!({"role": "user", "text": content});
+                // The summarizer gets no bytes: it learns that a picture was there and what it
+                // was called, so the summary can say the Captain shared one.
+                if !images.is_empty() {
+                    message["images"] = images
+                        .iter()
+                        .map(|image| {
+                            json!({
+                                "attachment_id": image.attachment_id,
+                                "name": image.name,
+                                "media_type": image.media_type,
+                                "note": "visual content not supplied to the summarizer",
+                            })
+                        })
+                        .collect();
+                }
+                messages.push(message)
             }
             ChatMessage::Assistant {
                 content,

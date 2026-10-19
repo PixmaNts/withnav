@@ -1298,6 +1298,7 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
     let transcript = vec![ChatMessage::User {
         provenance: Default::default(),
         content: "untrusted answer".into(),
+        images: Vec::new(),
     }];
     assert!(
         store

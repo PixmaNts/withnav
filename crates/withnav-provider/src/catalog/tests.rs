@@ -77,6 +77,7 @@ fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> R
             max_output_tokens: None,
             supports_tools: true,
             supports_parallel_tool_calls: None,
+            images: None,
             thinking: None,
             default_variant: None,
             variants: None,

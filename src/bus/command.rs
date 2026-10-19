@@ -118,6 +118,7 @@ impl Command {
             !matches!(
                 b,
                 ContentBlock::Text { .. }
+                    | ContentBlock::Image(_)
                     | ContentBlock::AskAnswer { .. }
                     | ContentBlock::Skill { .. }
                     | ContentBlock::LoadedSkill { .. }
@@ -126,7 +127,27 @@ impl Command {
         if non_text {
             return Err(ServerError::NonTextContent);
         }
+        // An image is the Captain's own upload, checked against the session's attachment store
+        // at admission. A navigator wake, a delegated prompt or a subagent result carrying one
+        // would put pictures nobody uploaded under that source's authority.
+        if !self.from_captain() && !self.images().is_empty() {
+            return Err(ServerError::MalformedBody(
+                "only the Captain can attach images".into(),
+            ));
+        }
         Ok(())
+    }
+
+    /// The images of this command, in order. Only a Captain command may carry any
+    /// (`validate_content`).
+    pub fn images(&self) -> Vec<withnav_client_api::attachment::ImageRef> {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image(image) => Some(image.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Whether a captain wrote it: one of the human ingress identities (`user:http`,
@@ -180,6 +201,38 @@ mod tests {
             content: vec![ContentBlock::Text { text: text.into() }],
             created_at: SystemTime::now(),
         }
+    }
+
+    fn image_block() -> ContentBlock {
+        ContentBlock::Image(withnav_client_api::attachment::ImageRef {
+            attachment_id: "a1".into(),
+            media_type: String::new(),
+            name: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
+        })
+    }
+
+    #[test]
+    fn only_the_captain_may_attach_images() {
+        for (source, accepted) in [
+            ("user:cli", true),
+            ("user:http", true),
+            ("navigator:wake", false),
+            ("parent:agent", false),
+            ("user:subagent", false),
+        ] {
+            let mut cmd = text_command(DeliveryMode::NextTurn, "look");
+            cmd.source_actor_id = source.into();
+            cmd.content.push(image_block());
+            assert_eq!(cmd.validate_content().is_ok(), accepted, "{source}");
+        }
+        let mut cmd = text_command(DeliveryMode::NextTurn, "");
+        cmd.content = vec![image_block()];
+        assert!(cmd.validate_content().is_ok(), "images without text");
+        assert_eq!(cmd.images().len(), 1);
+        assert_eq!(cmd.text_content(), "");
     }
 
     #[test]

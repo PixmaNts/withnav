@@ -24,7 +24,24 @@ fn lock_fixture(name: &str, body: &str) {
     let path = dir.join(format!("{name}.json"));
     let locked = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("required golden fixture {}: {e}", path.display()));
-    assert_eq!(locked, body, "wire body drifted from fixture {name}");
+    assert_eq!(
+        expected_wire(&locked),
+        body,
+        "wire body drifted from fixture {name}"
+    );
+}
+
+/// The bytes a locked fixture body is expected to match. The built-in client writes
+/// fields in declaration order. The genai transport writes the same JSON value with
+/// object keys sorted. Its expected bytes are the fixture's value re-serialized, so
+/// the fixture stays the reference and any other drift still fails.
+fn expected_wire(locked: &str) -> String {
+    if withnav::provider::client::GENAI_CHAT {
+        let value: serde_json::Value = serde_json::from_str(locked).expect("fixture is JSON");
+        serde_json::to_string(&value).unwrap()
+    } else {
+        locked.to_string()
+    }
 }
 
 /// A models.json with three aliases on one OmniRoute provider at `base_url`.
@@ -168,5 +185,5 @@ async fn variants_preserve_their_golden_wire_bodies() {
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(plain, locked[0]);
+    assert_eq!(plain, expected_wire(&locked[0]));
 }

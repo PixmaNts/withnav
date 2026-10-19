@@ -2516,7 +2516,10 @@ mod application_status_tests {
                 .await
                 .unwrap();
             ticker.abort();
-            assert!(during >= 40, "the runtime stalled: {during} ticks");
+            // About 120 ticks fit in the hold on Linux and about 38 on Windows, whose
+            // default timer resolution (about 15.6 ms) stretches each 5 ms sleep. A
+            // blocked runtime shows almost none.
+            assert!(during >= 10, "the runtime stalled: {during} ticks");
             assert!(store
                 .snapshot()
                 .values()

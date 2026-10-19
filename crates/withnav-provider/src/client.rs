@@ -11,7 +11,17 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{ProviderConfig, Variant};
 use crate::error::ProviderError;
 use crate::openai::{ChatRequest, ClientCache};
-use crate::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
+#[cfg(not(feature = "genai-chat"))]
+use crate::start_and_consume;
+use crate::{AssistantMessage, StreamDelta, extract_error_message};
+
+#[cfg(feature = "genai-chat")]
+pub mod genai;
+
+/// Whether `ModelClient::chat` runs on the genai crate (`genai-chat` feature). Request-body
+/// tests read it: genai writes the same JSON value with object keys in sorted order instead
+/// of WithNav's field order.
+pub const GENAI_CHAT: bool = cfg!(feature = "genai-chat");
 
 /// The largest model list accepted.
 const MAX_CATALOG_BYTES: usize = 2_000_000;
@@ -174,8 +184,25 @@ impl ModelClient {
 
     /// The streaming chat call: sends `request` with `variant` (the selected
     /// variant's overrides, if any) merged into the body under `cancel`, then
-    /// streams the answer through `on_delta` until `[DONE]`.
+    /// streams the answer through `on_delta` until `[DONE]`. With the
+    /// `genai-chat` feature the call goes through the genai crate instead
+    /// (see [`genai`]); the contract is the same.
     pub async fn chat(
+        &self,
+        request: ChatRequest,
+        variant: Option<&Variant>,
+        cancel: &CancellationToken,
+        on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+    ) -> Result<AssistantMessage, ProviderError> {
+        #[cfg(feature = "genai-chat")]
+        let answer = self.chat_genai(request, variant, cancel, on_delta).await;
+        #[cfg(not(feature = "genai-chat"))]
+        let answer = self.chat_builtin(request, variant, cancel, on_delta).await;
+        answer
+    }
+
+    #[cfg(not(feature = "genai-chat"))]
+    async fn chat_builtin(
         &self,
         mut request: ChatRequest,
         variant: Option<&Variant>,

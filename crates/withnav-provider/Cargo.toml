@@ -25,6 +25,8 @@ bytes = "1"
 directories = "6.0.0"
 tempfile = "3"
 wiremock = { version = "0.6", optional = true }
+# Prototype chat transport over the genai crate (fork pinned by revision); off by default.
+genai = { git = "https://github.com/PixmaNts/rust-genai", rev = "7c949ea87563d3c55eb3c5f396a4ec11bb1b77da", optional = true, default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -46,3 +48,5 @@ insta = "1.48"
 # Scripted-provider helpers (SSE bodies, raw HTTP responses) for the unit tests of crates that
 # depend on this one.
 test-support = ["dep:wiremock"]
+# Run `ModelClient::chat` on genai instead of the built-in OpenAI-compatible client.
+genai-chat = ["dep:genai"]

@@ -2378,6 +2378,7 @@ mod tests {
                 transcript.push(ChatMessage::User {
                     content: "child completion".into(),
                     provenance: UserProvenance::Subagent,
+                    images: Vec::new(),
                 });
                 history.save_transcript(id, transcript.clone());
                 history.load_for_resume(id).await.unwrap();
@@ -2901,7 +2902,7 @@ mod tests {
                                 assert_eq!(content.as_ptr() as usize, original);
                             }
                             if steer {
-                                assert!(matches!(&transcript[1], ChatMessage::User { content, provenance: UserProvenance::Parent } if content == "guidance"));
+                                assert!(matches!(&transcript[1], ChatMessage::User { content, provenance: UserProvenance::Parent, .. } if content == "guidance"));
                             }
                             match delivery {
                                 "empty" => Ok(None),
@@ -2910,8 +2911,7 @@ mod tests {
                                     let mut transcript = transcript.to_vec();
                                     transcript.push(ChatMessage::User {
                                         content: "delivered result".into(),
-                                        provenance: UserProvenance::Subagent,
-                                    });
+                                        provenance: UserProvenance::Subagent, images: Vec::new() });
                                     Ok(Some(transcript))
                                 }
                             }
@@ -2962,7 +2962,7 @@ mod tests {
                         );
                         if delivery == "inject" {
                             assert!(
-                                matches!(transcript.last(), Some(ChatMessage::User { content, provenance: UserProvenance::Subagent }) if content == "delivered result")
+                                matches!(transcript.last(), Some(ChatMessage::User { content, provenance: UserProvenance::Subagent, .. }) if content == "delivered result")
                             );
                         }
                     }

@@ -78,6 +78,7 @@ pub fn build_request(
         max_tokens,
         temperature: None,
         extra: Default::default(),
+        images: Default::default(),
     }
 }
 
@@ -130,6 +131,7 @@ mod tests {
         let user = ChatMessage::User {
             provenance: Default::default(),
             content: "hi".into(),
+            images: Vec::new(),
         };
         let tools = vec![ToolDef::function(
             "read",
@@ -148,6 +150,7 @@ mod tests {
         let user = ChatMessage::User {
             provenance: Default::default(),
             content: "hi".into(),
+            images: Vec::new(),
         };
         let req = build_request("m", Some("role"), None, None, vec![user], vec![], None);
         assert!(matches!(
@@ -166,6 +169,7 @@ mod tests {
         let user = ChatMessage::User {
             provenance: Default::default(),
             content: "hi".into(),
+            images: Vec::new(),
         };
         let req = build_request(
             "m",

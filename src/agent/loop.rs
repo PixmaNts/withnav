@@ -276,7 +276,10 @@ async fn run_steps_inner(
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
         let role_message = actor.role_message();
-        let history = actor.effective_history();
+        let transcript_history = actor.effective_history();
+        let image_plan = crate::agent::images::plan(&transcript_history, actor.images);
+        let image_ids = image_plan.send_ids(&transcript_history);
+        let mut history = actor.request_history(transcript_history.clone());
         let tools = actor.effective_tool_schemas();
         if actor.input_budget.is_some_and(|budget| {
             crate::agent::context::estimate(
@@ -294,9 +297,37 @@ async fn run_steps_inner(
             });
         }
 
+        // The bytes of the images this request sends, read after the estimate (which counts a
+        // fixed cost per image and needs none). An image that cannot be read becomes a text
+        // placeholder and the step goes on; the estimate only over-counted it.
+        let mut image_payloads = std::collections::HashMap::new();
+        if let Some(loader) = actor.attachment_loader.clone()
+            && !image_ids.is_empty()
+        {
+            let mut loaded = loader.load(image_ids.clone()).await;
+            let mut unavailable = std::collections::HashSet::new();
+            for id in &image_ids {
+                match loaded.remove(id) {
+                    Some(Ok(payload)) => {
+                        image_payloads.insert(id.clone(), payload);
+                    }
+                    Some(Err(reason)) => {
+                        tracing::warn!(attachment = %id, %reason, "image unavailable for request");
+                        unavailable.insert(id.clone());
+                    }
+                    None => {
+                        unavailable.insert(id.clone());
+                    }
+                }
+            }
+            if !unavailable.is_empty() {
+                history = image_plan.apply_excluding(&transcript_history, &unavailable);
+            }
+        }
+
         observe(AgentEvent::StepStarted);
 
-        let request = build_request(
+        let mut request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
@@ -305,6 +336,7 @@ async fn run_steps_inner(
             tools,
             actor.max_tokens,
         );
+        request.images = image_payloads;
 
         let message = match client
             .chat(
@@ -1555,6 +1587,10 @@ fn append_interrupted(actor: &mut AgentActor, tool_call_id: &str) {
 mod permission_tests;
 
 #[cfg(test)]
+#[path = "loop_image_tests.rs"]
+mod image_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::actor::AgentActor;
@@ -1581,6 +1617,7 @@ mod tests {
                     transcript.push(ChatMessage::User {
                         provenance: crate::provider::openai::UserProvenance::Parent,
                         content: "committed steering".into(),
+                        images: Vec::new(),
                     });
                     Ok(crate::agent::boundary::BoundaryResult::Watchdog(Some(
                         transcript,
@@ -2200,6 +2237,7 @@ mod tests {
                         transcript.push(ChatMessage::User {
                             provenance: crate::provider::openai::UserProvenance::Parent,
                             content: "committed steering".into(),
+                            images: Vec::new(),
                         });
                         Err(crate::agent::boundary::BoundaryError {
                             message: "delivery failed".into(),
@@ -2954,6 +2992,7 @@ mod tests {
             t.push(ChatMessage::User {
                 provenance: Default::default(),
                 content: format!("request {n}"),
+                images: Vec::new(),
             });
             t.push(ChatMessage::Assistant {
                 content: None,

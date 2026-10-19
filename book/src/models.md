@@ -70,6 +70,7 @@ The key must equal `<provider>/<model>`. WithNav refuses a catalogue where they 
 | `max_message_tokens` | Optional. Bound for one serialised compaction message. Must be positive. |
 | `supports_tools` | Whether the model can call tools. Default `false`. |
 | `supports_parallel_tool_calls` | Optional. |
+| `images` | Whether the model accepts image input. Absent means `false`: the model gets a text placeholder where an image would go. |
 | `reasoning_history` | `preserve` (default) or `omit`. |
 | `default_variant` | The variant a new conversation starts with. If you leave it out, there is no variant. |
 | `variants` | Named request overrides; see below. |

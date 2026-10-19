@@ -77,6 +77,7 @@ impl ProgressReviewer for ModelReviewer {
                     provenance: crate::provider::openai::UserProvenance::Subagent,
                     content: serde_json::json!({"untrusted_evidence":evidence.clone().bounded()})
                         .to_string(),
+                    images: Vec::new(),
                 }],
                 vec![],
                 Some(128),

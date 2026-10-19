@@ -19,6 +19,12 @@ pub const DEFAULT_OUTPUT_RESERVE: u64 = 8192;
 /// 8k model's window.
 pub const MIN_MARGIN: u64 = 4096;
 
+/// Tokens counted for each image a request sends. A rough constant: providers bill images
+/// differently (by pixels, patches or tiles) and one formula would be no truer than a fixed
+/// number. The usage the provider reports stays the truth. The base64 is never counted as text:
+/// it is a transport encoding, not what the model reads.
+pub const IMAGE_TOKENS: u64 = 1600;
+
 /// UTF-8 bytes / 4, rounded up.
 pub fn text_tokens(text: &str) -> u64 {
     bytes_tokens(text.len())
@@ -30,6 +36,10 @@ fn bytes_tokens(bytes: usize) -> u64 {
 
 /// One message: its text, reasoning and tool calls, plus the framing.
 pub fn message_tokens(message: &ChatMessage) -> u64 {
+    let images = match message {
+        ChatMessage::User { images, .. } => images.len() as u64 * IMAGE_TOKENS,
+        _ => 0,
+    };
     let bytes = match message {
         ChatMessage::System { content } | ChatMessage::User { content, .. } => content.len(),
         ChatMessage::Assistant {
@@ -50,7 +60,7 @@ pub fn message_tokens(message: &ChatMessage) -> u64 {
             ..
         } => tool_call_id.len() + content.len(),
     };
-    bytes_tokens(bytes) + MESSAGE_FRAMING_TOKENS
+    bytes_tokens(bytes) + images + MESSAGE_FRAMING_TOKENS
 }
 
 /// The tool definitions as they are serialized into the request.

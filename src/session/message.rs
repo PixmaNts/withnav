@@ -98,6 +98,7 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
         source: command.source_actor_id.clone(),
         target: command.target_actor_id.clone(),
         mode: command.mode.as_str().to_string(),
+        images: command.images(),
     };
     let committed = command.clone();
     let status = handle.status.clone();

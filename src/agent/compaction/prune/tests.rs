@@ -82,6 +82,7 @@ async fn batches_share_bounded_state_and_never_score_tail_or_unpaired_calls() {
     let mut transcript = vec![ChatMessage::User {
         provenance: Default::default(),
         content: "task".repeat(30000),
+        images: Vec::new(),
     }];
     for id in 0..20 {
         transcript.extend(exchange(
@@ -186,6 +187,7 @@ fn pins_resolve_errors_only_on_same_target_and_preserve_latest_references() {
     transcript.push(ChatMessage::User {
         provenance: Default::default(),
         content: "keep b".into(),
+        images: Vec::new(),
     });
     let pins = pinned(&transcript);
     assert!(pins.contains(&1) && pins.contains(&3));
@@ -227,6 +229,7 @@ async fn mutation_heads_and_pinned_errors_skills_and_references_bypass_scoring()
     transcript.push(ChatMessage::User {
         provenance: Default::default(),
         content: "check important".into(),
+        images: Vec::new(),
     });
     let judge = fake(0.0, 0.0);
     let projection = prune(&transcript, 0, end, None, &judge, &CancellationToken::new())

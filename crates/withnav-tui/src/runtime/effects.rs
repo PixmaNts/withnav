@@ -12,10 +12,15 @@ use crate::{
     input::Editor,
     protocol::{ClientEvent, Effect, Generation, SubmitRequest, SubmitResponse},
     reducer::strip_controls,
+    state::{MAX_ATTACHMENT_BYTES, PendingAttachment},
 };
 use withnav_client::{
     client::Client,
     stream::{self, StreamEvent},
+};
+use withnav_client_api::{
+    attachment::{ImageRef, human_size},
+    command::ContentBlock,
 };
 
 /// What the loop does after an effect ran.
@@ -425,6 +430,23 @@ impl Executor {
             // Legacy variant (never emitted by the reducer): no editor revision to echo.
             Effect::Send(request) => self.send(request, 0, ctx),
             Effect::SendAt { request, revision } => self.send(request, revision, ctx),
+            Effect::SendWithAttachments {
+                request,
+                revision,
+                attachments,
+            } => self.send_with_attachments(request, revision, attachments, ctx),
+            Effect::CheckAttachment { path } => {
+                let workspace = ctx.workspace.clone();
+                let home = self.host.home_dir();
+                self.spawn_event(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        check_attachment(&path, &workspace, home.as_deref())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("could not read the file: {e}")));
+                    ClientEvent::AttachmentChecked { generation, result }
+                });
+            }
             Effect::AnswerPermission {
                 session_id,
                 request_id,
@@ -623,6 +645,62 @@ impl Executor {
         });
     }
 
+    /// Uploads each image to the session, then sends `request` with one image block per upload
+    /// after its text. The session exists by now (the reducer sends only once it does), which is
+    /// why the upload happens here and not at `/attach` time. An upload that fails stops the
+    /// send before any message leaves, so the Captain's text and chips stay as they were; images
+    /// already uploaded stay on the server until the session is deleted (bounded by its quota).
+    fn send_with_attachments(
+        &mut self,
+        mut request: SubmitRequest,
+        revision: u64,
+        attachments: Vec<PendingAttachment>,
+        ctx: &Context,
+    ) {
+        let generation = ctx.generation.clone();
+        let Some(id) = ctx.session_id.clone() else {
+            let event = submit_event(
+                generation,
+                revision,
+                Err(SubmitFailure::Rejected(
+                    "no conversation to send the message to".into(),
+                )),
+            );
+            self.spawn_event(async move { event });
+            return;
+        };
+        let client = self.client.clone();
+        self.spawn_event(async move {
+            for attachment in &attachments {
+                let uploaded = upload_one(&client, &id, attachment).await;
+                match uploaded {
+                    // The server fills type, size and dimensions from what it stored; the
+                    // client names only the id.
+                    Ok(image) => request.content.push(ContentBlock::Image(ImageRef {
+                        attachment_id: image.attachment_id,
+                        media_type: String::new(),
+                        name: String::new(),
+                        size: 0,
+                        width: 0,
+                        height: 0,
+                    })),
+                    Err(message) => {
+                        return submit_event(
+                            generation,
+                            revision,
+                            Err(SubmitFailure::Rejected(message)),
+                        );
+                    }
+                }
+            }
+            submit_event(
+                generation,
+                revision,
+                client.send(&id, request).await.map_err(classify_send_error),
+            )
+        });
+    }
+
     /// Starts the stream of the tab tagged `generation`, replacing the one it had.
     fn subscribe(&mut self, session_id: String, cursor: Option<u64>, generation: Generation) {
         self.streams.retain(|s| {
@@ -664,6 +742,102 @@ impl Executor {
             let _ = tx.send(work.await).await;
         });
     }
+}
+
+/// Reads the file again at send time (it may have changed since `/attach`) and uploads it.
+async fn upload_one(
+    client: &Client,
+    session_id: &str,
+    attachment: &PendingAttachment,
+) -> Result<ImageRef, String> {
+    let path = attachment.path.clone();
+    let name = attachment.name.clone();
+    let read = tokio::task::spawn_blocking(move || read_attachment(&path))
+        .await
+        .map_err(|e| format!("could not read {name}: {e}"))?;
+    let bytes = read.map_err(|e| format!("{}: {e}", attachment.name))?;
+    client
+        .upload_attachment(session_id, &attachment.name, bytes)
+        .await
+        .map_err(|e| format!("could not upload {}: {e}", attachment.name))
+}
+
+/// The bytes of an attached file, refusing one that grew past the limit since it was attached.
+fn read_attachment(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot read the file: {e}"))?;
+    let mut bytes = Vec::new();
+    // One byte more than allowed, so a file over the limit is told from one at it without
+    // reading all of an arbitrarily large file.
+    file.take(MAX_ATTACHMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read the file: {e}"))?;
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(too_big(bytes.len() as u64));
+    }
+    Ok(bytes)
+}
+
+fn too_big(size: u64) -> String {
+    format!(
+        "{} is over the {} limit; downscale the image first",
+        human_size(size),
+        human_size(MAX_ATTACHMENT_BYTES)
+    )
+}
+
+/// What `/attach <path>` names: `~` is the home folder, a relative path is relative to the
+/// workspace, and a path pasted with quotes (drag and drop into a terminal) loses them. Only the
+/// file's metadata is read here; its bytes are read when the message is sent. The type is not
+/// judged: the server detects it from the bytes and refuses what is not an image.
+pub(super) fn check_attachment(
+    typed: &str,
+    workspace: &str,
+    home: Option<&std::path::Path>,
+) -> Result<PendingAttachment, String> {
+    let typed = typed.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|q| {
+            typed
+                .strip_prefix(*q)
+                .and_then(|rest| rest.strip_suffix(*q))
+        })
+        .unwrap_or(typed);
+    if unquoted.is_empty() {
+        return Err("usage: /attach <path to an image>".into());
+    }
+    let mut path = if unquoted == "~" || unquoted.starts_with("~/") {
+        match home {
+            Some(home) => home.join(unquoted.trim_start_matches('~').trim_start_matches('/')),
+            None => return Err("cannot expand ~: the home folder is unknown".into()),
+        }
+    } else {
+        std::path::PathBuf::from(unquoted)
+    };
+    if path.is_relative() {
+        path = std::path::Path::new(workspace).join(path);
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    if meta.len() == 0 {
+        return Err(format!("{} is empty", path.display()));
+    }
+    if meta.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!("{}: {}", path.display(), too_big(meta.len())));
+    }
+    let name = path
+        .file_name()
+        .map(|n| crate::reducer::strip_controls(&n.to_string_lossy()))
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| format!("{} has no file name", path.display()))?;
+    Ok(PendingAttachment {
+        path,
+        name,
+        size: meta.len(),
+    })
 }
 
 impl Drop for Executor {

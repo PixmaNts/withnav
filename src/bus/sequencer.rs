@@ -37,6 +37,8 @@ pub struct PendingCommand {
     pub source: String,
     pub target: String,
     pub mode: String,
+    /// The Captain's images, by reference, as admission resolved them from the attachment store.
+    pub images: Vec<withnav_client_api::attachment::ImageRef>,
 }
 
 /// Committer invoked by the sequencer AFTER `message.received` is seq-assigned
@@ -554,6 +556,7 @@ fn message_received_candidate(command: PendingCommand) -> Candidate {
             target: command.target,
             mode: command.mode,
             content: command.content,
+            images: command.images,
             selected_skill: command
                 .selected_skill
                 .map(|name| crate::bus::event::SelectedSkill {
@@ -802,6 +805,7 @@ mod tests {
                     source: "user:cli".into(),
                     target: "agent:main".into(),
                     mode: "next-turn".into(),
+                    images: Vec::new(),
                 },
                 commit,
             )

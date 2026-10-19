@@ -7,6 +7,7 @@ fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
         provenance: Default::default(),
         content: text.into(),
+        images: Vec::new(),
     }
 }
 

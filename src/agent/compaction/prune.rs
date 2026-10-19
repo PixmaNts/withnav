@@ -162,6 +162,7 @@ fn latest_captain(transcript: &[ChatMessage]) -> &str {
             ChatMessage::User {
                 content,
                 provenance: UserProvenance::Captain,
+                ..
             } => Some(content.as_str()),
             _ => None,
         })
@@ -209,6 +210,7 @@ fn state(transcript: &[ChatMessage], earlier: Option<&str>) -> Option<String> {
             ChatMessage::User {
                 content,
                 provenance: UserProvenance::Captain,
+                ..
             } => pairs.push((head(content, 2500), String::new())),
             ChatMessage::Assistant {
                 content: Some(text),

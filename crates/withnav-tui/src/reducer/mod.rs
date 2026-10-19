@@ -60,6 +60,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Metadata { generation, .. }
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
+        | ClientEvent::AttachmentChecked { generation, .. }
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::QuestionAnswered { generation, .. }
@@ -127,6 +128,9 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.variant_list_wanted = false;
     s.pending_submit_text = None;
     s.pending_submit = None;
+    // Images attached to the old conversation's message box do not follow the tab elsewhere.
+    s.pending_attachments.clear();
+    s.attachments_sending = 0;
     s.delivery_uncertain = false;
     s.unread = false;
     let generation = Generation(s.issue());
@@ -190,8 +194,29 @@ pub(super) fn refresh_start_variant(
     };
 }
 
+#[cfg(test)]
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
-    let content = if let Some(arguments) = text
+    send_effect_with(text, revision, vec![])
+}
+
+/// The send of the active tab's message: its pending images ride with it, and stay in the tab
+/// (counted in `attachments_sending`) until the server acknowledges the message.
+pub(crate) fn send_for_tab(s: &mut State, text: String, revision: u64) -> Effect {
+    let attachments = s.pending_attachments.clone();
+    s.attachments_sending = attachments.len();
+    send_effect_with(text, revision, attachments)
+}
+
+fn send_effect_with(
+    text: String,
+    revision: u64,
+    attachments: Vec<crate::state::PendingAttachment>,
+) -> Effect {
+    use withnav_client_api::command::ContentBlock;
+    let content = if text.trim().is_empty() && !attachments.is_empty() {
+        // A message may be images only: an empty text block would be noise for the model.
+        vec![]
+    } else if let Some(arguments) = text
         .strip_prefix("/skill")
         .filter(|arguments| arguments.starts_with(char::is_whitespace))
     {
@@ -201,14 +226,14 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
             .unwrap_or((arguments, ""));
         let request = request.trim();
         vec![
-            withnav_client_api::command::ContentBlock::Text {
+            ContentBlock::Text {
                 text: if request.is_empty() {
                     format!("Apply the {name} skill.")
                 } else {
                     request.to_string()
                 },
             },
-            withnav_client_api::command::ContentBlock::Skill {
+            ContentBlock::Skill {
                 name: name.to_string(),
             },
         ]
@@ -218,16 +243,22 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
         } else {
             text
         };
-        vec![withnav_client_api::command::ContentBlock::Text { text }]
+        vec![ContentBlock::Text { text }]
     };
-    Effect::SendAt {
-        request: SubmitRequest {
-            answer: None,
-            target_actor_id: "agent:main".into(),
-            mode: "next-turn".into(),
-            content,
-        },
-        revision,
+    let request = SubmitRequest {
+        answer: None,
+        target_actor_id: "agent:main".into(),
+        mode: "next-turn".into(),
+        content,
+    };
+    if attachments.is_empty() {
+        Effect::SendAt { request, revision }
+    } else {
+        Effect::SendWithAttachments {
+            request,
+            revision,
+            attachments,
+        }
     }
 }
 
@@ -738,7 +769,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 });
                 if let Some(text) = s.pending_submit_text.take() {
                     let revision = s.pending_submit.take().unwrap_or(0);
-                    effects.push(send_effect(text, revision));
+                    effects.push(send_for_tab(s, text, revision));
                 }
             }
             Err(x) => {
@@ -831,10 +862,43 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 keep_newer_context(s, snapshot);
             }
         }
+        ClientEvent::AttachmentChecked { result, .. } => match result {
+            Ok(attachment) => {
+                if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
+                    push_local(
+                        s,
+                        BlockKind::Notice(format!(
+                            "a message carries at most {} images; send it or use /attach clear",
+                            crate::state::MAX_ATTACHMENTS
+                        )),
+                    );
+                } else {
+                    push_local(
+                        s,
+                        BlockKind::Notice(format!("attached {}", attachment.chip())),
+                    );
+                    s.pending_attachments.push(attachment);
+                }
+            }
+            Err(why) => push_local(s, BlockKind::Notice(format!("/attach: {why}"))),
+        },
         ClientEvent::Submitted {
             revision, result, ..
         } => match result {
             Ok(r) => {
+                // The server took the message with its images: only now do the chips go. The
+                // `message.received` event carries the text alone, so the transcript would show
+                // the Captain's message without its images; echo them from the list sent.
+                let sent =
+                    std::mem::take(&mut s.attachments_sending).min(s.pending_attachments.len());
+                if sent > 0 {
+                    let chips: Vec<String> = s
+                        .pending_attachments
+                        .drain(..sent)
+                        .map(|a| a.chip())
+                        .collect();
+                    push_local(s, BlockKind::Notice(format!("sent {}", chips.join(" "))));
+                }
                 if !background {
                     effects.push(Effect::ClearEditor { revision });
                 } else if s.draft_revision == revision {
@@ -845,10 +909,17 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     push_local(s, BlockKind::Notice(n));
                 }
             }
-            Err(x) => push_local(s, BlockKind::Error(x)),
+            Err(x) => {
+                // Text and chips stay for another try.
+                s.attachments_sending = 0;
+                push_local(s, BlockKind::Error(x));
+            }
         },
         ClientEvent::DeliveryUncertain { .. } => {
             s.delivery_uncertain = true;
+            // The message may have reached the server; its chips stay with the draft until the
+            // Captain has checked the conversation.
+            s.attachments_sending = 0;
             push_local(
                 s,
                 BlockKind::Notice(

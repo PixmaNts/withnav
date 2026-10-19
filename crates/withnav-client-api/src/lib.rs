@@ -5,6 +5,7 @@
 //! Data only. Nothing here runs a task, opens a socket or draws a screen, so a client can depend
 //! on this crate without pulling in the server's runtime.
 
+pub mod attachment;
 pub mod command;
 pub mod event;
 pub mod permissions;

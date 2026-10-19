@@ -907,3 +907,265 @@ async fn wheel_bursts_accumulate_before_render() {
     }));
     assert_eq!(runtime.ui.scroll, 6);
 }
+
+/// A server that records, in order, each upload (name and bytes) and each message it receives.
+async fn recording_server(
+    refuse_uploads: bool,
+) -> (String, mpsc::UnboundedReceiver<serde_json::Value>) {
+    use axum::{Json, Router, body::Bytes, extract::Query, http::StatusCode, routing::post};
+    let (seen, rx) = mpsc::unbounded_channel();
+    let uploads = seen.clone();
+    let app = Router::new()
+        .route(
+            "/v1/sessions/{id}/attachments",
+            post(
+                move |Query(query): Query<std::collections::HashMap<String, String>>,
+                      body: Bytes| {
+                    let seen = uploads.clone();
+                    async move {
+                        if refuse_uploads {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error": "not an image"})),
+                            );
+                        }
+                        let name = query["name"].clone();
+                        let n = seen.send(serde_json::json!({"upload": name, "bytes": body.len()}));
+                        let _ = n;
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({"attachment_id": format!("att-{name}"),
+                                "media_type": "image/png", "name": name, "size": body.len(),
+                                "width": 1, "height": 1})),
+                        )
+                    }
+                },
+            ),
+        )
+        .route(
+            "/v1/sessions/{id}/messages",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let seen = seen.clone();
+                async move {
+                    let _ = seen.send(serde_json::json!({"send": request["content"]}));
+                    Json(serde_json::json!({"command_id": "c", "accepted": true,
+                        "actor_state": "idle"}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, rx)
+}
+
+fn pending(dir: &std::path::Path, name: &str, bytes: &[u8]) -> crate::state::PendingAttachment {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    crate::state::PendingAttachment {
+        path,
+        name: name.into(),
+        size: bytes.len() as u64,
+    }
+}
+
+fn send_request(text: &str) -> SubmitRequest {
+    SubmitRequest {
+        content: vec![withnav_client_api::command::ContentBlock::Text { text: text.into() }],
+        ..submit()
+    }
+}
+
+#[tokio::test]
+async fn images_are_uploaded_in_order_then_sent_after_the_text() {
+    let (url, mut seen) = recording_server(false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let attachments = vec![
+        pending(dir.path(), "a.png", &[1, 2, 3]),
+        pending(dir.path(), "b.png", &[4, 5]),
+    ];
+    let (tx, mut rx) = mpsc::channel(16);
+    let mut exec = Executor::new(
+        Client::new(url, None),
+        tx,
+        Arc::new(crate::test_host::FileHost),
+    );
+    exec.execute(
+        Effect::SendWithAttachments {
+            request: send_request("look"),
+            revision: 9,
+            attachments,
+        },
+        &ctx(2, Some("s1")),
+        &mut Editor::new(),
+    );
+    match next(&mut rx).await {
+        ClientEvent::Submitted {
+            generation,
+            revision,
+            result,
+        } => {
+            assert_eq!((generation, revision), (Generation(2), 9));
+            assert!(result.unwrap().accepted);
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"upload": "a.png", "bytes": 3})
+    );
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"upload": "b.png", "bytes": 2})
+    );
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"send": [
+            {"type": "text", "text": "look"},
+            {"type": "image", "attachment_id": "att-a.png"},
+            {"type": "image", "attachment_id": "att-b.png"},
+        ]})
+    );
+}
+
+#[tokio::test]
+async fn a_refused_upload_sends_no_message_and_fails_the_submission() {
+    let (url, mut seen) = recording_server(true).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::channel(16);
+    let mut exec = Executor::new(
+        Client::new(url, None),
+        tx,
+        Arc::new(crate::test_host::FileHost),
+    );
+    exec.execute(
+        Effect::SendWithAttachments {
+            request: send_request("look"),
+            revision: 1,
+            attachments: vec![pending(dir.path(), "a.png", &[1])],
+        },
+        &ctx(2, Some("s1")),
+        &mut Editor::new(),
+    );
+    match next(&mut rx).await {
+        ClientEvent::Submitted {
+            result: Err(why), ..
+        } => {
+            assert!(
+                why.contains("a.png") && why.contains("not an image"),
+                "{why}"
+            );
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+    assert!(
+        seen.try_recv().is_err(),
+        "nothing may be sent after a failed upload"
+    );
+}
+
+#[tokio::test]
+async fn a_file_that_vanished_before_sending_fails_the_submission() {
+    let (url, mut seen) = recording_server(false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gone = pending(dir.path(), "a.png", &[1]);
+    std::fs::remove_file(&gone.path).unwrap();
+    let (tx, mut rx) = mpsc::channel(16);
+    let mut exec = Executor::new(
+        Client::new(url, None),
+        tx,
+        Arc::new(crate::test_host::FileHost),
+    );
+    exec.execute(
+        Effect::SendWithAttachments {
+            request: send_request("look"),
+            revision: 1,
+            attachments: vec![gone],
+        },
+        &ctx(2, Some("s1")),
+        &mut Editor::new(),
+    );
+    assert!(matches!(
+        next(&mut rx).await,
+        ClientEvent::Submitted { result: Err(_), .. }
+    ));
+    assert!(seen.try_recv().is_err());
+}
+
+#[test]
+fn attach_resolves_paths_and_refuses_what_cannot_be_sent() {
+    use super::effects::check_attachment;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+    std::fs::write(dir.path().join("shot.png"), vec![0u8; 2_500]).unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("deep.png"), [0u8; 5]).unwrap();
+
+    // Relative to the workspace, with or without quotes, and `~` from the host's home folder.
+    let ok = check_attachment("shot.png", ws, None).unwrap();
+    assert_eq!((ok.name.as_str(), ok.size), ("shot.png", 2_500));
+    assert_eq!(ok.chip(), "[image shot.png, 3 KB]");
+    assert_eq!(
+        check_attachment("'shot.png'", ws, None).unwrap().name,
+        "shot.png"
+    );
+    assert_eq!(
+        check_attachment("~/sub/deep.png", "/elsewhere", Some(dir.path()))
+            .unwrap()
+            .name,
+        "deep.png"
+    );
+    assert!(
+        check_attachment("~/x.png", ws, None)
+            .unwrap_err()
+            .contains("home folder")
+    );
+
+    // Refused, each with a reason.
+    assert!(check_attachment("nope.png", ws, None).is_err());
+    assert!(
+        check_attachment("sub", ws, None)
+            .unwrap_err()
+            .contains("not a file")
+    );
+    std::fs::write(dir.path().join("empty.png"), []).unwrap();
+    assert!(
+        check_attachment("empty.png", ws, None)
+            .unwrap_err()
+            .contains("empty")
+    );
+    let big = dir.path().join("big.png");
+    std::fs::write(
+        &big,
+        vec![0u8; crate::state::MAX_ATTACHMENT_BYTES as usize + 1],
+    )
+    .unwrap();
+    let why = check_attachment("big.png", ws, None).unwrap_err();
+    assert!(why.contains("limit") && why.contains("downscale"), "{why}");
+    // Exactly at the limit is accepted.
+    std::fs::write(&big, vec![0u8; crate::state::MAX_ATTACHMENT_BYTES as usize]).unwrap();
+    assert!(check_attachment("big.png", ws, None).is_ok());
+}
+
+#[tokio::test]
+async fn attach_effect_reports_the_check_under_the_generation_of_the_moment() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.png"), [1u8; 4]).unwrap();
+    let (mut exec, mut rx) = executor();
+    let mut context = ctx(5, None);
+    context.workspace = dir.path().to_str().unwrap().into();
+    exec.execute(
+        Effect::CheckAttachment {
+            path: "a.png".into(),
+        },
+        &context,
+        &mut Editor::new(),
+    );
+    match next(&mut rx).await {
+        ClientEvent::AttachmentChecked { generation, result } => {
+            assert_eq!(generation, Generation(5));
+            assert_eq!(result.unwrap().size, 4);
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+}

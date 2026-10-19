@@ -932,6 +932,7 @@ mod tests {
                     ChatMessage::User {
                         provenance: Default::default(),
                         content: format!("request {n}"),
+                        images: Vec::new(),
                     },
                     ChatMessage::Assistant {
                         content: Some(format!("answer {n} {}", "word ".repeat(1200))),

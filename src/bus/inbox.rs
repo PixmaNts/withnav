@@ -300,9 +300,14 @@ impl ActorInbox {
                     .push(crate::provider::openai::ChatMessage::User {
                         content: text,
                         provenance: cmd.user_provenance(),
+                        images: cmd.images(),
                     });
             } else {
-                actor.push_user_in_current_turn(text, cmd.user_provenance());
+                actor.push_user_with_images_in_current_turn(
+                    text,
+                    cmd.user_provenance(),
+                    cmd.images(),
+                );
             }
         }
         outcome
@@ -560,6 +565,54 @@ mod tests {
         assert_eq!(outcome.downgrade_notice, None);
         assert_eq!(user_texts(&actor), vec!["m0", "m1", "m2"]);
         assert!(!inbox.has_buffered());
+    }
+
+    fn image_ref(id: &str) -> withnav_client_api::attachment::ImageRef {
+        withnav_client_api::attachment::ImageRef {
+            attachment_id: id.into(),
+            media_type: "image/png".into(),
+            name: format!("{id}.png"),
+            size: 4,
+            width: 1,
+            height: 1,
+        }
+    }
+
+    fn image_command(text: &str) -> Command {
+        let mut cmd = text_command(DeliveryMode::NextTurn, text);
+        cmd.content.push(ContentBlock::Image(image_ref("a1")));
+        cmd
+    }
+
+    // The Captain's images land on the user message; the stored text is the typed text only.
+    #[tokio::test]
+    async fn captain_images_are_stored_on_the_user_message_without_touching_its_text() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        send(&tx, image_command("what is this?"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert!(
+            matches!(&actor.transcript[..], [ChatMessage::User { content, images, .. }]
+            if content == "what is this?" && images == &vec![image_ref("a1")])
+        );
+    }
+
+    // An answer to a pending ask stays a Tool result; the images follow as a Captain message.
+    #[tokio::test]
+    async fn images_sent_with_an_ask_answer_follow_it_in_a_captain_message() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "ask_1".into(),
+        });
+        send(&tx, image_command("this one"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert!(matches!(&actor.transcript[..], [
+            ChatMessage::Tool { content, answered_by: Some(crate::provider::openai::UserProvenance::Captain), .. },
+            ChatMessage::User { content: after, images, .. },
+        ] if content == "this one" && after.is_empty() && images.len() == 1));
     }
 
     // Given a command with a non-Text block at the accept boundary

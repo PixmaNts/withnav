@@ -395,6 +395,9 @@ pub struct Service {
     pub(crate) config: Arc<SessionConfig>,
     /// The conversation-history store: every conversation is persisted.
     history: Arc<super::store::HistoryStore>,
+    /// Image attachments: its own connection to the history database, so blobs never queue
+    /// behind the history writer. `None` when the connection could not be opened.
+    attachments: Option<Arc<super::attachments::AttachmentStore>>,
     /// Editor context injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
     /// The lifecycle gate: resume, close and delete run one at a time, so a
@@ -719,6 +722,13 @@ impl Service {
             super::instance::Instance::acquire(&config.history_db).map_err(ServerError::History)?,
         );
         history.set_owner(instance.id);
+        let attachments = match super::attachments::AttachmentStore::open(&config.history_db) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                tracing::warn!(%error, "image attachments unavailable");
+                None
+            }
+        };
         history
             .recover_children(&instance.directory)
             .map_err(ServerError::History)?;
@@ -761,6 +771,7 @@ impl Service {
             sessions,
             config: Arc::new(config),
             history: Arc::new(history),
+            attachments,
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -805,6 +816,36 @@ impl Service {
     /// resume, close or delete; never call a gated method while holding it.
     pub(super) async fn lifecycle_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.gate.lock().await
+    }
+
+    /// Fills the command's image references from this session's stored rows, before anything is
+    /// sequenced: an unknown or foreign id refuses the whole message.
+    async fn resolve_images(&self, command: &mut Command) -> Result<(), ServerError> {
+        if !command
+            .content
+            .iter()
+            .any(|block| matches!(block, crate::bus::command::ContentBlock::Image(_)))
+        {
+            return Ok(());
+        }
+        let store = self.attachments.clone().ok_or_else(|| {
+            ServerError::MalformedBody("image attachments are unavailable".into())
+        })?;
+        let session = command.session_id.to_string();
+        let mut content = std::mem::take(&mut command.content);
+        let (content, result) = tokio::task::spawn_blocking(move || {
+            let result = super::attachments::resolve_command_images(&store, &session, &mut content);
+            (content, result)
+        })
+        .await
+        .map_err(|error| ServerError::MalformedBody(error.to_string()))?;
+        command.content = content;
+        result.map_err(|error| ServerError::MalformedBody(error.to_string()))
+    }
+
+    /// The image attachment store, `None` when its connection could not be opened.
+    pub fn attachments(&self) -> Option<Arc<super::attachments::AttachmentStore>> {
+        self.attachments.clone()
     }
 
     /// The history store.
@@ -1404,6 +1445,7 @@ impl Service {
                 "loaded skill content is server-only".into(),
             ));
         }
+        self.resolve_images(&mut command).await?;
         let names: Vec<_> = command
             .content
             .iter()
@@ -2639,6 +2681,12 @@ impl Service {
             temp: crate::permission::floor::system_temp_roots(),
         };
         actor.permission_session = session_id.to_string();
+        actor.attachment_loader = self.attachments.clone().map(|store| {
+            Arc::new(super::attachments::SessionLoader {
+                store,
+                session_id: session_id.to_string(),
+            }) as crate::agent::images::SharedLoader
+        });
         actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
@@ -3151,7 +3199,7 @@ impl Service {
                                 "reason":payload.get("reason")}).to_string();
                         }
                         let event = super::subagents::live_result::candidate(child, &payload, &text);
-                        transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
+                        transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text, images: Vec::new() });
                         let committed_transcript = transcript.clone();
                         let committed_history = history.clone();
                         #[cfg(debug_assertions)]

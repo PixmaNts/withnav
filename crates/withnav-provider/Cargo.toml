@@ -22,6 +22,7 @@ tracing.workspace = true
 futures-util.workspace = true
 futures = "0.3"
 bytes = "1"
+base64 = "0.22"
 directories = "6.0.0"
 tempfile = "3"
 wiremock = { version = "0.6", optional = true }

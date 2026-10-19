@@ -304,6 +304,7 @@ impl LlmCommenter {
             ),
             temperature: Some(0.2),
             extra: self.variant.clone().unwrap_or_default(),
+            images: Default::default(),
         };
         let client = ModelClient::new(
             &self.resolved.provider_name,
@@ -377,8 +378,7 @@ impl LlmCommenter {
             let mut messages = vec![
                 ChatMessage::System { content: system },
                 ChatMessage::User { provenance: Default::default(),
-                    content: self.build_user_message(ctx),
-                },
+                    content: self.build_user_message(ctx), images: Vec::new() },
             ];
 
             let mut message = None;
@@ -388,8 +388,7 @@ impl LlmCommenter {
                 // and says so.
                 let round_tools = if last {
                     messages.push(ChatMessage::User { provenance: Default::default(),
-                        content: NO_MORE_TOOLS_NOTICE.to_string(),
-                    });
+                        content: NO_MORE_TOOLS_NOTICE.to_string(), images: Vec::new() });
                     Vec::new()
                 } else {
                     tools.clone().unwrap_or_default()
@@ -440,8 +439,7 @@ answered_by: None, });
                 messages.push(ChatMessage::User { provenance: Default::default(),
                     content: format!(
                         "Your last reply tried to call a tool. {NO_MORE_TOOLS_NOTICE}"
-                    ),
-                });
+                    ), images: Vec::new() });
                 message = self.chat_round(&messages, Vec::new(), cancel).await?;
             }
             Ok::<_, ModelError>(message)

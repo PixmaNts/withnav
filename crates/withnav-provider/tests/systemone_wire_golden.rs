@@ -38,6 +38,7 @@ fn model_config() -> ModelConfig {
         max_output_tokens: Some(2048),
         supports_tools: false,
         supports_parallel_tool_calls: None,
+        images: None,
         thinking: None,
         default_variant: None,
         variants: None,

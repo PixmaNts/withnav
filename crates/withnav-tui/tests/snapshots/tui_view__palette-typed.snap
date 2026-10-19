@@ -13,6 +13,7 @@ expression: snapshot
             │ /new [agent]          Voyage · Session — new conversation in a new tab   │            
             │ /sessions             Voyage · Session — browse conversations            │            
             │ /model [model_id]     switch this conversation's model                   │            
+            │ /attach <path>|clear  attach an image to your next message (or clear)    │            
             │ /skills               choose a skill to load for your next message       │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            
@@ -25,8 +26,7 @@ expression: snapshot
             │ /agent [id]           server agent                                       │            
             │                                                                          │            
             │ ↑↓ move  enter run  esc close                                            │            
-            └──────────────────────────────────────────────────────────────────────────┘            
-                     │──────────────────────────────────────────────────────────────────────────────
+            └──────────────────────────────────────────────────────────────────────────┘────────────
                      │ ready                                                          session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││/                                                                           │

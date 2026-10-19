@@ -100,6 +100,8 @@ htmd = "0.5"
 html2text = "0.17"
 encoding_rs = "0.8.42"
 include_dir = "0.7"
+# Image type and dimensions from the header alone, for uploaded attachments (never decodes pixels).
+imagesize = "0.15"
 
 [dev-dependencies]
 withnav-provider = { path = "crates/withnav-provider", features = ["test-support"] }

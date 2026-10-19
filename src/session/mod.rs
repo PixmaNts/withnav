@@ -5,6 +5,7 @@
 //! lifecycle callbacks (`hooks`), the instructions log (`rules_log`), actor construction (`actor`) and the SQLite
 //! history (`store`). Transport-free: HTTP and SSE live in `server/`.
 mod actor;
+pub mod attachments;
 mod catalog;
 mod commands;
 mod config;

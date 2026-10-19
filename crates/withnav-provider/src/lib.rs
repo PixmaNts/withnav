@@ -6,7 +6,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{ProviderError, SseError};
 use crate::openai::ChatChunk;
-use crate::sse::SseEventStream;
 
 pub mod auth;
 pub mod catalog;
@@ -258,7 +257,7 @@ pub async fn start_and_consume(
         return Err(ProviderError::WrongContentType(content_type));
     }
 
-    let events = SseEventStream::new(Box::pin(response.bytes_stream()));
+    let events = sse::decode_events(Box::pin(response.bytes_stream()));
     consume_event_stream(events, cancel, on_delta).await
 }
 

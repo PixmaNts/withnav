@@ -15,6 +15,7 @@ pub mod dirs;
 pub mod error;
 pub mod fim;
 pub mod model_name;
+pub mod opaque;
 pub mod openai;
 pub mod sse;
 pub mod systemone;

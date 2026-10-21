@@ -20,6 +20,7 @@ fn call(id: &str, name: &str, args: &str) -> ChatMessage {
                 arguments: args.into(),
             },
         }],
+        opaque: None,
     }
 }
 
@@ -28,6 +29,7 @@ fn answer(text: &str) -> ChatMessage {
         content: Some(text.into()),
         reasoning_content: None,
         tool_calls: vec![],
+        opaque: None,
     }
 }
 
@@ -812,12 +814,14 @@ fn the_reasoning_projection_keeps_indices_and_drops_only_reasoning() {
             content: None,
             reasoning_content: Some("thoughts ".repeat(500)),
             tool_calls: vec![],
+            opaque: None,
         },
         user("b"),
         ChatMessage::Assistant {
             content: Some("x".into()),
             reasoning_content: Some("late".into()),
             tool_calls: vec![],
+            opaque: None,
         },
     ];
     let projected = project_reasoning(&t, 3);

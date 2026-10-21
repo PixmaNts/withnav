@@ -41,7 +41,13 @@
 //! (not the store) keeps it from replaying to subscribers, so the resumed
 //! stream does not look closed. `llm.delta` and `context.updated` are live-only and never stored.
 //! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
-//! after every turn end.
+//! after every turn end. An assistant message may carry an optional `opaque`
+//! object: provider-opaque reasoning (producer stamp, items whose `data` is JSON
+//! text kept byte for byte), absent when there is none. Reading it is lenient (a
+//! bad item or producer drops that data, never the transcript); reading the
+//! transcript itself is strict: NULL is an empty conversation, any other value
+//! that does not parse fails the resume and leaves the row untouched, because an
+//! empty resume would let the next snapshot overwrite the stored history.
 //!
 //! `model_resolution` is NULL or the versioned JSON of a
 //! [`ModelResolution`](crate::provider::catalog::ModelResolution): the model
@@ -3420,6 +3426,7 @@ mod tests {
                         arguments: "{}".into(),
                     },
                 }],
+                opaque: None,
             },
             ChatMessage::Tool {
                 tool_call_id: format!("c{n}"),
@@ -3430,6 +3437,7 @@ mod tests {
                 content: Some("done".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
+                opaque: None,
             },
         ]
     }
@@ -3484,6 +3492,96 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no stored session"), "{err}");
+    }
+
+    // Given an assistant message carrying opaque reasoning (non-ASCII, escapes, unsorted keys)
+    // When the transcript is saved, flushed and resumed
+    // Then the message is equal and every `data` string is byte-identical
+    #[tokio::test]
+    async fn opaque_reasoning_survives_save_and_resume_byte_for_byte() {
+        use crate::provider::openai::{OpaqueItem, OpaqueReasoning, Producer};
+        let (_dir, store) = temp_store();
+        let id = Ulid::generate();
+        store.record_session(id, "/w", "m", false).await.unwrap();
+        let big = format!("{{\"z\":\"{}\",\"a\":[1,2]}}", "x".repeat(200_000));
+        let items = vec![
+            OpaqueItem {
+                kind: "thinking".into(),
+                data: "{\"z\":1,\"signature\":\"caf\u{e9} \\u00e9 \\\"q\\\" \u{1F980}\",\"a\":{\"y\":1,\"b\":2}}"
+                    .into(),
+            },
+            OpaqueItem {
+                kind: "redacted".into(),
+                data: big,
+            },
+        ];
+        let mut transcript = exchange(0);
+        let ChatMessage::Assistant { opaque, .. } = &mut transcript[3] else {
+            panic!("exchange ends with an assistant message");
+        };
+        *opaque = Some(OpaqueReasoning {
+            producer: Producer {
+                wire: "anthropic".into(),
+                endpoint: "https://gw.example/v1".into(),
+                model: "claude-x".into(),
+            },
+            items,
+        });
+        store.save_transcript(id, transcript.clone());
+        store.flush().await.unwrap();
+        let (_, back, _) = store.load_for_resume(id).await.unwrap().unwrap();
+        let (
+            ChatMessage::Assistant { opaque: want, .. },
+            ChatMessage::Assistant { opaque: got, .. },
+        ) = (&transcript[3], &back[3])
+        else {
+            panic!("assistant expected");
+        };
+        assert_eq!(got, want);
+        let datas = |o: &Option<OpaqueReasoning>| -> Vec<String> {
+            o.iter()
+                .flat_map(|o| &o.items)
+                .map(|i| i.data.clone())
+                .collect()
+        };
+        assert_eq!(datas(got), datas(want));
+        assert_eq!(datas(got).len(), 2);
+        assert_eq!(back.len(), transcript.len());
+    }
+
+    // Given a transcript row that is not a readable transcript
+    // When the session is resumed
+    // Then the resume fails naming the session and the stored value is untouched
+    #[tokio::test]
+    async fn a_corrupt_transcript_fails_the_resume_and_leaves_the_row() {
+        let (dir, store) = temp_store();
+        let id = Ulid::generate();
+        store.record_session(id, "/w", "m", false).await.unwrap();
+        let conn = side_connection(&dir);
+        // NULL is an empty conversation.
+        let (_, empty, _) = store.load_for_resume(id).await.unwrap().unwrap();
+        assert!(empty.is_empty());
+        for garbage in [
+            "{not json",
+            "",
+            "{\"role\":\"user\"}",
+            "[{\"role\":\"nobody\"}]",
+        ] {
+            conn.execute("UPDATE sessions SET transcript = ?1", [garbage])
+                .unwrap();
+            let err = store.load_for_resume(id).await.unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "the saved transcript of session {id} cannot be read"
+                )),
+                "{err}"
+            );
+            assert!(store.load(id).await.is_err());
+            let raw: String = conn
+                .query_row("SELECT transcript FROM sessions", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(raw, garbage);
+        }
     }
 
     // Given a stored checkpoint that does not fit the transcript, or is not JSON

@@ -423,6 +423,7 @@ impl LlmCommenter {
                             },
                         })
                         .collect(),
+                        opaque: None,
                 });
                 for tc in &msg.tool_calls {
                     let output = self.execute_tool(ctx, tc).await;

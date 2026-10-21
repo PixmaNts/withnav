@@ -36,6 +36,7 @@ pub fn message_tokens(message: &ChatMessage) -> u64 {
             content,
             reasoning_content,
             tool_calls,
+            ..
         } => {
             content.as_deref().map_or(0, str::len)
                 + reasoning_content.as_deref().map_or(0, str::len)

@@ -72,6 +72,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
                     content: Some(format!("answer {n} {}", "word ".repeat(1400))),
                     reasoning_content: None,
                     tool_calls: vec![],
+                    opaque: None,
                 },
             ]
         })
@@ -674,6 +675,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
                     arguments: "{\"path\":\"big.txt\"}".into(),
                 },
             }],
+            opaque: None,
         },
         ChatMessage::Tool {
             tool_call_id: format!("call_{n}"),
@@ -684,6 +686,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
             content: Some(format!("answer {n} {}", "word ".repeat(1_000))),
             reasoning_content: None,
             tool_calls: vec![],
+            opaque: None,
         },
     ]
 }
@@ -698,6 +701,7 @@ fn short_turn(n: usize) -> Vec<ChatMessage> {
             content: Some(format!("answer {n}")),
             reasoning_content: None,
             tool_calls: vec![],
+            opaque: None,
         },
     ]
 }
@@ -891,6 +895,7 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
                     content: Some(format!("answer {n}")),
                     reasoning_content: Some("think ".repeat(2_500)),
                     tool_calls: vec![],
+                    opaque: None,
                 },
             ]
         })

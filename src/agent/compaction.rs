@@ -265,6 +265,7 @@ fn drop_empty_assistants(mut history: Vec<ChatMessage>) -> Vec<ChatMessage> {
             content,
             reasoning_content,
             tool_calls,
+            ..
         } => {
             content.as_deref().is_some_and(|c| !c.is_empty())
                 || reasoning_content.is_some()

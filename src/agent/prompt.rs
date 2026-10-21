@@ -107,6 +107,7 @@ pub fn assistant_history_message(msg: &AssistantMessage, policy: ReasoningHistor
         content,
         reasoning_content,
         tool_calls,
+        opaque: None,
     }
 }
 
@@ -207,6 +208,7 @@ mod tests {
                 content,
                 reasoning_content,
                 tool_calls,
+                ..
             } => {
                 assert_eq!(content.as_deref(), Some("answer"));
                 assert_eq!(reasoning_content.as_deref(), Some("chain of thought"));

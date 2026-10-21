@@ -111,6 +111,7 @@ fn call(id: &str, name: &str, args: &str) -> ChatMessage {
                 arguments: args.into(),
             },
         }],
+        opaque: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn answer(text: &str) -> ChatMessage {
         content: Some(text.into()),
         reasoning_content: None,
         tool_calls: vec![],
+        opaque: None,
     }
 }
 

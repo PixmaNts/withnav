@@ -22,6 +22,7 @@ fn assistant_call() -> ChatMessage {
                 arguments: "{\"path\":\"a\"}".into(),
             },
         }],
+        opaque: None,
     }
 }
 

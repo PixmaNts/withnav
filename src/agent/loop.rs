@@ -200,6 +200,7 @@ async fn run_steps_inner(
                     arguments: call.args.to_string(),
                 },
             }],
+            opaque: None,
         });
         match run_skill(actor, &call, observe, None, None).await {
             One::Ask(request, destination) => {
@@ -2966,6 +2967,7 @@ mod tests {
                         arguments: "{}".into(),
                     },
                 }],
+                opaque: None,
             });
             t.push(ChatMessage::Tool {
                 tool_call_id: format!("c{n}"),
@@ -2976,6 +2978,7 @@ mod tests {
                 content: Some(format!("done {n}")),
                 reasoning_content: None,
                 tool_calls: vec![],
+                opaque: None,
             });
         }
         t

@@ -28,7 +28,9 @@ fn bytes_tokens(bytes: usize) -> u64 {
     (bytes as u64).div_ceil(4)
 }
 
-/// One message: its text, reasoning and tool calls, plus the framing.
+/// One message: its text, reasoning (opaque data included: the estimate runs
+/// on the projection, where only what the request carries is left) and tool
+/// calls, plus the framing.
 pub fn message_tokens(message: &ChatMessage) -> u64 {
     let bytes = match message {
         ChatMessage::System { content } | ChatMessage::User { content, .. } => content.len(),
@@ -36,9 +38,13 @@ pub fn message_tokens(message: &ChatMessage) -> u64 {
             content,
             reasoning_content,
             tool_calls,
+            opaque,
         } => {
             content.as_deref().map_or(0, str::len)
                 + reasoning_content.as_deref().map_or(0, str::len)
+                + opaque.as_ref().map_or(0, |o| {
+                    o.items.iter().map(|item| item.data.len()).sum::<usize>()
+                })
                 + tool_calls
                     .iter()
                     .map(|c| c.id.len() + c.function.name.len() + c.function.arguments.len())

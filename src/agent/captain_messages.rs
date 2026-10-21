@@ -331,6 +331,7 @@ mod tests {
                 content: Some("assistant".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
+                opaque: None,
             },
             ChatMessage::Tool {
                 tool_call_id: "call".into(),
@@ -409,6 +410,7 @@ mod tests {
                     call("r1", "read", r#"{"path":"README"}"#),
                     call("a2", "ask", r#"{"question":"Which remote?"}"#),
                 ],
+                opaque: None,
             },
             ChatMessage::Tool {
                 tool_call_id: "a1".into(),
@@ -482,6 +484,7 @@ mod tests {
                     arguments: r#"{"question":"Which file?"}"#.into(),
                 },
             }],
+            opaque: None,
         };
         let answer = |content: &str| ChatMessage::Tool {
             tool_call_id: "a1".into(),
@@ -557,6 +560,7 @@ mod recent_tests {
             content: Some(text.into()),
             reasoning_content: None,
             tool_calls: vec![],
+            opaque: None,
         }
     }
 
@@ -636,6 +640,7 @@ mod recent_tests {
                     arguments: serde_json::json!({ "question": question }).to_string(),
                 },
             }],
+            opaque: None,
         };
         let transcript = vec![
             user(UserProvenance::Captain, "clean the test files"),

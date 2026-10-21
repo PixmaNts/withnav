@@ -33,6 +33,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
                     content: Some(format!("answer {n} {}", "word ".repeat(1200))),
                     reasoning_content: None,
                     tool_calls: vec![],
+                    opaque: None,
                 },
             ]
         })
@@ -281,6 +282,7 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
                     content: Some("word ".repeat(6000)),
                     reasoning_content: None,
                     tool_calls: vec![],
+                    opaque: None,
                 },
             ]
         })

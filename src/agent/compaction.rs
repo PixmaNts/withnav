@@ -17,7 +17,8 @@ use std::collections::{BTreeSet, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::context::{Breakdown, estimate, message_tokens};
-use crate::provider::openai::{ChatMessage, ToolDef};
+use crate::provider::opaque::retain_for;
+use crate::provider::openai::{ChatMessage, Producer, ToolDef};
 
 pub mod prune;
 mod summary;
@@ -237,38 +238,54 @@ pub fn effective_history(
     drop_empty_assistants(out)
 }
 
-/// The transcript as a model that did not write it receives it: the reasoning
-/// of the messages before `floor` left out. Index for index the same as the
-/// transcript (no message is removed), so a plan and a checkpoint made against
-/// it hold for the transcript itself. The one projection shared by request
-/// building, the context gauge and every compaction, so they measure the same
-/// prompt.
-pub fn project_reasoning(transcript: &[ChatMessage], floor: usize) -> Vec<ChatMessage> {
+/// The transcript as `destination` receives it: the reasoning of the messages
+/// before `floor` left out, and the provider-opaque reasoning of every message
+/// kept only where [`retain_for`] allows it (same producer, sendable items).
+/// Index for index the same as the transcript (no message is removed), so a
+/// plan and a checkpoint made against it hold for the transcript itself. The
+/// one projection shared by request building, the context gauge and every
+/// compaction, so they measure the same prompt.
+pub fn project_reasoning(
+    transcript: &[ChatMessage],
+    floor: usize,
+    destination: &Producer,
+) -> Vec<ChatMessage> {
     let mut projected = transcript.to_vec();
-    for message in projected.iter_mut().take(floor) {
+    for (index, message) in projected.iter_mut().enumerate() {
         if let ChatMessage::Assistant {
-            reasoning_content, ..
+            reasoning_content,
+            opaque,
+            ..
         } = message
         {
-            *reasoning_content = None;
+            if index < floor {
+                *reasoning_content = None;
+                *opaque = None;
+            } else {
+                retain_for(opaque, destination);
+            }
         }
     }
     projected
 }
 
 /// Leaves out an assistant message that holds nothing (no text, no reasoning,
-/// no tool call): what is left of one whose only content was reasoning that
-/// was projected away.
+/// no tool call, no opaque reasoning): what is left of one whose only content
+/// was reasoning that was projected away. Run on a projection, where opaque
+/// data that is still there is exactly what the request will carry, so a
+/// message holding only that is not empty.
 fn drop_empty_assistants(mut history: Vec<ChatMessage>) -> Vec<ChatMessage> {
     history.retain(|message| match message {
         ChatMessage::Assistant {
             content,
             reasoning_content,
             tool_calls,
+            opaque,
         } => {
             content.as_deref().is_some_and(|c| !c.is_empty())
                 || reasoning_content.is_some()
                 || !tool_calls.is_empty()
+                || opaque.is_some()
         }
         _ => true,
     });

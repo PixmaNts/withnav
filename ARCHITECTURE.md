@@ -731,6 +731,13 @@ the later 0.6 scope, not this contract.
   `crates/withnav-provider/`, next to `fim.rs` and `systemone.rs`, with its wire-golden test in that
   crate's `tests/`; it never imports the root. Which layer or agent uses it is decided in the root
   (`assignments.rs`, `layers.rs`), not in the crate.
+- Reasoning a provider wants back unchanged (signed thinking, encrypted reasoning) goes in the
+  assistant message's `opaque` field (`withnav-provider`'s `opaque.rs`, ADR 0016): the adapter
+  returns it in `ChatTurn.opaque`, `agent/prompt.rs::assistant_history_message` stamps the
+  producer (wire, endpoint, model), and `opaque::retain_for` is the only replay rule, applied in
+  `compaction::project_reasoning` and again in `ModelClient::chat_turn`. A new wire marks its
+  kinds in `opaque::sendable` and writes them in its own serializer. Opaque data never goes into
+  an event, a summary or a client type.
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission

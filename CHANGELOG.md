@@ -6,6 +6,14 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- The stored transcript can keep reasoning that only the model that wrote it can read back (signed thinking blocks, encrypted reasoning), with the identity of that model, and sends it back only to the same endpoint and model. No provider fills it yet; conversations already stored read back unchanged. (#88)
+
+### Fixed
+
+- A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
+
 ## [0.8.1] - 2026-10-16
 
 WithNav 0.8.1 shows the MCP servers' status in the terminal client and the browser, reworks the

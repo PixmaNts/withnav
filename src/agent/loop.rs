@@ -307,8 +307,8 @@ async fn run_steps_inner(
             actor.max_tokens,
         );
 
-        let message = match client
-            .chat(
+        let turn = match client
+            .chat_turn(
                 request,
                 actor.variant.as_ref(),
                 &actor.cancel,
@@ -324,9 +324,13 @@ async fn run_steps_inner(
             Err(e) => return Err(AgentError::Provider(e)),
         };
 
-        actor
-            .transcript
-            .push(assistant_history_message(&message, actor.reasoning_history));
+        let crate::provider::ChatTurn { message, opaque } = turn;
+        actor.transcript.push(assistant_history_message(
+            &message,
+            opaque,
+            &actor.producer(),
+            actor.reasoning_history,
+        ));
         observe(AgentEvent::Response(&message));
         observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
 

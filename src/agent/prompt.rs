@@ -1,7 +1,8 @@
 use crate::provider::AssistantMessage;
 use crate::provider::config::ReasoningHistory;
 use crate::provider::openai::{
-    ChatMessage, ChatRequest, RequestFunction, RequestToolCall, StreamOptions, ToolDef,
+    ChatMessage, ChatRequest, OpaqueItem, OpaqueReasoning, Producer, RequestFunction,
+    RequestToolCall, StreamOptions, ToolDef,
 };
 
 pub const SYSTEM_CONTRACT: &str = "\
@@ -81,7 +82,18 @@ pub fn build_request(
     }
 }
 
-pub fn assistant_history_message(msg: &AssistantMessage, policy: ReasoningHistory) -> ChatMessage {
+/// The transcript entry for one model answer. `opaque` is the reasoning the
+/// provider marked as replayable only to its own model: it is stamped with
+/// `producer` (the model that just produced it) under `Preserve`, and dropped
+/// under `Omit`, which means reasoning is not sent back. A producer that
+/// identifies nothing stamps nothing, since such bytes could be replayed to any
+/// model.
+pub fn assistant_history_message(
+    msg: &AssistantMessage,
+    opaque: Vec<OpaqueItem>,
+    producer: &Producer,
+    policy: ReasoningHistory,
+) -> ChatMessage {
     let content = if msg.text.is_empty() {
         None
     } else {
@@ -103,11 +115,20 @@ pub fn assistant_history_message(msg: &AssistantMessage, policy: ReasoningHistor
             },
         })
         .collect();
+    let opaque = match policy {
+        ReasoningHistory::Preserve if !opaque.is_empty() && producer.is_valid() => {
+            Some(OpaqueReasoning {
+                producer: producer.clone(),
+                items: opaque,
+            })
+        }
+        _ => None,
+    };
     ChatMessage::Assistant {
         content,
         reasoning_content,
         tool_calls,
-        opaque: None,
+        opaque,
     }
 }
 
@@ -116,6 +137,30 @@ mod tests {
     use super::*;
     use crate::provider::ToolCall;
     use serde_json::json;
+
+    fn producer() -> Producer {
+        Producer::chat_completions("https://api.example.com/v1", "m")
+    }
+
+    fn items() -> Vec<OpaqueItem> {
+        vec![
+            OpaqueItem {
+                kind: "k1".into(),
+                data: r#"{"b":1,"a":"é"}"#.into(),
+            },
+            OpaqueItem {
+                kind: "k2".into(),
+                data: "{}".into(),
+            },
+        ]
+    }
+
+    fn stamped(wire: &ChatMessage) -> Option<&OpaqueReasoning> {
+        match wire {
+            ChatMessage::Assistant { opaque, .. } => opaque.as_ref(),
+            other => panic!("expected Assistant, got {other:?}"),
+        }
+    }
 
     fn assistant(text: &str, thinking: &str, tool_calls: Vec<ToolCall>) -> AssistantMessage {
         AssistantMessage {
@@ -202,7 +247,8 @@ mod tests {
                 args_valid: true,
             }],
         );
-        let wire = assistant_history_message(&m, ReasoningHistory::Preserve);
+        let wire =
+            assistant_history_message(&m, Vec::new(), &producer(), ReasoningHistory::Preserve);
         match wire {
             ChatMessage::Assistant {
                 content,
@@ -223,13 +269,97 @@ mod tests {
     #[test]
     fn omit_policy_drops_reasoning_content() {
         let m = assistant("answer", "chain of thought", vec![]);
-        let wire = assistant_history_message(&m, ReasoningHistory::Omit);
+        let wire = assistant_history_message(&m, Vec::new(), &producer(), ReasoningHistory::Omit);
         match wire {
             ChatMessage::Assistant {
                 reasoning_content, ..
             } => assert!(reasoning_content.is_none()),
             other => panic!("expected Assistant, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn preserve_stamps_opaque_items_with_the_producer_in_order() {
+        let m = assistant("answer", "", vec![]);
+        let wire = assistant_history_message(&m, items(), &producer(), ReasoningHistory::Preserve);
+        let reasoning = stamped(&wire).expect("stamped");
+        assert_eq!(reasoning.producer, producer());
+        assert_eq!(reasoning.items, items());
+    }
+
+    #[test]
+    fn omit_drops_opaque_items() {
+        let m = assistant("answer", "", vec![]);
+        let wire = assistant_history_message(&m, items(), &producer(), ReasoningHistory::Omit);
+        assert!(stamped(&wire).is_none());
+    }
+
+    #[test]
+    fn no_items_stamp_nothing() {
+        let m = assistant("answer", "", vec![]);
+        let wire =
+            assistant_history_message(&m, Vec::new(), &producer(), ReasoningHistory::Preserve);
+        assert!(stamped(&wire).is_none());
+    }
+
+    #[test]
+    fn a_producer_that_identifies_nothing_stamps_nothing() {
+        let m = assistant("answer", "", vec![]);
+        for bad in [
+            Producer::chat_completions("not a url", "m"),
+            Producer::chat_completions("https://api.example.com/v1", ""),
+        ] {
+            assert!(!bad.is_valid());
+            let wire = assistant_history_message(&m, items(), &bad, ReasoningHistory::Preserve);
+            assert!(stamped(&wire).is_none());
+        }
+    }
+
+    /// The stamped message goes into the transcript as built; the opaque data
+    /// lives there and nowhere a client reads.
+    #[test]
+    fn the_transcript_keeps_the_stamped_opaque_reasoning() {
+        let m = assistant("answer", "", vec![]);
+        let mut transcript = vec![ChatMessage::User {
+            provenance: Default::default(),
+            content: "hi".into(),
+        }];
+        transcript.push(assistant_history_message(
+            &m,
+            items(),
+            &producer(),
+            ReasoningHistory::Preserve,
+        ));
+        let reasoning = stamped(transcript.last().unwrap()).expect("kept");
+        assert_eq!(reasoning.producer, producer());
+        assert_eq!(reasoning.items, items());
+    }
+
+    #[test]
+    fn the_response_event_carries_no_opaque_data() {
+        let sentinel = "OPAQUE-SENTINEL-7f3a";
+        let turn = crate::provider::ChatTurn {
+            message: assistant("answer", "thoughts", vec![]),
+            opaque: vec![OpaqueItem {
+                kind: "k".into(),
+                data: format!(r#"{{"signature":"{sentinel}"}}"#),
+            }],
+        };
+        let crate::provider::ChatTurn { message, opaque } = turn;
+        let history =
+            assistant_history_message(&message, opaque, &producer(), ReasoningHistory::Preserve);
+        assert!(stamped(&history).is_some());
+
+        let payload = serde_json::to_string(&crate::bus::event::LlmResponse {
+            turn_id: ulid::Ulid::generate(),
+            step_id: ulid::Ulid::generate(),
+            usage: message.usage,
+            finish_reason: message.finish_reason.clone(),
+            message,
+        })
+        .unwrap();
+        assert!(!payload.contains(sentinel), "{payload}");
+        assert!(!payload.contains("opaque"), "{payload}");
     }
 
     #[test]

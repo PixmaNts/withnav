@@ -10,9 +10,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{ProviderConfig, Variant};
 use crate::error::ProviderError;
-use crate::opaque::{Producer, retain_for};
+use crate::opaque::{OpaqueItem, Producer, retain_for};
 use crate::openai::{ChatMessage, ChatRequest, ClientCache};
-use crate::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
+use crate::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume_turn};
 
 /// The largest model list accepted.
 const MAX_CATALOG_BYTES: usize = 2_000_000;
@@ -178,11 +178,26 @@ impl ModelClient {
     /// streams the answer through `on_delta` until `[DONE]`.
     pub async fn chat(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         variant: Option<&Variant>,
         cancel: &CancellationToken,
         on_delta: &mut (dyn FnMut(StreamDelta) + Send),
     ) -> Result<AssistantMessage, ProviderError> {
+        self.chat_turn(request, variant, cancel, on_delta)
+            .await
+            .map(|turn| turn.message)
+    }
+
+    /// [`Self::chat`] that also returns the opaque reasoning the provider sent
+    /// with the answer. An error carries a partial message without opaque
+    /// items: an incomplete response is never replayed.
+    pub async fn chat_turn(
+        &self,
+        mut request: ChatRequest,
+        variant: Option<&Variant>,
+        cancel: &CancellationToken,
+        on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+    ) -> Result<ChatTurn, ProviderError> {
         if let Some(variant) = variant {
             request.apply_variant(variant);
         }
@@ -194,8 +209,20 @@ impl ModelClient {
                 .send(),
         )
         .await??;
-        start_and_consume(response, cancel, on_delta).await
+        start_and_consume_turn(response, cancel, on_delta).await
     }
+}
+
+/// One completed model answer: what clients see, and the provider-opaque
+/// reasoning that only goes back to the model that produced it.
+///
+/// The opaque items never reach a client: `AssistantMessage` has no field for
+/// them, and they travel only into the transcript.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatTurn {
+    pub message: AssistantMessage,
+    /// In the order the provider sent them; empty when it sent none.
+    pub opaque: Vec<OpaqueItem>,
 }
 
 /// Last line of the replay rule: whoever built the request, no assistant

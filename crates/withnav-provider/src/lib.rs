@@ -22,6 +22,7 @@ pub mod systemone;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+pub use client::ChatTurn;
 pub use withnav_client_api::provider::{AssistantMessage, StreamDelta, ToolCall, Usage};
 
 /// The word that clears the variant in text interfaces (`/variant off`,
@@ -147,6 +148,20 @@ pub async fn consume_event_stream<S>(
 where
     S: Stream<Item = Result<String, SseError>> + Unpin,
 {
+    consume_turn(events, cancel, on_delta)
+        .await
+        .map(|turn| turn.message)
+}
+
+/// [`consume_event_stream`] keeping the opaque reasoning next to the message.
+pub async fn consume_turn<S>(
+    events: S,
+    cancel: &CancellationToken,
+    on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+) -> Result<ChatTurn, ProviderError>
+where
+    S: Stream<Item = Result<String, SseError>> + Unpin,
+{
     let mut events = events;
     let mut acc = Accumulator::default();
     let mut saw_done = false;
@@ -198,7 +213,14 @@ where
             partial: Some(Box::new(acc.snapshot())),
         });
     }
-    Ok(acc.snapshot())
+    Ok(ChatTurn {
+        message: acc.snapshot(),
+        // Chat Completions carries no opaque reasoning today. A dialect that
+        // does (signed thinking, encrypted reasoning items) collects its items
+        // in the accumulator and returns them here; only a completed response
+        // gets this far, so an incomplete one is never replayed.
+        opaque: Vec::new(),
+    })
 }
 
 fn nonempty(msg: AssistantMessage) -> Option<Box<AssistantMessage>> {
@@ -236,6 +258,17 @@ pub async fn start_and_consume(
     cancel: &CancellationToken,
     on_delta: &mut (dyn FnMut(StreamDelta) + Send),
 ) -> Result<AssistantMessage, ProviderError> {
+    start_and_consume_turn(response, cancel, on_delta)
+        .await
+        .map(|turn| turn.message)
+}
+
+/// [`start_and_consume`] keeping the opaque reasoning next to the message.
+pub async fn start_and_consume_turn(
+    response: reqwest::Response,
+    cancel: &CancellationToken,
+    on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+) -> Result<ChatTurn, ProviderError> {
     let status = response.status();
     if !status.is_success() {
         let body = read_error_body(response, cancel).await?;
@@ -258,7 +291,7 @@ pub async fn start_and_consume(
     }
 
     let events = sse::decode_events(Box::pin(response.bytes_stream()));
-    consume_event_stream(events, cancel, on_delta).await
+    consume_turn(events, cancel, on_delta).await
 }
 
 fn extract_error_message(body: &str) -> Option<String> {
@@ -319,6 +352,17 @@ mod accumulator_tests {
         assert_eq!(msg.tool_calls[1].args, serde_json::json!({"cmd":"ls"}));
         assert_eq!(msg.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(msg.usage.unwrap().total_tokens, 15);
+    }
+
+    #[tokio::test]
+    async fn a_chat_completions_turn_carries_the_message_and_no_opaque_items() {
+        let events = vec![chunk_text("hi"), "[DONE]".to_string()];
+        let mut noop = |_d: StreamDelta| {};
+        let turn = consume_turn(event_stream(events), &CancellationToken::new(), &mut noop)
+            .await
+            .unwrap();
+        assert_eq!(turn.message.text, "hi");
+        assert!(turn.opaque.is_empty());
     }
 
     #[tokio::test]

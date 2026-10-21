@@ -1,5 +1,6 @@
 use super::*;
-use crate::provider::openai::{RequestFunction, RequestToolCall};
+use crate::provider::opaque::TEST_SENDABLE;
+use crate::provider::openai::{OpaqueItem, OpaqueReasoning, RequestFunction, RequestToolCall};
 
 fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
@@ -824,7 +825,7 @@ fn the_reasoning_projection_keeps_indices_and_drops_only_reasoning() {
             opaque: None,
         },
     ];
-    let projected = project_reasoning(&t, 3);
+    let projected = project_reasoning(&t, 3, &destination());
     assert_eq!(projected.len(), t.len());
     assert!(matches!(
         &projected[1],
@@ -838,4 +839,192 @@ fn the_reasoning_projection_keeps_indices_and_drops_only_reasoning() {
     );
     // The request leaves the emptied message out; the projection kept it.
     assert_eq!(effective_history(&projected, None).len(), 3);
+}
+
+fn destination() -> Producer {
+    Producer::chat_completions("https://gw.example/v1", "model-a")
+}
+
+fn other_producer() -> Producer {
+    Producer::chat_completions("https://gw.example/v1", "model-b")
+}
+
+/// An assistant step (a tool call) carrying one opaque item of `kind`.
+fn step_with_opaque(
+    id: &str,
+    producer: Producer,
+    kind: &str,
+    data: &str,
+    text: Option<&str>,
+) -> ChatMessage {
+    let mut message = call(id, "read", "{}");
+    if let ChatMessage::Assistant {
+        opaque, content, ..
+    } = &mut message
+    {
+        *content = text.map(Into::into);
+        *opaque = Some(OpaqueReasoning {
+            producer,
+            items: vec![OpaqueItem {
+                kind: kind.into(),
+                data: data.into(),
+            }],
+        });
+    }
+    message
+}
+
+/// A message whose only payload is opaque reasoning.
+fn only_opaque(producer: Producer, kind: &str, data: &str) -> ChatMessage {
+    ChatMessage::Assistant {
+        content: None,
+        reasoning_content: None,
+        tool_calls: vec![],
+        opaque: Some(OpaqueReasoning {
+            producer,
+            items: vec![OpaqueItem {
+                kind: kind.into(),
+                data: data.into(),
+            }],
+        }),
+    }
+}
+
+fn opaque_of(message: &ChatMessage) -> Option<&OpaqueReasoning> {
+    match message {
+        ChatMessage::Assistant { opaque, .. } => opaque.as_ref(),
+        _ => None,
+    }
+}
+
+fn json_of(history: &[ChatMessage]) -> String {
+    serde_json::to_string(history).unwrap()
+}
+
+// Given opaque reasoning on messages before and after the floor
+// Then below the floor it is removed whatever its producer; at or above, only the
+//      destination's sendable items stay
+#[test]
+fn the_projection_removes_opaque_below_the_floor_and_keeps_the_destinations_above() {
+    let t = vec![
+        user("a"),
+        step_with_opaque("c0", destination(), TEST_SENDABLE, "\"below\"", None),
+        result("c0", 4),
+        user("b"),
+        step_with_opaque("c1", destination(), TEST_SENDABLE, "\"same\"", None),
+        result("c1", 4),
+        step_with_opaque("c2", other_producer(), TEST_SENDABLE, "\"other\"", None),
+        result("c2", 4),
+        step_with_opaque("c3", destination(), "not.sendable", "\"kind\"", None),
+        result("c3", 4),
+    ];
+    let projected = project_reasoning(&t, 3, &destination());
+    assert!(opaque_of(&projected[1]).is_none());
+    assert_eq!(opaque_of(&projected[4]).unwrap().items[0].data, "\"same\"");
+    assert!(opaque_of(&projected[6]).is_none());
+    assert!(opaque_of(&projected[8]).is_none());
+}
+
+// Given a projection
+// Then it changes neither the stored transcript nor the message count
+#[test]
+fn the_projection_leaves_the_stored_transcript_untouched_and_keeps_indices() {
+    let t = vec![
+        user("a"),
+        step_with_opaque("c0", destination(), TEST_SENDABLE, "\"one\"", Some("t")),
+        result("c0", 4),
+        step_with_opaque("c1", other_producer(), TEST_SENDABLE, "\"two\"", None),
+        result("c1", 4),
+    ];
+    let before = json_of(&t);
+    for floor in [0, 2, t.len()] {
+        let projected = project_reasoning(&t, floor, &destination());
+        assert_eq!(projected.len(), t.len());
+        for (a, b) in projected.iter().zip(&t) {
+            assert_eq!(
+                std::mem::discriminant(a),
+                std::mem::discriminant(b),
+                "the roles line up index for index"
+            );
+        }
+    }
+    assert_eq!(json_of(&t), before);
+}
+
+// Given an assistant message whose only payload is opaque reasoning
+// Then it survives the request history while the destination may be sent it,
+//      and is left out once the projection removed it
+#[test]
+fn a_message_holding_only_retained_opaque_is_not_empty() {
+    let t = vec![
+        user("a"),
+        only_opaque(destination(), TEST_SENDABLE, "\"kept\""),
+        user("b"),
+        only_opaque(other_producer(), TEST_SENDABLE, "\"gone\""),
+        only_opaque(destination(), "not.sendable", "\"gone too\""),
+    ];
+    let history = effective_history(&project_reasoning(&t, 0, &destination()), None);
+    assert_eq!(history.len(), 3);
+    assert!(opaque_of(&history[1]).is_some());
+    assert!(!json_of(&history).contains("gone"));
+}
+
+// Given opaque reasoning on the earlier steps of a turn compacted in its middle
+// Then the messages before the boundary are only in the summary: their opaque
+//      data is absent from the request, and the later steps keep theirs
+#[test]
+fn a_mid_turn_checkpoint_removes_the_opaque_before_its_boundary_and_keeps_the_rest() {
+    let mut t = vec![user("do a long task")];
+    for n in 0..12 {
+        t.push(step_with_opaque(
+            &format!("c{n}"),
+            destination(),
+            TEST_SENDABLE,
+            &format!("\"signature-{n}-end\""),
+            None,
+        ));
+        t.push(result(&format!("c{n}"), 8_000));
+    }
+    let c = components();
+    let budget = 3_000 + summary_reserve_tokens();
+    let p = plan(&t, None, &c, budget, Aim::FitMidTurn).unwrap();
+    assert!(p.through_message >= 1 && p.through_message < 23);
+    let compaction = Compaction {
+        checkpoint: Checkpoint {
+            through_message: p.through_message,
+            summary: "s".into(),
+            generation: 1,
+        },
+        pruned_message_indices: p.kept_pruned(),
+    };
+    validate(&compaction, &t).unwrap();
+    let history = effective_history(&project_reasoning(&t, 0, &destination()), Some(&compaction));
+    let sent = json_of(&history);
+    for (index, message) in t.iter().enumerate() {
+        let Some(reasoning) = opaque_of(message) else {
+            continue;
+        };
+        let data = &reasoning.items[0].data;
+        // Compare the JSON-escaped form, as it appears in the serialized history.
+        let escaped = serde_json::to_string(data).unwrap();
+        let escaped = &escaped[1..escaped.len() - 1];
+        assert_eq!(
+            sent.contains(escaped),
+            index > p.through_message,
+            "message {index}"
+        );
+    }
+}
+
+// Given a destination that is another model than the producer
+// Then nothing opaque remains and the gauge-facing history is the plain one
+#[test]
+fn another_destination_receives_no_opaque() {
+    let t = vec![
+        user("a"),
+        step_with_opaque("c0", destination(), TEST_SENDABLE, "\"secret\"", None),
+        result("c0", 4),
+    ];
+    let history = effective_history(&project_reasoning(&t, 0, &other_producer()), None);
+    assert!(!json_of(&history).contains("secret"));
 }

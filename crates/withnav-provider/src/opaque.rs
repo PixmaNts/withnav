@@ -12,7 +12,10 @@ use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::catalog::UNPARSEABLE_ENDPOINT;
+use crate::catalog::{UNPARSEABLE_ENDPOINT, endpoint_without_credentials};
+
+/// Wire name of the Chat Completions dialect in a [`Producer`].
+pub const CHAT_COMPLETIONS: &str = "chat_completions";
 
 /// Reasoning data only its producer can read, kept for a replay to that producer.
 ///
@@ -41,6 +44,18 @@ pub struct Producer {
 }
 
 impl Producer {
+    /// The producer of bytes received from `model` at `base_url` over Chat
+    /// Completions. The endpoint is stored without credentials, query or
+    /// fragment and without a trailing slash, so the same endpoint written two
+    /// ways is one identity.
+    pub fn chat_completions(base_url: &str, model: &str) -> Self {
+        Self {
+            wire: CHAT_COMPLETIONS.into(),
+            endpoint: endpoint_without_credentials(base_url),
+            model: model.into(),
+        }
+    }
+
     /// Whether the producer names a real model on a real endpoint. The sentinel for
     /// an endpoint that did not parse identifies nothing, so bytes bound to it
     /// could be replayed to any model.
@@ -64,6 +79,51 @@ pub struct OpaqueItem {
     /// (`invalid type: newtype struct`, verified 2026-10-21). A string keeps key
     /// order, escapes and whitespace, which a signature may cover.
     pub data: String,
+}
+
+/// Whether `wire` can render an item of `kind` into a request.
+///
+/// No dialect writes opaque data yet, so nothing is sendable: an item stored
+/// today is kept in the transcript but never reaches a request, which keeps
+/// every request body what it was before the field existed. A dialect that
+/// learns to replay a kind adds it here, and the replay rule starts applying to
+/// it everywhere at once (projection, gauge, provider boundary).
+pub fn sendable(wire: &str, kind: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if kind == TEST_SENDABLE {
+        return true;
+    }
+    let _ = (wire, kind);
+    false
+}
+
+/// A kind sendable on every wire, so the keep path of the replay rule can be
+/// tested while no real dialect renders opaque data. Compiled only for tests.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_SENDABLE: &str = "test.sendable";
+
+/// Applies the replay rule: the reasoning stays only if it is going back to the
+/// model that produced it, and only the items `destination`'s wire can render.
+///
+/// Bytes bound to one model (a signature, an encrypted item) are rejected or
+/// misread by another, and a request must never carry them there; so a
+/// different wire, endpoint or model, or a destination that identifies nothing,
+/// removes everything. Order of the kept items is the producer's. `None` when
+/// nothing is left. Removal never turns the data into text.
+pub fn retain_for(opaque: &mut Option<OpaqueReasoning>, destination: &Producer) {
+    let Some(reasoning) = opaque else {
+        return;
+    };
+    if reasoning.producer != *destination || !destination.is_valid() {
+        *opaque = None;
+        return;
+    }
+    reasoning
+        .items
+        .retain(|item| sendable(&destination.wire, &item.kind));
+    if reasoning.items.is_empty() {
+        *opaque = None;
+    }
 }
 
 /// Reads the `opaque` field without ever failing the transcript around it.
@@ -133,6 +193,98 @@ fn read_item(value: Value) -> Option<OpaqueItem> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn dest() -> Producer {
+        Producer::chat_completions("https://gw.example/v1", "model-a")
+    }
+
+    fn held(producer: Producer, kinds: &[&str]) -> Option<OpaqueReasoning> {
+        Some(OpaqueReasoning {
+            producer,
+            items: kinds
+                .iter()
+                .enumerate()
+                .map(|(i, kind)| OpaqueItem {
+                    kind: (*kind).into(),
+                    data: format!("{i}"),
+                })
+                .collect(),
+        })
+    }
+
+    fn item_kinds(opaque: &Option<OpaqueReasoning>) -> Vec<&str> {
+        opaque
+            .as_ref()
+            .map(|o| o.items.iter().map(|i| i.kind.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn nothing_is_sendable_but_the_test_kind() {
+        assert!(!sendable(CHAT_COMPLETIONS, "thinking"));
+        assert!(!sendable("anthropic", "reasoning_details"));
+        assert!(sendable(CHAT_COMPLETIONS, TEST_SENDABLE));
+        assert!(sendable("anthropic", TEST_SENDABLE));
+    }
+
+    #[test]
+    fn the_chat_completions_producer_normalizes_its_endpoint() {
+        let a = Producer::chat_completions("https://user:pw@gw.example/v1/?k=1#f", "m");
+        assert_eq!(a, Producer::chat_completions("https://gw.example/v1", "m"));
+        assert_eq!(a.wire, CHAT_COMPLETIONS);
+        assert!(a.is_valid());
+        assert!(!Producer::chat_completions("not a url", "m").is_valid());
+    }
+
+    #[test]
+    fn retain_for_keeps_the_sendable_items_of_the_same_producer_in_order() {
+        let mut opaque = held(dest(), &[TEST_SENDABLE, "other", "test.sendable", "other"]);
+        retain_for(&mut opaque, &dest());
+        assert_eq!(item_kinds(&opaque), [TEST_SENDABLE, TEST_SENDABLE]);
+        let datas: Vec<_> = opaque.unwrap().items.into_iter().map(|i| i.data).collect();
+        assert_eq!(datas, ["0", "2"]);
+    }
+
+    #[test]
+    fn retain_for_removes_what_the_wire_cannot_render() {
+        let mut opaque = held(dest(), &["other", "thinking"]);
+        retain_for(&mut opaque, &dest());
+        assert!(opaque.is_none());
+    }
+
+    #[test]
+    fn retain_for_removes_everything_for_another_producer() {
+        let other_model = Producer::chat_completions("https://gw.example/v1", "model-b");
+        let other_endpoint = Producer::chat_completions("https://other.example/v1", "model-a");
+        let other_wire = Producer {
+            wire: "anthropic".into(),
+            ..dest()
+        };
+        for other in [other_model, other_endpoint, other_wire] {
+            let mut opaque = held(other, &[TEST_SENDABLE]);
+            retain_for(&mut opaque, &dest());
+            assert!(opaque.is_none());
+        }
+    }
+
+    #[test]
+    fn retain_for_removes_everything_for_an_invalid_destination() {
+        let bad = Producer::chat_completions("not a url", "model-a");
+        let mut opaque = held(bad.clone(), &[TEST_SENDABLE]);
+        retain_for(&mut opaque, &bad);
+        assert!(opaque.is_none());
+        let empty_model = Producer::chat_completions("https://gw.example/v1", "");
+        let mut opaque = held(empty_model.clone(), &[TEST_SENDABLE]);
+        retain_for(&mut opaque, &empty_model);
+        assert!(opaque.is_none());
+    }
+
+    #[test]
+    fn retain_for_leaves_none_alone() {
+        let mut opaque = None;
+        retain_for(&mut opaque, &dest());
+        assert!(opaque.is_none());
+    }
 
     #[derive(Debug, Deserialize)]
     struct Holder {

@@ -10,7 +10,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{ProviderConfig, Variant};
 use crate::error::ProviderError;
-use crate::openai::{ChatRequest, ClientCache};
+use crate::opaque::{Producer, retain_for};
+use crate::openai::{ChatMessage, ChatRequest, ClientCache};
 use crate::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume};
 
 /// The largest model list accepted.
@@ -185,6 +186,7 @@ impl ModelClient {
         if let Some(variant) = variant {
             request.apply_variant(variant);
         }
+        enforce_replay_rule(&mut request, &self.base_url);
         let response = cancellable(
             cancel,
             self.prepare_request(self.post("chat/completions"))
@@ -193,6 +195,30 @@ impl ModelClient {
         )
         .await??;
         start_and_consume(response, cancel, on_delta).await
+    }
+}
+
+/// Last line of the replay rule: whoever built the request, no assistant
+/// message goes out carrying opaque reasoning bound to another model than the
+/// one the request names at this client's endpoint.
+fn enforce_replay_rule(request: &mut ChatRequest, base_url: &str) {
+    let holds_opaque = request.messages.iter().any(|message| {
+        matches!(
+            message,
+            ChatMessage::Assistant {
+                opaque: Some(_),
+                ..
+            }
+        )
+    });
+    if !holds_opaque {
+        return;
+    }
+    let destination = Producer::chat_completions(base_url, &request.model);
+    for message in &mut request.messages {
+        if let ChatMessage::Assistant { opaque, .. } = message {
+            retain_for(opaque, &destination);
+        }
     }
 }
 
@@ -366,5 +392,113 @@ mod tests {
             .unwrap();
         // The body is handed back unparsed, whatever it holds.
         assert_eq!(&bytes[..], b"not json");
+    }
+
+    fn assistant_with(producer: Producer, kind: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some("hi".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: Some(crate::opaque::OpaqueReasoning {
+                producer,
+                items: vec![crate::opaque::OpaqueItem {
+                    kind: kind.into(),
+                    data: "\"signature\"".into(),
+                }],
+            }),
+        }
+    }
+
+    fn request_with(messages: Vec<ChatMessage>) -> ChatRequest {
+        ChatRequest {
+            model: "model-b".into(),
+            messages,
+            tools: vec![],
+            stream: true,
+            stream_options: None,
+            max_tokens: None,
+            temperature: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_boundary_removes_opaque_bound_to_another_model_and_keeps_the_senders() {
+        let own = Producer::chat_completions("http://gw.example/v1/", "model-b");
+        let other = Producer::chat_completions("http://gw.example/v1", "model-a");
+        let mut request = request_with(vec![
+            assistant_with(other, crate::opaque::TEST_SENDABLE),
+            assistant_with(own.clone(), crate::opaque::TEST_SENDABLE),
+            assistant_with(own, "not.sendable"),
+        ]);
+        enforce_replay_rule(&mut request, "http://gw.example/v1");
+        let held: Vec<bool> = request
+            .messages
+            .iter()
+            .map(|m| {
+                matches!(
+                    m,
+                    ChatMessage::Assistant {
+                        opaque: Some(_),
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(held, [false, true, false]);
+    }
+
+    /// Accepts one connection, returns the request body it carried, answers 500.
+    async fn capture_body() -> (
+        std::net::SocketAddr,
+        tokio::sync::oneshot::Receiver<Vec<u8>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut data = Vec::new();
+            let mut buf = [0u8; 8192];
+            let body = loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                data.extend_from_slice(&buf[..n]);
+                let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&data[..end]).to_lowercase();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                if data.len() >= end + 4 + length {
+                    break data[end + 4..end + 4 + length].to_vec();
+                }
+            };
+            let _ = tx.send(body);
+            let _ = sock
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        });
+        (addr, rx)
+    }
+
+    #[tokio::test]
+    async fn opaque_reasoning_for_another_model_does_not_reach_the_wire() {
+        let other = Producer::chat_completions("http://gw.example/v1", "model-a");
+        let with = request_with(vec![assistant_with(other, crate::opaque::TEST_SENDABLE)]);
+        let mut without = with.clone();
+        if let ChatMessage::Assistant { opaque, .. } = &mut without.messages[0] {
+            *opaque = None;
+        }
+        let expected = serde_json::to_vec(&without).unwrap();
+        let (addr, body) = capture_body().await;
+        let _ = client_at(addr)
+            .chat(with, None, &CancellationToken::new(), &mut |_| {})
+            .await;
+        let sent = body.await.unwrap();
+        assert_eq!(sent, expected);
+        assert!(!String::from_utf8_lossy(&sent).contains("signature"));
     }
 }

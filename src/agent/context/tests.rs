@@ -397,3 +397,56 @@ fn a_snapshot_without_the_newer_fields_still_reads() {
     assert_eq!(snap.skills, SkillCounts::default());
     assert_eq!(snap.rule_files, 0);
 }
+
+fn with_opaque(
+    producer: crate::provider::openai::Producer,
+    kind: &str,
+    bytes: usize,
+) -> ChatMessage {
+    let mut message = assistant_call();
+    if let ChatMessage::Assistant { opaque, .. } = &mut message {
+        *opaque = Some(crate::provider::openai::OpaqueReasoning {
+            producer,
+            items: vec![crate::provider::openai::OpaqueItem {
+                kind: kind.into(),
+                data: format!("\"{}\"", "s".repeat(bytes - 2)),
+            }],
+        });
+    }
+    message
+}
+
+// Given a message with 4000 bytes of opaque reasoning
+// Then the message counts them, and the estimate over the projection counts
+//      them only when the destination is the producer and the kind sendable
+#[test]
+fn the_estimate_counts_the_opaque_bytes_the_request_will_carry() {
+    use crate::agent::compaction::project_reasoning;
+    use crate::provider::opaque::TEST_SENDABLE;
+    use crate::provider::openai::Producer;
+    let producer = Producer::chat_completions("https://gw.example/v1", "model-a");
+    let other = Producer::chat_completions("https://gw.example/v1", "model-b");
+    let plain = message_tokens(&assistant_call());
+    let sendable = with_opaque(producer.clone(), TEST_SENDABLE, 4000);
+    assert_eq!(message_tokens(&sendable), plain + 1000);
+
+    let messages = |transcript: &[ChatMessage], destination: &Producer| {
+        estimate(
+            None,
+            None,
+            None,
+            &project_reasoning(transcript, 0, destination),
+            &[],
+        )
+        .messages
+    };
+    let kept = vec![user("a"), sendable];
+    let baseline = messages(&[user("a"), assistant_call()], &producer);
+    assert_eq!(messages(&kept, &producer), baseline + 1000);
+    assert_eq!(messages(&kept, &other), baseline);
+    let unsendable = vec![
+        user("a"),
+        with_opaque(producer.clone(), "not.sendable", 4000),
+    ];
+    assert_eq!(messages(&unsendable, &producer), baseline);
+}

@@ -25,6 +25,7 @@ use crate::bus::event::{
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::catalog::ModelResolution;
 use crate::provider::config::{ProviderConfig, ReasoningHistory, Variants};
+use crate::provider::openai::Producer;
 use std::sync::Arc as StdArc;
 
 /// Why a switch refused while the agent waits for a human.
@@ -65,6 +66,15 @@ pub struct ModelTarget {
     /// What the target offers as variants, and whether that is known.
     pub offer: Variants,
     pub offer_known: bool,
+}
+
+impl ModelTarget {
+    /// The model the target sends to, as the owner of opaque reasoning it may
+    /// receive: the provider config and wire model name the actor adopts on
+    /// install.
+    pub fn producer(&self) -> Producer {
+        Producer::chat_completions(&self.provider.base_url, &self.model)
+    }
 }
 
 /// The store write of a switch: the target, the reasoning floor and the
@@ -244,6 +254,10 @@ pub(super) async fn run(
         actor.reasoning_floor
     };
     let budget = target.limits.budget.input_budget;
+    // The model the projection is measured for: the target's, which the
+    // actor adopts on install (same provider config and wire model name), never
+    // the still-current actor's, whose opaque reasoning the target must not see.
+    let destination = target.producer();
     let old_role = actor.role.clone();
     let old_compaction = actor.compaction.clone();
     // Measure destination policy without installing it on the live actor.
@@ -252,6 +266,7 @@ pub(super) async fn run(
         actor,
         destination_role.as_ref(),
         floor,
+        &destination,
         old_compaction.as_ref(),
     );
     let mut compacted = None;
@@ -271,6 +286,7 @@ pub(super) async fn run(
             actor,
             destination_role.as_ref(),
             floor,
+            &destination,
             Some(&summarized.compaction),
         )
         .total()
@@ -323,6 +339,7 @@ pub(super) async fn run(
             actor,
             destination_role.as_ref(),
             floor,
+            &destination,
             staged
                 .as_ref()
                 .map(|s| &s.checkpoint)
@@ -445,7 +462,7 @@ async fn compact_for_target(
         .map(|snapshot| snapshot.input_budget)
         .ok_or_else(|| "this session has no context budget".to_string())?;
     // The transcript as the destination reads it.
-    let seen_by_target = actor.planning_transcript(floor);
+    let seen_by_target = actor.planning_transcript(floor, &target.producer());
     let goal = Goal {
         focus: None,
         aim: Aim::Fit,
@@ -507,10 +524,11 @@ fn destination_breakdown(
     actor: &AgentActor,
     role: Option<&Arc<crate::agent::definitions::AgentDefinition>>,
     floor: usize,
+    destination: &Producer,
     compaction: Option<&crate::agent::compaction::Compaction>,
 ) -> crate::agent::context::Breakdown {
     let message = destination_message(actor, role);
-    let transcript = actor.planning_transcript(floor);
+    let transcript = actor.planning_transcript(floor, destination);
     let history = crate::agent::compaction::effective_history(&transcript, compaction);
     crate::agent::context::estimate(
         message.as_deref(),

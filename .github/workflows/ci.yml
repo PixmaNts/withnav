@@ -54,7 +54,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ripgrep
           sudo install -m 0755 /usr/bin/true /usr/bin/mise
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --workspace --bins
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -91,7 +91,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: Install ripgrep for real-engine tests
         run: choco install ripgrep --version=14.1.0 -y --no-progress
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: x86_64-pc-windows-msvc
       - run: cargo build --workspace --bins --locked --target x86_64-pc-windows-msvc

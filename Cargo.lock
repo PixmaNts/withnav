@@ -1192,9 +1192,9 @@ dependencies = [
 
 [[package]]
 name = "html2text"
-version = "0.17.3"
+version = "0.17.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7475d5c5606bb86be8d7986962ba34b233490985cfa76a20d6a23e1eb9563b1c"
+checksum = "31e981cc9b710410461bf2e474b54da9ccb2fa3212936295bc5c02cb09f3d3f2"
 dependencies = [
  "html5ever 0.40.1",
  "tendril",
@@ -2619,13 +2619,14 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.5.1"
+version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab5023804cbe0304cbe06197ac16e645a0a0d0ffa2953bf735c15c2fa0213350"
+checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
 dependencies = [
  "chrono",
  "futures",
  "indexmap",
+ "libc",
  "pin-project-lite",
  "process-wrap",
  "serde",
@@ -3342,9 +3343,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.3"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",
@@ -3595,9 +3596,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tui-markdown"
-version = "0.3.11"
+version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cbd479859da89c70663630e3e455895038d337ccfeed132f2108fa89647c45c"
+checksum = "33ab50607adeb8d597e0f3653e5b173c14d7d8ef95f89f25a985828f0e127ba1"
 dependencies = [
  "ansi-to-tui",
  "itertools 0.15.0",

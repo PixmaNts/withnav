@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- `nav --version`, `nav lsp --version` and `nav doctor` name the build: `0.8.1-<branch>+<sha>`
+  on a branch, plain `0.8.1` on its release tag.
+
 ## [0.8.1] - 2026-10-16
 
 WithNav 0.8.1 shows the MCP servers' status in the terminal client and the browser, reworks the

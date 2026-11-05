@@ -1123,7 +1123,7 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: 
 }
 
 async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Path) {
-    report.add("binary.nav", Status::Ok, env!("CARGO_PKG_VERSION"), None);
+    report.add("binary.nav", Status::Ok, env!("WITHNAV_VERSION"), None);
     match crate::tools::bash::trusted_shell() {
         Some(path) => report.add("binary.bash", Status::Ok, shell_description(path), None),
         None => report.add(
@@ -1154,8 +1154,12 @@ async fn binary_checks(report: &mut Report, home: Option<&Path>, workspace: &Pat
             .filter(|o| o.status.success())
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|s| s.split_whitespace().last().map(str::to_owned))
-            .filter(|s| s.len() < 64 && s.chars().all(|c| c.is_ascii_digit() || ".-+".contains(c)));
-        let matching = version.as_deref() == Some(env!("CARGO_PKG_VERSION"));
+            .filter(|s| {
+                s.len() < 128
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
+            });
+        let matching = version.as_deref() == Some(env!("WITHNAV_VERSION"));
         report.add(
             "binary.lsp",
             if matching {

@@ -682,11 +682,14 @@ impl ModelResolution {
 pub fn api_name(api: ApiKind) -> String {
     format!("{api:?}").to_lowercase()
 }
+/// What `endpoint_without_credentials` returns for a base URL that does not
+/// parse. It names no real endpoint, so nothing may be bound to it.
+pub const UNPARSEABLE_ENDPOINT: &str = "(unparseable endpoint)";
 /// A base URL without userinfo, query or fragment, so no credential reaches
 /// the database.
 pub fn endpoint_without_credentials(base_url: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(base_url.trim_end_matches('/')) else {
-        return "(unparseable endpoint)".into();
+        return UNPARSEABLE_ENDPOINT.into();
     };
     let _ = url.set_username("");
     let _ = url.set_password(None);

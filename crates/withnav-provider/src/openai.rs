@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::Usage;
 use crate::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
 use crate::error::ProviderError;
+pub use crate::opaque::{OpaqueItem, OpaqueReasoning, Producer};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
@@ -65,6 +66,14 @@ pub enum ChatMessage {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         #[serde(default)]
         tool_calls: Vec<RequestToolCall>,
+        /// Reasoning only its producer can read back. Kept in the stored
+        /// transcript, never written by the Chat Completions serializer.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::opaque::lenient"
+        )]
+        opaque: Option<OpaqueReasoning>,
     },
     Tool {
         tool_call_id: String,
@@ -137,6 +146,27 @@ fn serialize_wire_messages<S: serde::Serializer>(
                 object.serialize_field("role", "tool")?;
                 object.serialize_field("tool_call_id", tool_call_id)?;
                 object.serialize_field("content", content)?;
+                object.end()
+            } else if let ChatMessage::Assistant {
+                content,
+                reasoning_content,
+                tool_calls,
+                ..
+            } = self.0
+            {
+                // Same keys, same order as the derived form; `opaque` is stored
+                // in the transcript but is never part of this wire body.
+                let mut object = serializer.serialize_struct("ChatMessage", 4)?;
+                object.serialize_field("role", "assistant")?;
+                if let Some(content) = content {
+                    object.serialize_field("content", content)?;
+                }
+                if let Some(reasoning_content) = reasoning_content {
+                    object.serialize_field("reasoning_content", reasoning_content)?;
+                }
+                if !tool_calls.is_empty() {
+                    object.serialize_field("tool_calls", tool_calls)?;
+                }
                 object.end()
             } else {
                 self.0.serialize(serializer)
@@ -365,6 +395,129 @@ impl ClientCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LEGACY_TRANSCRIPT: &str = concat!(
+        "[",
+        r#"{"role":"system","content":"be brief"},"#,
+        r#"{"role":"user","content":"from the navigator","provenance":"navigator"},"#,
+        r#"{"role":"user","content":"from a flow","provenance":{"source":"flow","flow":"nightly","run_id":"r1"}},"#,
+        r#"{"role":"assistant","content":"on it","reasoning_content":"think","tool_calls":["#,
+        r#"{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a\"}"}},"#,
+        r#"{"id":"c2","type":"function","function":{"name":"ask","arguments":"{}"}}]},"#,
+        r#"{"role":"tool","tool_call_id":"c1","content":"file text"},"#,
+        r#"{"role":"tool","tool_call_id":"c2","content":"yes","answered_by":"navigator"},"#,
+        r#"{"role":"assistant","tool_calls":[{"id":"c3","type":"function","function":{"name":"read","arguments":"{}"}}]}"#,
+        "]"
+    );
+
+    fn opaque_reasoning(data: &[&str]) -> OpaqueReasoning {
+        OpaqueReasoning {
+            producer: Producer {
+                wire: "anthropic".into(),
+                endpoint: "https://gw.example/v1".into(),
+                model: "claude-x".into(),
+            },
+            items: data
+                .iter()
+                .map(|d| OpaqueItem {
+                    kind: "thinking".into(),
+                    data: (*d).into(),
+                })
+                .collect(),
+        }
+    }
+
+    fn assistant(opaque: Option<OpaqueReasoning>) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some("answer".into()),
+            reasoning_content: Some("thoughts".into()),
+            tool_calls: vec![RequestToolCall {
+                id: "c1".into(),
+                kind: "function".into(),
+                function: RequestFunction {
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+            opaque,
+        }
+    }
+
+    #[test]
+    fn a_transcript_written_before_opaque_reasoning_reads_and_writes_back_unchanged() {
+        let transcript: Vec<ChatMessage> = serde_json::from_str(LEGACY_TRANSCRIPT).unwrap();
+        assert_eq!(transcript.len(), 7);
+        assert!(matches!(
+            &transcript[3],
+            ChatMessage::Assistant { opaque: None, .. }
+        ));
+        assert_eq!(
+            serde_json::to_string(&transcript).unwrap(),
+            LEGACY_TRANSCRIPT
+        );
+    }
+
+    #[test]
+    fn opaque_reasoning_round_trips_with_data_byte_identical() {
+        let datas = [
+            "{\"z\":1,\"signature\":\"caf\u{e9} \u{1F980} \\u00e9 \\\"q\\\" \\\\ \",\"a\":{\"y\":[3,1],\"b\":null}}",
+            "  {\"k\" :  \"v\"}  ",
+            &format!("{{\"blob\":\"{}\",\"a\":1}}", "A".repeat(1_000_000)),
+        ];
+        let message = assistant(Some(opaque_reasoning(&datas)));
+        let json = serde_json::to_string(&message).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        let ChatMessage::Assistant {
+            opaque: Some(opaque),
+            ..
+        } = &back
+        else {
+            panic!("opaque lost: {back:?}");
+        };
+        assert_eq!(opaque.items.len(), 3);
+        for (item, data) in opaque.items.iter().zip(datas) {
+            assert_eq!(item.data.as_bytes(), data.as_bytes());
+        }
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn a_bad_opaque_field_never_fails_the_transcript() {
+        let json = r#"[{"role":"assistant","content":"x","opaque":{"producer":{"wire":"w"},"items":[{"kind":"k","data":"1"}]}}]"#;
+        let transcript: Vec<ChatMessage> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            &transcript[0],
+            ChatMessage::Assistant {
+                content: Some(_),
+                opaque: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_request_body_never_carries_opaque_reasoning() {
+        let request = |message| ChatRequest {
+            model: "m".into(),
+            messages: vec![
+                ChatMessage::System {
+                    content: "s".into(),
+                },
+                message,
+            ],
+            tools: vec![],
+            stream: true,
+            stream_options: None,
+            max_tokens: None,
+            temperature: None,
+            extra: Default::default(),
+        };
+        let with =
+            serde_json::to_string(&request(assistant(Some(opaque_reasoning(&["{}"]))))).unwrap();
+        let without = serde_json::to_string(&request(assistant(None))).unwrap();
+        assert!(!with.contains("opaque"));
+        assert_eq!(with, without);
+    }
 
     #[test]
     fn deserialize_reasoning_chunk() {

@@ -413,6 +413,7 @@ mod tests {
                 content: Some("old answer".repeat(300)),
                 reasoning_content: None,
                 tool_calls: vec![],
+                opaque: None,
             });
         }
         let mut first = text_command(DeliveryMode::NextTurn, "instruction A verbatim");

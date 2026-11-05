@@ -450,7 +450,7 @@ pub(super) async fn run(
     if actor.role.is_some() {
         actor.role = Some(status.selection.current());
     }
-    let transcript = actor.planning_transcript(actor.reasoning_floor);
+    let transcript = actor.planning_transcript(actor.reasoning_floor, &actor.producer());
     let summarized = summarize(
         actor,
         status,
@@ -547,7 +547,7 @@ pub(super) async fn run_automatic(
     let capacity = |why: String| Some(format!("{CAPACITY_HINT} ({why})"));
     let _preparing = status.selection.begin_compaction().await;
     // The prompt as it is really sent: the reasoning of earlier models left out.
-    let transcript = actor.planning_transcript(actor.reasoning_floor);
+    let transcript = actor.planning_transcript(actor.reasoning_floor, &actor.producer());
     // Cheapest first: keep the recent turns verbatim and aim below 70% of the
     // budget, then take the whole budget; only then give up the recent turns
     // and keep just the latest exchange, again below 70%, then the whole

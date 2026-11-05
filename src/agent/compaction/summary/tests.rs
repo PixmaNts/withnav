@@ -111,6 +111,7 @@ fn call(id: &str, name: &str, args: &str) -> ChatMessage {
                 arguments: args.into(),
             },
         }],
+        opaque: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn answer(text: &str) -> ChatMessage {
         content: Some(text.into()),
         reasoning_content: None,
         tool_calls: vec![],
+        opaque: None,
     }
 }
 
@@ -479,4 +481,50 @@ fn the_summarizer_gets_the_transcript_as_json_so_text_cannot_spoof_a_role() {
     assert!(!content.contains("\n[system]\n") && !content.contains("\n[assistant]\n"));
     // An earlier summary is data too.
     assert!(doc["earlier_summary"].is_null());
+}
+
+// Given assistant steps carrying opaque reasoning the destination may be sent
+// Then the summary input is built from text and tool calls only: the opaque
+//      data never reaches the summarizer, retained or not
+#[test]
+fn the_summary_input_never_contains_opaque_reasoning() {
+    use crate::provider::opaque::TEST_SENDABLE;
+    use crate::provider::openai::{OpaqueItem, OpaqueReasoning, Producer};
+    let producer = Producer::chat_completions("https://gw.example/v1", "m");
+    let mut t = five_turns(100);
+    for message in &mut t {
+        if let ChatMessage::Assistant { opaque, .. } = message {
+            *opaque = Some(OpaqueReasoning {
+                producer: producer.clone(),
+                items: vec![OpaqueItem {
+                    kind: TEST_SENDABLE.into(),
+                    data: "\"OPAQUE-SIGNATURE-DATA\"".into(),
+                }],
+            });
+        }
+    }
+    let projected = crate::agent::compaction::project_reasoning(&t, 0, &producer);
+    assert!(
+        serde_json::to_string(&projected)
+            .unwrap()
+            .contains("OPAQUE-SIGNATURE-DATA"),
+        "the projection retained it"
+    );
+    let provider = provider("http://127.0.0.1:1/v1".into());
+    let mut i = input(&provider, &projected, None);
+    i.destination_budget = crate::agent::compaction::summary_reserve_tokens() + 400;
+    let planned = plan(
+        &projected,
+        None,
+        &i.components,
+        i.destination_budget,
+        Aim::Shrink,
+    )
+    .unwrap();
+    let request = build_summary_request(&i, &planned).unwrap();
+    assert!(
+        !serde_json::to_string(&request)
+            .unwrap()
+            .contains("OPAQUE-SIGNATURE-DATA")
+    );
 }

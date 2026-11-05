@@ -403,7 +403,8 @@ impl LlmCommenter {
                     break;
                 }
                 // Feed the assistant turn (tool calls) back, execute each
-                // tool, append its result.
+                // tool, append its result. Opaque reasoning is not kept in this
+                // history: a native adapter used here must keep it first.
                 messages.push(ChatMessage::Assistant {
                     content: if msg.text.is_empty() {
                         None
@@ -423,6 +424,7 @@ impl LlmCommenter {
                             },
                         })
                         .collect(),
+                        opaque: None,
                 });
                 for tc in &msg.tool_calls {
                     let output = self.execute_tool(ctx, tc).await;

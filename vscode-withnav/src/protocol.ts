@@ -1,4 +1,4 @@
-import { NotificationType } from "vscode-languageclient";
+import { NotificationType, RequestType } from "vscode-languageclient";
 
 export interface WithNavConfig {
   enabled: boolean;
@@ -90,6 +90,27 @@ export interface ReflexShownParams {
 export interface ServerInfoParams {
   port: number;
   token: string;
+}
+
+/** Where `withnav/reveal` opens the file. */
+export type RevealPlacement = "active" | "neighbor" | "beside";
+
+export interface RevealParams {
+  path: string;
+  line?: number;
+  symbol?: string;
+  placement: RevealPlacement;
+}
+
+/** The editor group used (1-based view column), or why nothing was opened. */
+export interface RevealResult {
+  group?: number;
+  symbol_found?: boolean;
+  error?: string;
+}
+
+export namespace RevealRequest {
+  export const type = new RequestType<RevealParams, RevealResult, void>("withnav/reveal");
 }
 
 export namespace ServerInfoNotification {

@@ -70,7 +70,7 @@ impl LanguageServer for NavigatorBackend {
             },
             server_info: Some(ServerInfo {
                 name: "withnav-navigator".to_string(),
-                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                version: Some(env!("WITHNAV_VERSION").to_string()),
             }),
             ..InitializeResult::default()
         })

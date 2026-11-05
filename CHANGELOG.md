@@ -13,6 +13,13 @@ requests land in `develop`.
 ### Fixed
 
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
+- Editor: when Cognition points to a place in the code, it opens the file in the editor and puts
+  the cursor, centered, on the function or line (new `reveal` tool). It can open the file beside
+  the current one, reusing a neighboring editor group, to keep two files visible.
+### Changed
+
+- `nav --version`, `nav lsp --version` and `nav doctor` name the build: `0.8.1-<branch>+<sha>`
+  on a branch, plain `0.8.1` on its release tag.
 
 ## [0.8.1] - 2026-10-16
 

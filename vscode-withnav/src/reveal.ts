@@ -2,22 +2,55 @@ import { realpath } from "node:fs/promises";
 import { relative, sep, isAbsolute } from "node:path";
 import * as vscode from "vscode";
 
-/** Where to put the cursor: a 1-based line, a symbol name, or both (the occurrence nearest the line). */
-export interface RevealTarget { line?: number; symbol?: string }
+import type { RevealParams, RevealPlacement, RevealResult } from "./protocol";
 
-/** Opens a workspace file (reusing its tab) and moves the cursor. `agent`: the
- *  cognition's `reveal` tool, which centers the target and keeps focus in the chat. */
-export async function openFile(path: string, line?: number, symbol?: string, agent = false): Promise<void> {
+/** Opens a workspace file from a chat link (reusing its tab) and moves the cursor. */
+export async function openFile(path: string, line?: number): Promise<void> {
   const uri = await workspaceFile(path);
   if (!uri) { void vscode.window.showInformationMessage(`WithNav: file missing or outside the workspace: ${path}`); return; }
   const document = await vscode.workspace.openTextDocument(uri);
-  const editor = await vscode.window.showTextDocument(document, { preserveFocus: agent, preview: !agent });
-  const validLine = typeof line === "number" && Number.isInteger(line) && line > 0 ? line : undefined;
-  const range = (symbol && await symbolRange(document, symbol, validLine)) ||
-    (validLine ? new vscode.Range(Math.min(validLine - 1, document.lineCount - 1), 0, Math.min(validLine - 1, document.lineCount - 1), 0) : undefined);
+  const editor = await vscode.window.showTextDocument(document);
+  const range = lineRange(document, line);
   if (!range) return;
   editor.selection = new vscode.Selection(range.start, range.start);
-  editor.revealRange(range, agent ? vscode.TextEditorRevealType.InCenter : vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+}
+
+/** The cognition's `reveal`: opens the file in the requested editor group,
+ *  centers the symbol or line, keeps focus in the chat. Never throws: an
+ *  impossible placement or file comes back as `error`. */
+export async function reveal(params: RevealParams): Promise<RevealResult> {
+  const uri = await workspaceFile(params.path);
+  if (!uri) return { error: `file missing or outside the workspace: ${params.path}` };
+  const column = targetColumn(params.placement ?? "active");
+  if (typeof column === "string") return { error: column };
+  const document = await vscode.workspace.openTextDocument(uri);
+  const editor = await vscode.window.showTextDocument(document, { viewColumn: column, preserveFocus: true, preview: false });
+  const symbol = params.symbol ? await symbolRange(document, params.symbol, params.line) : undefined;
+  const range = symbol ?? lineRange(document, params.line);
+  if (range) {
+    editor.selection = new vscode.Selection(range.start, range.start);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+  }
+  return { group: editor.viewColumn, ...(params.symbol ? { symbol_found: !!symbol } : {}) };
+}
+
+/** The view column for a placement, or why it is impossible. A neighbor is
+ *  the next group after the active one, else the one before it. */
+export function targetColumn(placement: RevealPlacement): vscode.ViewColumn | string {
+  const active = vscode.window.tabGroups.activeTabGroup?.viewColumn ?? vscode.ViewColumn.One;
+  if (placement === "active") return vscode.ViewColumn.Active;
+  const columns = vscode.window.tabGroups.all.map(group => group.viewColumn).sort((a, b) => a - b);
+  const neighbor = columns.find(column => column > active) ?? [...columns].reverse().find(column => column < active);
+  if (placement === "neighbor") return neighbor ?? "no editor group next to the active one; use placement \"beside\" to create one";
+  if (placement === "beside") return neighbor ?? vscode.ViewColumn.Beside;
+  return `unknown placement: ${String(placement)}`;
+}
+
+function lineRange(document: vscode.TextDocument, line?: number): vscode.Range | undefined {
+  if (typeof line !== "number" || !Number.isInteger(line) || line < 1) return undefined;
+  const index = Math.min(line - 1, document.lineCount - 1);
+  return new vscode.Range(index, 0, index, 0);
 }
 
 async function workspaceFile(path: string): Promise<vscode.Uri | undefined> {

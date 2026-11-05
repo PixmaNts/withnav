@@ -57,6 +57,20 @@ const MAX_EXCHANGE_CHARS: usize = 600;
 pub type SessionPost =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
+/// Asks the Captain's editor to reveal a file: installed by the language
+/// server, called by the cognition's `reveal` tool.
+pub type EditorReveal = Arc<
+    dyn Fn(
+            crate::navigator::lsp::protocol::RevealParams,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<crate::navigator::lsp::protocol::RevealResult, String>>
+                    + Send,
+            >,
+        > + Send
+        + Sync,
+>;
+
 /// Typed flow effects bypass the message inbox; notes need not start a turn.
 pub(crate) type FlowPost =
     Arc<dyn Fn(String, String, String, bool) -> Result<(), String> + Send + Sync>;
@@ -160,6 +174,7 @@ struct FeedState {
 pub struct ConversationFeed {
     inner: Arc<Mutex<FeedState>>,
     events: broadcast::Sender<ConversationEvent>,
+    editor: Arc<Mutex<Option<EditorReveal>>>,
 }
 
 impl Default for ConversationFeed {
@@ -186,7 +201,21 @@ impl ConversationFeed {
         Self {
             inner: Arc::default(),
             events: broadcast::channel(EVENT_CAPACITY).0,
+            editor: Arc::default(),
         }
+    }
+
+    /// Installs the editor that `reveal` drives (the language server's client).
+    pub fn set_editor(&self, editor: EditorReveal) {
+        *self.editor.lock().unwrap_or_else(|e| e.into_inner()) = Some(editor);
+    }
+
+    /// The connected editor, if any.
+    pub fn editor(&self) -> Option<EditorReveal> {
+        self.editor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// A new subscription to the feed's [`ConversationEvent`]s, starting

@@ -1572,13 +1572,6 @@ export class CognitionBackend implements ChatBackend {
         const shown = typeof exitCode === "number" && exitCode !== 0 ? `${summary} (exit ${exitCode})` : summary;
         const evidence = permissionEvidence(payload.metadata?.permission_gate) ?? this.state.toolEvidence.get(callId);
         this.state.toolEvidence.delete(callId);
-        // `reveal` points the Captain's editor at code: only live, never on a history replay.
-        const reveal = payload.metadata?.reveal;
-        if (name === "reveal" && payload.status === "ok" && typeof reveal?.path === "string" &&
-            this.state.replayThrough === undefined && !this.isReadOnly()) {
-          void openFile(reveal.path, typeof reveal.line === "number" ? reveal.line : undefined,
-            typeof reveal.symbol === "string" ? reveal.symbol : undefined, true).catch(() => undefined);
-        }
         return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok", evidence };
       }
       case "turn.end": {
@@ -1795,4 +1788,3 @@ function toolSummary(name: any, args: any, fallback?: string): string {
   }
 }
 import { outcomeText } from "./outcome";
-import { openFile } from "./reveal";

@@ -9,7 +9,8 @@ requests land in `develop`.
 ### Added
 
 - Editor: when Cognition points to a place in the code, it opens the file in the editor and puts
-  the cursor, centered, on the function or line (new `reveal` tool).
+  the cursor, centered, on the function or line (new `reveal` tool). It can open the file beside
+  the current one, reusing a neighboring editor group, to keep two files visible.
 
 ## [0.8.1] - 2026-10-16
 

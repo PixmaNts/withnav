@@ -131,7 +131,9 @@ impl SessionHooks for NavigatorHooks {
         // editor-session agent may update it.
         actor.registry.register(Box::new(IntentTool));
         // Points the Captain's editor at a file and symbol.
-        actor.registry.register(Box::new(RevealTool));
+        actor
+            .registry
+            .register(Box::new(RevealTool::new(self.feed.clone())));
         // A transcript saved before the role prompt left the transcript
         // starts with that prompt as a system message; drop it so the
         // actor does not send it twice.

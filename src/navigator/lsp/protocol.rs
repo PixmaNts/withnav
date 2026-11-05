@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use tower_lsp_server::ls_types::notification::Notification;
+use tower_lsp_server::ls_types::request::Request;
 
 /// Server -> client: the cognition chat server's endpoint, sent after
 /// `initialized` (and again whenever the server is restarted). The loopback
@@ -12,6 +13,50 @@ use tower_lsp_server::ls_types::notification::Notification;
 pub struct ServerInfoParams {
     pub port: u16,
     pub token: String,
+}
+
+/// Where `withnav/reveal` opens the file: the active editor group (the
+/// default), an existing neighbor group (an error when there is none), or
+/// beside the active group, reusing a neighbor and creating one only if needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevealPlacement {
+    #[default]
+    Active,
+    Neighbor,
+    Beside,
+}
+
+/// Server -> client request: open a workspace file and put the cursor on a
+/// symbol or a 1-based line. The client answers with what it did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevealParams {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    pub placement: RevealPlacement,
+}
+
+/// The client's answer to `withnav/reveal`: the editor group used (1-based
+/// view column) and whether the symbol was found, or why nothing was opened.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RevealResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_found: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub enum RevealRequest {}
+
+impl Request for RevealRequest {
+    type Params = RevealParams;
+    type Result = RevealResult;
+    const METHOD: &'static str = "withnav/reveal";
 }
 
 /// Server -> client: a new remark for a uri. Replaces any previous one.
@@ -184,6 +229,20 @@ mod tests {
     }
 
     #[test]
+    fn reveal_params_serialize_the_wire_shape() {
+        let p = RevealParams {
+            path: "/w/a.c".into(),
+            line: None,
+            symbol: Some("send".into()),
+            placement: RevealPlacement::Beside,
+        };
+        assert_eq!(
+            serde_json::to_string(&p).unwrap(),
+            r#"{"path":"/w/a.c","symbol":"send","placement":"beside"}"#
+        );
+    }
+
+    #[test]
     fn status_params_omit_missing_message() {
         let p = StatusParams {
             state: "idle".into(),
@@ -199,6 +258,7 @@ mod tests {
         assert_eq!(ClearNotification::METHOD, "withnav/clear");
         assert_eq!(StatusNotification::METHOD, "withnav/status");
         assert_eq!(ServerInfoNotification::METHOD, "withnav/serverInfo");
+        assert_eq!(RevealRequest::METHOD, "withnav/reveal");
     }
 
     #[test]

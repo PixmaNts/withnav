@@ -1767,6 +1767,11 @@ function toolSummary(name: any, args: any, fallback?: string): string {
       const path = arg("path");
       return path !== undefined ? `${tool} ${path}` : (fallback ?? tool);
     }
+    case "reveal": {
+      const path = arg("path");
+      const symbol = arg("symbol");
+      return path !== undefined ? `reveal ${path}${symbol ? ` · ${symbol}` : ""}` : (fallback ?? tool);
+    }
     case "grep": {
       const pattern = arg("pattern");
       return pattern !== undefined ? `grep ${pattern}` : (fallback ?? tool);

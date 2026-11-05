@@ -17,11 +17,13 @@ import {
   WithNavConfig,
   RemarkNotification,
   RemarkParams,
+  RevealRequest,
   ServerInfoNotification,
   StatusNotification,
   Verdict,
 } from "./protocol";
 import { registerReflex } from "./reflex";
+import { reveal } from "./reveal";
 import * as fs from "fs";
 import * as path from "path";
 import { affectsSettings, isSettingExplicit, readServerPath, readSetting } from "./settings";
@@ -189,6 +191,8 @@ async function startClient(): Promise<void> {
     refreshStatusBar();
   });
   newClient.onNotification(ServerInfoNotification.type, (params) => cognition.setServerInfo(params));
+  newClient.onRequest(RevealRequest.type, (params) =>
+    reveal(params).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) })));
 
   try {
     await newClient.start();

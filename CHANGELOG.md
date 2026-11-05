@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- Editor: when Cognition points to a place in the code, it opens the file in the editor and puts
+  the cursor, centered, on the function or line (new `reveal` tool). It can open the file beside
+  the current one, reusing a neighboring editor group, to keep two files visible.
 ### Changed
 
 - `nav --version`, `nav lsp --version` and `nav doctor` name the build: `0.8.1-<branch>+<sha>`

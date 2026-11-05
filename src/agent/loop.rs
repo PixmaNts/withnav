@@ -1152,7 +1152,7 @@ async fn run_decided(
     if actor.permission_store.is_some()
         && matches!(
             call.name.as_str(),
-            "task" | "steer_subagent" | "decide_subagent" | "intent"
+            "task" | "steer_subagent" | "decide_subagent" | "intent" | "reveal"
         )
     {
         return execute_and_settle(actor, call, None, None, observe)

@@ -97,6 +97,7 @@ Dependencies point down this list. A module never imports one above it.
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
 | `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, Captain-turn events |
 | `intent.rs` | `.withnav/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
+| `reveal.rs` | the cognition's `reveal` tool: validates a workspace file (optional symbol, line, editor-group placement), then asks the editor through the `ConversationFeed`'s editor slot, a `withnav/reveal` LSP request answered by `vscode-withnav/src/reveal.ts`; an impossible placement comes back as a tool error |
 | `ports.rs` | the model seams (`FimModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
 | `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |

@@ -1,10 +1,9 @@
 import { chatHtml } from "./chatHtml";
-import { realpath } from "node:fs/promises";
-import { relative, sep, isAbsolute } from "node:path";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { buildEditorContext, presentMessage } from "./editorContext";
 import { routeComposer } from "./commands";
+import { openFile } from "./reveal";
 
 const CONTEXT_DEBOUNCE_MS = 200;
 /** `globalState` key of the favorite model names; the terminal client keeps its own list. */
@@ -311,31 +310,4 @@ function randomNonce(): string {
 
 function showError(error: unknown): void {
   void vscode.window.showErrorMessage(`WithNav: ${error instanceof Error ? error.message : String(error)}`);
-}
-
-async function openFile(path: string, line?: number): Promise<void> {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!path.trim() || !folders?.length) { void vscode.window.showInformationMessage("WithNav: no workspace for this file."); return; }
-  const absolute = /^(\/|[A-Za-z]:[\\/])/.test(path);
-  const candidates = absolute ? [vscode.Uri.file(path)] : folders.map(folder => vscode.Uri.joinPath(folder.uri, path));
-  let uri: vscode.Uri | undefined;
-  for (const candidate of candidates) {
-    if (!vscode.workspace.getWorkspaceFolder(candidate)) continue;
-    try {
-      const stat = await vscode.workspace.fs.stat(candidate);
-      if (!(stat.type & vscode.FileType.File)) continue;
-      const realPath = await realpath(candidate.fsPath);
-      const roots = await Promise.all(folders.map(folder => realpath(folder.uri.fsPath)));
-      if (!roots.some(root => { const rel = relative(root, realPath); return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel)); })) continue;
-      uri = candidate; break;
-    } catch { /* Try the next workspace root for missing or inaccessible paths. */ }
-  }
-  if (!uri) { void vscode.window.showInformationMessage(`WithNav: file missing or outside the workspace: ${path}`); return; }
-  const document = await vscode.workspace.openTextDocument(uri);
-  const editor = await vscode.window.showTextDocument(document);
-  if (typeof line === "number" && Number.isInteger(line) && line > 0) {
-    const position = new vscode.Position(Math.min(line - 1, document.lineCount - 1), 0);
-    editor.selection = new vscode.Selection(position, position);
-    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-  }
 }

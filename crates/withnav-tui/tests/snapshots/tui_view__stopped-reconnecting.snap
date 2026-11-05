@@ -1,0 +1,24 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ ◆ withnav        ▌◎ build  cognition · assigned · — / 200k 
+────────────────────────────────────────────────────────────
+ │ ERROR                                                    
+ │  Permission denied                                       
+ │                                                          
+ │ QUESTION · awaiting answer                               
+ │  Choose a file                                           
+ │                                                          
+ │ NOTICE                                                   
+ │  Mode downgraded to next-turn                            
+ │                                                          
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ stopped   reconnecting   delivery uncertain; check conversa
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

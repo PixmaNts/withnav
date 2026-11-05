@@ -1738,7 +1738,7 @@ All clients observe the same core event history. No UI owns authoritative transc
 
 ## 21. Provider Configuration
 
-> **Status: built, and extended.** One provider protocol for chat (OpenAI-compatible), plus two small wire clients for the navigator layers (fill-in-the-middle and System One). Code: `src/provider/`.
+> **Status: built, and extended.** One provider protocol for chat (OpenAI-compatible), plus two small wire clients for the navigator layers (fill-in-the-middle and System One). Code: `crates/withnav-provider/`.
 
 ### 21.1 Scope
 
@@ -1805,7 +1805,7 @@ Rules:
 
 ### 21.3 Streaming Parser
 
-The implementation uses `reqwest` plus a focused SSE decoder (`src/provider/sse.rs`).
+The implementation uses `reqwest` plus a focused SSE decoder (`crates/withnav-provider/src/sse.rs`).
 
 It MUST correctly handle:
 

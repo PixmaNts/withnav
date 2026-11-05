@@ -54,10 +54,7 @@ fn no_context_window(
     }
 }
 
-/// The word that clears the variant in text interfaces (`/variant off`,
-/// `nav run --variant off`). Config loading refuses a variant of that name,
-/// so it never collides with an offered one.
-pub const CLEAR_WORD: &str = "off";
+pub use crate::provider::CLEAR_WORD;
 
 /// What a new session asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]

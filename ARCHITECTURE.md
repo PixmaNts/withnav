@@ -23,13 +23,46 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ agent/       the coding-agent loop (the cognition runs on it)
    ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
    ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
-   └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
+   └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
+
+nav tui   (the terminal client; an HTTP + SSE client of a session server, embedded or `--url`)
+   └─ withnav-tui → withnav-client (HTTP + SSE) → withnav-client-api (wire contract)
+                 └→ withnav-client-state (events → conversation state)
 ```
 
 The single binary, `nav` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
 `lsp` (the editor server above, or offline `lsp replay`), `run` (one task in a terminal),
 `serve` (the session server alone), `auth`, `tui` (the terminal
-chat client, below) and `web` (the browser chat client, below). `nav run` exits 3 when permission is required and 130 when interrupted.
+chat client, a separate crate: see Workspace crates) and `web` (the browser chat client, below). `nav run` exits 3 when permission is required and 130 when interrupted.
+
+## Workspace crates
+
+The root package `withnav` is the server, the engine and the `nav` binary. The terminal client is
+split into four crates under `crates/` so that a change to it rebuilds and tests without the
+server (`cargo test -p withnav-tui` does not compile `withnav`); the model access layer is a fifth,
+`withnav-provider` (`cargo test -p withnav-provider` does not compile `withnav` either).
+
+| Crate | Owns | Depends on (normal dependencies) |
+| --- | --- | --- |
+| `withnav-client-api` | the wire contract: the event envelope and every payload (`event.rs`), the HTTP request and response bodies (`protocol.rs`), the settings bodies (`settings.rs`), and the value types they refer to (`provider.rs`, `tools.rs`, `permissions.rs`, `command.rs`). Data only. | `serde`, `serde_json`, `ulid`, `time`, `thiserror`; no tokio, no reqwest, no ratatui |
+| `withnav-client` | the Rust HTTP client of the session server (`client.rs`) and the SSE subscription with reconnect and `Last-Event-ID` resume (`stream.rs`, which yields its own `StreamEvent`) | `withnav-client-api`, `reqwest`, `tokio`, `sse-stream` |
+| `withnav-client-state` | what a client keeps of one conversation, rebuilt from the events: blocks, activity, the model selection, child agents, pending requests (`apply_envelope`, `SessionState`); no I/O, no terminal | `withnav-client-api`; no tokio, no reqwest, no ratatui |
+| `withnav-tui` | the ratatui client: input and editor, reducer, views, themes, the settings screen, the runtime loop and the effects | `withnav-client`, `withnav-client-state`, `withnav-client-api`, `ratatui`, `crossterm`; never `withnav` |
+| `withnav-provider` | the model access layer: the `models.json` catalogue and its model-list cache (`config.rs`, `catalog.rs`), canonical identities (`model_name.rs`), keys (`auth.rs`, with `auth/windows.rs` for the credential-file DACL), the config and data directories and their `WITHNAV_CONFIG_DIR` / `WITHNAV_DATA_DIR` overrides (`dirs.rs`), one `ModelClient` per endpoint (`client.rs`, `openai.rs`), the chat SSE adapter over `sse-stream` (`sse.rs`: delivers an unterminated last event, fails an event past `MAX_FRAME_BYTES`, 4 MiB) and the chat-completion accumulator (`lib.rs`), the FIM and System One wire clients (`fim.rs`, `systemone.rs`), the provider errors (`error.rs`). The `test-support` feature exposes `test_support` (scripted SSE bodies) to other crates' tests. | `withnav-client-api`, `instinct-flow`, `reqwest`, `sse-stream`, `tokio`, `serde_json`; no `withnav`, no axum, no rusqlite, no ratatui |
+| `withnav` (root) | everything else, and `nav tui` (`src/app/tui.rs`), which starts the embedded server and calls `withnav_tui::run` | all of the above |
+
+Dependencies point one way: `withnav` → `withnav-tui` → `withnav-client`, `withnav-client-state` →
+`withnav-client-api`, and `withnav` → `withnav-provider` → `withnav-client-api`. A crate never imports
+one that depends on it, and `withnav-tui` and `withnav-provider` never import the root
+(`cargo tree -p withnav-tui -e normal` and `cargo tree -p withnav-provider -e normal` show no `withnav v`). The server and the root keep their own
+copies of the route bodies; the root re-exports the moved wire types at their old paths
+(`bus::event`, `provider`, `tools::ToolStatus`, `agent::permissions`) so server code is unchanged.
+
+What the terminal client needs from the machine goes through the `TuiHost` trait in `TuiOptions`,
+implemented by `Host` in `src/app/tui.rs`: the saved theme and favourite models (`settings::load`,
+`save_tui_theme`, `save_tui_favorite_models`), the workspace's git state (`workspace::git::read`,
+converted to the TUI's own `GitStatus` and `Change`) and the home folder (`paths::home_dir`). The
+settings file format and its atomic save stay in `settings.rs`; the TUI never opens the file.
 
 ## Modules
 
@@ -42,13 +75,13 @@ Dependencies point down this list. A module never imports one above it.
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
-| `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
+| `provider/` | `src/provider/mod.rs` re-exports the `withnav-provider` crate (the `models.json` catalogue in `config.rs`/`load_models`, `model_name.rs`, keys in `auth.rs`, `ModelClient` in `client.rs`, the chat SSE decoder, the FIM and System One clients, the provider errors) at its old paths, and adds `provider::assignments` and `provider::layers`, which live in `src/assignments.rs` and `src/layers.rs` because they read `config.json`: pure assignment resolution and the lower-layer clients built from it | the wire clients themselves, which are in `crates/withnav-provider/` |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens the bound write/edit destination without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
-| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel and by `GET /v1/workspaces` | sessions, HTTP |
+| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the Captain perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -64,14 +97,16 @@ Dependencies point down this list. A module never imports one above it.
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
 | `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, Captain-turn events |
 | `intent.rs` | `.withnav/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
+| `reveal.rs` | the cognition's `reveal` tool: validates a workspace file (optional symbol, line, editor-group placement), then asks the editor through the `ConversationFeed`'s editor slot, a `withnav/reveal` LSP request answered by `vscode-withnav/src/reveal.ts`; an impossible placement comes back as a tool error |
 | `ports.rs` | the model seams (`FimModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
 | `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
 
-### Inside `tui/`
+### Inside `crates/withnav-tui/`
 
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
-imports the serialized bus types and no runtime internals. Several conversations can be open at
+imports the wire types of `withnav-client-api` and no server internals. Paths below are under
+`crates/withnav-tui/src/` unless a crate is named. Several conversations can be open at
 once; each is shown in the left sidebar and streams in the background.
 
 Subagents are real, read-only child sessions nested under their parent. Parent events reconstruct
@@ -89,22 +124,24 @@ are read without depending on a newer server event enum. Missing data is not gue
 
 | File | Responsibility |
 | --- | --- |
-| `mod.rs` | `TuiOptions`, `TuiError`, `run` |
+| `lib.rs` | `TuiOptions`, `TuiHost` (settings, git, home folder: implemented by the root), `TuiError`, `run` |
+| `git.rs` | `GitStatus`, `Change` and `MAX_FILES`: the TUI's own shape of the workspace's git state, converted by the host |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
 | `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar and right column shown); data only |
-| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
+| `withnav-client/src/client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `config.rs` | Settings HTTP wire types and data-only editing state: six ordered sections, rows, summaries, filtering, staged changes, sequential revision-carrying writes, stale reload and validation errors. `State.config` owns it; `UiState.screen == Screen::Config` routes to Settings instead of the session transcript. `UiState.settings_target` gives the shared model picker its settings key, API filter and title. No server/settings internals or rendering. |
-| `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
+| `withnav-client/src/stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
-| `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
+| `withnav-client-state/src/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
+| `withnav-client-state/src/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
 | `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, agent/model/variant picks: live `/model <gateway/id>` changes the current agent's model (server applies target default variant), refused with a reason while an interaction waits; empty tabs choose an agent and optional overrides for creation |
-| `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
+| `withnav-client-state/src/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s; the open permission request's `y`/`a`/`n` and deny message; the second enter before text that would cancel it |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map; `palette`, the client's and the server's commands in one list; `route`, the server's prefix rule (a slash in the first column, `//text` is the literal `/text`) with the client's own commands kept local and their arguments checked; `variant_choices`, the rows of the variant list |
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
-| `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
+| `runtime/tests.rs`, `test_host.rs` | executor and loop tests with no terminal and a dead server; a host that keeps the theme and favourites in a `config.json` so saves can be observed |
+| `tests/` | reducer fixtures (`fixtures/tui/*.jsonl`), render snapshots (`snapshots/`), wire-shape and selection tests: they build state and render, no server. Tests that start a real server stay in the root `tests/` (`tui_e2e.rs`, `tui_transport.rs`, `tui_bypass.rs`, `tui_config.rs`, `tui_cli.rs`) |
 | `terminal.rs` | raw mode, alternate screen, bracketed paste and mouse capture, restored on exit and on panic |
 | `theme.rs` | the eight themes (Tide Dark by default) (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
@@ -117,7 +154,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
-| `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
+| `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten` (the home folder comes from `State.home`, set from the host), shared with the header |
 | `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. `ctrl+f` marks a favorite; favorites (`tui.favorite_models` in `config.json`) are listed first in an always-open section that is also kept in each model's group. |
 
 ### The browser client (`nav web`)
@@ -341,7 +378,7 @@ Cartographe write scope (`validate_write_scope`) still apply before the decision
 
 **Keystroke to suggestion (reflex).** The extension asks `withnav/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM
-request, `provider/fim.rs` calls Mercury, the answer goes back as ghost text. A newer request
+request, `withnav-provider`'s `fim.rs` calls Mercury, the answer goes back as ghost text. A newer request
 supersedes an older one; a stale version is dropped.
 
 **Pause or save to remark or wake (instinct, metacognition).** An idle timer or `didSave` calls
@@ -479,7 +516,7 @@ or disabled supervision installs a visible renewable 500-step fallback cap. Chil
 it outside admission and registry locks.
 
 **Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock seam and progress evidence/question/verdict conversion, using
-`provider/systemone.rs::DecisionModel` for the decision model,
+`withnav-provider`'s `systemone.rs::DecisionModel` for the decision model,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
 `supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal
 completion. It sleeps a full configured interval between checks, never replays missed ticks,
@@ -508,12 +545,12 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `<workspace>/.withnav/intent.md` | intent, plan, decisions | the cognition and the Captain |
 | `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
-| `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
+| `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
 
-Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
+Data and config paths come from `paths.rs` and `withnav-provider`'s `dirs.rs` (`config_dir`, `data_dir`, with `auth::default_config_dir`). On every start `paths::migrate_legacy`
 (`paths/migrate.rs`) moves what the former names left behind to the WithNav dirs: `~/.local/share/navigator/*`
 and `~/.local/share/rust-agent/*` (`navigator.db` or `navigator/sessions.db`, with their `-wal` and `-shm`,
 `navigator.jsonl`, `tui.log`) to `~/.local/share/withnav/`, and `~/.config/rust-agent/*` (`auth.json`,
@@ -603,22 +640,22 @@ the later 0.6 scope, not this contract.
 
 - Settings HTTP edits live in `server/settings.rs`: shared `settings::update` locks a stable sidecar
   across snapshot read, revision comparison, mutation and atomic save. `server/settings/editor.rs` owns
-  editable keys, defaults and scalar validation; `provider/assignments.rs` checks proposed model
+  editable keys, defaults and scalar validation; `assignments.rs` checks proposed model
   API and offered variants without runtime fallback. Unknown config keys and siblings survive.
   `restart` means after WithNav restarts (conservative for layers). `new_sessions` means next use:
   new sessions, model/agent switches or newly started subagents; running turns keep their values.
   `live` means the changing client applies it at once; other open clients on their next start.
 
-- Canonical identity parsing belongs in `provider/model_name.rs` (`ModelName`), assignment and
-  default-agent validation in `provider/assignments.rs`, and shared lower-layer construction in
-  `provider/layers.rs`. Do not put these policies in clients or duplicate them in navigator bootstrap.
+- Canonical identity parsing belongs in `withnav-provider`'s `model_name.rs` (`ModelName`), assignment and
+  default-agent validation in `src/assignments.rs` (`provider::assignments`), and shared lower-layer
+  construction in `src/layers.rs` (`provider::layers`). Do not put these policies in clients or duplicate them in navigator bootstrap.
   Typed assignment access belongs in `settings.rs`; unknown unrelated config keys must survive saves.
 - Durable per-agent overrides and selection staging belong in `session/store.rs`
   (`EffectiveAgentSelection`, optional `SelectionCheckpoint`), with service/runtime callbacks
   applying the transaction contract above.
   Wire source fields belong with selection summaries/events, never in provider credentials.
 - A chat model's context window (models.json, else the provider's model list, cached in
-  `<data dir>/model-catalog/`): `provider/catalog.rs` (`resolve_chat`); the session service calls it
+  `<data dir>/model-catalog/`): `withnav-provider`'s `catalog.rs` (`resolve_chat`); the session service calls it
   before building an actor and refuses a model with no window. The result is saved once in
   `sessions.model_resolution` (`session/store.rs`, versioned JSON, no credentials): a resume reads it
   back instead of resolving again, so a live or resumed conversation keeps its bounds; changed
@@ -683,14 +720,25 @@ the later 0.6 scope, not this contract.
   runtime swap the actor's provider, model, variant and limits. `AgentActor::reasoning_floor`
   (restored on resume) keeps the earlier reasoning out of the request projection unless the resolved
   identity is the same; the fit check measures that destination projection (`context_breakdown_at`).
-- A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
-  `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
+- A helper you need probably exists. Look first in: `withnav-provider`'s `client.rs` (any HTTP call to a
+  model) and `config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and
   numbered excerpts), `tools/mod.rs` (`validate_path`).
-- A decision model is exposed by `provider/systemone.rs::DecisionModel` (implemented by
+- A decision model is exposed by `withnav-provider`'s `systemone.rs::DecisionModel` (implemented by
   `SystemOneClient`). Compaction pruning (`agent/compaction/prune.rs`) and both watchdogs use
   this same seam; questions and answer interpretation stay with the caller. The standalone
   `instinct-flow` crate remains independent and owns its own protocol client.
+- A new wire family (another provider API, such as a native Anthropic client) goes in
+  `crates/withnav-provider/`, next to `fim.rs` and `systemone.rs`, with its wire-golden test in that
+  crate's `tests/`; it never imports the root. Which layer or agent uses it is decided in the root
+  (`assignments.rs`, `layers.rs`), not in the crate.
+- Reasoning a provider wants back unchanged (signed thinking, encrypted reasoning) goes in the
+  assistant message's `opaque` field (`withnav-provider`'s `opaque.rs`, ADR 0016): the adapter
+  returns it in `ChatTurn.opaque`, `agent/prompt.rs::assistant_history_message` stamps the
+  producer (wire, endpoint, model), and `opaque::retain_for` is the only replay rule, applied in
+  `compaction::project_reasoning` and again in `ModelClient::chat_turn`. A new wire marks its
+  kinds in `opaque::sendable` and writes them in its own serializer. Opaque data never goes into
+  an event, a summary or a client type.
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
@@ -707,8 +755,8 @@ the later 0.6 scope, not this contract.
   `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
-- A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `tui`.
-- `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.
+- A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `withnav-tui`.
+- `crates/withnav-tui` is a server client: HTTP + SSE only, through `withnav-client`. It shares the wire types of `withnav-client-api` and never depends on the root package: anything it needs from the machine is a method of `TuiHost`. A type that must be on the wire goes in `withnav-client-api`; per-conversation state derived from events goes in `withnav-client-state`.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.

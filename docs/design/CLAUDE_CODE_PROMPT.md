@@ -44,7 +44,7 @@ Nav is the single point of contact. It runs the `build` and `plan` modes. Update
 Keep Reflex, Instinct, Metacognition and Cognition as technical names. Add the explanatory labels Reflex · Completion, Instinct · Triage, Metacognition · Beacon, Cognition · Nav and the crew. Metacognition remarks are now shown as **Beacons signed by Nav**. A Metacognition "wake" targets Nav, so update strings like `metacognition → cognition` to `metacognition → nav`. Layers have no persona: no "I", no agent icon.
 
 ## 4. Colors and type
-Keep the Tide Dark / Tide Light grounds from `README.md` › Design tokens. Add these agent roles to the theme struct (`src/tui/theme.rs`), the CSS variables of the WebUI and webview, and the VS Code theme mapping:
+Keep the Tide Dark / Tide Light grounds from `README.md` › Design tokens. Add these agent roles to the theme struct (`crates/withnav-tui/src/theme.rs`), the CSS variables of the WebUI and webview, and the VS Code theme mapping:
 
 | Role | Tide Dark | Tide Light |
 |---|---|---|

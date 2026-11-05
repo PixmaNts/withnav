@@ -8,7 +8,7 @@ import type { Chat } from "../session/useChat";
 
 // The model picker popover: a session override of the active agent's model and
 // variant. Chat models only, grouped gateway › provider and collapsible, like
-// the terminal picker (`src/tui/catalog.rs`). It never writes config.json.
+// the terminal picker (`crates/withnav-tui/src/catalog.rs`). It never writes config.json.
 
 type Row = CatalogRow;
 

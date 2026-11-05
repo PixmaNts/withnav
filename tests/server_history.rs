@@ -404,6 +404,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
                 content: Some("earlier answer".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
+                opaque: None,
             },
         ],
     );

@@ -30,30 +30,28 @@ pub use crate::bus::event::McpServerView as ServerView;
 /// Every server of the service at one moment, as clients see it.
 pub use crate::bus::event::McpStatus as McpSnapshot;
 
-impl ServerView {
-    fn from_status(status: &ServerStatus, transport: &str) -> Self {
-        let (stderr_tail, stderr_truncated) = bounded_tail(&status.stderr_tail);
-        let ready = status.state == "ready";
-        Self {
-            server_id: status.server_id.clone(),
-            transport: transport.to_owned(),
-            state: status.state.to_owned(),
-            tool_count: if ready { status.tool_count } else { 0 },
-            skipped_tools: status
-                .skipped_tools
-                .iter()
-                .take(WIRE_SKIPPED)
-                .map(|s| bounded_chars(s, WIRE_ERROR_CHARS))
-                .collect(),
-            skipped_more: status.skipped_tools.len().saturating_sub(WIRE_SKIPPED),
-            error: status
-                .error
-                .as_deref()
-                .filter(|e| !e.is_empty())
-                .map(|e| bounded_chars(e, WIRE_ERROR_CHARS)),
-            stderr_tail,
-            stderr_truncated,
-        }
+fn server_view(status: &ServerStatus, transport: &str) -> ServerView {
+    let (stderr_tail, stderr_truncated) = bounded_tail(&status.stderr_tail);
+    let ready = status.state == "ready";
+    ServerView {
+        server_id: status.server_id.clone(),
+        transport: transport.to_owned(),
+        state: status.state.to_owned(),
+        tool_count: if ready { status.tool_count } else { 0 },
+        skipped_tools: status
+            .skipped_tools
+            .iter()
+            .take(WIRE_SKIPPED)
+            .map(|s| bounded_chars(s, WIRE_ERROR_CHARS))
+            .collect(),
+        skipped_more: status.skipped_tools.len().saturating_sub(WIRE_SKIPPED),
+        error: status
+            .error
+            .as_deref()
+            .filter(|e| !e.is_empty())
+            .map(|e| bounded_chars(e, WIRE_ERROR_CHARS)),
+        stderr_tail,
+        stderr_truncated,
     }
 }
 
@@ -218,7 +216,7 @@ impl McpManager {
         let servers = self
             .statuses()
             .iter()
-            .map(|status| ServerView::from_status(status, &transports(&status.server_id)))
+            .map(|status| server_view(status, &transports(&status.server_id)))
             .collect();
         McpSnapshot {
             incarnation: self.incarnation,
@@ -377,7 +375,7 @@ mod tests {
             error: Some(error),
             stderr_tail: String::new(),
         };
-        let view = ServerView::from_status(&status, "stdio");
+        let view = server_view(&status, "stdio");
         assert_eq!(view.tool_count, 0, "a failed server offers no tool");
         assert_eq!(view.error.unwrap().chars().count(), WIRE_ERROR_CHARS);
         assert_eq!(view.skipped_tools.len(), WIRE_SKIPPED);
@@ -386,7 +384,7 @@ mod tests {
             state: "ready",
             ..status
         };
-        assert_eq!(ServerView::from_status(&ready, "stdio").tool_count, 4);
+        assert_eq!(server_view(&ready, "stdio").tool_count, 4);
     }
 
     #[tokio::test]

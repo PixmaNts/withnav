@@ -79,14 +79,7 @@ pub fn bash_grace_ms() -> u64 {
         .unwrap_or(DEFAULT_BASH_GRACE_MS)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToolStatus {
-    Ok,
-    Denied,
-    Error,
-    Interrupted,
-}
+pub use withnav_client_api::tools::ToolStatus;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolErrorObj {

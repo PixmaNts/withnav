@@ -1,0 +1,34 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ 🛡 safe    ◆ withnav  ~/dev/project                                                        ▌◎ Nav /build  cognition · assigned · — / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▌  ◎ Nav · idle      │                                                                                                      │                                   
+                     │                                                                                                      │ AGENTS                            
+                     │                                                                                                      │  ● ◎ Nav  in use                  
+                     │                                                                                                      │  cognition · off ·                
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ CONTEXT                           
+                     │                                                                                                      │  —                                
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ SKILLS · MCP · PLUGINS            
+                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  skills                         — 
+                     │                    │ ❯ filter…                                                                │      │  mcp                            — 
+                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │                                   
+                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │ LAYERS                            
+                     │                    │                                                                          │      │  ● nav  idle                      
+                     │                    │ enter delete permanently  esc cancel                                     │      │                                   
+                     │                    └──────────────────────────────────────────────────────────────────────────┘      │                                   
+                     │                                                                                                      │                                   
+                     │                                                                                                      │                                   
+                     │                                                                                                      │                                   
+                     │                                                                                                      │                                   
+                     │                                                                                                      │                                   
+                     │                                                                                                      │                                   
+                     │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                     │ ready                                                                                                                      session — tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                                                                                        │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop · alt+r panel · f1 help

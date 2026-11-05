@@ -1665,8 +1665,10 @@ fn a_locked_permission_database_does_not_stall_the_runtime() {
         );
         let during = holder.join().unwrap();
         ticker.abort();
-        // About 120 ticks fit in the hold; a blocked runtime shows almost none.
-        assert!(during >= 40, "the runtime stalled: {during} ticks");
+        // A free runtime ticks about 120 times in the hold on Linux, but only about 38 on
+        // Windows, where the default timer resolution (about 15.6 ms) stretches each 5 ms
+        // sleep. A blocked runtime shows almost none, so 10 tells them apart on both.
+        assert!(during >= 10, "the runtime stalled: {during} ticks");
         assert_eq!(decisions(&actor)[0].outcome, Outcome::Pending);
     });
 }

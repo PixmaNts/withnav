@@ -15,8 +15,8 @@ one you need probably exists.
 - Work happens on a branch off `develop`: `feat/<name>` for a feature, `fix/<name>` for a bug,
   `refactor/<name>`, `docs/<name>` or `test/<name>` otherwise. One topic per branch; short names in
   kebab-case.
-- A pull request into `develop` is ready when `cargo build --bins`, `cargo test`,
-  `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` and, if the extension changed,
+- A pull request into `develop` is ready when `cargo build --workspace --bins`, `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` and, if the extension changed,
   `npm run compile` in `vscode-withnav/` all pass. Its description says what changed for the
   Captain, and how it was verified.
 - A release: bump the version in `Cargo.toml` and `vscode-withnav/package.json`, move the

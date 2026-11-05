@@ -519,7 +519,8 @@ temp file. Symlink policy: canonicalize then prefix-check (TOCTOU accepted for v
 - **No automatic retry in Phase 1** — 429/5xx surface as `ProviderError::Api`; retry/backoff is a
   documented Phase-2+ decision. Pinned "no retry" so a worker doesn't add hidden retries.
 - **SSE framing is strictly separate from OpenAI JSON decoding:** `sse.rs` = generic frames (max
-  frame size 4 MiB, matching SPEC §11.3 default → `SseError::MalformedFrame` when exceeded);
+  undelivered event size `MAX_FRAME_BYTES`, 4 MiB → `SseError::MalformedFrame` when exceeded; what it
+  bounds and why is documented on the constant in `crates/withnav-provider/src/sse.rs`);
   `mod.rs` accumulator interprets `[DONE]`, tool-call fragments, `reasoning_content`, errors,
   content-type, and cancellation.
 - **Streaming contract:** the accumulator emits an incremental delta via

@@ -6,6 +6,28 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-05
+
+WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and
+commit, and stops a corrupt conversation from overwriting its stored history.
+
+### Added
+
+- Editor: when Cognition points to a place in the code, it opens the file in the editor and puts
+  the cursor, centered, on the function or line (new `reveal` tool). It can open the file beside
+  the current one, reusing a neighboring editor group, to keep two files visible. (#96)
+- The stored transcript can keep reasoning that only the model that wrote it can read back (signed thinking blocks, encrypted reasoning), with the identity of that model, and sends it back only to the same endpoint and model. No provider fills it yet; conversations already stored read back unchanged. (#88)
+
+### Changed
+
+- `nav --version`, `nav lsp --version` and `nav doctor` name the build: `0.8.2-<branch>+<sha>`
+  on a branch, plain `0.8.2` on its release tag. (#97)
+- Dependency updates: Rust crates, the extension, the web UI and the CI actions.
+
+### Fixed
+
+- A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
+
 ## [0.8.1] - 2026-10-16
 
 WithNav 0.8.1 shows the MCP servers' status in the terminal client and the browser, reworks the

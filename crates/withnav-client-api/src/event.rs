@@ -1,0 +1,1535 @@
+//! Frozen `EventEnvelope` shape and the 25-kind `EventKind`
+//! catalog (the twelve original kinds plus `command.result`,
+//! `context.updated`, `context.compacting`, `session.agent_changed`, `context.compacted`,
+//! `permission.requested`, `permission.resolved`, `model.changed`,
+//! `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass` and `mcp.status`).
+//!
+//! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
+//! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
+//! `hook.decision`, `plugin.error`
+//! (Phase-2b plugins). Emitting them is impossible: no enum variant exists.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use time::OffsetDateTime;
+use ulid::Ulid;
+
+use crate::provider::{AssistantMessage, StreamDelta, Usage};
+use crate::tools::ToolStatus;
+
+/// Frozen envelope schema version (reserved = 1).
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// The single root actor id for this slice (all events are published by it).
+pub const ROOT_ACTOR_ID: &str = "agent:main";
+
+/// The catalog emits EXACTLY 25 kinds: 3 session +
+/// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
+/// context update + context compacting + agent change + context compacted +
+/// 2 permission + model change + 3 subagent + MCP status = 25. The first twelve are frozen;
+/// `command.result`, `context.updated`, `context.compacting`, `session.agent_changed`,
+/// `context.compacted`, `permission.requested`, `permission.resolved`, `model.changed`,
+/// `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass` and `mcp.status`
+/// were added without changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 25;
+
+/// Durable kinds are retained in the reconnect ring and the history store;
+/// `llm.delta`, `context.updated`, `context.compacting` and `mcp.status` are live-only (the
+/// gauges are readable at any time: the context from the session's context endpoint, the MCP
+/// servers from `GET /v1/mcp`). Kept with the catalog it guards.
+const fn is_durable(kind: EventKind) -> bool {
+    !matches!(
+        kind,
+        EventKind::LlmDelta
+            | EventKind::ContextUpdated
+            | EventKind::ContextCompacting
+            | EventKind::McpStatus
+    )
+}
+
+/// DRIFT GUARD (compile-authoritative): `ALL` is DERIVED from
+/// [`EventKind::all_variants`], an exhaustive match whose single or-pattern
+/// arms name EVERY variant with no `_` wildcard — so adding a variant
+/// without editing that match is error[E0004] (non-exhaustive patterns) and
+/// the crate does not compile. The array's type `[EventKind; EVENT_KIND_COUNT]` plus the
+/// `const _` assert below additionally pin the frozen catalog size, so the
+/// list itself cannot silently grow or shrink either. A runtime name/order
+/// test still guards the wire spellings, but completeness is enforced HERE,
+/// at compile time.
+impl EventKind {
+    const fn all_variants() -> [Self; EVENT_KIND_COUNT] {
+        match Self::SessionStart {
+            Self::SessionStart
+            | Self::SessionEnd
+            | Self::MessageReceived
+            | Self::TurnStart
+            | Self::TurnEnd
+            | Self::LlmDelta
+            | Self::LlmResponse
+            | Self::ToolPreCall
+            | Self::ToolPostCall
+            | Self::AgentState
+            | Self::AgentYield
+            | Self::TaskDone
+            | Self::CommandResult
+            | Self::ContextUpdated
+            | Self::ContextCompacting
+            | Self::SessionAgentChanged
+            | Self::ContextCompacted
+            | Self::PermissionRequested
+            | Self::PermissionResolved
+            | Self::ModelChanged
+            | Self::SubagentSpawned
+            | Self::SubagentDone
+            | Self::SubagentWatchdog
+            | Self::SessionBypass
+            | Self::McpStatus => [
+                Self::SessionStart,
+                Self::SessionEnd,
+                Self::MessageReceived,
+                Self::TurnStart,
+                Self::TurnEnd,
+                Self::LlmDelta,
+                Self::LlmResponse,
+                Self::ToolPreCall,
+                Self::ToolPostCall,
+                Self::AgentState,
+                Self::AgentYield,
+                Self::TaskDone,
+                Self::CommandResult,
+                Self::ContextUpdated,
+                Self::ContextCompacting,
+                Self::SessionAgentChanged,
+                Self::ContextCompacted,
+                Self::PermissionRequested,
+                Self::PermissionResolved,
+                Self::ModelChanged,
+                Self::SubagentSpawned,
+                Self::SubagentDone,
+                Self::SubagentWatchdog,
+                Self::SessionBypass,
+                Self::McpStatus,
+            ],
+        }
+    }
+
+    /// The 25 emitted kinds, in catalog order. The bus iterates this to seed
+    /// the ring/fan-out.
+    pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
+}
+
+const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
+
+macro_rules! event_kinds {
+    ($($variant:ident => $wire:literal),+ $(,)?) => {
+        /// Typed catalog of the 25 emitted event kinds; the wire name is the dotted
+        /// string (serialized verbatim, e.g. `"llm.delta"`).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum EventKind {
+            $(#[serde(rename = $wire)] $variant),+
+        }
+
+        impl EventKind {
+            /// Wire name for `EventEnvelope.kind` (a frozen dotted `String`).
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire),+
+                }
+            }
+        }
+    };
+}
+
+event_kinds! {
+    SessionBypass => "session.bypass",
+    SessionStart => "session.start",
+    SessionEnd => "session.end",
+    MessageReceived => "message.received",
+    TurnStart => "turn.start",
+    TurnEnd => "turn.end",
+    LlmDelta => "llm.delta",
+    LlmResponse => "llm.response",
+    ToolPreCall => "tool.pre_call",
+    ToolPostCall => "tool.post_call",
+    AgentState => "agent.state",
+    AgentYield => "agent.yield",
+    TaskDone => "task.done",
+    CommandResult => "command.result",
+    ContextUpdated => "context.updated",
+    ContextCompacting => "context.compacting",
+    SessionAgentChanged => "session.agent_changed",
+    ContextCompacted => "context.compacted",
+    PermissionRequested => "permission.requested",
+    PermissionResolved => "permission.resolved",
+    ModelChanged => "model.changed",
+    SubagentSpawned => "subagent.spawned",
+    SubagentDone => "subagent.done",
+    SubagentWatchdog => "subagent.watchdog",
+    McpStatus => "mcp.status",
+}
+
+impl EventKind {
+    /// Parses a wire `kind` string; `None` for unknown/deferred names.
+    pub fn from_wire(kind: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|event| event.as_str() == kind)
+    }
+
+    /// Durable = retained in the reconnect ring and stored (all but
+    /// `llm.delta` and `context.updated`).
+    pub const fn is_durable(self) -> bool {
+        is_durable(self)
+    }
+}
+
+/// Frozen envelope. Immutable after sequencing; the
+/// sequencer task is the only code that assigns `seq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventEnvelope {
+    pub schema_version: u32,
+    pub event_id: Ulid,
+    pub seq: u64,
+    pub session_id: Ulid,
+    pub actor_id: String,
+    pub kind: String,
+    pub occurred_at: String,
+    pub causation_id: Option<Ulid>,
+    pub correlation_id: Option<Ulid>,
+    pub payload: Value,
+}
+
+impl EventEnvelope {
+    /// Stamps a fully-populated envelope at emit time. Called only by the
+    /// per-session sequencer task (single `seq` assignment point).
+    pub fn new(session_id: Ulid, seq: u64, kind: EventKind, payload: Value) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            event_id: Ulid::generate(),
+            seq,
+            session_id,
+            actor_id: ROOT_ACTOR_ID.to_string(),
+            kind: kind.as_str().to_string(),
+            occurred_at: now_rfc3339(),
+            causation_id: None,
+            correlation_id: None,
+            payload,
+        }
+    }
+
+    /// Sets `causation_id` (the triggering command/event id).
+    pub fn with_causation_id(mut self, id: Ulid) -> Self {
+        self.causation_id = Some(id);
+        self
+    }
+
+    /// Sets `correlation_id` (the task id, stable across yield/resume).
+    pub fn with_correlation_id(mut self, id: Ulid) -> Self {
+        self.correlation_id = Some(id);
+        self
+    }
+}
+
+/// Wire vocabulary of `TurnEnd.outcome` (distinct from the internal
+/// loop type; `StepBudgetExhausted` never leaks — it maps to `yielded`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnEndOutcome {
+    Done,
+    Yielded,
+    Interrupted,
+    Error,
+}
+
+/// Bounded typed error summary on `TurnEnd`: enough for an
+/// event-only client to reproduce the CLI error line; no raw secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnError {
+    pub code: String,
+    pub message: String,
+}
+
+/// Frozen tool source on `ToolPreCall` (only native tools exist this slice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolSource {
+    #[serde(rename = "native")]
+    Native,
+}
+
+/// Frozen terminal task status (`task.done` fires once per task, on Done only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskStatus {
+    #[serde(rename = "done")]
+    Done,
+}
+
+// --- The 12 frozen payload structs, serialized inside
+// --- `EventEnvelope.payload`. Optional fields use skip-if-none (matches the
+// --- Phase-1 `ToolResult` convention).
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionStart {
+    pub workspace: String,
+    pub root_actor_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionEnd {
+    pub reason: String,
+    pub final_seq: u64,
+}
+
+/// `mode` wire vocab: "next-turn" | "steer" | "interrupt" (recorded only; the
+/// typed `DeliveryMode` lives in `bus::command`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageReceived {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<crate::tools::AskAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_skill: Option<SelectedSkill>,
+    pub command_id: Ulid,
+    pub source: String,
+    pub target: String,
+    pub mode: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectedSkill {
+    pub name: String,
+    pub origin: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnStart {
+    pub turn_id: Ulid,
+    pub actor_id: String,
+    pub task_id: Ulid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnEnd {
+    pub turn_id: Ulid,
+    pub actor_id: String,
+    pub outcome: TurnEndOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<TurnError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmDelta {
+    pub turn_id: Ulid,
+    pub step_id: Ulid,
+    pub delta: StreamDelta,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmResponse {
+    pub turn_id: Ulid,
+    pub step_id: Ulid,
+    pub message: AssistantMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolPreCall {
+    pub tool_call_id: String,
+    pub name: String,
+    pub source: ToolSource,
+    pub args: Value,
+    pub actor_id: String,
+}
+
+/// Reuses the `ToolResult` wire shape for status/output/metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolPostCall {
+    pub tool_call_id: String,
+    pub name: String,
+    pub status: ToolStatus,
+    pub output: String,
+    pub metadata: Value,
+}
+
+/// `from`/`to` wire vocab: "idle" | "running" | "yielded".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentStateChanged {
+    pub actor_id: String,
+    pub from: String,
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Reuses the `HumanRequest` fields (question/kind/details) with turn context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentYield {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<crate::tools::AskChoices>,
+    pub actor_id: String,
+    pub turn_id: Ulid,
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseToken {
+    pub incarnation: Ulid,
+    pub hold_id: Ulid,
+}
+
+/// One MCP server as clients see it: redacted and bounded. Built by `mcp/`, carried by the
+/// `mcp.status` event and `GET /v1/mcp`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerView {
+    pub server_id: String,
+    /// `stdio`; another value only for a declaration that failed to parse.
+    pub transport: String,
+    /// `starting`, `ready`, `failed` or `disabled`.
+    pub state: String,
+    /// Tools a new session would get from this server; 0 unless `ready`.
+    pub tool_count: usize,
+    pub skipped_tools: Vec<String>,
+    /// Skipped tools beyond the ones listed.
+    pub skipped_more: usize,
+    pub error: Option<String>,
+    pub stderr_tail: String,
+    /// The tail was cut to its last lines.
+    pub stderr_truncated: bool,
+}
+
+/// Every MCP server of the service at one moment: the `mcp.status` payload and the
+/// `GET /v1/mcp` body. `revision` grows with each change within one `incarnation` (one service
+/// process): a client keeps the snapshot with the higher revision, and starts over when the
+/// incarnation differs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpStatus {
+    pub incarnation: Ulid,
+    pub revision: u64,
+    pub servers: Vec<McpServerView>,
+}
+
+/// Read-only catalog projection; this is an HTTP body, not a new event kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SkillsBody {
+    pub skills: Vec<SkillEntry>,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskDone {
+    pub task_id: Ulid,
+    pub actor_id: String,
+    pub result_message_id: Ulid,
+    pub status: TaskStatus,
+}
+
+/// The primary agent of a session changed (`/agent`). Published after the
+/// new agent is stored, so a stream that shows it never outlives a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAgentChanged {
+    /// The agent the session runs as from now on.
+    pub agent: String,
+    /// The agent it ran as until now.
+    pub previous: String,
+}
+
+/// The canonical catalog identity and selection provenance of a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelIdentity {
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
+    pub agent: Option<String>,
+    pub variant: Option<String>,
+    pub source: Option<String>,
+    pub variant_source: Option<String>,
+}
+
+impl ModelIdentity {
+    pub fn from_upstream(gateway: &str, upstream_id: &str) -> Self {
+        Self {
+            model: format!("{gateway}/{upstream_id}"),
+            gateway: gateway.into(),
+            upstream_id: upstream_id.into(),
+            agent: None,
+            variant: None,
+            source: None,
+            variant_source: None,
+        }
+    }
+}
+
+/// Why the model selection of a session was announced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModelChangeReason {
+    /// The first selection of a new session.
+    #[serde(rename = "initial")]
+    Initial,
+    /// `/model` moved the conversation to another catalog model.
+    #[serde(rename = "model")]
+    Switch,
+    /// The active agent changed.
+    #[serde(rename = "agent")]
+    Agent,
+    /// The variant changed on the same model.
+    #[serde(rename = "variant")]
+    Variant,
+    /// A resume refreshed the saved variant from the current offer.
+    #[serde(rename = "resume-refresh")]
+    ResumeRefresh,
+}
+
+/// The model selection of a session was committed: the first one at its
+/// start, then every switch of model or variant. The events table is the
+/// selection history; a turn belongs to the selection in force at its
+/// `turn.start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChanged {
+    /// The `command.result` operation that asked for it; absent for the
+    /// session's own start and a resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Ulid>,
+    /// 1 for the first selection of the conversation, +1 for each later one.
+    pub revision: u64,
+    pub reason: ModelChangeReason,
+    /// What the session talked to until now; absent at the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<ModelIdentity>,
+    pub new: ModelIdentity,
+    /// The variant in force from now on; `null` for none.
+    pub variant: Option<String>,
+    /// The new model's context window, in tokens.
+    pub window: u64,
+    /// The input budget the conversation now fits, in tokens.
+    pub input_budget: u64,
+    /// Index, in the full transcript, of the first message the new selection
+    /// answers: the transcript length when it was committed.
+    pub from_message: u64,
+}
+
+/// A parent session started a child session: a background agent that works
+/// on one delegated prompt. Published on the PARENT's stream, durable, after
+/// the child and its link are committed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentSpawned {
+    pub parent_session_id: Ulid,
+    pub child_session_id: Ulid,
+    /// The agent definition the child runs as.
+    pub agent: String,
+    /// The delegated prompt, cut to 1 KiB for the stream (the child's own
+    /// stream holds it whole).
+    pub goal: String,
+    /// The `task` tool call that spawned it.
+    pub tool_call_id: String,
+}
+
+/// How a child ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentOutcome {
+    /// It finished its work.
+    Done,
+    /// It failed (a provider or runtime error).
+    Failed,
+    /// It was stopped: by its owner, by a stop of the parent, or because the
+    /// server restarted.
+    Stopped,
+}
+
+/// A child reached its terminal state. Published on the PARENT's stream,
+/// durable, once per child (the terminal transition is a compare-and-set).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentDone {
+    pub parent_session_id: Ulid,
+    pub child_session_id: Ulid,
+    pub agent: String,
+    pub outcome: SubagentOutcome,
+    /// Why it ended, for `failed` and `stopped`: `stopped_by_owner`,
+    /// `parent_stopped`, `server_restart`, or the error text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The notice that carries the result to the parent, by its id.
+    pub notification_id: Ulid,
+}
+
+/// Durable progress verdict on the owner's stream; evidence is untrusted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubagentWatchdog {
+    pub child_session_id: Ulid,
+    pub verdict: String,
+    pub reason: Option<String>,
+    pub checked_at: String,
+}
+
+/// What asked for a compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionReason {
+    /// `/compact`.
+    Manual,
+    /// The next request would not fit the input budget: the turn was held at
+    /// a safe boundary, compacted and carried on.
+    Automatic,
+    /// A `/model` switch to a smaller window compacted first, with the model
+    /// the conversation was on.
+    Switch,
+}
+
+/// The conversation was compacted: a summary now stands for its start. A
+/// notice published after the checkpoint is stored; the stored checkpoint,
+/// not this event, is what a resume restores from. The events before it are
+/// untouched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextCompacted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_by: Option<CompactionWriter>,
+    #[serde(default)]
+    pub passes: u64,
+    /// 1 for the first compaction of the conversation, +1 for each later one.
+    pub generation: u64,
+    /// Index, in the full transcript, of the last message the summary
+    /// replaces.
+    pub through_message: u64,
+    /// Tool outputs the prompt now shows as markers.
+    pub pruned: u64,
+    /// The estimated prompt size before and after, in tokens.
+    pub estimate_before: u64,
+    pub estimate_after: u64,
+    /// What asked for it. Absent in an event stored before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CompactionReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionWriter {
+    pub model: String,
+    pub layer: String,
+}
+
+/// A gated tool call waits for a Captain's decision. The call has not run.
+pub use crate::permissions::{REJECT_MESSAGE_LIMIT_ERROR, REJECT_MESSAGE_MAX_BYTES};
+
+/// A gated tool call waits for a Captain's decision. The call has not run.
+/// `arguments` is the call's JSON text cut to 4 KiB, for review only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionRequested {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<Ulid>,
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub arguments: String,
+    pub scope: crate::permissions::Scope,
+    pub agent: String,
+    pub reason: String,
+}
+
+/// How a permission request ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "resolution", rename_all = "snake_case")]
+pub enum PermissionResolution {
+    AllowOnce,
+    /// The call ran. `always_saved` is false when its rules could not be
+    /// saved: the call then ran once, and `always_error` says why. Events
+    /// written before the field existed count as saved.
+    AllowAlways {
+        #[serde(default = "saved")]
+        always_saved: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        always_error: Option<String>,
+    },
+    Reject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    AllowFolder,
+    AllowConfigSession,
+    AllowSkillMachine,
+    /// A captain refused; `message` is what the model reads back.
+    Deny {
+        message: String,
+    },
+    /// The turn was stopped while the request waited, or a new message
+    /// replaced it.
+    Cancelled,
+    /// The session restarted while the request waited.
+    Expired,
+}
+
+fn saved() -> bool {
+    true
+}
+
+/// A permission request ended, by a decision, a stop or a restart. Published
+/// exactly once per `permission.requested`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionResolved {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<Ulid>,
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    #[serde(flatten)]
+    pub resolution: PermissionResolution,
+}
+
+/// Largest serialized `data` a `command.result` carries.
+pub const COMMAND_RESULT_DATA_MAX_BYTES: usize = 16 * 1024;
+
+/// The outcome of one session command, published durably on the session
+/// stream. `data` is bounded: see [`CommandResult::bound_data`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResult {
+    pub operation_id: Ulid,
+    pub name: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl CommandResult {
+    /// Keeps `data` when its JSON form fits [`COMMAND_RESULT_DATA_MAX_BYTES`];
+    /// otherwise replaces it with a marker naming the dropped size.
+    pub fn bound_data(data: Value) -> Value {
+        let size = serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(0);
+        if size <= COMMAND_RESULT_DATA_MAX_BYTES {
+            data
+        } else {
+            serde_json::json!({ "truncated": true, "bytes": size })
+        }
+    }
+}
+
+/// The estimated size of one request, split by where its text comes from.
+/// The categories add up to [`Breakdown::total`] exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Breakdown {
+    /// The system contract and the role prompt.
+    pub system: u64,
+    /// The local instructions message.
+    pub rules: u64,
+    /// The skills catalog message.
+    pub skills_catalog: u64,
+    /// The serialized tool definitions.
+    pub tools: u64,
+    /// The history: user and assistant text, reasoning, tool calls, tool
+    /// outputs and loaded skill bodies.
+    pub messages: u64,
+}
+
+impl Breakdown {
+    pub fn total(&self) -> u64 {
+        self.system + self.rules + self.skills_catalog + self.tools + self.messages
+    }
+}
+
+/// The provider usage of the last step that reported one: the input the
+/// provider actually counted for that request, never the estimate of the next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastUsage {
+    /// The canonical identity the historical step ran on.
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// The `step_id` of the `llm.response` that reported it.
+    pub step: Ulid,
+}
+
+/// What the skills catalog holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SkillCounts {
+    pub listed: u64,
+    pub omitted: u64,
+}
+
+fn always_true() -> bool {
+    true
+}
+
+/// How full the context window is: the payload of `context.updated` and the
+/// body of `GET /v1/sessions/:id/context`. Three numbers that must stay apart:
+/// `estimate_total` sizes the NEXT request (an estimate, bytes / 4), `last_usage`
+/// is what the provider counted for the LAST one, and cumulative session usage
+/// lives in the `llm.response` and `turn.end` events, not here.
+///
+/// `estimated` is always true: no figure here but `last_usage` comes from a
+/// tokenizer or the provider. Rule diagnostics (which files were cut or
+/// skipped) and compaction metadata are not part of the snapshot yet; they
+/// join it as optional fields when those features land.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    pub window: u64,
+    /// `models.json` or a `discovered.*` field.
+    pub window_source: String,
+    /// Marks the sizes as estimates (bytes / 4), never a provider count.
+    #[serde(default = "always_true")]
+    pub estimated: bool,
+    pub estimate_total: u64,
+    pub breakdown: Breakdown,
+    pub output_reserve: u64,
+    pub margin: u64,
+    pub input_budget: u64,
+    /// `estimate_total` as a whole percent of `window`.
+    pub percent: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_usage: Option<LastUsage>,
+    /// The skills the catalog lists and the ones it had no room for.
+    #[serde(default)]
+    pub skills: SkillCounts,
+    /// How many local rule files are in the rules message.
+    #[serde(default)]
+    pub rule_files: u64,
+    /// The runtime incarnation that produced this snapshot: a session that is
+    /// stopped and resumed gets a fresh actor, whose revisions start again.
+    pub incarnation: Ulid,
+    /// Counts up with every snapshot of one incarnation. Incarnation ids carry
+    /// no order: a client orders revisions within an incarnation only, and
+    /// decides itself when a new incarnation has replaced the one it shows.
+    pub revision: u64,
+}
+
+impl ContextSnapshot {
+    /// The text a terminal shows: the gauge line, then one line per category.
+    pub fn render_text(&self) -> String {
+        let b = &self.breakdown;
+        let mut out = format!(
+            "~{} / {} · {}% · input budget {}",
+            tokens_k(self.estimate_total),
+            tokens_k(self.window),
+            self.percent,
+            tokens_k(self.input_budget),
+        );
+        for (name, n) in [
+            ("system", b.system),
+            ("rules", b.rules),
+            ("skills catalog", b.skills_catalog),
+            ("tools", b.tools),
+            ("messages", b.messages),
+        ] {
+            out.push_str(&format!("\n  {name:<15} ~{}", tokens_k(n)));
+        }
+        out.push_str(&format!(
+            "\noutput reserve {} · margin {} · window from {}",
+            tokens_k(self.output_reserve),
+            tokens_k(self.margin),
+            self.window_source
+        ));
+        if let Some(u) = &self.last_usage {
+            out.push_str(&format!(
+                "\nlast request: {} in, {} out (provider count)",
+                u.prompt_tokens, u.completion_tokens
+            ));
+        }
+        out
+    }
+}
+
+/// `842`, `42k`, `1,000k`: tokens rounded to thousands, with separators.
+pub fn tokens_k(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    let k = (n + 500) / 1000;
+    let digits = k.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{out}k")
+}
+
+// --- RFC 3339 timestamp (time crate; UTC with exactly three millisecond digits) ---
+
+/// Current UTC time as RFC 3339 with millisecond precision (`...Z`).
+/// Also used by the history store for its row timestamps.
+pub fn now_rfc3339() -> String {
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        // Duration since the epoch is always present on supported platforms.
+        .unwrap_or_default();
+    rfc3339_from_unix(d.as_secs(), d.subsec_millis())
+}
+
+fn rfc3339_from_unix(secs: u64, millis: u32) -> String {
+    let date = i64::try_from(secs)
+        .ok()
+        .and_then(|secs| OffsetDateTime::from_unix_timestamp(secs).ok())
+        .and_then(|date| date.replace_millisecond(u16::try_from(millis).ok()?).ok())
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        date.year(),
+        date.month() as u8,
+        date.day(),
+        date.hour(),
+        date.minute(),
+        date.second(),
+        date.millisecond(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const KIND_NAMES: [&str; 25] = [
+        "session.start",
+        "session.end",
+        "message.received",
+        "turn.start",
+        "turn.end",
+        "llm.delta",
+        "llm.response",
+        "tool.pre_call",
+        "tool.post_call",
+        "agent.state",
+        "agent.yield",
+        "task.done",
+        "command.result",
+        "context.updated",
+        "context.compacting",
+        "session.agent_changed",
+        "context.compacted",
+        "permission.requested",
+        "permission.resolved",
+        "model.changed",
+        "subagent.spawned",
+        "subagent.done",
+        "subagent.watchdog",
+        "session.bypass",
+        "mcp.status",
+    ];
+
+    #[test]
+    fn event_kind_catalog_is_exactly_the_twenty_one() {
+        let kinds = EventKind::ALL;
+        assert_eq!(EVENT_KIND_COUNT, 25);
+        assert_eq!(kinds.len(), 25);
+        assert_eq!(SCHEMA_VERSION, 1);
+        let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+        assert_eq!(names, KIND_NAMES);
+        // Wire names are unique and parse back.
+        for (kind, name) in kinds.iter().zip(KIND_NAMES) {
+            assert_eq!(EventKind::from_wire(name), Some(*kind));
+            assert_eq!(serde_json::to_string(kind).unwrap(), format!("\"{name}\""));
+        }
+        // Deferred names never construct a kind.
+        assert_eq!(EventKind::from_wire("prompt.pre_llm"), None);
+        assert_eq!(EventKind::from_wire("plugin.error"), None);
+    }
+
+    #[test]
+    fn event_kind_durability_marks_only_llm_delta_and_context_updated_live_only() {
+        let durable: Vec<bool> = EventKind::ALL.iter().map(|k| k.is_durable()).collect();
+        assert_eq!(durable.iter().filter(|d| !**d).count(), 4);
+        assert!(!EventKind::LlmDelta.is_durable());
+        assert!(!EventKind::ContextUpdated.is_durable());
+        assert!(!EventKind::McpStatus.is_durable());
+        assert!(EventKind::TurnEnd.is_durable());
+        assert!(EventKind::SessionStart.is_durable());
+    }
+
+    #[test]
+    fn envelope_roundtrips_through_serde_json_unchanged() {
+        let session_id = Ulid::generate();
+        let task_id = Ulid::generate();
+        let cause_id = Ulid::generate();
+        let payload = serde_json::to_value(LlmResponse {
+            turn_id: Ulid::generate(),
+            step_id: Ulid::generate(),
+            message: AssistantMessage {
+                text: "doné — ✓".into(),
+                thinking: "thought".into(),
+                tool_calls: vec![crate::provider::ToolCall {
+                    id: "call_1".into(),
+                    name: "read".into(),
+                    args: json!({"path": "/a"}),
+                    args_valid: true,
+                }],
+                finish_reason: Some("stop".into()),
+                usage: Some(Usage {
+                    prompt_tokens: 12,
+                    completion_tokens: 34,
+                    total_tokens: 46,
+                }),
+            },
+            usage: Some(Usage {
+                prompt_tokens: 12,
+                completion_tokens: 34,
+                total_tokens: 46,
+            }),
+            finish_reason: Some("stop".into()),
+        })
+        .unwrap();
+
+        let envelope = EventEnvelope::new(session_id, 7, EventKind::LlmResponse, payload)
+            .with_causation_id(cause_id)
+            .with_correlation_id(task_id);
+
+        let wire = serde_json::to_string(&envelope).unwrap();
+        let back: EventEnvelope = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back, envelope);
+        assert_eq!(back.schema_version, 1);
+        assert_eq!(back.actor_id, "agent:main");
+        assert_eq!(back.kind, "llm.response");
+    }
+
+    #[test]
+    fn all_payload_structs_roundtrip_through_serde_json() {
+        let cases: Vec<(&str, Value)> = vec![
+            (
+                "session.start",
+                serde_json::to_value(&SessionStart {
+                    workspace: "/w".into(),
+                    root_actor_id: ROOT_ACTOR_ID.into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "session.end",
+                serde_json::to_value(&SessionEnd {
+                    reason: "stop".into(),
+                    final_seq: 41,
+                })
+                .unwrap(),
+            ),
+            (
+                "message.received",
+                serde_json::to_value(&MessageReceived {
+                    answer: None,
+                    selected_skill: None,
+                    command_id: Ulid::generate(),
+                    source: "user:http".into(),
+                    target: ROOT_ACTOR_ID.into(),
+                    mode: "next-turn".into(),
+                    content: "héllo".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "turn.start",
+                serde_json::to_value(&TurnStart {
+                    turn_id: Ulid::generate(),
+                    actor_id: ROOT_ACTOR_ID.into(),
+                    task_id: Ulid::generate(),
+                })
+                .unwrap(),
+            ),
+            (
+                "turn.end",
+                serde_json::to_value(&TurnEnd {
+                    turn_id: Ulid::generate(),
+                    actor_id: ROOT_ACTOR_ID.into(),
+                    outcome: TurnEndOutcome::Yielded,
+                    usage: None,
+                    duration_ms: 250,
+                    error: Some(TurnError {
+                        code: "provider".into(),
+                        message: "boom".into(),
+                    }),
+                })
+                .unwrap(),
+            ),
+            (
+                "llm.delta",
+                serde_json::to_value(&LlmDelta {
+                    turn_id: Ulid::generate(),
+                    step_id: Ulid::generate(),
+                    delta: StreamDelta::ToolCallArgs {
+                        index: 2,
+                        fragment: "{\"pa".into(),
+                    },
+                })
+                .unwrap(),
+            ),
+            (
+                "llm.response",
+                serde_json::to_value(&LlmResponse {
+                    turn_id: Ulid::generate(),
+                    step_id: Ulid::generate(),
+                    message: AssistantMessage::default(),
+                    usage: None,
+                    finish_reason: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "tool.pre_call",
+                serde_json::to_value(&ToolPreCall {
+                    tool_call_id: "call_1".into(),
+                    name: "read".into(),
+                    source: ToolSource::Native,
+                    args: json!({"path": "/a"}),
+                    actor_id: ROOT_ACTOR_ID.into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "tool.post_call",
+                serde_json::to_value(&ToolPostCall {
+                    tool_call_id: "call_1".into(),
+                    name: "read".into(),
+                    status: crate::tools::ToolStatus::Ok,
+                    output: "contents".into(),
+                    metadata: Value::Null,
+                })
+                .unwrap(),
+            ),
+            (
+                "agent.state",
+                serde_json::to_value(&AgentStateChanged {
+                    actor_id: ROOT_ACTOR_ID.into(),
+                    from: "running".into(),
+                    to: "yielded".into(),
+                    reason: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "agent.yield",
+                serde_json::to_value(&AgentYield {
+                    choices: None,
+                    question_call_id: None,
+                    actor_id: ROOT_ACTOR_ID.into(),
+                    turn_id: Ulid::generate(),
+                    question: "proceed?".into(),
+                    kind: Some("budget".into()),
+                    details: Some(json!({"steps": 50})),
+                })
+                .unwrap(),
+            ),
+            (
+                "task.done",
+                serde_json::to_value(&TaskDone {
+                    task_id: Ulid::generate(),
+                    actor_id: ROOT_ACTOR_ID.into(),
+                    result_message_id: Ulid::generate(),
+                    status: TaskStatus::Done,
+                })
+                .unwrap(),
+            ),
+            (
+                "command.result",
+                serde_json::to_value(&CommandResult {
+                    operation_id: Ulid::generate(),
+                    name: "help".into(),
+                    ok: true,
+                    data: Some(json!({"commands": []})),
+                    error: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "context.updated",
+                serde_json::to_value(&ContextSnapshot {
+                    model: "p/m".into(),
+                    gateway: "p".into(),
+                    upstream_id: "m".into(),
+                    variant: None,
+                    window: 200_000,
+                    window_source: "models.json".into(),
+                    estimated: true,
+                    estimate_total: 42_000,
+                    breakdown: Default::default(),
+                    output_reserve: 8192,
+                    margin: 10_000,
+                    input_budget: 181_808,
+                    percent: 21,
+                    last_usage: None,
+                    skills: Default::default(),
+                    rule_files: 0,
+                    incarnation: Ulid::generate(),
+                    revision: 3,
+                })
+                .unwrap(),
+            ),
+            (
+                "session.agent_changed",
+                serde_json::to_value(&SessionAgentChanged {
+                    agent: "plan".into(),
+                    previous: "build".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "context.compacted",
+                serde_json::to_value(&ContextCompacted {
+                    written_by: None,
+                    passes: 1,
+                    generation: 1,
+                    through_message: 7,
+                    pruned: 2,
+                    estimate_before: 120_000,
+                    estimate_after: 18_000,
+                    reason: Some(CompactionReason::Manual),
+                })
+                .unwrap(),
+            ),
+            (
+                "context.compacting",
+                serde_json::json!({"pass":1,"total":6}),
+            ),
+            (
+                "permission.requested",
+                serde_json::to_value(&PermissionRequested {
+                    always_label: None,
+                    child_session_id: None,
+                    request_id: Ulid::generate(),
+                    tool_call_id: "call_1".into(),
+                    tool: "bash".into(),
+                    arguments: "{\"command\":\"ls\"}".into(),
+                    scope: crate::permissions::Scope::Folder("/w".into()),
+                    agent: "build".into(),
+                    reason: "`bash` acts in /w".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "permission.resolved",
+                serde_json::to_value(&PermissionResolved {
+                    child_session_id: None,
+                    request_id: Ulid::generate(),
+                    tool_call_id: "call_1".into(),
+                    resolution: PermissionResolution::Expired,
+                })
+                .unwrap(),
+            ),
+            (
+                "model.changed",
+                serde_json::to_value(&ModelChanged {
+                    operation_id: Some(Ulid::generate()),
+                    revision: 2,
+                    reason: ModelChangeReason::Switch,
+                    previous: Some(ModelIdentity::from_upstream("p", "m1")),
+                    new: ModelIdentity::from_upstream("p", "m2"),
+                    variant: Some("high".into()),
+                    window: 200_000,
+                    input_budget: 181_808,
+                    from_message: 7,
+                })
+                .unwrap(),
+            ),
+            (
+                "subagent.spawned",
+                serde_json::to_value(&SubagentSpawned {
+                    parent_session_id: Ulid::generate(),
+                    child_session_id: Ulid::generate(),
+                    agent: "vigie".into(),
+                    goal: "map the parser".into(),
+                    tool_call_id: "call_1".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "subagent.done",
+                serde_json::to_value(&SubagentDone {
+                    parent_session_id: Ulid::generate(),
+                    child_session_id: Ulid::generate(),
+                    agent: "vigie".into(),
+                    outcome: SubagentOutcome::Stopped,
+                    reason: Some("server_restart".into()),
+                    notification_id: Ulid::generate(),
+                })
+                .unwrap(),
+            ),
+        ];
+        let mut cases = cases.to_vec();
+        cases.push((
+            "subagent.watchdog",
+            serde_json::to_value(SubagentWatchdog {
+                child_session_id: Ulid::generate(),
+                verdict: "doubt".into(),
+                reason: Some("unavailable".into()),
+                checked_at: now_rfc3339(),
+            })
+            .unwrap(),
+        ));
+        cases.push((
+            "session.bypass",
+            serde_json::json!({"enabled":true,"by":"user:http"}),
+        ));
+        cases.push((
+            "mcp.status",
+            serde_json::to_value(McpStatus {
+                incarnation: Ulid::generate(),
+                revision: 3,
+                servers: vec![McpServerView {
+                    server_id: "github".into(),
+                    transport: "stdio".into(),
+                    state: "failed".into(),
+                    tool_count: 0,
+                    skipped_tools: vec!["bad: invalid schema".into()],
+                    skipped_more: 0,
+                    error: Some("MCP startup timed out".into()),
+                    stderr_tail: "listening".into(),
+                    stderr_truncated: false,
+                }],
+            })
+            .unwrap(),
+        ));
+        assert_eq!(cases.len(), EVENT_KIND_COUNT);
+
+        for (kind, payload) in cases {
+            let wire = serde_json::to_string(&payload).unwrap();
+            let back: Value = serde_json::from_str(&wire).unwrap();
+            assert_eq!(back, payload, "payload roundtrip failed for {kind}");
+        }
+    }
+
+    #[test]
+    fn permission_events_wire_shape_roundtrips() {
+        let request_id = Ulid::generate();
+        let requested = PermissionRequested {
+            always_label: None,
+            child_session_id: None,
+            request_id,
+            tool_call_id: "call_1".into(),
+            tool: "write".into(),
+            arguments: "{\"path\":\"/w/a\"}".into(),
+            scope: crate::permissions::Scope::Folder("/w".into()),
+            agent: "build".into(),
+            reason: "`write` acts in /w".into(),
+        };
+        let wire = serde_json::to_value(&requested).unwrap();
+        assert_eq!(wire["scope"], json!({"kind": "folder", "value": "/w"}));
+        assert_eq!(
+            serde_json::from_value::<PermissionRequested>(wire).unwrap(),
+            requested
+        );
+
+        for (resolution, expected) in [
+            (
+                PermissionResolution::AllowOnce,
+                json!({"resolution": "allow_once"}),
+            ),
+            (
+                PermissionResolution::AllowFolder,
+                json!({"resolution": "allow_folder"}),
+            ),
+            (
+                PermissionResolution::Deny {
+                    message: "no".into(),
+                },
+                json!({"resolution": "deny", "message": "no"}),
+            ),
+            (
+                PermissionResolution::Cancelled,
+                json!({"resolution": "cancelled"}),
+            ),
+            (
+                PermissionResolution::Expired,
+                json!({"resolution": "expired"}),
+            ),
+        ] {
+            let resolved = PermissionResolved {
+                child_session_id: None,
+                request_id,
+                tool_call_id: "call_1".into(),
+                resolution,
+            };
+            let mut wire = serde_json::to_value(&resolved).unwrap();
+            assert_eq!(wire["request_id"], json!(request_id));
+            assert_eq!(wire["tool_call_id"], "call_1");
+            wire.as_object_mut().unwrap().remove("request_id");
+            wire.as_object_mut().unwrap().remove("tool_call_id");
+            assert_eq!(wire, expected);
+            let back: PermissionResolved =
+                serde_json::from_value(serde_json::to_value(&resolved).unwrap()).unwrap();
+            assert_eq!(back, resolved);
+        }
+    }
+
+    #[test]
+    fn command_result_wire_shape_and_bounded_data() {
+        let id = Ulid::generate();
+        let ok = CommandResult {
+            operation_id: id,
+            name: "model".into(),
+            ok: true,
+            data: Some(json!({"alias": "a"})),
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            json!({"operation_id": id.to_string(), "name": "model", "ok": true, "data": {"alias": "a"}})
+        );
+        let failed = CommandResult {
+            operation_id: id,
+            name: "x".into(),
+            ok: false,
+            data: None,
+            error: Some("nope".into()),
+        };
+        let v = serde_json::to_value(&failed).unwrap();
+        assert_eq!(v["error"], "nope");
+        assert!(v.get("data").is_none());
+
+        let small = json!({"k": "v"});
+        assert_eq!(CommandResult::bound_data(small.clone()), small);
+        let big = json!({"k": "x".repeat(COMMAND_RESULT_DATA_MAX_BYTES + 1)});
+        let bounded = CommandResult::bound_data(big);
+        assert_eq!(bounded["truncated"], true);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() < 100);
+    }
+
+    #[test]
+    fn llm_delta_stream_delta_wire_uses_delta_type_tag() {
+        let delta = LlmDelta {
+            turn_id: Ulid::generate(),
+            step_id: Ulid::generate(),
+            delta: StreamDelta::Text {
+                text: "héllo ✓".into(),
+            },
+        };
+        let v = serde_json::to_value(&delta).unwrap();
+        assert_eq!(v["delta"]["delta_type"], "text");
+        assert_eq!(v["delta"]["text"], "héllo ✓");
+        let back: LlmDelta = serde_json::from_value(v).unwrap();
+        assert_eq!(back, delta);
+
+        let started = LlmDelta {
+            turn_id: delta.turn_id,
+            step_id: delta.step_id,
+            delta: StreamDelta::ToolCallStarted {
+                index: 0,
+                name: "bash".into(),
+            },
+        };
+        let v = serde_json::to_value(&started).unwrap();
+        assert_eq!(v["delta"]["delta_type"], "tool_call_started");
+        assert_eq!(v["delta"]["name"], "bash");
+        let back: LlmDelta = serde_json::from_value(v).unwrap();
+        assert_eq!(back, started);
+
+        // Unknown / malformed delta payloads are rejected, not coerced.
+        let bad: Result<LlmDelta, _> = serde_json::from_value(json!({
+            "turn_id": delta.turn_id.to_string(),
+            "step_id": delta.step_id.to_string(),
+            "delta": {"delta_type": "prompt.pre_llm"},
+        }));
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn stream_delta_wire_golden_roundtrips() {
+        let cases = [
+            (
+                StreamDelta::Text { text: "hi".into() },
+                json!({"delta_type": "text", "text": "hi"}),
+            ),
+            (
+                StreamDelta::Thinking { text: "hm".into() },
+                json!({"delta_type": "thinking", "text": "hm"}),
+            ),
+            (
+                StreamDelta::ToolCallStarted {
+                    index: 2,
+                    name: "bash".into(),
+                },
+                json!({"delta_type": "tool_call_started", "index": 2, "name": "bash"}),
+            ),
+            (
+                StreamDelta::ToolCallArgs {
+                    index: 2,
+                    fragment: "{\"a\"".into(),
+                },
+                json!({"delta_type": "tool_call_args", "index": 2, "fragment": "{\"a\""}),
+            ),
+        ];
+        for (delta, wire) in cases {
+            assert_eq!(serde_json::to_value(&delta).unwrap(), wire);
+            let back: StreamDelta = serde_json::from_value(wire).unwrap();
+            assert_eq!(back, delta);
+        }
+        // Missing fields and a wrong index type are rejected.
+        assert!(serde_json::from_value::<StreamDelta>(json!({"delta_type": "text"})).is_err());
+        assert!(
+            serde_json::from_value::<StreamDelta>(
+                json!({"delta_type": "tool_call_started", "index": "0", "name": "x"})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn tokens_are_shown_in_thousands_with_separators() {
+        assert_eq!(tokens_k(0), "0");
+        assert_eq!(tokens_k(999), "999");
+        assert_eq!(tokens_k(1_000), "1k");
+        assert_eq!(tokens_k(41_600), "42k");
+        assert_eq!(tokens_k(1_000_000), "1,000k");
+        assert_eq!(tokens_k(12_345_678), "12,346k");
+    }
+
+    #[test]
+    fn rfc3339_timestamps_are_utc_with_millis() {
+        assert_eq!(rfc3339_from_unix(0, 0), "1970-01-01T00:00:00.000Z");
+        // 2026-09-04T00:00:00Z == 1_788_480_000
+        assert_eq!(
+            rfc3339_from_unix(1_788_480_000, 42),
+            "2026-09-04T00:00:00.042Z"
+        );
+        assert_eq!(
+            rfc3339_from_unix(951_782_400, 0),
+            "2000-02-29T00:00:00.000Z"
+        );
+        assert_eq!(
+            rfc3339_from_unix(946_684_799, 999),
+            "1999-12-31T23:59:59.999Z"
+        );
+        assert_eq!(rfc3339_from_unix(u64::MAX, 999), "1970-01-01T00:00:00.000Z");
+    }
+
+    /// Manual QA observable: one fully-populated envelope as JSON (paste into
+    /// the todo report as the human-readable frozen shape).
+    #[test]
+    fn manual_qa_print_fully_populated_envelope() {
+        let session_id = Ulid::generate();
+        let task_id = Ulid::generate();
+        let command_id = Ulid::generate();
+        let payload = serde_json::to_value(&LlmDelta {
+            turn_id: Ulid::generate(),
+            step_id: Ulid::generate(),
+            delta: StreamDelta::ToolCallStarted {
+                index: 0,
+                name: "read".into(),
+            },
+        })
+        .unwrap();
+        let envelope = EventEnvelope::new(session_id, 3, EventKind::LlmDelta, payload)
+            .with_causation_id(command_id)
+            .with_correlation_id(task_id);
+        eprintln!("{}", serde_json::to_string_pretty(&envelope).unwrap());
+    }
+}

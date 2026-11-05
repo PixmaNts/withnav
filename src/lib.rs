@@ -1,8 +1,12 @@
 pub mod agent;
 pub mod app;
+pub mod assignments;
 pub mod bus;
 pub mod error;
 pub mod flows;
+#[cfg(test)]
+pub(crate) mod layer_fixture;
+pub mod layers;
 pub mod mcp;
 pub mod navigator;
 pub mod paths;
@@ -13,5 +17,4 @@ pub mod server;
 pub mod session;
 pub mod settings;
 pub mod tools;
-pub mod tui;
 pub mod workspace;

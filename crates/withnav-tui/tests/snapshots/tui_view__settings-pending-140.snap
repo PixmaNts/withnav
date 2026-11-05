@@ -1,0 +1,44 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ ◆ withnav  /ws/refactor-parser  —  /config                                  ● 2 unsaved  /cfg/withnav/config.json · /cfg/withnav/models.jso
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                     │                                                                                  │                                   
+ SETTINGS            │  Subagents  config.json → subagents, agent                                       │ FOCUSED                           
+                     │  Concurrency limits and watchdog intervals. Zero disables a watchdog.            │ subagents.max_concurrent          
+ 1 Gateways          │                                                                                  │                                   
+ omniroute           │▌ ● subagents.max_concurrent          5                                    ←→ ±1  │ Maximum concurrent subagents per  
+                     │  ● subagents.watchdog_interval_secs  60                                          │ session.                          
+ 2 Layers            │    agent.watchdog_interval_secs      300                                         │                                   
+ reflex · instinct · │                                                                                  │ type    integer · 1–64            
+ meta · cognition    │                                                                                  │ saved   4                         
+ 3 Agents            │                                                                                  │ applies to new sessions and       
+ build               │                                                                                  │ subagents                         
+                     │                                                                                  │                                   
+ 4 Permissions       │                                                                                  │ PENDING · 2                       
+ 2 scratch dirs      │                                                                                  │ subagents.max_concurrent          
+                     │                                                                                  │ - 4                               
+▌5 Subagents ●2      │                                                                                  │ + 5                               
+ max 5 per session   │                                                                                  │ subagents.watchdog_interval_secs  
+                     │                                                                                  │ - 300                             
+ 6 Appearance        │                                                                                  │ + 60                              
+ Ayu Dark            │                                                                                  │ [ctrl+s] write  [ctrl+z] revert   
+                     │                                                                                  │                                   
+                     │                                                                                  │ ▌ Written for every client: TUI,  
+                     │                                                                                  │ WebUI and VS Code. A /models      
+                     │                                                                                  │ pick in a session stays in that   
+                     │                                                                                  │ session and never writes here.    
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+ 1…6 section         │                                                                                  │                                   
+ tab next section    │                                                                                  │                                   
+ esc back to session │                                                                                  │                                   
+                     │                                                                                  │                                   
+                                                                                                                                            
+ ↑↓ move · ←→ change · enter pick/edit · space toggle · / filter · ctrl+s write · ctrl+z revert · esc back

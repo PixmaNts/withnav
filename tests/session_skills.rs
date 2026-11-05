@@ -488,21 +488,21 @@ async fn captain_selection_loads_the_skill_before_the_first_model_request() {
     assert!(bytes.contains("\"origin\":\"captain\""));
     server.abort();
     for stream in [&events, &replay] {
-        let mut projection = withnav::tui::state::State::default();
+        let mut projection = withnav_tui::state::State::default();
         for envelope in stream
             .iter()
             .filter(|event| event.kind == "message.received")
         {
-            withnav::tui::reducer::update(
+            withnav_tui::reducer::update(
                 &mut projection,
-                withnav::tui::protocol::ClientEvent::Envelope {
+                withnav_tui::protocol::ClientEvent::Envelope {
                     generation: Default::default(),
                     envelope: envelope.clone(),
                 },
             )
             .unwrap();
         }
-        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, withnav::tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
+        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, withnav_tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
     }
     let sent = body(&provider, 0);
     let messages = sent["messages"].as_array().unwrap();

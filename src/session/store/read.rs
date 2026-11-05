@@ -428,10 +428,11 @@ fn resume_tx(tx: &Transaction<'_>, id: Ulid) -> Result<Option<Resumed>, String> 
     else {
         return Ok(None);
     };
-    let transcript = transcript
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<Vec<ChatMessage>>(raw).ok())
-        .unwrap_or_default();
+    let transcript = match transcript.as_deref() {
+        None => Vec::new(),
+        Some(raw) => serde_json::from_str::<Vec<ChatMessage>>(raw)
+            .map_err(|e| format!("the saved transcript of session {id} cannot be read: {e}"))?,
+    };
     let compaction = checkpoint
         .as_deref()
         .map(|raw| Compaction::from_json(raw, &transcript))

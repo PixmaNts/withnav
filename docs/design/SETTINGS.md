@@ -1,6 +1,6 @@
 # Handoff: WithNav — Settings
 
-Design reference: `WithNav Settings.dc.html` (open in a browser next to `support.js`). Top bar switches **screen** (Settings · TUI, Settings · WebUI, Settings · VS Code) and **theme** (Ayu Dark/Light, Nord Dark/Light, same tokens as `README.md` and `src/tui/theme.rs`).
+Design reference: `WithNav Settings.dc.html` (open in a browser next to `support.js`). Top bar switches **screen** (Settings · TUI, Settings · WebUI, Settings · VS Code) and **theme** (Ayu Dark/Light, Nord Dark/Light, same tokens as `README.md` and `crates/withnav-tui/src/theme.rs`).
 
 This is a design, not as-built. Where the code disagrees, the code is right; items marked **(proposal)** do not exist in the code yet.
 

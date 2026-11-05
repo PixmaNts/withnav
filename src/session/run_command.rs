@@ -937,6 +937,7 @@ mod tests {
                         content: Some(format!("answer {n} {}", "word ".repeat(1200))),
                         reasoning_content: None,
                         tool_calls: vec![],
+                        opaque: None,
                     },
                 ]
             })

@@ -378,7 +378,8 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn watchdog_transmits_assignment_and_invalid_runtime_variant_asks_captain() {
-        use crate::provider::test_support::{assert_layer_body, layer_chat_fixture};
+        use crate::layer_fixture::layer_chat_fixture;
+        use crate::provider::test_support::assert_layer_body;
         for runtime in [false, true] {
             for (variant, effort) in [
                 (None, Some("low")),
@@ -445,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn unavailable_provider_never_continues_watchdog() {
         let (dir, server, models) =
-            crate::provider::test_support::layer_chat_fixture(None, false, "unused").await;
+            crate::layer_fixture::layer_chat_fixture(None, false, "unused").await;
         server.reset().await;
         let assigned = crate::provider::layers::assigned(
             &models,

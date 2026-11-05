@@ -1,0 +1,9 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ resize terminal to 
+                    
+                    
+line one            
+line two

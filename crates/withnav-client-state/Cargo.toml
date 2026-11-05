@@ -1,0 +1,15 @@
+[package]
+name = "withnav-client-state"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Conversation state a WithNav client rebuilds from the session event stream"
+
+# Pure projection of events into state: no runtime, no HTTP stack, no terminal code.
+[dependencies]
+withnav-client-api = { path = "../withnav-client-api" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ulid.workspace = true

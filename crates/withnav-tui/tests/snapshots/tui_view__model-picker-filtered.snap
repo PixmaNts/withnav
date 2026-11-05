@@ -1,0 +1,34 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ withnav  ~/dev/project           ▌◎ build  cognition · assigned · — / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  ◎ Nav · idle      │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+            ┌────────────────────── Switch this conversation to… ──────────────────────┐            
+            │ ❯ opus                                                                   │            
+            │ switches the model only; /variant after the switch · ctrl+n new tab      │            
+            │ ▾ gateway                                                                │            
+            │▌  opus                                                              1M   │            
+            │ opus · variants: low high max                                            │            
+            │ ↑↓ move  ←→ fold  alt+a all  ctrl+f fav  enter choose  esc close         │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ ready                                                          session — tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

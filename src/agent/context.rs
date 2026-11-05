@@ -7,7 +7,7 @@
 //! provider's own usage numbers.
 
 use crate::agent::prompt::SYSTEM_CONTRACT;
-pub use crate::bus::event::{Breakdown, ContextSnapshot, LastUsage, SkillCounts};
+pub use crate::bus::event::{Breakdown, ContextSnapshot, LastUsage, SkillCounts, tokens_k};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
 /// Tokens added to every message for its role and delimiters.
@@ -28,7 +28,9 @@ fn bytes_tokens(bytes: usize) -> u64 {
     (bytes as u64).div_ceil(4)
 }
 
-/// One message: its text, reasoning and tool calls, plus the framing.
+/// One message: its text, reasoning (opaque data included: the estimate runs
+/// on the projection, where only what the request carries is left) and tool
+/// calls, plus the framing.
 pub fn message_tokens(message: &ChatMessage) -> u64 {
     let bytes = match message {
         ChatMessage::System { content } | ChatMessage::User { content, .. } => content.len(),
@@ -36,9 +38,13 @@ pub fn message_tokens(message: &ChatMessage) -> u64 {
             content,
             reasoning_content,
             tool_calls,
+            opaque,
         } => {
             content.as_deref().map_or(0, str::len)
                 + reasoning_content.as_deref().map_or(0, str::len)
+                + opaque.as_ref().map_or(0, |o| {
+                    o.items.iter().map(|item| item.data.len()).sum::<usize>()
+                })
                 + tool_calls
                     .iter()
                     .map(|c| c.id.len() + c.function.name.len() + c.function.arguments.len())
@@ -73,12 +79,6 @@ impl std::io::Write for ByteCounter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
-    }
-}
-
-impl Breakdown {
-    pub fn total(&self) -> u64 {
-        self.system + self.rules + self.skills_catalog + self.tools + self.messages
     }
 }
 
@@ -255,35 +255,34 @@ impl ContextLimits {
     }
 }
 
-impl ContextSnapshot {
-    pub fn new(
-        limits: &ContextLimits,
-        breakdown: Breakdown,
-        last_usage: Option<LastUsage>,
-        incarnation: ulid::Ulid,
-        revision: u64,
-    ) -> Self {
-        let estimate_total = breakdown.total();
-        Self {
-            model: format!("{}/{}", limits.gateway, limits.upstream_id),
-            gateway: limits.gateway.clone(),
-            upstream_id: limits.upstream_id.clone(),
-            variant: limits.variant.clone(),
-            window: limits.budget.window,
-            window_source: limits.window_source.clone(),
-            estimated: true,
-            estimate_total,
-            breakdown,
-            output_reserve: limits.budget.output_reserve,
-            margin: limits.budget.margin,
-            input_budget: limits.budget.input_budget,
-            percent: percent(estimate_total, limits.budget.window),
-            last_usage,
-            skills: limits.skills,
-            rule_files: limits.rule_files,
-            incarnation,
-            revision,
-        }
+/// The snapshot of one request estimate under a session's model limits.
+pub fn context_snapshot(
+    limits: &ContextLimits,
+    breakdown: Breakdown,
+    last_usage: Option<LastUsage>,
+    incarnation: ulid::Ulid,
+    revision: u64,
+) -> ContextSnapshot {
+    let estimate_total = breakdown.total();
+    ContextSnapshot {
+        model: format!("{}/{}", limits.gateway, limits.upstream_id),
+        gateway: limits.gateway.clone(),
+        upstream_id: limits.upstream_id.clone(),
+        variant: limits.variant.clone(),
+        window: limits.budget.window,
+        window_source: limits.window_source.clone(),
+        estimated: true,
+        estimate_total,
+        breakdown,
+        output_reserve: limits.budget.output_reserve,
+        margin: limits.budget.margin,
+        input_budget: limits.budget.input_budget,
+        percent: percent(estimate_total, limits.budget.window),
+        last_usage,
+        skills: limits.skills,
+        rule_files: limits.rule_files,
+        incarnation,
+        revision,
     }
 }
 
@@ -328,7 +327,7 @@ impl ContextTracker {
     /// request its history would produce now.
     pub fn new(limits: ContextLimits, breakdown: Breakdown) -> Self {
         let incarnation = ulid::Ulid::generate();
-        let current = ContextSnapshot::new(&limits, breakdown, None, incarnation, 0);
+        let current = context_snapshot(&limits, breakdown, None, incarnation, 0);
         Self {
             limits,
             incarnation,
@@ -362,7 +361,7 @@ impl ContextTracker {
             return None;
         }
         self.limits.variant = variant;
-        self.current = ContextSnapshot::new(
+        self.current = context_snapshot(
             &self.limits,
             self.current.breakdown,
             self.last_usage.clone(),
@@ -378,7 +377,7 @@ impl ContextTracker {
         if self.current.breakdown == breakdown && self.current.last_usage == self.last_usage {
             return None;
         }
-        self.current = ContextSnapshot::new(
+        self.current = context_snapshot(
             &self.limits,
             breakdown,
             self.last_usage.clone(),
@@ -387,59 +386,6 @@ impl ContextTracker {
         );
         Some(&self.current)
     }
-}
-
-impl ContextSnapshot {
-    /// The text a terminal shows: the gauge line, then one line per category.
-    pub fn render_text(&self) -> String {
-        let b = &self.breakdown;
-        let mut out = format!(
-            "~{} / {} · {}% · input budget {}",
-            tokens_k(self.estimate_total),
-            tokens_k(self.window),
-            self.percent,
-            tokens_k(self.input_budget),
-        );
-        for (name, n) in [
-            ("system", b.system),
-            ("rules", b.rules),
-            ("skills catalog", b.skills_catalog),
-            ("tools", b.tools),
-            ("messages", b.messages),
-        ] {
-            out.push_str(&format!("\n  {name:<15} ~{}", tokens_k(n)));
-        }
-        out.push_str(&format!(
-            "\noutput reserve {} · margin {} · window from {}",
-            tokens_k(self.output_reserve),
-            tokens_k(self.margin),
-            self.window_source
-        ));
-        if let Some(u) = &self.last_usage {
-            out.push_str(&format!(
-                "\nlast request: {} in, {} out (provider count)",
-                u.prompt_tokens, u.completion_tokens
-            ));
-        }
-        out
-    }
-}
-
-/// `842`, `42k`, `1,000k`: tokens rounded to thousands, with separators.
-pub fn tokens_k(n: u64) -> String {
-    if n < 1000 {
-        return n.to_string();
-    }
-    let k = (n + 500) / 1000;
-    let digits = k.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    format!("{out}k")
 }
 
 #[cfg(test)]

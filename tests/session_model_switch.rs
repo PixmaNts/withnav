@@ -121,6 +121,7 @@ fn history(turns: usize, reasoning: bool) -> Vec<ChatMessage> {
                     content: Some(format!("answer {n} {}", "word ".repeat(1200))),
                     reasoning_content: reasoning.then(|| format!("thinking {n}")),
                     tool_calls: vec![],
+                    opaque: None,
                 },
             ]
         })
@@ -494,6 +495,7 @@ fn rich_history() -> Vec<ChatMessage> {
                     arguments: "{\"path\":\"a.txt\"}".into(),
                 },
             }],
+            opaque: None,
         },
         ChatMessage::Tool {
             tool_call_id: "call_1".into(),
@@ -504,11 +506,13 @@ fn rich_history() -> Vec<ChatMessage> {
             content: Some("read it".into()),
             reasoning_content: Some("thinking about the answer".into()),
             tool_calls: vec![],
+            opaque: None,
         },
         ChatMessage::Assistant {
             content: None,
             reasoning_content: Some("only thoughts".into()),
             tool_calls: vec![],
+            opaque: None,
         },
         ChatMessage::User {
             provenance: Default::default(),
@@ -759,6 +763,7 @@ async fn the_fit_check_measures_the_projection_the_target_will_receive() {
                     content: Some(format!("answer {n}")),
                     reasoning_content: Some("think ".repeat(2000)),
                     tool_calls: vec![],
+                    opaque: None,
                 },
             ]
         })

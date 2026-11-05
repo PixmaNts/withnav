@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { shortName } from "./ModelPicker";
 
-// Same cases as `src/tui/catalog.rs` (short_name tests), so the three pickers agree.
+// Same cases as `crates/withnav-tui/src/catalog.rs` (short_name tests), so the three pickers agree.
 describe("model short name", () => {
   const m = (name: string, gateway: string, provider_group: string) => ({ name, gateway, provider_group });
   it("drops the gateway and provider the headers show", () => {

@@ -11,7 +11,7 @@ use crate::agent::permissions::PermissionRequest;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::ToolCall;
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
-use crate::provider::openai::ChatMessage;
+use crate::provider::openai::{ChatMessage, Producer};
 use crate::tools::{Registry, ToolContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,16 +377,23 @@ impl AgentActor {
     /// Reasoning written by an earlier model (before `reasoning_floor`) is
     /// left out, and so is an assistant message that held nothing else.
     pub fn effective_history(&self) -> Vec<ChatMessage> {
-        self.effective_history_at(self.reasoning_floor)
+        self.effective_history_at(self.reasoning_floor, &self.producer())
+    }
+
+    /// The model this actor sends to, as the owner of the opaque reasoning it
+    /// receives: Chat Completions, this provider's endpoint, the upstream model
+    /// id of the request.
+    pub fn producer(&self) -> Producer {
+        Producer::chat_completions(&self.provider.base_url, &self.model)
     }
 
     /// [`AgentActor::effective_history`] as it would be with the reasoning
-    /// floor at `floor`, without changing the actor: the history a switch to
-    /// another model would send.
-    pub fn effective_history_at(&self, floor: usize) -> Vec<ChatMessage> {
+    /// floor at `floor`, sent to `destination`, without changing the actor: the
+    /// history a switch to another model would send.
+    pub fn effective_history_at(&self, floor: usize, destination: &Producer) -> Vec<ChatMessage> {
         effective_history(
             &super::skills::validation::project_skill_history(
-                &project_reasoning(&self.transcript, floor),
+                &project_reasoning(&self.transcript, floor, destination),
                 if self.skill_turn_open {
                     Some(self.skill_turn_start)
                 } else {
@@ -399,19 +406,23 @@ impl AgentActor {
 
     /// The transcript the compaction machinery plans against: the same
     /// projection the request is built from, index for index the transcript.
-    pub fn planning_transcript(&self, floor: usize) -> Vec<ChatMessage> {
-        project_reasoning(&self.transcript, floor)
+    pub fn planning_transcript(&self, floor: usize, destination: &Producer) -> Vec<ChatMessage> {
+        project_reasoning(&self.transcript, floor, destination)
     }
 
     /// The estimated size of the request this actor would send now, by
     /// category (see [`crate::agent::context`]): the effective prompt.
     pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
-        self.context_breakdown_at(self.reasoning_floor)
+        self.context_breakdown_at(self.reasoning_floor, &self.producer())
     }
 
     /// [`AgentActor::context_breakdown`] for the request with the reasoning
-    /// floor at `floor`.
-    pub fn context_breakdown_at(&self, floor: usize) -> crate::agent::context::Breakdown {
+    /// floor at `floor`, sent to `destination`.
+    pub fn context_breakdown_at(
+        &self,
+        floor: usize,
+        destination: &Producer,
+    ) -> crate::agent::context::Breakdown {
         // The same role message `build_request` sends: the selected agent's
         // prompt composed with the editor's.
         let role = self.role_message();
@@ -419,7 +430,7 @@ impl AgentActor {
             role.as_deref(),
             self.rules.message(),
             self.effective_skills_catalog(),
-            &self.effective_history_at(floor),
+            &self.effective_history_at(floor, destination),
             &self.effective_tool_schemas(),
         )
     }

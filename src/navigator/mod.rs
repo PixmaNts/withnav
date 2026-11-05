@@ -22,6 +22,7 @@ pub mod models;
 pub mod ports;
 pub mod reflex;
 pub mod replay;
+pub mod reveal;
 pub mod runtime;
 pub mod session_hooks;
 mod trigger;

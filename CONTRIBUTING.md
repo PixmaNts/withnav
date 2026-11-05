@@ -77,9 +77,9 @@ with an optional scope (`fix(permissions): ...`). Write in English, in the imper
 A pull request is ready when these pass, run from the repository root:
 
 ```sh
-cargo build --bins
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo build --workspace --bins
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 

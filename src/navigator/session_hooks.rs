@@ -1,5 +1,5 @@
 //! Editor context for the session service: editor roots carry the
-//! pair-programmer prompt and the `intent` tool, and drop a legacy
+//! pair-programmer prompt and the `intent` and `reveal` tools, and drop a legacy
 //! copy of that prompt from a restored transcript. When a conversation feed
 //! is attached, a navigator session also registers with it and feeds it
 //! the session's events.
@@ -13,6 +13,7 @@ use ulid::Ulid;
 use crate::agent::actor::AgentActor;
 use crate::navigator::conversation::{ConversationFeed, NAVIGATOR_ACTOR_ID, SessionPost};
 use crate::navigator::intent::IntentTool;
+use crate::navigator::reveal::RevealTool;
 use crate::provider::openai::ChatMessage;
 use crate::session::{SessionHooks, SessionSender, StartedSession, Subscription};
 
@@ -129,6 +130,10 @@ impl SessionHooks for NavigatorHooks {
         // The intent record is the navigator's working memory: only a
         // editor-session agent may update it.
         actor.registry.register(Box::new(IntentTool));
+        // Points the Captain's editor at a file and symbol.
+        actor
+            .registry
+            .register(Box::new(RevealTool::new(self.feed.clone())));
         // A transcript saved before the role prompt left the transcript
         // starts with that prompt as a system message; drop it so the
         // actor does not send it twice.

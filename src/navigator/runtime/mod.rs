@@ -84,6 +84,18 @@ impl Runtime {
         let reflex = deps.fim.map(ReflexService::new);
         let log = Arc::new(NavLog::new(deps.log_path));
         let turns = deps.conversation.as_ref().map(|feed| feed.subscribe());
+        if let Some(feed) = &deps.conversation {
+            let client = client.clone();
+            feed.set_editor(Arc::new(move |params| {
+                let client = client.clone();
+                Box::pin(async move {
+                    client
+                        .send_request::<crate::navigator::lsp::protocol::RevealRequest>(params)
+                        .await
+                        .map_err(|e| e.message.to_string())
+                })
+            }));
+        }
         let runtime = Arc::new(Self {
             flows: deps.flows,
             client,

@@ -21,7 +21,7 @@ pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 #[derive(Parser, Debug)]
 #[command(
     name = "nav",
-    version,
+    version = env!("WITHNAV_VERSION"),
     about = "WithNav: you set the course, Nav lights the way. A pair-programming crew for your code",
     propagate_version = true,
     args_conflicts_with_subcommands = true

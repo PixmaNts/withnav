@@ -484,10 +484,7 @@ async fn fixtures_unknown_keys_aliases_permissions_defaults_flows_and_variants()
         );
         assert_eq!(result.status, expected, "{}", server_path.display());
         assert_eq!(result.value, server_path.display().to_string());
-        assert_eq!(
-            check(&report, "binary.nav").value,
-            env!("CARGO_PKG_VERSION")
-        );
+        assert_eq!(check(&report, "binary.nav").value, env!("WITHNAV_VERSION"));
         assert!(!home.join("withnav-lsp").exists());
         assert_eq!(snapshot(root.path()), before);
     }

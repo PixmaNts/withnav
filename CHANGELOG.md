@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- Editor: when Cognition points to a place in the code, it opens the file in the editor and puts
+  the cursor, centered, on the function or line (new `reveal` tool).
+
 ## [0.8.1] - 2026-10-16
 
 WithNav 0.8.1 shows the MCP servers' status in the terminal client and the browser, reworks the

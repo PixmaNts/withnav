@@ -10,5 +10,6 @@ pub mod event;
 pub mod permissions;
 pub mod protocol;
 pub mod provider;
+pub mod secrets;
 pub mod settings;
 pub mod tools;

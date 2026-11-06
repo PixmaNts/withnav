@@ -1,11 +1,13 @@
 import { Crew } from "./Crew";
 import { ArrowUp, CaretRight, Compass, TreeStructure } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { McpAppDescriptor } from "../api/types";
 import { readDelegation } from "../lib/compose";
 import type { Item, Permission, SessionView, Turn } from "../session/reducer";
 import { Markdown } from "./Markdown";
 import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./QuestionCard";
+import { SecretCard, type SecretActions } from "./SecretCard";
 import { ToolList } from "./ToolList";
 
 type Answer = (requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) => Promise<void>;
@@ -17,8 +19,10 @@ interface Props {
   onAnswer: Answer;
   onAnswerQuestion?: (answer: import("../session/reducer").AskAnswer) => Promise<void>;
   onOpenChild: (id: string) => void;
+  onOpenApp?: (app: McpAppDescriptor) => void;
   readOnly?: boolean;
   empty?: React.ReactNode;
+  secrets?: SecretActions;
 }
 
 /** Follows the newest content unless the Captain scrolled up to read. */
@@ -41,19 +45,19 @@ function useStickToBottom(dep: unknown) {
   return ref;
 }
 
-export function Transcript({ view, agent, onAnswer, onAnswerQuestion, onOpenChild, readOnly, empty }: Props) {
+export function Transcript({ view, agent, onAnswer, onAnswerQuestion, onOpenChild, onOpenApp, readOnly, empty, secrets }: Props) {
   const ref = useStickToBottom(view);
   return (
     <div className="transcript" ref={ref} role="log" aria-live="polite" aria-relevant="additions">
       {view.items.length === 0 && empty}
       {view.items.map((item) => (
-        <ItemView key={item.key} item={item} view={view} agent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} readOnly={readOnly} />
+        <ItemView key={item.key} item={item} view={view} agent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} onOpenApp={onOpenApp} readOnly={readOnly} secrets={secrets} />
       ))}
     </div>
   );
 }
 
-function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, readOnly }: { item: Item } & Omit<Props, "empty">) {
+function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, onOpenApp, readOnly, secrets }: { item: Item } & Omit<Props, "empty">) {
   switch (item.kind) {
     case "captain": {
       const { delegated, text } = readDelegation(item.text);
@@ -89,7 +93,7 @@ function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, 
         </div>
       );
     case "turn":
-      return <TurnView turn={item} view={view} fallbackAgent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} readOnly={readOnly} />;
+      return <TurnView turn={item} view={view} fallbackAgent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} onOpenApp={onOpenApp} readOnly={readOnly} secrets={secrets} />;
     case "permission": {
       const perm = view.permissions[item.requestId];
       return perm ? <PermissionBlock perm={perm} onAnswer={onAnswer} readOnly={readOnly} /> : null;
@@ -103,7 +107,7 @@ function PermissionBlock({ perm, onAnswer, readOnly }: { perm: Permission; onAns
   return <PermissionCard perm={perm} onAnswer={(decision, message) => onAnswer(perm.requestId, decision, message)} readOnly={readOnly} />;
 }
 
-function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpenChild, readOnly }: { turn: Turn; fallbackAgent?: string } & Omit<Props, "agent" | "empty">) {
+function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpenChild, onOpenApp, readOnly, secrets }: { turn: Turn; fallbackAgent?: string } & Omit<Props, "agent" | "empty">) {
   const agent = turn.agent ?? view.agent ?? fallbackAgent;
   const childCalls: Record<string, number> = {};
   return (
@@ -124,6 +128,7 @@ function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpe
                 calls={part.calls.map((id) => view.tools[id]).filter((c) => c !== undefined)}
                 children={view.children}
                 onOpenChild={onOpenChild}
+                onOpenApp={onOpenApp}
                 childCalls={childCalls}
               />
             );
@@ -132,6 +137,7 @@ function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpe
             return perm ? <PermissionBlock key={`p${i}`} perm={perm} onAnswer={onAnswer} readOnly={readOnly} /> : null;
           }
           case "question":
+            if (part.secret && part.questionCallId) return <SecretCard key={part.questionCallId} question={{ ...part, agent: part.agent ?? agent }} actions={secrets} readOnly={readOnly || !secrets} />;
             if (part.choices && part.questionCallId) return <QuestionCard key={part.questionCallId} question={part} onAnswer={onAnswerQuestion ?? (async () => { throw new Error("This conversation is read-only."); })} readOnly={readOnly || !onAnswerQuestion} />;
             return (
               <div className="question" key={`q${i}`}>

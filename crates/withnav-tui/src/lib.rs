@@ -9,6 +9,7 @@ pub mod input;
 pub mod protocol;
 pub mod reducer;
 pub mod runtime;
+pub mod secret;
 pub mod state;
 pub mod terminal;
 #[cfg(test)]

@@ -64,6 +64,7 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
         registry.register(Box::new(tool));
     }
     let cx = ToolContext {
+        secrets: None,
         binding: None,
         workspace: std::env::temp_dir(),
         readable_roots: vec![],

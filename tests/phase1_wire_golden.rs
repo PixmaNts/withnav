@@ -42,6 +42,7 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
     let actor = AgentActor::new(
         registry,
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws],

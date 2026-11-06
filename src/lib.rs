@@ -13,6 +13,7 @@ pub mod paths;
 pub mod permission;
 pub mod provider;
 pub mod render;
+pub mod secrets;
 pub mod server;
 pub mod session;
 pub mod settings;

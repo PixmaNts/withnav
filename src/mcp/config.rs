@@ -132,7 +132,16 @@ pub fn child_env(config: &ServerConfig) -> Result<(BTreeMap<String, String>, Vec
             Some(value)
         })?;
         secrets.extend(parts.into_inner());
-        secrets.push(resolved.clone());
+        let is_non_secret_flag = matches!(
+            resolved.to_ascii_lowercase().as_str(),
+            "0" | "1" | "true" | "false" | "yes" | "no"
+        );
+        let is_public_url = (key.ends_with("_URL") || key.ends_with("_URI"))
+            && (resolved.starts_with("http://") || resolved.starts_with("https://"))
+            && !resolved.contains('@');
+        if !is_non_secret_flag && !is_public_url {
+            secrets.push(resolved.clone());
+        }
         #[cfg(windows)]
         env.retain(|existing, _| !existing.eq_ignore_ascii_case(key));
         env.insert(key.clone(), resolved);

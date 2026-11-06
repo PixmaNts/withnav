@@ -529,6 +529,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],

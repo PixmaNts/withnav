@@ -337,6 +337,7 @@ fn make_actor(base_url: String, ws: std::path::PathBuf) -> AgentActor {
     AgentActor::new(
         registry,
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws],

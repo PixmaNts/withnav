@@ -1,5 +1,5 @@
 import { del, get, post, put, q } from "./http";
-import type { AskAnswer } from "../session/reducer";
+import type { AskAnswer, SecretScope, SecretTtl } from "../session/reducer";
 import type {
   AgentsBody,
   CommandInfo,
@@ -9,10 +9,12 @@ import type {
   GatewayTest,
   IntentBody,
   LayerEntry,
+  McpResourceBody,
   McpStatus,
   ModelEntry,
   SessionListEntry,
   SessionSummary,
+  SecretView,
   SettingsBody,
   SkillsBody,
   WorkspaceEntry,
@@ -43,6 +45,12 @@ export const api = {
   layers: (workspace: string) => get<{ layers: LayerEntry[] }>(`/v1/layers?workspace=${q(workspace)}`).then((b) => b.layers ?? []),
   /** The service's MCP servers; the live `mcp.status` event carries the same body. */
   mcp: () => get<McpStatus>("/v1/mcp"),
+  mcpResource: (server: string, uri: string) =>
+    get<McpResourceBody>(`/v1/mcp/${q(server)}/resource?uri=${q(uri)}`),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mcpCall: (server: string, name: string, args: Record<string, any> = {}) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    post<any>(`/v1/mcp/${q(server)}/call`, { name, arguments: args }),
   settings: (workspace: string) => get<SettingsBody>(`/v1/settings?workspace=${q(workspace)}`),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   saveSetting: (workspace: string, body: { revision: string; key: string; value: any }) =>
@@ -66,6 +74,13 @@ export const api = {
     post<CommandOutcome>(`/v1/sessions/${q(id)}/commands`, { name, arguments: args }),
   continueChild: (parent: string, child: string, token?: { incarnation: string; hold_id: string }) =>
     post<{ accepted: boolean }>(`/v1/sessions/${q(parent)}/children/${q(child)}/continue`, { pause_token: token ?? null }),
+  /** The Captain's secret for `requestId`: the only request that carries a value. */
+  submitSecret: (id: string, requestId: string, body: { name?: string; value: string; ttl: SecretTtl; scope: SecretScope }) =>
+    post<{ accepted: boolean; secret?: SecretView }>(`/v1/sessions/${q(id)}/secrets/${q(requestId)}`, body),
+  declineSecret: (id: string, requestId: string) =>
+    post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/secrets/${q(requestId)}`, { decline: true }),
+  secrets: (id: string) => get<{ secrets: SecretView[] }>(`/v1/sessions/${q(id)}/secrets`).then((b) => b.secrets ?? []),
+  revokeSecret: (id: string, name: string) => del<void>(`/v1/sessions/${q(id)}/secrets/${q(name)}`),
   answerPermission: (id: string, requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) =>
     post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/permissions/${q(requestId)}`, message ? { decision, message } : { decision }),
 };

@@ -34,6 +34,14 @@
 //!   -> `{accepted:true}`: the typed answer to a `permission.requested`. 404 unknown session or
 //!   malformed id, 409 `{"error","reason":"permission_stale"}` for a request that is not waiting
 //!   (answered, cancelled, expired, never existed), 400 for a body that is not a decision.
+//! - `POST /v1/sessions/:id/secrets/:request_id` `{value?, name?, ttl:"1h"|"24h"|"session", scope:"session"|"workspace", decline?}`
+//!   -> `{accepted:true, secret?:{name,scope,ttl,expires_at?,created_at,use_count,last4}}`: the
+//!   Captain's answer to a `request_secret` (`agent.yield` kind `secret`, `question_call_id` is
+//!   the request id). The value never enters a command, an event or the history: the request's
+//!   result is metadata (`message.received.secret`). A settled request answers 409
+//!   `{"error","reason":"secret_stale"}` to a decline, and stores a value given with its `name`.
+//! - `GET  /v1/sessions/:id/secrets` -> `{secrets:[…]}`, metadata only;
+//!   `DELETE /v1/sessions/:id/secrets/:name` -> 204, or 404 when there is none.
 //! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
 //! - `GET /v1/sessions/:id/skills` -> `{skills:[{name,description}],disabled_reason?}`: only catalog-listed skills; no rows when the agent disables `skill`.
 //!   Message content accepts one `{type:"skill",name}` alongside text. Admission loads it through
@@ -163,6 +171,8 @@ pub fn app(state: AppState) -> Router {
         .merge(super::flows::router())
         .route("/v1/models", get(list_models))
         .route("/v1/mcp", get(mcp_status))
+        .route("/v1/mcp/{server}/resource", get(get_mcp_resource))
+        .route("/v1/mcp/{server}/call", post(post_mcp_call))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
         .route(
@@ -181,6 +191,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/sessions/{id}/permissions/{request_id}",
             post(answer_permission),
+        )
+        .route("/v1/sessions/{id}/secrets", get(list_secrets))
+        .route(
+            "/v1/sessions/{id}/secrets/{key}",
+            post(submit_secret).delete(revoke_secret),
         )
         .route("/v1/sessions/{id}/context", get(get_context))
         .route("/v1/sessions/{id}/skills", get(get_skills))
@@ -332,6 +347,48 @@ async fn health() -> Json<HealthBody> {
 /// `mcp.status` event (that event is live-only).
 async fn mcp_status(State(state): State<AppState>) -> Json<crate::mcp::McpSnapshot> {
     Json(state.service().mcp_status())
+}
+
+#[derive(Deserialize)]
+struct McpResourceQuery {
+    uri: String,
+}
+
+#[derive(Deserialize)]
+struct McpCallBody {
+    name: String,
+    #[serde(default)]
+    arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+async fn get_mcp_resource(
+    State(state): State<AppState>,
+    Path(server): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<McpResourceQuery>,
+) -> Response {
+    match state.service().mcp_read_resource(&server, &query.uri).await {
+        Ok(body) => Json(body).into_response(),
+        Err(message) => error_response(ServerError::MalformedBody(message)),
+    }
+}
+
+async fn post_mcp_call(
+    State(state): State<AppState>,
+    Path(server): Path<String>,
+    body: Result<Json<McpCallBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let body = match json_body(body) {
+        Ok(b) => b,
+        Err(err) => return error_response(err),
+    };
+    match state
+        .service()
+        .mcp_call_tool(&server, &body.name, body.arguments)
+        .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(message) => error_response(ServerError::MalformedBody(message)),
+    }
 }
 
 #[derive(Deserialize)]
@@ -987,6 +1044,52 @@ pub enum DecisionKind {
     Deny,
 }
 
+async fn list_secrets(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let result = async {
+        let id = parse_session_id(id)?;
+        state.list_secrets(id).await
+    }
+    .await;
+    json_result(result.map(|secrets| crate::secrets::SecretsBody { secrets }))
+}
+
+async fn submit_secret(
+    State(state): State<AppState>,
+    Path((id, request_id)): Path<(String, String)>,
+    body: Result<Json<crate::secrets::SecretSubmission>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let result = async {
+        let id = parse_session_id(id)?;
+        // The rejection text of a malformed body may quote it: never echo a value back.
+        let body = body.map(|Json(value)| value).map_err(|_| {
+            ServerError::MalformedBody("expected {value?, name?, ttl?, scope?, decline?}".into())
+        })?;
+        state.submit_secret(id, &request_id, body).await
+    }
+    .await;
+    json_result(result)
+}
+
+async fn revoke_secret(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    let result = async {
+        let id = parse_session_id(id)?;
+        state.revoke_secret(id, &name).await
+    }
+    .await;
+    match result {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("no secret named {name}") })),
+        )
+            .into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 /// The message a denial carries when the Captain gave none.
 const DEFAULT_DENIAL: &str = "the user denied this tool call";
 
@@ -1096,7 +1199,8 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SessionStopping
         | ServerError::ChildNotParked
         | ServerError::ResumeRequired
-        | ServerError::PermissionStale => StatusCode::CONFLICT,
+        | ServerError::PermissionStale
+        | ServerError::SecretStale => StatusCode::CONFLICT,
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
@@ -1133,6 +1237,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::ChildReadOnly => Some("child_read_only"),
         ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
         ServerError::PermissionStale => Some("permission_stale"),
+        ServerError::SecretStale => Some("secret_stale"),
         ServerError::NoContextWindow { .. } => Some("no_context_window"),
         ServerError::SavedAgentUnavailable { .. } => Some("saved_agent_unavailable"),
         ServerError::ImpossibleBudget { .. } => Some("impossible_context_budget"),

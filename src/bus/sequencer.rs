@@ -31,6 +31,8 @@ use crate::error::BusError;
 #[derive(Debug, Clone)]
 pub struct PendingCommand {
     pub answer: Option<crate::tools::control::AskAnswer>,
+    /// The host's note when the command answers a secret request.
+    pub secret: Option<withnav_client_api::secrets::SecretNote>,
     pub selected_skill: Option<String>,
     pub command_id: Ulid,
     pub content: String,
@@ -549,6 +551,7 @@ fn message_received_candidate(command: PendingCommand) -> Candidate {
         EventKind::MessageReceived,
         serde_json::to_value(crate::bus::event::MessageReceived {
             answer: command.answer,
+            secret: command.secret,
             command_id: command.command_id,
             source: command.source,
             target: command.target,
@@ -796,6 +799,7 @@ mod tests {
                         selected: vec![1],
                         custom: Some("custom answer".into()),
                     }),
+                    secret: None,
                     selected_skill: Some("rust".into()),
                     command_id,
                     content: "hello there".into(),

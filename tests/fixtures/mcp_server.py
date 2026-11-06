@@ -87,6 +87,8 @@ for line in sys.stdin:
             cursor = "second"
         tools = [{"name": name, "description": name, "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}} for name in names]
         for tool in tools:
+            if tool["name"] == "echo":
+                tool["_meta"] = {"ui": {"resourceUri": "ui://fixture/app.html"}}
             if tool["name"] == "reference":
                 tool["inputSchema"] = {"$defs": {"text": {"type": "string"}}, "properties": {"text": {"$ref": "#/$defs/text"}}}
             if tool["name"] == "described":
@@ -96,6 +98,9 @@ for line in sys.stdin:
             if tool["name"] == "malformed":
                 tool["inputSchema"] = {"type":"object", "properties":{"text":{"type":"string","minLength":"bad"}}}
         send(identifier, {"tools": tools, "nextCursor": cursor})
+    elif method == "resources/read":
+        uri = message.get("params", {}).get("uri", "")
+        send(identifier, {"contents": [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]})
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

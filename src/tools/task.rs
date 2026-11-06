@@ -83,6 +83,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let cx = ToolContext {
+            secrets: None,
             binding: None,
             workspace: std::env::temp_dir(),
             writable_roots: vec![],

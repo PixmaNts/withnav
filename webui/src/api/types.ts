@@ -142,6 +142,41 @@ export interface McpStatus {
   servers: McpServerView[];
 }
 
+export interface McpMediaItem {
+  mime_type: string;
+  data?: string;
+  svg?: string;
+}
+
+export interface McpUiMeta {
+  server: string;
+  tool: string;
+  resource_uri?: string;
+  html?: string;
+  url?: string;
+}
+
+export interface McpAppDescriptor {
+  callId: string;
+  server: string;
+  tool: string;
+  resourceUri?: string;
+  html?: string;
+  url?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args?: any;
+  output?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  metadata?: any;
+}
+
+export interface McpResourceBody {
+  uri: string;
+  mime_type: string;
+  text?: string | null;
+  blob?: string | null;
+}
+
 export interface IntentBody {
   exists: boolean;
   intent: string | null;
@@ -229,4 +264,15 @@ export interface GatewayTest {
   latency_ms: number;
   model_count: number | null;
   error: string | null;
+}
+
+/** One stored secret as `GET /v1/sessions/{id}/secrets` lists it: metadata and the last four characters at most. */
+export interface SecretView {
+  name: string;
+  scope: "session" | "workspace";
+  ttl: "1h" | "24h" | "session";
+  expires_at?: string;
+  created_at: string;
+  use_count: number;
+  last4: string;
 }

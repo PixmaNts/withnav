@@ -25,7 +25,24 @@ pub fn classify(msg: AssistantMessage) -> StepOutcome {
 }
 
 pub fn classify_with_ask(msg: AssistantMessage, allow_ask: bool) -> StepOutcome {
-    if allow_ask && let Some(ask) = msg.tool_calls.iter().find(|tc| tc.name == ASK_TOOL) {
+    classify_with(msg, |name| name == ASK_TOOL && allow_ask)
+}
+
+/// Whether a call pauses the turn for the Captain: an `ask`, or a valid `request_secret`.
+/// An invalid secret request is not a question: it is settled as an error the model reads.
+pub fn is_human_call(call: &ToolCall) -> bool {
+    call.name == ASK_TOOL
+        || (call.name == crate::tools::secret::REQUEST_SECRET_TOOL
+            && crate::tools::secret::validated_request(&call.args).is_ok())
+}
+
+/// [`classify_with_ask`] for every human call `allowed` lets through.
+pub fn classify_with(msg: AssistantMessage, allowed: impl Fn(&str) -> bool) -> StepOutcome {
+    if let Some(ask) = msg
+        .tool_calls
+        .iter()
+        .find(|tc| is_human_call(tc) && allowed(&tc.name))
+    {
         return StepOutcome::Yield {
             request: human_request_from(ask),
         };
@@ -39,16 +56,29 @@ pub fn classify_with_ask(msg: AssistantMessage, allow_ask: bool) -> StepOutcome 
 }
 
 pub(crate) fn human_request_from(ask: &ToolCall) -> HumanRequest {
+    if ask.name == crate::tools::secret::REQUEST_SECRET_TOOL
+        && let Ok(details) = crate::tools::secret::validated_request(&ask.args)
+    {
+        return HumanRequest {
+            tool_call_id: ask.id.clone(),
+            question: crate::tools::secret::question_text(&details),
+            kind: Some(crate::secrets::SECRET_KIND.to_owned()),
+            details: serde_json::to_value(&details).ok(),
+            choices: None,
+        };
+    }
     let question = ask
         .args
         .get("question")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // Only `request_secret` raises a secret card: an `ask` cannot claim to be one.
     let kind = ask
         .args
         .get("kind")
         .and_then(|v| v.as_str())
+        .filter(|kind| *kind != crate::secrets::SECRET_KIND)
         .map(String::from);
     let details = ask.args.get("details").cloned();
     HumanRequest {
@@ -146,5 +176,52 @@ mod tests {
             StepOutcome::Yield { request } => assert_eq!(request.question, "continue?"),
             other => panic!("expected Yield (ask wins), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_valid_secret_request_yields_a_secret_question_and_an_invalid_one_runs() {
+        let args = json!({"name":"API_KEY","label":"Key","reason":"the tests"});
+        let StepOutcome::Yield { request } =
+            classify_with(msg(vec![tc("s1", "request_secret", args)], ""), |_| true)
+        else {
+            panic!("a secret request must yield");
+        };
+        assert_eq!(request.kind.as_deref(), Some("secret"));
+        assert_eq!(request.details.unwrap()["name"], "API_KEY");
+        let invalid = msg(
+            vec![tc(
+                "s2",
+                "request_secret",
+                json!({"name":"path","label":"x","reason":"y"}),
+            )],
+            "",
+        );
+        assert!(matches!(
+            classify_with(invalid, |_| true),
+            StepOutcome::Continue { .. }
+        ));
+        let disallowed = msg(
+            vec![tc(
+                "s3",
+                "request_secret",
+                json!({"name":"API_KEY","label":"x","reason":"y"}),
+            )],
+            "",
+        );
+        assert!(matches!(
+            classify_with(disallowed, |name| name == "ask"),
+            StepOutcome::Continue { .. }
+        ));
+    }
+
+    #[test]
+    fn an_ask_cannot_claim_the_secret_kind() {
+        let StepOutcome::Yield { request } = classify(msg(
+            vec![tc("a", "ask", json!({"question":"key?","kind":"secret"}))],
+            "",
+        )) else {
+            panic!("ask must yield");
+        };
+        assert_eq!(request.kind, None);
     }
 }

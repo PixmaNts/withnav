@@ -9,6 +9,8 @@ import { displayTitle } from "../sessionTitle";
 import { ConversationIdentity } from "./conversationIdentity";
 import { diffKind, parseWake } from "./wake";
 import { ranked, PICKER_LIMIT } from "./pickerSearch";
+import { createSecretCard, expiresIn, KEY_ICON, scopeText, type SecretCard } from "./secretCard";
+import type { SecretInfo } from "../chatProtocol";
 import type { CommandInfo } from "../chatProtocol";
 import type { ChildInfo } from "../chatProtocol";
 import { actionsSummary, childGroup, crewOf, orderAgents, childStateLabels, countChildren, durationLabel, filterChildren, footerText, oneLine, stripChildren, type ChildFilter } from "./agentStrip";
@@ -62,11 +64,13 @@ const TEMPLATE = `
   <div class="sh-row">
     <button type="button" class="icon-button sh-back" aria-label="Show sessions" title="Sessions">${ICON.back}</button>
     <div class="sh-text"><div class="sh-title">New conversation</div><div class="sh-meta"></div></div>
+    <button type="button" class="icon-button sh-secrets" aria-haspopup="dialog" aria-expanded="false" aria-label="Secrets of this conversation" title="Secrets" hidden>${KEY_ICON}</button>
     <span class="ctx-ring" role="meter" aria-label="Next request context estimate" aria-valuemin="0" aria-valuemax="100" tabindex="0" hidden><svg class="ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="8"/><circle class="ring-fill" cx="10" cy="10" r="8" transform="rotate(-90 10 10)"/></svg><span class="ring-label"></span></span>
     <span class="status" role="status" aria-live="polite" data-state="connecting"><span class="status-dot"></span><span class="status-label">connecting</span></span>
   </div>
   <div class="agent-strip"></div>
   <div class="sa-menu" hidden></div>
+  <div class="secrets-pop" role="dialog" aria-label="Secrets" hidden></div>
 </header>
 <div class="child-header" hidden></div>
 <main class="transcript" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text"><div class="empty">Ask about the code, or describe what you want to do.</div></main>
@@ -644,6 +648,53 @@ let lastConsumedDraft: string | undefined;
 const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
 const questionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; answered: boolean }>();
 const pauseCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement }>();
+const secretCards = new Map<string, SecretCard>();
+const secretsButton = q<HTMLButtonElement>(".sh-secrets");
+const secretsPop = q<HTMLElement>(".secrets-pop");
+let secretsList: SecretInfo[] = [];
+
+/** A secret request still waits for the Captain's value. */
+function secretWaiting(): boolean {
+  if (readOnly) return false;
+  for (const card of secretCards.values()) if (card.state() === "pending") return true;
+  return false;
+}
+
+function renderSecretsButton(): void {
+  secretsButton.hidden = readOnly || !sessionId || (!secretCards.size && !secretsList.length);
+}
+
+function toggleSecrets(open: boolean): void {
+  secretsPop.hidden = !open;
+  secretsButton.setAttribute("aria-expanded", String(open));
+  if (open) { renderSecrets(); if (sessionId) post({ type: "listSecrets", sessionId }); }
+}
+
+/** The header list: each secret this conversation sees, its expiry, and Revoke. */
+function renderSecrets(error?: string): void {
+  secretsPop.replaceChildren(el("div", "secrets-title", "Secrets"));
+  if (error) secretsPop.append(el("p", "command-error", error));
+  if (!secretsList.length) secretsPop.append(el("p", "secrets-empty", "No secrets in this conversation."));
+  const list = el("ul", "secrets-list");
+  for (const secret of secretsList) {
+    const row = el("li", "secrets-row");
+    const text = el("div", "secrets-text");
+    text.append(el("code", "", `$${secret.name}${secret.last4 ? ` ••••${secret.last4}` : ""}`));
+    const when = expiresIn(secret.expiresAt);
+    text.append(el("span", "secrets-meta", `${when ? `expires ${when}` : "expired"} · ${scopeText(secret.scope)} · used ${secret.useCount}×`));
+    const revoke = actionButton("Revoke", () => { revoke.disabled = true; post({ type: "revokeSecret", sessionId, name: secret.name }); });
+    revoke.setAttribute("aria-label", `Revoke ${secret.name}`);
+    row.append(text, revoke);
+    list.append(row);
+  }
+  secretsPop.append(list);
+  secretsPop.append(el("p", "secrets-foot", "Values stay on the server, out of the chat; the agent only sees their names."));
+}
+secretsButton.addEventListener("click", () => toggleSecrets(secretsPop.hidden !== false));
+const onSecretsOutside = (event: MouseEvent): void => {
+  if (!secretsPop.hidden && !secretsPop.contains(event.target as Node) && !secretsButton.contains(event.target as Node)) toggleSecrets(false);
+};
+document.addEventListener("click", onSecretsOutside);
 
 /** Grows the composer with its text, from about three lines up to 40% of the view; it scrolls beyond. */
 let sizedFor = "";
@@ -664,7 +715,7 @@ function updateControls(): void {
   autosizePrompt();
   prompt.disabled = readOnly || state === "connecting";
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
-  else if (!readOnly) prompt.placeholder = "Message WithNav…";
+  else if (!readOnly) prompt.placeholder = secretWaiting() ? "Nav is waiting for the key above… (or write to answer otherwise)" : "Message WithNav…";
   if (readOnly) modelBtn.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
   stop.hidden = readOnly || (state !== "busy" && !compacting);
@@ -684,7 +735,10 @@ function waitingCount(): number {
   for (const card of permissionCards.values()) if (!card.controls.hidden) count++;
   for (const card of pauseCards.values()) if (!card.controls.hidden) count++;
   for (const card of questionCards.values()) if (!card.answered && !pendingQuestion) count++;
-  return count;
+  // A waiting secret request is the pending question when there is one: counted once.
+  let secrets = 0;
+  for (const card of secretCards.values()) if (card.state() === "pending") secrets++;
+  return count + (pendingQuestion && secrets ? secrets - 1 : secrets);
 }
 
 /** One word for the tab's icon: waiting on the Captain beats an error, which beats running. */
@@ -1032,6 +1086,45 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
   }
   row.title = summary;
   row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
+  if (event.mcpUi && (event.mcpUi.resource_uri || event.mcpUi.html || event.mcpUi.url)) {
+    const ui = event.mcpUi;
+    const btn = el("button", "mcp-open-btn", "Open App");
+    btn.type = "button";
+    btn.title = `Open ${ui.server} (${ui.tool || event.name}) beside`;
+    btn.addEventListener("click", () => {
+      post({
+        type: "openMcpApp",
+        app: {
+          callId: event.callId,
+          server: ui.server,
+          tool: ui.tool || event.name,
+          resourceUri: ui.resource_uri,
+          html: ui.html,
+          url: ui.url,
+          args: event.args,
+          output: event.output,
+          metadata: event.metadata,
+        },
+      });
+    });
+    row.append(btn);
+  }
+  if (event.mcpMedia && event.mcpMedia.length > 0) {
+    if (!group.chosen) group.details.open = true;
+    const grid = el("div", "mcp-media-grid");
+    event.mcpMedia.forEach((media, idx) => {
+      const card = el("div", "mcp-media-card");
+      const img = document.createElement("img");
+      img.src = media.svg
+        ? `data:image/svg+xml;utf8,${encodeURIComponent(media.svg)}`
+        : `data:${media.mime_type};base64,${media.data ?? ""}`;
+      img.alt = `${event.name} preview ${idx + 1}`;
+      img.addEventListener("click", () => card.classList.toggle("zoomed"));
+      card.append(img);
+      grid.append(card);
+    });
+    row.append(grid);
+  }
   if (event.evidence) row.append(evidenceDetails(event.evidence));
   refreshActivity(item);
   follow();
@@ -1330,17 +1423,36 @@ function receive(event: HostToWebview): void {
       permissionCards.clear();
       questionCards.clear();
       pauseCards.clear();
+      for (const card of secretCards.values()) card.dispose();
+      secretCards.clear();
+      secretsList = [];
       pendingQuestion = false;
       stickToBottom = true;
       replaying = true;
       try { for (const item of event.items) if (item.type !== "history") receive(item); }
       finally { replaying = false; }
+      // The history knows a secret's name and expiry, not its last characters or a revocation.
+      if (sessionId && !readOnly && [...secretCards.values()].some(card => card.state() === "saved")) post({ type: "listSecrets", sessionId });
+      renderSecretsButton(); updateControls();
       if (readOnly) { agentSeg.setDisabled(true); modelBtn.disabled = true; for (const control of document.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>(".control-card button, .control-card textarea")) control.disabled = true; }
       if (state === "connecting") setStatus("ready");
       follow();
       break;
     case "status": setStatus(event.state, event.message); break;
     case "message": {
+      if (event.secret) {
+        const card = event.secret.requestId ? secretCards.get(event.secret.requestId) : undefined;
+        if (card) card.settle(event.secret);
+        if (event.secret.requestId && card) pendingQuestion = false;
+        // The host's note stands for the card's outcome: no Captain bubble.
+        if (!card) add(el("article", "message control-notice secret-notice", event.secret.outcome === "stored" ? `Secret $${event.secret.name} provided · ${scopeText(event.secret.scope)}` : `Secret $${event.secret.name} declined`));
+        renderSecretsButton(); updateControls();
+        break;
+      }
+      if ((event.author === "captain" || event.author === "driver") && pendingQuestion) {
+        // A written answer settles a waiting secret request: the agent gets the text instead.
+        for (const card of secretCards.values()) if (card.state() === "pending") card.settle({ name: card.name, outcome: "declined" });
+      }
       if (event.answer) {
         const card = questionCards.get(event.answer.question_call_id);
         if (card) {
@@ -1356,6 +1468,26 @@ function receive(event: HostToWebview): void {
         }
       }
       message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
+    }
+    case "secretState": {
+      const card = secretCards.get(event.requestId);
+      if (card) card.update(event.state, event.secret, event.message);
+      else if (event.state === "error") { commandError.textContent = event.message ?? "Secret action failed."; commandError.hidden = false; }
+      if (event.state === "revoked" || event.state === "saved") {
+        secretsList = secretsList.filter(item => item.name !== event.name);
+        if (event.state === "saved" && event.secret) secretsList.push(event.secret);
+        for (const other of secretCards.values()) if (other !== card && other.name === event.name) other.reconcile(secretsList);
+        if (!secretsPop.hidden) renderSecrets();
+      }
+      renderSecretsButton(); updateControls();
+      break;
+    }
+    case "secrets": {
+      secretsList = event.items;
+      for (const card of secretCards.values()) card.reconcile(event.items);
+      if (!secretsPop.hidden) renderSecrets(event.error);
+      renderSecretsButton();
+      break;
     }
     case "questionState": {
       const card = questionCards.get(event.questionCallId);
@@ -1461,6 +1593,19 @@ function receive(event: HostToWebview): void {
       continueTurn(item);
       finishGroup(item);
       item.last = undefined;
+      if (event.secret && event.questionCallId) {
+        if (!secretCards.has(event.questionCallId)) {
+          const card = createSecretCard(event.questionCallId, event.secret, event.agent ?? agentLabel.dataset.agent ?? "Nav", {
+            post: identity.bind(rawPost),
+            sessionId: () => sessionId,
+            readOnly: () => readOnly,
+            changed: () => { updateControls(); env.changed(); },
+          });
+          secretCards.set(event.questionCallId, card);
+          item.root.append(card.root);
+        }
+        pendingQuestion = true; renderSecretsButton(); setStatus("ready"); follow(); break;
+      }
       if (event.choices && event.questionCallId) {
         renderQuestion(event, item.root);
         pendingQuestion = true; setStatus("ready"); follow(); break;
@@ -1660,6 +1805,10 @@ return {
   setEditorContext(label) { contextLabel = label; renderContext(); },
   setMessageCount(count) { messageCount = count; renderMeta(); },
   focusComposer() { if (!prompt.disabled) prompt.focus(); },
-  dispose() { for (const dispose of disposers.splice(0)) dispose(); },
+  dispose() {
+    for (const dispose of disposers.splice(0)) dispose();
+    for (const card of secretCards.values()) card.dispose();
+    document.removeEventListener("click", onSecretsOutside);
+  },
 };
 }

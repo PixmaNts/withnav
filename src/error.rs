@@ -85,6 +85,8 @@ pub enum ServerError {
     ResumeRequired,
     #[error("no such permission request is waiting: it was answered, cancelled or never existed")]
     PermissionStale,
+    #[error("no such secret request is waiting: it was answered, cancelled or never existed")]
+    SecretStale,
     #[error("message content must be text")]
     NonTextContent,
     #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]

@@ -283,6 +283,51 @@ impl Client {
         }
     }
 
+    /// Answers the secret request `request_id`, or gives a secret after it was settled
+    /// (`submission.name` set). The value goes in this one request body and nowhere else.
+    pub async fn submit_secret(
+        &self,
+        id: &str,
+        request_id: &str,
+        submission: &withnav_client_api::secrets::SecretSubmission,
+    ) -> Result<withnav_client_api::secrets::SecretAccepted, String> {
+        let path = format!(
+            "/v1/sessions/{}/secrets/{}",
+            encode_segment(id),
+            encode_segment(request_id)
+        );
+        self.json(self.post(&path).json(submission)).await
+    }
+
+    /// The secrets a session sees: metadata only.
+    pub async fn list_secrets(
+        &self,
+        id: &str,
+    ) -> Result<withnav_client_api::secrets::SecretsBody, String> {
+        self.json(self.get(&format!("/v1/sessions/{}/secrets", encode_segment(id))))
+            .await
+    }
+
+    /// Revokes the secret `name`; `Ok(false)` when there was none.
+    pub async fn revoke_secret(&self, id: &str, name: &str) -> Result<bool, String> {
+        let response = self
+            .authorized(self.http.delete(format!(
+                "{}/v1/sessions/{}/secrets/{}",
+                self.base_url,
+                encode_segment(id),
+                encode_segment(name)
+            )))
+            .send()
+            .await
+            .map_err(|e| describe(&e))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(status == reqwest::StatusCode::NO_CONTENT);
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(status_message(status, &body))
+    }
+
     /// The commands the server runs for a session.
     pub async fn commands(&self) -> Result<CommandsBody, String> {
         self.json(self.get("/v1/commands")).await

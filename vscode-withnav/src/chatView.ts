@@ -2,6 +2,7 @@ import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { singleTab } from "./chatHub";
+import { openMcpAppPanel } from "./mcpAppPanel";
 import { readSetting } from "./settings";
 
 export const FONT_SIZE = { min: 11, max: 22, fallback: 14 } as const;
@@ -264,6 +265,28 @@ export function registerChatView(
               void backend.answerQuestion(message.sessionId, message.answer, message.generation).catch(showError);
             }
             break;
+          // The value travels only from here to the backend's dedicated request: never logged,
+          // never put in a notice or an error (an error names the secret, not its value).
+          case "submitSecret":
+            if (typeof message.sessionId === "string" && typeof message.requestId === "string" && typeof message.name === "string" &&
+                typeof message.value === "string" && ["1h", "24h", "session"].includes(message.ttl) && ["session", "workspace"].includes(message.scope)) {
+              void backend.submitSecret(message.sessionId, message.requestId, message.name, message.value, message.ttl, message.scope, message.generation)
+                .catch(() => showError(new Error(`Could not save the secret ${message.name}.`)));
+            }
+            break;
+          case "declineSecret":
+            if (typeof message.sessionId === "string" && typeof message.requestId === "string") {
+              void backend.declineSecret(message.sessionId, message.requestId, message.generation).catch(showError);
+            }
+            break;
+          case "listSecrets":
+            if (typeof message.sessionId === "string") void backend.listSecrets(message.sessionId, message.generation).catch(showError);
+            break;
+          case "revokeSecret":
+            if (typeof message.sessionId === "string" && typeof message.name === "string") {
+              void backend.revokeSecret(message.sessionId, message.name, message.requestId, message.generation).catch(showError);
+            }
+            break;
           case "controlPause":
             if (typeof message.sessionId === "string" && typeof message.id === "string" &&
                 ["continue", "stop"].includes(message.action)) {
@@ -276,6 +299,11 @@ export function registerChatView(
           case "openFile":
             if (typeof message.path === "string") {
               void openFile(message.path, message.line).catch(showError);
+            }
+            break;
+          case "openMcpApp":
+            if (message.app && typeof message.app.server === "string") {
+              void openMcpAppPanel(backend, message.app).catch(showError);
             }
             break;
           case "selectModel":
@@ -370,6 +398,8 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
       child.publishSubagents();
       post({ type: "history", items: child.history(), generation: child.currentGeneration() });
       child.resumePermissionReads();
+    } else if (m.type === "openMcpApp" && m.app && typeof m.app.server === "string") {
+      void openMcpAppPanel(child, m.app).catch(showError);
     } else if (m.type === "controlChild" && m.parentId === parentId && m.childId === childId && ["stop", "continue"].includes(m.action)) {
       try {
         const descriptor = parent.captureChildControl(parentId, childId, m.action, m.generation);

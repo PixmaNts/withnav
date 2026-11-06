@@ -189,6 +189,7 @@ impl AgentActor {
                                 | "edit"
                                 | "bash"
                                 | "ask"
+                                | "request_secret"
                                 | "task"
                                 | "steer_subagent"
                                 | "decide_subagent"
@@ -492,7 +493,12 @@ impl AgentActor {
         self.pending = tool_calls
             .iter()
             .rev()
-            .find(|tc| tc.function.name == "ask" && !answered(&tc.id))
+            .find(|tc| {
+                matches!(
+                    tc.function.name.as_str(),
+                    "ask" | crate::tools::secret::REQUEST_SECRET_TOOL
+                ) && !answered(&tc.id)
+            })
             .map(|tc| PendingInteraction::Ask {
                 tool_call_id: tc.id.clone(),
             });
@@ -565,7 +571,10 @@ impl AgentActor {
         text: impl Into<String>,
         provenance: crate::provider::openai::UserProvenance,
     ) {
-        let text = text.into();
+        let mut text = text.into();
+        if let Some(secrets) = &self.tool_context.secrets {
+            secrets.redact_in_place(&mut text);
+        }
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
                 self.transcript.push(ChatMessage::Tool {

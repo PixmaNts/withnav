@@ -216,6 +216,7 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         let cx = ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.path().to_path_buf(),
             writable_roots: vec![root.path().to_path_buf()],

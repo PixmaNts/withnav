@@ -263,6 +263,7 @@ mod tests {
         );
         assert!(path_within(&target, &short));
         let cx = crate::tools::ToolContext {
+            secrets: None,
             workspace: short.clone(),
             writable_roots: vec![short.clone()],
             readable_roots: vec![],
@@ -412,6 +413,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let current = drive_root(workspace.path()).unwrap();
         let cx = crate::tools::ToolContext {
+            secrets: None,
             binding: None,
             workspace: workspace.path().to_path_buf(),
             writable_roots: vec![],

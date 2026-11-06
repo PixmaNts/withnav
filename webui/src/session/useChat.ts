@@ -8,7 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { HttpError } from "../api/http";
 import { keepMcpStatus, keys, useAgents, useContextSnapshot, useModels, useSessionSummary } from "../api/queries";
-import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry } from "../api/types";
+import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry, SecretView } from "../api/types";
+import type { SecretScope, SecretTtl } from "./reducer";
 import { useSessionStream } from "./useSessionStream";
 
 export interface Draft {
@@ -261,7 +262,40 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
     [sessionId],
   );
 
+  // The conversation's secrets, metadata only. A value passes through `submitSecret` and is
+  // never kept: not in this state, not in a query cache, not in storage.
+  const [secretList, setSecretList] = useState<SecretView[] | null>(null);
+  const [secretError, setSecretError] = useState<string | null>(null);
+  useEffect(() => { setSecretList(null); setSecretError(null); }, [sessionId]);
+  const refreshSecrets = useCallback(async () => {
+    if (!sessionId || readOnly) return;
+    try { setSecretList(await api.secrets(sessionId)); setSecretError(null); }
+    catch (e) { setSecretError(e instanceof Error ? e.message : String(e)); }
+  }, [sessionId, readOnly]);
+  const secretActions = useMemo(() => sessionId && !readOnly ? {
+    list: secretList,
+    submit: async (requestId: string, body: { name?: string; value: string; ttl: SecretTtl; scope: SecretScope }) => {
+      try {
+        const answer = await api.submitSecret(sessionId, requestId, body);
+        if (answer.secret) setSecretList((list) => [...(list ?? []).filter((s) => s.name !== answer.secret!.name), answer.secret!]);
+        return answer.secret;
+      } catch (e) {
+        if (e instanceof HttpError && e.reason === "secret_stale") throw new Error("This request is no longer waiting.");
+        throw e;
+      }
+    },
+    decline: async (requestId: string) => { await api.declineSecret(sessionId, requestId); },
+    revoke: async (name: string) => {
+      try { await api.revokeSecret(sessionId, name); }
+      catch (e) { if (!(e instanceof HttpError && e.status === 404)) throw e; }
+      setSecretList((list) => (list ?? []).filter((s) => s.name !== name));
+    },
+  } : undefined, [sessionId, readOnly, secretList]);
+
   return {
+    secrets: secretActions,
+    secretError,
+    refreshSecrets,
     answerQuestion: async (answer: import("./reducer").AskAnswer) => {
       if (!sessionId || readOnly) throw new Error("This conversation is read-only.");
       await api.answerQuestion(sessionId, answer);

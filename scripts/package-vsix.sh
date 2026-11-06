@@ -19,7 +19,20 @@ esac
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ext="$root/vscode-withnav"
 dist="$root/dist"
-version="$(cd "$ext" && node -p "require('./package.json').version")"
+base="$(cd "$ext" && node -p "require('./package.json').version")"
+if git -C "$root" tag --points-at HEAD 2>/dev/null | grep -Fxq "v$base"; then
+  version="$base"
+elif sha="$(git -C "$root" rev-parse --short HEAD 2>/dev/null)" && [ -n "$sha" ]; then
+  branch="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
+    branch="$(printf '%s' "$branch" | tr -c '[:alnum:]' '-')"
+    version="$base-$branch+$sha"
+  else
+    version="$base+$sha"
+  fi
+else
+  version="$base"
+fi
 
 # A stale bin/nav would leak into a universal package, so clear it on every exit too.
 trap 'rm -rf "$ext/bin"' EXIT

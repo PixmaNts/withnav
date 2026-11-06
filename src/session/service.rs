@@ -365,6 +365,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     pub(crate) mcp: Arc<crate::mcp::McpManager>,
+    /// The Captain's secrets: every conversation's, and the saved workspace ones.
+    pub(crate) secrets: Arc<crate::secrets::SecretStore>,
     /// Publishes the MCP servers' status to every live session.
     pub(super) mcp_bridge: Arc<super::mcp::McpBridge>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
@@ -452,6 +454,23 @@ impl Service {
     /// Never waits for discovery.
     pub fn mcp_status(&self) -> crate::mcp::McpSnapshot {
         self.mcp.status_snapshot()
+    }
+
+    pub async fn mcp_read_resource(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.mcp.read_ui_resource(server_id, uri).await
+    }
+
+    pub async fn mcp_call_tool(
+        &self,
+        server_id: &str,
+        name: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        self.mcp.call_ui_tool(server_id, name, arguments).await
     }
 
     /// See [`crate::mcp::McpManager::wait_until_settled`]. Only `nav run` waits:
@@ -731,8 +750,10 @@ impl Service {
         );
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let mcp_bridge = Arc::new(super::mcp::McpBridge::start(&mcp, &sessions));
+        let secrets = Arc::new(crate::secrets::SecretStore::open(&config.data_dir));
         Ok(Self {
             mcp,
+            secrets,
             mcp_bridge,
             flows: Arc::new(crate::flows::host::Host::new(
                 config.config_dir.clone(),
@@ -1450,6 +1471,13 @@ impl Service {
                         content: snapshot.id.clone(),
                     };
                 }
+            }
+        }
+        // A value the Captain pasted into the chat is hidden like any other occurrence.
+        let secrets = self.secret_access(self.secret_owner(command.session_id), &handle.workspace);
+        for block in &mut command.content {
+            if let crate::bus::command::ContentBlock::Text { text } = block {
+                secrets.redact_in_place(text);
             }
         }
         accept(&handle, command).await
@@ -2587,6 +2615,9 @@ impl Service {
                 &mcp_tools,
             ),
         };
+        // A subagent hands its tools the secrets of the tree it works for.
+        let secret_owner = child_parent.map_or(session_id, |parent| self.secret_owner(parent));
+        actor.tool_context.secrets = Some(self.secret_access(secret_owner, &workspace));
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
@@ -3363,7 +3394,7 @@ fn child_tool_allowed(tool: &str, child: &AgentDefinition, parent: &AgentDefinit
         && parent.tools.get(tool).copied().unwrap_or(true)
         && parent_ceiling
         && child_access
-        && !matches!(tool, "ask" | "task" | "steer_subagent")
+        && !matches!(tool, "ask" | "request_secret" | "task" | "steer_subagent")
 }
 
 #[cfg(test)]
@@ -3411,6 +3442,7 @@ mod child_policy_tests {
             ("edit", &readonly_child, &build, false),
             ("fetch", &readonly_child, &build, true),
             ("ask", &build, &build, false),
+            ("request_secret", &build, &build, false),
             ("task", &build, &build, false),
         ] {
             assert_eq!(child_tool_allowed(tool, child, parent), expected, "{tool}");

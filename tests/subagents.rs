@@ -1567,6 +1567,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
         .unwrap();
     let task = withnav::tools::task::TaskTool::new(fx.state.service(), parent);
     let cx = withnav::tools::ToolContext {
+        secrets: None,
         binding: None,
         workspace: fx.ws.clone(),
         writable_roots: vec![fx.ws.clone()],

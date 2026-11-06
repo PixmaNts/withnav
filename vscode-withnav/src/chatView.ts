@@ -2,6 +2,7 @@ import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { singleTab } from "./chatHub";
+import { openMcpAppPanel } from "./mcpAppPanel";
 import { readSetting } from "./settings";
 
 export const FONT_SIZE = { min: 11, max: 22, fallback: 14 } as const;
@@ -278,6 +279,11 @@ export function registerChatView(
               void openFile(message.path, message.line).catch(showError);
             }
             break;
+          case "openMcpApp":
+            if (message.app && typeof message.app.server === "string") {
+              void openMcpAppPanel(backend, message.app).catch(showError);
+            }
+            break;
           case "selectModel":
             if (typeof message.name === "string") backend.selectModel(message.name);
             break;
@@ -370,6 +376,8 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
       child.publishSubagents();
       post({ type: "history", items: child.history(), generation: child.currentGeneration() });
       child.resumePermissionReads();
+    } else if (m.type === "openMcpApp" && m.app && typeof m.app.server === "string") {
+      void openMcpAppPanel(child, m.app).catch(showError);
     } else if (m.type === "controlChild" && m.parentId === parentId && m.childId === childId && ["stop", "continue"].includes(m.action)) {
       try {
         const descriptor = parent.captureChildControl(parentId, childId, m.action, m.generation);

@@ -21,8 +21,10 @@ use crate::server::session::AppState;
 /// The built single-page app, `webui/dist` at build time.
 static DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/webui/dist");
 
-const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
-                   font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'";
+const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+                   style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; \
+                   frame-src 'self' http://127.0.0.1:* http://localhost:* https: data: blob:; \
+                   frame-ancestors 'none'; base-uri 'none'";
 
 /// True for a request the static-file handler answers without a token: a page or asset path,
 /// never an API path.

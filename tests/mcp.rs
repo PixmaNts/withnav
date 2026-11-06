@@ -128,6 +128,36 @@ async fn registry_call_pagination_conversion_cancel_crash_and_restart() {
     let result = call("mcp__fixture__echo").await.unwrap();
     assert_eq!(result.output, "{\"text\": \"hello\"}");
     assert_eq!(result.metadata["mcp_tool"], "echo");
+    assert_eq!(
+        result.metadata["mcp_ui"]["resource_uri"],
+        "ui://fixture/app.html"
+    );
+    let resource = manager
+        .read_ui_resource("fixture", "ui://fixture/app.html")
+        .await
+        .unwrap();
+    assert_eq!(resource["mime_type"], "text/html;profile=mcp-app");
+    assert!(
+        resource["text"]
+            .as_str()
+            .unwrap()
+            .contains("<title>App</title>")
+    );
+    assert!(
+        manager
+            .read_ui_resource("fixture", "file:///etc/passwd")
+            .await
+            .is_err()
+    );
+    let direct = manager
+        .call_ui_tool(
+            "fixture",
+            "echo",
+            serde_json::from_value(json!({"text": "from-ui"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(direct["content"][0]["text"], "{\"text\": \"from-ui\"}");
     let result = call("mcp__fixture__big").await.unwrap();
     assert_eq!(result.truncated.unwrap().original_bytes, 100000);
     assert!(result.output.len() <= 65536);

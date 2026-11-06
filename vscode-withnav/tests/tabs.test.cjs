@@ -24,6 +24,7 @@ const vscode = {
 Module._load = function (id, ...args) { return id === "vscode" ? vscode : originalLoad.call(this, id, ...args); };
 const { registerChatView } = require("../out/tests/chatView.js");
 const { ChatHub } = require("../out/tests/chatHub.js");
+const { renderMcpAppHtml } = require("../out/tests/mcpAppPanel.js");
 Module._load = originalLoad;
 const { stripChildren, filterChildren, footerText, actionsSummary, durationLabel, childGroup } = require("../out/tests/webview/agentStrip.js");
 const { visibleSessions, filterCounts, sessionStatus, matchesFilter } = require("../out/tests/webview/conversations.js");
@@ -717,4 +718,40 @@ test("agent picker helpers: crews and ordering", () => {
   const items = ["a", "b", "c"].map(id => ({ id, description: id === "c" ? "searchable" : "" }));
   assert.deepEqual(orderAgents(items, "", new Set(["c"])).map(i => i.id), ["c", "a", "b"]);
   assert.deepEqual(orderAgents(items, "search", new Set()).map(i => i.id), ["c"]);
+});
+
+test("mcp app: tool row renders inline media preview and Open App button posts openMcpApp", () => {
+  const { dom, posts, tab, view } = agentPage();
+  tab("t1", { type: "turnStart", id: "turn1", generation: 1 });
+  tab("t1", {
+    type: "tool",
+    id: "turn1",
+    callId: "c1",
+    phase: "end",
+    name: "mcp__excalidraw__get_canvas_screenshot",
+    summary: "mcp__excalidraw__get_canvas_screenshot",
+    ok: true,
+    mcpMedia: [{ mime_type: "image/png", data: "AAAA" }],
+    mcpUi: { server: "excalidraw", tool: "get_canvas_screenshot", resource_uri: "ui://excalidraw/app.html", url: "http://127.0.0.1:3000" },
+    args: { scale: 2 },
+    output: "captured",
+    generation: 1,
+  });
+  const img = view.querySelector(".mcp-media-card img");
+  assert(img, "inline image preview is rendered");
+  assert.equal(img.getAttribute("src"), "data:image/png;base64,AAAA");
+  img.click();
+  assert(view.querySelector(".mcp-media-card").classList.contains("zoomed"), "clicking toggles zoom");
+  const openBtn = view.querySelector(".mcp-open-btn");
+  assert(openBtn, "Open App button is rendered");
+  openBtn.click();
+  const posted = posts.find(p => p.type === "openMcpApp");
+  assert(posted, "clicking Open App posts openMcpApp");
+  assert.equal(posted.app.server, "excalidraw");
+  assert.equal(posted.app.resourceUri, "ui://excalidraw/app.html");
+  assert.equal(posted.app.url, "http://127.0.0.1:3000");
+  const html = renderMcpAppHtml("nonce1", posted.app, "<!doctype html><p>Canvas</p>");
+  assert.match(html, /sandbox="allow-scripts allow-forms"/);
+  assert.match(html, /srcdoc="&lt;!doctype html&gt;&lt;p&gt;Canvas&lt;\/p&gt;"/);
+  dom.window.close();
 });

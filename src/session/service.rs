@@ -454,6 +454,23 @@ impl Service {
         self.mcp.status_snapshot()
     }
 
+    pub async fn mcp_read_resource(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.mcp.read_ui_resource(server_id, uri).await
+    }
+
+    pub async fn mcp_call_tool(
+        &self,
+        server_id: &str,
+        name: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        self.mcp.call_ui_tool(server_id, name, arguments).await
+    }
+
     /// See [`crate::mcp::McpManager::wait_until_settled`]. Only `nav run` waits:
     /// session creation in `nav serve` never blocks on MCP servers.
     pub async fn wait_for_mcp(&self) {

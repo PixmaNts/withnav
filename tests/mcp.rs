@@ -106,6 +106,7 @@ async fn startup_cancel_and_timeout_allow_sigterm_cleanup() {
 
 fn context() -> ToolContext {
     ToolContext {
+        secrets: None,
         binding: None,
         workspace: std::env::temp_dir(),
         writable_roots: vec![],

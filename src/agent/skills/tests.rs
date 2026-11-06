@@ -880,6 +880,7 @@ fn context(fx: &Fixture) -> (Registry, ToolContext) {
     (
         Registry::new(),
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: fx.ws.clone(),
             writable_roots: vec![fx.ws.clone()],

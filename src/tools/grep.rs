@@ -659,6 +659,7 @@ mod tests {
         use crate::tools::Tool;
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let cx = crate::tools::ToolContext {
+            secrets: None,
             workspace: root.clone(),
             writable_roots: vec![root.clone()],
             readable_roots: vec![],

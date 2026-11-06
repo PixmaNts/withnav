@@ -277,7 +277,11 @@ async fn run_steps_inner(
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
         let role_message = actor.role_message();
-        let history = actor.effective_history();
+        let mut history = actor.effective_history();
+        // Whatever a value reached the transcript by, the model never reads it.
+        if let Some(secrets) = &actor.tool_context.secrets {
+            history.iter_mut().for_each(|m| secrets.redact_message(m));
+        }
         let tools = actor.effective_tool_schemas();
         if actor.input_budget.is_some_and(|budget| {
             crate::agent::context::estimate(
@@ -312,7 +316,13 @@ async fn run_steps_inner(
                 request,
                 actor.variant.as_ref(),
                 &actor.cancel,
-                &mut |delta| observe(AgentEvent::Delta(delta)),
+                &mut |mut delta| {
+                    // Best effort: a value split across two deltas is caught on the response.
+                    if let Some(secrets) = &actor.tool_context.secrets {
+                        redact_delta(secrets, &mut delta);
+                    }
+                    observe(AgentEvent::Delta(delta))
+                },
             )
             .await
         {
@@ -324,7 +334,14 @@ async fn run_steps_inner(
             Err(e) => return Err(AgentError::Provider(e)),
         };
 
-        let crate::provider::ChatTurn { message, opaque } = turn;
+        let crate::provider::ChatTurn {
+            mut message,
+            opaque,
+        } = turn;
+        if let Some(secrets) = &actor.tool_context.secrets {
+            secrets.redact_in_place(&mut message.text);
+            secrets.redact_in_place(&mut message.thinking);
+        }
         actor.transcript.push(assistant_history_message(
             &message,
             opaque,
@@ -336,10 +353,7 @@ async fn run_steps_inner(
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
-        match crate::agent::response::classify_with_ask(
-            message,
-            actor.tool_allowed(crate::agent::response::ASK_TOOL),
-        ) {
+        match crate::agent::response::classify_with(message, |name| actor.tool_allowed(name)) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));
@@ -1001,6 +1015,16 @@ async fn run_calls(
 ) -> Calls {
     let mut calls = std::collections::VecDeque::from(calls);
     while let Some(mut call) = calls.pop_front() {
+        // A valid secret request the turn may make pauses it before any call runs; one that
+        // reaches here is invalid or not allowed, and is never decided or dispatched.
+        if call.name == crate::tools::secret::REQUEST_SECRET_TOOL {
+            let reason = match crate::tools::secret::validated_request(&call.args) {
+                Err(reason) => reason,
+                Ok(_) => "request_secret is disabled by this session's policy".into(),
+            };
+            reject_call(actor, &call, reason, observe);
+            continue;
+        }
         if call.name == "skill" {
             // Provider arguments never choose host snapshots or claim human selection.
             if call.args.get("snapshot_id").is_some() || call.args.get("captain_selected").is_some()
@@ -1484,6 +1508,11 @@ async fn execute_call(
         Ok(result) => result,
         Err(e) => ToolResult::error("tool_error", e.to_string()),
     };
+    // A secret a tool printed is hidden before the event, the transcript or the model see it.
+    if let Some(secrets) = &actor.tool_context.secrets {
+        secrets.redact_in_place(&mut result.output);
+        secrets.redact_json(&mut result.metadata);
+    }
     // How the call was allowed: the durable `tool.post_call` says so.
     if let Some(note) = note {
         merge_approval_metadata(&mut result.metadata, &note);
@@ -1516,6 +1545,17 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
         && note.get("flow").is_none()
     {
         metadata["guard"] = note.clone();
+    }
+}
+
+/// Hides the secrets a streamed piece of text carries.
+fn redact_delta(secrets: &crate::secrets::SecretAccess, delta: &mut StreamDelta) {
+    match delta {
+        StreamDelta::Text { text } | StreamDelta::Thinking { text } => {
+            secrets.redact_in_place(text)
+        }
+        StreamDelta::ToolCallArgs { fragment, .. } => secrets.redact_in_place(fragment),
+        StreamDelta::ToolCallStarted { .. } => {}
     }
 }
 
@@ -1742,6 +1782,7 @@ mod tests {
         let mut actor = AgentActor::new(
             registry,
             ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: ws.clone(),
                 writable_roots: vec![ws],

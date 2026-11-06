@@ -43,6 +43,7 @@ impl LlmCommenter {
         // metacognition never writes, so the workspace folders are the only
         // roots it gets.
         let cx = ToolContext {
+            secrets: None,
             binding: None,
             workspace: workspace.clone(),
             writable_roots: std::iter::once(workspace.clone())

@@ -1082,6 +1082,7 @@ mod tests {
             .to_string()
             .replace('\\', "/");
         let cx = crate::tools::ToolContext {
+            secrets: None,
             binding: None,
             workspace: f.cx.workspace.clone(),
             writable_roots: vec![],

@@ -95,6 +95,11 @@ async fn run_bash(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The Captain's secrets, as environment variables: the command line itself never names
+    // a value, so neither the decision table nor the events see one.
+    if let Some(secrets) = &cx.secrets {
+        launcher.envs(secrets.environment());
+    }
     #[cfg(unix)]
     launcher.process_group(0);
     #[cfg(unix)]
@@ -269,6 +274,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],

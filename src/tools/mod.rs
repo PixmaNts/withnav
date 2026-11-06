@@ -22,6 +22,7 @@ pub mod native;
 pub mod nofollow;
 #[cfg(windows)]
 pub(crate) mod process_job;
+pub mod secret;
 pub mod steer_subagent;
 pub mod task;
 
@@ -213,6 +214,9 @@ pub struct ToolContext {
     /// Extra places `read` and `grep` may look, never change: the skill
     /// roots.
     pub readable_roots: Vec<PathBuf>,
+    /// The Captain's secrets this conversation may hand to the processes it starts
+    /// (`bash`), and hides from its model. `None` outside a session.
+    pub secrets: Option<crate::secrets::SecretAccess>,
 }
 
 #[derive(Clone)]
@@ -527,6 +531,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],

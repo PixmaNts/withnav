@@ -571,6 +571,7 @@ impl AgentActor {
                 tool_call_id: id.clone(),
                 content: UNFINISHED.into(),
                 answered_by: None,
+                images: Vec::new(),
             });
         }
         unanswered.len()
@@ -620,6 +621,7 @@ impl AgentActor {
                     tool_call_id,
                     content: text,
                     answered_by: Some(provenance.clone()),
+                    images: Vec::new(),
                 });
                 if !images.is_empty() {
                     self.transcript.push(ChatMessage::User {
@@ -692,6 +694,7 @@ impl AgentActor {
                 tool_call_id: call.id.clone(),
                 content: crate::agent::run_loop::NOT_RUN.into(),
                 answered_by: None,
+                images: Vec::new(),
             });
         }
     }

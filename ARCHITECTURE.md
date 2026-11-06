@@ -659,6 +659,12 @@ the later 0.6 scope, not this contract.
   sent and which become placeholders (model without `images`, request budget), the session's loader
   fetches the bytes into the request-only `ChatRequest.images`, and `withnav-provider`'s `openai.rs`
   serializes them as `image_url` parts. The transcript is never changed by that projection.
+  Tools return pictures in `ToolResult.images` (bytes, never serialized); `execute_call` in
+  `agent/loop.rs` stores them through `AttachmentLoader::store` before `PostCall`, so events and
+  `ChatMessage::Tool` carry references only. A tool message cannot hold an image part on the
+  chat-completions wire, so `openai.rs` sends one request-only user message after the tool batch,
+  opened by `TOOL_IMAGES_PREFACE`. SVG is rasterized in `session/attachments/svg.rs` with every
+  external reference refused.
 
 - MCP configuration and environment isolation belong in `mcp/config.rs`; transport supervision
   and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result

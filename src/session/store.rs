@@ -3483,6 +3483,7 @@ mod tests {
                 tool_call_id: format!("c{n}"),
                 content: "output".repeat(50),
                 answered_by: None,
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: Some("done".into()),

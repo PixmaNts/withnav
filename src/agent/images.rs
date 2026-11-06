@@ -35,6 +35,10 @@ pub trait AttachmentLoader: Send + Sync {
         &self,
         ids: Vec<String>,
     ) -> BoxFuture<'static, HashMap<String, Result<ImagePayload, String>>>;
+
+    /// Stores an image a tool returned as an attachment of the same session, validated like an
+    /// upload, and returns its reference. The error is a short reason the model may read.
+    fn store(&self, name: String, bytes: Vec<u8>) -> BoxFuture<'static, Result<ImageRef, String>>;
 }
 
 /// A loader handle as the actor holds it.
@@ -72,9 +76,10 @@ pub fn plan(history: &[ChatMessage], accepts_images: Option<bool>) -> Plan {
     let mut base64 = 0u64;
     let mut cut = false;
     for (at, message) in history.iter().enumerate().rev() {
-        let ChatMessage::User { images, .. } = message else {
+        let images = images_of(message);
+        if images.is_empty() {
             continue;
-        };
+        }
         let mut verdicts = vec![Verdict::Send; images.len()];
         for (slot, image) in images.iter().enumerate().rev() {
             verdicts[slot] = if accepts_images == Some(false) {
@@ -94,7 +99,7 @@ pub fn plan(history: &[ChatMessage], accepts_images: Option<bool>) -> Plan {
                 if cut || sent + 1 > MAX_REQUEST_IMAGES || next > MAX_REQUEST_IMAGE_BASE64 {
                     cut = true;
                     Verdict::Placeholder(format!(
-                        "[image {} not included in this request (size limit); ask the Captain to attach it again if needed]",
+                        "[image {} not included in this request (size limit); attach it again or call the tool again if needed]",
                         image.label()
                     ))
                 } else {
@@ -109,17 +114,52 @@ pub fn plan(history: &[ChatMessage], accepts_images: Option<bool>) -> Plan {
     Plan { messages }
 }
 
+/// The images a message carries: the Captain's on a user message, a tool's on its result.
+pub fn images_of(message: &ChatMessage) -> &[ImageRef] {
+    match message {
+        ChatMessage::User { images, .. } | ChatMessage::Tool { images, .. } => images,
+        _ => &[],
+    }
+}
+
+/// Moves the placeholders of `verdicts` into `text` and returns the images still sent.
+fn settle(
+    text: &mut String,
+    images: &[ImageRef],
+    verdicts: &[Verdict],
+    unavailable: &HashSet<String>,
+) -> Vec<ImageRef> {
+    let mut kept = Vec::new();
+    for (image, verdict) in images.iter().zip(verdicts) {
+        let placeholder = match verdict {
+            Verdict::Send if unavailable.contains(&image.attachment_id) => {
+                Some(format!("[image {} unavailable]", image.label()))
+            }
+            Verdict::Send => {
+                kept.push(image.clone());
+                None
+            }
+            Verdict::Placeholder(text) => Some(text.clone()),
+        };
+        if let Some(placeholder) = placeholder {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&placeholder);
+        }
+    }
+    kept
+}
+
 impl Plan {
     /// The distinct attachment ids whose bytes the request needs, in transcript order.
     pub fn send_ids(&self, history: &[ChatMessage]) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut ids = Vec::new();
         for (message, verdicts) in history.iter().zip(&self.messages) {
-            if let ChatMessage::User { images, .. } = message {
-                for (image, verdict) in images.iter().zip(verdicts) {
-                    if *verdict == Verdict::Send && seen.insert(image.attachment_id.clone()) {
-                        ids.push(image.attachment_id.clone());
-                    }
+            for (image, verdict) in images_of(message).iter().zip(verdicts) {
+                if *verdict == Verdict::Send && seen.insert(image.attachment_id.clone()) {
+                    ids.push(image.attachment_id.clone());
                 }
             }
         }
@@ -157,28 +197,25 @@ impl Plan {
                         images,
                     } if !images.is_empty() && verdicts.len() == images.len() => {
                         let mut text = content.clone();
-                        let mut kept: Vec<ImageRef> = Vec::new();
-                        for (image, verdict) in images.iter().zip(verdicts) {
-                            let placeholder = match verdict {
-                                Verdict::Send if unavailable.contains(&image.attachment_id) => {
-                                    Some(format!("[image {} unavailable]", image.label()))
-                                }
-                                Verdict::Send => {
-                                    kept.push(image.clone());
-                                    None
-                                }
-                                Verdict::Placeholder(text) => Some(text.clone()),
-                            };
-                            if let Some(placeholder) = placeholder {
-                                if !text.is_empty() {
-                                    text.push('\n');
-                                }
-                                text.push_str(&placeholder);
-                            }
-                        }
+                        let kept = settle(&mut text, images, verdicts, unavailable);
                         ChatMessage::User {
                             content: text,
                             provenance: provenance.clone(),
+                            images: kept,
+                        }
+                    }
+                    ChatMessage::Tool {
+                        tool_call_id,
+                        content,
+                        answered_by,
+                        images,
+                    } if !images.is_empty() && verdicts.len() == images.len() => {
+                        let mut text = content.clone();
+                        let kept = settle(&mut text, images, verdicts, unavailable);
+                        ChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: text,
+                            answered_by: answered_by.clone(),
                             images: kept,
                         }
                     }

@@ -102,6 +102,10 @@ encoding_rs = "0.8.42"
 include_dir = "0.7"
 # Image type and dimensions from the header alone, for uploaded attachments (never decodes pixels).
 imagesize = "0.15"
+# Decodes the base64 image blocks MCP tools return (screenshots), before they are stored.
+base64 = "0.22"
+# SVG attachments are rasterized to PNG on the server: no script, no network, no file access.
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"] }
 
 [dev-dependencies]
 withnav-provider = { path = "crates/withnav-provider", features = ["test-support"] }

@@ -131,6 +131,7 @@ fn result(id: &str, bytes: usize) -> ChatMessage {
         tool_call_id: id.into(),
         content: "x".repeat(bytes),
         answered_by: None,
+        images: Vec::new(),
     }
 }
 

@@ -1529,7 +1529,7 @@ mod tests {
             ),
             (
                 uri.clone(),
-                b"<svg xmlns='x'/>".to_vec(),
+                b"<html><body>not a picture</body></html>".to_vec(),
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "unsupported_type",
             ),

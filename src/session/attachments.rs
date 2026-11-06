@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+
+pub mod svg;
 use ulid::Ulid;
 use withnav_client_api::attachment::ImageRef;
 
@@ -35,9 +37,7 @@ const MAX_NAME_BYTES: usize = 128;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AttachmentError {
-    #[error(
-        "unsupported image type ({0}): attach a PNG, JPEG, GIF or WebP file (convert or export SVG and other formats first)"
-    )]
+    #[error("unsupported image type ({0}): attach a PNG, JPEG, GIF, WebP or SVG file")]
     Unsupported(String),
     #[error(
         "image is {size} bytes, over the {max} byte limit (3.75 MiB): downscale or compress it and attach it again"
@@ -226,8 +226,18 @@ impl AttachmentStore {
         name: Option<&str>,
         bytes: &[u8],
     ) -> Result<ImageRef, AttachmentError> {
+        // An SVG is stored as the PNG it renders to, under the same name with `.png`: providers
+        // read raster images only, and a client never receives markup that could run.
+        let rendered;
+        let (bytes, name) = if imagesize::image_type(bytes).is_err() && svg::looks_like_svg(bytes) {
+            rendered = svg::rasterize(bytes)?;
+            let base = sanitize_name(name);
+            let stem = base.strip_suffix(".svg").unwrap_or(&base);
+            (rendered.as_slice(), format!("{stem}.png"))
+        } else {
+            (bytes, sanitize_name(name))
+        };
         let detected = inspect(bytes)?;
-        let name = sanitize_name(name);
         let mut connection = self.lock();
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let has_sessions_table = tx
@@ -339,6 +349,21 @@ pub struct SessionLoader {
 }
 
 impl crate::agent::images::AttachmentLoader for SessionLoader {
+    fn store(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> futures::future::BoxFuture<'static, Result<ImageRef, String>> {
+        let store = self.store.clone();
+        let session = self.session_id.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || store.insert(&session, Some(&name), &bytes))
+                .await
+                .map_err(|_| "the attachment store stopped".to_string())?
+                .map_err(|error| error.to_string())
+        })
+    }
+
     fn load(
         &self,
         ids: Vec<String>,
@@ -503,8 +528,22 @@ mod tests {
         assert_eq!(image.name, "x.jpg");
     }
 
+    // Given an SVG upload
+    // Then the store keeps the PNG it renders to, under the same name with `.png`, never the markup
     #[test]
-    fn svg_and_other_text_are_refused_with_what_they_look_like() {
+    fn an_svg_upload_is_stored_as_its_png_rendering() {
+        let store = store_with_session("s1");
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400"><rect width="800" height="400" fill="green"/></svg>"#;
+        let image = store.insert("s1", Some("diagram.svg"), svg).unwrap();
+        assert_eq!(image.media_type, "image/png");
+        assert_eq!(image.name, "diagram.png");
+        assert_eq!((image.width, image.height), (800, 400));
+        let (_, bytes) = store.load("s1", &image.attachment_id).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG"));
+    }
+
+    #[test]
+    fn raw_svg_and_other_text_are_not_images_to_the_header_check() {
         let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>"#;
         let error = inspect(svg).unwrap_err();
         assert!(
@@ -674,7 +713,12 @@ mod tests {
     #[test]
     fn a_refused_upload_stores_nothing() {
         let store = store_with_session("s1");
-        assert!(store.insert("s1", None, b"<svg/>").is_err());
+        assert!(
+            store
+                .insert("s1", None, b"<html>not an image</html>")
+                .is_err()
+        );
+        assert!(store.insert("s1", None, b"<svg><unclosed").is_err());
         let count: i64 = store
             .lock()
             .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))

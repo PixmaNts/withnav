@@ -39,7 +39,9 @@ fn bytes_tokens(bytes: usize) -> u64 {
 /// calls, plus the framing.
 pub fn message_tokens(message: &ChatMessage) -> u64 {
     let images = match message {
-        ChatMessage::User { images, .. } => images.len() as u64 * IMAGE_TOKENS,
+        ChatMessage::User { images, .. } | ChatMessage::Tool { images, .. } => {
+            images.len() as u64 * IMAGE_TOKENS
+        }
         _ => 0,
     };
     let bytes = match message {

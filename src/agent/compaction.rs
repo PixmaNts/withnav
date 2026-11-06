@@ -327,6 +327,7 @@ fn elided(message: &ChatMessage) -> ChatMessage {
             tool_call_id: tool_call_id.clone(),
             content: elision_marker(content.len()),
             answered_by: None,
+            images: Vec::new(),
         },
         other => other.clone(),
     }

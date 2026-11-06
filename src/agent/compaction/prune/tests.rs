@@ -69,6 +69,7 @@ fn exchange(id: usize, name: &str, args: Value, text: &str) -> Vec<ChatMessage> 
             tool_call_id: id.to_string(),
             content: text.into(),
             answered_by: None,
+            images: Vec::new(),
         },
     ]
 }

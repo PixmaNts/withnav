@@ -80,6 +80,11 @@ commit, and stops a corrupt conversation from overwriting its stored history.
   `models.json` says `"images": true` or, without that field, when the gateway's model list reports
   image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
   `images` and where it came from.
+- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
+  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
+  reduced to a size note. They are stored with the session's other images (at most four per call)
+  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
+  into a PNG first; it may not load external files or declare a DTD.
 
 ## [0.8.1] - 2026-10-16
 

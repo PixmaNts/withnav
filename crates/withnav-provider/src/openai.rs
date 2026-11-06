@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use withnav_client_api::attachment::ImageRef;
+pub use withnav_client_api::attachment::{ImageRef, human_size};
 
 use crate::Usage;
 use crate::config::{ProviderConfig, RESERVED_VARIANT_KEYS, Variant};
@@ -158,6 +158,11 @@ pub enum ChatMessage {
         /// tool result. Kept in the stored transcript, never sent to the model.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answered_by: Option<UserProvenance>,
+        /// Images the tool returned (a picture file, a screenshot), by reference. Tool output,
+        /// never the Captain's: on the chat-completions wire they follow the batch's tool
+        /// messages in one extra user message that exists only in the request.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageRef>,
     },
 }
 
@@ -207,14 +212,83 @@ struct WireMessages<'a> {
 impl Serialize for WireMessages<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
-        let mut sequence = serializer.serialize_seq(Some(self.messages.len()))?;
-        for message in self.messages {
+        let mut sequence = serializer.serialize_seq(None)?;
+        // Chat completions has no image part in a `tool` message. The images of one batch of
+        // tool results follow its last tool message, in one user message that exists only in
+        // this request: the transcript keeps them on the tool messages, as tool output.
+        let mut batch: Vec<&ImageRef> = Vec::new();
+        for (at, message) in self.messages.iter().enumerate() {
             sequence.serialize_element(&Wire {
                 message,
                 images: self.images,
             })?;
+            if let ChatMessage::Tool { images, .. } = message {
+                batch.extend(images.iter());
+                let batch_ends =
+                    !matches!(self.messages.get(at + 1), Some(ChatMessage::Tool { .. }));
+                if batch_ends && !batch.is_empty() {
+                    sequence.serialize_element(&ToolImagesMessage {
+                        images: &batch,
+                        payloads: self.images,
+                    })?;
+                    batch.clear();
+                }
+            }
         }
         sequence.end()
+    }
+}
+
+/// The request-only user message that carries the images of a batch of tool results.
+struct ToolImagesMessage<'a> {
+    images: &'a [&'a ImageRef],
+    payloads: &'a HashMap<String, ImagePayload>,
+}
+
+/// The text that opens a [`ToolImagesMessage`]: it says whose images these are, so the model
+/// never reads a tool's screenshot as something the user sent.
+pub const TOOL_IMAGES_PREFACE: &str =
+    "Images returned by the tool calls above (tool output, not a message from the user):";
+
+impl Serialize for ToolImagesMessage<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeSeq, SerializeStruct};
+        struct Parts<'a>(&'a ToolImagesMessage<'a>);
+        impl Serialize for Parts<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut parts = serializer.serialize_seq(None)?;
+                parts.serialize_element(
+                    &serde_json::json!({"type": "text", "text": TOOL_IMAGES_PREFACE}),
+                )?;
+                for image in self.0.images {
+                    parts.serialize_element(&serde_json::json!({
+                        "type": "text", "text": format!("[image {}]", image.label()),
+                    }))?;
+                    parts.serialize_element(&image_part(image, self.0.payloads))?;
+                }
+                parts.end()
+            }
+        }
+        let mut object = serializer.serialize_struct("ChatMessage", 2)?;
+        object.serialize_field("role", "user")?;
+        object.serialize_field("content", &Parts(self))?;
+        object.end()
+    }
+}
+
+/// One image as a content part: its data URL, or a visible placeholder when its bytes are
+/// missing. The agent never sends a reference it has no bytes for; if one slips through, a
+/// placeholder is better than a request the provider rejects.
+fn image_part(image: &ImageRef, payloads: &HashMap<String, ImagePayload>) -> Value {
+    match payloads.get(&image.attachment_id) {
+        Some(payload) => serde_json::json!({
+            "type": "image_url",
+            "image_url": {"url": payload.data_url()},
+        }),
+        None => serde_json::json!({
+            "type": "text",
+            "text": format!("[image {} unavailable]", image.label()),
+        }),
     }
 }
 
@@ -254,12 +328,27 @@ impl Serialize for Wire<'_> {
             ChatMessage::Tool {
                 tool_call_id,
                 content,
+                images,
                 ..
             } => {
                 let mut object = serializer.serialize_struct("ChatMessage", 3)?;
                 object.serialize_field("role", "tool")?;
                 object.serialize_field("tool_call_id", tool_call_id)?;
-                object.serialize_field("content", content)?;
+                if images.is_empty() {
+                    object.serialize_field("content", content)?;
+                } else {
+                    let mut text = content.clone();
+                    for image in images {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&format!(
+                            "[image {}: attached in the next message]",
+                            image.label()
+                        ));
+                    }
+                    object.serialize_field("content", &text)?;
+                }
                 object.end()
             }
             ChatMessage::Assistant {
@@ -302,18 +391,7 @@ impl Serialize for UserParts<'_> {
             parts.serialize_element(&serde_json::json!({"type": "text", "text": self.text}))?;
         }
         for image in self.images {
-            match self.payloads.get(&image.attachment_id) {
-                Some(payload) => parts.serialize_element(&serde_json::json!({
-                    "type": "image_url",
-                    "image_url": {"url": payload.data_url()},
-                }))?,
-                // The agent never sends a reference it has no bytes for; if one slips through,
-                // a visible placeholder is better than a request the provider rejects.
-                None => parts.serialize_element(&serde_json::json!({
-                    "type": "text",
-                    "text": format!("[image {} unavailable]", image.label()),
-                }))?,
-            }
+            parts.serialize_element(&image_part(image, self.payloads))?;
         }
         parts.end()
     }

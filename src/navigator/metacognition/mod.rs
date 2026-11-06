@@ -430,7 +430,7 @@ impl LlmCommenter {
                     messages.push(ChatMessage::Tool {
                         tool_call_id: tc.id.clone(),
                         content: output,
-answered_by: None, });
+answered_by: None, images: Vec::new(), });
                 }
             }
             let mut message = message.expect("the loop always sets the final message");

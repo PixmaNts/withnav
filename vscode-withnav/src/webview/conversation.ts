@@ -696,7 +696,23 @@ const onSecretsOutside = (event: MouseEvent): void => {
 };
 document.addEventListener("click", onSecretsOutside);
 
+/** Grows the composer with its text, from about three lines up to 40% of the view; it scrolls beyond. */
+let sizedFor = "";
+function autosizePrompt(): void {
+  // Measuring forces two layouts: skip it when nothing that changes the height did.
+  const key = `${window.innerWidth}x${window.innerHeight}|${document.documentElement.style.getPropertyValue("--nav-font-size")}|${prompt.value}`;
+  if (key === sizedFor) return;
+  sizedFor = key;
+  const max = Math.max(120, Math.round(window.innerHeight * 0.4));
+  prompt.style.height = "auto";
+  const wanted = prompt.scrollHeight;
+  prompt.style.height = `${Math.min(wanted, max)}px`;
+  prompt.style.overflowY = wanted > max ? "auto" : "hidden";
+}
+window.addEventListener("resize", autosizePrompt);
+
 function updateControls(): void {
+  autosizePrompt();
   prompt.disabled = readOnly || state === "connecting";
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
   else if (!readOnly) prompt.placeholder = secretWaiting() ? "Nav is waiting for the key above… (or write to answer otherwise)" : "Message WithNav…";

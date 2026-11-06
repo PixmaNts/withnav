@@ -61,6 +61,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::AttachmentChecked { generation, .. }
+        | ClientEvent::ImageOpened { generation, .. }
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::QuestionAnswered { generation, .. }
@@ -959,6 +960,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 keep_newer_context(s, snapshot);
             }
         }
+        ClientEvent::ImageOpened { result, .. } => {
+            push_local(s, BlockKind::Notice(result.unwrap_or_else(|e| e)));
+        }
         ClientEvent::AttachmentChecked { result, .. } => match result {
             Ok(attachment) => {
                 if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
@@ -984,18 +988,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         } => match result {
             Ok(r) => {
                 // The server took the message with its images: only now do the chips go. The
-                // `message.received` event carries the text alone, so the transcript would show
-                // the Captain's message without its images; echo them from the list sent.
+                // transcript shows the images from the `message.received` event.
                 let sent =
                     std::mem::take(&mut s.attachments_sending).min(s.pending_attachments.len());
-                if sent > 0 {
-                    let chips: Vec<String> = s
-                        .pending_attachments
-                        .drain(..sent)
-                        .map(|a| a.chip())
-                        .collect();
-                    push_local(s, BlockKind::Notice(format!("sent {}", chips.join(" "))));
-                }
+                s.pending_attachments.drain(..sent);
                 if !background {
                     effects.push(Effect::ClearEditor { revision });
                 } else if s.draft_revision == revision {

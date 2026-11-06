@@ -90,6 +90,9 @@ commit, and stops a corrupt conversation from overwriting its stored history.
   The Captain's images and those returned by tools show as thumbnails in the conversation, also
   after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
   in an editor panel beside the VS Code chat.
+- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
+  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
+  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
 
 ## [0.8.1] - 2026-10-16
 

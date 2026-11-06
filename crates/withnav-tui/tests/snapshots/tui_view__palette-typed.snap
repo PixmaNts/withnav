@@ -6,7 +6,6 @@ expression: snapshot
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · idle      │                                                                              
                      │                                                                              
-                     │                                                                              
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
             │▌/config               edit settings in config.json                       │            
@@ -14,6 +13,8 @@ expression: snapshot
             │ /sessions             Voyage · Session — browse conversations            │            
             │ /model [model_id]     switch this conversation's model                   │            
             │ /attach <path>|clear  attach an image to your next message (or clear)    │            
+            │ /paste-image          attach the image on the clipboard to your next mes │            
+            │ /image [n]            open an image of this conversation in the system v │            
             │ /skills               choose a skill to load for your next message       │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            
@@ -26,9 +27,8 @@ expression: snapshot
             │ /compact              server compact                                     │            
             │ /agent [id]           server agent                                       │            
             │                                                                          │            
-            │ ↑↓ move  enter run  esc close                                            │            
-            └──────────────────────────────────────────────────────────────────────────┘────────────
-                     │ ready                                                          session — tok 
+            │ ↑↓ move  enter run  esc close                                            │────────────
+            └──────────────────────────────────────────────────────────────────────────┘ssion — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││/                                                                           │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘

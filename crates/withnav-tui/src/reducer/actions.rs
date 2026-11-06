@@ -837,27 +837,18 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             vec![]
         }
         Action::Attach(path) => {
-            if s.read_only() {
-                push_local(
-                    s,
-                    BlockKind::Notice(
-                        "this subagent is read-only; return to its parent to attach images".into(),
-                    ),
-                );
-                return vec![];
-            }
-            if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
-                push_local(
-                    s,
-                    BlockKind::Notice(format!(
-                        "a message carries at most {} images; send it or use /attach clear",
-                        crate::state::MAX_ATTACHMENTS
-                    )),
-                );
+            if attach_refused(s) {
                 return vec![];
             }
             vec![Effect::CheckAttachment { path }]
         }
+        Action::PasteImage => {
+            if attach_refused(s) {
+                return vec![];
+            }
+            vec![Effect::PasteImage]
+        }
+        Action::OpenImage(number) => open_image(s, number.trim()),
         Action::ClearAttachments => {
             // The images of a message in flight leave with its acknowledgement, not before.
             let kept = s.attachments_sending.min(s.pending_attachments.len());
@@ -1124,4 +1115,57 @@ fn mark_secret_sending(s: &mut State, call_id: &str) {
             p.error = None;
         }
     }
+}
+
+/// Whether a new image cannot join the message box; the notice says why.
+fn attach_refused(s: &mut State) -> bool {
+    if s.read_only() {
+        push_local(
+            s,
+            BlockKind::Notice(
+                "this subagent is read-only; return to its parent to attach images".into(),
+            ),
+        );
+        return true;
+    }
+    if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
+        push_local(
+            s,
+            BlockKind::Notice(format!(
+                "a message carries at most {} images; send it or use /attach clear",
+                crate::state::MAX_ATTACHMENTS
+            )),
+        );
+        return true;
+    }
+    false
+}
+
+/// `/image [n]`: the nth image of the transcript, the last when no number is given.
+fn open_image(s: &mut State, number: &str) -> Vec<Effect> {
+    let count = s.conversation.images.len();
+    let session_id = s.session.as_ref().map(|m| m.session_id.clone());
+    let (Some(session_id), true) = (session_id, count > 0) else {
+        push_local(
+            s,
+            BlockKind::Notice("this conversation has no image yet".into()),
+        );
+        return vec![];
+    };
+    let number = if number.is_empty() {
+        count
+    } else {
+        match number.parse::<usize>() {
+            Ok(n) if (1..=count).contains(&n) => n,
+            _ => {
+                push_local(s, BlockKind::Notice(format!("usage: /image [1-{count}]")));
+                return vec![];
+            }
+        }
+    };
+    vec![Effect::OpenImage {
+        session_id,
+        number,
+        image: s.conversation.images[number - 1].clone(),
+    }]
 }

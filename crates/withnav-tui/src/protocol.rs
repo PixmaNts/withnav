@@ -117,6 +117,11 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<crate::state::PendingAttachment, String>,
     },
+    /// An image of the transcript was handed to the system viewer, or why it could not be.
+    ImageOpened {
+        generation: Generation,
+        result: Result<String, String>,
+    },
     /// A permission answer came back.
     PermissionAnswered {
         generation: Generation,
@@ -273,6 +278,11 @@ pub enum Action {
     Attach(String),
     /// `/attach clear`: drops the chips of the message box.
     ClearAttachments,
+    /// `/paste-image`: attaches the image on the local clipboard, like `/attach`.
+    PasteImage,
+    /// `/image [n]`: opens the nth image of the transcript (the last by default) in the system
+    /// viewer.
+    OpenImage(String),
     /// Shows a notice in the active conversation; nothing else happens.
     ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
@@ -416,6 +426,16 @@ pub enum Effect {
     /// resolved by the runtime) and reports `ClientEvent::AttachmentChecked`.
     CheckAttachment {
         path: String,
+    },
+    /// Saves the image on the local clipboard to a private file and reports
+    /// `ClientEvent::AttachmentChecked`.
+    PasteImage,
+    /// Downloads one stored image and opens it in the system viewer; reports
+    /// `ClientEvent::ImageOpened`.
+    OpenImage {
+        session_id: String,
+        number: usize,
+        image: withnav_client_api::attachment::ImageRef,
     },
     /// Opens the variant list of the active conversation, from the offer the server just gave.
     ShowVariants {

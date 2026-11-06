@@ -447,6 +447,46 @@ impl Executor {
                     ClientEvent::AttachmentChecked { generation, result }
                 });
             }
+            Effect::PasteImage => {
+                self.spawn_event(async move {
+                    let result = tokio::task::spawn_blocking(|| {
+                        let bytes = super::desktop::clipboard_image()?;
+                        let path = super::desktop::private_file("png", &bytes)?;
+                        Ok(PendingAttachment {
+                            path,
+                            name: "clipboard.png".into(),
+                            size: bytes.len() as u64,
+                        })
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("could not read the clipboard: {e}")));
+                    ClientEvent::AttachmentChecked { generation, result }
+                });
+            }
+            Effect::OpenImage {
+                session_id,
+                number,
+                image,
+            } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    let result = match client.attachment(&session_id, &image.attachment_id).await {
+                        Ok(bytes) => tokio::task::spawn_blocking(move || {
+                            let path = super::desktop::private_file(
+                                super::desktop::extension(&image.media_type),
+                                &bytes,
+                            )?;
+                            super::desktop::open(&path)?;
+                            Ok(format!("image {number} opened in the system viewer"))
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string())),
+                        Err(e) => Err(e),
+                    }
+                    .map_err(|e| format!("image {number} could not be opened: {e}"));
+                    ClientEvent::ImageOpened { generation, result }
+                });
+            }
             Effect::AnswerPermission {
                 session_id,
                 request_id,

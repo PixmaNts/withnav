@@ -5830,14 +5830,66 @@ fn a_message_with_images_uploads_after_the_conversation_exists_and_keeps_the_chi
         },
     );
     assert!(fx.is_empty());
-    // Acknowledged: the chips go and the transcript echoes them.
+    // Acknowledged: the chips go; the transcript shows the images from `message.received`.
     submitted_now(&mut s, 3, accepted()).unwrap();
     assert!(s.pending_attachments.is_empty());
-    assert!(
-        notice_texts(&s)
-            .iter()
-            .any(|n| n.contains("[image a.png, 10 B] [image b.png, 20 B]"))
+}
+
+#[test]
+fn transcript_images_are_numbered_and_open_by_number() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage(String::new()));
+    assert!(fx.is_empty());
+    assert!(notice_texts(&s).iter().any(|n| n.contains("no image yet")));
+    subagent_event(
+        &mut s,
+        1,
+        "message.received",
+        json!({"source": "captain", "content": "look", "images": [
+            {"attachment_id": "A1", "media_type": "image/png", "name": "a.png",
+             "size": 10, "width": 3, "height": 2}
+        ]}),
     );
+    subagent_event(
+        &mut s,
+        2,
+        "tool.post_call",
+        json!({"tool_call_id": "c1", "name": "read", "status": "ok", "output": "",
+               "metadata": {"images": [{"attachment_id": "A2", "name": "shot\u{7}.png"}]}}),
+    );
+    let notices = notice_texts(&s);
+    assert!(notices.contains(&"image 1: a.png, 3x2, 10 B (/image 1 to open)".to_string()));
+    assert!(notices.contains(&"image 2: shot.png (/image 2 to open)".to_string()));
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage("1".into()));
+    assert!(matches!(
+        fx.as_slice(),
+        [Effect::OpenImage { session_id, number: 1, image }]
+            if session_id == "S1" && image.attachment_id == "A1"
+    ));
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage(String::new()));
+    assert!(matches!(
+        fx.as_slice(),
+        [Effect::OpenImage { number: 2, .. }]
+    ));
+    assert!(handle_action(&mut s, &mut ui(), Action::OpenImage("3".into())).is_empty());
+    assert!(notice_texts(&s).iter().any(|n| n == "usage: /image [1-2]"));
+}
+
+#[test]
+fn a_pasted_image_path_attaches_it() {
+    let mut s = st();
+    let mut ui = ui();
+    let mut editor = withnav_tui::input::Editor::new();
+    let action = withnav_tui::input::route_paste("'/tmp/a b.png'".into(), &s, &mut ui, &mut editor);
+    assert_eq!(action, Some(Action::Attach("/tmp/a b.png".into())));
+    let fx = handle_action(&mut s, &mut ui, action.unwrap());
+    assert!(matches!(fx.as_slice(), [Effect::CheckAttachment { path }] if path == "/tmp/a b.png"));
+    assert_eq!(
+        withnav_tui::input::route_paste("see /tmp/a.png".into(), &s, &mut ui, &mut editor),
+        None
+    );
+    assert_eq!(editor.text(), "see /tmp/a.png");
 }
 
 #[test]

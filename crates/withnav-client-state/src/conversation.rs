@@ -148,6 +148,9 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Conversation {
     pub blocks: Vec<Block>,
+    /// The images shown in the transcript, in order: the Captain's and the tools'. A notice
+    /// numbers each one from 1 so the Captain can name it.
+    pub images: Vec<withnav_client_api::attachment::ImageRef>,
     pub steps: HashMap<(String, String, String), String>,
     pub tools_by_turn: HashMap<(String, String), Vec<String>>,
     pub usage_by_step: HashMap<(String, String, String), Usage>,

@@ -251,6 +251,30 @@ impl Client {
         self.json(request).await
     }
 
+    /// The bytes of one stored image of the session.
+    pub async fn attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<u8>, String> {
+        let path = format!(
+            "/v1/sessions/{}/attachments/{}",
+            encode_segment(session_id),
+            encode_segment(attachment_id)
+        );
+        let response = self.get(&path).send().await.map_err(|e| describe(&e))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(status_message(status, &body));
+        }
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| describe(&e))
+    }
+
     /// Sends a structured question answer through the ordinary Captain-message ingress.
     pub async fn answer_question(
         &self,

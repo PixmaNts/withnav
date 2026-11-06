@@ -574,6 +574,7 @@ mod tests {
             registry.register(Box::new(tool));
         }
         let cx = crate::tools::ToolContext {
+            secrets: None,
             binding: None,
             workspace: std::env::temp_dir(),
             writable_roots: vec![],

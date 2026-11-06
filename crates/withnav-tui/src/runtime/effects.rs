@@ -454,6 +454,46 @@ impl Executor {
                     }
                 });
             }
+            Effect::SubmitSecret {
+                session_id,
+                call_id,
+                submission,
+            } => {
+                let client = self.client.clone();
+                let name = submission.name.clone().unwrap_or_default();
+                self.spawn_event(async move {
+                    // The value is in `submission` until this request is built; nothing logs it.
+                    let result = client
+                        .submit_secret(&session_id, &call_id, &submission)
+                        .await;
+                    drop(submission);
+                    ClientEvent::SecretAnswered {
+                        generation,
+                        call_id,
+                        name,
+                        result,
+                    }
+                });
+            }
+            Effect::ListSecrets(session_id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::SecretsListed {
+                        generation,
+                        result: client.list_secrets(&session_id).await,
+                    }
+                });
+            }
+            Effect::RevokeSecret { session_id, name } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::SecretRevoked {
+                        generation,
+                        result: client.revoke_secret(&session_id, &name).await,
+                        name,
+                    }
+                });
+            }
             Effect::FetchCommands => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

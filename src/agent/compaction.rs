@@ -455,7 +455,7 @@ fn never_elided(transcript: &[ChatMessage]) -> HashSet<&str> {
             _ => None,
         })
         .flatten()
-        .filter(|c| matches!(c.function.name.as_str(), "skill" | "ask"))
+        .filter(|c| matches!(c.function.name.as_str(), "skill" | "ask" | "request_secret"))
         .map(|c| c.id.as_str())
         .collect()
 }

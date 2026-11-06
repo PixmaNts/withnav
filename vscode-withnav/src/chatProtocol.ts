@@ -36,6 +36,15 @@ export interface PermissionEvidence {
 export interface PauseToken { incarnation: string; hold_id: string }
 export interface AskChoices { header?: string; options: { label: string; description?: string }[]; multiple: boolean; allow_custom: boolean; recommended?: number }
 export interface AskAnswer { question_call_id: string; selected: number[]; custom?: string }
+/** How long a secret stays available, and who may use it (the server's wire spellings). */
+export type SecretTtl = "1h" | "24h" | "session";
+export type SecretScope = "session" | "workspace";
+/** What `request_secret` asks for: metadata only, never a value. */
+export interface SecretRequest { name: string; label: string; reason: string; defaultTtl: SecretTtl; defaultScope: SecretScope }
+/** One stored secret as the server lists it: the last four characters at most. */
+export interface SecretInfo { name: string; scope: SecretScope; ttl: SecretTtl; expiresAt?: string; createdAt: string; useCount: number; last4: string }
+/** The server's note on a settled secret request (`message.received.secret`). */
+export interface SecretNote { requestId?: string; name: string; outcome: "stored" | "declined"; scope?: SecretScope; ttl?: SecretTtl; expiresAt?: string }
 
 export interface McpMediaItem {
   mime_type: string;
@@ -86,7 +95,7 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   /** A message already complete when shown (the Captain's own, or a Nav wake).
    *  `context` is the chip label of the editor context attached to a Captain message;
    *  `text` then holds the Captain's own text only, without the raw block. */
-   | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer }
+   | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer; secret?: SecretNote }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
   | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false }
@@ -110,8 +119,12 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the Captain a question and waits for the next message as the answer. */
-   | { type: "question"; id: string; text: string; questionCallId?: string; choices?: AskChoices }
+   | { type: "question"; id: string; text: string; questionCallId?: string; choices?: AskChoices; secret?: SecretRequest; agent?: string }
    | { type: "questionState"; questionCallId: string; error: string }
+  /** The outcome of the Captain's own secret action (the value is never echoed back). */
+  | { type: "secretState"; requestId: string; name: string; state: "saved" | "declined" | "revoked" | "error"; secret?: SecretInfo; message?: string }
+  /** The secrets the conversation sees, for its header list. */
+  | { type: "secrets"; items: SecretInfo[]; error?: string }
   /** Live preview of the editor context the next message would carry (chip label). */
   | { type: "editorContext"; label: string }
   /** Past conversations of this workspace, newest first. Global (no tab). */
@@ -198,6 +211,11 @@ export type WebviewToHost = { generation?: number; tab?: string } & (
   | { type: "stop" }
    | { type: "answerPermission"; sessionId: string; requestId: string; decision: PermissionDecision; message?: string }
    | { type: "answerQuestion"; sessionId: string; answer: AskAnswer }
+  /** The Captain's secret, for `requestId`. Carries the value: never logged, stored or echoed. */
+  | { type: "submitSecret"; sessionId: string; requestId: string; name: string; value: string; ttl: SecretTtl; scope: SecretScope }
+  | { type: "declineSecret"; sessionId: string; requestId: string }
+  | { type: "listSecrets"; sessionId: string }
+  | { type: "revokeSecret"; sessionId: string; name: string; requestId?: string }
   | { type: "controlPause"; sessionId: string; id: string; action: "continue" | "stop" }
   /** The Captain opens a file mentioned in the chat. */
   | { type: "openFile"; path: string; line?: number }
@@ -263,6 +281,11 @@ export interface ChatBackend {
   hasOpenPermissions(): boolean;
   answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation?: number): Promise<void>;
   answerQuestion(sessionId: string, answer: AskAnswer, generation?: number): Promise<void>;
+  /** Sends `value` to the secrets endpoint; never keeps it. */
+  submitSecret(sessionId: string, requestId: string, name: string, value: string, ttl: SecretTtl, scope: SecretScope, generation?: number): Promise<void>;
+  declineSecret(sessionId: string, requestId: string, generation?: number): Promise<void>;
+  listSecrets(sessionId: string, generation?: number): Promise<void>;
+  revokeSecret(sessionId: string, name: string, requestId?: string, generation?: number): Promise<void>;
   controlPause(sessionId: string, id: string, action: "continue" | "stop", generation?: number): Promise<void>;
   /** Saved conversations of the workspace, newest first. */
   listConversations(): Promise<ConversationSummary[]>;

@@ -167,6 +167,7 @@ fn block_text(
                 lines.extend(tool::output(&block.kind, theme));
             }
         }
+        BlockKind::Secret(p) => lines.extend(secret_lines(p, theme)),
         BlockKind::YieldQuestion(question) => {
             lines.push(Line::styled(
                 "QUESTION · awaiting answer",
@@ -460,6 +461,8 @@ pub fn draw(
         let gutter = match &block.kind {
             BlockKind::Error(_) => theme.error(),
             BlockKind::YieldQuestion(_) | BlockKind::Question(_) => theme.warning(),
+            BlockKind::Secret(p) if p.is_open() => theme.warning(),
+            BlockKind::Secret(_) => theme.muted(),
             BlockKind::Message { source, .. } => match Origin::of(source) {
                 Origin::User => theme.muted(),
                 Origin::Navigator => theme.error(),
@@ -520,6 +523,14 @@ pub(crate) fn copy_block(block: &Block) -> Option<String> {
         }
         BlockKind::YieldQuestion(text) | BlockKind::Error(text) | BlockKind::Notice(text) => text,
         BlockKind::Question(p) => &p.text,
+        BlockKind::Secret(p) => {
+            return Some(format!(
+                "{} (${}): for {}",
+                clean(&p.request.label),
+                p.request.name,
+                clean(&p.request.reason)
+            ));
+        }
         BlockKind::Permission(_) => return None,
     };
     Some(clean(text))
@@ -572,7 +583,7 @@ fn sender(block: &Block, state: &State) -> String {
         BlockKind::ToolCall { name, .. } => format!("Tool {}", clean(name)),
         BlockKind::Notice(_) => "Notice".into(),
         BlockKind::Error(_) => "Error".into(),
-        BlockKind::YieldQuestion(_) | BlockKind::Question(_) => {
+        BlockKind::YieldQuestion(_) | BlockKind::Question(_) | BlockKind::Secret(_) => {
             super::sidebar::agent_label(state.agent_name())
         }
         BlockKind::Command { name, .. } => format!("/{}", clean(name)),
@@ -627,9 +638,101 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
         BlockKind::Question(p) => {
             format!("{p:?}").hash(&mut h);
         }
+        BlockKind::Secret(p) => {
+            format!("{p:?}").hash(&mut h);
+            // The expiry words change with time.
+            (ui.tick / 600).hash(&mut h);
+        }
         BlockKind::Permission(_) => {}
     }
     h.finish().to_string()
+}
+
+/// A secret request: what was asked, and what became of it. Never a value; the last four
+/// characters once the server reported them.
+fn secret_lines(p: &crate::state::SecretPrompt, theme: &Theme) -> Vec<Line<'static>> {
+    use crate::state::SecretState;
+    let status = match (&p.state, p.sending) {
+        (SecretState::Pending, true) => "sending…".to_owned(),
+        (SecretState::Pending, false) => "waiting for your answer".to_owned(),
+        (SecretState::Stored { .. }, _) => "saved".to_owned(),
+        (SecretState::Declined, _) => "declined".to_owned(),
+        (SecretState::Revoked, _) => "revoked".to_owned(),
+    };
+    let style = if p.is_open() {
+        theme.warning().add_modifier(Modifier::BOLD)
+    } else {
+        theme.muted().add_modifier(Modifier::BOLD)
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("⚿ {}", clean(&p.request.label)), style),
+        Span::styled(format!(" · {status}"), style),
+    ])];
+    lines.push(Line::styled(
+        format!(
+            " For {}. Requested by {}.",
+            clean(&p.request.reason),
+            p.agent
+                .as_deref()
+                .map(clean)
+                .unwrap_or_else(|| "Nav".into())
+        ),
+        theme.muted(),
+    ));
+    match &p.state {
+        SecretState::Pending => lines.push(Line::styled(
+            format!(
+                " Kept out of the chat. The agent receives ${}, not the value · alt+k to enter it",
+                p.request.name
+            ),
+            theme.muted(),
+        )),
+        SecretState::Stored { scope, expires_at } => {
+            let when =
+                crate::secret::expires_in(expires_at.as_deref(), time::OffsetDateTime::now_utc());
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(
+                        " ${} ••••{}",
+                        p.request.name,
+                        p.last4.as_deref().unwrap_or("")
+                    ),
+                    theme.text(),
+                ),
+                Span::styled(
+                    match when {
+                        Some(when) => {
+                            format!(" · expires {when}, {}", crate::secret::scope_text(*scope))
+                        }
+                        None => " · expired".to_owned(),
+                    },
+                    theme.muted(),
+                ),
+            ]));
+            lines.push(Line::styled(
+                format!(
+                    " alt+k replace · /secrets revoke {} removes it",
+                    p.request.name
+                ),
+                theme.muted(),
+            ));
+        }
+        SecretState::Declined => lines.push(Line::styled(
+            " Nav was told and continues without it · alt+k provide anyway",
+            theme.muted(),
+        )),
+        SecretState::Revoked => lines.push(Line::styled(
+            format!(
+                " ${} was revoked: commands no longer receive it · alt+k provide again",
+                p.request.name
+            ),
+            theme.muted(),
+        )),
+    }
+    if let Some(error) = &p.error {
+        lines.push(Line::styled(format!(" {}", clean(error)), theme.error()));
+    }
+    lines
 }
 
 #[cfg(test)]

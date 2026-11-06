@@ -123,6 +123,24 @@ pub enum ClientEvent {
         call_id: String,
         result: Result<SubmitResponse, String>,
     },
+    /// The answer to a secret request (or a secret given later) came back.
+    SecretAnswered {
+        generation: Generation,
+        call_id: String,
+        name: String,
+        result: Result<withnav_client_api::secrets::SecretAccepted, String>,
+    },
+    /// `/secrets`: what the conversation sees.
+    SecretsListed {
+        generation: Generation,
+        result: Result<withnav_client_api::secrets::SecretsBody, String>,
+    },
+    /// `/secrets revoke NAME` came back: whether there was one.
+    SecretRevoked {
+        generation: Generation,
+        name: String,
+        result: Result<bool, String>,
+    },
     /// The server's command list.
     Commands {
         generation: Generation,
@@ -236,6 +254,16 @@ pub enum Action {
     QuestionDismiss,
     QuestionCustom,
     AnswerQuestion(withnav_client_api::tools::AskAnswer),
+    /// Opens the secret prompt on the newest secret request of the conversation.
+    OpenSecret,
+    /// Sends the value typed in the secret prompt (the reducer takes it from the prompt).
+    SubmitSecret,
+    /// Declines the secret request of the prompt.
+    DeclineSecret,
+    /// `/secrets`: lists the conversation's secrets.
+    ListSecrets,
+    /// `/secrets revoke NAME`.
+    RevokeSecret(String),
     /// Shows a notice in the active conversation; nothing else happens.
     ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
@@ -273,6 +301,17 @@ pub enum Effect {
     AnswerQuestion {
         session_id: String,
         answer: withnav_client_api::tools::AskAnswer,
+    },
+    /// Carries the value to the secrets endpoint; its `Debug` never prints it.
+    SubmitSecret {
+        session_id: String,
+        call_id: String,
+        submission: withnav_client_api::secrets::SecretSubmission,
+    },
+    ListSecrets(String),
+    RevokeSecret {
+        session_id: String,
+        name: String,
     },
     SetBypass {
         session_id: String,

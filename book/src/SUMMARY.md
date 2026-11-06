@@ -21,6 +21,7 @@
   - [MCP servers](mcp-servers.md)
   - [Import a catalogue from OpenCode](catalogue-import.md)
 - [Permissions](permissions.md)
+- [Secrets](secrets.md)
 - [InstinctFlow](instinctflow.md)
 - [Troubleshooting](troubleshooting.md)
 

@@ -496,6 +496,7 @@ mod tests {
         let mut actor = crate::agent::actor::AgentActor::new(
             crate::tools::Registry::new(),
             crate::tools::ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: std::env::temp_dir(),
                 writable_roots: vec![],

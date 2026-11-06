@@ -8,6 +8,22 @@ requests land in `develop`.
 
 ### Added
 
+- Secrets: an agent can ask the Captain for a secret (an API key, a token) with the new
+  `request_secret` tool. The turn pauses and a dedicated card asks for the value (VS Code, the
+  browser client; a prompt in `nav tui`), with availability (1 h, 24 h, session) and scope (this
+  session, this workspace). The value goes to `POST /v1/sessions/{id}/secrets/{request_id}`, never
+  through the chat; the model reads only `stored as $NAME (expires …, scope …)` or
+  `declined by the Captain`. Commands the agent runs with `bash` (subagents included) get it as an
+  environment variable, and every exact occurrence of a value of 8 characters or more is replaced
+  by `[secret NAME]` in tool output, model text, Captain messages, events and the stored history.
+  `GET /v1/sessions/{id}/secrets` lists them (name, scope, expiry, use count, last four
+  characters), `DELETE /v1/sessions/{id}/secrets/{name}` revokes one; the key icon of the
+  conversation header (VS Code, browser) and `/secrets` in `nav tui` do the same. Session secrets
+  stay in memory; workspace secrets are also kept, in plain text, in
+  `<data dir>/credentials/secrets.json` (mode 0600) until they expire or are revoked.
+  Security: the model never sees the value in the chat, but an agent able to run commands can still
+  read it from its environment and exfiltrate it in transformed form; redaction reduces this, it
+  does not prevent it. MCP servers do not receive secrets. See the book's Secrets page.
 - MCP Apps and media in the WebUI and VS Code extension:
   - MCP tool calls returning images (`image/png`, `image/jpeg`, `image/webp`, `image/gif`, inline SVG, or board previews in `structuredContent`) render inline thumbnails in the transcript with click-to-zoom, while keeping the model's tool output text compact.
   - Tools declaring a `ui://` resource (`_meta.ui.resourceUri` / `text/html;profile=mcp-app`) or an app URL show an **Open App** button on the tool row that opens a sandboxed interactive MCP App view (in a dedicated `App` tab of the WebUI right panel, or in a `Beside` editor group in VS Code) with a JSON-RPC 2.0 `postMessage` bridge (`ui/initialize`, `ui/notifications/tool-input`, `ui/notifications/tool-result`, `ui/open-link`, `tools/call`, `resources/read`).

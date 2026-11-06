@@ -1317,6 +1317,7 @@ impl Script {
             &MessageReceived {
                 answer: None,
                 selected_skill: None,
+                secret: None,
                 command_id: Ulid(7),
                 source: "user:http".into(),
                 target: ROOT_ACTOR_ID.into(),

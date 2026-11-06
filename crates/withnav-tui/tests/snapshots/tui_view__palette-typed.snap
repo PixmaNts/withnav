@@ -18,6 +18,7 @@ expression: snapshot
             │ /stop                 stop generation                                    │            
             │ /mode                 cycle delivery mode (steer and interrupt send as n │            
             │ /theme                choose the colour theme                            │            
+            │ /secrets              list secrets · /secrets revoke NAME removes one    │            
             │ /help                 show keyboard shortcuts                            │            
             │ /quit                 quit terminal client                               │            
             │ /context              server context                                     │            
@@ -25,8 +26,7 @@ expression: snapshot
             │ /agent [id]           server agent                                       │            
             │                                                                          │            
             │ ↑↓ move  enter run  esc close                                            │            
-            └──────────────────────────────────────────────────────────────────────────┘            
-                     │──────────────────────────────────────────────────────────────────────────────
+            └──────────────────────────────────────────────────────────────────────────┘────────────
                      │ ready                                                          session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││/                                                                           │

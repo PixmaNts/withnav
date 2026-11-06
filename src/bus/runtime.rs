@@ -218,6 +218,38 @@ impl RuntimeStatus {
             .answer_text(&question.question, answer)
     }
 
+    /// The secret request `request_id`, when it is the question the actor waits on and no
+    /// Captain message already queued for it.
+    pub(crate) fn pending_secret(
+        &self,
+        request_id: &str,
+    ) -> Option<crate::secrets::SecretRequestDetails> {
+        if self
+            .queued_captain
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+        {
+            return None;
+        }
+        self.waiting_secret(request_id)
+    }
+
+    /// The secret request `request_id` while the actor waits on it, queued answer or not.
+    pub(crate) fn waiting_secret(
+        &self,
+        request_id: &str,
+    ) -> Option<crate::secrets::SecretRequestDetails> {
+        let pending = self
+            .pending_question
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let question = pending
+            .as_ref()
+            .filter(|q| q.tool_call_id == request_id)
+            .filter(|q| q.kind.as_deref() == Some(crate::secrets::SECRET_KIND))?;
+        serde_json::from_value(question.details.clone()?).ok()
+    }
+
     pub(crate) fn clear_question(&self) {
         *self
             .pending_question
@@ -3066,6 +3098,7 @@ mod tests {
         AgentActor::new(
             registry_all(),
             ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: ws.clone(),
                 writable_roots: vec![ws],

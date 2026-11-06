@@ -277,7 +277,11 @@ async fn run_steps_inner(
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
         let role_message = actor.role_message();
-        let history = actor.effective_history();
+        let mut history = actor.effective_history();
+        // Whatever a value reached the transcript by, the model never reads it.
+        if let Some(secrets) = &actor.tool_context.secrets {
+            history.iter_mut().for_each(|m| secrets.redact_message(m));
+        }
         let tools = actor.effective_tool_schemas();
         if actor.input_budget.is_some_and(|budget| {
             crate::agent::context::estimate(
@@ -312,7 +316,13 @@ async fn run_steps_inner(
                 request,
                 actor.variant.as_ref(),
                 &actor.cancel,
-                &mut |delta| observe(AgentEvent::Delta(delta)),
+                &mut |mut delta| {
+                    // Best effort: a value split across two deltas is caught on the response.
+                    if let Some(secrets) = &actor.tool_context.secrets {
+                        redact_delta(secrets, &mut delta);
+                    }
+                    observe(AgentEvent::Delta(delta))
+                },
             )
             .await
         {
@@ -324,22 +334,27 @@ async fn run_steps_inner(
             Err(e) => return Err(AgentError::Provider(e)),
         };
 
-        let crate::provider::ChatTurn { message, opaque } = turn;
-        actor.transcript.push(assistant_history_message(
-            &message,
+        let crate::provider::ChatTurn {
+            mut message,
             opaque,
-            &actor.producer(),
-            actor.reasoning_history,
-        ));
+        } = turn;
+        if let Some(secrets) = &actor.tool_context.secrets {
+            secrets.redact_in_place(&mut message.text);
+            secrets.redact_in_place(&mut message.thinking);
+        }
+        let mut history =
+            assistant_history_message(&message, opaque, &actor.producer(), actor.reasoning_history);
+        // The call itself still runs with the arguments the model wrote.
+        if let Some(secrets) = &actor.tool_context.secrets {
+            secrets.redact_message(&mut history);
+        }
+        actor.transcript.push(history);
         observe(AgentEvent::Response(&message));
         observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
-        match crate::agent::response::classify_with_ask(
-            message,
-            actor.tool_allowed(crate::agent::response::ASK_TOOL),
-        ) {
+        match crate::agent::response::classify_with(message, |name| actor.tool_allowed(name)) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));
@@ -1001,6 +1016,16 @@ async fn run_calls(
 ) -> Calls {
     let mut calls = std::collections::VecDeque::from(calls);
     while let Some(mut call) = calls.pop_front() {
+        // A valid secret request the turn may make pauses it before any call runs; one that
+        // reaches here is invalid or not allowed, and is never decided or dispatched.
+        if call.name == crate::tools::secret::REQUEST_SECRET_TOOL {
+            let reason = match crate::tools::secret::validated_request(&call.args) {
+                Err(reason) => reason,
+                Ok(_) => "request_secret is disabled by this session's policy".into(),
+            };
+            reject_call(actor, &call, reason, observe);
+            continue;
+        }
         if call.name == "skill" {
             // Provider arguments never choose host snapshots or claim human selection.
             if call.args.get("snapshot_id").is_some() || call.args.get("captain_selected").is_some()
@@ -1261,6 +1286,9 @@ fn deny_call(
     });
     let mut result = ToolResult::permission_denied(message);
     merge_approval_metadata(&mut result.metadata, &note);
+    if let Some(secrets) = &actor.tool_context.secrets {
+        redact_result(secrets, &mut result);
+    }
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1484,6 +1512,10 @@ async fn execute_call(
         Ok(result) => result,
         Err(e) => ToolResult::error("tool_error", e.to_string()),
     };
+    // A secret a tool printed is hidden before the event, the transcript or the model see it.
+    if let Some(secrets) = &actor.tool_context.secrets {
+        redact_result(secrets, &mut result);
+    }
     // How the call was allowed: the durable `tool.post_call` says so.
     if let Some(note) = note {
         merge_approval_metadata(&mut result.metadata, &note);
@@ -1519,6 +1551,26 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
     }
 }
 
+/// Hides the secrets a tool result carries: its output, its metadata and its error message.
+fn redact_result(secrets: &crate::secrets::SecretAccess, result: &mut ToolResult) {
+    secrets.redact_in_place(&mut result.output);
+    secrets.redact_json(&mut result.metadata);
+    if let Some(error) = &mut result.error {
+        secrets.redact_in_place(&mut error.message);
+    }
+}
+
+/// Hides the secrets a streamed piece of text carries.
+fn redact_delta(secrets: &crate::secrets::SecretAccess, delta: &mut StreamDelta) {
+    match delta {
+        StreamDelta::Text { text } | StreamDelta::Thinking { text } => {
+            secrets.redact_in_place(text)
+        }
+        StreamDelta::ToolCallArgs { fragment, .. } => secrets.redact_in_place(fragment),
+        StreamDelta::ToolCallStarted { .. } => {}
+    }
+}
+
 /// What the model reads for a call cancelled before it started: an empty
 /// result would read as a success with no output.
 pub(crate) const NOT_RUN: &str = "interrupted: the call did not run";
@@ -1538,11 +1590,14 @@ fn interrupted_content(result: &ToolResult) -> String {
 }
 
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
-    let content = match result.status {
+    let mut content = match result.status {
         ToolStatus::Ok => result.output.clone(),
         ToolStatus::Interrupted => interrupted_content(result),
         _ => serde_json::to_string(result).unwrap_or_else(|_| result.output.clone()),
     };
+    if let Some(secrets) = &actor.tool_context.secrets {
+        secrets.redact_in_place(&mut content);
+    }
     actor.transcript.push(ChatMessage::Tool {
         tool_call_id: tool_call_id.to_string(),
         content,
@@ -1742,6 +1797,7 @@ mod tests {
         let mut actor = AgentActor::new(
             registry,
             ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: ws.clone(),
                 writable_roots: vec![ws],
@@ -3511,5 +3567,74 @@ mod tests {
         };
         assert_eq!(result.status, ToolStatus::Error);
         assert!(!target.exists());
+    }
+
+    fn with_secret(actor: &mut AgentActor, value: &str) {
+        let store = Arc::new(crate::secrets::SecretStore::in_memory());
+        let owner = ulid::Ulid::generate();
+        let ws = actor.tool_context.workspace.clone();
+        store
+            .put(
+                owner,
+                &ws,
+                "API_KEY",
+                value,
+                crate::secrets::SecretTtl::Day,
+                crate::secrets::SecretScope::Session,
+            )
+            .unwrap();
+        actor.tool_context.secrets = Some(crate::secrets::SecretAccess::new(store, owner, &ws));
+    }
+
+    #[test]
+    fn a_denial_carrying_a_secret_is_redacted() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        let call = ToolCall {
+            id: "d1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"echo"}),
+            args_valid: true,
+        };
+        let mut published = String::new();
+        deny_call(
+            &mut actor,
+            &call,
+            format!("no, use {VALUE}"),
+            serde_json::json!({}),
+            &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    published = serde_json::to_string(result).unwrap();
+                }
+            },
+        );
+        settle_rejected(&mut actor, &call, &[], Some(format!("again {VALUE}")));
+        assert!(published.contains("[secret API_KEY]"), "{published}");
+        let transcript = serde_json::to_string(&actor.transcript).unwrap();
+        assert!(!transcript.contains(VALUE), "{transcript}");
+        assert!(transcript.contains("[secret API_KEY]"));
+    }
+
+    #[tokio::test]
+    async fn tool_arguments_are_redacted_in_the_transcript() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "r1",
+                "read",
+                serde_json::json!({"path": format!("/nowhere/{VALUE}")}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        run_agent(&mut actor, &mut noop).await.unwrap();
+        let transcript = serde_json::to_string(&actor.transcript).unwrap();
+        assert!(!transcript.contains(VALUE), "{transcript}");
+        assert!(transcript.contains("[secret API_KEY]"), "{transcript}");
     }
 }

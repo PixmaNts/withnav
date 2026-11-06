@@ -14,6 +14,11 @@ pub enum ContentBlock {
     AskAnswer {
         answer: crate::tools::AskAnswer,
     },
+    /// Host-only answer to a secret request: metadata, never the value.
+    #[serde(skip)]
+    SecretAnswer {
+        note: crate::secrets::SecretNote,
+    },
     /// Captain-selected skill, resolved by admission before any message is accepted.
     Skill {
         name: String,

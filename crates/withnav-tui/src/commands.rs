@@ -58,6 +58,11 @@ pub const CATALOG: &[Command] = &[
         args_hint: "",
     },
     Command {
+        name: "/secrets",
+        description: "list secrets · /secrets revoke NAME removes one",
+        args_hint: "",
+    },
+    Command {
         name: "/help",
         description: "show keyboard shortcuts",
         args_hint: "",
@@ -301,6 +306,11 @@ fn local_action(name: &str, arguments: &str, mode: Mode) -> Local {
                 Action::SwitchModel(model_id)
             })
         }
+        "secrets" => match arguments.split_whitespace().collect::<Vec<_>>()[..] {
+            [] => Local::Run(Action::ListSecrets),
+            ["revoke", name] => Local::Run(Action::RevokeSecret(name.to_string())),
+            _ => Local::Refuse("usage: /secrets [revoke NAME]".into()),
+        },
         // With arguments, `/variant` is the server's; alone it opens the list.
         "variant" if has_args => Local::Server,
         _ => match command_action(&format!("/{name}"), mode) {
@@ -327,6 +337,7 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
         "/theme" => Action::OpenOverlay(Overlay::Themes),
         "/config" => Action::OpenConfig,
         "/help" => Action::OpenOverlay(Overlay::Help),
+        "/secrets" => Action::ListSecrets,
         "/quit" => Action::Quit,
         _ => return None,
     })

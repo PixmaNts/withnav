@@ -753,6 +753,11 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 _ => vec![],
             }
         }
+        Action::OpenSecret
+        | Action::SubmitSecret
+        | Action::DeclineSecret
+        | Action::ListSecrets
+        | Action::RevokeSecret(_) => secret_action(s, ui, a),
         Action::QuestionMove(_)
         | Action::QuestionToggle
         | Action::QuestionDismiss
@@ -991,4 +996,83 @@ fn confirm_child(
         ui.child_confirm = Some((parent.clone(), child.session_id.clone(), control));
     }
     vec![]
+}
+
+/// The secret prompt and `/secrets`. The value moves from the prompt into the effect that sends
+/// it, and the prompt is emptied in the same step.
+fn secret_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
+    if s.read_only() {
+        return vec![];
+    }
+    let Some(session_id) = s.session.as_ref().map(|m| m.session_id.clone()) else {
+        if matches!(a, Action::ListSecrets | Action::RevokeSecret(_)) {
+            push_local(s, BlockKind::Notice("secrets: no conversation yet".into()));
+        }
+        return vec![];
+    };
+    match a {
+        Action::OpenSecret => {
+            if let Some(p) = crate::secret::latest(s) {
+                let later = !p.is_open();
+                ui.secret_put_aside = None;
+                ui.secret_entry = Some(crate::secret::SecretEntry::for_prompt(p, later));
+            }
+            vec![]
+        }
+        Action::SubmitSecret => {
+            let Some(entry) = ui.secret_entry.as_mut() else {
+                return vec![];
+            };
+            if entry.value.is_empty() {
+                return vec![];
+            }
+            let value = std::mem::take(&mut entry.value);
+            entry.shown = false;
+            let call_id = entry.call_id.clone();
+            let submission = withnav_client_api::secrets::SecretSubmission {
+                name: entry.later.then(|| entry.name.clone()),
+                value: Some(value),
+                ttl: entry.ttl,
+                scope: entry.scope,
+                decline: false,
+            };
+            if entry.later {
+                ui.secret_entry = None;
+            }
+            mark_secret_sending(s, &call_id);
+            vec![Effect::SubmitSecret {
+                session_id,
+                call_id,
+                submission,
+            }]
+        }
+        Action::DeclineSecret => {
+            let Some(entry) = ui.secret_entry.take() else {
+                return vec![];
+            };
+            mark_secret_sending(s, &entry.call_id);
+            vec![Effect::SubmitSecret {
+                session_id,
+                call_id: entry.call_id,
+                submission: withnav_client_api::secrets::SecretSubmission {
+                    decline: true,
+                    ..Default::default()
+                },
+            }]
+        }
+        Action::ListSecrets => vec![Effect::ListSecrets(session_id)],
+        Action::RevokeSecret(name) => vec![Effect::RevokeSecret { session_id, name }],
+        _ => vec![],
+    }
+}
+
+fn mark_secret_sending(s: &mut State, call_id: &str) {
+    for block in &mut s.conversation.blocks {
+        if let BlockKind::Secret(p) = &mut block.kind
+            && p.call_id == call_id
+        {
+            p.sending = true;
+            p.error = None;
+        }
+    }
 }

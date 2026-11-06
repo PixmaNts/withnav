@@ -6,6 +6,7 @@ mod markdown;
 pub mod panel;
 mod permission;
 mod pickers;
+mod secret;
 pub(crate) mod selection;
 pub mod sidebar;
 pub(crate) mod status;
@@ -334,6 +335,9 @@ pub fn draw(
         frame.render_widget(Paragraph::new(Line::from(bar)), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);
+    if ui.overlay.is_none() {
+        secret::draw(frame, full, state, ui, &theme);
+    }
     if let Some((_, _, control)) = &ui.child_confirm {
         pickers::confirm_child(frame, full, state.agent_name(), *control, &theme);
     }

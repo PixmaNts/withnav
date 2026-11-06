@@ -8,7 +8,6 @@ expression: snapshot
                      │ │  Explain the failure, then fix it.                                         
                      │ │                                                                            
                      │ │ ◎ Nav                                                                      
-                     │ │ ▸ Reasoning                                                                
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
             │▌/config               edit settings in config.json                       │            
@@ -20,6 +19,7 @@ expression: snapshot
             │ /stop                 stop generation                                    │            
             │ /mode                 cycle delivery mode (steer and interrupt send as n │            
             │ /theme                choose the colour theme                            │            
+            │ /secrets              list secrets · /secrets revoke NAME removes one    │            
             │ /help                 show keyboard shortcuts                            │            
             │ /quit                 quit terminal client                               │            
             │                                                                          │            

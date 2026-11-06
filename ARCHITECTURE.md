@@ -21,7 +21,8 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
    ├─ agent/       the coding-agent loop (the cognition runs on it)
-   ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
+   ├─ tools/       nine registry tools: read, write, edit, grep, glob, fetch, bash, ask, request_secret; each session adds `skill`
+   ├─ secrets/     the Captain's secrets: store, bash environment, redaction
    ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
    └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
 
@@ -76,6 +77,7 @@ Dependencies point down this list. A module never imports one above it.
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `src/provider/mod.rs` re-exports the `withnav-provider` crate (the `models.json` catalogue in `config.rs`/`load_models`, `model_name.rs`, keys in `auth.rs`, `ModelClient` in `client.rs`, the chat SSE decoder, the FIM and System One clients, the provider errors) at its old paths, and adds `provider::assignments` and `provider::layers`, which live in `src/assignments.rs` and `src/layers.rs` because they read `config.json`: pure assignment resolution and the lower-layer clients built from it | the wire clients themselves, which are in `crates/withnav-provider/` |
+| `secrets/` | the Captain's secrets (`SecretStore`: session-scoped in memory, workspace-scoped also in `<data dir>/credentials/secrets.json`, 0600, plain text, with expiry), reserved names, the per-tree `SecretAccess` a `ToolContext` carries (the `bash` environment, `[secret NAME]` redaction of exact values of 8+ characters), the metadata texts the model reads (`file.rs`: the atomic private file) | the answer route (`session/secrets.rs`), the tool (`tools/secret.rs`) |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens the bound write/edit destination without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
@@ -345,6 +347,23 @@ place), nothing is written and the call goes through the decision again. The bin
 pathname, not the inode: a regular file swapped in at the same path is written. A stop or a chat message cancels the request; a resume expires every request that has no
 `permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`.
 
+**Secret request to answer.** `request_secret` (`tools/secret.rs`, never in a child or read-only
+registry) is a human call like `ask`: a valid call makes `classify_with` yield
+(`PendingInteraction::Ask`, `agent.yield` kind `secret`, `question_call_id` the request id,
+`details` = `SecretRequestDetails`); an invalid one is refused by `run_calls` without a decision.
+`POST /v1/sessions/{id}/secrets/{request_id}` reaches `Service::submit_secret`
+(`session/secrets.rs`), which, under the question gate and only while
+`RuntimeStatus::pending_secret` still names that request, stores the value in the service's
+`SecretStore` (or not, for a decline) and routes a Captain command whose text is metadata only
+(`stored as $NAME …` / `declined by the Captain`) and whose host-only `ContentBlock::SecretAnswer`
+becomes `message.received.secret`: the value never enters a command, an event or the transcript.
+A settled request takes a value with its `name` (a note is routed when the name is new and no
+other question waits). Each actor's `ToolContext.secrets` is the `SecretAccess` of its tree's root
+(`Service::secret_owner`): `bash` adds `environment()` to the child's environment; the loop redacts
+each dispatched tool result (output and metadata), the model's response and streamed deltas, the
+request history, and `push_user`; `Service::send` redacts Captain text before `message.received`.
+A root's `session`-long secrets end with `close_session`. MCP servers are service-wide and get none.
+
 **Bypass.** `BypassState {enabled, seq}` is the actor's ephemeral setting, shared with `RuntimeStatus`;
 only `Control::Bypass` changes it, after the `session.bypass` event is durable (`commit_acked`), in the
 idle and the running select alike. The decision reads it as its control level: a call that no `deny`
@@ -549,6 +568,7 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
+| `~/.local/share/withnav/credentials/secrets.json` | workspace-scoped secrets with a timed availability, in plain text, mode 0600 (directory 0700), each with its expiry; removed when empty | `secrets/` (`Service::submit_secret`, expiry, revocation) |
 
 Data and config paths come from `paths.rs` and `withnav-provider`'s `dirs.rs` (`config_dir`, `data_dir`, with `auth::default_config_dir`). On every start `paths::migrate_legacy`
 (`paths/migrate.rs`) moves what the former names left behind to the WithNav dirs: `~/.local/share/navigator/*`
@@ -720,6 +740,10 @@ the later 0.6 scope, not this contract.
   runtime swap the actor's provider, model, variant and limits. `AgentActor::reasoning_floor`
   (restored on resume) keeps the earlier reasoning out of the request projection unless the resolved
   identity is the same; the fit check measures that destination projection (`context_breakdown_at`).
+- Anything that must not show a secret's value goes through `secrets::SecretAccess`
+  (`redact_in_place`, `redact_json`, `redact_message`), reached from `ToolContext.secrets`; a new
+  process the agent starts gets `SecretAccess::environment()`. A value travels only in
+  `SecretSubmission` (whose `Debug` hides it), from the client to `session/secrets.rs`.
 - A helper you need probably exists. Look first in: `withnav-provider`'s `client.rs` (any HTTP call to a
   model) and `config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and

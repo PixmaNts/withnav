@@ -79,6 +79,11 @@ export interface McpResourceBody {
   blob?: string | null;
 }
 
+/** A stored image, by reference; the host fetches its bytes on demand. */
+export interface ImageRef { attachment_id: string; media_type?: string; name?: string; size?: number; width?: number; height?: number }
+/** An image the Captain pasted or dropped, base64 without the `data:` prefix, not yet uploaded. */
+export interface PendingImage { name: string; data: string }
+
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number; tab?: string } & (
   /** The open conversation tabs, in order; `active` is the focused one. Not tab-scoped. */
@@ -95,7 +100,9 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   /** A message already complete when shown (the Captain's own, or a Nav wake).
    *  `context` is the chip label of the editor context attached to a Captain message;
    *  `text` then holds the Captain's own text only, without the raw block. */
-   | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer; secret?: SecretNote }
+   | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer; secret?: SecretNote; images?: ImageRef[] }
+  /** The bytes of one stored image as a `data:` URL, or no `url` when it cannot be read. */
+  | { type: "imageData"; attachmentId: string; url?: string }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
   | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false }
@@ -115,7 +122,7 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
   | { type: "reasoning"; id: string; stepId?: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */
-  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown> }
+  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown>; images?: ImageRef[] }
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the Captain a question and waits for the next message as the answer. */
@@ -206,7 +213,9 @@ export type WebviewToHost = { generation?: number; tab?: string } & (
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
   /** The Captain sends a message to the cognition; the host appends the editor context when asked. */
-  | { type: "send"; text: string; includeContext?: boolean }
+  | { type: "send"; text: string; includeContext?: boolean; images?: PendingImage[] }
+  | { type: "loadImage"; attachmentId: string }
+  | { type: "openImage"; attachmentId: string; name: string }
   /** The Captain interrupts the current turn. */
   | { type: "stop" }
    | { type: "answerPermission"; sessionId: string; requestId: string; decision: PermissionDecision; message?: string }
@@ -276,7 +285,8 @@ export interface ChatBackend {
   /** Subscribe to live messages; returns an unsubscribe function. */
   subscribe(listener: (message: HostToWebview) => void): () => void;
   /** `context` is an editor-context block appended after the Captain's text. */
-  send(text: string, context?: string, operation?: ComposerOperation): Promise<void>;
+  send(text: string, context?: string, operation?: ComposerOperation, images?: PendingImage[]): Promise<void>;
+  imageDataUrl(attachmentId: string): Promise<string | undefined>;
   stop(): Promise<void>;
   hasOpenPermissions(): boolean;
   answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation?: number): Promise<void>;

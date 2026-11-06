@@ -23,6 +23,8 @@ const workspaceName = (): { workspace?: string } => (vscode.workspace.name ? { w
 import { buildEditorContext, presentMessage } from "./editorContext";
 import { routeComposer } from "./commands";
 import { openFile } from "./reveal";
+import { showImage } from "./imagePanel";
+
 
 const CONTEXT_DEBOUNCE_MS = 200;
 /** `globalState` key of the favorite model names; the terminal client keeps its own list. */
@@ -217,18 +219,32 @@ export function registerChatView(
         if (!tab || !backend || message.generation !== backend.currentGeneration()) return;
         const post = (reply: HostToWebview): void => postTab(tab, reply);
         switch (message.type) {
+          case "loadImage":
+            if (typeof message.attachmentId === "string") {
+              const attachmentId = message.attachmentId;
+              void backend.imageDataUrl(attachmentId).catch(() => undefined).then(url => post({ type: "imageData", attachmentId, url }));
+            }
+            break;
+          case "openImage":
+            if (typeof message.attachmentId === "string") {
+              const { attachmentId, name } = message;
+              void backend.imageDataUrl(attachmentId).then(url => url ? showImage(String(name || "image"), url) : void vscode.window.showWarningMessage("This image is no longer available."), showError);
+            }
+            break;
           case "toggleBypass":
             void backend.toggleBypassPermissions().catch(showError);
             break;
           case "send":
             if (backend.isReadOnly()) break;
-            if (typeof message.text === "string" && message.text.trim()) {
+            if (typeof message.text === "string" && (message.text.trim() || message.images?.length)) {
+              const images = (message.images ?? []).slice(0, 8);
               const operation = backend.captureOperation();
               void (async () => {
                 const session = backend.currentConversationId();
                  const generation = backend.currentGeneration();
                  // Route before confirmation and, crucially, before reading editor content.
                  const route = routeComposer(message.text);
+                 if (images.length && route.kind === "command") throw new Error("Images go with a message, not with a command.");
                  if (route.kind === "command" && route.name !== "skill") {
                    return await backend.runComposerCommand(message.text, generation, operation);
                  }
@@ -242,7 +258,7 @@ export function registerChatView(
                  if (route.kind === "command") return await backend.runComposerCommand(message.text, generation, operation);
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
                  const routed = routeComposer(message.text);
-                 if (routed.kind === "message") await backend.send(routed.text, context, operation);
+                 if (routed.kind === "message") await backend.send(routed.text, context, operation, images);
                 return true;
                })().then(accepted => {
                  // /new deliberately changes identity. Its reset already released the composer;

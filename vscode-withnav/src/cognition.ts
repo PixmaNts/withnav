@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { ContextSnapshot, parseContext } from "./contextMeter";
-import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
-import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
+import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
+import { ConversationControls, eventView, imageRefs, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 import { CLIENT_COMMANDS, routeComposer } from "./commands";
 import type { CommandInfo } from "./chatProtocol";
@@ -684,19 +684,42 @@ export class CognitionBackend implements ChatBackend {
     await this.listConversations();
   }
 
-  async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
+  async send(text: string, context?: string, operation?: ComposerOperation, images: PendingImage[] = []): Promise<void> {
     if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent.");
     // The Captain's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
     const { session, generation } = await this.ensureSession(operation);
     this.checkGeneration(generation);
+    // Each image is stored first; the message then names it by id.
+    const stored: { type: "image"; attachment_id: string }[] = [];
+    for (const image of images) {
+      const ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(image.name || "image")}`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: Buffer.from(image.data, "base64"),
+      });
+      stored.push({ type: "image", attachment_id: String(ref?.attachment_id) });
+    }
+    const body = context ? `${text}\n\n${context}` : text;
     await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, {
       method: "POST",
       body: JSON.stringify({
         target_actor_id: ROOT_ACTOR,
-        content: [{ type: "text", text: context ? `${text}\n\n${context}` : text }],
+        content: [...(body.trim() ? [{ type: "text", text: body }] : []), ...stored],
       }),
     });
+  }
+
+  /** One stored image of the conversation shown now, as a `data:` URL; undefined when unreadable. */
+  async imageDataUrl(attachmentId: string): Promise<string | undefined> {
+    const session = this.currentConversationId();
+    if (!session || !this.endpoint) return undefined;
+    const response = await fetch(`http://127.0.0.1:${this.endpoint.port}/v1/sessions/${encodeURIComponent(session)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      headers: { authorization: `Bearer ${this.endpoint.token}` },
+    }).catch(() => undefined);
+    const type = response?.headers.get("content-type") ?? "";
+    if (!response?.ok || !type.startsWith("image/")) return undefined;
+    return `data:${type};base64,${Buffer.from(await response.arrayBuffer()).toString("base64")}`;
   }
 
   async stop(): Promise<void> { if (this.isReadOnly()) throw new Error("Use the confirmed subagent Stop control."); await this.stopState(this.state); }
@@ -1677,6 +1700,7 @@ export class CognitionBackend implements ChatBackend {
           summary: shown,
           ok: payload.status === "ok",
           evidence,
+          images: imageRefs(payload.metadata?.images),
         };
         if (mcpMedia) toolEvent.mcpMedia = mcpMedia;
         if (mcpUi) {

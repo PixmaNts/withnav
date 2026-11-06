@@ -85,6 +85,11 @@ commit, and stops a corrupt conversation from overwriting its stored history.
   reduced to a size note. They are stored with the session's other images (at most four per call)
   and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
   into a PNG first; it may not load external files or declare a DTD.
+- Images in the browser client and the VS Code extension: paste or drop images into the message
+  (the browser also has an attach button; at most eight per message, a message may be images only).
+  The Captain's images and those returned by tools show as thumbnails in the conversation, also
+  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
+  in an editor panel beside the VS Code chat.
 
 ## [0.8.1] - 2026-10-16
 

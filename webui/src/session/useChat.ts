@@ -147,7 +147,7 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   }, [sessionId, workspace, refreshSummary]);
 
   const send = useCallback(
-    async (content: ContentBlock[]): Promise<boolean> => {
+    async (content: ContentBlock[], files: File[] = []): Promise<boolean> => {
       if (!workspace) return false;
       setBusy(true);
       const ok = await withErrors(async () => {
@@ -163,7 +163,9 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
           setDraft({ agent: null, model: null, variant: undefined });
           onCreated(id);
         } else await ensureLive();
-        await api.send(id, content);
+        const images: ContentBlock[] = [];
+        for (const file of files) images.push({ type: "image", attachment_id: (await api.upload(id, file)).attachment_id });
+        await api.send(id, [...content, ...images]);
         void qc.invalidateQueries({ queryKey: keys.sessions(workspace) });
         return true;
       });

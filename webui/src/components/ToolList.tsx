@@ -5,6 +5,14 @@ import type { McpAppDescriptor, McpMediaItem, McpUiMeta } from "../api/types";
 import type { Child, ToolCall } from "../session/reducer";
 import { toolLine } from "../session/toolText";
 import { Spinner } from "./Spinner";
+import { Thumbnails } from "./Images";
+import type { ImageRef } from "../api/types";
+
+/** The images a tool returned, as the server stored them (`metadata.images`). */
+function toolImages(call: ToolCall): ImageRef[] {
+  const images = call.metadata?.images;
+  return Array.isArray(images) ? images.filter((i): i is ImageRef => typeof i?.attachment_id === "string") : [];
+}
 
 function StatusMark({ call }: { call: ToolCall }) {
   if (call.status === "running") return <Spinner />;
@@ -153,6 +161,7 @@ export function ToolList({
               </div>
             )}
             {expanded && <pre className="tool-out">{call.output}</pre>}
+            <Thumbnails images={toolImages(call)} />
           </div>
         );
       })}

@@ -9,6 +9,7 @@ import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./QuestionCard";
 import { SecretCard, type SecretActions } from "./SecretCard";
 import { ToolList } from "./ToolList";
+import { Thumbnails } from "./Images";
 
 type Answer = (requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) => Promise<void>;
 
@@ -67,7 +68,8 @@ function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, 
             <Crew id="captain" />{delegated ? " · Delegation" : ""}
             {item.skill ? ` · skill ${item.skill}` : ""}
           </div>
-          <Markdown text={text} />
+          {text && <Markdown text={text} />}
+          {item.images && <Thumbnails images={item.images} />}
         </div>
       );
     }

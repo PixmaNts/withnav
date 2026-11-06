@@ -66,7 +66,7 @@
 //! - `POST /v1/sessions/:id/attachments?name=<file name>` raw image bytes -> the stored `ImageRef`
 //!   `{attachment_id, media_type, name, size, width, height}`. PNG, JPEG, GIF and WebP are
 //!   identified from the bytes (name and `Content-Type` are ignored), at most 3.75 MiB and 8000 px a
-//!   side, 64 per session. Errors keep the `{"error", "reason"}` shape: 404 `unknown_session`,
+//!   side, 64 per session. An SVG is stored as its PNG rendering. Errors keep the `{"error", "reason"}` shape: 404 `unknown_session`,
 //!   413 `too_large`, 415 `unsupported_type`, 400 `invalid_image`/`too_wide`, 409 `quota`,
 //!   503 `attachments_unavailable`.
 //! - `GET /v1/sessions/:id/attachments/:attachment_id` -> the bytes with the stored `Content-Type`,

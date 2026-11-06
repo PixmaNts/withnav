@@ -19,6 +19,16 @@ function env(kind: string, payload: object, at = "2026-10-06T10:00:00.000Z"): En
 const turns = (items: ReturnType<typeof emptyView>["items"]) => items.filter((i): i is Turn => i.kind === "turn");
 
 describe("transcript projection", () => {
+  it("keeps the image references of a Captain message and of a tool result, never bytes", () => {
+    const image = { attachment_id: "A1", media_type: "image/png", name: "shot.png", size: 10, width: 2, height: 2 };
+    const view = reduceAll(emptyView(), [
+      env("message.received", { source: "user:http", content: "", images: [image, { name: "no id" }] }),
+      env("tool.post_call", { tool_call_id: "r1", name: "read", status: "ok", output: "shot.png is an image", metadata: { images: [image] } }),
+    ]);
+    const captain = view.items[0];
+    expect(captain?.kind === "captain" && captain.images).toEqual([image]);
+    expect(view.tools.r1?.metadata.images).toEqual([image]);
+  });
   it("renders stored legacy instinct approvals with the layer name", () => {
     const view = reduceAll(emptyView(), fixture("write-file.sse"));
     expect(toolLine(Object.values(view.tools).find((call) => call.name === "write")!).meta).toContain("auto · instinct");

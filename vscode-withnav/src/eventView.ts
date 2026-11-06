@@ -1,4 +1,35 @@
-import type { HostToWebview, PermissionCard, PermissionEvidence, PauseToken } from "./chatProtocol";
+import type { HostToWebview, PermissionCard, PermissionEvidence, PauseToken, SecretInfo, SecretNote, SecretRequest, SecretScope, SecretTtl } from "./chatProtocol";
+
+const TTLS: readonly SecretTtl[] = ["1h", "24h", "session"];
+const SCOPES: readonly SecretScope[] = ["session", "workspace"];
+const ttl = (value: unknown): SecretTtl | undefined => TTLS.includes(value as SecretTtl) ? value as SecretTtl : undefined;
+const scope = (value: unknown): SecretScope | undefined => SCOPES.includes(value as SecretScope) ? value as SecretScope : undefined;
+
+/** The `details` of a secret `agent.yield`, when well formed. */
+export function secretRequest(details: any): SecretRequest | undefined {
+  if (typeof details?.name !== "string" || typeof details.label !== "string" || typeof details.reason !== "string") return undefined;
+  return { name: details.name, label: details.label, reason: details.reason,
+    defaultTtl: ttl(details.default_ttl) ?? "24h", defaultScope: scope(details.default_scope) ?? "session" };
+}
+
+/** The `secret` of a `message.received`, when well formed. */
+export function secretNote(value: any): SecretNote | undefined {
+  if (typeof value?.name !== "string" || !["stored", "declined"].includes(value.outcome)) return undefined;
+  return { name: value.name, outcome: value.outcome,
+    ...(typeof value.request_id === "string" ? { requestId: value.request_id } : {}),
+    ...(scope(value.scope) ? { scope: scope(value.scope) } : {}),
+    ...(ttl(value.ttl) ? { ttl: ttl(value.ttl) } : {}),
+    ...(typeof value.expires_at === "string" ? { expiresAt: value.expires_at } : {}) };
+}
+
+/** One row of `GET /v1/sessions/{id}/secrets` (or the `secret` of a submit answer). */
+export function secretInfo(value: any): SecretInfo | undefined {
+  if (typeof value?.name !== "string" || !scope(value.scope) || !ttl(value.ttl)) return undefined;
+  return { name: value.name, scope: scope(value.scope)!, ttl: ttl(value.ttl)!,
+    ...(typeof value.expires_at === "string" ? { expiresAt: value.expires_at } : {}),
+    createdAt: String(value.created_at ?? ""), useCount: Number(value.use_count ?? 0),
+    last4: typeof value.last4 === "string" ? value.last4.slice(-4) : "" };
+}
 
 /** Network-free projection shared by live SSE and durable replay. */
 export interface WireEnvelope { seq: number; kind: string; payload: any }
@@ -108,8 +139,9 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         : source === "nav" || source.startsWith("nav:") || source === "navigator" || source.startsWith("navigator:") ? "navigator" : "subagent";
       const selectedSkill = author === "captain" && typeof p.selected_skill?.name === "string"
         ? { name: p.selected_skill.name, origin: String(p.selected_skill.origin ?? "") } : undefined;
+      const secret = author === "captain" ? secretNote(p.secret) : undefined;
       return { type: "message", id: String(p.command_id ?? envelope.seq), author, source,
-         text: String(p.content ?? ""), selectedSkill, answer: author === "captain" ? p.answer : undefined };
+         text: String(p.content ?? ""), selectedSkill, answer: author === "captain" ? p.answer : undefined, ...(secret ? { secret } : {}) };
     }
     case "permission.requested": {
       if (typeof p.request_id !== "string") return undefined;
@@ -138,7 +170,8 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
       if (p.kind === "budget") return { type: "pause", id, kind: "budget", text: "Out of steps", token };
       if (p.kind === "watchdog") return { type: "pause", id, kind: "watchdog",
         text: `Paused by the watchdog: ${String(p.question ?? p.details?.reason ?? "")}`, token };
-       return { type: "question", id: String(p.turn_id ?? currentTurn ?? envelope.seq), text: String(p.question ?? ""), ...(p.question_call_id ? { questionCallId: p.question_call_id } : {}), ...(p.choices ? { choices: p.choices } : {}) };
+      const secret = p.kind === "secret" && p.question_call_id ? secretRequest(p.details) : undefined;
+       return { type: "question", id: String(p.turn_id ?? currentTurn ?? envelope.seq), text: String(p.question ?? ""), ...(p.question_call_id ? { questionCallId: p.question_call_id } : {}), ...(p.choices ? { choices: p.choices } : {}), ...(secret ? { secret } : {}) };
     }
     case "command.result":
       if (p.name === "watchdog") return { type: "notice", text: String(p.data?.message ?? "Watchdog notice") };

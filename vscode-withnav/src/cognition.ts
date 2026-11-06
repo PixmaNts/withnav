@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { ContextSnapshot, parseContext } from "./contextMeter";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
-import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, WireEnvelope } from "./eventView";
+import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 import { CLIENT_COMMANDS, routeComposer } from "./commands";
 import type { CommandInfo } from "./chatProtocol";
@@ -739,6 +739,82 @@ export class CognitionBackend implements ChatBackend {
     } catch (error) {
       origin.pendingControls.delete(`${sessionId}:question:${answer?.question_call_id}`);
       this.emitForState(origin, { type: "questionState", questionCallId: answer?.question_call_id, error: this.errorText(error) });
+    }
+  }
+
+  /** The secret request `requestId` of the open conversation, while it still waits. */
+  private waitingSecret(origin: ConversationState, sessionId: string, requestId: string): import("./chatProtocol").SecretRequest | undefined {
+    if (this.isReadOnly() || sessionId !== origin.session) return undefined;
+    const question = origin.transcript.find(message => message.type === "question" && message.questionCallId === requestId && message.secret);
+    const settled = origin.transcript.some(message => message.type === "message" && message.secret?.requestId === requestId);
+    return question?.type === "question" && !settled ? question.secret : undefined;
+  }
+
+  /**
+   * Sends the Captain's secret to its dedicated endpoint. `value` is used for this one request
+   * and kept nowhere: not in the transcript, not in a message, not in an error.
+   */
+  async submitSecret(sessionId: string, requestId: string, name: string, value: string, ttl: import("./chatProtocol").SecretTtl, scope: import("./chatProtocol").SecretScope, generation = this.state.streamGeneration): Promise<void> {
+    const origin = this.state;
+    try {
+      this.checkGeneration(generation);
+      if (this.isReadOnly() || sessionId !== origin.session) throw new Error("This secret request does not belong to the open conversation.");
+      if (!value) throw new Error("Enter a value first.");
+      const waiting = this.waitingSecret(origin, sessionId, requestId);
+      const body = waiting ? { value, ttl, scope } : { name, value, ttl, scope };
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/secrets/${encodeURIComponent(requestId)}`, {
+        method: "POST", body: JSON.stringify(body),
+      }, "operation");
+      const secret = secretInfo(result?.secret);
+      this.emitForState(origin, { type: "secretState", requestId, name, state: "saved", ...(secret ? { secret } : {}) });
+    } catch (error) {
+      // The server's error text never quotes a value; ours names the secret only.
+      this.emitForState(origin, { type: "secretState", requestId, name, state: "error", message: `Could not save ${name}: ${this.errorText(error)}` });
+    }
+  }
+
+  async declineSecret(sessionId: string, requestId: string, generation = this.state.streamGeneration): Promise<void> {
+    const origin = this.state;
+    const name = this.waitingSecret(origin, sessionId, requestId)?.name ?? "";
+    try {
+      this.checkGeneration(generation);
+      if (!name) throw new Error("This secret request is no longer waiting.");
+      await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/secrets/${encodeURIComponent(requestId)}`, {
+        method: "POST", body: JSON.stringify({ decline: true }),
+      }, "operation");
+    } catch (error) {
+      this.emitForState(origin, { type: "secretState", requestId, name, state: "error", message: this.errorText(error) });
+    }
+  }
+
+  async listSecrets(sessionId: string, generation = this.state.streamGeneration): Promise<void> {
+    const origin = this.state;
+    try {
+      this.checkGeneration(generation);
+      if (sessionId !== origin.session) return;
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/secrets`, { method: "GET" }, "operation");
+      const items = Array.isArray(result?.secrets) ? result.secrets.map(secretInfo).filter((item: unknown) => item !== undefined) : [];
+      this.emitForState(origin, { type: "secrets", items });
+    } catch (error) {
+      this.emitForState(origin, { type: "secrets", items: [], error: this.errorText(error) });
+    }
+  }
+
+  async revokeSecret(sessionId: string, name: string, requestId?: string, generation = this.state.streamGeneration): Promise<void> {
+    const origin = this.state;
+    try {
+      this.checkGeneration(generation);
+      if (this.isReadOnly() || sessionId !== origin.session) throw new Error("This secret does not belong to the open conversation.");
+      try {
+        await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/secrets/${encodeURIComponent(name)}`, { method: "DELETE" }, "operation");
+      } catch (error) {
+        // Already gone (expired, revoked elsewhere): the outcome the Captain wanted.
+        if (!(error instanceof HttpError && error.status === 404)) throw error;
+      }
+      this.emitForState(origin, { type: "secretState", requestId: requestId ?? "", name, state: "revoked" });
+      await this.listSecrets(sessionId, generation);
+    } catch (error) {
+      this.emitForState(origin, { type: "secretState", requestId: requestId ?? "", name, state: "error", message: this.errorText(error) });
     }
   }
 
@@ -1514,6 +1590,7 @@ export class CognitionBackend implements ChatBackend {
       this.emit(projected);
       return { type: "pauseState", id: projected.id, state: "resolved", message: "Ended with the previous run" };
     }
+    if (projected?.type === "question" && projected.secret) return { ...projected, agent: this.state.agent };
     if (projected) return projected;
     switch (envelope.kind) {
       case "context.updated":
@@ -1635,6 +1712,7 @@ export class CognitionBackend implements ChatBackend {
       message.type === "conversations" ||
       message.type === "conversationOpened" ||
       message.type === "models" ||
+      message.type === "secrets" ||
       message.type === "usage";
     if (message.type === "sendResult") {
       for (const listener of this.listeners) listener(message);

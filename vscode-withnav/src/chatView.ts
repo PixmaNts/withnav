@@ -264,6 +264,28 @@ export function registerChatView(
               void backend.answerQuestion(message.sessionId, message.answer, message.generation).catch(showError);
             }
             break;
+          // The value travels only from here to the backend's dedicated request: never logged,
+          // never put in a notice or an error (an error names the secret, not its value).
+          case "submitSecret":
+            if (typeof message.sessionId === "string" && typeof message.requestId === "string" && typeof message.name === "string" &&
+                typeof message.value === "string" && ["1h", "24h", "session"].includes(message.ttl) && ["session", "workspace"].includes(message.scope)) {
+              void backend.submitSecret(message.sessionId, message.requestId, message.name, message.value, message.ttl, message.scope, message.generation)
+                .catch(() => showError(new Error(`Could not save the secret ${message.name}.`)));
+            }
+            break;
+          case "declineSecret":
+            if (typeof message.sessionId === "string" && typeof message.requestId === "string") {
+              void backend.declineSecret(message.sessionId, message.requestId, message.generation).catch(showError);
+            }
+            break;
+          case "listSecrets":
+            if (typeof message.sessionId === "string") void backend.listSecrets(message.sessionId, message.generation).catch(showError);
+            break;
+          case "revokeSecret":
+            if (typeof message.sessionId === "string" && typeof message.name === "string") {
+              void backend.revokeSecret(message.sessionId, message.name, message.requestId, message.generation).catch(showError);
+            }
+            break;
           case "controlPause":
             if (typeof message.sessionId === "string" && typeof message.id === "string" &&
                 ["continue", "stop"].includes(message.action)) {

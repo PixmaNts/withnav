@@ -167,7 +167,9 @@ export function createSecretCard(requestId: string, request: SecretRequest, agen
   });
   const save = button("control-primary secret-save", "Save", () => submit());
   actions.append(decline, save);
-  form.append(field, options, note, actions);
+  const short = el("p", "secret-short", "Shorter than 8 characters: it is not hidden if it shows up in a command's output.");
+  short.hidden = true;
+  form.append(field, options, note, short, actions);
 
   const result = el("div", "secret-result");
   const outcome = el("div", "control-outcome");
@@ -203,6 +205,7 @@ export function createSecretCard(requestId: string, request: SecretRequest, agen
 
   function refresh(): void {
     save.disabled = env.readOnly() || !input.value;
+    short.hidden = !input.value || [...input.value].length >= 8;
   }
 
   function scheduleExpiry(): void {

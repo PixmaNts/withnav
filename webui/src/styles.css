@@ -1955,6 +1955,7 @@ a:hover {
 .secret-card .secret-status { margin-left: auto; font-size: 12px; color: var(--mu); white-space: nowrap; }
 .secret-card[data-state="pending"] .secret-status { color: var(--ac); }
 .secret-reason, .secret-note { color: var(--mu); font-size: 12px; }
+.secret-short { color: var(--or); font-size: 12px; }
 .secret-field { display: flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px; border: 1px solid var(--bd); border-radius: 4px; background: var(--bg); }
 .secret-field:focus-within { outline: 2px solid var(--ac); outline-offset: 1px; }
 .secret-field input { flex: 1; min-width: 0; padding: 6px 0; border: 0; outline: none; background: none; color: inherit; font-size: 12.5px; }

@@ -95,3 +95,16 @@ it("declines, offers Provide anyway, and the header list revokes", async () => {
   expect(onRevoke).toHaveBeenCalledWith("API_KEY");
   await act(async () => root.unmount());
 });
+
+it("a list older than the stored note does not read as a revocation", async () => {
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  const stale = actions({ list: [] });
+  const stored: Question = { ...question, secretNote: { requestId: "sec_1", name: "API_KEY", outcome: "stored", scope: "session", ttl: "1h", expiresAt: new Date(Date.now() + 3_600_000).toISOString() } };
+  await act(async () => root.render(<SecretCard question={stored} actions={stale} />));
+  expect(host.querySelector(".secret-card")!.getAttribute("data-state")).toBe("saved");
+  // A list fetched afterwards without the name: the secret went.
+  await act(async () => root.render(<SecretCard question={stored} actions={{ ...stale, list: [] }} />));
+  expect(host.querySelector(".secret-card")!.getAttribute("data-state")).toBe("revoked");
+  await act(async () => root.unmount());
+});

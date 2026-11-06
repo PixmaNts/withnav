@@ -137,6 +137,14 @@ impl Service {
             return Err(ServerError::SecretStale);
         }
         let name = submission.name.clone().ok_or(ServerError::SecretStale)?;
+        if let Some(details) = handle.status.waiting_secret(request_id)
+            && details.name != name
+        {
+            return Err(ServerError::MalformedBody(format!(
+                "the request is for {}, not {name}",
+                details.name
+            )));
+        }
         let replaced = self
             .secrets
             .list(owner, &handle.workspace)

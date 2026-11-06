@@ -680,6 +680,7 @@ code { padding: 1px 5px; border-radius: 4px; background: var(--vscode-textPrefor
 .secret-seg-btn.selected { background: var(--vscode-button-secondaryBackground, var(--nav-soft)); color: var(--vscode-button-secondaryForeground, var(--nav-fg)); }
 .secret-seg-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
 .secret-note { margin: 8px 0 0; font-size: 0.857rem; color: var(--nav-muted); }
+.secret-short { margin: 4px 0 0; font-size: 0.857rem; color: var(--vscode-editorWarning-foreground, var(--nav-muted)); }
 .secret-decline.control-secondary { border-color: var(--nav-border); background: none; color: var(--nav-fg); }
 .secret-saved { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .secret-masked { font-family: var(--nav-mono); }

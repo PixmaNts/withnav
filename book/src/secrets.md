@@ -42,6 +42,17 @@ secret is removed from it, and the file is deleted when it holds none. WithNav d
 operating system's keychain. Because the path contains `credentials`, a tool call that names it
 asks you, as for any other credential file.
 
+If the file cannot be written (read-only data folder, full disk), saving a workspace secret
+fails with that reason: the card shows the error, and the value is kept in memory only, until
+WithNav stops. A file WithNav cannot read (damaged, unknown version) is left untouched at start-up,
+and nothing from it is loaded. Two WithNav servers using the same data folder each rewrite the
+whole file: the last one to save wins. How many commands received a secret is counted in memory
+and reaches the file with the next save, so a count can be lower after a restart.
+
+A session secret can have the same name as a workspace one: the conversation then sees the
+session secret. Revoking that name removes the session secret only, and the workspace one
+becomes visible again; revoke a second time to remove it too.
+
 The value is never written to the conversation history, the events clients receive, the decision
 log or the model's requests. Expiry is checked by the server: an expired secret is no longer given
 to commands or listed.
@@ -55,7 +66,7 @@ few more) are refused.
 Before any text reaches the model, the history or a client, every stored value of 8 characters or
 more is replaced by `[secret NAME]`: tool output (`echo $OPENAI_API_KEY` shows
 `[secret OPENAI_API_KEY]`), what Nav writes, and your own messages if you paste the value. Shorter
-values are stored and given to commands but not redacted, so that ordinary words are not replaced.
+values are stored and given to commands but not redacted, so that ordinary words are not replaced; the card warns you when the value you type is that short.
 A revoked or expired value is no longer redacted.
 
 ## What this does not protect against

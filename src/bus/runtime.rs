@@ -231,6 +231,14 @@ impl RuntimeStatus {
         {
             return None;
         }
+        self.waiting_secret(request_id)
+    }
+
+    /// The secret request `request_id` while the actor waits on it, queued answer or not.
+    pub(crate) fn waiting_secret(
+        &self,
+        request_id: &str,
+    ) -> Option<crate::secrets::SecretRequestDetails> {
         let pending = self
             .pending_question
             .lock()

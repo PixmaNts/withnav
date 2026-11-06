@@ -302,3 +302,93 @@ fn model_texts_carry_metadata_only() {
     assert!(!text.contains("cdef"));
     assert!(declined_text("API_KEY").starts_with("declined by the Captain"));
 }
+
+#[test]
+fn revoke_removes_the_session_secret_and_uncovers_the_workspace_one() {
+    let store = SecretStore::in_memory();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    for (value, scope) in [
+        ("workspace-value", SecretScope::Workspace),
+        ("session-value-1", SecretScope::Session),
+    ] {
+        store
+            .put(owner, ws.path(), "API_KEY", value, SecretTtl::Day, scope)
+            .unwrap();
+    }
+    assert!(store.revoke(owner, ws.path(), "API_KEY"));
+    assert_eq!(
+        store.environment(owner, ws.path()),
+        vec![("API_KEY".to_owned(), "workspace-value".to_owned())],
+        "only the secret the conversation saw went"
+    );
+    assert!(store.revoke(owner, ws.path(), "API_KEY"));
+    assert!(store.environment(owner, ws.path()).is_empty());
+}
+
+#[test]
+fn an_unreadable_secrets_file_survives_the_start() {
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("credentials").join("secrets.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{ not json").unwrap();
+    let store = SecretStore::open(data.path());
+    assert!(store.list(Ulid::generate(), data.path()).is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+}
+
+#[test]
+fn using_a_secret_does_not_rewrite_the_file() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    store
+        .put(
+            owner,
+            ws.path(),
+            "API_KEY",
+            VALUE,
+            SecretTtl::Day,
+            SecretScope::Workspace,
+        )
+        .unwrap();
+    let path = store.file().unwrap().to_path_buf();
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(store.environment(owner, ws.path()).len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[test]
+fn a_workspace_secret_that_cannot_be_saved_is_reported() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    // A file where the directory should be: the save cannot create it.
+    std::fs::write(data.path().join("credentials"), "").unwrap();
+    let store = SecretStore::open(data.path());
+    let owner = Ulid::generate();
+    let error = store
+        .put(
+            owner,
+            ws.path(),
+            "API_KEY",
+            VALUE,
+            SecretTtl::Day,
+            SecretScope::Workspace,
+        )
+        .unwrap_err();
+    assert!(matches!(error, SecretError::NotSaved(_)));
+    assert!(
+        store
+            .put(
+                owner,
+                ws.path(),
+                "S_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session
+            )
+            .is_ok(),
+        "a secret that is never saved does not care"
+    );
+}

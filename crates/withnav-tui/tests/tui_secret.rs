@@ -269,3 +269,22 @@ fn esc_declines_ctrl_e_puts_it_aside_and_secrets_lists_and_revokes() {
     );
     assert!(listed.contains("used 2×"));
 }
+
+#[test]
+fn ctrl_c_quits_while_the_prompt_is_open() {
+    let s = asked();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    withnav_tui::secret::sync(&s, &mut ui);
+    assert!(ui.secret_entry.is_some());
+    let ctrl_c = || key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(route_key(ctrl_c(), &s, &mut ui, &mut editor).is_none());
+    assert!(
+        ui.quit_confirm.is_some(),
+        "the first ctrl+c asks to confirm"
+    );
+    assert!(matches!(
+        route_key(ctrl_c(), &s, &mut ui, &mut editor),
+        Some(withnav_tui::protocol::Action::Quit)
+    ));
+}

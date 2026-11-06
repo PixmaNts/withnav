@@ -149,6 +149,9 @@ pub enum SecretError {
     TooLarge,
     #[error("the secret value contains a NUL character")]
     Nul,
+    /// Kept for this server's life, but the workspace file could not be written.
+    #[error("the secret is kept in memory only: the secrets file could not be written ({0})")]
+    NotSaved(String),
 }
 
 /// The service's secrets: every conversation's, plus the persisted workspace ones.
@@ -181,9 +184,11 @@ impl SecretStore {
     pub fn open(data_dir: &Path) -> Self {
         let path = data_dir.join("credentials").join("secrets.json");
         let now = now();
+        let mut rewrite = false;
         let entries = match file::load(&path) {
             Ok(saved) => saved
                 .into_iter()
+                .inspect(|saved| rewrite |= saved.expires_at <= now)
                 .filter(|saved| saved.expires_at > now && check_name(&saved.name).is_ok())
                 .map(|saved| Entry {
                     name: saved.name,
@@ -206,7 +211,9 @@ impl SecretStore {
             file: Some(path),
             entries: Mutex::new(entries),
         };
-        store.save(&store.lock());
+        if rewrite {
+            let _ = store.save(&store.lock());
+        }
         store
     }
 
@@ -230,9 +237,9 @@ impl SecretStore {
         persisted
     }
 
-    fn save(&self, entries: &[Entry]) {
+    fn save(&self, entries: &[Entry]) -> std::io::Result<()> {
         let Some(path) = &self.file else {
-            return;
+            return Ok(());
         };
         let saved: Vec<file::Saved> = entries
             .iter()
@@ -247,9 +254,9 @@ impl SecretStore {
                 use_count: entry.use_count,
             })
             .collect();
-        if let Err(error) = file::save(path, &saved) {
+        file::save(path, &saved).inspect_err(|error| {
             tracing::warn!(path = %path.display(), %error, "workspace secrets not saved");
-        }
+        })
     }
 
     /// Stores `value` as `name` for the conversation tree `owner` in `workspace`, replacing the
@@ -293,23 +300,39 @@ impl SecretStore {
         // workspace one of the same name for this conversation only.
         entries
             .retain(|e| !(e.name == name && e.scope == scope && e.visible_to(owner, &workspace)));
+        let persisted = entry.persisted();
         entries.push(entry);
-        self.save(&entries);
-        Ok(view)
+        match self.save(&entries) {
+            Err(error) if persisted => Err(SecretError::NotSaved(error.to_string())),
+            _ => Ok(view),
+        }
     }
 
-    /// Removes the secret `name` the tree `owner` sees in `workspace`; false when none.
+    /// Removes the secret `name` the tree `owner` sees in `workspace`, the one `list` shows: a
+    /// session secret that hides a workspace one of the same name goes, the workspace one
+    /// stays. False when none.
     pub fn revoke(&self, owner: Ulid, workspace: &Path, name: &str) -> bool {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
         let purged = Self::purge(&mut entries, now());
-        let before = entries.len();
-        entries.retain(|e| !(e.name == name && e.visible_to(owner, &workspace)));
-        let removed = entries.len() != before;
-        if removed || purged {
-            self.save(&entries);
+        let matches = |e: &Entry, scope| {
+            e.name == name && e.scope == scope && e.visible_to(owner, &workspace)
+        };
+        let target = entries
+            .iter()
+            .position(|e| matches(e, SecretScope::Session))
+            .or_else(|| {
+                entries
+                    .iter()
+                    .position(|e| matches(e, SecretScope::Workspace))
+            });
+        if let Some(index) = target {
+            entries.remove(index);
         }
-        removed
+        if target.is_some() || purged {
+            let _ = self.save(&entries);
+        }
+        target.is_some()
     }
 
     /// Forgets the secrets that last as long as the conversation tree `owner`.
@@ -339,7 +362,7 @@ impl SecretStore {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
         if Self::purge(&mut entries, now()) {
-            self.save(&entries);
+            let _ = self.save(&entries);
         }
         Self::visible(&mut entries, owner, &workspace)
             .into_iter()
@@ -348,22 +371,21 @@ impl SecretStore {
     }
 
     /// The environment a process started for `owner` in `workspace` receives: one
-    /// `(NAME, value)` per visible secret, each counted as one more use.
+    /// `(NAME, value)` per visible secret, each counted as one more use. The count reaches
+    /// the file with the next save (store, revoke, expiry), not on every command.
     pub fn environment(&self, owner: Ulid, workspace: &Path) -> Vec<(String, String)> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
         let purged = Self::purge(&mut entries, now());
-        let mut persisted = purged;
         let env = Self::visible(&mut entries, owner, &workspace)
             .into_iter()
             .map(|e| {
                 e.use_count = e.use_count.saturating_add(1);
-                persisted |= e.persisted();
                 (e.name.clone(), e.value.clone())
             })
             .collect();
-        if persisted {
-            self.save(&entries);
+        if purged {
+            let _ = self.save(&entries);
         }
         env
     }

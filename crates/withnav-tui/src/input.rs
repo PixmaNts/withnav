@@ -104,8 +104,11 @@ pub fn route_key(
             _ => None,
         };
     }
-    // The secret prompt takes every key while it is open: nothing typed there reaches the editor.
-    if ui.secret_entry.is_some() && ui.overlay.is_none() && !state.read_only() {
+    // The secret prompt takes every key while it is open, quitting aside: nothing typed there
+    // reaches the editor.
+    let quit_key = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q'));
+    if ui.secret_entry.is_some() && ui.overlay.is_none() && !state.read_only() && !quit_key {
         return crate::secret::key(key, state, ui);
     }
     if key.code == KeyCode::Char('k')

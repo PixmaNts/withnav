@@ -62,8 +62,12 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
   const settled = note?.outcome === "stored" || local?.state === "saved";
   const expiresAt = listed?.expires_at ?? local?.view?.expires_at ?? note?.expiresAt;
   const when = expiresIn(expiresAt);
+  // A list fetched before the value was stored does not know it: only a later one can say it went.
+  const listAtSettle = useRef<SecretView[] | null | undefined>(undefined);
+  if (settled && listAtSettle.current === undefined) listAtSettle.current = actions?.list ?? null;
+  const freshList = actions?.list && actions.list !== listAtSettle.current ? actions.list : null;
   let state: "pending" | "saved" | "declined" | "revoked" | "expired" = "pending";
-  if (local?.state === "revoked" || (settled && !local && actions?.list && !listed && when)) state = "revoked";
+  if (local?.state === "revoked" || (settled && !local && freshList && !listed && when)) state = "revoked";
   else if (settled) state = when ? "saved" : "expired";
   else if (note?.outcome === "declined") state = "declined";
   const editing = (state === "pending" && !busy?.startsWith("Declin")) || reopened;
@@ -137,6 +141,7 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
             <span className="secret-option"><span className="muted">Available</span><Segmented label="Availability" options={TTLS} value={ttl} onChange={setTtl} disabled={disabled} /></span>
             <span className="secret-option"><span className="muted">For</span><Segmented label="Scope" options={SCOPES} value={scope} onChange={setScope} disabled={disabled} /></span>
           </div>
+          {value && [...value].length < 8 && <div className="secret-short">Shorter than 8 characters: it is not hidden if it shows up in a command's output.</div>}
           <div className="secret-note">Kept out of the chat. The agent receives <code>${request.name}</code>, not the value.</div>
           <div className="actions">
             <button type="button" className="btn ghost" disabled={disabled} onClick={() => void decline()}>{reopened ? "Cancel" : "Decline"}</button>

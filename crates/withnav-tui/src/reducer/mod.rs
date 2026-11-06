@@ -63,6 +63,9 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::QuestionAnswered { generation, .. }
+        | ClientEvent::SecretAnswered { generation, .. }
+        | ClientEvent::SecretsListed { generation, .. }
+        | ClientEvent::SecretRevoked { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::ChildControlled { generation, .. }
@@ -570,6 +573,100 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     )
                 }
             }
+        }
+        ClientEvent::SecretAnswered {
+            call_id,
+            name,
+            result,
+            ..
+        } => {
+            let mut stored = None;
+            for block in &mut s.conversation.blocks {
+                if let BlockKind::Secret(p) = &mut block.kind
+                    && p.call_id == call_id
+                {
+                    p.sending = false;
+                    match &result {
+                        Ok(accepted) => {
+                            if let Some(view) = &accepted.secret {
+                                p.last4 = Some(view.last4.clone());
+                                // A settled request is stored at once; an open one waits for
+                                // the server's note.
+                                if !p.is_open() {
+                                    p.state = crate::state::SecretState::Stored {
+                                        scope: view.scope,
+                                        expires_at: view.expires_at.clone(),
+                                    };
+                                }
+                                stored = Some(view.clone());
+                            }
+                        }
+                        Err(error) => p.error = Some(error.clone()),
+                    }
+                }
+            }
+            if let Err(error) = result {
+                push_local(s, BlockKind::Error(format!("secret ${name}: {error}")));
+            } else if stored.is_none()
+                && s.conversation
+                    .blocks
+                    .iter()
+                    .all(|b| !matches!(&b.kind, BlockKind::Secret(p) if p.call_id == call_id))
+            {
+                push_local(s, BlockKind::Notice(format!("secret ${name}: sent")));
+            }
+        }
+        ClientEvent::SecretsListed { result, .. } => match result {
+            Ok(body) => {
+                let now = time::OffsetDateTime::now_utc();
+                let text = if body.secrets.is_empty() {
+                    "secrets: none in this conversation".to_owned()
+                } else {
+                    let rows: Vec<String> = body
+                        .secrets
+                        .iter()
+                        .map(|v| {
+                            format!(
+                                "${}{} · {} · expires {} · used {}×",
+                                v.name,
+                                if v.last4.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ••••{}", v.last4)
+                                },
+                                crate::secret::scope_text(v.scope),
+                                crate::secret::expires_in(v.expires_at.as_deref(), now)
+                                    .unwrap_or_else(|| "now".into()),
+                                v.use_count
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "secrets:\n{}\n/secrets revoke NAME removes one",
+                        rows.join("\n")
+                    )
+                };
+                push_local(s, BlockKind::Notice(text));
+            }
+            Err(error) => push_local(s, BlockKind::Error(format!("secrets: {error}"))),
+        },
+        ClientEvent::SecretRevoked { name, result, .. } => {
+            let text = match result {
+                Ok(true) => {
+                    for block in &mut s.conversation.blocks {
+                        if let BlockKind::Secret(p) = &mut block.kind
+                            && p.request.name == name
+                            && matches!(p.state, crate::state::SecretState::Stored { .. })
+                        {
+                            p.state = crate::state::SecretState::Revoked;
+                        }
+                    }
+                    format!("secret ${name} revoked: commands no longer receive it")
+                }
+                Ok(false) => format!("secret ${name}: none to revoke"),
+                Err(error) => format!("secret ${name}: {error}"),
+            };
+            push_local(s, BlockKind::Notice(text));
         }
         ClientEvent::QuestionAnswered {
             call_id, result, ..

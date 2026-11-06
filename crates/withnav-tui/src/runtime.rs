@@ -334,6 +334,7 @@ impl Runtime {
 
     pub fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
         let previous_text = std::mem::take(&mut self.cache.transcript.text);
+        crate::secret::sync(&self.state, &mut self.ui);
         view::draw(frame, &self.state, &self.ui, &self.editor, &mut self.cache);
         if previous_text != self.cache.transcript.text {
             self.selection = Default::default();

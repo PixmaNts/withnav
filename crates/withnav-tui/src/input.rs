@@ -104,6 +104,18 @@ pub fn route_key(
             _ => None,
         };
     }
+    // The secret prompt takes every key while it is open: nothing typed there reaches the editor.
+    if ui.secret_entry.is_some() && ui.overlay.is_none() && !state.read_only() {
+        return crate::secret::key(key, state, ui);
+    }
+    if key.code == KeyCode::Char('k')
+        && key.modifiers.contains(KeyModifiers::ALT)
+        && ui.overlay.is_none()
+        && !state.read_only()
+        && crate::secret::latest(state).is_some()
+    {
+        return Some(Action::OpenSecret);
+    }
     if ui.overlay == Some(Overlay::Commands) && ui.palette_typed {
         return typed_palette_key(key, state, ui, editor);
     }
@@ -905,6 +917,9 @@ pub fn route_paste(
         return None;
     }
     if state.read_only() {
+        return None;
+    }
+    if ui.overlay.is_none() && crate::secret::paste(&text, ui) {
         return None;
     }
     // While a reject message is typed, a paste goes into it (one line); a message left from a

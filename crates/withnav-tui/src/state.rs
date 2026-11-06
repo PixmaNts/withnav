@@ -4,7 +4,7 @@ use super::protocol::{Generation, ModelEntry, SessionListEntry};
 use std::collections::HashMap;
 pub use withnav_client_state::{
     Activity, Block, BlockKind, ChildAgent, ChildStatus, Conversation, DEFAULT_AGENT, ModelSwitch,
-    PermissionPrompt, QuestionPrompt, SessionState, SkillScript,
+    PermissionPrompt, QuestionPrompt, SecretPrompt, SecretState, SessionState, SkillScript,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -336,4 +336,8 @@ pub struct UiState {
     /// (scrolled away, or not drawn yet), the first `y`, `a` or `n` brings it into view instead
     /// of answering it.
     pub prompt_shown: Option<String>,
+    /// The secret prompt, while open: it holds the value being typed, and nothing else does.
+    pub secret_entry: Option<crate::secret::SecretEntry>,
+    /// The secret request the Captain put aside (ctrl+e) to answer in the chat instead.
+    pub secret_put_aside: Option<String>,
 }

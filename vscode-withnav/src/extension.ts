@@ -29,6 +29,7 @@ import * as path from "path";
 import { affectsSettings, isSettingExplicit, readServerPath, readSetting } from "./settings";
 import { bundledServerName, pickServerCommand, ServerChoice } from "./serverPath";
 import { CognitionBackend } from "./cognition";
+import { ChatHub, type SavedTabs } from "./chatHub";
 import { registerChatView } from "./chatView";
 import { registerSettingsView } from "./settingsView";
 
@@ -58,10 +59,21 @@ let lastRemark: ActiveRemark | undefined;
 let diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let reflexContext: vscode.ExtensionContext | undefined;
 let reflexDisposables: vscode.Disposable[] = [];
-const cognition = new CognitionBackend();
+let cognition: ChatHub;
+const TABS_KEY = "withnav.openTabs";
 
 export function activate(_context: vscode.ExtensionContext) {
   reflexContext = _context;
+  // One backend per conversation tab, all on the same server; a hidden one lists and serves settings.
+  cognition = new ChatHub(
+    () => new CognitionBackend({ bootstrap: false }),
+    new CognitionBackend({ bootstrap: false }),
+    {
+      load: () => _context.workspaceState.get<SavedTabs>(TABS_KEY),
+      save: value => { void Promise.resolve(_context.workspaceState.update(TABS_KEY, value)).catch(() => undefined); },
+    },
+    error => void vscode.window.showErrorMessage(`WithNav: ${error instanceof Error ? error.message : String(error)}`),
+  );
   decorationType = vscode.window.createTextEditorDecorationType({
     after: {
       margin: "0 0 0 2em",
@@ -76,7 +88,7 @@ export function activate(_context: vscode.ExtensionContext) {
   statusItem.show();
 
   registerCommands();
-  _context.subscriptions.push(vscode.commands.registerCommand("withnav.toggleBypassPermissions", () => cognition.toggleBypassPermissions().catch(error => vscode.window.showErrorMessage(String(error)))));
+  _context.subscriptions.push(vscode.commands.registerCommand("withnav.toggleBypassPermissions", () => (cognition.activeBackend()?.toggleBypassPermissions() ?? Promise.resolve()).catch(error => vscode.window.showErrorMessage(String(error)))));
   _context.subscriptions.push(registerChatView(_context, cognition));
   _context.subscriptions.push(registerSettingsView(_context, cognition));
   _context.subscriptions.push(cognition);

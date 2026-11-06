@@ -6,6 +6,28 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- VS Code extension: the chat panel is redesigned.
+  - It lives in the secondary side bar, next to the other chat extensions (VS Code 1.106 or later;
+    `engines.vscode` is now `^1.106.0`).
+  - Several conversations run at once as tabs, each with its own session, agent, model and transcript.
+  - A session list offers search, All / Active / Waiting for you / Errors filters and marks the
+    sessions open in a tab. From 900 px wide it stays open as a left sidebar, shown or hidden with
+    one toggle pinned at the top left.
+  - Header, transcript and composer share one centred column (760 px by default). Each conversation
+    has a header with a context ring and an agent strip: primary agent, three subagent chips and a
+    dropdown listing every subagent by state.
+  - Captain messages sit in a labelled bubble; Nav answers have a crew-coloured header and rule.
+    A turn with several runs of actions shows one "Activity" line that expands to the steps.
+  - Markdown is styled (headings, tight lists, tables, quotes, inline code, code blocks); a
+    ```mermaid block shows as a labelled card with its source.
+  - Chat text uses the editor text colour at 14 px by default, set with the new
+    `withnav.chat.fontSize` (11 to 22) and updated live.
+  - The composer is a single box: context chip, attach button, model button, an agent picker
+    (search, current mark, favourites kept under `withnav.favoriteAgents`) and send/stop.
+  - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

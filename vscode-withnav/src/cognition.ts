@@ -214,7 +214,7 @@ export class CognitionBackend implements ChatBackend {
     this.validateChild(parentId, childId, generation);
     if (metadata?.parent_session_id !== parentId || metadata?.promptable !== false) throw new Error("The server did not confirm a read-only child of this parent.");
     this.seedChild(parent, childId, metadata);
-    const panel = new CognitionBackend();
+    const panel = new CognitionBackend({ bootstrap: false });
     panel.endpoint = this.endpoint;
     panel.state.session = childId;
     panel.state.parent = parent;
@@ -269,6 +269,11 @@ export class CognitionBackend implements ChatBackend {
   }
   private state = new ConversationState();
   private nextGeneration = 0;
+  /**
+   * `bootstrap: false` makes a tab's backend start empty: the first endpoint announcement does not
+   * resume the newest saved conversation (the chat hub opens the conversation each tab asked for).
+   */
+  constructor(private readonly options: { bootstrap?: boolean } = {}) {}
   private endpoint?: ServerInfoParams;
   /**
    * An authenticated request for the settings page. The page may open before
@@ -511,7 +516,8 @@ export class CognitionBackend implements ChatBackend {
     if (first || restarted) {
       void this.fetchModels();
       void this.refreshAssignments().catch(() => undefined);
-      void this.bootstrapConversations();
+      if (this.options.bootstrap !== false) void this.bootstrapConversations();
+      else void this.listConversations().catch(() => undefined);
     }
   }
 
@@ -1730,11 +1736,17 @@ function parseSessionList(body: any): ConversationSummary[] {
     }
     return found.size - 1;
   };
+  const childCount = (id: string, statuses: string[]): number =>
+    sessions.filter((c: any) => c && c.parent_session_id === id && statuses.includes(c.child_status)).length;
   return sessions
     .filter((s: any) => s && typeof s.id === "string" && !s.parent_session_id && s.promptable !== false)
     .map((s: any) => ({
       id: s.id,
       subagentCount: descendants(s.id),
+      ...(typeof s.agent === "string" && s.agent ? { agent: s.agent } : {}),
+      ...(typeof s.live === "boolean" ? { live: s.live } : {}),
+      subagentsRunning: childCount(s.id, ["running", "active"]),
+      subagentsFailed: childCount(s.id, ["failed"]),
       title: typeof s.title === "string" && s.title ? s.title : "Untitled conversation",
       updatedAt: typeof s.updated_at === "string" ? s.updated_at : "",
       messageCount: typeof s.message_count === "number" ? s.message_count : 0,

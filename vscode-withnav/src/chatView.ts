@@ -1,6 +1,24 @@
 import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
-import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
+import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, WebviewToHost } from "./chatProtocol";
+import { singleTab } from "./chatHub";
+import { readSetting } from "./settings";
+
+export const FONT_SIZE = { min: 11, max: 22, fallback: 14 } as const;
+/** The chat text size from `withnav.chat.fontSize`, clamped; the default when unreadable. */
+export function chatFontSize(): number {
+  try {
+    const value = Number(readSetting<number>("chat.fontSize", FONT_SIZE.fallback, false));
+    return Number.isFinite(value) ? Math.min(FONT_SIZE.max, Math.max(FONT_SIZE.min, Math.round(value))) : FONT_SIZE.fallback;
+  } catch { return FONT_SIZE.fallback; }
+}
+/** Calls `listener` when the setting changes; a host without configuration events gets a no-op. */
+function onFontSizeChange(listener: () => void): { dispose(): void } {
+  try { return vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration("withnav.chat.fontSize")) listener(); }); }
+  catch { return { dispose() {} }; }
+}
+
+const workspaceName = (): { workspace?: string } => (vscode.workspace.name ? { workspace: vscode.workspace.name } : {});
 import { buildEditorContext, presentMessage } from "./editorContext";
 import { routeComposer } from "./commands";
 import { openFile } from "./reveal";
@@ -8,12 +26,14 @@ import { openFile } from "./reveal";
 const CONTEXT_DEBOUNCE_MS = 200;
 /** `globalState` key of the favorite model names; the terminal client keeps its own list. */
 export const FAVORITE_MODELS_KEY = "withnav.favoriteModels";
+/** `globalState` key of the favorite agent names. */
+export const FAVORITE_AGENTS_KEY = "withnav.favoriteAgents";
 const MAX_FAVORITES = 500;
 const MAX_FAVORITE_NAME = 300;
 
 /** Favorite names saved in `state`; anything but a list of strings is ignored. */
-export function readFavorites(state: vscode.Memento): string[] {
-  const saved = state.get<unknown>(FAVORITE_MODELS_KEY);
+export function readFavorites(state: vscode.Memento, key: string = FAVORITE_MODELS_KEY): string[] {
+  const saved = state.get<unknown>(key);
   return Array.isArray(saved) ? saved.filter((name): name is string => typeof name === "string") : [];
 }
 
@@ -23,15 +43,15 @@ interface FavoriteStore {
   onChange(listener: (items: string[]) => void): () => void;
 }
 
-function favoriteStore(state: vscode.Memento): FavoriteStore {
+function favoriteStore(state: vscode.Memento, key: string = FAVORITE_MODELS_KEY): FavoriteStore {
   const listeners = new Set<(items: string[]) => void>();
   return {
-    get: () => readFavorites(state),
+    get: () => readFavorites(state, key),
     toggle(name) {
-      const current = readFavorites(state);
+      const current = readFavorites(state, key);
       if (!current.includes(name) && (current.length >= MAX_FAVORITES || !name || name.length > MAX_FAVORITE_NAME)) return;
       const next = current.includes(name) ? current.filter(saved => saved !== name) : [...current, name];
-      const saved = state.update(FAVORITE_MODELS_KEY, next);
+      const saved = state.update(key, next);
       for (const listener of listeners) listener(next);
       void Promise.resolve(saved).catch(showError);
     },
@@ -39,26 +59,40 @@ function favoriteStore(state: vscode.Memento): FavoriteStore {
   };
 }
 
+function isTabs(source: ChatTabs | ChatBackend): source is ChatTabs {
+  return typeof (source as ChatTabs).tabs === "function" && typeof (source as ChatTabs).backend === "function";
+}
+
+/** Messages that name no conversation: they carry neither a tab nor a generation. */
+const GLOBAL_MESSAGES = new Set(["ready", "openTab", "closeTab", "focusTab", "listConversations", "deleteConversation", "toggleFavorite", "toggleFavoriteAgent"]);
+
 export function registerChatView(
   context: vscode.ExtensionContext,
-  backend: ChatBackend,
+  source: ChatTabs | ChatBackend,
 ): vscode.Disposable {
-  const panels = new Map<string, vscode.WebviewPanel>();
+  const tabs: ChatTabs = isTabs(source) ? source : singleTab(source);
+  const panels = new Map<string, { panel: vscode.WebviewPanel; tab: string }>();
   const openings = new Map<string, Promise<void>>();
   const favorites = favoriteStore(context.globalState);
+  const favoriteAgents = favoriteStore(context.globalState, FAVORITE_AGENTS_KEY);
+  let currentWebview: vscode.Webview | undefined;
+  const showSessions = vscode.commands.registerCommand("withnav.showSessions", () => { void currentWebview?.postMessage({ type: "showSessions" }); });
+  const newConversation = vscode.commands.registerCommand("withnav.newConversation", () => { tabs.open(); });
   const deletion = vscode.commands.registerCommand("withnav.deleteConversation", async () => {
     try {
-      const items = await backend.listConversations();
+      const items = await tabs.listConversations();
       const picked = await vscode.window.showQuickPick(items.map(conversation => ({
         label: conversation.title, description: conversation.updatedAt, conversation,
       })), { placeHolder: "Choose a conversation to delete" });
-      if (picked) await confirmDeleteConversation(backend, picked.conversation.id);
+      if (picked) await confirmDeleteConversation(tabs, picked.conversation.id);
     } catch (error) { showError(error); }
   });
   const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
       let disposed = false;
+      let ready = false;
       const webview = view.webview;
+      currentWebview = webview;
       webview.options = {
         enableScripts: true,
         localResourceRoots: [
@@ -72,27 +106,60 @@ export function registerChatView(
       const style = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"));
       webview.html = chatHtml(nonce, String(script), String(style), webview.cspSource);
 
-      // Captain messages lose their raw editor-context block and gain a chip label.
-      // The webview (re)loads with amnesia: remember the last conversation
-      // header pushes so `ready` can restore them before the transcript.
-      let lastConversationOpened: HostToWebview | undefined;
-      let lastConversations: HostToWebview | undefined;
-      let lastModels: HostToWebview | undefined;
-      const post = (message: HostToWebview): void => {
+      // The webview (re)loads with amnesia: remember each tab's last header pushes so
+      // `ready` can restore them before the transcript.
+      const lastOpened = new Map<string, HostToWebview>();
+      const lastModels = new Map<string, HostToWebview>();
+      const known = new Set<string>();
+      const postGlobal = (message: HostToWebview): void => { void webview.postMessage(message); };
+      // Tab messages carry their tab and the generation of that tab's backend; Captain messages
+      // lose their raw editor-context block and gain a chip label.
+      const postTab = (tab: string, message: HostToWebview): void => {
+        const backend = tabs.backend(tab);
+        if (!backend) return;
         if (message.generation !== undefined && message.generation !== backend.currentGeneration()) return;
-        message = { ...message, generation: backend.currentGeneration() };
-        if (message.type === "conversationOpened") {
-          lastConversationOpened = message;
-        } else if (message.type === "conversations") lastConversations = message;
-        else if (message.type === "models") lastModels = message;
+        message = { ...message, tab, generation: backend.currentGeneration() };
+        if (message.type === "conversationOpened") lastOpened.set(tab, message);
+        else if (message.type === "models") lastModels.set(tab, message);
         void webview.postMessage(presentMessage(message));
       };
-      const unsubscribe = backend.subscribe(post);
-      const unsubscribeFavorites = favorites.onChange(items => post({ type: "favorites", items }));
+      const initTab = (tab: string): void => {
+        const backend = tabs.backend(tab);
+        if (!backend) return;
+        const opened = lastOpened.get(tab);
+        postTab(tab, { type: "conversationOpened", id: backend.currentConversationId(),
+          title: opened?.type === "conversationOpened" ? opened.title : "Conversation" });
+        backend.publishSubagents();
+        backend.publishBypass?.();
+        postTab(tab, { type: "history", items: backend.history() });
+        backend.publishCompaction();
+        const models = lastModels.get(tab);
+        if (models) postTab(tab, models);
+        const snapshot = backend.currentContext();
+        if (snapshot) postTab(tab, { type: "usage", snapshot });
+        backend.resumePermissionReads();
+        void backend.refreshCommands().catch(showError);
+        void backend.refreshAssignments().catch(showError);
+      };
+      const syncTabs = (): void => {
+        if (!ready) return;
+        const current = tabs.tabs();
+        postGlobal({ type: "tabs", tabs: current, active: tabs.active() });
+        const ids = new Set(current.map(tab => tab.id));
+        for (const id of [...known]) if (!ids.has(id)) known.delete(id);
+        for (const id of ids) if (!known.has(id)) { known.add(id); initTab(id); }
+        for (const [childId, entry] of panels) if (!ids.has(entry.tab)) { panels.delete(childId); entry.panel.dispose(); }
+      };
+      const unsubscribe = tabs.subscribe(postTab);
+      const unsubscribeTabs = tabs.onTabs(syncTabs);
+      const unsubscribeList = tabs.onConversations(items => postGlobal({ type: "conversations", items, ...workspaceName() }));
+      const unsubscribeFavorites = favorites.onChange(items => postGlobal({ type: "favorites", items }));
+      const unsubscribeFavoriteAgents = favoriteAgents.onChange(items => postGlobal({ type: "favoriteAgents", items }));
+      const fontWatcher = onFontSizeChange(() => postGlobal({ type: "appearance", fontSize: chatFontSize() }));
 
       // Live preview of what the next message would carry.
       let contextTimer: ReturnType<typeof setTimeout> | undefined;
-      const pushContext = (): void => post({ type: "editorContext", label: buildEditorContext().label });
+      const pushContext = (): void => postGlobal({ type: "editorContext", label: buildEditorContext().label });
       const scheduleContext = (): void => {
         if (contextTimer) clearTimeout(contextTimer);
         contextTimer = setTimeout(pushContext, CONTEXT_DEBOUNCE_MS);
@@ -105,27 +172,52 @@ export function registerChatView(
       ];
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
         try {
-        if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
-        switch (message?.type) {
+        // Messages that name no conversation.
+        if (message?.type && GLOBAL_MESSAGES.has(message.type)) {
+          switch (message.type) {
+            case "ready":
+              ready = true;
+              known.clear();
+              postGlobal({ type: "conversations", items: tabs.conversations(), ...workspaceName() });
+              postGlobal({ type: "appearance", fontSize: chatFontSize() });
+              postGlobal({ type: "favorites", items: favorites.get() });
+              postGlobal({ type: "favoriteAgents", items: favoriteAgents.get() });
+              syncTabs();
+              pushContext();
+              void Promise.resolve().then(() => tabs.listConversations()).catch(() => undefined);
+              break;
+            case "openTab":
+              if (message.sessionId === undefined || typeof message.sessionId === "string") tabs.open(message.sessionId);
+              break;
+            case "closeTab":
+              if (typeof message.tab === "string") tabs.close(message.tab);
+              break;
+            case "focusTab":
+              if (typeof message.tab === "string") tabs.focus(message.tab);
+              break;
+            case "listConversations":
+              void tabs.listConversations().catch(showError);
+              break;
+            case "deleteConversation":
+              if (typeof message.id === "string") void confirmDeleteConversation(tabs, message.id).catch(showError);
+              break;
+            case "toggleFavoriteAgent":
+              if (typeof message.name === "string") favoriteAgents.toggle(message.name);
+              break;
+            case "toggleFavorite":
+              if (typeof message.name === "string") favorites.toggle(message.name);
+              break;
+          }
+          return;
+        }
+        // Everything else belongs to one tab and its current generation.
+        const tab = typeof message?.tab === "string" ? message.tab : undefined;
+        const backend = tab === undefined ? undefined : tabs.backend(tab);
+        if (!tab || !backend || message.generation !== backend.currentGeneration()) return;
+        const post = (reply: HostToWebview): void => postTab(tab, reply);
+        switch (message.type) {
           case "toggleBypass":
             void backend.toggleBypassPermissions().catch(showError);
-            break;
-          case "ready":
-            if (lastConversations) post(lastConversations);
-            post({ type: "conversationOpened", id: backend.currentConversationId(),
-              title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
-            backend.publishSubagents();
-            backend.publishBypass?.();
-            post({ type: "history", items: backend.history() });
-            backend.publishCompaction();
-            if (lastModels) post(lastModels);
-            const snapshot = backend.currentContext();
-            if (snapshot) post({ type: "usage", snapshot });
-            post({ type: "favorites", items: favorites.get() });
-            pushContext();
-            backend.resumePermissionReads();
-            void backend.refreshCommands().catch(showError);
-            void backend.refreshAssignments().catch(showError);
             break;
           case "send":
             if (backend.isReadOnly()) break;
@@ -186,27 +278,8 @@ export function registerChatView(
               void openFile(message.path, message.line).catch(showError);
             }
             break;
-          case "listConversations":
-            void backend.listConversations().catch(showError);
-            break;
-          case "openConversation":
-            if (typeof message.id === "string") {
-              void backend.openConversation(message.id).catch(showError);
-            }
-            break;
-          case "newConversation":
-            void backend.newConversation().catch(showError);
-            break;
-          case "deleteConversation":
-            if (typeof message.id === "string") {
-              void confirmDeleteConversation(backend, message.id).catch(showError);
-            }
-            break;
           case "selectModel":
             if (typeof message.name === "string") backend.selectModel(message.name);
-            break;
-          case "toggleFavorite":
-            if (typeof message.name === "string") favorites.toggle(message.name);
             break;
           case "selectAgent":
             if (typeof message.id === "string") void backend.selectAgent(message.id).catch(showError);
@@ -214,15 +287,15 @@ export function registerChatView(
           case "openChild":
             if (typeof message.parentId === "string" && typeof message.childId === "string") {
               const existing = panels.get(message.childId);
-              if (existing) { existing.reveal(); break; }
+              if (existing) { existing.panel.reveal(); break; }
               const opening = openings.get(message.childId);
-              if (opening) { void opening.then(() => panels.get(message.childId)?.reveal()); break; }
+              if (opening) { void opening.then(() => panels.get(message.childId)?.panel.reveal()); break; }
               const pending = backend.openChild(message.parentId, message.childId, message.generation).then(childBackend => {
                 if (disposed || message.generation !== backend.currentGeneration()) { childBackend.dispose(); return; }
                 const panel = vscode.window.createWebviewPanel("withnav.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
-                panels.set(message.childId, panel);
+                panels.set(message.childId, { panel, tab });
                 mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId, favorites);
-                panel.onDidDispose(() => { if (panels.get(message.childId) === panel) panels.delete(message.childId); childBackend.dispose(); });
+                panel.onDidDispose(() => { if (panels.get(message.childId)?.panel === panel) panels.delete(message.childId); childBackend.dispose(); });
                 const off = backend.subscribe(update => { if (update.generation !== message.generation) panel.dispose(); });
                 panel.onDidDispose(off);
               }).catch(showError).finally(() => { if (openings.get(message.childId) === pending) openings.delete(message.childId); });
@@ -246,19 +319,24 @@ export function registerChatView(
       });
       view.onDidDispose(() => {
         disposed = true;
-        backend.cancelPermissionReads();
+        if (currentWebview === webview) currentWebview = undefined;
+        for (const tab of tabs.tabs()) tabs.backend(tab.id)?.cancelPermissionReads();
         unsubscribe();
+        unsubscribeTabs();
+        unsubscribeList();
         unsubscribeFavorites();
+        unsubscribeFavoriteAgents();
+        fontWatcher.dispose();
         messageSubscription.dispose();
         if (contextTimer) clearTimeout(contextTimer);
         for (const subscription of editorSubscriptions) subscription.dispose();
       });
     },
-  });
-  return vscode.Disposable.from(registration, deletion);
+  }, { webviewOptions: { retainContextWhenHidden: true } });
+  return vscode.Disposable.from(registration, showSessions, newConversation, deletion);
 }
 
-export async function confirmDeleteConversation(backend: ChatBackend, id: string): Promise<void> {
+export async function confirmDeleteConversation(backend: Pick<ChatBackend, "listConversations" | "deleteConversation">, id: string): Promise<void> {
   const conversation = (await backend.listConversations()).find(item => item.id === id);
   const count = conversation?.subagentCount ?? 0;
   const answer = await vscode.window.showWarningMessage(
@@ -277,6 +355,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
   const post = (m: HostToWebview): void => { if (!disposed) void webview.postMessage(m); };
   const off = child.subscribe(post);
   const favoritesOff = favorites.onChange(items => post({ type: "favorites", items, generation: child.currentGeneration() }));
+  const fontWatcher = onFontSizeChange(() => post({ type: "appearance", fontSize: chatFontSize() }));
   const parentOff = parent.subscribe(m => { if (m.type === "subagents") {
     const row = m.items.find(c => c.id === childId);
     if (m.parentId === parentId && !row) { panel.dispose(); return; }
@@ -286,6 +365,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
     if (disposed || (m.type !== "ready" && m.generation !== child.currentGeneration())) return;
     if (m.type === "ready") {
       post({ type: "conversationOpened", id: childId, title: "Read-only subagent", generation: child.currentGeneration() });
+      post({ type: "appearance", fontSize: chatFontSize() });
       post({ type: "favorites", items: favorites.get(), generation: child.currentGeneration() });
       child.publishSubagents();
       post({ type: "history", items: child.history(), generation: child.currentGeneration() });
@@ -299,7 +379,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
     }
     // No send, resume, commands or permission answers in this panel.
   });
-  panel.onDidDispose(() => { disposed = true; off(); favoritesOff(); parentOff(); child.dispose(); });
+  panel.onDidDispose(() => { disposed = true; off(); favoritesOff(); fontWatcher.dispose(); parentOff(); child.dispose(); });
 }
 
 function randomNonce(): string {

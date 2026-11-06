@@ -14,7 +14,7 @@
   },
   "private": true,
   "engines": {
-    "vscode": "^1.91.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Other"
@@ -26,7 +26,7 @@
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "withnav",
           "title": "WithNav",
@@ -44,6 +44,18 @@
       ]
     },
     "commands": [
+      {
+        "command": "withnav.showSessions",
+        "title": "Show Sessions",
+        "category": "WithNav",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "withnav.newConversation",
+        "title": "New Conversation",
+        "category": "WithNav",
+        "icon": "$(add)"
+      },
       {
         "command": "withnav.deleteConversation",
         "title": "Delete Conversation…",
@@ -88,9 +100,19 @@
     "menus": {
       "view/title": [
         {
+          "command": "withnav.showSessions",
+          "when": "view == withnav.chat",
+          "group": "navigation@0"
+        },
+        {
+          "command": "withnav.newConversation",
+          "when": "view == withnav.chat",
+          "group": "navigation@1"
+        },
+        {
           "command": "withnav.openSettings",
           "when": "view == withnav.chat",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ]
     },
@@ -114,6 +136,13 @@
     "configuration": {
       "title": "WithNav",
       "properties": {
+        "withnav.chat.fontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 11,
+          "maximum": 22,
+          "description": "Base text size of the chat, in pixels. Smaller text scales with it."
+        },
         "withnav.enabled": {
           "type": "boolean",
           "default": true,

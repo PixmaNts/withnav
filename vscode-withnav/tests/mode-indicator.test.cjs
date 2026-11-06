@@ -6,8 +6,8 @@ test('mode indicator carries both states, pending state and no transcript noise'
   const { chatHtml } = require('../out/tests/chatHtml.js');
   const dom = new JSDOM(chatHtml('n', 'chat.js', 'chat.css', 'resource:'), { runScripts: 'outside-only' });
   dom.window.acquireVsCodeApi = () => ({ postMessage() {}, getState() {}, setState() {} });
-  dom.window.eval(fs.readFileSync(require.resolve('../out/chat.js'), 'utf8'));
-  const send = data => dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data: { ...data, generation: 1 } }));
+  dom.window.eval(fs.readFileSync(require.resolve('../out/chat.js'), 'utf8'));dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{type:'tabs',tabs:[{id:'t1',title:'S'}],active:'t1'}}));
+  const send = data => dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data: { tab: 't1', ...data, generation: 1 } }));
   send({ type: 'conversationOpened', id: 'S', title: 'Mode' });
   const button = dom.window.document.querySelector('.bypass-toggle');
   for (let i = 0; i < 10; i++) {

@@ -58,7 +58,7 @@ test('S1 real watchdog doubt continues with null; S3 confirmation revision rejec
   event('subagent.watchdog',{parent_session_id:'P',child_session_id:'C',verdict:'doubt'});
   let confirm;vscode.window.showWarningMessage=()=>new Promise(r=>confirm=r);
   let finish;const calls=[];t.mock.method(globalThis,'fetch',(url,init)=>{calls.push({url,...init});return new Promise(r=>finish=r);});
-  const continueButton=()=>[...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue');
+  const continueButton=()=>[...menuButtons(dom)].find(x=>x.textContent==='Continue');
   continueButton().click();event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});confirm('Confirm');await tick();assert.equal(calls.length,0);
   b.state.children.get('C').state='watchdog';b.publishSubagents();
   vscode.window.showWarningMessage=async()=> 'Confirm';continueButton().click();await tick();
@@ -71,14 +71,14 @@ test('S2 panel inspection preserves pending parent send, skill refusal and model
   event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
   const generation=b.currentGeneration();let finish;
   t.mock.method(globalThis,'fetch',(url)=>url.endsWith('/messages')?new Promise(r=>finish=r):Promise.resolve(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done',agent:'plan'}))));
-  send('hello');dom.window.document.querySelector('.child-open').click();await tick();await tick();
+  send('hello');dom.window.document.querySelector('.chip-sub').click();await tick();await tick();
   assert.equal(panels.length,1);assert.equal(b.currentGeneration(),generation);assert.equal(b.currentConversationId(),'P');
   finish(new Response(JSON.stringify({accepted:true})));await tick();assert.equal(prompt.value,'');
-  assert.equal(panels[0].page.window.document.querySelector('#composer').hidden,true);
+  assert.equal(panels[0].page.window.document.querySelector('.composer').hidden,true);
   const snapshot={incarnation:'I',revision:1,estimate_total:42,window:1000,breakdown:{system:1,rules:1,skills:1,tools:1,messages:38}};b.state.context=snapshot;b.emit({type:'usage',snapshot});
-  const label=dom.window.document.querySelector('#usage-label').textContent;
+  const label=dom.window.document.querySelector('.ring-label').textContent;
   panels[0].send({type:'send',text:'forged',generation});await tick();assert.equal(prompt.value,'');
-  assert.equal(dom.window.document.querySelector('#usage-label').textContent,label);
+  assert.equal(dom.window.document.querySelector('.ring-label').textContent,label);
   send('/skill review check');await tick();finish(new Response(JSON.stringify({error:'Skill refused'}),{status:400}));await tick();assert.match(dom.window.document.querySelector('.command-error').textContent,/Skill refused/);
   b.state.commands.set('M',{draft:'/model next',name:'model',arguments:'next'});event('command.result',{operation_id:'M',name:'model',ok:false,error:'Model refused'});
   assert.match(dom.window.document.querySelector('.command-error').textContent,/Model refused/);
@@ -93,7 +93,7 @@ test('S5 panel replay cannot regress seq100 budget row; S6 terminal metadata see
     if(url.endsWith('/events')){signal=init.signal;return new Response(new ReadableStream({start(c){controller=c;signal.addEventListener('abort',()=>c.close());}}));}
     return new Response(JSON.stringify({parent_session_id:'P',promptable:false,agent:'plan',child_status:'out_of_steps'}));
   });
-  dom.window.document.querySelector('.child-open').click();await tick();await tick();
+  dom.window.document.querySelector('.chip-sub').click();await tick();await tick();
   controller.enqueue(encoder.encode('id: 10\ndata: '+JSON.stringify({seq:10,kind:'turn.start',payload:{turn_id:'T'}})+'\n\n'));await tick();
   assert.equal(b.state.children.get('C').state,'budget');
   panels[0].panel.dispose();assert.equal(signal.aborted,true);
@@ -122,7 +122,7 @@ test('S3 panel disposal cancels confirmation; S8 terminal panel replay EOF never
     if(url.endsWith('/events')){streams++;return new Response('');}
     return new Response(JSON.stringify({parent_session_id:'P',promptable:false,agent:'plan',child_status:'done'}));
   });
-  dom.window.document.querySelector('.child-open').click();await tick();await tick();
+  dom.window.document.querySelector('.chip-sub').click();await tick();await tick();
   await new Promise(r=>setTimeout(r,650));assert.equal(streams,1);
   b.state.children.get('C').state='budget';b.publishSubagents();
   let confirm;vscode.window.showWarningMessage=()=>new Promise(r=>confirm=r);
@@ -134,7 +134,7 @@ test('S2.1 concurrent delayed opens reserve one panel then close and reopen', as
   event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
   let finish;let count=0;
   t.mock.method(globalThis,'fetch',()=>{count++;return new Promise(r=>finish=r);});
-  const open=()=>dom.window.document.querySelector('.child-open').click();open();open();assert.equal(count,1);
+  const open=()=>dom.window.document.querySelector('.chip-sub').click();open();open();assert.equal(count,1);
   finish(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done'})));await tick();await tick();assert.equal(panels.length,1);
   panels[0].panel.dispose();const before=count;open();assert.equal(count,before+1);
   finish(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done'})));await tick();await tick();assert.equal(panels.length,2);panels[1].panel.dispose();
@@ -144,7 +144,7 @@ test('S2.2 running metadata is real running but preserves newer budget and termi
   event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'running'})));
   event('agent.yield',{child_session_id:'C',kind:'budget'});
-  dom.window.document.querySelector('.child-open').click();await tick();await tick();assert.equal(b.state.children.get('C').state,'budget');
+  dom.window.document.querySelector('.chip-sub').click();await tick();await tick();assert.equal(b.state.children.get('C').state,'budget');
   event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});
   b.seedChild(b.state,'C',{child_status:'active'});assert.equal(b.state.children.get('C').state,'done');
   assert.equal(b.childStatus('running'),'running');assert.equal(b.childStatus('active'),'running');panels[0].panel.dispose();
@@ -167,7 +167,7 @@ test('S2.4 two outstanding confirmed descriptors across accepted completion send
   event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});event('agent.yield',{child_session_id:'C',kind:'budget'});
   const confirmations=[];vscode.window.showWarningMessage=()=>new Promise(r=>confirmations.push(r));
   let count=0;t.mock.method(globalThis,'fetch',async()=>{count++;return new Response(JSON.stringify({accepted:true}));});
-  const button=[...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue');button.click();button.click();
+  const button=[...menuButtons(dom)].find(x=>x.textContent==='Continue');button.click();button.click();
   confirmations[0]('Confirm');await tick();confirmations[1]('Confirm');await tick();assert.equal(count,1);assert.equal(b.state.children.get('C').state,'budget');
 });
 test('S2.3 hanging terminal metadata GET times out and releases reconciliation', async t=>{
@@ -180,18 +180,18 @@ test('S2.3 hanging terminal metadata GET times out and releases reconciliation',
 test('compaction real host/page starts immediately, survives deferred acceptance, completes and rejects stale ownership',async t=>{
   const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
   let finish;t.mock.method(globalThis,'fetch',()=>new Promise(r=>finish=r));
-  send('/compact focus');assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Compacting/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);assert.equal(dom.window.document.querySelector('#stop').hidden,false);assert.equal(dom.window.document.querySelector('#usage').getAttribute('aria-busy'),'true');
+  send('/compact focus');assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Compacting/);assert.equal(dom.window.document.querySelector('.prompt').disabled,false);assert.equal(dom.window.document.querySelector('.stop-btn').hidden,false);assert.equal(dom.window.document.querySelector('.ctx-ring').getAttribute('aria-busy'),'true');
   event('command.result',{name:'compact',operation_id:'C',ok:true,data:{accepted:true,applies:'after_turn'}});
   finish(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(b.state.compaction.pending,true);
   event('context.compacted',{estimate_before:200,estimate_after:100});assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'true');
-  event('command.result',{name:'compact',operation_id:'C',ok:true,data:{estimate_before:200,estimate_after:100}});assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'false');assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  event('command.result',{name:'compact',operation_id:'C',ok:true,data:{estimate_before:200,estimate_after:100}});assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'false');assert.equal(dom.window.document.querySelector('.prompt').disabled,false);
   send('/compact');await tick();await b.newConversation();finish(new Response(JSON.stringify({operation_id:'OLD',ok:true})));await tick();assert.equal(dom.window.document.querySelector('.compaction-progress'),null);assert.equal(b.state.compaction,undefined);
 });
 test('compaction correlated failure replaces progress and frees composer',async t=>{
   const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C',ok:true})));
   send('/compact');await tick();event('command.result',{name:'compact',operation_id:'C',ok:false,error:'Summary unavailable'});
-  assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Summary unavailable/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Summary unavailable/);assert.equal(dom.window.document.querySelector('.prompt').disabled,false);
 });
 test('compaction pending progress survives recreated host view',async t=>{
   const {b,send,tick}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
@@ -205,7 +205,7 @@ test('R1.1 compaction queues ordinary send and allows help while preventing seco
   const {b,event,send,tick,dom}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
   b.refreshCommands=async()=>{};
   const calls=[];t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push(url);return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{operation_id:'C'}));});
-  send('/compact');await tick();send('queued input');await tick();assert(calls.some(url=>url.endsWith('/messages')));assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  send('/compact');await tick();send('queued input');await tick();assert(calls.some(url=>url.endsWith('/messages')));assert.equal(dom.window.document.querySelector('.prompt').disabled,false);
   b.commands.push({name:'compact',description:'Compact',args_hint:''});await b.runComposerCommand('/help');await assert.rejects(b.runComposerCommand('/compact'),/already pending/);event('command.result',{name:'compact',operation_id:'C',ok:true});
 });
 test('R1.4 manual compact binds HTTP id before cached results and ignores automatic notices and older completions',async t=>{
@@ -238,8 +238,8 @@ test('R2.1 registered host posts queued message while idle compact HTTP remains 
   t.mock.method(globalThis,'fetch',(url,init)=>{calls.push({url,...init});return new Promise(resolve=>{if(url.endsWith('/commands'))compactResponse=resolve;else messageResponse=resolve;});});
   prompt.focus();type('/compact focus');key('Enter');await tick();assert.equal(calls.length,1);assert.equal(prompt.value,'/compact focus');
   while(prompt.value)key('Backspace');type('queued message');key('Enter');await tick();assert.match(calls[1].url,/\/messages$/);
-  compactResponse(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(dom.window.document.querySelector('#send').disabled,true);
-  b.handleFrame({id:'1',event:'',envelope:{seq:1,kind:'command.result',payload:{name:'compact',operation_id:'C',ok:false,error:'Summary refused'}}});await tick();assert.equal(dom.window.document.querySelector('#send').disabled,true);
+  compactResponse(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(dom.window.document.querySelector('.send-btn').disabled,true);
+  b.handleFrame({id:'1',event:'',envelope:{seq:1,kind:'command.result',payload:{name:'compact',operation_id:'C',ok:false,error:'Summary refused'}}});await tick();assert.equal(dom.window.document.querySelector('.send-btn').disabled,true);
   messageResponse(new Response(JSON.stringify({accepted:true})));await tick();assert.equal(prompt.value,'');
 });
 test('R2.2 cancelled selector cannot route slash completion as model selection, including after conversation switch',async t=>{
@@ -248,7 +248,7 @@ test('R2.2 cancelled selector cannot route slash completion as model selection, 
   await tick();b.emit({type:'commands',items:[{name:'compact',description:'Compact',args_hint:''}]});
   const {key,type}=focusedKeys(dom);let posts=0;
   t.mock.method(globalThis,'fetch',()=>{posts++;return new Promise(()=>{});});
-   const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+   const selector=dom.window.document.querySelector('.model-btn');selector.focus();key('Enter');assert.equal(dom.window.document.querySelectorAll('.picker-options [role=option]').length,1);key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
   selector.focus();key('Enter');await b.newConversation();await tick();prompt.focus();while(prompt.value)key('Backspace');type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
 });
 test('R2.3 unknown bare slash reaches registered host validation and retains focused draft',async t=>{
@@ -265,11 +265,11 @@ test('target configured default agent, editor creation body, agent switching and
     if(url.includes('/layers?'))return new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',model:'direct/editor',reason:'wrong API'},{layer:'instinct',status:'usable',model:'omniroute/typesafe/jev',variant:null},{layer:'metacognition',status:'usable',model:'omniroute/combo/fast',variant:'low'}]}));
     return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));
   });
-  await b.refreshAssignments();assert.equal(b.state.agent,'plan');assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').value,'plan');assert.equal(dom.window.document.querySelectorAll('[aria-label="Conversation agent"] option').length,2);
-  assert.match(dom.window.document.querySelector('.topbar').title,/FIM.*disabled.*wrong API/);assert.match(dom.window.document.querySelector('.topbar').title,/not network availability/);
+  await b.refreshAssignments();assert.equal(b.state.agent,'plan');assert.equal(dom.window.document.querySelector('.agent-btn .agent-name').textContent,'plan');dom.window.document.querySelector('.agent-btn').click();assert.equal(dom.window.document.querySelectorAll('.agent-row').length,2);dom.window.document.querySelector('.agent-btn').click();
+  assert.match(dom.window.document.querySelector('.session-header').title,/FIM.*disabled.*wrong API/);assert.match(dom.window.document.querySelector('.session-header').title,/not network availability/);
   send('hello');await tick();const creation=calls.find(c=>c.url.endsWith('/v1/sessions'));assert.deepEqual(JSON.parse(creation.body),{workspace:process.cwd(),editor:true});
   event('model.changed',{operation_id:'A',reason:'agent',new:{agent:'build',model:'direct/override',gateway:'direct',upstream_id:'override',variant:null,source:'override',variant_source:'override'}});
-  assert.equal(b.state.selectedModel,'direct/override');assert.match(dom.window.document.querySelector('.agent-label').textContent,/build.*override/);
+  assert.equal(b.state.selectedModel,'direct/override');assert.match(dom.window.document.querySelector('.chip-primary').title,/build.*override/);
   event('model.changed',{operation_id:'B',reason:'agent',new:{agent:'plan',model:'omniroute/combo/think',gateway:'omniroute',upstream_id:'combo/think',variant:'high',source:'config',variant_source:'config'}});assert.equal(b.state.selectedModel,'omniroute/combo/think');
   await b.newConversation();assert.equal(b.state.modelOverride,undefined);assert.equal(b.state.agent,'plan');
 });
@@ -277,21 +277,21 @@ test('target stale agents and layers cannot update replacement conversation',asy
   const {b,dom}=fullChat(t);let finishAgents,finishLayers;b.refreshCommands=async()=>{};
   t.mock.method(globalThis,'fetch',url=>new Promise(resolve=>{if(url.includes('/agents?'))finishAgents=resolve;else finishLayers=resolve;}));
   const pending=b.refreshAssignments().catch(()=>{});await b.newConversation();
-  finishAgents(new Response(JSON.stringify({default_agent:'obsolete',agents:[{id:'obsolete',description:'old',mode:'primary',effective:{model:'gw/old',source:'config'}}]})));finishLayers(new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',reason:'old reason'}]})));await pending;assert.notEqual(b.state.agent,'obsolete');assert.doesNotMatch(dom.window.document.querySelector('.topbar').title,/old reason/);
+  finishAgents(new Response(JSON.stringify({default_agent:'obsolete',agents:[{id:'obsolete',description:'old',mode:'primary',effective:{model:'gw/old',source:'config'}}]})));finishLayers(new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',reason:'old reason'}]})));await pending;assert.notEqual(b.state.agent,'obsolete');assert.doesNotMatch(dom.window.document.querySelector('.session-header').title,/old reason/);
 });
 test('target grouped model picker canonical names collapse and search without choosing headers',async t=>{
   const {b,dom,tick}=fullChat(t);b.state.session='P';b.refreshAssignments=async()=>{};
   const models=[{name:'omniroute/combo/think',gateway:'omniroute',provider_group:'combo',upstream_id:'combo/think',api:'chat',enabled:true},{name:'direct/model',gateway:'direct',provider_group:'direct',upstream_id:'model',api:'chat',enabled:true}];
-  b.models=models;b.emit({type:'models',items:models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');
+  b.models=models;b.emit({type:'models',items:models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('.model-btn').focus();key('Enter');
   const groups=[...dom.window.document.querySelectorAll('.picker-group')];assert.deepEqual(groups.map(g=>g.textContent),['direct','omniroute','combo']);
-  groups.find(g=>g.textContent==='omniroute').click();assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);
-  const search=dom.window.document.querySelector('#command-palette .picker-search');search.focus();type('combo/think');assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);assert.equal(dom.window.document.querySelector('#picker-options [role=option]').title,'omniroute/combo/think');
+  groups.find(g=>g.textContent==='omniroute').click();assert.equal(dom.window.document.querySelectorAll('.picker-options [role=option]').length,1);
+  const search=dom.window.document.querySelector('.command-palette .picker-search');search.focus();type('combo/think');assert.equal(dom.window.document.querySelectorAll('.picker-options [role=option]').length,1);assert.equal(dom.window.document.querySelector('.picker-options [role=option]').title,'omniroute/combo/think');
   let request;t.mock.method(globalThis,'fetch',async(url,init)=>{request=JSON.parse(init.body);return new Response(JSON.stringify({operation_id:'M'}));});key('Enter');await tick();assert.deepEqual(request,{name:'model',arguments:'omniroute/combo/think'});
 });
 test('target reopened summary restores effective override and blocks stale metadata selection',async t=>{
   const {b,dom,event}=fullChat(t);b.state.session='S';b.refreshAssignments=async()=>{};
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:3,agent:'plan',model:'gw/saved',variant:'high',source:'override',variant_source:'override'})));
-  await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/saved');assert.match(dom.window.document.querySelector('.topbar').title,/gw\/saved.*override/);
+  await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/saved');assert.match(dom.window.document.querySelector('.session-header').title,/gw\/saved.*override/);
   for(let i=0;i<5;i++)event('model.changed',{new:{agent:'build',model:'gw/new',gateway:'gw',upstream_id:'new',variant:null,source:'config',variant_source:'config'}});
   await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/new');
 });
@@ -301,7 +301,7 @@ test('review1 monotonic identity remains atomic across replay summaries and cach
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({...identity,current_seq:10})));
   await b.loadSessionModel('S');
   for(let i=0;i<9;i++)event('model.changed',{new:{agent:'build',model:'gw/old',variant:null,source:'config',variant_source:'config'}});
-  event('session.agent_changed',{agent:'build'});assert.equal(b.state.agent,'plan');assert.match(dom.window.document.querySelector('.topbar').title,/plan.*gw\/current.*high.*override/);
+  event('session.agent_changed',{agent:'build'});assert.equal(b.state.agent,'plan');assert.match(dom.window.document.querySelector('.session-header').title,/plan.*gw\/current.*high.*override/);
   b.state.commandResults.set('old',{operation_id:'old',name:'agent',ok:true,data:{selection:{agent:'build',model:'gw/old',variant:null,source:'config'}}});
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({error:'missing'}),{status:404}));await b.openConversation('missing').catch(()=>{});
   assert.equal(b.state.agent,'plan');assert.equal(b.state.selectedModel,'gw/current');
@@ -322,19 +322,19 @@ test('review3 archive mode persists on ready and list refresh, inert history and
   t.mock.method(globalThis,'fetch',async(_url,init)=>{if(init.method==='POST')posts++;return new Response(JSON.stringify({current_seq:10,read_only:true,resume_disabled_reason:'identity unproven',title:'Old history',agent:'plan',model:'gw/history',source:'config'}));});
   await b.openConversation('archive');assert.equal(posts,0);b.publishSubagents();
   event('permission.requested',{request_id:'R',tool:'bash',agent:'plan',arguments:'{}',reason:'historic'});event('agent.yield',{kind:'budget'});
-  b.publishSubagents();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').disabled,true);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.doesNotMatch(dom.window.document.querySelector('.child-header').textContent,/subagent of/);
+  b.publishSubagents();assert.equal(dom.window.document.querySelector('.prompt').disabled,true);assert.equal(dom.window.document.querySelector('.agent-btn').disabled,true);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.doesNotMatch(dom.window.document.querySelector('.child-header').textContent,/subagent of/);
   delete b.listConversations;
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'archive',title:'Old history',read_only:true,promptable:false}]})));
-  await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('#composer').hidden,true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);
+  await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('.prompt').disabled,true);assert.equal(dom.window.document.querySelector('.composer').hidden,true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);
   const messages=[];let receive;provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});receive({type:'ready'});assert(messages.some(m=>m.type==='viewMode'&&m.readOnly&&m.archiveReason));
   await b.newConversation();assert.equal(b.isReadOnly(),false);assert.equal(b.terminalChild,false);
-  assert.equal(dom.window.document.querySelector('#composer').hidden,false);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
+  assert.equal(dom.window.document.querySelector('.composer').hidden,false);assert.equal(dom.window.document.querySelector('.prompt').disabled,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
 });
 for(const transition of ['new','saved','restart'])test(`final archive to ${transition} restores visible composer and accepts focused submission`,async t=>{
   const {b,dom,tick,prompt}=fullChat(t);
   b.refreshAssignments=async()=>{};b.refreshCommands=async()=>{};b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:1,read_only:true,resume_disabled_reason:'archived identity',title:'Archive'})));
-  await b.openConversation('archive');assert.equal(dom.window.document.querySelector('#composer').hidden,true);
+  await b.openConversation('archive');assert.equal(dom.window.document.querySelector('.composer').hidden,true);
   const posts=[];t.mock.method(globalThis,'fetch',async(url,init)=>{
     if(init.method==='POST')posts.push({url,body:JSON.parse(init.body)});
     return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:url.endsWith('/v1/sessions')?{session_id:'saved'}:{current_seq:1,agent:'build',model:'gw/chat',variant:null,source:'config',variant_source:'config',actor_state:'idle'}));
@@ -343,7 +343,7 @@ for(const transition of ['new','saved','restart'])test(`final archive to ${trans
   else if(transition==='saved')await b.openConversation('saved');
   else b.setServerInfo({port:5678,token:'restart'});
   await tick();
-  assert.equal(dom.window.document.querySelector('#composer').hidden,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
+  assert.equal(dom.window.document.querySelector('.composer').hidden,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
   if(transition==='restart')b.emit({type:'status',state:'ready'}); // Controlled empty-server bootstrap completion.
   assert.equal(prompt.disabled,false);
   const {key,type}=focusedKeys(dom);prompt.focus();type('ordinary draft');key('Enter');await tick();
@@ -353,13 +353,13 @@ for(const variant of ['high','off','inherit'])test(`review4 ${variant} variant-o
   const {b,dom,tick,send}=fullChat(t);b.state.session=undefined;b.refreshAssignments=async()=>{};
   b.agents=[{id:'build',description:'Build',mode:'primary',effective:{model:'gw/chat',variant:'low',source:'config',variant_source:'config'}}];b.models=[{name:'gw/chat',gateway:'gw',provider_group:'gw',upstream_id:'chat',api:'chat',variants:['low','high']}];b.state.selectedModel='gw/chat';b.state.selection=b.agents[0].effective;
   b.commands.push({name:'variant',description:'Variant',args_hint:''});const bodies=[];t.mock.method(globalThis,'fetch',async(url,init)=>{if(init.method==='POST')bodies.push(JSON.parse(init.body));return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));});
-  send('/variant '+variant);await tick();assert.match(dom.window.document.querySelector('.topbar').title,variant==='off'?/variant off/:variant==='inherit'?/low/:/high/);send('hello');await tick();assert.equal(bodies[0].model,undefined);assert.equal(bodies[0].variant,variant==='inherit'?undefined:variant==='off'?null:'high');
+  send('/variant '+variant);await tick();assert.match(dom.window.document.querySelector('.session-header').title,variant==='off'?/variant off/:variant==='inherit'?/low/:/high/);send('hello');await tick();assert.equal(bodies[0].model,undefined);assert.equal(bodies[0].variant,variant==='inherit'?undefined:variant==='off'?null:'high');
 });
 test('review5 hierarchy preserves gateway with collapsed providers and group key actions never select model',async t=>{
   const {b,dom}=fullChat(t);const rows=['a','b'].map(provider=>({name:`gw/${provider}/model`,gateway:'gw',provider_group:provider,upstream_id:`${provider}/model`,api:'chat',enabled:true}));rows.push({name:'direct/model',gateway:'direct',provider_group:'direct',upstream_id:'model',api:'chat',enabled:true});b.emit({type:'models',items:rows,locked:false});
-  const {key}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');let requests=0;t.mock.method(globalThis,'fetch',()=>{requests++;return new Promise(()=>{});});
+  const {key}=focusedKeys(dom);dom.window.document.querySelector('.model-btn').focus();key('Enter');let requests=0;t.mock.method(globalThis,'fetch',()=>{requests++;return new Promise(()=>{});});
   const group=text=>[...dom.window.document.querySelectorAll('.picker-group')].find(button=>button.textContent===text);
-  group('a').click();assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,2);group('b').click();assert(group('gw'));assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);group('gw').click();assert.equal(group('a'),undefined);assert.equal(group('b'),undefined);
+  group('a').click();assert.equal(dom.window.document.querySelectorAll('.picker-options [role=option]').length,2);group('b').click();assert(group('gw'));assert.equal(dom.window.document.querySelectorAll('.picker-options [role=option]').length,1);group('gw').click();assert.equal(group('a'),undefined);assert.equal(group('b'),undefined);
   group('gw').focus();key('Enter');group('gw').click(); // jsdom needs native button activation simulated.
   group('a').focus();key(' ');group('a').click();assert.equal(requests,0);assert.equal([...dom.window.document.querySelectorAll('.picker-group')].filter(button=>button.textContent==='direct').length,1);
 });
@@ -386,16 +386,16 @@ for(const choice of ['high','off'])test(`round2 initial ${choice} variant previe
   const {b,dom,send,tick}=fullChat(t);b.state.session=undefined;b.models=[{name:'gw/A',gateway:'gw',provider_group:'gw',upstream_id:'A',api:'chat',variants:['high'],defaultVariant:'high'}];b.state.selectedModel='gw/A';b.commands.push({name:'variant',description:'Variant',args_hint:''});
   send('/variant '+choice);await tick();
   t.mock.method(globalThis,'fetch',async url=>new Response(JSON.stringify(url.includes('/agents?')?{default_agent:'build',agents:[{id:'build',description:'Build',mode:'primary',assignment:{model:'gw/A',variant:null,source:'config',variant_source:'config'},effective:{model:'gw/A',variant:null,source:'config',variant_source:'config'}}]}:{layers:[]})));
-  await b.refreshAssignments();assert.equal(b.state.selection.variant,choice==='off'?null:'high');assert.match(dom.window.document.querySelector('.topbar').title,/model source: config.*variant source: override/);
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,choice==='off'?null:'high');assert.match(dom.window.document.querySelector('.session-header').title,/model source: config.*variant source: override/);
 });
 test('round2 model override inherit uses its model default, assignment null stays explicitly off',async t=>{
   const {b,dom,send,tick}=fullChat(t);b.state.session=undefined;b.commands.push({name:'variant',description:'Variant',args_hint:''});
   b.models=[{name:'gw/A',gateway:'gw',provider_group:'gw',upstream_id:'A',api:'chat',variants:['high'],defaultVariant:'high'},{name:'gw/B',gateway:'gw',provider_group:'gw',upstream_id:'B',api:'chat',variants:['low'],defaultVariant:'low'}];
   const base={model:'gw/A',variant:null,source:'config',variant_source:'config'};b.agents=[{id:'build',description:'Build',mode:'primary',assignment:base,effective:base}];
   t.mock.method(globalThis,'fetch',async url=>new Response(JSON.stringify(url.includes('/agents?')?{default_agent:'build',agents:b.agents}:{layers:[]})));
-  await b.refreshAssignments();assert.equal(b.state.selection.variant,null);assert.match(dom.window.document.querySelector('.topbar').title,/variant off/);
-  b.emit({type:'models',items:b.models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');type('gw/B');key('Enter');await tick();
-  send('/variant inherit');await tick();assert.equal(b.state.selection.model,'gw/B');assert.equal(b.state.selection.variant,'low');assert.match(dom.window.document.querySelector('.topbar').title,/model source: override.*variant source: model_default/);
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,null);assert.match(dom.window.document.querySelector('.session-header').title,/variant off/);
+  b.emit({type:'models',items:b.models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('.model-btn').focus();key('Enter');type('gw/B');key('Enter');await tick();
+  send('/variant inherit');await tick();assert.equal(b.state.selection.model,'gw/B');assert.equal(b.state.selection.variant,'low');assert.match(dom.window.document.querySelector('.session-header').title,/model source: override.*variant source: model_default/);
   await b.refreshAssignments();assert.equal(b.state.selection.variant,'low');
 });
 test('turn segments preserve step order, tool summaries, folds and visible interruptions', t => {
@@ -407,10 +407,10 @@ test('turn segments preserve step order, tool summaries, folds and visible inter
   emit({type:'tool',id:'T',callId:'a',phase:'start',name:'bash',summary:'bash: work'});
   const group = dom.window.document.querySelector('.tool-group');
   assert.equal(group.open,true);
-  assert.match(group.querySelector('summary').textContent,/1 tool calls · running bash: work/);
+  assert.match(group.querySelector('summary').textContent,/1 action · ran 1 command · running bash: work/);
   emit({type:'tool',id:'T',callId:'a',phase:'end',name:'bash',summary:'bash: work',ok:false});
   emit({type:'tool',id:'T',callId:'b',phase:'start',name:'read',summary:'read a.rs'});
-  assert.match(group.querySelector('summary').textContent,/2 tool calls · 1 failed/);
+  assert.match(group.querySelector('summary').textContent,/2 actions · read 1 file · ran 1 command · 1 failed/);
   emit({type:'delta',id:'T',stepId:'2',text:'After'});
   assert.equal(group.open,false);
   assert.deepEqual([...dom.window.document.querySelector('.cognition').children].filter(x=>x.matches('.message-body,.tool-group')).map(x=>x.className),['message-body','tool-group','message-body']);
@@ -428,15 +428,21 @@ test('turn segments preserve step order, tool summaries, folds and visible inter
   emit({type:'tool',id:'T',callId:'d',phase:'start',name:'read',summary:'read c.rs'});
   const card = dom.window.document.querySelector('.permission-card');
   assert.equal(card.closest('.tool-group'),null);
-  assert.ok(card.compareDocumentPosition(dom.window.document.querySelector('#transcript').lastElementChild) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.ok(card.compareDocumentPosition(dom.window.document.querySelector('.transcript').lastElementChild) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
 test('history tool groups remain closed', t => {
   const { b, dom } = fullChat(t);
-  dom.window.dispatchEvent(new dom.window.MessageEvent('message', {data:{type:'history',generation:b.currentGeneration(),items:[{type:'turnStart',generation:b.currentGeneration(),id:'H'},{type:'tool',generation:b.currentGeneration(),id:'H',callId:'a',phase:'start',name:'read',summary:'read a.rs'}]}}));
+  dom.window.dispatchEvent(new dom.window.MessageEvent('message', {data:{type:'history',tab:'main',generation:b.currentGeneration(),items:[{type:'turnStart',generation:b.currentGeneration(),id:'H'},{type:'tool',generation:b.currentGeneration(),id:'H',callId:'a',phase:'start',name:'read',summary:'read a.rs'}]}}));
   assert.equal(dom.window.document.querySelector('.tool-group').open,false);
 });
 
+/** The subagent dropdown's buttons; the dropdown is opened first. */
+function menuButtons(dom) {
+  const d = dom.window.document;
+  if (d.querySelector('.sa-menu').hidden) d.querySelector('.chip-more').click();
+  return d.querySelectorAll('.child-row button');
+}
 function fullChat(t, globalState = memento()) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');
@@ -454,22 +460,23 @@ function fullChat(t, globalState = memento()) {
     onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
   vscode.ViewColumn = {Active:1};
   vscode.window.createWebviewPanel = (_kind,title) => {
-    const page = new JSDOM(chatHtml('n','chat.js','chat.css','resource:'), {runScripts:'outside-only'});
+    let page;
     const handlers=[];let handler;
     const panel={title, reveal(){}, webview:{cspSource:'test',options:{},asWebviewUri:v=>v,
+      set html(value){page=new JSDOM(value,{runScripts:'outside-only'});},
       postMessage(data){page.window.dispatchEvent(new page.window.MessageEvent('message',{data}));},
       onDidReceiveMessage(fn){handler=fn;return noopDisposable();}},
       onDidDispose(fn){handlers.push(fn);return noopDisposable();},
       dispose(){for(const fn of handlers.splice(0))fn();page.window.close();}};
-    panels.push({panel,page,send:m=>handler(m)});
+    panels.push({panel,get page(){return page;},send:m=>handler(m)});
     // Start the shipped page once the panel host handler has been registered.
     setImmediate(()=>{page.window.acquireVsCodeApi=()=>({postMessage:m=>handler(m),getState(){},setState(){}});page.window.eval(fs.readFileSync('out/chat.js','utf8'));});
     return panel;
   };
   dom.window.acquireVsCodeApi = () => ({ postMessage: message => receive(message), getState() {}, setState() {} });
   dom.window.eval(fs.readFileSync('out/chat.js','utf8'));
-  const prompt = dom.window.document.querySelector('#prompt');
-  const send = text => { prompt.value = text; receive({ type: 'send', text, includeContext: false, generation: b.currentGeneration() }); };
+  const prompt = dom.window.document.querySelector('.prompt');
+  const send = text => { prompt.value = text; receive({ type: 'send', text, includeContext: false, tab: 'main', generation: b.currentGeneration() }); };
   let seq = 0;
   const event = (kind,payload) => b.handleFrame({ id: String(++seq), event: '', envelope: { seq,kind,payload } });
   const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -481,15 +488,15 @@ test('subagent Stop and Continue confirm, exact bodies, refusals and stale paren
   event('agent.yield',{child_session_id:'C',kind:'budget'});
   let confirmed=0; vscode.window.showWarningMessage=async()=>{confirmed++;return 'Confirm';};
   const calls=[]; t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({accepted:false,error:'Not parked'}));});
-  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue').click(); await tick();
+  [...menuButtons(dom)].find(x=>x.textContent==='Continue').click(); await tick();
   assert.equal(confirmed,1); assert.deepEqual(JSON.parse(calls[0].body),{pause_token:null});
   assert.match(calls[0].url,/\/P\/children\/C\/continue$/); assert.match(dom.window.document.querySelector('.child-row').textContent,/Not parked/);
   const token={incarnation:'I',hold_id:'H'};
   event('agent.yield',{child_session_id:'C',kind:'watchdog',details:{pause_token:token}});
   t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({accepted:true}));});
-  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue').click(); await tick();
+  [...menuButtons(dom)].find(x=>x.textContent==='Continue').click(); await tick();
   assert.deepEqual(JSON.parse(calls.at(-1).body),{pause_token:null});
-  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Stop').click(); await tick();
+  [...menuButtons(dom)].find(x=>x.textContent==='Stop').click(); await tick();
   assert.match(calls.at(-1).url,/\/C\/stop$/); assert.equal(calls.at(-1).body,undefined);
   const old=b.currentGeneration(); await b.newConversation();
   await assert.rejects(b.controlChild('P','C','stop',old),/conversation changed/);
@@ -498,7 +505,7 @@ test('subagent session list seeds rows, replay preserves terminal states and wat
   const { b,event,dom,tick } = fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
   t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'P',promptable:true},{id:'C',parent_session_id:'P',promptable:false,agent:'plan',child_status:'out_of_steps'}]})));
   delete b.listConversations;await b.listConversations();
-  assert.equal(b.state.children.get('C').state,'budget');assert.match(dom.window.document.querySelector('.child-row').textContent,/Out of steps/);
+  assert.equal(b.state.children.get('C').state,'budget');assert.match((menuButtons(dom),dom.window.document.querySelector('.child-row')).textContent,/Out of steps/);
   const token={incarnation:'I',hold_id:'H'};
   event('agent.yield',{child_session_id:'C',kind:'watchdog',details:{pause_token:token}});
   assert.equal(b.state.children.get('C').state,'watchdog');
@@ -538,7 +545,7 @@ test('R3.2 end-to-end populated picker locks at nonzero opening generation and u
   const { b,dom,tick } = fullChat(t);
   b.models=[{name:'gw/a',gateway:'gw',provider_group:'gw',upstream_id:'a',api:'chat',enabled:true}];
   await b.newConversation();
-  const picker=dom.window.document.querySelector('#model');
+  const picker=dom.window.document.querySelector('.model-btn');
   assert(b.currentGeneration()>=1); assert.equal(picker.disabled,false);
   let finish;
   t.mock.method(globalThis,'fetch',url => url.endsWith('/v1/sessions') ? Promise.resolve(new Response(JSON.stringify({session_id:'B'}))) : new Promise(resolve => finish=resolve));
@@ -572,7 +579,7 @@ for (const opening of [false,true]) test(`R2.2 end-to-end New abandons pending $
   t.mock.method(globalThis,'fetch',() => new Promise(resolve => finish=resolve));
   if (opening) { void b.openConversation('B').catch(() => {}); }
   else send('abandoned');
-  await tick(); assert.equal(dom.window.document.querySelector('#model').disabled,true);
+  await tick(); assert.equal(dom.window.document.querySelector('.model-btn').disabled,true);
   send('/new'); await tick();
   assert.equal(b.state.starting,false);
   finish(new Response(JSON.stringify({ session_id:'old', current_seq:1 }))); await tick();
@@ -616,7 +623,7 @@ test("R1 skill confirms permission cancellation before submission without editor
     runComposerCommand: async () => { assert.equal(confirms, 1); submitted++; return false; } };
   registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
   provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
-  receive({ type: "send", text: "/skill review check", generation: 2, includeContext: true });
+  receive({ type: "send", text: "/skill review check", tab: "main", generation: 2, includeContext: true });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(submitted, 1);
   delete vscode.window.activeTextEditor;
@@ -638,7 +645,7 @@ test("host routes slash commands before editor context or permission confirmatio
   };
   registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
   provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
-  receive({ type: "send", text: "/context", includeContext: true, generation: 2 });
+  receive({ type: "send", text: "/context", includeContext: true, tab: "main", generation: 2 });
   await Promise.resolve(); await Promise.resolve();
   assert.deepEqual(command, { text: "/context", generation: 2 });
   assert.equal(contextReads, 0);
@@ -674,9 +681,11 @@ test("late-created and recreated views receive current session identity before r
       onDidDispose(listener) { dispose = listener; },
     });
     receive({ type: "ready" });
-    assert.deepEqual(messages[0], { type: "conversationOpened", id: "already-open", title: "Conversation", generation: 1 });
-    assert.equal(messages[1].type, "history");
-    assert.deepEqual(messages[2], { type: "usage", snapshot: backend.currentContext(), generation: 1 });
+    assert.deepEqual(messages.find(m => m.type === "tabs"), { type: "tabs", tabs: [{ id: "main", title: "Conversation", sessionId: "already-open" }], active: "main" });
+    const tabbed = messages.filter(m => m.tab === "main");
+    assert.deepEqual(tabbed[0], { type: "conversationOpened", id: "already-open", title: "Conversation", generation: 1, tab: "main" });
+    assert.equal(tabbed[1].type, "history");
+    assert.deepEqual(tabbed[2], { type: "usage", snapshot: backend.currentContext(), generation: 1, tab: "main" });
     dispose();
   }
   assert.equal(cancelled, 2);
@@ -694,18 +703,17 @@ test("favorite models: the host stores them in globalState, shares them with eve
   };
   const first = open(); const second = open();
   first.receive({ type: "ready" });
-  assert.deepEqual(first.favorites().at(-1), { type: "favorites", items: ["kept/model"], generation: 1 }, "non-strings are dropped on read");
-  first.receive({ type: "toggleFavorite", name: "gw/a", generation: 1 });
+  assert.deepEqual(first.favorites().at(-1), { type: "favorites", items: ["kept/model"] }, "non-strings are dropped on read");
+  first.receive({ type: "toggleFavorite", name: "gw/a" });
   assert.deepEqual(state.get("withnav.favoriteModels"), ["kept/model", "gw/a"]);
   assert.deepEqual(first.favorites().at(-1).items, ["kept/model", "gw/a"]);
   assert.deepEqual(second.favorites().at(-1).items, ["kept/model", "gw/a"], "another view sees the change");
-  first.receive({ type: "toggleFavorite", name: "kept/model", generation: 1 });
+  first.receive({ type: "toggleFavorite", name: "kept/model" });
   assert.deepEqual(state.get("withnav.favoriteModels"), ["gw/a"]);
-  first.receive({ type: "toggleFavorite", name: 5, generation: 1 });
-  first.receive({ type: "toggleFavorite", name: "", generation: 1 });
-  first.receive({ type: "toggleFavorite", name: "x".repeat(1000), generation: 1 });
-  first.receive({ type: "toggleFavorite", name: "gw/b", generation: 99 });
-  assert.deepEqual(state.get("withnav.favoriteModels"), ["gw/a"], "bad names and stale generations change nothing");
+  first.receive({ type: "toggleFavorite", name: 5 });
+  first.receive({ type: "toggleFavorite", name: "" });
+  first.receive({ type: "toggleFavorite", name: "x".repeat(1000) });
+    assert.deepEqual(state.get("withnav.favoriteModels"), ["gw/a"], "bad names change nothing");
   second.receive({ type: "ready" });
   assert.deepEqual(second.favorites().at(-1).items, ["gw/a"], "a recreated view starts from the stored list");
 });
@@ -716,7 +724,7 @@ test("favorite models reach a subagent panel too", async t => {
   b.state.session = "P"; b.scheduleChildRead = () => {};
   event("subagent.spawned", { parent_session_id: "P", child_session_id: "C", agent: "plan", goal: "work" });
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ parent_session_id: "P", promptable: false, child_status: "done", agent: "plan" })));
-  dom.window.document.querySelector(".child-open").click(); await tick(); await tick();
+  dom.window.document.querySelector(".chip-sub").click(); await tick(); await tick();
   assert.equal(panels.length, 1);
   await tick();
   const seen = [];

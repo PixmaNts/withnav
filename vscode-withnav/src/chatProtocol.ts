@@ -38,7 +38,11 @@ export interface AskChoices { header?: string; options: { label: string; descrip
 export interface AskAnswer { question_call_id: string; selected: number[]; custom?: string }
 
 /** Host -> webview messages. */
-export type HostToWebview = { generation?: number } & (
+export type HostToWebview = { generation?: number; tab?: string } & (
+  /** The open conversation tabs, in order; `active` is the focused one. Not tab-scoped. */
+  | { type: "tabs"; tabs: TabInfo[]; active?: string }
+  /** The view-title "Sessions" button: show the session list. Not tab-scoped. */
+  | { type: "showSessions" }
   | { type: "bypass"; enabled: boolean; pending: boolean; disabled: boolean; yolo?: boolean; permissionsUnavailable?: string }
   | { type: "viewMode"; readOnly: boolean; archiveReason?: string }
   | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string; variant_source?: string; models?: ModelInfo[]; locked?: boolean }
@@ -77,8 +81,10 @@ export type HostToWebview = { generation?: number } & (
    | { type: "questionState"; questionCallId: string; error: string }
   /** Live preview of the editor context the next message would carry (chip label). */
   | { type: "editorContext"; label: string }
-  /** Past conversations of this workspace, newest first. `currentId` is the open one. */
-  | { type: "conversations"; items: ConversationSummary[]; currentId?: string }
+  /** Past conversations of this workspace, newest first. Global (no tab). */
+  | { type: "conversations"; items: ConversationSummary[]; currentId?: string; workspace?: string }
+  /** Look of the chat: the base text size in px (setting `withnav.chat.fontSize`). Global. */
+  | { type: "appearance"; fontSize: number }
   /** A conversation was opened (resumed or started); a `history` message follows. */
   | { type: "conversationOpened"; id?: string; title: string }
   /** Replace the whole transcript (sent when the view is (re)opened). */
@@ -87,17 +93,29 @@ export type HostToWebview = { generation?: number } & (
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
   /** The Captain's favorite model names (kept by the host, shared by every panel; names no longer in the catalogue are not listed by the picker). */
   | { type: "favorites"; items: string[] }
+  /** The Captain's favorite agent names, kept like the favorite models. Global. */
+  | { type: "favoriteAgents"; items: string[] }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
   | { type: "usage"; snapshot: import("./contextMeter").ContextSnapshot });
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
   subagentCount?: number;
+  /** The primary agent, when the server reports it. */
+  agent?: string;
+  /** The server holds a live runtime for this session. */
+  live?: boolean;
+  /** Subagent sessions the server reports as running / failed (from `child_status`). */
+  subagentsRunning?: number;
+  subagentsFailed?: number;
   id: string;
   title: string;
   updatedAt: string;
   messageCount: number;
 }
+
+/** One open conversation tab. `sessionId` is absent until the conversation exists on the server. */
+export interface TabInfo { id: string; title: string; sessionId?: string }
 
 /** One canonical catalog identity; never reconstruct its name from upstream_id. */
 export interface ModelInfo {
@@ -128,7 +146,13 @@ export interface ChildInfo {
 export interface ComposerOperation { owner: object; generation: number }
 
 /** Webview -> host messages. */
-export type WebviewToHost = { generation?: number } & (
+export type WebviewToHost = { generation?: number; tab?: string } & (
+  /** Open a conversation in a tab (focus its tab when already open); no id opens a new, empty one. Not tab-scoped. */
+  | { type: "openTab"; sessionId?: string }
+  /** Close the tab named by `tab`. Not generation-checked. */
+  | { type: "closeTab" }
+  /** Focus the tab named by `tab`. */
+  | { type: "focusTab" }
   | { type: "toggleBypass" }
   | { type: "selectAgent"; id: string }
   | { type: "openChild"; parentId: string; childId: string }
@@ -146,16 +170,32 @@ export type WebviewToHost = { generation?: number } & (
   | { type: "openFile"; path: string; line?: number }
   /** The Captain asks for the conversation list (the host answers with `conversations`). */
   | { type: "listConversations" }
-  /** The Captain reopens a past conversation. */
-  | { type: "openConversation"; id: string }
-  /** The Captain starts a new conversation; the current one stays saved. */
-  | { type: "newConversation" }
   /** The Captain deletes a saved conversation. */
   | { type: "deleteConversation"; id: string }
   /** The Captain picks the model for the next new conversation. */
   | { type: "selectModel"; name: string }
   /** The Captain adds the model to the favorites, or removes it. The host answers with `favorites`. */
-  | { type: "toggleFavorite"; name: string });
+  | { type: "toggleFavorite"; name: string }
+  /** The same for an agent. The host answers with `favoriteAgents`. */
+  | { type: "toggleFavoriteAgent"; name: string });
+
+/** The set of conversation tabs the chat view shows; each tab owns one `ChatBackend`. */
+export interface ChatTabs {
+  tabs(): TabInfo[];
+  active(): string | undefined;
+  backend(tab: string): ChatBackend | undefined;
+  /** Opens `sessionId` in a tab, or focuses the tab that already holds it; no id opens an empty conversation. */
+  open(sessionId?: string): string;
+  close(tab: string): void;
+  focus(tab: string): void;
+  onTabs(listener: () => void): () => void;
+  /** Every backend message, tagged with its tab. */
+  subscribe(listener: (tab: string, message: HostToWebview) => void): () => void;
+  listConversations(): Promise<ConversationSummary[]>;
+  deleteConversation(id: string): Promise<void>;
+  conversations(): ConversationSummary[];
+  onConversations(listener: (items: ConversationSummary[]) => void): () => void;
+}
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {

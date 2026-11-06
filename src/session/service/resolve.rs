@@ -37,7 +37,9 @@ fn identity_of(resolved: &ResolvedModel) -> ModelResolution {
             context_window: String::new(),
             max_input_tokens: String::new(),
             reported_output: String::new(),
+            images: String::new(),
         },
+        images: None,
     }
 }
 
@@ -384,6 +386,11 @@ impl Service {
         let mut resolved = resolved;
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
+        // A resolution saved before image support was recorded keeps what
+        // models.json says today; a recorded one is kept, like the bounds.
+        if !snapshot.provenance.images.is_empty() {
+            resolved.model.images = snapshot.images;
+        }
         Ok((resolved, api_key, snapshot, save_late, models_file))
     }
 
@@ -818,7 +825,7 @@ impl Service {
                         resolved.provider = target.provider.clone();
                         resolved.model.model = target.model.clone();
                         resolved.model.reasoning_history = target.reasoning_history;
-                        resolved.model.images = Some(target.images);
+                        resolved.model.images = target.images;
                         resolved.model.max_output_tokens = target.max_tokens;
                         resolved.model.context_window =
                             Some(target.resolution.bounds.context_window);
@@ -919,7 +926,7 @@ impl Service {
             api_key,
             model: resolved.model.model.clone(),
             reasoning_history: resolved.model.reasoning_history,
-            images: resolved.model.images.unwrap_or(false),
+            images: snapshot.images,
             max_tokens: resolved.model.max_output_tokens,
             variant,
             new: ModelIdentity::from_upstream(&snapshot.provider, &snapshot.model),

@@ -50,8 +50,8 @@ pub struct ModelTarget {
     /// The model name sent on the wire.
     pub model: String,
     pub reasoning_history: ReasoningHistory,
-    /// Whether the target accepts images (`ModelConfig.images`, absent meaning no).
-    pub images: bool,
+    /// Whether the target accepts images, as its resolution says; `None`: unknown.
+    pub images: Option<bool>,
     pub max_tokens: Option<u64>,
     pub max_message_tokens: Option<u64>,
     /// The target's own default variant.

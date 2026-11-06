@@ -694,6 +694,12 @@ pub struct ModelEntry {
     /// asked for); `refresh_error` says why when the lookup failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_variant_unavailable: Option<String>,
+    /// Whether the model takes images: absent when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
+    /// Where `images` came from: `models.json`, `discovered.vision` or `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images_source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -782,6 +788,8 @@ async fn list_models(
                             variants: m.variants.unwrap_or_default().into_keys().collect(),
                             default_variant: m.default_variant,
                             default_variant_unavailable: None,
+                            images: m.images,
+                            images_source: None,
                         },
                     )
                 })
@@ -813,6 +821,8 @@ async fn list_models(
                             discovered: d.discovered,
                         });
                         entry.variants = resolution.variants.into_keys().collect();
+                        entry.images = resolution.images;
+                        entry.images_source = Some(resolution.images_source);
                     }
                     Err(error) => {
                         entry.enabled = Some(false);

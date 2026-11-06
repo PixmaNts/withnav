@@ -119,9 +119,9 @@ pub struct AgentActor {
     pub api_key: String,
     pub model: String,
     pub reasoning_history: ReasoningHistory,
-    /// Whether the model accepts images (`ModelConfig.images`, absent meaning no). When it does
-    /// not, every image goes out as a text placeholder.
-    pub images: bool,
+    /// Whether the model accepts images: models.json, else the provider's model list; `None`
+    /// when neither says. Unless it is `Some(true)`, every image goes out as a text placeholder.
+    pub images: Option<bool>,
     /// Reads the bytes of the images a request sends. The session installs one bound to its own
     /// id; without one (a run outside a session, a child) images go out as `unavailable`
     /// placeholders.
@@ -274,7 +274,7 @@ impl AgentActor {
             api_key,
             model,
             reasoning_history,
-            images: false,
+            images: None,
             attachment_loader: None,
             reasoning_floor: 0,
             max_tokens,

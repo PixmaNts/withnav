@@ -76,8 +76,10 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 ### Added
 
 - Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF or WebP
-  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model marked `"images": true`
-  in `models.json` sees it; any other model gets a short note saying an image was shown.
+  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
+  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
+  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
+  `images` and where it came from.
 
 ## [0.8.1] - 2026-10-16
 

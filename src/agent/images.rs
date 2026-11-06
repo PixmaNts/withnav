@@ -66,7 +66,7 @@ fn base64_len(size: u64) -> u64 {
 /// first occurrence, newest first, that does not fit, and everything older is cut with it: the
 /// sent set only changes at its oldest end, so the request prefix, and the provider's prompt
 /// cache with it, stays the same between cuts.
-pub fn plan(history: &[ChatMessage], accepts_images: bool) -> Plan {
+pub fn plan(history: &[ChatMessage], accepts_images: Option<bool>) -> Plan {
     let mut messages: Vec<Vec<Verdict>> = vec![Vec::new(); history.len()];
     let mut sent = 0usize;
     let mut base64 = 0u64;
@@ -77,9 +77,16 @@ pub fn plan(history: &[ChatMessage], accepts_images: bool) -> Plan {
         };
         let mut verdicts = vec![Verdict::Send; images.len()];
         for (slot, image) in images.iter().enumerate().rev() {
-            verdicts[slot] = if !accepts_images {
+            verdicts[slot] = if accepts_images == Some(false) {
                 Verdict::Placeholder(format!(
                     "[image {}: this model cannot see images]",
+                    image.label()
+                ))
+            } else if accepts_images.is_none() {
+                // Sending an image to a text-only model fails the whole request, so an
+                // unknown model gets the text and the Captain a way to say otherwise.
+                Verdict::Placeholder(format!(
+                    "[image {}: not sent, this model's image support is unknown (set \"images\": true in models.json to send it)]",
                     image.label()
                 ))
             } else {
@@ -221,7 +228,7 @@ mod tests {
     #[test]
     fn a_model_without_images_gets_a_placeholder_and_keeps_the_text() {
         let history = vec![user("look", vec![image("a", 1500)])];
-        let projected = plan(&history, false).apply(&history);
+        let projected = plan(&history, Some(false)).apply(&history);
         let ChatMessage::User {
             content, images, ..
         } = &projected[0]
@@ -237,10 +244,26 @@ mod tests {
         assert!(matches!(&history[0], ChatMessage::User { images, .. } if images.len() == 1));
     }
 
+    // Given a model whose image support nobody reported
+    // Then its images are not sent (a text-only model fails the whole request on an image part)
+    //      and the placeholder says how to send them
+    #[test]
+    fn a_model_with_unknown_image_support_gets_a_placeholder_naming_the_fix() {
+        let history = vec![user("look", vec![image("a", 10)])];
+        let plan = plan(&history, None);
+        assert!(!plan.sends_any());
+        let projected = plan.apply(&history);
+        assert!(
+            matches!(&projected[0], ChatMessage::User { content, images, .. }
+            if images.is_empty() && content.contains("image support is unknown")
+                && content.contains("\"images\": true"))
+        );
+    }
+
     #[test]
     fn an_image_only_message_becomes_just_the_placeholder() {
         let history = vec![user("", vec![image("a", 10)])];
-        let projected = plan(&history, false).apply(&history);
+        let projected = plan(&history, Some(false)).apply(&history);
         assert!(matches!(&projected[0], ChatMessage::User { content, .. }
             if content == "[image a.png, image/png, 10 B: this model cannot see images]"));
     }
@@ -250,7 +273,7 @@ mod tests {
         let history: Vec<ChatMessage> = (0..23)
             .map(|n| user("", vec![image(&format!("i{n}"), 3)]))
             .collect();
-        let plan = plan(&history, true);
+        let plan = plan(&history, Some(true));
         let projected = plan.apply(&history);
         let sent = sent_ids(&projected);
         assert_eq!(sent.len(), MAX_REQUEST_IMAGES);
@@ -267,7 +290,7 @@ mod tests {
             "",
             (0..25).map(|n| image(&format!("i{n}"), 3)).collect(),
         )];
-        let projected = plan(&history, true).apply(&history);
+        let projected = plan(&history, Some(true)).apply(&history);
         let sent = sent_ids(&projected);
         assert_eq!(sent.len(), MAX_REQUEST_IMAGES);
         // Within a message the newest (last) images are the ones kept.
@@ -277,7 +300,7 @@ mod tests {
     #[test]
     fn the_same_attachment_twice_counts_twice_but_loads_once() {
         let history = vec![user("", vec![image("a", 3)]), user("", vec![image("a", 3)])];
-        let plan = plan(&history, true);
+        let plan = plan(&history, Some(true));
         assert_eq!(sent_ids(&plan.apply(&history)).len(), 2);
         assert_eq!(plan.send_ids(&history), vec!["a".to_string()]);
     }
@@ -293,7 +316,7 @@ mod tests {
             user("", vec![image("big2", big)]),
             user("", vec![image("big3", big)]),
         ];
-        let plan = plan(&history, true);
+        let plan = plan(&history, Some(true));
         let sent = sent_ids(&plan.apply(&history));
         // big3 and big2 fit (20 MiB exactly); big1 does not, and the tiny one older than it stays
         // cut so the sent set only moves at its oldest end.
@@ -303,7 +326,7 @@ mod tests {
     #[test]
     fn unavailable_images_become_placeholders_and_the_rest_are_kept() {
         let history = vec![user("hi", vec![image("a", 5), image("b", 5)])];
-        let plan = plan(&history, true);
+        let plan = plan(&history, Some(true));
         let projected = plan.apply_excluding(&history, &HashSet::from(["a".to_string()]));
         let ChatMessage::User {
             content, images, ..
@@ -324,7 +347,7 @@ mod tests {
             },
             user("plain", vec![]),
         ];
-        let plan = plan(&history, false);
+        let plan = plan(&history, Some(false));
         assert!(!plan.sends_any());
         let projected = plan.apply(&history);
         assert_eq!(

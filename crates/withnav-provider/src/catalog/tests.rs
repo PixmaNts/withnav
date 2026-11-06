@@ -333,6 +333,7 @@ fn limits(context: u64) -> Limits {
         max_output_tokens: None,
         effort_tiers: None,
         max_message_tokens: None,
+        vision: None,
     }
 }
 
@@ -773,6 +774,7 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
             max_output_tokens: Some(1_000),
             effort_tiers: None,
             max_message_tokens: None,
+            vision: None,
         },
     );
     let d = lookup(&catalog, &base, "m").await;
@@ -926,7 +928,9 @@ fn a_saved_resolution_needs_a_positive_window() {
             context_window: "models.json".into(),
             max_input_tokens: "none".into(),
             reported_output: "none".into(),
+            images: String::new(),
         },
+        images: None,
     };
     let raw = |r: &ModelResolution| serde_json::to_string(r).unwrap();
     assert!(ModelResolution::from_saved(&raw(&good)).is_ok());
@@ -944,4 +948,67 @@ fn a_saved_resolution_needs_a_positive_window() {
             .unwrap_err()
             .contains("max_input_tokens")
     );
+}
+
+// Given the shapes a model list reports image input in (OmniRoute, checked 2026-11-06)
+// Then `input_modalities` decides, `capabilities.vision` is the fallback, and nothing else
+//      (a name, an absent field) makes a model a vision model
+#[test]
+fn vision_is_read_from_input_modalities_then_capabilities_and_never_guessed() {
+    let body = br#"{"data":[
+        {"id":"seeing","input_modalities":["text","image"]},
+        {"id":"text-only","input_modalities":["text"],"capabilities":{"vision":true}},
+        {"id":"flagged","capabilities":{"vision":true}},
+        {"id":"flagged-no","capabilities":{"vision":false}},
+        {"id":"gpt-4o-vision"}
+    ]}"#;
+    let models = parse_models(body).unwrap();
+    assert_eq!(models["seeing"].vision, Some(true));
+    assert_eq!(models["text-only"].vision, Some(false));
+    assert_eq!(models["flagged"].vision, Some(true));
+    assert_eq!(models["flagged-no"].vision, Some(false));
+    assert_eq!(models["gpt-4o-vision"].vision, None);
+}
+
+// Given models.json and the provider's list, alone or together
+// Then an explicit models.json value wins, `false` included; the list fills the gap; and with
+//      neither the support is unknown, recorded with its source in the saved resolution
+#[test]
+fn image_support_prefers_models_json_then_discovery_then_unknown() {
+    let data = |vision| CatalogData {
+        limits: Some(Limits {
+            vision,
+            ..Default::default()
+        }),
+        stale: false,
+        age_seconds: Some(1),
+        error: None,
+    };
+    let mut model = resolved("http://gw.invalid/v1", "m", ApiKind::Chat, Some(1000));
+    let cases = [
+        (Some(false), Some(true), Some(false), "models.json"),
+        (Some(true), Some(false), Some(true), "models.json"),
+        (None, Some(true), Some(true), "discovered.vision"),
+        (None, Some(false), Some(false), "discovered.vision"),
+        (None, None, None, "none"),
+    ];
+    for (configured, discovered, expected, source) in cases {
+        model.model.images = configured;
+        let chat = chat_from_data(&model, Some(data(discovered))).unwrap();
+        assert_eq!(chat.images, expected, "{configured:?} {discovered:?}");
+        assert_eq!(chat.images_source, source);
+        assert_eq!(chat.snapshot.images, expected);
+        assert_eq!(chat.snapshot.provenance.images, source);
+    }
+}
+
+// Given a resolution saved before image support was recorded
+// Then it still reads, with the support unknown and no source
+#[test]
+fn a_resolution_saved_before_image_support_reads_as_unknown() {
+    let raw = r#"{"version":1,"provider":"p","model":"m","api":"chat","endpoint":"","bounds":{"context_window":1000,"max_input_tokens":null,"reported_output":null},"history_policy":"preserve","provenance":{"context_window":"models.json","max_input_tokens":"none","reported_output":"none"}}"#;
+    let saved = ModelResolution::from_saved(raw).unwrap();
+    assert_eq!(saved.images, None);
+    assert!(saved.provenance.images.is_empty());
+    assert_eq!(serde_json::to_string(&saved).unwrap(), raw);
 }

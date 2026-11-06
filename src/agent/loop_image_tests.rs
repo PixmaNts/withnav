@@ -53,7 +53,7 @@ impl AttachmentLoader for FakeLoader {
 async fn body_of_the_request(images: bool, loader: Option<Arc<dyn AttachmentLoader>>) -> Value {
     let server = spawn_mock(vec![http_sse(&sse_body(&[&text_chunk("seen")]))]).await;
     let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
-    actor.images = images;
+    actor.images = Some(images);
     actor.attachment_loader = loader;
     actor.push_user_with_images_in_current_turn(
         "what is this?",
@@ -189,7 +189,7 @@ fn a_sent_image_counts_a_fixed_cost_and_a_placeholder_counts_its_text() {
     let blind = actor.context_breakdown().messages;
     assert!(blind < crate::agent::context::IMAGE_TOKENS);
     // Model sees images, no loader: unavailable placeholders, still text.
-    actor.images = true;
+    actor.images = Some(true);
     assert!(actor.context_breakdown().messages < crate::agent::context::IMAGE_TOKENS);
     // Model sees images and a loader can supply them: the fixed cost applies.
     actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));

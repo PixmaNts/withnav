@@ -2386,7 +2386,9 @@ mod tests {
                     context_window: "models.json".into(),
                     max_input_tokens: "none".into(),
                     reported_output: "none".into(),
+                    images: String::new(),
                 },
+                images: None,
             },
         };
         let value = AgentOverride {
@@ -3423,7 +3425,9 @@ mod tests {
                 context_window: "models.json".into(),
                 max_input_tokens: "none".into(),
                 reported_output: "none".into(),
+                images: String::new(),
             },
+            images: None,
         };
         let (_dir, store) = temp_store();
         let id = Ulid::generate();

@@ -69,7 +69,7 @@ pub async fn test_gateway(
 /// Version 2 added the effort tiers. A version 1 file still holds valid
 /// limits: it is read as a fallback (tiers unknown) and refreshed at once to
 /// learn the tiers.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 const OLDEST_READABLE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 10_000;
 const FETCH_DEADLINE: Duration = Duration::from_secs(3);
@@ -88,6 +88,10 @@ pub struct Limits {
     /// reported); `Some` of an empty list: the provider says there are none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_tiers: Option<Vec<String>>,
+    /// Whether the model takes image input, as the provider's list reports it
+    /// (`input_modalities`, else `capabilities.vision`). `None`: not reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
 }
 impl Limits {
     /// Every reported limit is positive.
@@ -439,7 +443,8 @@ fn merge(
                 let kept = (l.context_length.is_none() && p.context_length.is_some())
                     || (l.max_input_tokens.is_none() && p.max_input_tokens.is_some())
                     || (l.max_output_tokens.is_none() && p.max_output_tokens.is_some())
-                    || (l.effort_tiers.is_none() && p.effort_tiers.is_some());
+                    || (l.effort_tiers.is_none() && p.effort_tiers.is_some())
+                    || (l.vision.is_none() && p.vision.is_some());
                 if kept {
                     let since = old.carried.get(&id).copied().unwrap_or(old.fetched_at);
                     carried.insert(id.clone(), since.min(old.fetched_at));
@@ -452,6 +457,7 @@ fn merge(
                     (a, b) => a.or(b),
                 };
                 l.effort_tiers = l.effort_tiers.or_else(|| p.effort_tiers.clone());
+                l.vision = l.vision.or(p.vision);
             }
             (id, l)
         })
@@ -509,6 +515,7 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
             max_output_tokens: positive("max_output_tokens"),
             max_message_tokens: positive("max_message_tokens"),
             effort_tiers: effort_tiers(e),
+            vision: vision(e),
         };
         let Some(existing) = models.get_mut(id) else {
             models.insert(id.to_string(), incoming);
@@ -531,6 +538,7 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
         existing.max_input_tokens = existing.max_input_tokens.or(incoming.max_input_tokens);
         existing.max_message_tokens = existing.max_message_tokens.or(incoming.max_message_tokens);
         existing.max_output_tokens = existing.max_output_tokens.or(incoming.max_output_tokens);
+        existing.vision = existing.vision.or(incoming.vision);
         if existing.effort_tiers.as_ref().is_none_or(Vec::is_empty)
             && incoming.effort_tiers.is_some()
         {
@@ -538,6 +546,19 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
         }
     }
     Ok(models)
+}
+
+/// Whether one model entry says it takes images. `input_modalities` is the
+/// OpenRouter-style list (OmniRoute serves it too, checked 2026-11-06); a list
+/// without `image` is a definite no. `capabilities.vision` is the fallback.
+/// Anything else is "not reported": a name never decides it.
+fn vision(entry: &serde_json::Value) -> Option<bool> {
+    if let Some(modalities) = entry.get("input_modalities").and_then(|v| v.as_array()) {
+        return Some(modalities.iter().any(|m| m.as_str() == Some("image")));
+    }
+    entry
+        .pointer("/capabilities/vision")
+        .and_then(|v| v.as_bool())
 }
 
 /// At most this many tiers of one model are kept.
@@ -619,6 +640,11 @@ pub struct ModelResolution {
     pub bounds: Bounds,
     pub history_policy: String,
     pub provenance: Provenance,
+    /// Whether the model takes images, from models.json or the provider's
+    /// list; `None` when neither says. Absent in a resolution saved before
+    /// image support was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
 }
 /// The effective bounds of a model, in tokens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +659,9 @@ pub struct Provenance {
     pub context_window: String,
     pub max_input_tokens: String,
     pub reported_output: String,
+    /// `models.json`, `discovered.vision` or `none`. Empty in an older row.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub images: String,
 }
 impl ModelResolution {
     /// `provider 'p', model 'm', api chat, endpoint <url>`: the identity a
@@ -731,6 +760,10 @@ pub struct ResolvedChat {
     /// The alias's `default_variant` as configured. It may name a generated
     /// tier the provider no longer reports: check with [`Self::default_override`].
     pub default_variant: Option<String>,
+    /// Whether the model takes images; `None`: unknown.
+    pub images: Option<bool>,
+    /// Where `images` came from: `models.json`, `discovered.vision` or `none`.
+    pub images_source: String,
 }
 impl ResolvedChat {
     /// The default variant's name and override object; `None` when the alias
@@ -780,9 +813,12 @@ pub async fn resolve_chat(
     // configured.
     let needs_tiers =
         resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
+    // Image support not pinned in models.json is learned from the same list.
+    let needs_vision =
+        resolved.model.images.is_none() && resolved.provider.catalog_format.is_some();
     let data = if !is_chat {
         None
-    } else if explicit.is_some() && !needs_tiers {
+    } else if explicit.is_some() && !needs_tiers && !needs_vision {
         Some(catalog.cached(resolved))
     } else {
         Some(catalog.lookup(resolved, key, clients).await)
@@ -812,6 +848,12 @@ pub fn chat_from_data(
         used.and_then(|d| d.error.clone())
     };
     let limits = data.and_then(|d| d.limits).unwrap_or_default();
+    // An explicit models.json value, including `false`, wins over the list.
+    let (images, images_source) = match (resolved.model.images, limits.vision) {
+        (Some(v), _) => (Some(v), "models.json"),
+        (None, Some(v)) => (Some(v), "discovered.vision"),
+        (None, None) => (None, "none"),
+    };
     let variants = effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[]));
     let default_variant = resolved.model.default_variant.clone();
     let (window, source) = if let Some(n) = explicit {
@@ -866,7 +908,9 @@ pub fn chat_from_data(
                 "none"
             }
             .into(),
+            images: images_source.into(),
         },
+        images,
     };
     Ok(ResolvedChat {
         window,
@@ -880,6 +924,8 @@ pub fn chat_from_data(
         snapshot,
         variants,
         default_variant,
+        images,
+        images_source: images_source.into(),
     })
 }
 

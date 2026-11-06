@@ -26,6 +26,7 @@ requests land in `develop`.
     `withnav.chat.fontSize` (11 to 22) and updated live.
   - The composer is a single box: context chip, attach button, model button, an agent picker
     (search, current mark, favourites kept under `withnav.favoriteAgents`) and send/stop.
+  - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
 ## [0.8.2] - 2026-11-05

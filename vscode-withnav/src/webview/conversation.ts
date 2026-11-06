@@ -645,7 +645,18 @@ const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElemen
 const questionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; answered: boolean }>();
 const pauseCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement }>();
 
+/** Grows the composer with its text, from about three lines up to 40% of the view; it scrolls beyond. */
+function autosizePrompt(): void {
+  const max = Math.max(120, Math.round(window.innerHeight * 0.4));
+  prompt.style.height = "auto";
+  const wanted = prompt.scrollHeight;
+  prompt.style.height = `${Math.min(wanted, max)}px`;
+  prompt.style.overflowY = wanted > max ? "auto" : "hidden";
+}
+window.addEventListener("resize", autosizePrompt);
+
 function updateControls(): void {
+  autosizePrompt();
   prompt.disabled = readOnly || state === "connecting";
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
   else if (!readOnly) prompt.placeholder = "Message WithNav…";

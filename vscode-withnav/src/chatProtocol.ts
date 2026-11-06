@@ -37,6 +37,39 @@ export interface PauseToken { incarnation: string; hold_id: string }
 export interface AskChoices { header?: string; options: { label: string; description?: string }[]; multiple: boolean; allow_custom: boolean; recommended?: number }
 export interface AskAnswer { question_call_id: string; selected: number[]; custom?: string }
 
+export interface McpMediaItem {
+  mime_type: string;
+  data?: string;
+  svg?: string;
+}
+
+export interface McpUiMeta {
+  server: string;
+  tool: string;
+  resource_uri?: string;
+  html?: string;
+  url?: string;
+}
+
+export interface McpAppDescriptor {
+  callId: string;
+  server: string;
+  tool: string;
+  resourceUri?: string;
+  html?: string;
+  url?: string;
+  args?: Record<string, unknown>;
+  output?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface McpResourceBody {
+  uri: string;
+  mime_type: string;
+  text?: string | null;
+  blob?: string | null;
+}
+
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number; tab?: string } & (
   /** The open conversation tabs, in order; `active` is the focused one. Not tab-scoped. */
@@ -73,7 +106,7 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
   | { type: "reasoning"; id: string; stepId?: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */
-  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence }
+  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown> }
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the Captain a question and waits for the next message as the answer. */
@@ -168,6 +201,8 @@ export type WebviewToHost = { generation?: number; tab?: string } & (
   | { type: "controlPause"; sessionId: string; id: string; action: "continue" | "stop" }
   /** The Captain opens a file mentioned in the chat. */
   | { type: "openFile"; path: string; line?: number }
+  /** The Captain opens an interactive MCP App in a side editor panel. */
+  | { type: "openMcpApp"; app: McpAppDescriptor }
   /** The Captain asks for the conversation list (the host answers with `conversations`). */
   | { type: "listConversations" }
   /** The Captain deletes a saved conversation. */
@@ -240,4 +275,6 @@ export interface ChatBackend {
   currentConversationId(): string | undefined;
   /** Model name for the next new conversation (ignored while one is open with messages). */
   selectModel(name: string): void;
+  readMcpResource?(server: string, uri: string): Promise<McpResourceBody>;
+  callMcpTool?(server: string, name: string, args: Record<string, unknown>): Promise<unknown>;
 }

@@ -9,6 +9,7 @@ import type {
   GatewayTest,
   IntentBody,
   LayerEntry,
+  McpResourceBody,
   McpStatus,
   ModelEntry,
   SessionListEntry,
@@ -43,6 +44,12 @@ export const api = {
   layers: (workspace: string) => get<{ layers: LayerEntry[] }>(`/v1/layers?workspace=${q(workspace)}`).then((b) => b.layers ?? []),
   /** The service's MCP servers; the live `mcp.status` event carries the same body. */
   mcp: () => get<McpStatus>("/v1/mcp"),
+  mcpResource: (server: string, uri: string) =>
+    get<McpResourceBody>(`/v1/mcp/${q(server)}/resource?uri=${q(uri)}`),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mcpCall: (server: string, name: string, args: Record<string, any> = {}) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    post<any>(`/v1/mcp/${q(server)}/call`, { name, arguments: args }),
   settings: (workspace: string) => get<SettingsBody>(`/v1/settings?workspace=${q(workspace)}`),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   saveSetting: (workspace: string, body: { revision: string; key: string; value: any }) =>

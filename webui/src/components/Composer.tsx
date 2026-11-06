@@ -17,6 +17,8 @@ interface Props {
   pickerOpen: boolean;
   running: boolean;
   disabled?: string;
+  /** Placeholder while the conversation waits for something other than a message. */
+  hint?: string;
   context: ContextSnapshot | null;
   serverCommands: CommandInfo[];
   error: string | null;
@@ -176,7 +178,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           rows={1}
           value={text}
           disabled={!!disabled}
-          placeholder={disabled ?? "What course would you like to set?  /skill  /command"}
+          placeholder={disabled ?? props.hint ?? "What course would you like to set?  /skill  /command"}
           onChange={(e) => {
             setText(e.target.value);
             setSlashDismissed(false);

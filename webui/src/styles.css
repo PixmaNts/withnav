@@ -1948,3 +1948,30 @@ a:hover {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* secret card: a value the agent asked for, typed here and kept out of the chat */
+.secret-card { display: grid; gap: 8px; }
+.secret-card .secret-label { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.secret-card .secret-status { margin-left: auto; font-size: 12px; color: var(--mu); white-space: nowrap; }
+.secret-card[data-state="pending"] .secret-status { color: var(--ac); }
+.secret-reason, .secret-note { color: var(--mu); font-size: 12px; }
+.secret-field { display: flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px; border: 1px solid var(--bd); border-radius: 4px; background: var(--bg); }
+.secret-field:focus-within { outline: 2px solid var(--ac); outline-offset: 1px; }
+.secret-field input { flex: 1; min-width: 0; padding: 6px 0; border: 0; outline: none; background: none; color: inherit; font-size: 12.5px; }
+.secret-options { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
+.secret-option { display: inline-flex; align-items: center; gap: 6px; }
+.secret-seg { display: inline-flex; border: 1px solid var(--bd); border-radius: 4px; overflow: hidden; }
+.secret-seg button { padding: 2px 8px; border: 0; background: none; color: var(--mu); font-size: 12px; }
+.secret-seg button + button { border-left: 1px solid var(--bd); }
+.secret-seg button.selected { background: var(--tint); color: var(--at); }
+.secret-seg button:focus-visible { outline: 2px solid var(--ac); outline-offset: -2px; }
+.secret-saved { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; }
+.secret-saved code { font-family: var(--font-mono); }
+.secrets-anchor { position: relative; display: inline-flex; }
+.secrets-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: min(360px, 90vw); display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--bd); border-radius: 6px; background: var(--pn); box-shadow: 0 6px 20px rgb(0 0 0 / 0.25); font-size: 12.5px; text-align: left; }
+.secrets-title { font-weight: 600; }
+.secrets-list { list-style: none; margin: 0; padding: 0; }
+.secrets-list li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--bd); }
+.secrets-text { flex: 1; min-width: 0; display: grid; }
+.secrets-text code { font-family: var(--font-mono); }
+.secrets-foot { font-size: 11.5px; }

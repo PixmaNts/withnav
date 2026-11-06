@@ -230,3 +230,14 @@ export interface GatewayTest {
   model_count: number | null;
   error: string | null;
 }
+
+/** One stored secret as `GET /v1/sessions/{id}/secrets` lists it: metadata and the last four characters at most. */
+export interface SecretView {
+  name: string;
+  scope: "session" | "workspace";
+  ttl: "1h" | "24h" | "session";
+  expires_at?: string;
+  created_at: string;
+  use_count: number;
+  last4: string;
+}

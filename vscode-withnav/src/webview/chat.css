@@ -699,3 +699,10 @@ code { padding: 1px 5px; border-radius: 4px; background: var(--vscode-textPrefor
 .secrets-foot { margin: 6px 0 0; }
 .secret-field .secret-input:focus, .secret-field .secret-input:focus-visible { outline: none; }
 .secret-field .secret-input:placeholder-shown { font-family: var(--vscode-font-family, sans-serif); }
+.mcp-open-btn { margin-left: auto; padding: 2px 7px; border-radius: 4px; border: 1px solid var(--nav-border); background: var(--nav-soft); color: var(--nav-fg); font-size: 0.786rem; cursor: pointer; flex: none; }
+.mcp-open-btn:hover { border-color: var(--nav-focus); }
+.mcp-media-grid { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.mcp-media-card { border: 1px solid var(--nav-border); border-radius: 5px; overflow: hidden; background: var(--nav-bg); max-width: 240px; }
+.mcp-media-card.zoomed { max-width: 100%; }
+.mcp-media-card img { display: block; max-width: 100%; max-height: 180px; object-fit: contain; cursor: zoom-in; }
+.mcp-media-card.zoomed img { max-height: 480px; cursor: zoom-out; }

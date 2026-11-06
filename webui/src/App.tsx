@@ -5,6 +5,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
 import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
+import type { McpAppDescriptor } from "./api/types";
 import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
 import { Drawer, DrawerButton, MOBILE, TABLET, useDrawer } from "./lib/drawer";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
@@ -93,6 +94,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const qc = useQueryClient();
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
+  const [mcpApp, setMcpApp] = useState<McpAppDescriptor | null>(null);
+  const [appExpanded, setAppExpanded] = useState(false);
   const [removing, setRemoving] = useState<RemoveRequest | null>(null);
   const [deleting, setDeleting] = useState<DeleteSessionRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
@@ -150,6 +153,14 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const otherAgent = chat.agentId === "plan" ? "build" : "plan";
   const toggleAgent = useCallback(() => void chat.switchAgent(chat.agentId === "plan" ? "build" : "plan"), [chat]);
   const openChild = useCallback((id: string) => navigate({ subagent: id }), [navigate]);
+  const openMcpApp = useCallback(
+    (app: McpAppDescriptor) => {
+      setMcpApp(app);
+      setTab("app");
+      closeDetails(true);
+    },
+    [closeDetails],
+  );
   const newSession = useCallback(() => navigate({ session: null, subagent: null }), [navigate]);
   const openSettings = useCallback(() => navigate({ page: "settings", section: null }), [navigate]);
   const openStudio = useCallback(() => navigate({ page: "studio", flow: null, loc: null }), [navigate]);
@@ -334,9 +345,10 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
 
   const crumbWs = workspace ? baseName(workspace) : "WithNav";
   const crumb = route.subagent ? `${title} / ${childAgent ?? "subagent"}` : workspace ? title : "Choose a workspace";
+  const shellClass = `shell${tab === "app" && mcpApp ? (appExpanded ? " app-expanded" : " app-open") : ""}`;
 
   return (
-    <div className="shell">
+    <div className={shellClass}>
       <header className="topbar">
         <DrawerButton target="chat-side" state={side} label="Workspaces and sessions" className="side-toggle">
           <List size={18} aria-hidden />
@@ -418,6 +430,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             onAnswer={chat.answerPermission}
             onAnswerQuestion={chat.answerQuestion}
             onOpenChild={openChild}
+            onOpenApp={openMcpApp}
             readOnly={chat.readOnly}
             secrets={chat.secrets}
             empty={<EmptyState workspace={workspace} sessionId={route.session} loading={chat.stream.status === "connecting"} agent={chat.agentId} />}
@@ -446,7 +459,20 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       )}
 
       <Drawer id="chat-details" side="right" state={details} label="Session details">
-        <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
+        <RightPanel
+          tab={tab}
+          setTab={setTab}
+          workspace={workspace}
+          chat={chat}
+          onOpenChild={openChild}
+          mcpApp={mcpApp}
+          appExpanded={appExpanded}
+          onToggleAppExpand={() => setAppExpanded((v) => !v)}
+          onCloseApp={() => {
+            setMcpApp(null);
+            setAppExpanded(false);
+          }}
+        />
       </Drawer>
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}

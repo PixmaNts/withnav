@@ -1,6 +1,7 @@
 import { Crew } from "./Crew";
 import { ArrowUp, CaretRight, Compass, TreeStructure } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { McpAppDescriptor } from "../api/types";
 import { readDelegation } from "../lib/compose";
 import type { Item, Permission, SessionView, Turn } from "../session/reducer";
 import { Markdown } from "./Markdown";
@@ -18,6 +19,7 @@ interface Props {
   onAnswer: Answer;
   onAnswerQuestion?: (answer: import("../session/reducer").AskAnswer) => Promise<void>;
   onOpenChild: (id: string) => void;
+  onOpenApp?: (app: McpAppDescriptor) => void;
   readOnly?: boolean;
   empty?: React.ReactNode;
   secrets?: SecretActions;
@@ -43,19 +45,19 @@ function useStickToBottom(dep: unknown) {
   return ref;
 }
 
-export function Transcript({ view, agent, onAnswer, onAnswerQuestion, onOpenChild, readOnly, empty, secrets }: Props) {
+export function Transcript({ view, agent, onAnswer, onAnswerQuestion, onOpenChild, onOpenApp, readOnly, empty, secrets }: Props) {
   const ref = useStickToBottom(view);
   return (
     <div className="transcript" ref={ref} role="log" aria-live="polite" aria-relevant="additions">
       {view.items.length === 0 && empty}
       {view.items.map((item) => (
-        <ItemView key={item.key} item={item} view={view} agent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} readOnly={readOnly} secrets={secrets} />
+        <ItemView key={item.key} item={item} view={view} agent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} onOpenApp={onOpenApp} readOnly={readOnly} secrets={secrets} />
       ))}
     </div>
   );
 }
 
-function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, readOnly, secrets }: { item: Item } & Omit<Props, "empty">) {
+function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, onOpenApp, readOnly, secrets }: { item: Item } & Omit<Props, "empty">) {
   switch (item.kind) {
     case "captain": {
       const { delegated, text } = readDelegation(item.text);
@@ -91,7 +93,7 @@ function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, 
         </div>
       );
     case "turn":
-      return <TurnView turn={item} view={view} fallbackAgent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} readOnly={readOnly} secrets={secrets} />;
+      return <TurnView turn={item} view={view} fallbackAgent={agent} onAnswer={onAnswer} onAnswerQuestion={onAnswerQuestion} onOpenChild={onOpenChild} onOpenApp={onOpenApp} readOnly={readOnly} secrets={secrets} />;
     case "permission": {
       const perm = view.permissions[item.requestId];
       return perm ? <PermissionBlock perm={perm} onAnswer={onAnswer} readOnly={readOnly} /> : null;
@@ -105,7 +107,7 @@ function PermissionBlock({ perm, onAnswer, readOnly }: { perm: Permission; onAns
   return <PermissionCard perm={perm} onAnswer={(decision, message) => onAnswer(perm.requestId, decision, message)} readOnly={readOnly} />;
 }
 
-function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpenChild, readOnly, secrets }: { turn: Turn; fallbackAgent?: string } & Omit<Props, "agent" | "empty">) {
+function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpenChild, onOpenApp, readOnly, secrets }: { turn: Turn; fallbackAgent?: string } & Omit<Props, "agent" | "empty">) {
   const agent = turn.agent ?? view.agent ?? fallbackAgent;
   const childCalls: Record<string, number> = {};
   return (
@@ -126,6 +128,7 @@ function TurnView({ turn, view, fallbackAgent, onAnswer, onAnswerQuestion, onOpe
                 calls={part.calls.map((id) => view.tools[id]).filter((c) => c !== undefined)}
                 children={view.children}
                 onOpenChild={onOpenChild}
+                onOpenApp={onOpenApp}
                 childCalls={childCalls}
               />
             );

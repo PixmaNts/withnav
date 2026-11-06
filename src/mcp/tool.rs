@@ -9,12 +9,18 @@ use sha2::{Digest, Sha256};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+const MAX_MEDIA_ITEMS: usize = 4;
+const MAX_MEDIA_BASE64_BYTES: usize = 4 * 1024 * 1024;
+const MAX_UI_HTML_BYTES: usize = 512 * 1024;
+
 #[derive(Clone)]
 pub struct McpTool {
     pub(super) wire: String,
     pub(super) original: String,
     server: Arc<Server>,
     schema: Value,
+    pub(super) ui_resource_uri: Option<String>,
+    pub(super) ui_url: Option<String>,
 }
 
 pub(super) fn wire_name(server: &str, original: &str) -> String {
@@ -274,6 +280,39 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     Ok(output)
 }
 
+fn allowed_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/svg+xml"
+    )
+}
+
+fn valid_base64(data: &str) -> bool {
+    !data.is_empty()
+        && data.len() <= MAX_MEDIA_BASE64_BYTES
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+}
+
+pub(super) fn extract_ui_resource_uri(meta: &Value) -> Option<String> {
+    meta["ui"]["resourceUri"]
+        .as_str()
+        .or_else(|| meta["ui/resourceUri"].as_str())
+        .filter(|uri| uri.starts_with("ui://") && uri.len() <= 512)
+        .map(ToOwned::to_owned)
+}
+
+pub(super) fn extract_ui_url(meta: &Value) -> Option<String> {
+    meta["ui"]["url"]
+        .as_str()
+        .or_else(|| meta["ui/url"].as_str())
+        .filter(|url| {
+            (url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 512
+        })
+        .map(ToOwned::to_owned)
+}
+
 /// Converts a `tools/call` result to a bounded tool result. Structured content is redacted
 /// as a value before it is serialised: serialisation escapes newlines, quotes and
 /// backslashes, so a raw-value text replacement afterwards would miss such a secret.
@@ -287,33 +326,107 @@ pub(super) fn convert(
     let content = value["content"].as_array();
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
+    let mut media = vec![];
+    let mut resource_uri =
+        extract_ui_resource_uri(&value["_meta"]).filter(|uri| redact(uri) == *uri);
+    let mut ui_url = extract_ui_url(&value["_meta"]).filter(|url| redact(url) == *url);
+    let mut ui_html: Option<String> = None;
     if let Some(blocks) = content {
         for block in blocks {
             match block["type"].as_str().unwrap_or("") {
-                "text" => parts.push(block["text"].as_str().unwrap_or("").to_string()),
+                "text" => {
+                    let text = block["text"].as_str().unwrap_or("");
+                    parts.push(text.to_string());
+                    let trimmed = text.trim();
+                    if media.len() < MAX_MEDIA_ITEMS
+                        && trimmed.starts_with("<svg")
+                        && trimmed.ends_with("</svg>")
+                        && trimmed.len() <= MAX_UI_HTML_BYTES
+                    {
+                        media.push(json!({"mime_type": "image/svg+xml", "svg": redact(trimmed)}));
+                    }
+                }
                 "resource_link" => parts.push(format!(
                     "{} ({})",
                     block["uri"].as_str().unwrap_or(""),
                     block["name"].as_str().unwrap_or("")
                 )),
                 kind @ ("image" | "audio") => {
-                    let bytes = block["data"].as_str().map_or(0, |data| {
-                        (data.len().saturating_mul(3) / 4)
-                            .saturating_sub(data.chars().rev().take_while(|c| *c == '=').count())
+                    let mime = block["mimeType"].as_str().unwrap_or("unknown");
+                    let data = block["data"].as_str();
+                    let bytes = data.map_or(0, |d| {
+                        (d.len().saturating_mul(3) / 4)
+                            .saturating_sub(d.chars().rev().take_while(|c| *c == '=').count())
                     });
-                    parts.push(format!(
-                        "[{kind}: {}, {bytes} bytes]",
-                        block["mimeType"].as_str().unwrap_or("unknown")
-                    ));
+                    parts.push(format!("[{kind}: {mime}, {bytes} bytes]"));
+                    if kind == "image"
+                        && media.len() < MAX_MEDIA_ITEMS
+                        && allowed_image_mime(mime)
+                        && let Some(d) = data.filter(|d| valid_base64(d) && redact(d) == *d)
+                    {
+                        media.push(json!({"mime_type": mime, "data": d}));
+                    }
                 }
-                "resource" => parts.push("[embedded resource omitted]".into()),
+                "resource" => {
+                    parts.push("[embedded resource omitted]".into());
+                    let res = &block["resource"];
+                    let uri = res["uri"].as_str().unwrap_or("");
+                    let mime = res["mimeType"].as_str().unwrap_or("");
+                    if uri.starts_with("ui://") || mime.starts_with("text/html") {
+                        if resource_uri.is_none()
+                            && uri.starts_with("ui://")
+                            && uri.len() <= 512
+                            && redact(uri) == uri
+                        {
+                            resource_uri = Some(uri.to_owned());
+                        }
+                        if ui_html.is_none()
+                            && let Some(html) = res["text"].as_str()
+                            && html.len() <= MAX_UI_HTML_BYTES
+                        {
+                            ui_html = Some(redact(html));
+                        }
+                    } else if media.len() < MAX_MEDIA_ITEMS && allowed_image_mime(mime) {
+                        if let Some(blob) = res["blob"]
+                            .as_str()
+                            .filter(|d| valid_base64(d) && redact(d) == *d)
+                        {
+                            media.push(json!({"mime_type": mime, "data": blob}));
+                        } else if mime == "image/svg+xml"
+                            && let Some(svg) = res["text"].as_str()
+                            && svg.len() <= MAX_UI_HTML_BYTES
+                        {
+                            media.push(json!({"mime_type": mime, "svg": redact(svg)}));
+                        }
+                    }
+                }
                 _ => parts.push("[unsupported MCP content]".into()),
             }
         }
     }
-    if !has_text && let Some(structured) = value.get("structuredContent") {
-        let structured = super::redaction::redact_value(structured, secrets);
-        parts.push(serde_json::to_string_pretty(&structured).unwrap_or_default());
+    let redacted_structured = value
+        .get("structuredContent")
+        .filter(|v| !v.is_null())
+        .map(|s| super::redaction::redact_value(s, secrets));
+    if !has_text && let Some(structured) = &redacted_structured {
+        parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+    }
+    if let Some(structured) = &redacted_structured {
+        let board = &structured["excalidashBoard"];
+        if media.len() < MAX_MEDIA_ITEMS
+            && let Some(data_url) = board["png"].as_str().or_else(|| structured["png"].as_str())
+            && let Some(b64) = data_url.strip_prefix("data:image/png;base64,")
+            && valid_base64(b64)
+        {
+            media.push(json!({"mime_type": "image/png", "data": b64}));
+        }
+        if ui_url.is_none()
+            && let Some(url) = board["url"].as_str().or_else(|| structured["url"].as_str())
+            && (url.starts_with("http://") || url.starts_with("https://"))
+            && url.len() <= 512
+        {
+            ui_url = Some(url.to_owned());
+        }
     }
     let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
     if value["isError"] == true {
@@ -328,7 +441,28 @@ pub(super) fn convert(
             },
         });
     }
-    result.metadata = json!({"mcp_server": server, "mcp_tool": redact(original)});
+    let redacted_tool = redact(original);
+    let mut metadata = json!({"mcp_server": server, "mcp_tool": redacted_tool});
+    if let Some(structured) = redacted_structured {
+        metadata["mcp_structured"] = structured;
+    }
+    if !media.is_empty() {
+        metadata["mcp_media"] = Value::Array(media);
+    }
+    if resource_uri.is_some() || ui_html.is_some() || ui_url.is_some() {
+        let mut ui = json!({"server": server, "tool": redacted_tool});
+        if let Some(uri) = resource_uri.take() {
+            ui["resource_uri"] = Value::String(uri);
+        }
+        if let Some(html) = ui_html.take() {
+            ui["html"] = Value::String(html);
+        }
+        if let Some(url) = ui_url.take() {
+            ui["url"] = Value::String(url);
+        }
+        metadata["mcp_ui"] = ui;
+    }
+    result.metadata = metadata;
     result
 }
 
@@ -348,6 +482,31 @@ impl McpTool {
                 server.redact(&original)
             ));
         }
+        let raw_def = serde_json::to_value(&definition).unwrap_or_default();
+        let ui_resource_uri =
+            extract_ui_resource_uri(&raw_def["_meta"]).filter(|uri| server.redact(uri) == *uri);
+        let ui_url = extract_ui_url(&raw_def["_meta"])
+            .or_else(|| {
+                let is_excalidraw = server.id == "excalidraw"
+                    || server
+                        .config
+                        .command
+                        .iter()
+                        .any(|c| c.contains("excalidraw"));
+                is_excalidraw.then(|| {
+                    server
+                        .config
+                        .env
+                        .get("EXPRESS_SERVER_URL")
+                        .cloned()
+                        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
+                })
+            })
+            .filter(|url| {
+                (url.starts_with("http://") || url.starts_with("https://"))
+                    && url.len() <= 512
+                    && server.redact(url) == *url
+            });
         let parameters = normalize(Value::Object((*definition.input_schema).clone()))
             .map_err(|e| format!("{original}: {e}"))?;
         let parameters = super::redaction::redact_value(&parameters, &secrets);
@@ -360,6 +519,8 @@ impl McpTool {
             original,
             server,
             schema,
+            ui_resource_uri,
+            ui_url,
         })
     }
 
@@ -378,6 +539,33 @@ impl McpTool {
     /// Published with every result; the name is redacted like any other server text.
     fn metadata(&self) -> Value {
         json!({"mcp_server": self.server.id, "mcp_tool": self.server.redact(&self.original)})
+    }
+
+    fn attach_ui(&self, mut result: ToolResult) -> ToolResult {
+        if self.ui_resource_uri.is_none() && self.ui_url.is_none() {
+            return result;
+        }
+        let ui = result.metadata["mcp_ui"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut merged = serde_json::Map::from_iter([
+            ("server".into(), json!(self.server.id)),
+            ("tool".into(), json!(self.server.redact(&self.original))),
+        ]);
+        merged.extend(ui);
+        if !merged.contains_key("resource_uri")
+            && let Some(uri) = &self.ui_resource_uri
+        {
+            merged.insert("resource_uri".into(), json!(uri));
+        }
+        if !merged.contains_key("url")
+            && let Some(url) = &self.ui_url
+        {
+            merged.insert("url".into(), json!(url));
+        }
+        result.metadata["mcp_ui"] = Value::Object(merged);
+        result
     }
 }
 
@@ -434,9 +622,9 @@ impl Tool for McpTool {
                 response = &mut handle.rx => {
                     return Ok(match response {
                         Ok(Ok(response)) => match serde_json::to_value(response) {
-                            Ok(value) => {
+                            Ok(value) => self.attach_ui(
                                 convert(&value, &self.server.id, &self.original, &self.server.secrets())
-                            },
+                            ),
                             Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
                         },
                         Ok(Err(rmcp::ServiceError::McpError(_))) => self.error("mcp_tool_error", "MCP server rejected the call"),
@@ -586,6 +774,63 @@ mod tests {
             &[],
         );
         assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
+        assert_eq!(
+            mixed.metadata["mcp_media"],
+            json!([{"mime_type": "image/png", "data": "AAAA"}])
+        );
+        let ui = convert(
+            &json!({
+                "_meta": {"ui": {"resourceUri": "ui://excalidraw/app.html"}},
+                "content": [
+                    {"type": "text", "text": "<svg viewBox=\"0 0 10 10\"></svg>"},
+                    {"type": "resource", "resource": {"uri": "ui://excalidraw/app.html", "mimeType": "text/html;profile=mcp-app", "text": "<html>ok</html>"}}
+                ]
+            }),
+            "excalidraw",
+            "draw",
+            &[],
+        );
+        assert_eq!(
+            ui.metadata["mcp_ui"],
+            json!({
+                "server": "excalidraw",
+                "tool": "draw",
+                "resource_uri": "ui://excalidraw/app.html",
+                "html": "<html>ok</html>"
+            })
+        );
+        assert_eq!(
+            ui.metadata["mcp_media"],
+            json!([{"mime_type": "image/svg+xml", "svg": "<svg viewBox=\"0 0 10 10\"></svg>"}])
+        );
+        let dash = convert(
+            &json!({
+                "content": [{"type": "text", "text": "\"Board\" is shown to the user"}],
+                "structuredContent": {
+                    "excalidashBoard": {
+                        "id": "b1",
+                        "name": "Board",
+                        "url": "https://excalidash.example/b/b1",
+                        "png": "data:image/png;base64,AAAA"
+                    }
+                }
+            }),
+            "excalidash",
+            "display_board",
+            &[],
+        );
+        assert_eq!(
+            dash.metadata["mcp_structured"]["excalidashBoard"]["name"],
+            "Board"
+        );
+        assert_eq!(
+            dash.metadata["mcp_media"],
+            json!([{"mime_type": "image/png", "data": "AAAA"}])
+        );
+        assert_eq!(
+            dash.metadata["mcp_ui"]["url"],
+            "https://excalidash.example/b/b1"
+        );
     }
 
     #[test]

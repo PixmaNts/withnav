@@ -1070,6 +1070,45 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
   }
   row.title = summary;
   row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
+  if (event.mcpUi && (event.mcpUi.resource_uri || event.mcpUi.html || event.mcpUi.url)) {
+    const ui = event.mcpUi;
+    const btn = el("button", "mcp-open-btn", "Open App");
+    btn.type = "button";
+    btn.title = `Open ${ui.server} (${ui.tool || event.name}) beside`;
+    btn.addEventListener("click", () => {
+      post({
+        type: "openMcpApp",
+        app: {
+          callId: event.callId,
+          server: ui.server,
+          tool: ui.tool || event.name,
+          resourceUri: ui.resource_uri,
+          html: ui.html,
+          url: ui.url,
+          args: event.args,
+          output: event.output,
+          metadata: event.metadata,
+        },
+      });
+    });
+    row.append(btn);
+  }
+  if (event.mcpMedia && event.mcpMedia.length > 0) {
+    if (!group.chosen) group.details.open = true;
+    const grid = el("div", "mcp-media-grid");
+    event.mcpMedia.forEach((media, idx) => {
+      const card = el("div", "mcp-media-card");
+      const img = document.createElement("img");
+      img.src = media.svg
+        ? `data:image/svg+xml;utf8,${encodeURIComponent(media.svg)}`
+        : `data:${media.mime_type};base64,${media.data ?? ""}`;
+      img.alt = `${event.name} preview ${idx + 1}`;
+      img.addEventListener("click", () => card.classList.toggle("zoomed"));
+      card.append(img);
+      grid.append(card);
+    });
+    row.append(grid);
+  }
   if (event.evidence) row.append(evidenceDetails(event.evidence));
   refreshActivity(item);
   follow();

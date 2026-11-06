@@ -82,6 +82,7 @@ class ConversationState {
   replayThrough: number | undefined;
   previousRunThrough: number = -1;
   toolSummaries: Map<string, string> = new Map();
+  toolArgs: Map<string, Record<string, unknown>> = new Map();
   toolEvidence: Map<string, NonNullable<Extract<HostToWebview, { type: "tool" }>["evidence"]>> = new Map();
 }
 
@@ -1634,6 +1635,9 @@ export class CognitionBackend implements ChatBackend {
         const name = String(payload.name ?? "tool");
         const summary = toolSummary(name, payload.args);
         this.state.toolSummaries.set(callId, summary);
+        if (payload.args && typeof payload.args === "object") {
+          this.state.toolArgs.set(callId, payload.args as Record<string, unknown>);
+        }
         const evidence = permissionEvidence(payload.permission_gate);
         if (evidence) this.state.toolEvidence.set(callId, evidence);
         return { type: "tool", id, callId, phase: "start", name, summary, evidence };
@@ -1646,6 +1650,8 @@ export class CognitionBackend implements ChatBackend {
         // so the finished row keeps saying what was touched.
         const summary = toolSummary(name, undefined, this.state.toolSummaries.get(callId));
         this.state.toolSummaries.delete(callId);
+        const args = this.state.toolArgs.get(callId);
+        this.state.toolArgs.delete(callId);
         // A non-zero shell exit is reported as status error, but it is
         // often harmless: `grep` finding nothing exits 1, and in a `;` chain
         // the last command's code decides for all the output above it. Show
@@ -1655,7 +1661,31 @@ export class CognitionBackend implements ChatBackend {
         const shown = typeof exitCode === "number" && exitCode !== 0 ? `${summary} (exit ${exitCode})` : summary;
         const evidence = permissionEvidence(payload.metadata?.permission_gate) ?? this.state.toolEvidence.get(callId);
         this.state.toolEvidence.delete(callId);
-        return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok", evidence };
+        const mcpMedia = Array.isArray(payload.metadata?.mcp_media) && payload.metadata.mcp_media.length > 0
+          ? payload.metadata.mcp_media
+          : undefined;
+        const rawUi = payload.metadata?.mcp_ui;
+        const mcpUi = rawUi && typeof rawUi === "object" && typeof rawUi.server === "string" && (rawUi.resource_uri || rawUi.html || rawUi.url)
+          ? rawUi
+          : undefined;
+        const toolEvent: Extract<HostToWebview, { type: "tool" }> = {
+          type: "tool",
+          id,
+          callId,
+          phase: "end",
+          name,
+          summary: shown,
+          ok: payload.status === "ok",
+          evidence,
+        };
+        if (mcpMedia) toolEvent.mcpMedia = mcpMedia;
+        if (mcpUi) {
+          toolEvent.mcpUi = mcpUi;
+          if (args) toolEvent.args = args;
+          if (typeof payload.output === "string") toolEvent.output = payload.output;
+          if (payload.metadata && typeof payload.metadata === "object") toolEvent.metadata = payload.metadata;
+        }
+        return toolEvent;
       }
       case "turn.end": {
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
@@ -1786,6 +1816,22 @@ export class CognitionBackend implements ChatBackend {
     const raw = await response.text();
     check();
     return raw ? JSON.parse(raw) : undefined;
+  }
+
+  async readMcpResource(server: string, uri: string): Promise<import("./chatProtocol").McpResourceBody> {
+    return this.request(
+      `/v1/mcp/${encodeURIComponent(server)}/resource?uri=${encodeURIComponent(uri)}`,
+      { method: "GET" },
+      "operation",
+    );
+  }
+
+  async callMcpTool(server: string, name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    return this.request(
+      `/v1/mcp/${encodeURIComponent(server)}/call`,
+      { method: "POST", body: JSON.stringify({ name, arguments: args }) },
+      "operation",
+    );
   }
 }
 

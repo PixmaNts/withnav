@@ -171,6 +171,8 @@ pub fn app(state: AppState) -> Router {
         .merge(super::flows::router())
         .route("/v1/models", get(list_models))
         .route("/v1/mcp", get(mcp_status))
+        .route("/v1/mcp/{server}/resource", get(get_mcp_resource))
+        .route("/v1/mcp/{server}/call", post(post_mcp_call))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
         .route(
@@ -345,6 +347,48 @@ async fn health() -> Json<HealthBody> {
 /// `mcp.status` event (that event is live-only).
 async fn mcp_status(State(state): State<AppState>) -> Json<crate::mcp::McpSnapshot> {
     Json(state.service().mcp_status())
+}
+
+#[derive(Deserialize)]
+struct McpResourceQuery {
+    uri: String,
+}
+
+#[derive(Deserialize)]
+struct McpCallBody {
+    name: String,
+    #[serde(default)]
+    arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+async fn get_mcp_resource(
+    State(state): State<AppState>,
+    Path(server): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<McpResourceQuery>,
+) -> Response {
+    match state.service().mcp_read_resource(&server, &query.uri).await {
+        Ok(body) => Json(body).into_response(),
+        Err(message) => error_response(ServerError::MalformedBody(message)),
+    }
+}
+
+async fn post_mcp_call(
+    State(state): State<AppState>,
+    Path(server): Path<String>,
+    body: Result<Json<McpCallBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let body = match json_body(body) {
+        Ok(b) => b,
+        Err(err) => return error_response(err),
+    };
+    match state
+        .service()
+        .mcp_call_tool(&server, &body.name, body.arguments)
+        .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(message) => error_response(ServerError::MalformedBody(message)),
+    }
 }
 
 #[derive(Deserialize)]

@@ -24,6 +24,10 @@ requests land in `develop`.
   Security: the model never sees the value in the chat, but an agent able to run commands can still
   read it from its environment and exfiltrate it in transformed form; redaction reduces this, it
   does not prevent it. MCP servers do not receive secrets. See the book's Secrets page.
+- MCP Apps and media in the WebUI and VS Code extension:
+  - MCP tool calls returning images (`image/png`, `image/jpeg`, `image/webp`, `image/gif`, inline SVG, or board previews in `structuredContent`) render inline thumbnails in the transcript with click-to-zoom, while keeping the model's tool output text compact.
+  - Tools declaring a `ui://` resource (`_meta.ui.resourceUri` / `text/html;profile=mcp-app`) or an app URL show an **Open App** button on the tool row that opens a sandboxed interactive MCP App view (in a dedicated `App` tab of the WebUI right panel, or in a `Beside` editor group in VS Code) with a JSON-RPC 2.0 `postMessage` bridge (`ui/initialize`, `ui/notifications/tool-input`, `ui/notifications/tool-result`, `ui/open-link`, `tools/call`, `resources/read`).
+  - `scripts/package-vsix.sh` now names branch builds `withnav-<variant>-<version>-<branch>+<sha>.vsix`, matching `nav --version`.
 
 ### Changed
 

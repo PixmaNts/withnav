@@ -277,7 +277,8 @@ export interface ChatBackend {
   currentContext(): import("./contextMeter").ContextSnapshot | undefined;
   currentGeneration(): number;
   refreshCommands(): Promise<void>;
-  runComposerCommand(text: string, generation?: number, operation?: ComposerOperation): Promise<boolean>;
+  /** `images` go only with `/skill`, which sends a message; any other command refuses them. */
+  runComposerCommand(text: string, generation?: number, operation?: ComposerOperation, images?: PendingImage[]): Promise<boolean>;
   resumePermissionReads(): void;
   cancelPermissionReads(): void;
   /** Current transcript, replayed into a freshly opened view. */

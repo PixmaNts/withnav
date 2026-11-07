@@ -787,9 +787,9 @@ function decorateCrew(byline: HTMLElement, agent = "build"): void {
 
 // ---- Images: pending ones in the composer, stored ones as thumbnails ---------------------------
 
-/** Most images a message carries, and the largest file read (the server refuses bigger ones). */
+/** Most images a message carries, and the largest file read: the server's 3.75 MiB per image. */
 const MAX_IMAGES = 8;
-const MAX_IMAGE_FILE = 8 * 1024 * 1024;
+const MAX_IMAGE_FILE = 3_932_160;
 let pendingImages: (PendingImage & { size: number })[] = [];
 const pendingList = el("ul", "pending-images");
 pendingList.setAttribute("aria-label", "Images to send");
@@ -825,7 +825,8 @@ function addImageFiles(files: Iterable<File>): void {
   }
 }
 
-const imageUrls = new Map<string, string | null>();
+/** Per attachment: its `data:` URL, `null` while it loads, `false` once it is known unavailable. */
+const imageUrls = new Map<string, string | null | false>();
 function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
   if (!images?.length) return undefined;
   const row = el("div", "thumbs");
@@ -842,13 +843,14 @@ function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
     row.append(button);
     const known = imageUrls.get(image.attachment_id);
     if (known) img.src = known;
+    else if (known === false) button.classList.add("missing");
     else if (known === undefined) { imageUrls.set(image.attachment_id, null); post({ type: "loadImage", attachmentId: image.attachment_id }); }
   }
   return row;
 }
 
 function showImageData(attachmentId: string, url: string | undefined): void {
-  imageUrls.set(attachmentId, url ?? null);
+  imageUrls.set(attachmentId, url ?? false);
   for (const button of transcript.querySelectorAll<HTMLButtonElement>(`.thumb[data-attachment="${CSS.escape(attachmentId)}"]`)) {
     const img = button.querySelector("img");
     if (url && img) img.src = url;

@@ -68,7 +68,8 @@ pub async fn test_gateway(
 }
 /// Version 2 added the effort tiers. A version 1 file still holds valid
 /// limits: it is read as a fallback (tiers unknown) and refreshed at once to
-/// learn the tiers.
+/// learn the tiers. Version 3 added image support (`vision`): an older file
+/// is read the same way, as a fallback refreshed at once.
 const CACHE_VERSION: u32 = 3;
 const OLDEST_READABLE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 10_000;

@@ -789,7 +789,7 @@ async fn list_models(
                             default_variant: m.default_variant,
                             default_variant_unavailable: None,
                             images: m.images,
-                            images_source: None,
+                            images_source: m.images.map(|_| "models.json".to_string()),
                         },
                     )
                 })

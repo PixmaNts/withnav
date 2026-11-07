@@ -61,11 +61,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
   const [dragging, setDragging] = useState(false);
   const addFiles = (incoming: File[]) => {
     if (!incoming.length) return;
-    setFiles((current) => {
-      const next = [...current, ...incoming];
-      if (next.length > MAX_IMAGES) props.onError(`A message carries at most ${MAX_IMAGES} images.`);
-      return next.slice(0, MAX_IMAGES);
-    });
+    // The updater stays pure (StrictMode runs it twice): the notice is raised here, once.
+    if (files.length + incoming.length > MAX_IMAGES) props.onError(`A message carries at most ${MAX_IMAGES} images.`);
+    setFiles((current) => [...current, ...incoming].slice(0, MAX_IMAGES));
   };
 
   useImperativeHandle(ref, () => ({
@@ -119,7 +117,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
       await props.onServerCommand(routed.name, routed.arguments);
       setText("");
     } else {
-      const content = line.trim() ? routed.content : routed.content.filter((b) => b.type !== "text");
+      // An empty text block is dropped, unless it carries the delegation line.
+      const content = line.trim() || delegate ? routed.content : routed.content.filter((b) => b.type !== "text");
       if (await props.onSend(content, files)) {
         setText("");
         setFiles([]);

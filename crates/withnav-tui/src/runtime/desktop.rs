@@ -143,7 +143,9 @@ pub(super) fn clipboard_image() -> Result<Vec<u8>, String> {
     Err(format!("no image on the clipboard ({})", tried.join("; ")))
 }
 
-/// Writes `bytes` to a new file only this user can read, in the temporary folder.
+/// Writes `bytes` to a new file only this user can read, in the temporary folder. The file must
+/// outlive the call (the upload or the viewer reads it later), so it is not removed here: each
+/// call first sweeps this module's files older than [`STALE_AFTER`].
 pub(super) fn private_file(extension: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     remove_stale(&std::env::temp_dir(), SystemTime::now());

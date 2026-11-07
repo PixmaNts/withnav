@@ -256,7 +256,14 @@ impl AttachmentStore {
         let (bytes, name) = if imagesize::image_type(bytes).is_err() && svg::looks_like_svg(bytes) {
             rendered = svg::rasterize(bytes)?;
             let base = sanitize_name(name);
-            let stem = base.strip_suffix(".svg").unwrap_or(&base);
+            let stem = match base.len().checked_sub(4) {
+                Some(at)
+                    if base.is_char_boundary(at) && base[at..].eq_ignore_ascii_case(".svg") =>
+                {
+                    &base[..at]
+                }
+                _ => base.as_str(),
+            };
             (rendered.as_slice(), format!("{stem}.png"))
         } else {
             (bytes, sanitize_name(name))
@@ -589,6 +596,8 @@ mod tests {
         let image = store.insert("s1", Some("diagram.svg"), svg).unwrap();
         assert_eq!(image.media_type, "image/png");
         assert_eq!(image.name, "diagram.png");
+        let upper = store.insert("s1", Some("SHOT.SVG"), svg).unwrap();
+        assert_eq!(upper.name, "SHOT.png");
         assert_eq!((image.width, image.height), (800, 400));
         let (_, bytes) = store.load("s1", &image.attachment_id).unwrap();
         assert!(bytes.starts_with(b"\x89PNG"));

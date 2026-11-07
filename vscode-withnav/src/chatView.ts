@@ -244,7 +244,7 @@ export function registerChatView(
                  const generation = backend.currentGeneration();
                  // Route before confirmation and, crucially, before reading editor content.
                  const route = routeComposer(message.text);
-                 if (images.length && route.kind === "command") throw new Error("Images go with a message, not with a command.");
+                 if (images.length && route.kind === "command" && route.name !== "skill") throw new Error("Images go with a message, not with a command.");
                  if (route.kind === "command" && route.name !== "skill") {
                    return await backend.runComposerCommand(message.text, generation, operation);
                  }
@@ -255,7 +255,7 @@ export function registerChatView(
                   if (answer !== "Send anyway") return false;
                 }
                  if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
-                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation, operation);
+                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation, operation, images);
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
                  const routed = routeComposer(message.text);
                  if (routed.kind === "message") await backend.send(routed.text, context, operation, images);

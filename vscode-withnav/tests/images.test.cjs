@@ -17,6 +17,7 @@ test("the image panel shows only an image data URL, escapes the name and runs no
   const ok = imageHtml("<b>shot</b>", "data:image/png;base64,iVBORw0K");
   assert.match(ok, /src="data:image\/png;base64,iVBORw0K"/);
   assert.match(ok, /alt="&lt;b&gt;shot&lt;\/b&gt;"/);
+  assert.match(ok, /default-src 'none'; img-src data:;/);
   assert.doesNotMatch(ok, /script-src/);
   assert.match(imageHtml("x", "javascript:alert(1)"), /src=""/);
   assert.match(imageHtml("x", "data:image/svg+xml;base64,PHN2Zz4="), /src=""/);

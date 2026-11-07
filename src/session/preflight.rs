@@ -142,7 +142,8 @@ impl Preflight {
         if assigned.variant.is_none() && metadata_model.model.variants.is_none() {
             metadata_model.model.variants = Some(Default::default());
         }
-        // Image support does not decide admission; sessions learn it when they resolve.
+        // Image support does not decide admission, so this admission-only copy pins it and
+        // asks the gateway nothing about it; the session resolves it for real when it starts.
         metadata_model.model.images.get_or_insert(false);
         let chat = resolve_chat(&self.catalog, &metadata_model, &key, &self.clients)
             .await

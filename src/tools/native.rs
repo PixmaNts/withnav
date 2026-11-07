@@ -85,13 +85,8 @@ impl Tool for ReadTool {
             let bytes = {
                 use std::io::Read;
                 let mut bytes = Vec::new();
-                let file = nofollow::open_read(&resolved)?;
-                #[cfg(windows)]
-                let mut file = file.take(16 * 1024 * 1024 + 1);
-                #[cfg(unix)]
-                let mut file = file;
+                let mut file = nofollow::open_read(&resolved)?.take(16 * 1024 * 1024 + 1);
                 file.read_to_end(&mut bytes)?;
-                #[cfg(windows)]
                 if bytes.len() > 16 * 1024 * 1024 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -121,10 +116,6 @@ impl Tool for ReadTool {
     }
 }
 
-/// Largest picture file `read` hands over as an image, before any conversion: past it the model
-/// gets a short note instead of megabytes of decoded garbage text.
-const MAX_READ_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-
 /// `read` on a picture: a PNG, JPEG, GIF or WebP (recognised by its bytes) or an `.svg` file. The
 /// result carries the bytes as a [`crate::tools::ToolImage`]; the agent loop stores them in the
 /// session and the model sees the picture when its model can. `None` for any other file, which
@@ -150,7 +141,14 @@ fn read_image(path: &Path, bytes: &[u8]) -> Option<ToolResult> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "image".into());
     let size = crate::provider::openai::human_size(bytes.len() as u64);
-    if bytes.len() > MAX_READ_IMAGE_BYTES {
+    // The store's own limits: past them the model gets a short note rather than a failed store
+    // or megabytes of decoded garbage text.
+    let max = if raster {
+        crate::session::attachments::MAX_IMAGE_BYTES
+    } else {
+        crate::session::attachments::svg::MAX_SVG_BYTES
+    };
+    if bytes.len() > max {
         return Some(ToolResult::ok(format!(
             "{name} is an image of {size}, too large to show: downscale it first"
         )));

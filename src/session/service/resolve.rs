@@ -386,9 +386,9 @@ impl Service {
         let mut resolved = resolved;
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
-        // A resolution saved before image support was recorded keeps what
-        // models.json says today; a recorded one is kept, like the bounds.
-        if !snapshot.provenance.images.is_empty() {
+        // An explicit models.json value always wins, so setting `"images"` repairs a
+        // conversation saved as unknown. Without one, a recorded value is kept like the bounds.
+        if resolved.model.images.is_none() && !snapshot.provenance.images.is_empty() {
             resolved.model.images = snapshot.images;
         }
         Ok((resolved, api_key, snapshot, save_late, models_file))

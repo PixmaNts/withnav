@@ -20,40 +20,72 @@ export function ImageProvider({ sessionId, open, children }: { sessionId: string
   return <ImageScope.Provider value={{ sessionId, open: open ?? parent.open }}>{children}</ImageScope.Provider>;
 }
 
-// Object URLs of fetched attachments. A session holds at most 64 images; the oldest URLs are
-// released past this bound so a long browsing session does not keep every picture in memory.
+// Object URLs of fetched attachments, counted by the components that show them. Past MAX_URLS,
+// the oldest URLs nobody shows are released, so a long browsing session does not keep every
+// picture in memory while a picture still on screen is never revoked under it.
 const MAX_URLS = 128;
-const urls = new Map<string, Promise<string>>();
 
-function attachmentUrl(sessionId: string, attachmentId: string): Promise<string> {
-  const key = `${sessionId}/${attachmentId}`;
-  const known = urls.get(key);
-  if (known) return known;
-  const loading = api.attachment(sessionId, attachmentId).then((bytes) => URL.createObjectURL(bytes));
-  loading.catch(() => urls.delete(key));
-  urls.set(key, loading);
-  while (urls.size > MAX_URLS) {
-    const [oldest, url] = urls.entries().next().value as [string, Promise<string>];
-    urls.delete(oldest);
-    void url.then((u) => URL.revokeObjectURL(u), () => {});
+interface Entry {
+  loading: Promise<string>;
+  users: number;
+}
+
+const urls = new Map<string, Entry>();
+
+function evictUnused() {
+  for (const [key, entry] of urls) {
+    if (urls.size <= MAX_URLS) return;
+    if (entry.users > 0) continue;
+    urls.delete(key);
+    void entry.loading.then((u) => URL.revokeObjectURL(u), () => {});
   }
-  return loading;
+}
+
+/** Takes a use of the URL of an attachment; `release` gives it back. */
+export function acquireAttachmentUrl(sessionId: string, attachmentId: string): { loading: Promise<string>; release: () => void } {
+  const key = `${sessionId}/${attachmentId}`;
+  let entry = urls.get(key);
+  if (!entry) {
+    const loading = api.attachment(sessionId, attachmentId).then((bytes) => URL.createObjectURL(bytes));
+    const created: Entry = { loading, users: 0 };
+    loading.catch(() => {
+      if (urls.get(key) === created) urls.delete(key);
+    });
+    urls.set(key, created);
+    entry = created;
+  }
+  const held = entry;
+  held.users += 1;
+  evictUnused();
+  let released = false;
+  return {
+    loading: held.loading,
+    release: () => {
+      if (released) return;
+      released = true;
+      held.users -= 1;
+      evictUnused();
+    },
+  };
 }
 
 function useAttachmentUrl(sessionId: string | null, attachmentId: string): string | null | "error" {
-  const [url, setUrl] = useState<string | null | "error">(null);
+  const key = sessionId ? `${sessionId}/${attachmentId}` : null;
+  const [shown, setShown] = useState<{ key: string; url: string | "error" } | null>(null);
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !key) return;
     let live = true;
-    attachmentUrl(sessionId, attachmentId).then(
-      (u) => live && setUrl(u),
-      () => live && setUrl("error"),
+    const { loading, release } = acquireAttachmentUrl(sessionId, attachmentId);
+    loading.then(
+      (url) => live && setShown({ key, url }),
+      () => live && setShown({ key, url: "error" }),
     );
     return () => {
       live = false;
+      release();
     };
-  }, [sessionId, attachmentId]);
-  return url;
+  }, [sessionId, attachmentId, key]);
+  return shown && shown.key === key ? shown.url : null;
 }
 
 export function imageLabel(image: ImageRef): string {

@@ -1,6 +1,6 @@
 import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
-import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, WebviewToHost } from "./chatProtocol";
+import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, PendingImage, WebviewToHost } from "./chatProtocol";
 import { singleTab } from "./chatHub";
 import { openMcpAppPanel } from "./mcpAppPanel";
 import { readSetting } from "./settings";
@@ -237,9 +237,9 @@ export function registerChatView(
           case "send":
             if (backend.isReadOnly()) break;
             if (typeof message.text === "string" && (message.text.trim() || message.images?.length)) {
-              const images = (message.images ?? []).slice(0, 8);
               const operation = backend.captureOperation();
               void (async () => {
+                const images = pendingImages(message.images);
                 const session = backend.currentConversationId();
                  const generation = backend.currentGeneration();
                  // Route before confirmation and, crucially, before reading editor content.
@@ -422,6 +422,15 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
         const choice = await vscode.window.showWarningMessage(`${m.action === "stop" ? "Stop" : "Continue"} this subagent?`, { modal: true }, "Confirm");
         if (!disposed && choice === "Confirm") await parent.controlChild(parentId, childId, m.action, m.generation, descriptor);
       } catch (error) { if (!disposed) showError(error); }
+    } else if (m.type === "loadImage" && typeof m.attachmentId === "string") {
+      const attachmentId = m.attachmentId;
+      const url = await child.imageDataUrl(attachmentId).catch(() => undefined);
+      post({ type: "imageData", attachmentId, url });
+    } else if (m.type === "openImage" && typeof m.attachmentId === "string") {
+      const url = await child.imageDataUrl(m.attachmentId).catch(() => undefined);
+      if (disposed) return;
+      if (url) showImage(String(m.name || "image"), url);
+      else void vscode.window.showWarningMessage("This image is no longer available.");
     }
     // No send, resume, commands or permission answers in this panel.
   });
@@ -436,4 +445,24 @@ function randomNonce(): string {
 
 function showError(error: unknown): void {
   void vscode.window.showErrorMessage(`WithNav: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+/** Most images a message carries, and the largest one in base64 (the server's 3.75 MiB raw cap). */
+const MAX_PENDING_IMAGES = 8;
+const MAX_PENDING_BASE64 = Math.ceil((3_932_160 * 4) / 3) + 4;
+
+/**
+ * The images of a `send` from the webview, checked before anything is decoded or uploaded: the
+ * webview is not a trust boundary. Anything malformed refuses the whole message.
+ */
+export function pendingImages(value: unknown): PendingImage[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_PENDING_IMAGES) throw new Error(`A message carries at most ${MAX_PENDING_IMAGES} images.`);
+  return value.map((item: unknown) => {
+    const { name, data } = (item ?? {}) as { name?: unknown; data?: unknown };
+    if (typeof name !== "string" || name.length > 255 || typeof data !== "string" || !data) throw new Error("An attached image could not be read.");
+    if (data.length > MAX_PENDING_BASE64) throw new Error(`${name} is too large to attach.`);
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error(`${name} could not be read.`);
+    return { name, data };
+  });
 }

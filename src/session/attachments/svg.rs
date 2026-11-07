@@ -5,7 +5,8 @@
 //! URL (every `href` resolves to nothing), refuses a DTD (no entity expansion), stops past a node
 //! budget, and draws text with the system fonts only.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use resvg::{tiny_skia, usvg};
 
@@ -43,8 +44,106 @@ fn fonts() -> Arc<usvg::fontdb::Database> {
         .clone()
 }
 
-/// Renders `bytes` (an SVG document) to PNG bytes.
+/// Most filter primitives (`<feGaussianBlur>` and the like): each keeps a full-size intermediate
+/// image while the filter renders.
+const MAX_FILTER_PRIMITIVES: usize = 16;
+
+/// Largest `order` of an `<feConvolveMatrix>`: its cost is every pixel times every kernel cell.
+const MAX_CONVOLVE_ORDER: u32 = 5;
+
+/// Largest `numOctaves` of an `<feTurbulence>`: each octave is another pass over every pixel.
+const MAX_TURBULENCE_OCTAVES: u32 = 8;
+
+/// Refuses a document whose rendering would cost far more than its size suggests: `<use>`
+/// elements that expand into more than [`MAX_SVG_NODES`] nodes (nested references multiply), too
+/// many filter primitives, or primitives whose cost grows with a parameter. The parser's node
+/// limit counts the source only; this counts what the renderer would build.
+fn check_budget(document: &usvg::roxmltree::Document) -> Result<(), AttachmentError> {
+    let refused =
+        |why: String| AttachmentError::Invalid(format!("SVG too costly to render ({why})"));
+    let ids: HashMap<&str, usvg::roxmltree::Node> = document
+        .descendants()
+        .filter_map(|n| n.attribute("id").map(|id| (id, n)))
+        .collect();
+    let mut primitives = 0;
+    for node in document.descendants().filter(|n| n.is_element()) {
+        let name = node.tag_name().name();
+        if name.starts_with("fe") && name.len() > 2 && name.as_bytes()[2].is_ascii_uppercase() {
+            primitives += 1;
+            if primitives > MAX_FILTER_PRIMITIVES {
+                return Err(refused(format!(
+                    "more than {MAX_FILTER_PRIMITIVES} filter steps"
+                )));
+            }
+        }
+        let number = |attribute: &str| {
+            node.attribute(attribute)
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        if name == "feConvolveMatrix" && number("order") > MAX_CONVOLVE_ORDER as f64 {
+            return Err(refused(format!(
+                "a convolution larger than {MAX_CONVOLVE_ORDER}x{MAX_CONVOLVE_ORDER}"
+            )));
+        }
+        if name == "feTurbulence" && number("numOctaves") > MAX_TURBULENCE_OCTAVES as f64 {
+            return Err(refused(format!(
+                "more than {MAX_TURBULENCE_OCTAVES} turbulence octaves"
+            )));
+        }
+    }
+    let mut sizes = HashMap::new();
+    let total = expanded(document.root_element(), &ids, &mut sizes, 0);
+    if total > MAX_SVG_NODES as u64 {
+        return Err(refused(format!(
+            "references expand to more than {MAX_SVG_NODES} elements"
+        )));
+    }
+    Ok(())
+}
+
+/// How many elements `node` becomes once every `<use>` below it is replaced by its target,
+/// saturating. A reference cycle counts as the budget itself (usvg skips cycles; a cycle is never
+/// a legitimate drawing).
+fn expanded<'a>(
+    node: usvg::roxmltree::Node<'a, 'a>,
+    ids: &HashMap<&'a str, usvg::roxmltree::Node<'a, 'a>>,
+    sizes: &mut HashMap<usvg::roxmltree::NodeId, u64>,
+    depth: usize,
+) -> u64 {
+    if let Some(size) = sizes.get(&node.id()) {
+        return *size;
+    }
+    if depth > 64 {
+        return MAX_SVG_NODES as u64 + 1;
+    }
+    // Marks the node while it is counted, so a cycle reads as over budget.
+    sizes.insert(node.id(), MAX_SVG_NODES as u64 + 1);
+    let mut size: u64 = 1;
+    for child in node.children().filter(|c| c.is_element()) {
+        size = size.saturating_add(expanded(child, ids, sizes, depth + 1));
+    }
+    if node.tag_name().name() == "use" {
+        let href = node
+            .attribute("href")
+            .or_else(|| node.attribute(("http://www.w3.org/1999/xlink", "href")));
+        if let Some(target) = href
+            .and_then(|h| h.strip_prefix('#'))
+            .and_then(|id| ids.get(id))
+        {
+            size = size.saturating_add(expanded(*target, ids, sizes, depth + 1));
+        }
+    }
+    sizes.insert(node.id(), size);
+    size
+}
+
+/// Renders `bytes` (an SVG document) to PNG bytes. One rendering at a time: each holds a
+/// full-size canvas, and the budget above bounds one, not many in parallel.
 pub fn rasterize(bytes: &[u8]) -> Result<Vec<u8>, AttachmentError> {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     if bytes.len() > MAX_SVG_BYTES {
         return Err(AttachmentError::TooLarge {
             size: bytes.len(),
@@ -73,6 +172,7 @@ pub fn rasterize(bytes: &[u8]) -> Result<Vec<u8>, AttachmentError> {
         resolve_data: Box::new(|_, _, _| None),
         resolve_string: Box::new(|_, _| None),
     };
+    check_budget(&document)?;
     let tree = usvg::Tree::from_xmltree(&document, &options)
         .map_err(|error| unreadable(error.to_string()))?;
     let size = tree.size();
@@ -154,6 +254,37 @@ mod tests {
         );
         let png = rasterize(svg.as_bytes()).unwrap();
         assert_eq!(pixel(&png, 300, 300), [255, 255, 255, 255]);
+    }
+
+    // Given small documents whose rendering would multiply: nested `<use>` fan-out, many filter
+    //       steps, a huge convolution kernel, a self-referencing `<use>`
+    // Then each is refused before the renderer builds anything
+    #[test]
+    fn documents_that_expand_or_filter_too_much_are_refused() {
+        let mut fanout = String::from(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><defs><rect id="l0" width="1" height="1"/>"#,
+        );
+        for level in 1..=8 {
+            fanout.push_str(&format!(r#"<g id="l{level}">"#));
+            for _ in 0..10 {
+                fanout.push_str(&format!(r##"<use href="#l{}"/>"##, level - 1));
+            }
+            fanout.push_str("</g>");
+        }
+        fanout.push_str(r##"</defs><use href="#l8"/></svg>"##);
+        let filters = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><filter id="f">{}</filter></svg>"#,
+            "<feGaussianBlur stdDeviation='9'/>".repeat(MAX_FILTER_PRIMITIVES + 1)
+        );
+        let kernel = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><filter id="f"><feConvolveMatrix order="300" kernelMatrix="1"/></filter></svg>"#;
+        let cycle = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><g id="a"><use href="#a"/></g></svg>"##;
+        for svg in [fanout.as_str(), filters.as_str(), kernel, cycle] {
+            let error = rasterize(svg.as_bytes()).unwrap_err();
+            assert!(error.to_string().contains("too costly"), "{error}");
+        }
+        // A modest drawing with a few reused shapes and one blur still renders.
+        let fine = r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><defs><filter id="b"><feGaussianBlur stdDeviation="2"/></filter><rect id="r" width="10" height="10"/></defs><use href="#r"/><use href="#r" x="20"/><rect width="50" height="50" filter="url(#b)"/></svg>"##;
+        rasterize(fine.as_bytes()).unwrap();
     }
 
     #[test]

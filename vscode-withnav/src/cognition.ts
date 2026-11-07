@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { createHash } from "node:crypto";
 import { ContextSnapshot, parseContext } from "./contextMeter";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, imageRefs, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
@@ -276,6 +277,8 @@ export class CognitionBackend implements ChatBackend {
    */
   constructor(private readonly options: { bootstrap?: boolean } = {}) {}
   private endpoint?: ServerInfoParams;
+  /** Images already stored, by session and content hash, so a failed send's retry does not store them twice. */
+  private readonly uploaded = new Map<string, string>();
   /**
    * An authenticated request for the settings page. The page may open before
    * nav lsp announces its server: wait for it a while, then say so rather
@@ -693,12 +696,19 @@ export class CognitionBackend implements ChatBackend {
     // Each image is stored first; the message then names it by id.
     const stored: { type: "image"; attachment_id: string }[] = [];
     for (const image of images) {
+      // A retry after a failed send reuses what was already stored rather than filling the quota.
+      const key = `${session}:${createHash("sha256").update(image.data).digest("hex")}`;
+      const known = this.uploaded.get(key);
+      if (known) { stored.push({ type: "image", attachment_id: known }); continue; }
       const ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(image.name || "image")}`, {
         method: "POST",
         headers: { "content-type": "application/octet-stream" },
         body: Buffer.from(image.data, "base64"),
       });
-      stored.push({ type: "image", attachment_id: String(ref?.attachment_id) });
+      const id = String(ref?.attachment_id);
+      this.uploaded.set(key, id);
+      if (this.uploaded.size > 64) this.uploaded.delete(this.uploaded.keys().next().value as string);
+      stored.push({ type: "image", attachment_id: id });
     }
     const body = context ? `${text}\n\n${context}` : text;
     await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, {

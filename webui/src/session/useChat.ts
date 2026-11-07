@@ -12,6 +12,10 @@ import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry, SecretV
 import type { SecretScope, SecretTtl } from "./reducer";
 import { useSessionStream } from "./useSessionStream";
 
+
+/** Files already stored, by session: the Composer keeps a failed message's files for the retry. */
+const uploaded = new WeakMap<File, { session: string; id: string }>();
+
 export interface Draft {
   agent: string | null;
   model: string | null;
@@ -164,7 +168,13 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
           onCreated(id);
         } else await ensureLive();
         const images: ContentBlock[] = [];
-        for (const file of files) images.push({ type: "image", attachment_id: (await api.upload(id, file)).attachment_id });
+        for (const file of files) {
+          // A retry after a failed send reuses the uploads that succeeded instead of filling the quota.
+          const known = uploaded.get(file);
+          const attachmentId = known?.session === id ? known.id : (await api.upload(id, file)).attachment_id;
+          uploaded.set(file, { session: id, id: attachmentId });
+          images.push({ type: "image", attachment_id: attachmentId });
+        }
         await api.send(id, [...content, ...images]);
         void qc.invalidateQueries({ queryKey: keys.sessions(workspace) });
         return true;

@@ -33,6 +33,18 @@ pub const MAX_IMAGE_SIDE: u32 = 8000;
 /// deleted, so the quota is what bounds the database growth of an idle session.
 pub const MAX_ATTACHMENTS_PER_SESSION: usize = 64;
 
+/// Attachments tools may fill: the rest of the quota stays the Captain's, so a run of screenshots
+/// never stops them attaching an image.
+pub const MAX_TOOL_ATTACHMENTS_PER_SESSION: usize = 48;
+
+/// Who stores an attachment: an upload is the Captain's; a tool's image is deduplicated and has
+/// the smaller [`MAX_TOOL_ATTACHMENTS_PER_SESSION`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Upload,
+    Tool,
+}
+
 const MAX_NAME_BYTES: usize = 128;
 
 #[derive(Debug, thiserror::Error)]
@@ -226,6 +238,18 @@ impl AttachmentStore {
         name: Option<&str>,
         bytes: &[u8],
     ) -> Result<ImageRef, AttachmentError> {
+        self.insert_from(session_id, name, bytes, Origin::Upload)
+    }
+
+    /// [`Self::insert`] for `origin`. A tool image identical to one the session already holds
+    /// returns that one: a tool polled for the same screenshot does not fill the quota.
+    pub fn insert_from(
+        &self,
+        session_id: &str,
+        name: Option<&str>,
+        bytes: &[u8],
+        origin: Origin,
+    ) -> Result<ImageRef, AttachmentError> {
         // An SVG is stored as the PNG it renders to, under the same name with `.png`: providers
         // read raster images only, and a client never receives markup that could run.
         let rendered;
@@ -255,8 +279,34 @@ impl AttachmentStore {
             [session_id],
             |row| row.get(0),
         )?;
-        if held as usize >= MAX_ATTACHMENTS_PER_SESSION {
-            return Err(AttachmentError::Quota(MAX_ATTACHMENTS_PER_SESSION));
+        if origin == Origin::Tool {
+            let known = tx
+                .query_row(
+                    "SELECT id, media_type, name, size, width, height FROM attachments
+                     WHERE session_id = ?1 AND size = ?2 AND bytes = ?3 LIMIT 1",
+                    params![session_id, bytes.len() as i64, bytes],
+                    |row| {
+                        Ok(ImageRef {
+                            attachment_id: row.get(0)?,
+                            media_type: row.get(1)?,
+                            name: row.get(2)?,
+                            size: row.get::<_, i64>(3)? as u64,
+                            width: row.get(4)?,
+                            height: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()?;
+            if let Some(image) = known {
+                return Ok(image);
+            }
+        }
+        let limit = match origin {
+            Origin::Upload => MAX_ATTACHMENTS_PER_SESSION,
+            Origin::Tool => MAX_TOOL_ATTACHMENTS_PER_SESSION,
+        };
+        if held as usize >= limit {
+            return Err(AttachmentError::Quota(limit));
         }
         let image = ImageRef {
             attachment_id: Ulid::generate().to_string(),
@@ -357,10 +407,12 @@ impl crate::agent::images::AttachmentLoader for SessionLoader {
         let store = self.store.clone();
         let session = self.session_id.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || store.insert(&session, Some(&name), &bytes))
-                .await
-                .map_err(|_| "the attachment store stopped".to_string())?
-                .map_err(|error| error.to_string())
+            tokio::task::spawn_blocking(move || {
+                store.insert_from(&session, Some(&name), &bytes, Origin::Tool)
+            })
+            .await
+            .map_err(|_| "the attachment store stopped".to_string())?
+            .map_err(|error| error.to_string())
         })
     }
 
@@ -708,6 +760,33 @@ mod tests {
         store.insert("s2", None, &bytes).unwrap();
         store.delete_session("s1").unwrap();
         store.insert("s1", None, &bytes).unwrap();
+    }
+
+    #[test]
+    fn a_repeated_tool_image_is_stored_once_and_tools_leave_room_for_the_captain() {
+        let store = store_with_session("s1");
+        let first = store
+            .insert_from("s1", Some("a.png"), &png(1, 1), Origin::Tool)
+            .unwrap();
+        let again = store
+            .insert_from("s1", Some("b.png"), &png(1, 1), Origin::Tool)
+            .unwrap();
+        assert_eq!(first, again);
+        for side in 2..=MAX_TOOL_ATTACHMENTS_PER_SESSION as u32 {
+            store
+                .insert_from("s1", None, &png(side, 1), Origin::Tool)
+                .unwrap();
+        }
+        assert!(matches!(
+            store.insert_from("s1", None, &png(1, 2), Origin::Tool),
+            Err(AttachmentError::Quota(48))
+        ));
+        // An identical image is still found once the tools' share is full.
+        store
+            .insert_from("s1", None, &png(1, 1), Origin::Tool)
+            .unwrap();
+        // The Captain's uploads are never deduplicated and keep the remaining slots.
+        store.insert("s1", None, &png(1, 1)).unwrap();
     }
 
     #[test]

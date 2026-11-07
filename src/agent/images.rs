@@ -167,6 +167,15 @@ impl Plan {
     }
 
     /// Whether any image is sent as a picture.
+    /// How many image occurrences this plan replaces with a placeholder.
+    pub fn placeholders(&self) -> usize {
+        self.messages
+            .iter()
+            .flatten()
+            .filter(|v| matches!(v, Verdict::Placeholder(_)))
+            .count()
+    }
+
     pub fn sends_any(&self) -> bool {
         self.messages.iter().flatten().any(|v| *v == Verdict::Send)
     }

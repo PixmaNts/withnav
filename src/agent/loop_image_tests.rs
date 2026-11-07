@@ -324,3 +324,76 @@ async fn a_tool_image_for_a_text_only_model_is_a_placeholder_without_follow_up()
     );
     assert_eq!(messages.len(), at + 1);
 }
+
+// Given a long conversation (several hundred messages) where the Captain already sent two large
+//       screenshots, and a vision model that calls `read` on a third, larger picture
+// Then the very next request, the one right after the tool result, carries the tool's image
+//      bytes together with the two earlier ones: nothing waits for another Captain message
+#[tokio::test]
+async fn in_a_long_history_with_earlier_images_a_tool_image_reaches_the_very_next_request() {
+    let call = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"r1","function":{"name":"read","arguments":"{\"path\":\"board.png\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+    let server = spawn_mock(vec![
+        http_sse(&sse_body(&[call])),
+        http_sse(&sse_body(&[&text_chunk("the board")])),
+    ])
+    .await;
+    let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+    std::fs::write(
+        actor.tool_context.workspace.join("board.png"),
+        crate::session::attachments::fixtures::png(2, 2),
+    )
+    .unwrap();
+    actor.images = Some(true);
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    for turn in 0..300 {
+        actor.push_user_with_provenance(format!("question {turn}"), UserProvenance::Captain);
+        actor.transcript.push(ChatMessage::Assistant {
+            content: Some(format!("answer {turn}")),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: None,
+        });
+    }
+    let screenshot = |id: &str| ImageRef {
+        size: 340_000,
+        ..image(id)
+    };
+    actor.push_user_with_images_in_current_turn(
+        "here is the first",
+        UserProvenance::Captain,
+        vec![screenshot("cap-1")],
+    );
+    actor.transcript.push(ChatMessage::Assistant {
+        content: Some("seen".into()),
+        reasoning_content: None,
+        tool_calls: vec![],
+        opaque: None,
+    });
+    actor.push_user_with_images_in_current_turn(
+        "and the second; now read board.png",
+        UserProvenance::Captain,
+        vec![screenshot("cap-2")],
+    );
+    run_agent(&mut actor, &mut |_| {}).await.unwrap();
+
+    let requests = server.requests.lock().await;
+    assert_eq!(requests.len(), 2, "one tool step, one answer step");
+    let body: Value = serde_json::from_str(requests[1].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let urls: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+        .filter(|part| part["type"] == "image_url")
+        .collect();
+    assert_eq!(urls.len(), 3, "both Captain screenshots and the tool image");
+    let tool_at = messages.iter().rposition(|m| m["role"] == "tool").unwrap();
+    let follow = &messages[tool_at + 1];
+    assert_eq!(follow["role"], "user");
+    assert_eq!(follow["content"][2]["type"], "image_url");
+    assert_eq!(
+        tool_at + 2,
+        messages.len(),
+        "the tool image is the last thing the model reads"
+    );
+}

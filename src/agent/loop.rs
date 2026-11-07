@@ -333,6 +333,26 @@ async fn run_steps_inner(
             }
         }
 
+        // Which images this request carries: when a model says it cannot see an image, this
+        // line tells whether the bytes were sent at all. Ids only, never bytes.
+        if !image_ids.is_empty() || image_plan.placeholders() > 0 {
+            let sent: Vec<&str> = image_ids
+                .iter()
+                .filter(|id| image_payloads.contains_key(*id))
+                .map(String::as_str)
+                .collect();
+            tracing::info!(
+                step,
+                model_images = ?actor.images,
+                sent = sent.len(),
+                sent_ids = ?sent,
+                unavailable = image_ids.len() - sent.len(),
+                placeholders = image_plan.placeholders(),
+                base64_bytes = image_payloads.values().map(|p| p.base64.len()).sum::<usize>(),
+                "request images"
+            );
+        }
+
         observe(AgentEvent::StepStarted);
 
         let mut request = build_request(

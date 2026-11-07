@@ -85,13 +85,8 @@ impl Tool for ReadTool {
             let bytes = {
                 use std::io::Read;
                 let mut bytes = Vec::new();
-                let file = nofollow::open_read(&resolved)?;
-                #[cfg(windows)]
-                let mut file = file.take(16 * 1024 * 1024 + 1);
-                #[cfg(unix)]
-                let mut file = file;
+                let mut file = nofollow::open_read(&resolved)?.take(16 * 1024 * 1024 + 1);
                 file.read_to_end(&mut bytes)?;
-                #[cfg(windows)]
                 if bytes.len() > 16 * 1024 * 1024 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -102,6 +97,9 @@ impl Tool for ReadTool {
                 bytes
             };
             let original_bytes = bytes.len();
+            if let Some(result) = read_image(&resolved, &bytes) {
+                return Ok(result);
+            }
             let text = String::from_utf8_lossy(&bytes).into_owned();
 
             let offset = args.get("offset").and_then(|v| v.as_u64());
@@ -116,6 +114,51 @@ impl Tool for ReadTool {
             Ok(result)
         })
     }
+}
+
+/// `read` on a picture: a PNG, JPEG, GIF or WebP (recognised by its bytes) or an `.svg` file. The
+/// result carries the bytes as a [`crate::tools::ToolImage`]; the agent loop stores them in the
+/// session and the model sees the picture when its model can. `None` for any other file, which
+/// `read` returns as text.
+fn read_image(path: &Path, bytes: &[u8]) -> Option<ToolResult> {
+    let svg = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"));
+    let raster = imagesize::image_type(bytes).ok().is_some_and(|kind| {
+        matches!(
+            kind,
+            imagesize::ImageType::Png
+                | imagesize::ImageType::Jpeg
+                | imagesize::ImageType::Gif
+                | imagesize::ImageType::Webp
+        )
+    });
+    if !svg && !raster {
+        return None;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "image".into());
+    let size = crate::provider::openai::human_size(bytes.len() as u64);
+    // The store's own limits: past them the model gets a short note rather than a failed store
+    // or megabytes of decoded garbage text.
+    let max = if raster {
+        crate::session::attachments::MAX_IMAGE_BYTES
+    } else {
+        crate::session::attachments::svg::MAX_SVG_BYTES
+    };
+    if bytes.len() > max {
+        return Some(ToolResult::ok(format!(
+            "{name} is an image of {size}, too large to show: downscale it first"
+        )));
+    }
+    let mut result = ToolResult::ok(format!("{name} is an image ({size})."));
+    result.images.push(crate::tools::ToolImage {
+        name,
+        bytes: bytes.to_vec(),
+    });
+    Some(result)
 }
 
 fn slice_lines(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
@@ -535,6 +578,42 @@ mod tests {
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),
         }
+    }
+
+    // Given a PNG with a misleading extension, an SVG, and a text file named like a picture
+    // Then `read` returns the picture bytes as an image when the bytes (or `.svg`) say it is one,
+    //      and text otherwise; the output names the image instead of dumping its bytes
+    #[tokio::test]
+    async fn read_returns_pictures_as_images_and_text_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = crate::session::attachments::fixtures::png(3, 2);
+        std::fs::write(dir.path().join("shot.dat"), &png).unwrap();
+        std::fs::write(
+            dir.path().join("d.svg"),
+            "<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("fake.png"), "just text").unwrap();
+        let read = |path: &str| {
+            let cx = ctx(dir.path());
+            let args = json!({"path": dir.path().join(path)});
+            async move {
+                ReadTool
+                    .call(args, CancellationToken::new(), &cx)
+                    .await
+                    .unwrap()
+            }
+        };
+        let picture = read("shot.dat").await;
+        assert_eq!(picture.images.len(), 1);
+        assert_eq!(picture.images[0].name, "shot.dat");
+        assert_eq!(picture.images[0].bytes, png);
+        assert!(picture.output.contains("is an image"));
+        let svg = read("d.svg").await;
+        assert_eq!(svg.images.len(), 1);
+        let text = read("fake.png").await;
+        assert!(text.images.is_empty());
+        assert_eq!(text.output, "just text");
     }
 
     #[tokio::test]

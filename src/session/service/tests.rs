@@ -93,7 +93,7 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
     .await
     .expect("applied routing flow must be consumed and its runtime joined");
     let transcript = service.history.load(id).await.unwrap().unwrap().transcript;
-    assert!(transcript.iter().any(|message| matches!(message, ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Flow { .. }, content } if content.contains("routing evidence"))));
+    assert!(transcript.iter().any(|message| matches!(message, ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Flow { .. }, content, .. } if content.contains("routing evidence"))));
 }
 
 #[tokio::test]

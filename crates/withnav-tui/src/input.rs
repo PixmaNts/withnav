@@ -516,7 +516,8 @@ pub fn route_key(
     }
     if key.code == KeyCode::Enter && !alt && !key.modifiers.contains(KeyModifiers::SHIFT) {
         let text = editor.text();
-        if text.trim().is_empty() {
+        // A message may be images only.
+        if text.trim().is_empty() && state.pending_attachments.is_empty() {
             return None;
         }
         return Some(match commands::route(&text, ui.mode) {
@@ -896,6 +897,55 @@ pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Ve
     }
 }
 
+/// The image file named by a paste that is nothing but one absolute path: what a terminal types
+/// when a file is dropped on it, quoted, with escaped spaces or as a `file://` URI. Any other
+/// text, a relative path included, stays text.
+pub fn dropped_image(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.contains(['\n', '\r']) {
+        return None;
+    }
+    let path = if let Some(uri) = text.strip_prefix("file://") {
+        percent_decode(uri.strip_prefix("localhost").unwrap_or(uri))?
+    } else if let Some(quoted) = ['\'', '"']
+        .iter()
+        .find_map(|q| text.strip_prefix(*q).and_then(|rest| rest.strip_suffix(*q)))
+    {
+        quoted.to_string()
+    } else if text.replace("\\ ", "").contains(char::is_whitespace) {
+        // Several dropped files, or prose.
+        return None;
+    } else {
+        text.replace("\\ ", " ")
+    };
+    if !(path.starts_with('/') || path.starts_with("~/")) {
+        return None;
+    }
+    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
+    )
+    .then_some(path)
+}
+
+/// `%20` and the like decoded; `None` when the result is not UTF-8 or an escape is cut.
+fn percent_decode(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        if b == b'%' {
+            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(b);
+            rest = tail;
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Inserts pasted text into the editor (newlines kept), unless an overlay other than the typed
 /// slash palette has the focus.
 pub fn route_paste(
@@ -947,6 +997,9 @@ pub fn route_paste(
     let typed_palette = ui.overlay == Some(Overlay::Commands) && ui.palette_typed;
     if (ui.overlay.is_some() && !typed_palette) || ui.focus != Focus::Editor {
         return None;
+    }
+    if !typed_palette && let Some(path) = dropped_image(&text) {
+        return Some(Action::Attach(path));
     }
     if editor.area_mut().insert_str(text) {
         editor.bump();
@@ -1076,6 +1129,55 @@ mod tests {
             assert_eq!(ui.focus, focus, "{code:?}");
             assert_eq!(editor.text(), text, "{code:?}");
             assert_eq!(editor.revision() > revision, !text.is_empty(), "{code:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod dropped_image_tests {
+    use super::dropped_image;
+
+    #[test]
+    fn a_dropped_image_path_is_recognized_in_the_forms_terminals_type() {
+        assert_eq!(
+            dropped_image("/tmp/shot.png").as_deref(),
+            Some("/tmp/shot.png")
+        );
+        assert_eq!(
+            dropped_image(" '/tmp/my shot.PNG' ").as_deref(),
+            Some("/tmp/my shot.PNG")
+        );
+        assert_eq!(
+            dropped_image("\"/tmp/a b.jpg\"").as_deref(),
+            Some("/tmp/a b.jpg")
+        );
+        assert_eq!(
+            dropped_image("/tmp/my\\ shot.webp").as_deref(),
+            Some("/tmp/my shot.webp")
+        );
+        assert_eq!(
+            dropped_image("file:///tmp/a%20b.svg").as_deref(),
+            Some("/tmp/a b.svg")
+        );
+        assert_eq!(
+            dropped_image("~/Pictures/x.jpeg").as_deref(),
+            Some("~/Pictures/x.jpeg")
+        );
+    }
+
+    #[test]
+    fn other_text_stays_text() {
+        for text in [
+            "shot.png",
+            "see /tmp/shot.png",
+            "/tmp/a.png /tmp/b.png",
+            "/tmp/notes.txt",
+            "/tmp/shot.png\nmore",
+            "/usr/bin",
+            "file:///tmp/%zz.png",
+            "",
+        ] {
+            assert_eq!(dropped_image(text), None, "{text:?}");
         }
     }
 }

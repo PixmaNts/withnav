@@ -327,6 +327,7 @@ pub(super) fn convert(
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
     let mut media = vec![];
+    let mut images = vec![];
     let mut resource_uri =
         extract_ui_resource_uri(&value["_meta"]).filter(|uri| redact(uri) == *uri);
     let mut ui_url = extract_ui_url(&value["_meta"]).filter(|url| redact(url) == *url);
@@ -351,27 +352,42 @@ pub(super) fn convert(
                     block["uri"].as_str().unwrap_or(""),
                     block["name"].as_str().unwrap_or("")
                 )),
-                kind @ ("image" | "audio") => {
+                "image" => {
                     let mime = block["mimeType"].as_str().unwrap_or("unknown");
                     let data = block["data"].as_str();
-                    let bytes = data.map_or(0, |d| {
-                        (d.len().saturating_mul(3) / 4)
-                            .saturating_sub(d.chars().rev().take_while(|c| *c == '=').count())
-                    });
-                    parts.push(format!("[{kind}: {mime}, {bytes} bytes]"));
-                    if kind == "image"
-                        && media.len() < MAX_MEDIA_ITEMS
+                    // Decoded for the model; the note stays only when it could not be.
+                    if let Err(note) = decode_image(data, &mut images) {
+                        parts.push(format!("[image: {mime}, {note}]"));
+                    }
+                    if media.len() < MAX_MEDIA_ITEMS
                         && allowed_image_mime(mime)
                         && let Some(d) = data.filter(|d| valid_base64(d) && redact(d) == *d)
                     {
                         media.push(json!({"mime_type": mime, "data": d}));
                     }
                 }
+                "audio" => {
+                    let bytes = block["data"].as_str().map_or(0, |data| {
+                        (data.len().saturating_mul(3) / 4)
+                            .saturating_sub(data.chars().rev().take_while(|c| *c == '=').count())
+                    });
+                    parts.push(format!(
+                        "[audio: {}, {bytes} bytes]",
+                        block["mimeType"].as_str().unwrap_or("unknown")
+                    ));
+                }
                 "resource" => {
-                    parts.push("[embedded resource omitted]".into());
                     let res = &block["resource"];
                     let uri = res["uri"].as_str().unwrap_or("");
                     let mime = res["mimeType"].as_str().unwrap_or("");
+                    // A screenshot can also come as an embedded resource with an image type.
+                    if mime.starts_with("image/") && res["blob"].is_string() {
+                        if let Err(note) = decode_image(res["blob"].as_str(), &mut images) {
+                            parts.push(format!("[embedded image omitted: {note}]"));
+                        }
+                    } else {
+                        parts.push("[embedded resource omitted]".into());
+                    }
                     if uri.starts_with("ui://") || mime.starts_with("text/html") {
                         if resource_uri.is_none()
                             && uri.starts_with("ui://")
@@ -463,7 +479,40 @@ pub(super) fn convert(
         metadata["mcp_ui"] = ui;
     }
     result.metadata = metadata;
+    for (at, bytes) in images.into_iter().enumerate() {
+        result.images.push(crate::tools::ToolImage {
+            name: format!("{}-{}.img", redacted_tool, at + 1),
+            bytes,
+        });
+    }
     result
+}
+
+/// Largest base64 image block decoded, in characters: 12 MiB, about 9 MiB of image. Bigger
+/// blocks are not decoded at all, so a server cannot make the agent allocate unbounded memory.
+const MAX_IMAGE_BLOCK_BASE64: usize = 12 * 1024 * 1024;
+
+/// Most image blocks decoded from one result; the rest are named in the output.
+const MAX_IMAGE_BLOCKS: usize = 4;
+
+/// Decodes one base64 image block into `images`, or says why it was not. The type is decided
+/// later from the bytes, never from the block's declared `mimeType`.
+fn decode_image(data: Option<&str>, images: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    use base64::Engine as _;
+    let data = data.ok_or("no data")?;
+    if images.len() >= MAX_IMAGE_BLOCKS {
+        return Err(format!(
+            "not kept, at most {MAX_IMAGE_BLOCKS} images per result"
+        ));
+    }
+    if data.len() > MAX_IMAGE_BLOCK_BASE64 {
+        return Err(format!("{} bytes, too large to keep", data.len() / 4 * 3));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|_| "not valid base64".to_string())?;
+    images.push(bytes);
+    Ok(())
 }
 
 impl McpTool {
@@ -674,6 +723,44 @@ mod tests {
         );
         assert!(normalize(json!({"oneOf":[]})).is_err());
     }
+    // Given an MCP result with a screenshot, an embedded image resource, broken and oversized blocks
+    // Then the decodable images become tool images, the rest are named in the output, and the
+    //      output never carries base64
+    #[test]
+    fn image_blocks_become_tool_images_and_bad_ones_are_named() {
+        use base64::Engine as _;
+        let png = crate::session::attachments::fixtures::png(3, 3);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let huge = "A".repeat(MAX_IMAGE_BLOCK_BASE64 + 4);
+        let value = json!({"content": [
+            {"type": "text", "text": "canvas"},
+            {"type": "image", "mimeType": "image/png", "data": b64},
+            {"type": "resource", "resource": {"uri": "x://shot", "mimeType": "image/png", "blob": b64}},
+            {"type": "image", "mimeType": "image/png", "data": "!!not base64!!"},
+            {"type": "image", "mimeType": "image/png", "data": huge},
+        ]});
+        let result = convert(&value, "excalidraw", "get_canvas_screenshot", &[]);
+        assert_eq!(result.images.len(), 2);
+        assert_eq!(result.images[0].bytes, png);
+        assert!(result.output.contains("not valid base64"));
+        assert!(result.output.contains("too large to keep"));
+        assert!(!result.output.contains(&b64[..16]));
+        assert_eq!(result.images[0].name, "get_canvas_screenshot-1.img");
+    }
+
+    #[test]
+    fn at_most_four_image_blocks_are_decoded() {
+        let png = crate::session::attachments::fixtures::png(1, 1);
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let blocks: Vec<Value> = (0..6)
+            .map(|_| json!({"type": "image", "mimeType": "image/png", "data": b64}))
+            .collect();
+        let result = convert(&json!({"content": blocks}), "s", "t", &[]);
+        assert_eq!(result.images.len(), 4);
+        assert_eq!(result.output.matches("at most 4 images").count(), 2);
+    }
+
     #[test]
     fn reference_siblings_that_would_replace_constraints_skip_the_tool() {
         let schema = json!({
@@ -773,7 +860,8 @@ mod tests {
             "echo",
             &[],
         );
-        assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
+        assert_eq!(mixed.output, "file:///x (x)");
+        assert_eq!(mixed.images.len(), 1);
         assert_eq!(
             mixed.metadata["mcp_media"],
             json!([{"mime_type": "image/png", "data": "AAAA"}])

@@ -39,6 +39,8 @@ pub struct PendingCommand {
     pub source: String,
     pub target: String,
     pub mode: String,
+    /// The Captain's images, by reference, as admission resolved them from the attachment store.
+    pub images: Vec<withnav_client_api::attachment::ImageRef>,
 }
 
 /// Committer invoked by the sequencer AFTER `message.received` is seq-assigned
@@ -87,7 +89,7 @@ pub enum Ingress {
     /// FIRST, then invoke `commit`, then ack with the assigned seq.
     AcceptCommand {
         commit: CommandCommit,
-        command: PendingCommand,
+        command: Box<PendingCommand>,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
     /// Sequence + emit `candidate`, then ack with its seq. A candidate queued
@@ -290,7 +292,7 @@ impl Sequencer {
             &self.ingress_tx,
             Ingress::AcceptCommand {
                 commit,
-                command,
+                command: Box::new(command),
                 reply: reply_tx,
             },
         )?;
@@ -485,7 +487,7 @@ async fn run(
                 // sequenced envelope, THEN commit the command, THEN ack —
                 // so the ack is observable proof that commit followed emit.
                 let command_id = command.command_id;
-                let mut candidate = message_received_candidate(command);
+                let mut candidate = message_received_candidate(*command);
                 candidate.causation_id = Some(command_id);
                 emitter.emit(stamp(session_id, seq, candidate));
                 commit();
@@ -557,6 +559,7 @@ fn message_received_candidate(command: PendingCommand) -> Candidate {
             target: command.target,
             mode: command.mode,
             content: command.content,
+            images: command.images,
             selected_skill: command
                 .selected_skill
                 .map(|name| crate::bus::event::SelectedSkill {
@@ -806,6 +809,7 @@ mod tests {
                     source: "user:cli".into(),
                     target: "agent:main".into(),
                     mode: "next-turn".into(),
+                    images: Vec::new(),
                 },
                 commit,
             )

@@ -1,4 +1,4 @@
-import { del, get, post, put, q } from "./http";
+import { blob, del, get, post, put, q, request } from "./http";
 import type { AskAnswer, SecretScope, SecretTtl } from "../session/reducer";
 import type {
   AgentsBody,
@@ -7,6 +7,7 @@ import type {
   ContentBlock,
   ContextSnapshot,
   GatewayTest,
+  ImageRef,
   IntentBody,
   LayerEntry,
   McpResourceBody,
@@ -67,6 +68,14 @@ export const api = {
       mode: "next-turn",
       content,
     }),
+  /** Store an image for the session; the server checks its type from the bytes. */
+  upload: (id: string, file: File) =>
+    request<ImageRef>(`/v1/sessions/${q(id)}/attachments?name=${q(file.name || "image")}`, {
+      method: "POST",
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    }),
+  attachment: (id: string, attachmentId: string) => blob(`/v1/sessions/${q(id)}/attachments/${q(attachmentId)}`),
   stop: (id: string) => post<{ accepted: boolean; actor_state: string }>(`/v1/sessions/${q(id)}/stop`),
   answerQuestion: (id: string, answer: AskAnswer) =>
     post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/messages`, { target_actor_id: "agent:main", mode: "next-turn", content: [], answer }),

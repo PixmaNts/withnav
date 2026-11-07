@@ -208,7 +208,20 @@ export interface CommandOutcome {
   error?: string;
 }
 
-export type ContentBlock = { type: "text"; text: string } | { type: "skill"; name: string };
+/** A stored image, by reference: the bytes stay on the server, behind the session's attachment route. */
+export interface ImageRef {
+  attachment_id: string;
+  media_type?: string;
+  name?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+}
+
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "skill"; name: string }
+  | { type: "image"; attachment_id: string };
 
 // Settings (`.scratch/settings/contract.md`): config.json fields and the gateways of models.json.
 export type SettingApplies = "new_sessions" | "restart" | "live";

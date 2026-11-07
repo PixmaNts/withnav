@@ -734,3 +734,21 @@ test("favorite models reach a subagent panel too", async t => {
   assert.deepEqual(seen.find(m => m.type === "favorites")?.items, ["gw/a"]);
   panels[0].panel.dispose();
 });
+
+test("pending images from the webview are checked before anything is decoded", () => {
+  const { pendingImages } = require("../out/tests/chatView.js");
+  const ok = { name: "shot.png", data: "iVBORw0KGgo=" };
+  assert.deepEqual(pendingImages(undefined), []);
+  assert.deepEqual(pendingImages([ok]), [ok]);
+  for (const bad of [
+    "nope",
+    [{ name: 3, data: "AAAA" }],
+    [{ name: "x".repeat(256), data: "AAAA" }],
+    [{ name: "a.png", data: "" }],
+    [{ name: "a.png", data: "not base64!" }],
+    [{ name: "a.png", data: "A".repeat(6_000_000) }],
+    Array.from({ length: 9 }, () => ok),
+  ]) {
+    assert.throws(() => pendingImages(bad));
+  }
+});

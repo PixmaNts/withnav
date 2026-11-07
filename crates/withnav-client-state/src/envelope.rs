@@ -25,6 +25,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::Value;
 use withnav_client_api::{
+    attachment::{ImageRef, human_size},
     event::{EventEnvelope, EventKind, McpStatus},
     protocol::{ModelChanged, ModelEntry},
     provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
@@ -150,6 +151,35 @@ pub struct EnvelopeContext<'a> {
     pub catalog: &'a [ModelEntry],
     /// The service-wide MCP gauge, shared by every conversation.
     pub mcp: &'a mut Option<McpStatus>,
+}
+
+/// Numbers the images of one event and shows each as a notice under it. A value that is not a
+/// list of references shows nothing.
+fn push_images(s: &mut SessionState, seq: u64, value: &Value) {
+    let Ok(images) = Vec::<ImageRef>::deserialize(value) else {
+        return;
+    };
+    for (i, image) in images.into_iter().enumerate() {
+        let mut chip = format!(
+            "image {}: {}",
+            s.conversation.images.len() + 1,
+            strip_controls(&image.name)
+        );
+        if image.width > 0 && image.height > 0 {
+            chip.push_str(&format!(", {}x{}", image.width, image.height));
+        }
+        if image.size > 0 {
+            chip.push_str(&format!(", {}", human_size(image.size)));
+        }
+        chip.push_str(&format!(
+            " (/image {} to open)",
+            s.conversation.images.len() + 1
+        ));
+        s.conversation.images.push(image);
+        s.conversation
+            .blocks
+            .push(block(format!("image:{seq}:{i}"), BlockKind::Notice(chip)));
+    }
 }
 
 pub fn apply_envelope(
@@ -342,6 +372,7 @@ pub fn apply_envelope(
                     text: strip_controls(text),
                 },
             ));
+            push_images(s, e.seq, &v["images"]);
             if matches!(
                 v["selected_skill"]["origin"].as_str(),
                 Some("driver" | "captain")
@@ -475,6 +506,7 @@ pub fn apply_envelope(
                 ..Default::default()
             };
             tool_merge(s, &actor, &turn, id, patch);
+            push_images(s, e.seq, &v["metadata"]["images"]);
         }
         Some(EventKind::AgentYield) => {
             let v = e.payload;

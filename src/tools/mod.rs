@@ -105,6 +105,25 @@ pub struct ToolResult {
     pub error: Option<ToolErrorObj>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+    /// Images the tool produced (a picture file, a screenshot). Never serialized: the agent loop
+    /// stores them as attachments of the session and keeps only their references.
+    #[serde(skip)]
+    pub images: Vec<ToolImage>,
+}
+
+/// One image a tool returned, as raw bytes. Its `Debug` prints only the size: a screenshot that
+/// reached a log or an event would carry the whole picture with it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ToolImage {
+    /// A display name (`shot.png`); the type is detected from the bytes when it is stored.
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ToolImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ToolImage({}, {} bytes)", self.name, self.bytes.len())
+    }
 }
 
 impl ToolResult {
@@ -115,6 +134,7 @@ impl ToolResult {
             truncated: None,
             error: None,
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -144,6 +164,7 @@ impl ToolResult {
                 message,
             }),
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -159,6 +180,7 @@ impl ToolResult {
                 message: message.into(),
             }),
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -175,6 +197,7 @@ impl ToolResult {
             truncated: None,
             error: None,
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -323,6 +346,7 @@ impl Registry {
                     message: format!("no such tool: {name}"),
                 }),
                 metadata: Value::Null,
+                images: Vec::new(),
             }),
         }
     }
@@ -696,6 +720,7 @@ mod tests {
                 message: "blocked".into(),
             }),
             metadata: Value::Null,
+            images: Vec::new(),
         };
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["status"], "denied");

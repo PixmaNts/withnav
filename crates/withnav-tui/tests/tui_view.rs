@@ -3881,3 +3881,41 @@ fn unavailable_permission_rules_are_visible_in_the_header_with_the_open_error() 
     assert!(text.contains("Permission rules unavailable"), "{text}");
     assert!(text.contains("withnav.db: open failed"), "{text}");
 }
+
+#[test]
+fn pending_images_show_as_chips_above_the_message_box() {
+    let mut s = state();
+    s.pending_attachments = vec![
+        withnav_tui::state::PendingAttachment {
+            path: "/ws/bug.png".into(),
+            name: "bug.png".into(),
+            size: 120_000,
+        },
+        withnav_tui::state::PendingAttachment {
+            path: "/ws/b.jpg".into(),
+            name: "b.jpg".into(),
+            size: 3_400_000,
+        },
+    ];
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|f| {
+            view::draw(
+                f,
+                &s,
+                &UiState::default(),
+                &Editor::new(),
+                &mut RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let rows: Vec<String> = (0..24).map(|y| row_text(&terminal, y, 100)).collect();
+    let chips = rows
+        .iter()
+        .position(|r| r.contains("[image bug.png, 120 KB] [image b.jpg, 3.4 MB]"))
+        .expect("chips drawn");
+    assert!(
+        rows[chips + 1].contains("Message"),
+        "the chips sit right above the box: {rows:#?}"
+    );
+}

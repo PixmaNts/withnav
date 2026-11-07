@@ -73,6 +73,11 @@ already running, pass `--url`; see the [command line](cli.md#nav-tui).
 - **Subagents.** `alt+s` opens a subagent's read-only transcript. `alt+c` continues one that ran
   out of steps.
 - **Bypass.** `alt+p` turns [bypass](permissions.md#bypass) on or off.
+- **Images.** `/attach <path>` adds an image to the next message; dropping an image file on the
+  terminal (which pastes its path) does the same. `/paste-image` adds the image on the clipboard,
+  read with `wl-paste` or `xclip` (`pngpaste` on macOS). Each image of the conversation, yours or
+  a tool's, shows as a numbered line; `/image [n]` opens it in the system viewer (the last one by
+  default). Over SSH the clipboard and the viewer are the remote machine's.
 - **Themes.** Eight: Ayu, Nord, Tide and Moss, each dark and light. Tide Dark is the default.
   Choose one with `/theme`; it is saved as `tui.theme`.
 - **Help.** `f1` shows every shortcut. `ctrl+q` quits, `esc` or `ctrl+c` stops a running turn.

@@ -5,7 +5,6 @@ expression: snapshot
  Conversations       │ ◆ withnav  ~/dev/project           ▌◎ build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  ◎ Nav · idle      │                                                                              
-                     │                                                                              
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
             │▌/config               edit settings in config.json                       │            

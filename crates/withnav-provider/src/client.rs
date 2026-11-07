@@ -440,7 +440,6 @@ mod tests {
     fn request_with(messages: Vec<ChatMessage>) -> ChatRequest {
         ChatRequest {
             model: "model-b".into(),
-            images: Default::default(),
             messages,
             tools: vec![],
             stream: true,

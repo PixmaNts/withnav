@@ -89,7 +89,7 @@ pub enum Ingress {
     /// FIRST, then invoke `commit`, then ack with the assigned seq.
     AcceptCommand {
         commit: CommandCommit,
-        command: PendingCommand,
+        command: Box<PendingCommand>,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
     /// Sequence + emit `candidate`, then ack with its seq. A candidate queued
@@ -292,7 +292,7 @@ impl Sequencer {
             &self.ingress_tx,
             Ingress::AcceptCommand {
                 commit,
-                command,
+                command: Box::new(command),
                 reply: reply_tx,
             },
         )?;
@@ -487,7 +487,7 @@ async fn run(
                 // sequenced envelope, THEN commit the command, THEN ack —
                 // so the ack is observable proof that commit followed emit.
                 let command_id = command.command_id;
-                let mut candidate = message_received_candidate(command);
+                let mut candidate = message_received_candidate(*command);
                 candidate.causation_id = Some(command_id);
                 emitter.emit(stamp(session_id, seq, candidate));
                 commit();

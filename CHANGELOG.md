@@ -92,6 +92,8 @@ commit, and stops a corrupt conversation from overwriting its stored history.
   reduced to a size note. They are stored with the session's other images (at most four per call)
   and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
   into a PNG first; it may not load external files or declare a DTD.
+- A conversation saved before image support was known, or while the gateway could not tell,
+  learns it from the gateway's model list when it resumes, instead of keeping images unsent.
 - Images in the browser client and the VS Code extension: paste or drop images into the message
   (the browser also has an attach button; at most eight per message, a message may be images only).
   The Captain's images and those returned by tools show as thumbnails in the conversation, also

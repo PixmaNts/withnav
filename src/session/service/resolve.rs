@@ -386,11 +386,31 @@ impl Service {
         let mut resolved = resolved;
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
-        // An explicit models.json value always wins, so setting `"images"` repairs a
-        // conversation saved as unknown. Without one, a recorded value is kept like the bounds.
-        if resolved.model.images.is_none() && !snapshot.provenance.images.is_empty() {
-            resolved.model.images = snapshot.images;
-        }
+        let recorded = (!snapshot.provenance.images.is_empty())
+            .then_some(snapshot.images)
+            .flatten();
+        // Image support is not a bound: a conversation saved before it was known, or saved
+        // while discovery could not tell, asks the catalog now (its cache within the TTL, else
+        // one bounded request) instead of staying unknown for good.
+        // Only a provider whose list reports image support (`catalog_format`) is asked, as for
+        // a fresh session.
+        let discovered = if resolved.model.images.is_none()
+            && recorded.is_none()
+            && resolved.provider.catalog_format.is_some()
+        {
+            self.catalog
+                .lookup(
+                    &resolved,
+                    &api_key,
+                    &crate::provider::openai::ClientCache::new(),
+                )
+                .await
+                .limits
+                .and_then(|l| l.vision)
+        } else {
+            None
+        };
+        resolved.model.images = image_support(resolved.model.images, recorded, discovered);
         Ok((resolved, api_key, snapshot, save_late, models_file))
     }
 
@@ -937,5 +957,33 @@ impl Service {
             offer: offered.variants,
             offer_known: offered.known,
         })
+    }
+}
+
+/// Whether a resumed conversation's model takes images: an explicit models.json value always
+/// wins (so setting `"images"` repairs any conversation), then the value recorded with the
+/// conversation, then what the catalog reports today. `None`: still unknown.
+fn image_support(
+    configured: Option<bool>,
+    recorded: Option<bool>,
+    discovered: Option<bool>,
+) -> Option<bool> {
+    configured.or(recorded).or(discovered)
+}
+
+#[cfg(test)]
+mod image_support_tests {
+    use super::image_support;
+
+    #[test]
+    fn configured_then_recorded_then_discovered() {
+        assert_eq!(
+            image_support(Some(false), Some(true), Some(true)),
+            Some(false)
+        );
+        assert_eq!(image_support(None, Some(false), Some(true)), Some(false));
+        // Saved before image support was recorded, or saved as unknown: the catalog decides.
+        assert_eq!(image_support(None, None, Some(true)), Some(true));
+        assert_eq!(image_support(None, None, None), None);
     }
 }

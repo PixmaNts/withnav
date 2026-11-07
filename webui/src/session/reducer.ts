@@ -6,7 +6,7 @@
 // carries no `llm.delta` (it is live-only), so `llm.response` is authoritative
 // for a step's text and reasoning; deltas only fill it in while it streams.
 
-import type { ContextSnapshot, Envelope } from "../api/types";
+import type { ContextSnapshot, Envelope, ImageRef } from "../api/types";
 import { outcomeText } from "./outcome";
 import { parseWake, type WakeNote } from "./wake";
 
@@ -103,7 +103,7 @@ export interface Permission {
 }
 
 export type Item =
-  | { kind: "captain"; key: string; text: string; skill?: string }
+  | { kind: "captain"; key: string; text: string; skill?: string; images?: ImageRef[] }
   | { kind: "wake"; key: string; text: string; note: WakeNote }
   | { kind: "beacon"; key: string; text: string }
   | { kind: "subagent-result"; key: string; text: string; source: string; agent?: string; outcome?: string; childId?: string }
@@ -234,7 +234,8 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
           } : item);
         }
         const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
-        next.items = [...next.items, { kind: "captain", key, text, skill }];
+        const images = Array.isArray(p.images) ? (p.images as ImageRef[]).filter((i) => typeof i?.attachment_id === "string") : [];
+        next.items = [...next.items, { kind: "captain", key, text, skill, ...(images.length ? { images } : {}) }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];
       else next.items = [...next.items, { kind: "subagent-result", key, source, ...subagentResult(text, p) }];
       return next;

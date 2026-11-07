@@ -141,7 +141,8 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         ? { name: p.selected_skill.name, origin: String(p.selected_skill.origin ?? "") } : undefined;
       const secret = author === "captain" ? secretNote(p.secret) : undefined;
       return { type: "message", id: String(p.command_id ?? envelope.seq), author, source,
-         text: String(p.content ?? ""), selectedSkill, answer: author === "captain" ? p.answer : undefined, ...(secret ? { secret } : {}) };
+         text: String(p.content ?? ""), selectedSkill, answer: author === "captain" ? p.answer : undefined,
+         images: imageRefs(p.images), ...(secret ? { secret } : {}) };
     }
     case "permission.requested": {
       if (typeof p.request_id !== "string") return undefined;
@@ -223,4 +224,11 @@ export function permissionOutcome(resolution: string, message?: string, alwaysSa
     case "error": return message ?? "Could not send the answer. Try again.";
     default: return resolution;
   }
+}
+
+/** The well-formed image references of an event field; anything else is dropped. */
+export function imageRefs(value: unknown): import("./chatProtocol").ImageRef[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const refs = value.filter((i): i is import("./chatProtocol").ImageRef => typeof i?.attachment_id === "string");
+  return refs.length ? refs : undefined;
 }

@@ -1842,6 +1842,10 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 params![id.to_string()],
             )?;
             tx.execute(
+                "DELETE FROM attachments WHERE session_id = ?1",
+                params![id.to_string()],
+            )?;
+            tx.execute(
                 "DELETE FROM sessions WHERE id = ?1",
                 params![id.to_string()],
             )?;
@@ -1934,7 +1938,13 @@ fn migrate(path: &Path) -> Result<(), String> {
             result_ref TEXT NOT NULL,
             payload TEXT NOT NULL,
             delivered INTEGER NOT NULL DEFAULT 0
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS attachments (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, media_type TEXT NOT NULL,
+            name TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER NOT NULL,
+            height INTEGER NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS attachments_session ON attachments(session_id);",
     )
     .map_err(|e| format!("migrate: {e}"))?;
     // Editor context is explicit since October 2026. Legacy profile values are
@@ -2376,7 +2386,9 @@ mod tests {
                     context_window: "models.json".into(),
                     max_input_tokens: "none".into(),
                     reported_output: "none".into(),
+                    images: String::new(),
                 },
+                images: None,
             },
         };
         let value = AgentOverride {
@@ -2780,6 +2792,7 @@ mod tests {
             vec![ChatMessage::User {
                 provenance: Default::default(),
                 content: "hi".into(),
+                images: Vec::new(),
             }],
         );
         // id2 updated later: it must list first even though id was created
@@ -2863,6 +2876,40 @@ mod tests {
         }
         assert!(store.load(id).await.expect("load").is_none());
         assert!(store.list("/w").await.expect("list").is_empty());
+    }
+
+    // Given a session with stored images and another session with one
+    // When the session is deleted
+    // Then its attachments go with it and the other session keeps its own
+    #[tokio::test]
+    async fn delete_removes_the_sessions_attachments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.db");
+        let store = HistoryStore::open(&path).expect("open");
+        let (gone, kept) = (Ulid::generate(), Ulid::generate());
+        for id in [gone, kept] {
+            store
+                .record_session(id, "/w", "m", false)
+                .await
+                .expect("record");
+        }
+        let attachments = crate::session::attachments::AttachmentStore::open(&path).expect("open");
+        let image = crate::session::attachments::fixtures::png(2, 2);
+        let removed = attachments
+            .insert(&gone.to_string(), None, &image)
+            .expect("insert");
+        let survivor = attachments
+            .insert(&kept.to_string(), None, &image)
+            .expect("insert");
+        store.delete(gone).await.expect("delete");
+        assert!(
+            attachments
+                .load(&gone.to_string(), &removed.attachment_id)
+                .is_err()
+        );
+        attachments
+            .load(&kept.to_string(), &survivor.attachment_id)
+            .expect("the other session keeps its image");
     }
 
     // Given a store file
@@ -2957,6 +3004,7 @@ mod tests {
             vec![ChatMessage::User {
                 provenance: Default::default(),
                 content: "hi".into(),
+                images: Vec::new(),
             }],
         );
         store.flush().await.expect("flush");
@@ -3377,7 +3425,9 @@ mod tests {
                 context_window: "models.json".into(),
                 max_input_tokens: "none".into(),
                 reported_output: "none".into(),
+                images: String::new(),
             },
+            images: None,
         };
         let (_dir, store) = temp_store();
         let id = Ulid::generate();
@@ -3414,6 +3464,7 @@ mod tests {
             ChatMessage::User {
                 provenance: Default::default(),
                 content: format!("request {n}"),
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: None,
@@ -3432,6 +3483,7 @@ mod tests {
                 tool_call_id: format!("c{n}"),
                 content: "output".repeat(50),
                 answered_by: None,
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: Some("done".into()),

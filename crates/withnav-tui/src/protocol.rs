@@ -112,6 +112,16 @@ pub enum ClientEvent {
         revision: u64,
         result: Result<SubmitResponse, String>,
     },
+    /// A file named by `/attach` was looked at on disk: its chip, or why it is refused.
+    AttachmentChecked {
+        generation: Generation,
+        result: Result<crate::state::PendingAttachment, String>,
+    },
+    /// An image of the transcript was handed to the system viewer, or why it could not be.
+    ImageOpened {
+        generation: Generation,
+        result: Result<String, String>,
+    },
     /// A permission answer came back.
     PermissionAnswered {
         generation: Generation,
@@ -264,6 +274,15 @@ pub enum Action {
     ListSecrets,
     /// `/secrets revoke NAME`.
     RevokeSecret(String),
+    /// `/attach <path>`: checks the file and, if it can be sent, adds a chip to the message box.
+    Attach(String),
+    /// `/attach clear`: drops the chips of the message box.
+    ClearAttachments,
+    /// `/paste-image`: attaches the image on the local clipboard, like `/attach`.
+    PasteImage,
+    /// `/image [n]`: opens the nth image of the transcript (the last by default) in the system
+    /// viewer.
+    OpenImage(String),
     /// Shows a notice in the active conversation; nothing else happens.
     ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
@@ -394,6 +413,29 @@ pub enum Effect {
     SendAt {
         request: SubmitRequest,
         revision: u64,
+    },
+    /// Like `SendAt`, for a message with images: the runtime uploads each file to the session
+    /// first (which only exists by now), appends the returned references to `request.content`
+    /// after the text, and sends. Any failure comes back as a failed `Submitted`.
+    SendWithAttachments {
+        request: SubmitRequest,
+        revision: u64,
+        attachments: Vec<crate::state::PendingAttachment>,
+    },
+    /// Looks at the file named by `/attach` (`path` as typed: `~` and relative paths are
+    /// resolved by the runtime) and reports `ClientEvent::AttachmentChecked`.
+    CheckAttachment {
+        path: String,
+    },
+    /// Saves the image on the local clipboard to a private file and reports
+    /// `ClientEvent::AttachmentChecked`.
+    PasteImage,
+    /// Downloads one stored image and opens it in the system viewer; reports
+    /// `ClientEvent::ImageOpened`.
+    OpenImage {
+        session_id: String,
+        number: usize,
+        image: withnav_client_api::attachment::ImageRef,
     },
     /// Opens the variant list of the active conversation, from the offer the server just gave.
     ShowVariants {

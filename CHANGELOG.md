@@ -73,6 +73,26 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 ### Fixed
 
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
+### Added
+
+- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG
+  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
+  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
+  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
+  `images` and where it came from.
+- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
+  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
+  reduced to a size note. They are stored with the session's other images (at most four per call)
+  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
+  into a PNG first; it may not load external files or declare a DTD.
+- Images in the browser client and the VS Code extension: paste or drop images into the message
+  (the browser also has an attach button; at most eight per message, a message may be images only).
+  The Captain's images and those returned by tools show as thumbnails in the conversation, also
+  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
+  in an editor panel beside the VS Code chat.
+- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
+  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
+  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
 
 ## [0.8.1] - 2026-10-16
 

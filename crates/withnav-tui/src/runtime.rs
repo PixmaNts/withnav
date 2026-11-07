@@ -1,6 +1,7 @@
 //! Owns the UI event loop; effect execution lives in `effects`, drawing in
 //! view. The runtime is the only owner of `State`, `UiState`, the editor, the
 //! render cache, the client and the event streams (one per open tab).
+mod desktop;
 mod effects;
 mod selection;
 

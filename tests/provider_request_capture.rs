@@ -48,6 +48,7 @@ async fn mcp_definitions_reach_provider_with_safe_names_and_normalized_schema() 
         vec![ChatMessage::User {
             content: "hello".into(),
             provenance: Default::default(),
+            images: Vec::new(),
         }],
         registry.schemas(),
         Some(256),

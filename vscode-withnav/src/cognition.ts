@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
+import { createHash } from "node:crypto";
 import { ContextSnapshot, parseContext } from "./contextMeter";
-import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
-import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
+import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
+import { ConversationControls, eventView, imageRefs, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 import { CLIENT_COMMANDS, routeComposer } from "./commands";
 import type { CommandInfo } from "./chatProtocol";
@@ -276,6 +277,8 @@ export class CognitionBackend implements ChatBackend {
    */
   constructor(private readonly options: { bootstrap?: boolean } = {}) {}
   private endpoint?: ServerInfoParams;
+  /** Images already stored, by session and content hash, so a failed send's retry does not store them twice. */
+  private readonly uploaded = new Map<string, string>();
   /**
    * An authenticated request for the settings page. The page may open before
    * nav lsp announces its server: wait for it a while, then say so rather
@@ -317,12 +320,13 @@ export class CognitionBackend implements ChatBackend {
   captureOperation(): ComposerOperation { return { owner: this.state, generation: this.currentGeneration() }; }
   ownsOperation(operation: ComposerOperation): boolean { return !this.disposed && operation.owner === this.state && operation.generation === this.currentGeneration(); }
 
-  async runComposerCommand(draft: string, generation = this.currentGeneration(), operation?: ComposerOperation): Promise<boolean> {
+  async runComposerCommand(draft: string, generation = this.currentGeneration(), operation?: ComposerOperation, images: PendingImage[] = []): Promise<boolean> {
     if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent to send messages or commands.");
     this.checkGeneration(generation);
     const routed = routeComposer(draft);
     if (routed.kind !== "command") throw new Error("Not a command");
     const { name, arguments: args } = routed;
+    if (images.length && name !== "skill") throw new Error("Images go with a message, not with a command.");
     if (name === "bypass") {
       if (!["", "on", "off"].includes(args)) throw new Error("Usage: /bypass [on|off]");
       if (args) await this.setBypassPermissions(args === "on", operation);
@@ -378,7 +382,8 @@ export class CognitionBackend implements ChatBackend {
       const session = ensured.session;
       generation = ensured.generation;
       this.checkGeneration(generation);
-      const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }] }) });
+      const stored = await this.storeImages(session, images);
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }, ...stored] }) });
       this.checkGeneration(generation);
       const operationId = result?.command_id ?? result?.operation_id;
       if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args });
@@ -684,19 +689,54 @@ export class CognitionBackend implements ChatBackend {
     await this.listConversations();
   }
 
-  async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
+  async send(text: string, context?: string, operation?: ComposerOperation, images: PendingImage[] = []): Promise<void> {
     if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent.");
     // The Captain's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
     const { session, generation } = await this.ensureSession(operation);
     this.checkGeneration(generation);
+    const stored = await this.storeImages(session, images);
+    const body = context ? `${text}\n\n${context}` : text;
     await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, {
       method: "POST",
       body: JSON.stringify({
         target_actor_id: ROOT_ACTOR,
-        content: [{ type: "text", text: context ? `${text}\n\n${context}` : text }],
+        content: [...(body.trim() ? [{ type: "text", text: body }] : []), ...stored],
       }),
     });
+  }
+
+  /** Stores each image in the session first, so a message can name it by id. */
+  private async storeImages(session: string, images: PendingImage[]): Promise<{ type: "image"; attachment_id: string }[]> {
+    const stored: { type: "image"; attachment_id: string }[] = [];
+    for (const image of images) {
+      // A retry after a failed send reuses what was already stored rather than filling the quota.
+      const key = `${session}:${createHash("sha256").update(image.data).digest("hex")}`;
+      const known = this.uploaded.get(key);
+      if (known) { stored.push({ type: "image", attachment_id: known }); continue; }
+      const ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(image.name || "image")}`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: Buffer.from(image.data, "base64"),
+      });
+      const id = String(ref?.attachment_id);
+      this.uploaded.set(key, id);
+      if (this.uploaded.size > 64) this.uploaded.delete(this.uploaded.keys().next().value as string);
+      stored.push({ type: "image", attachment_id: id });
+    }
+    return stored;
+  }
+
+  /** One stored image of the conversation shown now, as a `data:` URL; undefined when unreadable. */
+  async imageDataUrl(attachmentId: string): Promise<string | undefined> {
+    const session = this.currentConversationId();
+    if (!session || !this.endpoint) return undefined;
+    const response = await fetch(`http://127.0.0.1:${this.endpoint.port}/v1/sessions/${encodeURIComponent(session)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      headers: { authorization: `Bearer ${this.endpoint.token}` },
+    }).catch(() => undefined);
+    const type = response?.headers.get("content-type") ?? "";
+    if (!response?.ok || !type.startsWith("image/")) return undefined;
+    return `data:${type};base64,${Buffer.from(await response.arrayBuffer()).toString("base64")}`;
   }
 
   async stop(): Promise<void> { if (this.isReadOnly()) throw new Error("Use the confirmed subagent Stop control."); await this.stopState(this.state); }
@@ -1677,6 +1717,7 @@ export class CognitionBackend implements ChatBackend {
           summary: shown,
           ok: payload.status === "ok",
           evidence,
+          images: imageRefs(payload.metadata?.images),
         };
         if (mcpMedia) toolEvent.mcpMedia = mcpMedia;
         if (mcpUi) {

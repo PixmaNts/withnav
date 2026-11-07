@@ -277,11 +277,17 @@ async fn run_steps_inner(
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
         let role_message = actor.role_message();
-        let mut history = actor.effective_history();
-        // Whatever a value reached the transcript by, the model never reads it.
+        let mut transcript_history = actor.effective_history();
+        // Whatever a value reached the transcript by, the model never reads it. Redacted before
+        // the image plan, so every history built from it below is redacted too.
         if let Some(secrets) = &actor.tool_context.secrets {
-            history.iter_mut().for_each(|m| secrets.redact_message(m));
+            transcript_history
+                .iter_mut()
+                .for_each(|m| secrets.redact_message(m));
         }
+        let image_plan = crate::agent::images::plan(&transcript_history, actor.images);
+        let image_ids = image_plan.send_ids(&transcript_history);
+        let mut history = actor.request_history(transcript_history.clone());
         let tools = actor.effective_tool_schemas();
         if actor.input_budget.is_some_and(|budget| {
             crate::agent::context::estimate(
@@ -299,9 +305,37 @@ async fn run_steps_inner(
             });
         }
 
+        // The bytes of the images this request sends, read after the estimate (which counts a
+        // fixed cost per image and needs none). An image that cannot be read becomes a text
+        // placeholder and the step goes on; the estimate only over-counted it.
+        let mut image_payloads = std::collections::HashMap::new();
+        if let Some(loader) = actor.attachment_loader.clone()
+            && !image_ids.is_empty()
+        {
+            let mut loaded = loader.load(image_ids.clone()).await;
+            let mut unavailable = std::collections::HashSet::new();
+            for id in &image_ids {
+                match loaded.remove(id) {
+                    Some(Ok(payload)) => {
+                        image_payloads.insert(id.clone(), payload);
+                    }
+                    Some(Err(reason)) => {
+                        tracing::warn!(attachment = %id, %reason, "image unavailable for request");
+                        unavailable.insert(id.clone());
+                    }
+                    None => {
+                        unavailable.insert(id.clone());
+                    }
+                }
+            }
+            if !unavailable.is_empty() {
+                history = image_plan.apply_excluding(&transcript_history, &unavailable);
+            }
+        }
+
         observe(AgentEvent::StepStarted);
 
-        let request = build_request(
+        let mut request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
@@ -310,6 +344,7 @@ async fn run_steps_inner(
             tools,
             actor.max_tokens,
         );
+        request.images = image_payloads;
 
         let turn = match client
             .chat_turn(
@@ -1516,6 +1551,9 @@ async fn execute_call(
     if let Some(secrets) = &actor.tool_context.secrets {
         redact_result(secrets, &mut result);
     }
+    // Images go into the session's store before anything is published, so the event and the
+    // transcript only ever carry references to stored rows.
+    store_tool_images(actor, &mut result).await;
     // How the call was allowed: the durable `tool.post_call` says so.
     if let Some(note) = note {
         merge_approval_metadata(&mut result.metadata, &note);
@@ -1589,6 +1627,60 @@ fn interrupted_content(result: &ToolResult) -> String {
     }
 }
 
+/// Most images one tool result keeps; the rest are named in its output.
+pub(crate) const MAX_TOOL_IMAGES: usize = 4;
+
+/// Stores the images `result` carries as attachments of the session and records their references
+/// in `metadata.images`, where clients and the transcript read them. An image that cannot be
+/// stored (no store, a refused type or size) is reported in the output instead: the model learns
+/// a picture was there and why it cannot see it, and the call itself still succeeds.
+async fn store_tool_images(actor: &AgentActor, result: &mut ToolResult) {
+    let images = std::mem::take(&mut result.images);
+    if images.is_empty() {
+        return;
+    }
+    let mut stored = Vec::new();
+    let mut notes = Vec::new();
+    for (at, image) in images.into_iter().enumerate() {
+        let name = image.name.clone();
+        if at >= MAX_TOOL_IMAGES {
+            notes.push(format!(
+                "[image {name} not kept: at most {MAX_TOOL_IMAGES} images per tool result]"
+            ));
+            continue;
+        }
+        let outcome = match &actor.attachment_loader {
+            Some(loader) => loader.store(image.name, image.bytes).await,
+            None => Err("this conversation keeps no images".into()),
+        };
+        match outcome {
+            Ok(reference) => stored.push(reference),
+            Err(reason) => notes.push(format!("[image {name} not kept: {reason}]")),
+        }
+    }
+    for note in notes {
+        if !result.output.is_empty() {
+            result.output.push('\n');
+        }
+        result.output.push_str(&note);
+    }
+    if !stored.is_empty() {
+        if !result.metadata.is_object() {
+            result.metadata = serde_json::json!({});
+        }
+        result.metadata["images"] = serde_json::to_value(&stored).unwrap_or_default();
+    }
+}
+
+/// The image references [`store_tool_images`] recorded on a result.
+fn tool_result_images(result: &ToolResult) -> Vec<crate::provider::openai::ImageRef> {
+    result
+        .metadata
+        .get("images")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
     let mut content = match result.status {
         ToolStatus::Ok => result.output.clone(),
@@ -1602,6 +1694,7 @@ fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolR
         tool_call_id: tool_call_id.to_string(),
         content,
         answered_by: None,
+        images: tool_result_images(result),
     });
 }
 
@@ -1613,6 +1706,10 @@ fn append_interrupted(actor: &mut AgentActor, tool_call_id: &str) {
 #[cfg(test)]
 #[path = "loop_permission_tests.rs"]
 mod permission_tests;
+
+#[cfg(test)]
+#[path = "loop_image_tests.rs"]
+mod image_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1641,6 +1738,7 @@ mod tests {
                     transcript.push(ChatMessage::User {
                         provenance: crate::provider::openai::UserProvenance::Parent,
                         content: "committed steering".into(),
+                        images: Vec::new(),
                     });
                     Ok(crate::agent::boundary::BoundaryResult::Watchdog(Some(
                         transcript,
@@ -2261,6 +2359,7 @@ mod tests {
                         transcript.push(ChatMessage::User {
                             provenance: crate::provider::openai::UserProvenance::Parent,
                             content: "committed steering".into(),
+                            images: Vec::new(),
                         });
                         Err(crate::agent::boundary::BoundaryError {
                             message: "delivery failed".into(),
@@ -3015,6 +3114,7 @@ mod tests {
             t.push(ChatMessage::User {
                 provenance: Default::default(),
                 content: format!("request {n}"),
+                images: Vec::new(),
             });
             t.push(ChatMessage::Assistant {
                 content: None,
@@ -3033,6 +3133,7 @@ mod tests {
                 tool_call_id: format!("c{n}"),
                 content: "output ".repeat(200),
                 answered_by: None,
+                images: Vec::new(),
             });
             t.push(ChatMessage::Assistant {
                 content: Some(format!("done {n}")),

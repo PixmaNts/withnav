@@ -188,6 +188,7 @@ async fn run_bash(
         truncated: None,
         error: None,
         metadata: json!({"exit_code": code}),
+        images: Vec::new(),
     };
     if let Some(orig) = truncated {
         result = result.with_truncation(orig);

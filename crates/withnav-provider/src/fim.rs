@@ -171,6 +171,7 @@ mod tests {
                 max_output_tokens: None,
                 supports_tools: false,
                 supports_parallel_tool_calls: None,
+                images: None,
                 thinking: None,
                 default_variant: None,
                 variants: None,

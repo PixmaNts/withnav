@@ -37,7 +37,9 @@ fn identity_of(resolved: &ResolvedModel) -> ModelResolution {
             context_window: String::new(),
             max_input_tokens: String::new(),
             reported_output: String::new(),
+            images: String::new(),
         },
+        images: None,
     }
 }
 
@@ -384,6 +386,11 @@ impl Service {
         let mut resolved = resolved;
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
+        // An explicit models.json value always wins, so setting `"images"` repairs a
+        // conversation saved as unknown. Without one, a recorded value is kept like the bounds.
+        if resolved.model.images.is_none() && !snapshot.provenance.images.is_empty() {
+            resolved.model.images = snapshot.images;
+        }
         Ok((resolved, api_key, snapshot, save_late, models_file))
     }
 
@@ -818,6 +825,7 @@ impl Service {
                         resolved.provider = target.provider.clone();
                         resolved.model.model = target.model.clone();
                         resolved.model.reasoning_history = target.reasoning_history;
+                        resolved.model.images = target.images;
                         resolved.model.max_output_tokens = target.max_tokens;
                         resolved.model.context_window =
                             Some(target.resolution.bounds.context_window);
@@ -918,6 +926,7 @@ impl Service {
             api_key,
             model: resolved.model.model.clone(),
             reasoning_history: resolved.model.reasoning_history,
+            images: snapshot.images,
             max_tokens: resolved.model.max_output_tokens,
             variant,
             new: ModelIdentity::from_upstream(&snapshot.provider, &snapshot.model),

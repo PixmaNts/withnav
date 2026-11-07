@@ -33,6 +33,21 @@ pub const CATALOG: &[Command] = &[
         args_hint: "[model_id]",
     },
     Command {
+        name: "/attach",
+        description: "attach an image to your next message (or clear)",
+        args_hint: "<path>|clear",
+    },
+    Command {
+        name: "/paste-image",
+        description: "attach the image on the clipboard to your next message",
+        args_hint: "",
+    },
+    Command {
+        name: "/image",
+        description: "open an image of this conversation in the system viewer",
+        args_hint: "[n]",
+    },
+    Command {
         name: "/skills",
         description: "choose a skill to load for your next message",
         args_hint: "",
@@ -311,6 +326,14 @@ fn local_action(name: &str, arguments: &str, mode: Mode) -> Local {
             ["revoke", name] => Local::Run(Action::RevokeSecret(name.to_string())),
             _ => Local::Refuse("usage: /secrets [revoke NAME]".into()),
         },
+        "attach" if !has_args => {
+            Local::Refuse("usage: /attach <path to an image> | /attach clear".into())
+        }
+        "attach" if arguments == "clear" => Local::Run(Action::ClearAttachments),
+        "attach" => Local::Run(Action::Attach(arguments.to_string())),
+        "paste-image" if !has_args => Local::Run(Action::PasteImage),
+        "paste-image" => Local::Refuse("usage: /paste-image".into()),
+        "image" => Local::Run(Action::OpenImage(arguments.to_string())),
         // With arguments, `/variant` is the server's; alone it opens the list.
         "variant" if has_args => Local::Server,
         _ => match command_action(&format!("/{name}"), mode) {

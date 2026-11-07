@@ -2,7 +2,7 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
-import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
+import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision, ImageRef, PendingImage } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
 import { contextMeter } from "../contextMeter";
 import { displayTitle } from "../sessionTitle";
@@ -717,7 +717,7 @@ function updateControls(): void {
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
   else if (!readOnly) prompt.placeholder = secretWaiting() ? "Nav is waiting for the key above… (or write to answer otherwise)" : "Message WithNav…";
   if (readOnly) modelBtn.disabled = true;
-  send.disabled = prompt.disabled || sending || !prompt.value.trim();
+  send.disabled = prompt.disabled || sending || (!prompt.value.trim() && !pendingImages.length);
   stop.hidden = readOnly || (state !== "busy" && !compacting);
 }
 
@@ -785,7 +785,80 @@ function decorateCrew(byline: HTMLElement, agent = "build"): void {
   }
 }
 
-function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string): void {
+// ---- Images: pending ones in the composer, stored ones as thumbnails ---------------------------
+
+/** Most images a message carries, and the largest file read: the server's 3.75 MiB per image. */
+const MAX_IMAGES = 8;
+const MAX_IMAGE_FILE = 3_932_160;
+let pendingImages: (PendingImage & { size: number })[] = [];
+const pendingList = el("ul", "pending-images");
+pendingList.setAttribute("aria-label", "Images to send");
+pendingList.hidden = true;
+
+function renderPending(): void {
+  pendingList.replaceChildren(...pendingImages.map((image, index) => {
+    const item = el("li", "pending-image", `${image.name} · ${Math.ceil(image.size / 1024)} KiB`);
+    const remove = el("button", "pending-image-remove", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${image.name}`);
+    remove.addEventListener("click", () => { pendingImages.splice(index, 1); renderPending(); updateControls(); });
+    item.append(remove);
+    return item;
+  }));
+  pendingList.hidden = !pendingImages.length;
+}
+
+function addImageFiles(files: Iterable<File>): void {
+  for (const file of files) {
+    if (!file.type.startsWith("image/") && !/\.(png|jpe?g|gif|webp|svg)$/i.test(file.name)) continue;
+    if (pendingImages.length >= MAX_IMAGES) { commandError.textContent = `A message carries at most ${MAX_IMAGES} images.`; commandError.hidden = false; return; }
+    if (file.size > MAX_IMAGE_FILE) { commandError.textContent = `${file.name} is too large to attach.`; commandError.hidden = false; continue; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result ?? "");
+      const data = url.slice(url.indexOf(",") + 1);
+      if (!data || pendingImages.length >= MAX_IMAGES) return;
+      pendingImages.push({ name: file.name || "image", data, size: file.size });
+      renderPending(); updateControls();
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+/** Per attachment: its `data:` URL, `null` while it loads, `false` once it is known unavailable. */
+const imageUrls = new Map<string, string | null | false>();
+function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
+  if (!images?.length) return undefined;
+  const row = el("div", "thumbs");
+  for (const image of images) {
+    const name = image.name || "image";
+    const button = el("button", "thumb");
+    button.type = "button";
+    button.title = `${name}${image.width && image.height ? ` · ${image.width}×${image.height}` : ""}: open beside`;
+    button.dataset.attachment = image.attachment_id;
+    const img = el("img") as HTMLImageElement;
+    img.alt = name;
+    button.append(img);
+    button.addEventListener("click", () => post({ type: "openImage", attachmentId: image.attachment_id, name }));
+    row.append(button);
+    const known = imageUrls.get(image.attachment_id);
+    if (known) img.src = known;
+    else if (known === false) button.classList.add("missing");
+    else if (known === undefined) { imageUrls.set(image.attachment_id, null); post({ type: "loadImage", attachmentId: image.attachment_id }); }
+  }
+  return row;
+}
+
+function showImageData(attachmentId: string, url: string | undefined): void {
+  imageUrls.set(attachmentId, url ?? false);
+  for (const button of transcript.querySelectorAll<HTMLButtonElement>(`.thumb[data-attachment="${CSS.escape(attachmentId)}"]`)) {
+    const img = button.querySelector("img");
+    if (url && img) img.src = url;
+    else button.classList.add("missing");
+  }
+}
+
+function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string, images?: ImageRef[]): void {
   if ((author === "navigator" || author === "nav")) { add(navNote(text)); return; }
   if ((author === "driver" || author === "captain") && !firstCaptain && text.trim()) { firstCaptain = text; if (sessionId) setTitle(); }
   const root = el("article", `message ${author === "driver" ? "captain" : author}`);
@@ -805,6 +878,8 @@ function message(author: string, text: string, context?: string, skill?: { name:
   const body = el("div", "message-body");
   renderMarkdown(body, text);
   root.append(body);
+  const thumbs = thumbnails(images);
+  if (thumbs) root.append(thumbs);
   if (context) {
     const chip = el("div", "context-chip sent", context);
     chip.title = "Editor context sent with this message";
@@ -1467,7 +1542,7 @@ function receive(event: HostToWebview): void {
           card.outcome.textContent = `Answered${event.answer.custom ? ` · ${event.answer.custom}` : ""}`;
         }
       }
-      message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
+      message(event.author, event.text, event.context, event.selectedSkill, event.source, event.images); break;
     }
     case "secretState": {
       const card = secretCards.get(event.requestId);
@@ -1489,6 +1564,7 @@ function receive(event: HostToWebview): void {
       renderSecretsButton();
       break;
     }
+    case "imageData": showImageData(event.attachmentId, event.url); break;
     case "questionState": {
       const card = questionCards.get(event.questionCallId);
       if (card && !card.answered) {
@@ -1498,7 +1574,7 @@ function receive(event: HostToWebview): void {
       break;
     }
     case "sendResult":
-      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; }
+      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; if (event.accepted) { pendingImages = []; renderPending(); } }
       if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
       if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
         prompt.value = event.text;
@@ -1587,7 +1663,13 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     }
-    case "tool": activity(turn(event.id), event); break;
+    case "tool": {
+      const item = turn(event.id);
+      activity(item, event);
+      const thumbs = thumbnails(event.images);
+      if (thumbs) item.root.append(thumbs);
+      break;
+    }
     case "question": {
       const item = turn(event.id);
       continueTurn(item);
@@ -1759,16 +1841,36 @@ function renderMarkdown(root: HTMLElement, source: string): void {
   root.replaceChildren(...Array.from(container.childNodes));
 }
 
+prompt.before(pendingList);
+prompt.addEventListener("paste", event => {
+  const files = Array.from(event.clipboardData?.files ?? []);
+  if (!files.some(file => file.type.startsWith("image/"))) return;
+  event.preventDefault();
+  addImageFiles(files);
+});
+form.addEventListener("dragover", event => {
+  if (!event.dataTransfer?.types.includes("Files") || prompt.disabled) return;
+  event.preventDefault();
+  form.classList.add("dropping");
+});
+form.addEventListener("dragleave", () => form.classList.remove("dropping"));
+form.addEventListener("drop", event => {
+  form.classList.remove("dropping");
+  if (!event.dataTransfer?.files.length || prompt.disabled) return;
+  event.preventDefault();
+  addImageFiles(Array.from(event.dataTransfer.files));
+});
+
 form.addEventListener("submit", event => {
   event.preventDefault();
   const text = prompt.value;
-  if (!text.trim() || prompt.disabled || sending) return;
+  if ((!text.trim() && !pendingImages.length) || prompt.disabled || sending) return;
   closePalette();
   commandError.hidden = true;
   // Idle compaction holds its HTTP response until completion. It must not own
   // the ordinary message submission lock while the server queues input safely.
   if (!/^\/compact(?:\s|$)/.test(text)) { sending = true; pendingSendText = text; }
-  post({ type: "send", text, includeContext: contextOn() });
+  post({ type: "send", text, includeContext: contextOn(), ...(pendingImages.length ? { images: pendingImages.map(({ name, data }) => ({ name, data })) } : {}) });
   // Dropping the chip applies to one message only.
   skipNext = false; renderContext();
   updateControls();

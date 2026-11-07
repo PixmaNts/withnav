@@ -12,6 +12,7 @@ import { CommandPalette, type PaletteCommand, type PalettePage } from "./compone
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { RightPanel, type PanelTab } from "./components/RightPanel";
+import { ImageProvider, type ShownImage } from "./components/Images";
 import { Sidebar, sidebarWorkspaces } from "./components/Sidebar";
 import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./components/WorkspaceActions";
 import { DeleteSessionDialog, type DeleteSessionRequest } from "./components/SessionActions";
@@ -96,6 +97,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const [tab, setTab] = useState<PanelTab>("intent");
   const [mcpApp, setMcpApp] = useState<McpAppDescriptor | null>(null);
   const [appExpanded, setAppExpanded] = useState(false);
+  const [shown, setShown] = useState<ShownImage | null>(null);
   const [removing, setRemoving] = useState<RemoveRequest | null>(null);
   const [deleting, setDeleting] = useState<DeleteSessionRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
@@ -123,6 +125,14 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const details = useDrawer(TABLET);
   const { setOpen: closeSide } = side;
   const { setOpen: closeDetails } = details;
+  const openImage = useCallback(
+    (image: ShownImage) => {
+      setShown(image);
+      setTab("image");
+      details.setOpen(true);
+    },
+    [details.setOpen],
+  );
   // Picking a session or a subagent in a drawer shows it: the drawer gets out of the way.
   useEffect(() => {
     closeSide(false);
@@ -418,6 +428,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} onDelete={setDeleting} />
       </Drawer>
 
+      <ImageProvider sessionId={route.session} open={openImage}>
       {route.subagent && route.session ? (
         <main className="main">
           <SubagentView childId={route.subagent} parentId={route.session} parent={chat.view} parentTitle={title} onBack={() => navigate({ subagent: null })} />
@@ -457,6 +468,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
           {overlay === "models" && <ModelPicker chat={chat} onClose={close} onSwitchAgent={(id) => void chat.switchAgent(id)} />}
         </main>
       )}
+      </ImageProvider>
 
       <Drawer id="chat-details" side="right" state={details} label="Session details">
         <RightPanel
@@ -472,6 +484,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             setMcpApp(null);
             setAppExpanded(false);
           }}
+          shown={shown}
         />
       </Drawer>
 

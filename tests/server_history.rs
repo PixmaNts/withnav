@@ -399,6 +399,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
             ChatMessage::User {
                 provenance: Default::default(),
                 content: "earlier question".into(),
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: Some("earlier answer".into()),

@@ -67,6 +67,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n} {}", "word ".repeat(1400))),
@@ -675,6 +676,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
         ChatMessage::User {
             provenance: Default::default(),
             content: format!("request {n}"),
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: None,
@@ -693,6 +695,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
             tool_call_id: format!("call_{n}"),
             content: "lorem ".repeat(3_400),
             answered_by: None,
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: Some(format!("answer {n} {}", "word ".repeat(1_000))),
@@ -708,6 +711,7 @@ fn short_turn(n: usize) -> Vec<ChatMessage> {
         ChatMessage::User {
             provenance: Default::default(),
             content: format!("request {n}"),
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: Some(format!("answer {n}")),
@@ -902,6 +906,7 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n}")),

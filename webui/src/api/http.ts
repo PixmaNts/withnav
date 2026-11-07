@@ -54,7 +54,7 @@ export class HttpError extends Error {
 /** JSON request; a non-2xx answer becomes an HttpError carrying the server's `error`. */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = authHeaders(init.headers);
-  if (init.body !== undefined) headers.set("content-type", "application/json");
+  if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
   let response: Response;
   try {
     response = await fetch(path, { ...init, headers });
@@ -79,6 +79,22 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     throw new HttpError(response.status, detail || `HTTP ${response.status}`, typeof body?.reason === "string" ? body.reason : undefined, body);
   }
   return body as T;
+}
+
+/** Raw bytes of an authenticated route; `<img src>` cannot carry the bearer token. */
+export async function blob(path: string): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(path, { headers: authHeaders() });
+  } catch (error) {
+    throw new HttpError(0, `The WithNav server is unreachable (${error instanceof Error ? error.message : String(error)}).`);
+  }
+  if (response.status === 401) {
+    reportUnauthorized();
+    throw new HttpError(401, "Session expired");
+  }
+  if (!response.ok) throw new HttpError(response.status, `HTTP ${response.status}`);
+  return response.blob();
 }
 
 export const get = <T>(path: string) => request<T>(path);

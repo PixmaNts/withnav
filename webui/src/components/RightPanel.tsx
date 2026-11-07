@@ -5,12 +5,14 @@ import type { AgentEntry, McpAppDescriptor } from "../api/types";
 import type { Child } from "../session/reducer";
 import type { Chat } from "../session/useChat";
 import { McpAppHost } from "./McpAppHost";
+import { ImageView, type ShownImage } from "./Images";
 
-export type PanelTab = "intent" | "agents" | "extensions" | "app";
+export type PanelTab = "intent" | "agents" | "extensions" | "image" | "app";
 const BASE_TABS: [PanelTab, string][] = [
   ["intent", "Intent"],
   ["agents", "Crew"],
   ["extensions", "Extensions"],
+  ["image", "Image"],
 ];
 
 export function RightPanel({
@@ -23,6 +25,7 @@ export function RightPanel({
   appExpanded = false,
   onToggleAppExpand,
   onCloseApp,
+  shown = null,
 }: {
   tab: PanelTab;
   setTab: (t: PanelTab) => void;
@@ -33,6 +36,7 @@ export function RightPanel({
   appExpanded?: boolean;
   onToggleAppExpand?: () => void;
   onCloseApp?: () => void;
+  shown?: ShownImage | null;
 }) {
   const tabs: [PanelTab, string][] = mcpApp ? [...BASE_TABS, ["app", `App · ${mcpApp.server}`]] : BASE_TABS;
   return (
@@ -59,6 +63,7 @@ export function RightPanel({
             }}
           />
         )}
+        {tab === "image" && <ImageView shown={shown} />}
       </div>
     </aside>
   );

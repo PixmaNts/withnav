@@ -222,7 +222,13 @@ export function registerChatView(
           case "loadImage":
             if (typeof message.attachmentId === "string") {
               const attachmentId = message.attachmentId;
-              void backend.imageDataUrl(attachmentId).catch(() => undefined).then(url => post({ type: "imageData", attachmentId, url }));
+              // The answer belongs to the conversation it was asked for: once the tab shows another
+              // one (or is gone), drop it. Not the generation: a stop and resume of the same
+              // conversation also moves it, and a dropped answer leaves the thumbnail blank for good.
+              const session = backend.currentConversationId();
+              void backend.imageDataUrl(attachmentId).catch(() => undefined).then(url => {
+                if (tabs.backend(tab) === backend && backend.currentConversationId() === session) post({ type: "imageData", attachmentId, url });
+              });
             }
             break;
           case "openImage":

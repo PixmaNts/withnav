@@ -8,23 +8,34 @@ const { JSDOM } = require("jsdom");
 const originalLoad = Module._load;
 const noop = () => ({ dispose() {} });
 let provider;
+let createdPanel;
 const vscode = {
   commands: { registerCommand() { return noop(); } },
+  env: { async openExternal() { return true; } },
   Disposable: { from(...items) { return { dispose() { items.forEach(item => item.dispose()); } }; } },
-  ViewColumn: { Active: 1 },
+  ViewColumn: { Active: 1, Beside: 2 },
   window: {
     showErrorMessage() {}, visibleTextEditors: [],
+    createWebviewPanel() {
+      let listener;
+      createdPanel = {
+        posted: [], title: "", reveal() {}, onDidDispose: noop,
+        webview: { html: "", postMessage(m) { createdPanel.posted.push(m); return Promise.resolve(true); }, onDidReceiveMessage(l) { listener = l; return noop(); } },
+        receive: m => listener(m),
+      };
+      return createdPanel;
+    },
     registerWebviewViewProvider(_id, value) { provider = value; return noop(); },
     onDidChangeActiveTextEditor: noop, onDidChangeTextEditorSelection: noop, onDidChangeVisibleTextEditors: noop,
     tabGroups: { onDidChangeTabs: noop, all: [] },
   },
   workspace: { workspaceFolders: [] },
-  Uri: { joinPath(_uri, ...parts) { return parts.join("/"); } },
+  Uri: { joinPath(_uri, ...parts) { return parts.join("/"); }, parse(value) { return value; } },
 };
 Module._load = function (id, ...args) { return id === "vscode" ? vscode : originalLoad.call(this, id, ...args); };
 const { registerChatView } = require("../out/tests/chatView.js");
 const { ChatHub } = require("../out/tests/chatHub.js");
-const { renderMcpAppHtml } = require("../out/tests/mcpAppPanel.js");
+const { renderMcpAppHtml, openMcpAppPanel } = require("../out/tests/mcpAppPanel.js");
 Module._load = originalLoad;
 const { stripChildren, filterChildren, footerText, actionsSummary, durationLabel, childGroup } = require("../out/tests/webview/agentStrip.js");
 const { visibleSessions, filterCounts, sessionStatus, matchesFilter } = require("../out/tests/webview/conversations.js");
@@ -121,6 +132,48 @@ test("hub: tabs are restored from the store and reopen their sessions after a se
   assert.deepEqual(backends.map(b => b.endpoint.port), [2, 2, 2]);
 });
 
+test("hub: a conversation's tabs close only once the server delete succeeds; a refused delete keeps tabs and list", async () => {
+  const { hub, lister } = makeHub();
+  lister.list = [{ id: "A", title: "A" }, { id: "B", title: "B" }];
+  await hub.listConversations();
+  const a = hub.open("A");
+  let pending;
+  lister.deleteConversation = () => new Promise((resolve, reject) => { pending = { resolve, reject }; });
+  const refused = hub.deleteConversation("A");
+  assert.notEqual(hub.backend(a), undefined, "the tab stays open while the delete is in flight");
+  pending.reject(new Error("HTTP 500"));
+  await assert.rejects(refused, /HTTP 500/);
+  assert.notEqual(hub.backend(a), undefined, "a refused delete keeps the tab");
+  assert.deepEqual(hub.conversations().map(item => item.id), ["A", "B"]);
+  const accepted = hub.deleteConversation("A");
+  assert.notEqual(hub.backend(a), undefined);
+  pending.resolve();
+  await accepted;
+  assert.equal(hub.backend(a), undefined, "the tab closes once the server dropped the conversation");
+  assert.deepEqual(hub.conversations().map(item => item.id), ["B"]);
+});
+
+test("hub: a failed coalesced list refresh is reported, unless the hub was disposed meanwhile", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const errors = []; const backends = []; const lister = fakeBackend();
+  const hub = new ChatHub(() => { const b = fakeBackend(); backends.push(b); return b; }, lister, undefined, error => errors.push(error.message));
+  hub.setServerInfo({ port: 1, token: "t" });
+  let pending;
+  lister.listConversations = () => new Promise((_resolve, reject) => { pending = reject; });
+  backends[0].emit({ type: "turnEnd", id: "T" });
+  t.mock.timers.tick(800);
+  pending(new Error("HTTP 503"));
+  await flush();
+  assert.deepEqual(errors, ["HTTP 503"]);
+  backends[0].emit({ type: "turnEnd", id: "U" });
+  t.mock.timers.tick(800);
+  hub.dispose();
+  pending(new Error("late"));
+  await flush();
+  assert.deepEqual(errors, ["HTTP 503"], "a refresh failing after disposal stays silent");
+});
+
 // --- The chat view routes by tab --------------------------------------------------------------------
 test("chat view: backend messages carry their tab, webview messages reach the backend of their tab and generation", async () => {
   const { hub, backends } = makeHub();
@@ -156,6 +209,53 @@ test("chat view: backend messages carry their tab, webview messages reach the ba
   assert.equal(hub.tabs().length, 2);
   receive({ type: "openTab", sessionId: 42 });
   assert.equal(hub.tabs().length, 2, "a session id must be a string");
+});
+
+test("chat view: an image answer arriving after the tab switched conversation is dropped", async () => {
+  const { hub, backends } = makeHub();
+  const tab = hub.open("B");
+  const backend = backends[1];
+  const pending = [];
+  backend.imageDataUrl = () => new Promise(resolve => pending.push(resolve));
+  registerChatView({ extensionUri: "extension", globalState: memento() }, hub);
+  const messages = []; let receive;
+  provider.resolveWebviewView({ webview: { cspSource: "t", asWebviewUri: v => v, postMessage(m) { messages.push(m); }, onDidReceiveMessage(l) { receive = l; return noop(); } }, onDidDispose() {} });
+  receive({ type: "ready" });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  receive({ type: "loadImage", attachmentId: "img1", tab, generation: 1 });
+  pending.shift()("data:image/png;base64,AA");
+  await flush();
+  assert.deepEqual(messages.filter(m => m.type === "imageData").map(m => [m.tab, m.attachmentId, m.url]), [[tab, "img1", "data:image/png;base64,AA"]], "a timely answer reaches its tab");
+  receive({ type: "loadImage", attachmentId: "img2", tab, generation: 1 });
+  backend.generation = 2; // a stop and resume of the same conversation
+  pending.shift()("data:image/png;base64,BB");
+  await flush();
+  assert.equal(messages.filter(m => m.type === "imageData" && m.attachmentId === "img2").length, 1, "the same conversation still gets its answer");
+  receive({ type: "loadImage", attachmentId: "img3", tab, generation: 2 });
+  backend.session = "C"; backend.generation = 3; // another conversation opened in this tab
+  pending.shift()("data:image/png;base64,CC");
+  await flush();
+  assert.equal(messages.filter(m => m.type === "imageData" && m.attachmentId === "img3").length, 0, "a late answer for the previous conversation is dropped");
+});
+
+test("mcp app: a browser that fails to open shows a panel error instead of escaping as an unhandled rejection", async () => {
+  const original = vscode.env.openExternal;
+  vscode.env.openExternal = async () => { throw new Error("no browser found"); };
+  try {
+    await openMcpAppPanel({}, { server: "s", tool: "t", callId: "c", html: "<p>app</p>", url: "https://example.com" });
+    await assert.doesNotReject(createdPanel.receive({ type: "openExternal", url: "https://example.com" }));
+    assert.deepEqual(createdPanel.posted, [{ type: "hostError", message: "Could not open the browser: no browser found" }]);
+  } finally { vscode.env.openExternal = original; }
+  const dom = new JSDOM(renderMcpAppHtml("n", { server: "s", tool: "t", callId: "c" }), {
+    runScripts: "dangerously",
+    beforeParse(window) { window.acquireVsCodeApi = () => ({ postMessage() {} }); },
+  });
+  const box = dom.window.document.getElementById("host-error");
+  assert.equal(box.hidden, true, "no error before one is reported");
+  dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { type: "hostError", message: "Could not open the browser: no browser found" } }));
+  assert.equal(box.hidden, false);
+  assert.equal(box.textContent, "Could not open the browser: no browser found");
+  dom.window.close();
 });
 
 // --- The page: tabs, agent strip, session list ------------------------------------------------------

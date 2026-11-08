@@ -686,7 +686,9 @@ export class CognitionBackend implements ChatBackend {
     } else {
       this.emitConversations();
     }
-    await this.listConversations();
+    // The server has dropped it and the list above no longer shows it: a failed re-read must not
+    // report the deletion as failed, or the caller keeps tabs open on a conversation that is gone.
+    await this.listConversations().catch(() => undefined);
   }
 
   async send(text: string, context?: string, operation?: ComposerOperation, images: PendingImage[] = []): Promise<void> {

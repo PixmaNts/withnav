@@ -4,7 +4,7 @@ Compile-checked prototype of the WithNav v1 target design (`../pipeline.md`, `..
 `../data-flow.md`). Sketch fidelity: no I/O, no HTTP, no SQLite. Standalone crate, not in the root workspace.
 
 ```
-cd doc-v1/sketch && cargo test
+cd docs/architecture/v1/sketch && cargo test
 ```
 
 ## What it proves
@@ -20,6 +20,6 @@ cd doc-v1/sketch && cargo test
 | Module | Future crate |
 | --- | --- |
 | `core` | `withnav-core` |
-| `api` | `withnav-api` |
+| `api` | `withnav-client-api` |
 | `engine::{pipeline, authorize, turn}` | `withnav-engine` |
 | `fakes` | test support in each crate |

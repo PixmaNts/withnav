@@ -172,7 +172,7 @@ stateDiagram-v2
   Settled --> [*]
 ```
 
-## 4. Wire contract (`withnav-api`)
+## 4. Wire contract (`withnav-client-api`)
 
 ```rust
 pub mod v1 {
@@ -203,6 +203,6 @@ Wire keys stay exactly as today (`schema_version`, `occurred_at`, `causation_id`
 above are illustrative. Full catalog: [events-and-hooks.md](events-and-hooks.md).
 
 - Same JSON as today: the move is a typing exercise, not a protocol change.
-- TS types for `webui/` and `vscode-withnav/` generated with `ts-rs` from this crate (no hand copies).
+- TS types for `webui/` and `vscode-withnav/` generated with `ts-rs` from this crate (no hand copies). Not done yet: the crate exists, the TypeScript copies are still by hand.
 - Three distinct versions: URL `/v1`, envelope `schema`, storage format. A breaking change = `/v2`.
 - Domain types never appear on the wire: `server` converts `core` → `api`.

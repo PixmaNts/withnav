@@ -1,4 +1,4 @@
-//! Stands in for the `withnav-api` crate: the typed wire contract. No domain type appears here.
+//! Stands in for the `withnav-client-api` crate: the typed wire contract. No domain type appears here.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

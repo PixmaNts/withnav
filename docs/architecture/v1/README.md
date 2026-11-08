@@ -1,6 +1,7 @@
 # WithNav v1 — target architecture
 
-From one 107k-line crate to a Cargo workspace whose boundaries the compiler enforces.
+From a 90k-line root crate to a Cargo workspace whose boundaries the compiler enforces.
+The first crates are already out (section 4).
 Still **one process, one binary** (`nav`): modular, not distributed.
 
 | Doc | Content |
@@ -15,7 +16,7 @@ Still **one process, one binary** (`nav`): modular, not distributed.
 | [sketch/](sketch/) | standalone Rust crate that compiles the core, api and engine design (`cargo test`) |
 | [migration.md](migration.md) | shippable steps, risks, open questions |
 
-Current state for comparison: [`../doc-pré-v1/`](../doc-pré-v1/README.md).
+Current state for comparison: [`../current.md`](../current.md).
 
 ## 1. Layers
 
@@ -44,7 +45,7 @@ flowchart TB
     PRV["withnav-providers<br/>openai · anthropic · …"] ~~~ TL["withnav-tools<br/>native tools"] ~~~ MCP["withnav-mcp"] ~~~ STO["withnav-storage<br/>SQLite, JSONL"] ~~~ PLG["plugins<br/>(features / stdio)"]
   end
 
-  clients -- "withnav-api v1 (typed DTOs)" --> SRV
+  clients -- "withnav-client-api v1 (typed DTOs)" --> SRV
   VSC -. LSP .-> LSP
   SRV --> RT --> ENG
   LSP --> FL
@@ -63,7 +64,7 @@ Arrows = `use` (compile-time). Runtime calls go the other way through ports.
 ```mermaid
 flowchart BT
   core[withnav-core]
-  api[withnav-api]
+  api[withnav-client-api]
   engine[withnav-engine] --> core
   runtime[withnav-runtime] --> engine
   flows[withnav-flows] --> core
@@ -82,14 +83,14 @@ flowchart BT
 
 Rules:
 1. **Adapters never import each other** nor anything above `core`.
-2. **`withnav-api` is a leaf**: wire DTOs only, versioned (`v1`), TS types generated from it.
+2. **`withnav-client-api` is a leaf**: wire DTOs only, versioned (`v1`), TS types generated from it.
 3. **`core` holds values and traits only**: no I/O, no config loading, no orchestration.
 4. A component is tested with fakes of the ports it uses (scripted provider, in-memory store,
    fake clock, recording stage). Each port has one contract test suite run on fake *and* real adapter.
 
 | Today | Goes to |
 | --- | --- |
-| `provider/` | `providers` (wire), `core` (neutral types), `runtime` (assignment/selection) |
+| `provider/` | wire, catalog and keys done: `withnav-provider`; neutral types still to move to `core`, assignment/selection (`src/assignments`, `src/layers.rs`) to `runtime` |
 | `tools/` | `tools`; `task`, `steer_subagent`, `decide_subagent` → `runtime` |
 | `mcp/` | `mcp` (returns a status snapshot; runtime publishes it) |
 | `agent/` | `engine` |
@@ -97,17 +98,32 @@ Rules:
 | `bus/`, `session/` | `runtime` (logic), `storage` (`store.rs`) |
 | `flows/` | `flows` |
 | `navigator/` | `navigator`; bootstrap → `nav` |
-| `server/` | `server`; DTOs → `api` |
-| `tui/` | `tui` + `client` (HTTP/SSE transport shared with future Rust clients) |
-| `bus/event.rs` wire types | `api` |
+| `server/` | `server`; DTOs already in `withnav-client-api` |
+| `tui/` | done: `withnav-tui` + `withnav-client` + `withnav-client-state` |
+| `bus/event.rs` wire types | done: `withnav-client-api` |
 
 How today's cycles break:
 
 | Cycle | Fix |
 | --- | --- |
-| `provider → session/settings` | resolved config is injected; providers never read settings |
+| `provider → session/settings` | done: `withnav-provider` never imports the root |
 | `tools ⇄ agent/session` | session-control tools live in `runtime`, implement `core::Tool` |
-| `permission ⇄ agent/bus/flows` | evidence types move to `core`; flows reached through a port |
-| `flows → navigator` | flows get intent through a `WorkspacePort`, not `navigator::intent` |
+| `permission ⇄ agent/bus/tools` | evidence types move to `core`; flows already reached through a port (`permission⇄flows` is gone) |
+| `flows → navigator` | done: `flows` imports only `agent` and `provider` |
 | `mcp → bus` | MCP exposes a status `watch`; runtime turns it into `mcp.status` |
-| `session ⇄ server` | server depends on runtime, never the reverse |
+| `session ⇄ server`, `navigator ⇄ server` | server depends on runtime, never the reverse (`session⇄server` is gone; `navigator⇄server` is left) |
+
+## 4. Where it stands (8 November 2026)
+
+| Target crate | Today | Status |
+| --- | --- | --- |
+| `withnav-client-api` (named `withnav-api` in the first draft) | `crates/withnav-client-api` | done for Rust; TypeScript types still hand-written |
+| `withnav-client` | `crates/withnav-client` (+ `withnav-client-state`) | done |
+| `withnav-tui` | `crates/withnav-tui` | done |
+| `withnav-providers` | `crates/withnav-provider` | wire, catalog, keys done; one chat wire only (OpenAI-compatible); neutral types not yet in `core` |
+| `instinct-flow` | `crates/instinct-flow` | done |
+| `withnav-core` | none | not started; `ChatMessage` still doubles as transcript and wire type |
+| `withnav-engine`, `withnav-runtime` | `src/agent`, `src/permission`, `src/bus`, `src/session` | not started; the cycles of [`../current.md`](../current.md#2-dependencies-between-root-modules-non-test-crate-imports) are here |
+| `withnav-tools`, `withnav-mcp`, `withnav-storage` | `src/tools`, `src/mcp`, `src/session/store.rs` | not started |
+| `withnav-flows`, `withnav-navigator`, `withnav-server` | `src/flows`, `src/navigator`, `src/server` | not started |
+

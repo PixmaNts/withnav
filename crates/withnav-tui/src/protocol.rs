@@ -115,7 +115,15 @@ pub enum ClientEvent {
     /// A file named by `/attach` was looked at on disk: its chip, or why it is refused.
     AttachmentChecked {
         generation: Generation,
+        /// The tab's `attachments_revision` when the check was asked for.
+        revision: u64,
         result: Result<crate::state::PendingAttachment, String>,
+    },
+    /// Images of a failed `SendWithAttachments` that reached the server's attachment store,
+    /// reported before its failed `Submitted` or `DeliveryUncertain`, so a retry reuses them.
+    AttachmentsUploaded {
+        generation: Generation,
+        uploads: Vec<(crate::state::PendingAttachment, crate::state::Uploaded)>,
     },
     /// An image of the transcript was handed to the system viewer, or why it could not be.
     ImageOpened {
@@ -416,7 +424,9 @@ pub enum Effect {
     },
     /// Like `SendAt`, for a message with images: the runtime uploads each file to the session
     /// first (which only exists by now), appends the returned references to `request.content`
-    /// after the text, and sends. Any failure comes back as a failed `Submitted`.
+    /// after the text, and sends. An attachment already `uploaded` to this session is named, not
+    /// uploaded again. New uploads are reported in `ClientEvent::AttachmentsUploaded`; any
+    /// failure comes back as a failed `Submitted`.
     SendWithAttachments {
         request: SubmitRequest,
         revision: u64,
@@ -426,10 +436,15 @@ pub enum Effect {
     /// resolved by the runtime) and reports `ClientEvent::AttachmentChecked`.
     CheckAttachment {
         path: String,
+        /// Echoed in `ClientEvent::AttachmentChecked`.
+        revision: u64,
     },
     /// Saves the image on the local clipboard to a private file and reports
     /// `ClientEvent::AttachmentChecked`.
-    PasteImage,
+    PasteImage {
+        /// Echoed in `ClientEvent::AttachmentChecked`.
+        revision: u64,
+    },
     /// Downloads one stored image and opens it in the system viewer; reports
     /// `ClientEvent::ImageOpened`.
     OpenImage {

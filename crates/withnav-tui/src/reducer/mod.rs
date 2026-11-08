@@ -61,6 +61,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::AttachmentChecked { generation, .. }
+        | ClientEvent::AttachmentsUploaded { generation, .. }
         | ClientEvent::ImageOpened { generation, .. }
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
@@ -963,6 +964,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::ImageOpened { result, .. } => {
             push_local(s, BlockKind::Notice(result.unwrap_or_else(|e| e)));
         }
+        // Checked before an `/attach clear`: the Captain dropped it already.
+        ClientEvent::AttachmentChecked { revision, .. } if revision != s.attachments_revision => {}
         ClientEvent::AttachmentChecked { result, .. } => match result {
             Ok(attachment) => {
                 if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
@@ -983,6 +986,19 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             Err(why) => push_local(s, BlockKind::Notice(format!("/attach: {why}"))),
         },
+        ClientEvent::AttachmentsUploaded { uploads, .. } => {
+            // Matched by the attachment itself, not its position: only images of the message in
+            // flight take a stored id, never one attached or cleared since.
+            let sending = s.attachments_sending.min(s.pending_attachments.len());
+            for (attachment, uploaded) in uploads {
+                if let Some(pending) = s.pending_attachments[..sending]
+                    .iter_mut()
+                    .find(|p| p.uploaded.is_none() && **p == attachment)
+                {
+                    pending.uploaded = Some(uploaded);
+                }
+            }
+        }
         ClientEvent::Submitted {
             revision, result, ..
         } => match result {

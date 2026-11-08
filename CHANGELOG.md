@@ -59,6 +59,14 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- `nav tui`: an `/attach` or `/paste-image` still being checked when you run `/attach clear` no
+  longer adds its image back to the next message.
+- `nav tui`: when sending a message with several images fails after some of them were stored, the
+  retry reuses the stored images instead of uploading them again, so failed sends no longer fill
+  the conversation's attachment quota with copies.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

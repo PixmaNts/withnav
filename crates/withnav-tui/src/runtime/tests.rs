@@ -912,9 +912,18 @@ async fn wheel_bursts_accumulate_before_render() {
 async fn recording_server(
     refuse_uploads: bool,
 ) -> (String, mpsc::UnboundedReceiver<serde_json::Value>) {
+    recording_server_refusing(move |_| refuse_uploads).await
+}
+
+/// Like `recording_server`, refusing the uploads for which `refuse` is true, given the 1-based
+/// number of the upload request. A refused upload is not recorded.
+async fn recording_server_refusing(
+    refuse: impl Fn(usize) -> bool + Clone + Send + Sync + 'static,
+) -> (String, mpsc::UnboundedReceiver<serde_json::Value>) {
     use axum::{Json, Router, body::Bytes, extract::Query, http::StatusCode, routing::post};
     let (seen, rx) = mpsc::unbounded_channel();
     let uploads = seen.clone();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = Router::new()
         .route(
             "/v1/sessions/{id}/attachments",
@@ -922,8 +931,10 @@ async fn recording_server(
                 move |Query(query): Query<std::collections::HashMap<String, String>>,
                       body: Bytes| {
                     let seen = uploads.clone();
+                    let number = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    let refused = refuse(number);
                     async move {
-                        if refuse_uploads {
+                        if refused {
                             return (
                                 StatusCode::BAD_REQUEST,
                                 Json(serde_json::json!({"error": "not an image"})),
@@ -966,6 +977,7 @@ fn pending(dir: &std::path::Path, name: &str, bytes: &[u8]) -> crate::state::Pen
         path,
         name: name.into(),
         size: bytes.len() as u64,
+        uploaded: None,
     }
 }
 
@@ -1065,6 +1077,91 @@ async fn a_refused_upload_sends_no_message_and_fails_the_submission() {
 }
 
 #[tokio::test]
+async fn a_retry_after_a_failed_upload_does_not_store_the_earlier_images_again() {
+    // The first attempt stores a.png, then the server refuses b.png.
+    let (url, mut seen) = recording_server_refusing(|number| number == 2).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = pending(dir.path(), "a.png", &[1, 2, 3]);
+    let b = pending(dir.path(), "b.png", &[4, 5]);
+    let (tx, mut rx) = mpsc::channel(16);
+    let mut exec = Executor::new(
+        Client::new(url, None),
+        tx,
+        Arc::new(crate::test_host::FileHost),
+    );
+    exec.execute(
+        Effect::SendWithAttachments {
+            request: send_request("look"),
+            revision: 1,
+            attachments: vec![a.clone(), b.clone()],
+        },
+        &ctx(2, Some("s1")),
+        &mut Editor::new(),
+    );
+    let ClientEvent::AttachmentsUploaded {
+        generation,
+        uploads,
+    } = next(&mut rx).await
+    else {
+        panic!("the stored image must be reported before the failure")
+    };
+    assert_eq!(generation, Generation(2));
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0].0, a);
+    assert_eq!(uploads[0].1.attachment_id, "att-a.png");
+    assert!(matches!(
+        next(&mut rx).await,
+        ClientEvent::Submitted { result: Err(_), .. }
+    ));
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"upload": "a.png", "bytes": 3})
+    );
+
+    // The retry names a.png by its stored id. An id stored in another conversation is not
+    // reused: c.png is uploaded again.
+    let mut stored_a = a.clone();
+    stored_a.uploaded = Some(uploads[0].1.clone());
+    let mut foreign_c = pending(dir.path(), "c.png", &[6]);
+    foreign_c.uploaded = Some(crate::state::Uploaded {
+        session_id: "other".into(),
+        attachment_id: "att-elsewhere".into(),
+    });
+    exec.execute(
+        Effect::SendWithAttachments {
+            request: send_request("look"),
+            revision: 1,
+            attachments: vec![stored_a, b, foreign_c],
+        },
+        &ctx(2, Some("s1")),
+        &mut Editor::new(),
+    );
+    // Accepted: the images leave the tab, so no stored id is reported.
+    assert!(matches!(
+        next(&mut rx).await,
+        ClientEvent::Submitted { result: Ok(_), .. }
+    ));
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"upload": "b.png", "bytes": 2})
+    );
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"upload": "c.png", "bytes": 1})
+    );
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        serde_json::json!({"send": [
+            {"type": "text", "text": "look"},
+            {"type": "image", "attachment_id": "att-a.png"},
+            {"type": "image", "attachment_id": "att-b.png"},
+            {"type": "image", "attachment_id": "att-c.png"},
+        ]})
+    );
+    assert!(seen.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn a_file_that_vanished_before_sending_fails_the_submission() {
     let (url, mut seen) = recording_server(false).await;
     let dir = tempfile::tempdir().unwrap();
@@ -1157,13 +1254,18 @@ async fn attach_effect_reports_the_check_under_the_generation_of_the_moment() {
     exec.execute(
         Effect::CheckAttachment {
             path: "a.png".into(),
+            revision: 7,
         },
         &context,
         &mut Editor::new(),
     );
     match next(&mut rx).await {
-        ClientEvent::AttachmentChecked { generation, result } => {
-            assert_eq!(generation, Generation(5));
+        ClientEvent::AttachmentChecked {
+            generation,
+            revision,
+            result,
+        } => {
+            assert_eq!((generation, revision), (Generation(5), 7));
             assert_eq!(result.unwrap().size, 4);
         }
         other => panic!("unexpected event {other:?}"),

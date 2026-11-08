@@ -1,5 +1,5 @@
 import { ClipboardText, Eye, EyeSlash, Key } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { SecretView } from "../api/types";
 import type { Question, SecretScope, SecretTtl } from "../session/reducer";
 
@@ -25,11 +25,25 @@ export function expiresIn(expiresAt: string | undefined, now = Date.now()): stri
 }
 export const scopeText = (scope?: SecretScope) => (scope === "workspace" ? "this workspace" : "this session");
 
+// Arrow keys move the choice in a radio group, wrapping at both ends.
+const ARROW_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
+/** A radio group: only the chosen option is in the tab order, arrow keys move the choice and the focus. */
 function Segmented<T extends string>({ label, options, value, onChange, disabled }: { label: string; options: [T, string][]; value: T; onChange: (v: T) => void; disabled?: boolean }) {
+  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
+  const onKeyDown = (e: KeyboardEvent) => {
+    const step = ARROW_STEP[e.key];
+    if (!step || disabled) return;
+    e.preventDefault();
+    const at = (options.findIndex(([v]) => v === value) + step + options.length) % options.length;
+    onChange(options[at]![0]);
+    buttons.current[at]?.focus();
+  };
   return (
-    <div className="secret-seg" role="radiogroup" aria-label={label}>
-      {options.map(([v, text]) => (
-        <button key={v} type="button" role="radio" aria-checked={value === v} className={value === v ? "selected" : ""} disabled={disabled} onClick={() => onChange(v)}>
+    <div className="secret-seg" role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
+      {options.map(([v, text], i) => (
+        <button key={v} ref={(node) => { buttons.current[i] = node; }} type="button" role="radio" aria-checked={value === v} tabIndex={value === v ? 0 : -1}
+          className={value === v ? "selected" : ""} disabled={disabled} onClick={() => onChange(v)}>
           {text}
         </button>
       ))}
@@ -173,10 +187,33 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
   );
 }
 
-/** The topbar list: the conversation's secrets, their expiry and Revoke. */
-export function SecretsList({ list, error, onRevoke }: { list: SecretView[] | null; error?: string | null; onRevoke: (name: string) => void }) {
+/** The topbar Secrets button and its list. Escape in the list closes it and puts the focus back on the button. */
+export function SecretsMenu({ list, error, onOpen, onRevoke }: { list: SecretView[] | null; error?: string | null; onOpen: () => void; onRevoke: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   return (
-    <div className="secrets-pop" role="dialog" aria-label="Secrets">
+    <span className="secrets-anchor">
+      <button ref={trigger} type="button" className="icon-btn" aria-haspopup="dialog" aria-expanded={open} aria-label="Secrets of this session" title="Secrets"
+        onClick={() => { setOpen(!open); if (!open) onOpen(); }}>
+        <Key size={16} />
+      </button>
+      {open && <SecretsList list={list} error={error} onRevoke={onRevoke} onClose={() => { setOpen(false); trigger.current?.focus(); }} />}
+    </span>
+  );
+}
+
+/** The topbar list: the conversation's secrets, their expiry and Revoke. Takes the focus when it opens. */
+export function SecretsList({ list, error, onRevoke, onClose }: { list: SecretView[] | null; error?: string | null; onRevoke: (name: string) => void; onClose?: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  // The container, not the first Revoke: the list may still be loading or empty.
+  useEffect(() => box.current?.focus(), []);
+  // A revoked row takes its focused button with it: keep the focus in the list so Escape still closes it.
+  useEffect(() => {
+    if (!document.activeElement || document.activeElement === document.body) box.current?.focus();
+  }, [list]);
+  return (
+    <div ref={box} className="secrets-pop" role="dialog" aria-label="Secrets" tabIndex={-1}
+      onKeyDown={(e) => { if (e.key === "Escape" && onClose) { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
       <div className="secrets-title">Secrets</div>
       {error && <div className="composer-error" role="alert">{error}</div>}
       {list === null ? <div className="muted">Loading…</div> : list.length === 0 ? <div className="muted">No secrets in this conversation.</div> : (

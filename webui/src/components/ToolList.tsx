@@ -149,12 +149,16 @@ export function ToolList({
                   const isZoomed = zoomed === key;
                   return (
                     <div key={key} className={`mcp-media-card${isZoomed ? " zoomed" : ""}`}>
-                      <img
-                        src={mediaSrc(item)}
-                        alt={`${call.name} preview ${idx + 1}`}
+                      <button
+                        type="button"
+                        className="mcp-media-zoom"
+                        aria-pressed={isZoomed}
+                        aria-label={`Enlarge ${call.name} preview ${idx + 1}`}
+                        title={isZoomed ? "Shrink" : "Enlarge"}
                         onClick={() => setZoomed(isZoomed ? null : key)}
-                        title={isZoomed ? "Click to shrink" : "Click to enlarge"}
-                      />
+                      >
+                        <img src={mediaSrc(item)} alt="" />
+                      </button>
                     </div>
                   );
                 })}

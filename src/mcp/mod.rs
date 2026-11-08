@@ -3,7 +3,9 @@ pub mod config;
 mod connection;
 mod redaction;
 mod tool;
+mod ui_error;
 pub use tool::McpTool;
+pub use ui_error::{McpUiError, UI_ERROR_DETAIL_CHARS};
 
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -308,19 +310,30 @@ impl McpManager {
         }
     }
 
+    /// The server an app request names: unknown ids are 404-class, configured servers whose
+    /// configuration did not parse are unavailable rather than unknown.
+    fn ui_server(&self, server_id: &str) -> Result<&Arc<Server>, McpUiError> {
+        if let Some(server) = self.servers.iter().find(|s| s.id == server_id) {
+            return Ok(server);
+        }
+        if self.invalid.iter().any(|s| s.server_id == server_id) {
+            return Err(McpUiError::Unavailable);
+        }
+        Err(McpUiError::UnknownServer)
+    }
+
     pub async fn read_ui_resource(
         &self,
         server_id: &str,
         uri: &str,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, McpUiError> {
+        const METHOD: &str = "resources/read";
         if !uri.starts_with("ui://") || uri.len() > 512 {
-            return Err("only ui:// resources are permitted".into());
+            return Err(McpUiError::InvalidRequest(
+                "only ui:// resources are permitted",
+            ));
         }
-        let server = self
-            .servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .ok_or_else(|| format!("unknown MCP server: {server_id}"))?;
+        let server = self.ui_server(server_id)?;
         let ready = server
             .ready
             .lock()
@@ -328,27 +341,28 @@ impl McpManager {
             .as_ref()
             .map(|r| (r.peer.clone(), r.disconnected.clone()));
         let Some((peer, disconnected)) = ready else {
-            return Err("MCP server is disconnected".into());
+            return Err(McpUiError::Unavailable);
         };
         let params = rmcp::model::ReadResourceRequestParams::new(uri.to_string());
         let request = rmcp::model::ClientRequest::ReadResourceRequest(
             rmcp::model::ReadResourceRequest::new(params),
         );
         let timeout = std::time::Duration::from_millis(server.config.call_timeout_ms);
+        let secrets = server.secrets();
         let value = tokio::select! {
             biased;
-            _ = disconnected.cancelled() => return Err("MCP server is disconnected".into()),
+            _ = disconnected.cancelled() => return Err(McpUiError::Unavailable),
             res = tokio::time::timeout(timeout, peer.send_request(request)) => match res {
-                Ok(Ok(response)) => serde_json::to_value(response).map_err(|_| "invalid MCP resource response".to_string())?,
-                Ok(Err(_)) => return Err("MCP server rejected resources/read".into()),
-                Err(_) => return Err("MCP resources/read timed out".into()),
+                Ok(Ok(response)) => serde_json::to_value(response)
+                    .map_err(|_| McpUiError::InvalidResponse { method: METHOD })?,
+                Ok(Err(error)) => return Err(ui_error::classify(&server.id, METHOD, error, &secrets)),
+                Err(_) => return Err(ui_error::timed_out(&server.id, METHOD, timeout)),
             }
         };
-        let secrets = server.secrets();
         let contents = value["contents"]
             .as_array()
             .and_then(|items| items.first())
-            .ok_or_else(|| "MCP resource is empty".to_string())?;
+            .ok_or(McpUiError::InvalidResponse { method: METHOD })?;
         let mime_type = contents["mimeType"]
             .as_str()
             .unwrap_or("text/html;profile=mcp-app");
@@ -373,45 +387,44 @@ impl McpManager {
         server_id: &str,
         tool_name: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
-        let server = self
-            .servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .ok_or_else(|| format!("unknown MCP server: {server_id}"))?;
+    ) -> Result<serde_json::Value, McpUiError> {
+        const METHOD: &str = "tools/call";
+        let server = self.ui_server(server_id)?;
         let ready = server
             .ready
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|r| {
+            .map(|r| {
                 let tool = r
                     .tools
                     .iter()
-                    .find(|t| t.original == tool_name || t.wire == tool_name)?;
-                Some((
-                    r.peer.clone(),
-                    r.disconnected.clone(),
-                    tool.original.clone(),
-                ))
+                    .find(|t| t.original == tool_name || t.wire == tool_name)
+                    .map(|t| t.original.clone());
+                (r.peer.clone(), r.disconnected.clone(), tool)
             });
-        let Some((peer, disconnected, original)) = ready else {
-            return Err("MCP tool is unavailable on this server".into());
+        let Some((peer, disconnected, tool)) = ready else {
+            return Err(McpUiError::Unavailable);
+        };
+        let Some(original) = tool else {
+            return Err(McpUiError::UnknownTool);
         };
         let params = rmcp::model::CallToolRequestParams::new(original).with_arguments(arguments);
         let request =
             rmcp::model::ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(params));
         let timeout = std::time::Duration::from_millis(server.config.call_timeout_ms);
+        let secrets = server.secrets();
         let value = tokio::select! {
             biased;
-            _ = disconnected.cancelled() => return Err("MCP server is disconnected".into()),
+            _ = disconnected.cancelled() => return Err(McpUiError::Unavailable),
             res = tokio::time::timeout(timeout, peer.send_request(request)) => match res {
-                Ok(Ok(response)) => serde_json::to_value(response).map_err(|_| "invalid MCP tool response".to_string())?,
-                Ok(Err(_)) => return Err("MCP server rejected tools/call".into()),
-                Err(_) => return Err("MCP tools/call timed out".into()),
+                Ok(Ok(response)) => serde_json::to_value(response)
+                    .map_err(|_| McpUiError::InvalidResponse { method: METHOD })?,
+                Ok(Err(error)) => return Err(ui_error::classify(&server.id, METHOD, error, &secrets)),
+                Err(_) => return Err(ui_error::timed_out(&server.id, METHOD, timeout)),
             }
         };
-        Ok(redaction::redact_value(&value, &server.secrets()))
+        Ok(redaction::redact_value(&value, &secrets))
     }
 
     pub async fn shutdown(&self) {

@@ -463,7 +463,7 @@ impl Service {
         &self,
         server_id: &str,
         uri: &str,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::mcp::McpUiError> {
         self.mcp.read_ui_resource(server_id, uri).await
     }
 
@@ -472,7 +472,7 @@ impl Service {
         server_id: &str,
         name: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::mcp::McpUiError> {
         self.mcp.call_ui_tool(server_id, name, arguments).await
     }
 

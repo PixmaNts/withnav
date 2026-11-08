@@ -7,6 +7,12 @@
 //!   the service's MCP servers (global, not per workspace). `state` is starting/ready/failed/disabled;
 //!   `tool_count` is 0 unless ready; text is redacted and bounded. Keep the highest `revision` of one
 //!   `incarnation`; the live-only `mcp.status` event carries the same body.
+//! - `GET /v1/mcp/:server/resource?uri=ui://…` -> `{uri,mime_type,text,blob}`;
+//!   `POST /v1/mcp/:server/call` `{name,arguments}` -> the tool's MCP result (an `isError` result
+//!   is still 200). Failures are `{error,reason}`: 400 `mcp_invalid_request`/`mcp_invalid_params`,
+//!   404 `mcp_unknown_server`/`mcp_unknown_tool`, 502 `mcp_rejected`/`mcp_invalid_response`,
+//!   503 `mcp_unavailable`, 504 `mcp_timeout`. A server's own error text is redacted, one line and
+//!   at most `mcp::UI_ERROR_DETAIL_CHARS` characters; the longer diagnostic goes to the log.
 //! - `GET /v1/layers?workspace=` -> `{layers:[{layer,status,model,variant,gateway,upstream_id,api,reason,variant_diagnostic?}]}`; exactly three lower layers, usable means validated assignment/API, not connectivity. Cached-only unresolved preferred-low is explicit, never a resolved runtime variant.
 //! - `GET /v1/agents?workspace=&session_id=` -> `{default_agent,agents:[{id,description,mode,assignment,effective,override?,warning,inherits_parent}]}`; canonical model identities and sanitized source/variant summaries only.
 //!   Session definitions are pinned for live sessions; base assignments project current config.
@@ -379,25 +385,47 @@ struct McpCallBody {
     arguments: serde_json::Map<String, serde_json::Value>,
 }
 
+/// An extractor rejection on an MCP App route: the app sees a stable message. The rejection text
+/// quotes request values (tool arguments may hold tokens) and the app renders whatever it gets,
+/// so only the rejection's status is logged.
+fn mcp_bad_request(route: &'static str, rejected: StatusCode) -> Response {
+    tracing::warn!(
+        route,
+        status = rejected.as_u16(),
+        "MCP App request rejected"
+    );
+    error_response(ServerError::Mcp(crate::mcp::McpUiError::InvalidRequest(
+        "invalid MCP App request",
+    )))
+}
+
+type McpServerPath = Result<Path<String>, axum::extract::rejection::PathRejection>;
+
 async fn get_mcp_resource(
     State(state): State<AppState>,
-    Path(server): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<McpResourceQuery>,
+    server: McpServerPath,
+    query: Result<axum::extract::Query<McpResourceQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
+    let (server, query) = match (server, query) {
+        (Ok(Path(server)), Ok(axum::extract::Query(query))) => (server, query),
+        (Err(rejection), _) => return mcp_bad_request("resource", rejection.status()),
+        (_, Err(rejection)) => return mcp_bad_request("resource", rejection.status()),
+    };
     match state.service().mcp_read_resource(&server, &query.uri).await {
         Ok(body) => Json(body).into_response(),
-        Err(message) => error_response(ServerError::MalformedBody(message)),
+        Err(error) => error_response(error.into()),
     }
 }
 
 async fn post_mcp_call(
     State(state): State<AppState>,
-    Path(server): Path<String>,
+    server: McpServerPath,
     body: Result<Json<McpCallBody>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let body = match json_body(body) {
-        Ok(b) => b,
-        Err(err) => return error_response(err),
+    let (server, body) = match (server, body) {
+        (Ok(Path(server)), Ok(Json(body))) => (server, body),
+        (Err(rejection), _) => return mcp_bad_request("call", rejection.status()),
+        (_, Err(rejection)) => return mcp_bad_request("call", rejection.status()),
     };
     match state
         .service()
@@ -405,7 +433,7 @@ async fn post_mcp_call(
         .await
     {
         Ok(result) => Json(result).into_response(),
-        Err(message) => error_response(ServerError::MalformedBody(message)),
+        Err(error) => error_response(error.into()),
     }
 }
 
@@ -1243,7 +1271,10 @@ async fn upload_attachment(
             );
         }
         Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
+            tracing::warn!(detail = ?rejection.body_text(), "attachment upload body rejected");
+            return error_response(ServerError::MalformedBody(
+                "the upload body could not be read".into(),
+            ));
         }
     };
     let session = session.to_string();
@@ -1343,6 +1374,33 @@ async fn continue_child(
 /// [`ServerError`] mapped onto a status code + JSON body. The full-inbox
 /// rejection carries the FROZEN `{accepted:false, reason:"inbox_full"}`
 /// body; every other failure shares `{"error": ...}`.
+/// The status of an MCP App failure: the caller's own mistakes are 4xx, the server's
+/// failures are 5xx, so a client can tell "fix the request" from "the server is down".
+fn mcp_status_code(error: &crate::mcp::McpUiError) -> StatusCode {
+    use crate::mcp::McpUiError as E;
+    match error {
+        E::InvalidRequest(_) | E::InvalidParams { .. } => StatusCode::BAD_REQUEST,
+        E::UnknownServer | E::UnknownTool => StatusCode::NOT_FOUND,
+        E::Rejected { .. } | E::InvalidResponse { .. } => StatusCode::BAD_GATEWAY,
+        E::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        E::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+    }
+}
+
+fn mcp_reason(error: &crate::mcp::McpUiError) -> &'static str {
+    use crate::mcp::McpUiError as E;
+    match error {
+        E::InvalidRequest(_) => "mcp_invalid_request",
+        E::InvalidParams { .. } => "mcp_invalid_params",
+        E::UnknownServer => "mcp_unknown_server",
+        E::UnknownTool => "mcp_unknown_tool",
+        E::Unavailable => "mcp_unavailable",
+        E::Rejected { .. } => "mcp_rejected",
+        E::InvalidResponse { .. } => "mcp_invalid_response",
+        E::Timeout { .. } => "mcp_timeout",
+    }
+}
+
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionArchived { .. } => StatusCode::FORBIDDEN,
@@ -1373,6 +1431,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::Mcp(error) => mcp_status_code(error),
     };
     if matches!(err, ServerError::InboxFull) {
         return (
@@ -1401,6 +1460,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::VariantUnavailable { .. } => Some("variant_unavailable"),
         ServerError::VariantOfferUnknown { .. } => Some("variant_offer_unknown"),
         ServerError::UnknownVariant { .. } => Some("unknown_variant"),
+        ServerError::Mcp(error) => Some(mcp_reason(error)),
         _ => None,
     };
     if let Some(reason) = reason {
@@ -1559,6 +1619,45 @@ mod tests {
                 assert_eq!(value["reason"], "too_large");
             }
         }
+    }
+
+    // Given an upload whose body stream fails with a distinctive message
+    // When the attachment handler reads it
+    // Then the client gets a stable 400 message, never the transport's error text
+    #[tokio::test]
+    async fn unreadable_upload_body_is_a_stable_400() {
+        let (_dir, state) = test_state();
+        let session = Ulid::generate();
+        state
+            .history()
+            .record_session(session, "/w", "m", false)
+            .await
+            .expect("record");
+        let failing = futures::stream::iter([Err::<axum::body::Bytes, _>(std::io::Error::other(
+            "upload-stream-sentinel",
+        ))]);
+        let response = app(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{session}/attachments"))
+                    .body(Body::from_stream(failing))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("json error body");
+        assert_eq!(
+            value["error"],
+            "malformed request body: the upload body could not be read"
+        );
     }
 
     // Given a session POST with a malformed body

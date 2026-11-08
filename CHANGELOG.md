@@ -59,6 +59,15 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- MCP Apps: a failed resource read or tool call from an app no longer comes back as a 400 that
+  blames the request. A bad request is 400, an unknown server or tool 404, a server error 502, a
+  disabled, misconfigured or disconnected server 503 and a timeout 504, each with its own `reason`.
+  The server's own error text reaches the app redacted, on one line and cut to 256 characters; the
+  longer diagnostic goes to the log. A malformed app request or an unreadable image upload gets a
+  fixed message instead of the request quoted back.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

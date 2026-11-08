@@ -9,19 +9,19 @@ tokio = "1.53"
 tokio-util = "0.7"
 # rustls, NOT native-tls, for reproducible builds (no system OpenSSL). reqwest 0.13 names it
 # `rustls` (aws-lc-rs crypto); `query` gates `RequestBuilder::query`.
-reqwest = { version = "0.13.5", default-features = false }
+reqwest = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1.1.8"
-thiserror = "2.0.20"
+toml = "1.1"
+thiserror = "2.0"
 ulid = { version = "3", features = ["std", "serde"] }
 time = "0.3"
 sha2 = "0.11"
 hex = "0.4"
 futures-util = "0.3"
-clap = { version = "4.6.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 evalexpr = "13.1.0"
-ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 sse-stream = { version = "0.3", default-features = true }
 tracing = "0.1"
@@ -79,7 +79,7 @@ sha2.workspace = true
 # sha2 0.11 digests no longer implement LowerHex: hex-encode them explicitly.
 hex.workspace = true
 time = { workspace = true, features = ["formatting", "parsing"] }
-directories = "6.0.0"
+directories = "6.0"
 tempfile = "3"
 regex = "1"
 bytes = "1"
@@ -88,22 +88,22 @@ futures-util.workspace = true
 axum = { version = "0.8.9", features = ["macros"] }
 futures = "0.3"
 tower-lsp-server = "0.23.0"
-similar = "3.2.0"
+similar = "3.2"
 # Navigator pipeline branch conditions: builtin functions disabled at use sites.
 evalexpr.workspace = true
 # Conversation history (navigator): one SQLite file per user, bundled SQLite.
 rusqlite = { version = "0.40", features = ["bundled"] }
-serde-saphyr = "2.0.0"
-globset = "0.4.20"
+serde-saphyr = "2.0"
+globset = "0.4"
 ignore = "0.4"
 htmd = "0.5"
 html2text = "0.17"
-encoding_rs = "0.8.42"
+encoding_rs = "0.8"
 include_dir = "0.7"
 # Image type and dimensions from the header alone, for uploaded attachments (never decodes pixels).
 imagesize = "0.15"
 # Decodes the base64 image blocks MCP tools return (screenshots), before they are stored.
-base64 = "0.22"
+base64 = "0.23"
 # SVG attachments are rasterized to PNG on the server: no script, no network, no file access.
 resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts"] }
 
@@ -118,7 +118,7 @@ wiremock = "0.6"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 insta = "1.48"
-flate2 = "1.1.10"
+flate2 = "1.1"
 
 [profile.release]
 lto = "thin"
@@ -135,7 +135,7 @@ path = "tools/reflex_latency_probe.rs"
 
 # Unix-only primitives (signals, process groups, descriptor-relative file access, flock).
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
+nix = { version = "0.31", features = ["signal", "fs", "resource", "user", "dir"] }
 
 # Windows backends: file ACLs for private files, Job Objects for owned process trees,
 # ShellExecuteW to open the browser, the registry to locate Git for Windows.

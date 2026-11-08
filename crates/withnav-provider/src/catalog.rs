@@ -91,6 +91,7 @@ pub struct Limits {
     pub effort_tiers: Option<Vec<String>>,
     /// Whether the model takes image input, as the provider's list reports it
     /// (`input_modalities`, else `capabilities.vision`). `None`: not reported.
+    /// It fills the alias's `images` when models.json leaves that unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
 }
@@ -487,6 +488,8 @@ fn short(e: &ProviderError) -> String {
 /// missing limits are "not reported". An id listed twice with conflicting
 /// values is ambiguous: it is dropped (and warned about) rather than guessed,
 /// so the alias on it needs an explicit `context_window`; other ids are kept.
+/// Conflicting image support counts too: picking one entry by its position
+/// would send images to a text-only model or hide them from a vision one.
 /// Duplicates that agree, or fill each other's gaps, are merged.
 pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, ProviderError> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
@@ -522,14 +525,17 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
             models.insert(id.to_string(), incoming);
             continue;
         };
-        let conflicts = |a: Option<u64>, b: Option<u64>| a.zip(b).is_some_and(|(x, y)| x != y);
+        fn conflicts<T: PartialEq>(a: Option<T>, b: Option<T>) -> bool {
+            a.zip(b).is_some_and(|(x, y)| x != y)
+        }
         if conflicts(existing.context_length, incoming.context_length)
             || conflicts(existing.max_input_tokens, incoming.max_input_tokens)
             || conflicts(existing.max_output_tokens, incoming.max_output_tokens)
+            || conflicts(existing.vision, incoming.vision)
         {
             tracing::warn!(
                 id,
-                "model catalog lists this id twice with conflicting limits; ignoring it"
+                "model catalog lists this id twice with conflicting limits or image support; ignoring it"
             );
             models.remove(id);
             ambiguous.insert(id.to_string());
@@ -836,14 +842,17 @@ pub fn chat_from_data(
     let explicit = resolved.model.context_window.filter(|n| *n > 0);
     let needs_tiers =
         resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
+    let needs_vision =
+        resolved.model.images.is_none() && resolved.provider.catalog_format.is_some();
     // Freshness only describes values that came from the provider's list.
     let used = data.as_ref().filter(|d| d.limits.is_some());
     let stale = used.is_some_and(|d| d.stale);
     let stale_age_secs = used.filter(|d| d.stale).and_then(|d| d.age_seconds);
     // A lookup that failed is reported even when nothing is cached for the
-    // model: a pinned window then still tells why no variants are on offer.
+    // model: a pinned window then still tells why no variants are on offer,
+    // or why image support is unknown rather than simply not reported.
     // Without a lookup the error is only that of values actually used.
-    let refresh_error = if needs_tiers && is_chat {
+    let refresh_error = if (needs_tiers || needs_vision) && is_chat {
         data.as_ref().and_then(|d| d.error.clone())
     } else {
         used.and_then(|d| d.error.clone())

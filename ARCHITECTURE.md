@@ -5,6 +5,10 @@ goes. Vocabulary is defined in [`CONTEXT.md`](CONTEXT.md); the decisions behind 
 [`docs/adr/`](docs/adr/). Read this before adding a module or a helper: most past duplication came
 from agents who did not know the piece already existed.
 
+The same code as diagrams, with what hurts and the modular workspace it is moving towards:
+[`docs/architecture/current.md`](docs/architecture/current.md) and
+[`docs/architecture/v1/`](docs/architecture/v1/README.md).
+
 The runtime map below describes the implementation prepared for **0.5**, not which binaries
 are installed on the Captain's machine. See
 [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md) and the contract section below.

@@ -5,7 +5,7 @@ use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
 mod common;
-use common::deadline::Deadline;
+use common::deadline::{DEADLINE, Deadline};
 
 async fn spawn_linked_child(
     state: &AppState,
@@ -28,6 +28,10 @@ async fn spawn_linked_child(
 
 /// The next provider request whose body satisfies `wanted`. Requests that arrive
 /// first and do not match are kept in `pending` for a later call.
+///
+/// The whole search shares one `DEADLINE`: bounding each receive alone would let
+/// a steady flow of unrelated requests keep a test waiting forever for a request
+/// that never comes.
 async fn request_matching(
     requests: &mut tokio::sync::mpsc::Receiver<(
         String,
@@ -39,16 +43,50 @@ async fn request_matching(
     if let Some(index) = pending.iter().position(|(body, _)| wanted(body)) {
         return pending.remove(index);
     }
-    loop {
-        let (body, stream) = requests
-            .recv()
-            .bounded(file!(), line!())
-            .await
-            .expect("provider closed");
-        if wanted(&body) {
-            return (body, stream);
+    let search = async {
+        loop {
+            let (body, stream) = requests.recv().await.expect("provider closed");
+            if wanted(&body) {
+                return (body, stream);
+            }
+            pending.push((body, stream));
         }
-        pending.push((body, stream));
+    };
+    match tokio::time::timeout(DEADLINE, search).await {
+        Ok(found) => found,
+        Err(_) => panic!(
+            "no provider request matched within {DEADLINE:?}; {} non-matching requests set aside",
+            pending.len()
+        ),
+    }
+}
+
+/// A flow of unrelated requests must not hold off the deadline: the search gives
+/// up once `DEADLINE` has passed in total, however often other requests arrive.
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "no provider request matched within")]
+async fn request_matching_gives_up_despite_unrelated_requests() {
+    let (tx, mut requests) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = tokio::sync::mpsc::unbounded_channel();
+            if tx.send(("unrelated".to_string(), stream)).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(DEADLINE / 2).await;
+        }
+    });
+    let mut pending = Vec::new();
+    // Virtual time: this outer bound only fires if the search never gives up, and
+    // its message differs from the one `should_panic` expects.
+    if tokio::time::timeout(
+        DEADLINE * 6,
+        request_matching(&mut requests, &mut pending, |_| false),
+    )
+    .await
+    .is_err()
+    {
+        panic!("request_matching never gave up");
     }
 }
 
@@ -176,7 +214,6 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     let (notice, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
         body.contains("used its 50 steps")
     })
-    .bounded(file!(), line!())
     .await;
     assert!(notice.contains("top-ups used 0/3"), "{notice}");
     if let withnav::bus::ResumeOutcome::Replay(events) = state
@@ -225,13 +262,8 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     drop(stream);
     // The parent's completion wake: a notice whose outcome is `done`. The earlier
     // budget notice is pending too and must not match.
-    let (_, stream) = tokio::time::timeout(
-        Duration::from_secs(2),
-        request_matching(&mut provider.requests, &mut pending, is_completion_wake),
-    )
-    .bounded(file!(), line!())
-    .await
-    .unwrap();
+    let (_, stream) =
+        request_matching(&mut provider.requests, &mut pending, is_completion_wake).await;
     assert_eq!(
         state
             .child_metadata(child)
@@ -350,7 +382,6 @@ async fn parent_tops_up_a_budget_parked_child_three_times_then_the_captain_conti
     let (notice, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
         body.contains("used its 50 steps")
     })
-    .bounded(file!(), line!())
     .await;
     assert!(notice.contains("top-ups used 0/3"), "{notice}");
     parent_turn.send(text_chunk("noted")).unwrap();
@@ -388,7 +419,6 @@ async fn parent_tops_up_a_budget_parked_child_three_times_then_the_captain_conti
             request_matching(&mut provider.requests, &mut pending, |body| {
                 body.contains(&format!("top-ups used {top}/3"))
             })
-            .bounded(file!(), line!())
             .await;
         assert!(notice.contains("steps"), "{notice}");
         parent_turn.send(text_chunk("noted")).unwrap();
@@ -420,13 +450,8 @@ async fn parent_tops_up_a_budget_parked_child_three_times_then_the_captain_conti
     .await;
     stream.send(text_chunk("child complete")).unwrap();
     drop(stream);
-    let (_, wake) = tokio::time::timeout(
-        Duration::from_secs(2),
-        request_matching(&mut provider.requests, &mut pending, is_completion_wake),
-    )
-    .bounded(file!(), line!())
-    .await
-    .unwrap();
+    let (_, wake) =
+        request_matching(&mut provider.requests, &mut pending, is_completion_wake).await;
     drop(wake);
     assert_eq!(
         state
@@ -475,7 +500,6 @@ async fn owner_stop_on_a_budget_park_terminalizes_with_partial_output() {
     let (_, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
         body.contains("used its 50 steps")
     })
-    .bounded(file!(), line!())
     .await;
     parent_turn.send(text_chunk("noted")).unwrap();
     drop(parent_turn);
@@ -505,18 +529,30 @@ async fn owner_stop_on_a_budget_park_terminalizes_with_partial_output() {
         "capacity released once"
     );
     // The owner is told the child stopped at its budget, with the output so far.
-    let (wake, parent_turn) = tokio::time::timeout(
-        Duration::from_secs(2),
-        request_matching(&mut provider.requests, &mut pending, |body| {
-            body.contains("stopped by owner at its step budget")
-        }),
-    )
-    .bounded(file!(), line!())
-    .await
-    .unwrap();
+    let (wake, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("stopped by owner at its step budget")
+    })
+    .await;
+    // The request also carries this child's earlier budget-park notice: pick the
+    // stop notice by its result, then check its structured fields.
+    let notices = request_outputs(&wake);
+    let notice = notices
+        .iter()
+        .find(|n| {
+            n["child_session_id"] == child.to_string()
+                && n["result"]
+                    .as_str()
+                    .is_some_and(|r| r.starts_with("stopped by owner at its step budget"))
+        })
+        .unwrap_or_else(|| panic!("no stop notice for the child: {notices:?}"));
+    assert_eq!(notice["outcome"], "stopped", "{notice}");
+    assert_eq!(notice["reason"], "budget", "{notice}");
     assert!(
-        wake.contains("\"outcome\\\":\\\"stopped\\\"") || wake.contains("stopped"),
-        "{wake}"
+        notice["result"]
+            .as_str()
+            .unwrap()
+            .contains("Observable partial progress."),
+        "the notice carries the partial output: {notice}"
     );
     drop(parent_turn);
     state.close_all().bounded(file!(), line!()).await;

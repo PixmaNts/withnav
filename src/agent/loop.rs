@@ -1647,13 +1647,12 @@ fn interrupted_content(result: &ToolResult) -> String {
     }
 }
 
-/// Most images one tool result keeps; the rest are named in its output.
-pub(crate) const MAX_TOOL_IMAGES: usize = 4;
-
 /// Stores the images `result` carries as attachments of the session and records their references
 /// in `metadata.images`, where clients and the transcript read them. An image that cannot be
-/// stored (no store, a refused type or size) is reported in the output instead: the model learns
-/// a picture was there and why it cannot see it, and the call itself still succeeds.
+/// stored (no store, a refused type or size, past the count or byte budget of one result) is
+/// reported in the output instead: the model learns a picture was there and why it cannot see it,
+/// and the call itself still succeeds. Producers already apply the budget while converting; it is
+/// checked again here so a producer that skipped it cannot reach the store with more.
 async fn store_tool_images(actor: &AgentActor, result: &mut ToolResult) {
     let images = std::mem::take(&mut result.images);
     if images.is_empty() {
@@ -1661,14 +1660,16 @@ async fn store_tool_images(actor: &AgentActor, result: &mut ToolResult) {
     }
     let mut stored = Vec::new();
     let mut notes = Vec::new();
-    for (at, image) in images.into_iter().enumerate() {
+    let (mut kept, mut kept_bytes) = (0, 0usize);
+    for image in images {
         let name = image.name.clone();
-        if at >= MAX_TOOL_IMAGES {
-            notes.push(format!(
-                "[image {name} not kept: at most {MAX_TOOL_IMAGES} images per tool result]"
-            ));
+        if let Some(reason) = crate::tools::tool_image_refusal(kept, kept_bytes, image.bytes.len())
+        {
+            notes.push(format!("[image {name} not kept: {reason}]"));
             continue;
         }
+        kept += 1;
+        kept_bytes += image.bytes.len();
         let outcome = match &actor.attachment_loader {
             Some(loader) => loader.store(image.name, image.bytes).await,
             None => Err("this conversation keeps no images".into()),

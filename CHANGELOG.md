@@ -59,6 +59,15 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- Tool images: one tool result keeps at most 4 images and 16 MiB of image bytes together. An MCP
+  image past either limit is no longer decoded; the model reads that it was not kept.
+- Secrets: a session whose recorded parents form a chain longer than 16, or a cycle, gets an
+  explicit error instead of having its secrets filed under whichever session the lookup stopped at.
+- Subagents: a step-budget notice whose evidence lacks a valid top-up or step count is skipped and
+  logged instead of reporting zero.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

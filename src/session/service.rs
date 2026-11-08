@@ -1516,7 +1516,7 @@ impl Service {
             }
         }
         // A value the Captain pasted into the chat is hidden like any other occurrence.
-        let secrets = self.secret_access(self.secret_owner(command.session_id), &handle.workspace);
+        let secrets = self.secret_access(self.secret_owner(command.session_id)?, &handle.workspace);
         for block in &mut command.content {
             if let crate::bus::command::ContentBlock::Text { text } = block {
                 secrets.redact_in_place(text);
@@ -2658,7 +2658,10 @@ impl Service {
             ),
         };
         // A subagent hands its tools the secrets of the tree it works for.
-        let secret_owner = child_parent.map_or(session_id, |parent| self.secret_owner(parent));
+        let secret_owner = match child_parent {
+            Some(parent) => self.secret_owner(parent)?,
+            None => session_id,
+        };
         actor.tool_context.secrets = Some(self.secret_access(secret_owner, &workspace));
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(

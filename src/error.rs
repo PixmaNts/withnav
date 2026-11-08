@@ -75,6 +75,10 @@ pub enum ServerError {
     SubagentCapacity { capacity: usize },
     #[error("subagent settings unavailable: {0}")]
     SubagentSettings(String),
+    #[error(
+        "session {session} has more than {max} ancestors: its conversation tree is corrupt, so its secrets owner is unknown"
+    )]
+    SessionTreeTooDeep { session: String, max: usize },
     #[error("server bind error: {0}")]
     Bind(#[from] std::io::Error),
     #[error("session not found: {0}")]

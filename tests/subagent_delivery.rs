@@ -26,6 +26,59 @@ async fn spawn_linked_child(
     (parent, child)
 }
 
+/// The next provider request whose body satisfies `wanted`. Requests that arrive
+/// first and do not match are kept in `pending` for a later call.
+async fn request_matching(
+    requests: &mut tokio::sync::mpsc::Receiver<(
+        String,
+        tokio::sync::mpsc::UnboundedSender<String>,
+    )>,
+    pending: &mut Vec<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
+    wanted: impl Fn(&str) -> bool,
+) -> (String, tokio::sync::mpsc::UnboundedSender<String>) {
+    if let Some(index) = pending.iter().position(|(body, _)| wanted(body)) {
+        return pending.remove(index);
+    }
+    loop {
+        let (body, stream) = requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .expect("provider closed");
+        if wanted(&body) {
+            return (body, stream);
+        }
+        pending.push((body, stream));
+    }
+}
+
+/// A parent request carrying a completed-child notice (`"outcome":"done"`).
+fn is_completion_wake(body: &str) -> bool {
+    let v: Value =
+        serde_json::from_str(body.split_once("\r\n\r\n").unwrap().1).unwrap_or(Value::Null);
+    v["messages"].as_array().is_some_and(|msgs| {
+        msgs.iter().any(|m| {
+            m["content"]
+                .as_str()
+                .and_then(|c| serde_json::from_str::<Value>(c).ok())
+                .is_some_and(|n| n["outcome"] == "done")
+        })
+    })
+}
+
+/// A child's own turn: a request holding a message whose content is exactly
+/// `goal`. A parent's wake notice also mentions the goal inside JSON, so a
+/// substring match would take the parent's request for the child's.
+fn is_child_turn(goal: &'static str) -> impl Fn(&str) -> bool {
+    move |body: &str| {
+        let v: Value =
+            serde_json::from_str(body.split_once("\r\n\r\n").unwrap().1).unwrap_or(Value::Null);
+        v["messages"]
+            .as_array()
+            .is_some_and(|msgs| msgs.iter().any(|m| m["content"].as_str() == Some(goal)))
+    }
+}
+
 #[tokio::test]
 async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     use tower::ServiceExt;
@@ -54,12 +107,13 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let (_, first) = provider
-        .requests
-        .recv()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
+    let mut pending = Vec::new();
+    let (_, first) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
     assert!(matches!(
         state
             .continue_child(parent, child)
@@ -87,12 +141,140 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
         drop(tx);
         if index + 1 < steps {
             stream = Some(
-                provider
-                    .requests
-                    .recv()
-                    .bounded(file!(), line!())
+                request_matching(
+                    &mut provider.requests,
+                    &mut pending,
+                    is_child_turn("inspect"),
+                )
+                .await
+                .1,
+            );
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let withnav::bus::ResumeOutcome::Replay(events) = state
+                .subscribe(child, None)
+                .bounded(file!(), line!())
+                .await
+                .unwrap()
+                .replay
+                && events
+                    .iter()
+                    .any(|e| e.kind == "agent.yield" && e.payload["kind"] == "budget")
+            {
+                break;
+            }
+            tokio::task::yield_now().bounded(file!(), line!()).await;
+        }
+    })
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    // The budget park woke the parent: its turn carries the notice with the
+    // counts and evidence. The parent answers it, so its turn ends.
+    let (notice, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("used its 50 steps")
+    })
+    .bounded(file!(), line!())
+    .await;
+    assert!(notice.contains("top-ups used 0/3"), "{notice}");
+    if let withnav::bus::ResumeOutcome::Replay(events) = state
+        .subscribe(parent, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .replay
+    {
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == "subagent.watchdog"
+                    && event.payload["verdict"] == "budget")
+        );
+        assert!(!events.iter().any(|event| event.kind == "subagent.done"));
+    } else {
+        panic!("expected parent event replay");
+    }
+
+    assert!(notice.contains("inspect"), "{notice}");
+    parent_turn
+        .send(text_chunk("parent noted the park"))
+        .unwrap();
+    drop(parent_turn);
+    let app = withnav::server::app(state.clone());
+    let request = || {
+        axum::http::Request::post(format!("/v1/sessions/{parent}/children/{child}/continue"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let (a, b) = tokio::join!(
+        app.clone().oneshot(request()),
+        app.clone().oneshot(request())
+    );
+    let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, vec![200, 409]);
+    let (_, stream) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
+    stream.send(text_chunk("child complete")).unwrap();
+    drop(stream);
+    // The parent's completion wake: a notice whose outcome is `done`. The earlier
+    // budget notice is pending too and must not match.
+    let (_, stream) = tokio::time::timeout(
+        Duration::from_secs(2),
+        request_matching(&mut provider.requests, &mut pending, is_completion_wake),
+    )
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    assert_eq!(
+        state
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "done"
+    );
+    assert_eq!(state.reserved_child_count(parent), 0);
+    state.close_all().bounded(file!(), line!()).await;
+    drop(stream);
+}
+
+/// Runs `child`'s steps to the budget boundary: `steps` tool calls on the
+/// streaming provider, each answered by one request, then waits until its
+/// budget yield is recorded.
+async fn exhaust_child_budget(
+    provider: &mut common::sse::StreamingProvider,
+    pending: &mut Vec<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
+    state: &AppState,
+    child: ulid::Ulid,
+    first: tokio::sync::mpsc::UnboundedSender<String>,
+    call_prefix: &str,
+    steps: usize,
+) {
+    let mut stream = Some(first);
+    for index in 0..steps {
+        let tx = stream.take().unwrap();
+        let mut chunk: Value = serde_json::from_str(&tool_call_chunk(
+            &format!("{call_prefix}-{index}"),
+            "glob",
+            &json!({"pattern":"*"}),
+        ))
+        .unwrap();
+        chunk["choices"][0]["delta"]["content"] = json!("Observable partial progress.");
+        tx.send(chunk.to_string()).unwrap();
+        drop(tx);
+        if index + 1 < steps {
+            stream = Some(
+                request_matching(&mut provider.requests, pending, is_child_turn("inspect"))
                     .await
-                    .unwrap()
                     .1,
             );
         }
@@ -117,32 +299,135 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
     .bounded(file!(), line!())
     .await
     .unwrap();
-    let app = withnav::server::app(state.clone());
-    let request = || {
-        axum::http::Request::post(format!("/v1/sessions/{parent}/children/{child}/continue"))
-            .body(axum::body::Body::empty())
-            .unwrap()
-    };
-    let (a, b) = tokio::join!(
-        app.clone().oneshot(request()),
-        app.clone().oneshot(request())
-    );
-    let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
-    statuses.sort();
-    assert_eq!(statuses, vec![200, 409]);
-    let (_, stream) = provider
-        .requests
-        .recv()
+}
+
+#[tokio::test]
+async fn parent_tops_up_a_budget_parked_child_three_times_then_the_captain_continues() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .allow_everything()
+        .state();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
+    let mut pending = Vec::new();
+    let (_, first) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
+    let steps = withnav::agent::run_loop::max_steps();
+    let service = state.service();
+    let foreign = state
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
+    assert!(matches!(
+        service
+            .decide_subagent(foreign, child, false, None)
+            .bounded(file!(), line!())
+            .await,
+        Err(withnav::error::ServerError::ChildReadOnly)
+    ));
+
+    exhaust_child_budget(
+        &mut provider,
+        &mut pending,
+        &state,
+        child,
+        first,
+        "a",
+        steps,
+    )
+    .await;
+    // The first park woke the parent with 0/3 used; it answers the notice.
+    let (notice, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("used its 50 steps")
+    })
+    .bounded(file!(), line!())
+    .await;
+    assert!(notice.contains("top-ups used 0/3"), "{notice}");
+    parent_turn.send(text_chunk("noted")).unwrap();
+    drop(parent_turn);
+
+    // Three parent top-ups: each renews the budget, the child runs to the next park.
+    for top in 1..=3u32 {
+        service
+            .decide_subagent(
+                parent,
+                child,
+                false,
+                Some("Continue the remaining inspection"),
+            )
+            .bounded(file!(), line!())
+            .await
+            .unwrap_or_else(|e| panic!("top-up {top} refused: {e}"));
+        let (_, stream) = request_matching(
+            &mut provider.requests,
+            &mut pending,
+            is_child_turn("inspect"),
+        )
+        .await;
+        exhaust_child_budget(
+            &mut provider,
+            &mut pending,
+            &state,
+            child,
+            stream,
+            &format!("t{top}"),
+            steps,
+        )
+        .await;
+        let (notice, parent_turn) =
+            request_matching(&mut provider.requests, &mut pending, |body| {
+                body.contains(&format!("top-ups used {top}/3"))
+            })
+            .bounded(file!(), line!())
+            .await;
+        assert!(notice.contains("steps"), "{notice}");
+        parent_turn.send(text_chunk("noted")).unwrap();
+        drop(parent_turn);
+    }
+
+    // The fourth is refused with the Captain's pointer; the child stays parked.
+    let refused = service
+        .decide_subagent(parent, child, false, None)
+        .bounded(file!(), line!())
+        .await;
+    let message = refused.expect_err("fourth top-up refused").to_string();
+    assert!(
+        message.contains("top-up limit reached; the Captain can continue it"),
+        "{message}"
+    );
+    // The Captain's continue still works after the cap and is not a top-up:
+    // the child resumes and finishes.
+    state
+        .continue_child(parent, child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
     stream.send(text_chunk("child complete")).unwrap();
     drop(stream);
-    let (_, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, wake) = tokio::time::timeout(
+        Duration::from_secs(2),
+        request_matching(&mut provider.requests, &mut pending, is_completion_wake),
+    )
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    drop(wake);
     assert_eq!(
         state
             .child_metadata(child)
@@ -153,9 +438,88 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
             .status,
         "done"
     );
-    assert_eq!(state.reserved_child_count(parent), 0);
     state.close_all().bounded(file!(), line!()).await;
-    drop(stream);
+}
+
+#[tokio::test]
+async fn owner_stop_on_a_budget_park_terminalizes_with_partial_output() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .allow_everything()
+        .state();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
+    let mut pending = Vec::new();
+    let (_, first) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
+    let steps = withnav::agent::run_loop::max_steps();
+    exhaust_child_budget(
+        &mut provider,
+        &mut pending,
+        &state,
+        child,
+        first,
+        "s",
+        steps,
+    )
+    .await;
+    let (_, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("used its 50 steps")
+    })
+    .bounded(file!(), line!())
+    .await;
+    parent_turn.send(text_chunk("noted")).unwrap();
+    drop(parent_turn);
+
+    state
+        .service()
+        .decide_subagent(parent, child, true, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let meta = state
+        .child_metadata(child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.status, "stopped", "stop terminalizes the parked child");
+    assert!(
+        meta.result_text
+            .as_deref()
+            .unwrap()
+            .contains("Observable partial progress.")
+    );
+    assert_eq!(
+        state.reserved_child_count(parent),
+        0,
+        "capacity released once"
+    );
+    // The owner is told the child stopped at its budget, with the output so far.
+    let (wake, parent_turn) = tokio::time::timeout(
+        Duration::from_secs(2),
+        request_matching(&mut provider.requests, &mut pending, |body| {
+            body.contains("stopped by owner at its step budget")
+        }),
+    )
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    assert!(
+        wake.contains("\"outcome\\\":\\\"stopped\\\"") || wake.contains("stopped"),
+        "{wake}"
+    );
+    drop(parent_turn);
+    state.close_all().bounded(file!(), line!()).await;
 }
 
 #[tokio::test]

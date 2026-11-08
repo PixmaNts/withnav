@@ -69,6 +69,8 @@ pub enum ServerError {
     ChildNotParked,
     #[error("child sessions are read-only to clients")]
     ChildReadOnly,
+    #[error("top-up limit reached; the Captain can continue it")]
+    BudgetTopupLimit,
     #[error("subagent capacity reached: {capacity} children are running; wait for one to finish")]
     SubagentCapacity { capacity: usize },
     #[error("subagent settings unavailable: {0}")]

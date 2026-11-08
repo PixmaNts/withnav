@@ -56,6 +56,24 @@ mod tests {
     }
 
     #[test]
+    fn parent_budget_notice_projects_without_a_child_subscription() {
+        let mut state = SessionState::default();
+        let session = Ulid::generate();
+        let child = Ulid::generate();
+        apply(
+            &mut state,
+            EventEnvelope::new(
+                session,
+                1,
+                EventKind::SubagentWatchdog,
+                json!({"child_session_id":child,"agent":"vigie","verdict":"budget"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(state.children[0].status, ChildStatus::OutOfSteps);
+    }
+
+    #[test]
     fn turn_boundaries_discard_unfinished_tool_arguments() {
         for (kind, payload) in [
             (EventKind::TurnStart, json!({"turn_id":"next"})),
@@ -259,6 +277,7 @@ pub fn apply_envelope(
             "subagent.done" => ChildStatus::from_wire(v["outcome"].as_str().ok_or_else(bad)?),
             _ if !child.status.terminal() => match v["verdict"].as_str() {
                 Some("doubt" | "stuck") => ChildStatus::Doubt,
+                Some("budget") => ChildStatus::OutOfSteps,
                 Some("active") if child.status == ChildStatus::Doubt => ChildStatus::Running,
                 _ => child.status,
             },

@@ -76,6 +76,17 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
         e.kind == "turn.end"
     })
     .await;
+    // Exhaustion wakes the parent independently; settle that request before
+    // asserting that an interrupt cannot resume the child.
+    let (notice, parent_stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(notice.contains("top-ups used 0/3"));
+    parent_stream.send(text_chunk("noted")).unwrap();
+    drop(parent_stream);
     state
         .steer_child(parent, child, "accepted budget replacement", true)
         .await

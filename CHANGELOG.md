@@ -8,6 +8,13 @@ requests land in `develop`.
 
 ### Added
 
+- Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
+  pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
+  and the last tool call and result. The parent can continue it with one more budget, up to three
+  times per child, or stop it (keeping its partial output) and start a new subagent. A fourth
+  top-up is refused; your Continue always works and is not counted. `decide_subagent` accepts a
+  budget park as well as a watchdog doubt; it still cannot approve a permission.
+
 - Secrets: an agent can ask the Captain for a secret (an API key, a token) with the new
   `request_secret` tool. The turn pauses and a dedicated card asks for the value (VS Code, the
   browser client; a prompt in `nav tui`), with availability (1 h, 24 h, session) and scope (this

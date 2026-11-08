@@ -57,14 +57,29 @@ use crate::error::AgentError;
 /// The turn-end transcript hook: called with the actor's transcript after
 /// each turn's terminal events (the history store's snapshot seam).
 pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionOutcome {
     Done,
     Failed,
     Stopped,
     Parked,
+    /// The step budget ran out: the turn parked at a safe boundary and the
+    /// owner may top it up (`decide_subagent`) or stop it.
+    Budget(serde_json::Value),
 }
 pub type CompletionHook = Box<dyn Fn(crate::provider::AssistantMessage, CompletionOutcome) + Send>;
+
+/// Parent top-ups a child may receive over its lifetime, on top of its own budget.
+pub const MAX_BUDGET_TOPUPS: u32 = 3;
+
+/// Why a budget top-up was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetTopupError {
+    /// The child is not parked on its step budget.
+    NotParked,
+    /// The child already received `MAX_BUDGET_TOPUPS` top-ups.
+    LimitReached,
+}
 
 /// Cancel reason recorded on `session.end` when the session token fires.
 const CANCEL_REASON: &str = "cancel";
@@ -138,6 +153,9 @@ pub struct RuntimeStatus {
     pending_notice: Mutex<Option<delivery::NoticeCell>>,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
+    /// Serializes top-up claims so the cap check and the park CAS are one step.
+    budget_topup_gate: Mutex<()>,
+    budget_topups: std::sync::atomic::AtomicU32,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
     captain_commit: Mutex<Option<delivery::CaptainCommitCell>>,
     variant: Mutex<VariantSlot>,
@@ -370,6 +388,16 @@ impl RuntimeStatus {
             })
             .is_ok()
     }
+    /// Guidance accompanying a renewal must not enqueue another wake.
+    pub fn queue_budget_note(&self, content: String) -> bool {
+        self.steering.admit(steering::Operation {
+            wake: false,
+            id: Ulid::generate(),
+            content,
+            provenance: crate::provider::openai::UserProvenance::Parent,
+            interrupt: false,
+        })
+    }
     pub fn flow_note(&self, text: String, flow: String, run_id: String) -> bool {
         self.queue_flow_note(text, flow, run_id, true)
     }
@@ -380,6 +408,17 @@ impl RuntimeStatus {
         !wake || self.controls.tx.send(Control::Steer).is_ok()
     }
     pub fn continue_budget(&self) -> bool {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self
+            .watchdog
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
         if self
             .budget_parked
             .compare_exchange(
@@ -393,6 +432,76 @@ impl RuntimeStatus {
             return false;
         }
         self.controls.tx.send(Control::Continue).is_ok()
+    }
+    /// Owner top-up of a budget park: claims the park and, under the same
+    /// atomic step, the parent's allowance (`MAX_BUDGET_TOPUPS` per child).
+    /// Refused (`Err`) when the child is not budget-parked or the cap is spent;
+    /// the park stays in place on refusal.
+    pub fn topup_budget(&self) -> Result<u32, BudgetTopupError> {
+        self.topup_budget_with(|| {})
+    }
+    pub fn topup_budget_with(&self, apply: impl FnOnce()) -> Result<u32, BudgetTopupError> {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self
+            .watchdog
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+            || !self
+                .budget_parked
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(BudgetTopupError::NotParked);
+        }
+        let used = self
+            .budget_topups
+            .load(std::sync::atomic::Ordering::Acquire);
+        if used >= MAX_BUDGET_TOPUPS {
+            return Err(BudgetTopupError::LimitReached);
+        }
+        if self
+            .budget_parked
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err(BudgetTopupError::NotParked);
+        }
+        apply();
+        self.budget_topups
+            .store(used + 1, std::sync::atomic::Ordering::Release);
+        if self.controls.tx.send(Control::Continue).is_err() {
+            self.budget_topups
+                .store(used, std::sync::atomic::Ordering::Release);
+            self.budget_parked
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err(BudgetTopupError::NotParked);
+        }
+        Ok(used + 1)
+    }
+    /// Claim terminal ownership while excluding competing budget continuations.
+    pub fn claim_budget_stop(&self) -> bool {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.is_budget_parked() && self.watchdog.claim_terminal(TerminalOwner::Watchdog)
+    }
+    /// Whether the runtime is parked on its step budget right now.
+    pub fn is_budget_parked(&self) -> bool {
+        self.budget_parked
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Top-ups already granted to this child (`0..=MAX_BUDGET_TOPUPS`).
+    pub fn budget_topups_used(&self) -> u32 {
+        self.budget_topups
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
@@ -1662,12 +1771,24 @@ async fn runtime_loop(
                     .budget_parked
                     .store(true, std::sync::atomic::Ordering::Release);
                 if let Some(done) = &completion {
+                    let outcome = if matches!(outcome, Ok(RunOutcome::StepBudgetExhausted)) {
+                        let activity = status.activity.0.lock().unwrap_or_else(|e| e.into_inner());
+                        CompletionOutcome::Budget(serde_json::json!({
+                            "goal": crate::tools::bound_output(&actor.captain_task.clone().unwrap_or_default(), 1024).0,
+                            "step_count": activity.steps,
+                            "last_tool_call": activity.last_tool_call.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
+                            "last_tool_result": activity.last_tool_result.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
+                            "topups_used": status.budget_topups_used(),
+                        }))
+                    } else {
+                        CompletionOutcome::Parked
+                    };
                     done(
                         crate::provider::AssistantMessage {
                             text: "step budget exhausted".into(),
                             ..Default::default()
                         },
-                        CompletionOutcome::Parked,
+                        outcome,
                     );
                 }
                 // The internal variant NEVER leaks: the wire sees a yield of
@@ -2041,6 +2162,92 @@ fn teardown(actor: &mut AgentActor, sequencer: &Sequencer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A status parked on its step budget, as the runtime leaves it.
+    fn budget_parked_status() -> RuntimeStatus {
+        let status = RuntimeStatus::default();
+        status
+            .budget_parked
+            .store(true, std::sync::atomic::Ordering::Release);
+        status
+    }
+
+    #[test]
+    fn three_topups_are_granted_and_the_fourth_is_refused_without_clearing_the_park() {
+        let status = budget_parked_status();
+        for expected in 1..=MAX_BUDGET_TOPUPS {
+            assert_eq!(status.topup_budget(), Ok(expected));
+            assert!(!status.is_budget_parked(), "a top-up releases the park");
+            status
+                .budget_parked
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        assert_eq!(status.budget_topups_used(), MAX_BUDGET_TOPUPS);
+        assert_eq!(
+            status.topup_budget(),
+            Err(BudgetTopupError::LimitReached),
+            "the fourth top-up is refused"
+        );
+        assert!(
+            status.is_budget_parked(),
+            "a refused top-up leaves the child parked for the Captain"
+        );
+    }
+
+    #[test]
+    fn budget_stop_excludes_both_parent_and_captain_continuations() {
+        let status = budget_parked_status();
+        assert!(status.claim_budget_stop());
+        assert!(!status.continue_budget());
+        assert_eq!(status.topup_budget(), Err(BudgetTopupError::NotParked));
+        assert_eq!(status.budget_topups_used(), 0);
+    }
+
+    #[test]
+    fn renewal_guidance_enqueues_exactly_one_wake() {
+        let status = budget_parked_status();
+        let mut receiver = status.controls.take_receiver().unwrap();
+        status
+            .topup_budget_with(|| {
+                assert!(status.queue_budget_note("continue carefully".into()));
+            })
+            .unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Control::Continue)));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn refused_topup_does_not_apply_guidance() {
+        let status = RuntimeStatus::default();
+        assert_eq!(
+            status.topup_budget_with(|| panic!("must not steer")),
+            Err(BudgetTopupError::NotParked)
+        );
+    }
+
+    #[test]
+    fn topup_requires_a_budget_park() {
+        let status = RuntimeStatus::default();
+        assert_eq!(status.topup_budget(), Err(BudgetTopupError::NotParked));
+        assert_eq!(status.budget_topups_used(), 0, "a refusal spends no top-up");
+    }
+
+    #[test]
+    fn captain_continue_on_a_budget_park_does_not_use_a_topup() {
+        let status = budget_parked_status();
+        assert!(
+            status.continue_budget(),
+            "Captain continue releases the park"
+        );
+        assert_eq!(status.budget_topups_used(), 0);
+        // After the Captain's continue the child can still be topped up 3 times.
+        for expected in 1..=MAX_BUDGET_TOPUPS {
+            status
+                .budget_parked
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert_eq!(status.topup_budget(), Ok(expected));
+        }
+    }
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::EventEnvelope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};

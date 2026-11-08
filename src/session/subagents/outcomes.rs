@@ -162,7 +162,9 @@ impl Service {
                     CompletionOutcome::Done => "done",
                     CompletionOutcome::Failed => "failed",
                     CompletionOutcome::Stopped => "stopped",
-                    CompletionOutcome::Parked => unreachable!("parked outcomes are not terminal"),
+                    CompletionOutcome::Parked | CompletionOutcome::Budget(_) => {
+                        unreachable!("parked outcomes are not terminal")
+                    }
                 };
                 handle.status.watchdog.supervisor_cancel.cancel();
                 let text = crate::tools::bound_output(&message.text, 16 * 1024).0;

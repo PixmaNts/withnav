@@ -196,7 +196,8 @@ Supersession names the old turn in the pause-resolution event, never a second te
 Accepted deferred model/compact operations receive correlated cancellation at a watchdog pause.
 Without instinct, or with supervision disabled, the session announces a renewable 500-step fallback
 cap instead. Only explicit owner Continue or fresh Captain input renews it. An explicit
-`WITHNAV_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.
+`WITHNAV_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default
+and park on it too, waking their parent with a notice (counts and evidence) rather than only the Captain.
 
 The instinct's separate progress check for a running background child, every 300 seconds by
 default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
@@ -208,9 +209,12 @@ unavailable, timed-out or invalid answers also yield doubt; one is silent. Permi
 and doubt-parked children are not checked, and missed intervals are discarded.
 
 Only the owning root cognition can use `decide_subagent(child_id, decision, note?)` to continue
-or stop a watchdog doubt. This cannot approve a tool or renew a step budget. The Captain's existing
-Stop and owner Continue endpoints still work. `subagent.watchdog` is a durable parent-stream
-verdict with `child_session_id`, `verdict`, `reason` and `checked_at`; evidence is untrusted data.
+or stop a watchdog doubt or a child parked on its step budget. On a budget park, `continue` renews
+the budget (3 top-ups per child; a fourth is refused with "top-up limit reached; the Captain can
+continue it") and `stop` terminalizes it with its partial output. It never approves a tool. The
+Captain's existing Stop and Continue endpoints still work; Captain Continue is not a top-up. `subagent.watchdog` is a durable parent-stream
+notice with `child_session_id`, `verdict`, `reason` and `checked_at`; `verdict: budget` reports step exhaustion
+without marking the child done or in watchdog doubt. Budget notices also carry top-up counts. Evidence is untrusted data.
 Recovery stops doubts like any other unfinished child; watchdog state is not restored.
 _Avoid_: permission request
 

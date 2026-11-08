@@ -20,7 +20,7 @@ impl Tool for DecideSubagent {
         "decide_subagent"
     }
     fn schema(&self) -> Value {
-        json!({"description":"Continue or stop an owned subagent parked by a watchdog doubt (not a permission or budget answer)",
+        json!({"description":"Continue or stop an owned subagent parked by a watchdog doubt or by its step budget. continue on a budget park grants one more step budget (at most 3 top-ups per child); it never approves a permission.",
             "parameters":{"type":"object","properties":{"child_id":{"type":"string"},"decision":{"type":"string","enum":["continue","stop"]},"note":{"type":"string","maxLength":16384}},"required":["child_id","decision"],"additionalProperties":false}})
     }
     fn call<'a>(

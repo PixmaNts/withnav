@@ -1352,6 +1352,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ChildNotParked
+        | ServerError::BudgetTopupLimit
         | ServerError::ResumeRequired
         | ServerError::PermissionStale
         | ServerError::SecretStale => StatusCode::CONFLICT,
@@ -1389,6 +1390,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
     let reason = match &err {
         ServerError::ResumeRequired => Some("resume_required"),
         ServerError::ChildReadOnly => Some("child_read_only"),
+        ServerError::BudgetTopupLimit => Some("budget_topup_limit"),
         ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
         ServerError::PermissionStale => Some("permission_stale"),
         ServerError::SecretStale => Some("secret_stale"),

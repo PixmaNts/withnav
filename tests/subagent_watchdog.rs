@@ -1553,7 +1553,7 @@ async fn budget_parked_child_is_skipped_without_asking_instinct() {
             .decide_subagent(f.parent, f.child, false, None)
             .bounded(file!(), line!())
             .await
-            .is_err()
+            .is_ok()
     );
     f.service.close_all().bounded(file!(), line!()).await;
 }

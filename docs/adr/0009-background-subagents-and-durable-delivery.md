@@ -68,10 +68,15 @@ They build on the separate role and permission rules of ADR 0008.
   `active` does nothing. `stuck` stops execution and delivers partial output marked
   "stopped by watchdog". `doubt` holds the next safe boundary and wakes the parent with evidence.
   Two consecutive unavailable, timed-out or invalid answers mean doubt; one is silent.
-  Permission-, budget- and doubt-parked children are skipped. Missed ticks do not pile up.
+  Permission-parked children are skipped; budget- and doubt-parked children are not checked.
+  Missed ticks do not pile up.
   Verdicts belong to a runtime generation. Stale verdicts cannot stop a replacement turn.
   The owning parent model answers doubts with `decide_subagent`; driver stop and continue remain.
-  The decision cannot approve permissions or renew a budget. Watchdog state is not restored.
+  A child that uses its step budget (50 by default) parks and wakes its parent with a notice that
+  carries the counts and bounded evidence. The parent's `decide_subagent` may renew the budget up
+  to 3 times per child (4 × 50 steps at most without the Captain); a fourth is refused. The
+  Captain's Continue is never counted. The decision cannot approve permissions, and a permission
+  park is never answered by it. Watchdog state is not restored.
   A timeout-as-stop rule was rejected: an unavailable judge is not proof of stuck execution.
 - **Recovery must distinguish dead owners from other live processes.** Each service holds an
   instance lock file beside the canonical database, in `<database>.instances/`.

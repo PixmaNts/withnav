@@ -1340,7 +1340,7 @@ impl Service {
             }
         };
         for (child, payload) in pending {
-            let kind = if payload["notice_kind"] == "watchdog" {
+            let kind = if matches!(payload["notice_kind"].as_str(), Some("watchdog" | "budget")) {
                 EventKind::SubagentWatchdog
             } else {
                 EventKind::SubagentDone
@@ -3086,11 +3086,23 @@ impl Service {
                 let service = self.clone();
                 Some(Box::new(move |message, outcome| {
                     use crate::bus::runtime::CompletionOutcome;
+                    if let CompletionOutcome::Budget(evidence) = outcome {
+                        let service = service.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = service
+                                .notify_budget_park(parent, session_id, evidence)
+                                .await
+                            {
+                                tracing::error!(%error, %session_id, "child budget notice failed");
+                            }
+                        });
+                        return;
+                    }
                     let status = match outcome {
                         CompletionOutcome::Done => "done",
                         CompletionOutcome::Failed => "failed",
                         CompletionOutcome::Stopped => "stopped",
-                        CompletionOutcome::Parked => return,
+                        CompletionOutcome::Parked | CompletionOutcome::Budget(_) => return,
                     };
                     let service = service.clone();
                     tokio::spawn(async move {

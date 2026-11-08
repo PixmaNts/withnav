@@ -2,7 +2,7 @@ use crate::error::ServerError;
 use crate::session::service::{Service, SessionId};
 
 impl Service {
-    /// Root cognition may decide only its own watchdog doubt; permissions stay with the Captain.
+    /// Root cognition decides its own child pauses; permissions stay with the Captain.
     pub async fn decide_subagent(
         &self,
         parent: SessionId,
@@ -20,19 +20,35 @@ impl Service {
                 "note must be at most 16 KiB".into(),
             ));
         }
-        if !handle.status.watchdog.is_doubt() {
+        if handle.status.pending_permission().is_some()
+            || handle.status.selection.ask_pending()
+            || handle
+                .status
+                .awaiting_fresh_captain
+                .load(std::sync::atomic::Ordering::Acquire)
+            || handle.status.watchdog.root_hold().is_some()
+        {
+            return Err(ServerError::ChildNotParked);
+        }
+        let doubt = handle.status.watchdog.is_doubt();
+        let budget = handle.status.is_budget_parked();
+        if !doubt && !budget {
             return Err(ServerError::MalformedBody(
-                "child is not parked by a watchdog doubt".into(),
+                "child is not parked by a watchdog doubt or its step budget".into(),
             ));
         }
         if stop {
-            if !handle.status.watchdog.claim_stop() {
-                return Err(ServerError::MalformedBody(
-                    "child is not parked by a watchdog doubt".into(),
-                ));
+            if doubt {
+                if !handle.status.watchdog.claim_stop() {
+                    return Err(ServerError::MalformedBody(
+                        "child is not parked by a watchdog doubt".into(),
+                    ));
+                }
+                return self.stop_watchdog_child(parent, child).await;
             }
-            self.stop_watchdog_child(parent, child).await
-        } else {
+            return self.stop_budget_child(parent, child).await;
+        }
+        if doubt {
             if !handle.status.watchdog.resume_with(|| {
                 if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
                     handle.status.steer(note.to_string(), false);
@@ -42,7 +58,21 @@ impl Service {
                     "child is not parked by a watchdog doubt".into(),
                 ));
             }
-            Ok(())
+            return Ok(());
         }
+        handle
+            .status
+            .topup_budget_with(|| {
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    handle.status.queue_budget_note(note.to_string());
+                }
+            })
+            .map_err(|error| match error {
+                crate::bus::runtime::BudgetTopupError::NotParked => ServerError::ChildNotParked,
+                crate::bus::runtime::BudgetTopupError::LimitReached => {
+                    ServerError::BudgetTopupLimit
+                }
+            })?;
+        Ok(())
     }
 }

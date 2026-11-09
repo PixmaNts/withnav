@@ -113,16 +113,23 @@ export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescripto
   });
 }
 
-/** The origin of a URL, or undefined when it is not a plain http(s) one. */
+/**
+ * The origin of a URL as a CSP source, or undefined when it is not a plain http(s) origin of
+ * letters, digits, dots, dashes and a port: anything else would be pasted into the policy.
+ */
 function originOf(url: string | undefined): string | undefined {
   if (!url) return undefined;
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : undefined;
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(parsed.origin) ? parsed.origin : undefined;
   } catch {
     return undefined;
   }
 }
+
+/** What an external `app.url` page has always been allowed to embed, redirects included. */
+const EXTERNAL_FRAME_SOURCES = "http://127.0.0.1:* http://localhost:* https:";
 
 export function renderMcpAppHtml(
   nonce: string,
@@ -148,17 +155,18 @@ export function renderMcpAppHtml(
   const sandbox = showUrl
     ? "allow-scripts allow-same-origin allow-forms allow-downloads"
     : "allow-scripts allow-forms";
-  // The panel may embed only the one origin it was asked to show, so a frame that navigates
-  // itself cannot land on another page that the bridge would still answer.
-  const frameOrigin = originOf(frameSrc);
-  const frameSources = frameOrigin ?? "'none'";
+  // The panel may embed only the one origin of a document WithNav served, so a frame that
+  // navigates itself cannot land on another page that the bridge would still answer. An
+  // external `app.url` keeps the wider list it had, since such pages redirect.
+  const frameSources = showUrl ? EXTERNAL_FRAME_SOURCES : (originOf(frameSrc) ?? "'none'");
+  const policy = `default-src 'none'; frame-src ${frameSources}; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${frameSources}; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="${escapeHtml(policy)}">
   <title>${escapeHtml(app.server)} · ${escapeHtml(app.tool)}</title>
   <style>
     html, body { height: 100%; margin: 0; padding: 0; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family, sans-serif); font-size: 12px; display: flex; flex-direction: column; overflow: hidden; }

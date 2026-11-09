@@ -1,4 +1,5 @@
 """Deterministic newline JSON-RPC stdio fixture, with concurrent cancellable calls."""
+import base64
 import json
 import os
 import sys
@@ -11,6 +12,26 @@ if os.environ.get("CLEANUP_MARKER"):
         open(os.environ["CLEANUP_MARKER"], "w").write("cleanup")
         sys.exit(0)
     signal.signal(signal.SIGTERM, cleanup)
+
+# An MCP app: initializes with the host, then reports what its sandbox lets it do. The two
+# ports to fetch come in the URL fragment ("declared,undeclared").
+PROBE_PAGE = """<!doctype html><title>probe</title><script>
+const [declared, undeclared] = location.hash.slice(1).split(",");
+const result = {};
+async function probe(port) {
+  try { await fetch("http://127.0.0.1:" + port + "/", {mode: "no-cors"}); return "reached"; }
+  catch (error) { return "blocked"; }
+}
+window.addEventListener("message", async (event) => {
+  if (!event.data || event.data.id !== 1 || !event.data.result) return;
+  result.initialized = event.data.result.protocolVersion;
+  try { parent.document.title; result.parentDocument = "readable"; } catch (error) { result.parentDocument = "blocked"; }
+  result.declared = await probe(declared);
+  result.undeclared = await probe(undeclared);
+  parent.postMessage({jsonrpc: "2.0", method: "probe/result", params: result}, "*");
+});
+parent.postMessage({jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {}}, "*");
+</script>"""
 
 lock = threading.Lock()
 cancelled = set()
@@ -100,7 +121,15 @@ for line in sys.stdin:
         send(identifier, {"tools": tools, "nextCursor": cursor})
     elif method == "resources/read":
         uri = message.get("params", {}).get("uri", "")
-        send(identifier, {"contents": [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]})
+        if uri == "ui://fixture/probe.html":
+            # An app page with inline script. APP_CONNECT lists the origins it declares in `_meta.ui.csp`.
+            content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": PROBE_PAGE}
+            content["_meta"] = {"ui": {"csp": {"connectDomains": os.environ.get("APP_CONNECT", "").split()}}}
+        elif uri == "ui://fixture/blob.html":
+            content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "blob": base64.b64encode(("<p>" + os.environ.get("SECRET", "") + "</p>").encode()).decode()}
+        else:
+            content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}
+        send(identifier, {"contents": [content]})
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

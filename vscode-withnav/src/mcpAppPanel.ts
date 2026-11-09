@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import type { ChatBackend, McpAppDescriptor } from "./chatProtocol";
 
 const activePanels = new Map<string, vscode.WebviewPanel>();
+/** One message listener per panel: reopening the same app replaces it instead of adding another. */
+const panelListeners = new Map<string, vscode.Disposable>();
 
 function escapeHtml(text: string): string {
   return text
@@ -37,22 +39,24 @@ export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescripto
     });
   }
 
-  let html = app.html;
+  // The app runs in its own document, served by WithNav with a Content-Security-Policy of its
+  // own, never in a srcdoc that would inherit this panel's.
+  let frameUrl: string | undefined;
   let loadError: string | undefined;
-  if (!html && app.resourceUri && backend.readMcpResource) {
+  const source = app.html ? { html: app.html } : app.resourceUri ? { uri: app.resourceUri } : undefined;
+  if (source) {
     try {
-      const res = await backend.readMcpResource(app.server, app.resourceUri);
-      if (res.text) html = res.text;
-      else if (res.blob) html = Buffer.from(res.blob, "base64").toString("utf8");
-      else loadError = "MCP resource returned no HTML content.";
+      if (!backend.mcpAppFrame) throw new Error("MCP apps are not supported by this backend");
+      frameUrl = await backend.mcpAppFrame(app.server, source);
     } catch (error) {
       loadError = error instanceof Error ? error.message : String(error);
     }
   }
 
   const nonce = randomNonce();
-  panel.webview.html = renderMcpAppHtml(nonce, app, html, loadError);
+  panel.webview.html = renderMcpAppHtml(nonce, app, frameUrl, loadError);
 
+  panelListeners.get(key)?.dispose();
   const sub = panel.webview.onDidReceiveMessage(async (msg: any) => {
     if (!msg || typeof msg !== "object") return;
     if (msg.type === "openExternal" && typeof msg.url === "string") {
@@ -102,13 +106,28 @@ export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescripto
       }
     }
   });
-  panel.onDidDispose(() => sub.dispose());
+  panelListeners.set(key, sub);
+  panel.onDidDispose(() => {
+    sub.dispose();
+    if (panelListeners.get(key) === sub) panelListeners.delete(key);
+  });
+}
+
+/** The origin of a URL, or undefined when it is not a plain http(s) one. */
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function renderMcpAppHtml(
   nonce: string,
   app: McpAppDescriptor,
-  html?: string,
+  frameUrl?: string,
   loadError?: string,
 ): string {
   const payloadJson = JSON.stringify({
@@ -120,19 +139,26 @@ export function renderMcpAppHtml(
     output: app.output,
     metadata: app.metadata ?? {},
   }).replace(/</g, "\\u003c");
-  const showUrl = !html && !!app.url;
-  const srcdocAttr = html ? `srcdoc="${escapeHtml(html)}"` : "";
-  const srcAttr = showUrl && app.url ? `src="${escapeHtml(app.url)}"` : "";
+  // A document served by WithNav is a one-time URL under its own CSP, in an opaque-origin
+  // sandbox: it runs, but cannot reach this panel, VS Code's API or local files. A bare
+  // `app.url` is an external page and keeps the sandbox it had.
+  const showUrl = !frameUrl && !!app.url;
+  const frameSrc = frameUrl ?? (showUrl ? app.url : undefined);
+  const srcAttr = frameSrc ? `src="${escapeHtml(frameSrc)}"` : "";
   const sandbox = showUrl
     ? "allow-scripts allow-same-origin allow-forms allow-downloads"
     : "allow-scripts allow-forms";
+  // The panel may embed only the one origin it was asked to show, so a frame that navigates
+  // itself cannot land on another page that the bridge would still answer.
+  const frameOrigin = originOf(frameSrc);
+  const frameSources = frameOrigin ?? "'none'";
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src http://127.0.0.1:* http://localhost:* https: data: blob:; img-src https: http: data: blob:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${frameSources}; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>${escapeHtml(app.server)} · ${escapeHtml(app.tool)}</title>
   <style>
     html, body { height: 100%; margin: 0; padding: 0; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family, sans-serif); font-size: 12px; display: flex; flex-direction: column; overflow: hidden; }
@@ -153,7 +179,7 @@ export function renderMcpAppHtml(
     </div>
   </div>
   ${loadError && !showUrl ? `<div class="error">${escapeHtml(loadError)}</div>` : ""}
-  ${html || showUrl ? `<iframe id="mcp-frame" sandbox="${sandbox}" ${srcdocAttr} ${srcAttr}></iframe>` : ""}
+  ${frameSrc ? `<iframe id="mcp-frame" sandbox="${sandbox}" ${srcAttr}></iframe>` : ""}
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const app = ${payloadJson};

@@ -86,7 +86,7 @@ Dependencies point down this list. A module never imports one above it.
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
-| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
+| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent`; `mcp_app.rs`: MCP app documents served once under their own CSP (below) | session state, the model layers |
 | `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the Captain perceives as the navigator, below | session internals |
 
@@ -427,6 +427,19 @@ the platform's normal per-user directory resolution is unchanged.
 Empty overrides are also unset. Relative overrides resolve to absolute paths
 against the nav process working directory, not a tool's workspace; storage and
 the protected floor therefore refer to the same files.
+
+**MCP app documents.** A client that opens an MCP App asks `POST /v1/mcp/{server}/app` (bearer token
+required; the server refuses it when it has none) with the app's `ui://` resource or its inline HTML.
+`server/mcp_app.rs` parks the document (at most 512 KiB, redacted) under an unguessable token for 60
+seconds, at most 32 at a time, and answers `/mcp-app/{token}`. `GET /mcp-app/{token}` is the one route
+besides the static files and health that needs no bearer (an iframe cannot send one): it checks the
+method and a loopback `Host`, then removes the document, so it loads once. It carries its own
+Content-Security-Policy, built from `_meta.ui.csp` (`connectDomains`, `resourceDomains`,
+`frameDomains`, `baseUriDomains`, each entry validated as scheme, host and port, never pasted
+through): inline scripts and styles run, everything that reaches the network is `'none'` unless
+declared, and a `sandbox` directive makes it an opaque origin even outside a client's own iframe.
+`vscode-withnav/src/mcpAppPanel.ts` embeds that URL with `sandbox="allow-scripts allow-forms"` and
+allows only its origin as `frame-src`; the bridge stays `postMessage` between frame and panel.
 
 MCP declarations live only in the global `config.json` under `mcp`. Connections, restart
 counters, tool inventories and bounded stderr tails are memory-only. Environment references

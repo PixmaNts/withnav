@@ -7,6 +7,7 @@
 //! (loopback bind with graceful shutdown).
 pub mod config;
 mod flows;
+mod mcp_app;
 pub mod routes;
 pub mod session;
 mod settings;

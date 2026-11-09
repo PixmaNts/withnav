@@ -467,6 +467,15 @@ impl Service {
         self.mcp.read_ui_resource(server_id, uri).await
     }
 
+    /// The HTML and declared CSP of a `ui://` app resource, for serving it as a document.
+    pub async fn mcp_read_app(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<(String, serde_json::Value), String> {
+        self.mcp.read_app_resource(server_id, uri).await
+    }
+
     pub async fn mcp_call_tool(
         &self,
         server_id: &str,

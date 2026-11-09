@@ -55,6 +55,9 @@ fn server_view(status: &ServerStatus, transport: &str) -> ServerView {
     }
 }
 
+/// The largest app document the server will serve, in bytes.
+pub const MAX_APP_HTML_BYTES: usize = 512 * 1024;
+
 fn bounded_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
@@ -365,7 +368,44 @@ impl McpManager {
             "mime_type": mime_type,
             "text": text,
             "blob": blob,
+            "csp": contents["_meta"]["ui"]["csp"],
         }))
+    }
+
+    /// The HTML of a `ui://` app resource, ready to be served as a document: text as the
+    /// server sent it, or a blob decoded to UTF-8, both redacted and bounded to
+    /// [`MAX_APP_HTML_BYTES`]; plus the CSP the resource declares in `_meta.ui.csp` (`null`
+    /// when it declares none). A blob that is not valid base64 or UTF-8, or is too large, is
+    /// refused rather than served.
+    pub async fn read_app_resource(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<(String, serde_json::Value), String> {
+        use base64::Engine as _;
+        let body = self.read_ui_resource(server_id, uri).await?;
+        let html = if let Some(text) = body["text"].as_str() {
+            text.to_owned()
+        } else if let Some(blob) = body["blob"].as_str() {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(blob)
+                .map_err(|_| "MCP app resource is not valid base64".to_string())?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| "MCP app resource is not valid UTF-8".to_string())?;
+            let secrets = self
+                .servers
+                .iter()
+                .find(|s| s.id == server_id)
+                .map(|s| s.secrets())
+                .unwrap_or_default();
+            redaction::redact(&text, &secrets)
+        } else {
+            return Err("MCP resource returned no HTML content".into());
+        };
+        if html.len() > MAX_APP_HTML_BYTES {
+            return Err("MCP app resource is too large".into());
+        }
+        Ok((html, body["csp"].clone()))
     }
 
     pub async fn call_ui_tool(

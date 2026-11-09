@@ -977,6 +977,11 @@ pub fn route_paste(
     if state.read_only() {
         return None;
     }
+    // A paste while the answer is being sent is dropped: it would linger as an unintended value
+    // if the request fails.
+    if ui.overlay.is_none() && crate::secret::sending(state, ui) {
+        return None;
+    }
     if ui.overlay.is_none() && crate::secret::paste(&text, ui) {
         return None;
     }

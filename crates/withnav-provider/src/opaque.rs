@@ -72,7 +72,11 @@ impl Producer {
 pub struct OpaqueItem {
     /// Wire-specific, chosen by the adapter that captured it.
     pub kind: String,
-    /// JSON text exactly as the provider sent it.
+    /// JSON text of the item as its adapter captured it, stored and replayed
+    /// unchanged. An adapter that receives the item whole keeps the provider's
+    /// bytes; one that assembles it from stream fragments (Chat Completions
+    /// `reasoning_details`) stores the assembled value, whose string contents
+    /// are the provider's.
     ///
     /// A `String`, not a raw JSON value: an internally tagged enum buffers its
     /// fields while reading, and a raw value cannot be read back from that buffer
@@ -83,18 +87,17 @@ pub struct OpaqueItem {
 
 /// Whether `wire` can render an item of `kind` into a request.
 ///
-/// No dialect writes opaque data yet, so nothing is sendable: an item stored
-/// today is kept in the transcript but never reaches a request, which keeps
-/// every request body what it was before the field existed. A dialect that
-/// learns to replay a kind adds it here, and the replay rule starts applying to
-/// it everywhere at once (projection, gauge, provider boundary).
+/// Chat Completions writes `reasoning_details` entries back; every other kind
+/// is kept in the transcript but never reaches a request, so a request body
+/// stays what it was before the kind was captured. A dialect that learns to
+/// replay a kind adds it here, and the replay rule starts applying to it
+/// everywhere at once (projection, gauge, provider boundary).
 pub fn sendable(wire: &str, kind: &str) -> bool {
     #[cfg(any(test, feature = "test-support"))]
     if kind == TEST_SENDABLE {
         return true;
     }
-    let _ = (wire, kind);
-    false
+    wire == CHAT_COMPLETIONS && kind == crate::reasoning_details::KIND
 }
 
 /// A kind sendable on every wire, so the keep path of the replay rule can be
@@ -280,8 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_sendable_but_the_test_kind() {
+    fn only_reasoning_details_on_chat_completions_and_the_test_kind_are_sendable() {
         assert!(!sendable(CHAT_COMPLETIONS, "thinking"));
+        assert!(!sendable(
+            CHAT_COMPLETIONS,
+            "reasoning_details.openai-responses-v1"
+        ));
+        assert!(sendable(CHAT_COMPLETIONS, "reasoning_details"));
         assert!(!sendable("anthropic", "reasoning_details"));
         assert!(sendable(CHAT_COMPLETIONS, TEST_SENDABLE));
         assert!(sendable("anthropic", TEST_SENDABLE));

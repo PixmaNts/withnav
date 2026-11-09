@@ -19,6 +19,74 @@ def send(identifier, result):
     with lock:
         print(json.dumps({"jsonrpc": "2.0", "id": identifier, "result": result}), flush=True)
 
+def error(identifier, code, text):
+    with lock:
+        print(json.dumps({"jsonrpc": "2.0", "id": identifier, "error": {"code": code, "message": text}}), flush=True)
+
+def resources_page(identifier, params):
+    """Two pages of resources (RESOURCES=1); LOOP_CURSOR makes the server repeat its cursor."""
+    if os.environ.get("BIG_LISTING"):
+        page = int(params.get("cursor") or 0)
+        resources = [{"uri": "x://big/%d/%d" % (page, n), "name": "n", "description": "d" * 300} for n in range(200)]
+        send(identifier, {"resources": resources, "nextCursor": str(page + 1)})
+    elif os.environ.get("DESCRIBE_SECRET") and not params.get("cursor"):
+        send(identifier, {"resources": [{"uri": "x://described", "name": "described", "description": "x" * 290 + os.environ["SECRET"]}]})
+    elif os.environ.get("LOOP_CURSOR"):
+        send(identifier, {"resources": [{"uri": "x://loop", "name": "loop"}], "nextCursor": "again"})
+    elif not params.get("cursor"):
+        send(identifier, {"resources": [{"uri": "file:///notes/a.md", "name": "a", "mimeType": "text/markdown", "description": "First\n  note"}], "nextCursor": "second"})
+    else:
+        resources = [{"uri": "x://multi", "name": "multi", "title": "Several pieces"}]
+        if os.environ.get("SECRET"):
+            resources.append({"uri": "x://" + os.environ["SECRET"], "name": "hidden"})
+        send(identifier, {"resources": resources})
+
+def templates_page(identifier):
+    if os.environ.get("NO_TEMPLATES"):
+        error(identifier, -32601, "Method not found")
+        return
+    if os.environ.get("SLOW_TEMPLATES"):
+        time.sleep(float(os.environ["SLOW_TEMPLATES"]))
+    description = "One note by id"
+    if os.environ.get("DESCRIBE_SECRET"):
+        description = "see " + os.environ["SECRET"]
+    send(identifier, {"resourceTemplates": [{"uriTemplate": "x://notes/{id}", "name": "note", "description": description}]})
+
+def read_resource(identifier, uri):
+    if uri == "x://slow":
+        time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
+        if identifier in cancelled:
+            return
+    if uri == "x://multi":
+        contents = [
+            {"uri": "x://multi", "mimeType": "text/plain", "text": "first piece"},
+            {"uri": "x://multi#image", "mimeType": "image/png", "blob": "iVBORw0KGgo="},
+            {"uri": "x://multi#notes", "text": "second piece"},
+        ]
+    elif uri == "x://secret":
+        contents = [{"uri": uri, "text": "token " + os.environ.get("SECRET", "")}]
+    elif uri == "x://big":
+        contents = [{"uri": uri, "text": "y" * 100000}]
+    elif uri == "x://empty":
+        contents = []
+    elif uri == "x://missing":
+        error(identifier, -32002, "Resource not found: " + os.environ.get("SECRET", ""))
+        return
+    elif uri.endswith("/multi.html"):
+        contents = [
+            {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "a"},
+            {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "b"},
+        ]
+    elif uri.endswith("/malformed.html"):
+        # Neither text nor blob: rmcp cannot type this item.
+        send(identifier, {"contents": [{"uri": uri}]})
+        return
+    elif uri.endswith("/plain.html"):
+        contents = [{"uri": uri, "mimeType": "text/plain", "text": "plain"}]
+    else:
+        contents = [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]
+    send(identifier, {"contents": contents})
+
 def call(identifier, params):
     name = params["name"]
     rpc_error = params.get("arguments", {}).get("rpc_error")
@@ -89,7 +157,12 @@ for line in sys.stdin:
         gate = os.environ.get("INIT_GATE")
         while gate and not os.path.exists(gate):
             time.sleep(0.02)
-        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {"listChanged": bool(os.environ.get("TOOLS_FILE"))}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
+        capabilities = {"tools": {"listChanged": bool(os.environ.get("TOOLS_FILE"))}}
+        if os.environ.get("RESOURCES"):
+            capabilities["resources"] = {}
+        if os.environ.get("RESOURCES_ONLY"):
+            capabilities = {"resources": {}}
+        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": capabilities, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
         if os.environ.get("TOOLS_FILE"):
             threading.Thread(target=watch_tools_file, args=(os.environ["TOOLS_FILE"],), daemon=True).start()
         if os.environ.get("COMPOSITE"):
@@ -100,6 +173,8 @@ for line in sys.stdin:
             time.sleep(0.02)
             sys.stderr.write(token[5:] + " retained tail")
             sys.stderr.flush()
+    elif method == "tools/list" and os.environ.get("RESOURCES_ONLY"):
+        error(identifier, -32601, "Method not found")
     elif method == "tools/list":
         names = ["echo", "slow", "big", "fail", "crash", "bad.name", "bad name", "reference", "cancellations"]
         if os.environ.get("COMPOSITE"):
@@ -131,20 +206,13 @@ for line in sys.stdin:
             if tool["name"] == "malformed":
                 tool["inputSchema"] = {"type":"object", "properties":{"text":{"type":"string","minLength":"bad"}}}
         send(identifier, {"tools": tools, "nextCursor": cursor})
+    elif method == "resources/list":
+        resources_page(identifier, message.get("params") or {})
+    elif method == "resources/templates/list":
+        threading.Thread(target=templates_page, args=(identifier,), daemon=True).start()
     elif method == "resources/read":
         uri = message.get("params", {}).get("uri", "")
-        if uri.endswith("/multi.html"):
-            send(identifier, {"contents": [
-                {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "a"},
-                {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "b"},
-            ]})
-        elif uri.endswith("/malformed.html"):
-            # Neither text nor blob: rmcp cannot type this item.
-            send(identifier, {"contents": [{"uri": uri}]})
-        elif uri.endswith("/plain.html"):
-            send(identifier, {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "plain"}]})
-        else:
-            send(identifier, {"contents": [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]})
+        threading.Thread(target=read_resource, args=(identifier, uri), daemon=True).start()
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

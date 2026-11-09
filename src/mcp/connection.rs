@@ -462,47 +462,73 @@ async fn discover(
     server: &Arc<Server>,
     peer: &rmcp::Peer<rmcp::RoleClient>,
 ) -> Result<Vec<McpTool>, String> {
-    let mut cursor = None;
-    let mut cursors = HashSet::new();
+    let capabilities = peer
+        .peer_info()
+        .map(|info| info.capabilities.clone())
+        .unwrap_or_default();
+    let offers_resources = capabilities.resources.is_some();
     let mut definitions = vec![];
-    for _ in 0..100 {
-        let page = peer
-            .list_tools(Some(
-                rmcp::model::PaginatedRequestParams::default().with_cursor(cursor),
-            ))
-            .await
-            .map_err(|_| "MCP tools/list failed".to_string())?;
-        definitions.extend(page.tools);
-        if definitions.len() > 10_000 {
-            return Err("MCP tool inventory exceeds 10000 tools".into());
-        }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-        if !cursors.insert(cursor.clone()) {
-            return Err("MCP tools/list repeated a cursor".into());
-        }
-        if cursors.len() == 100 {
-            return Err("MCP tools/list exceeds 100 pages".into());
+    // A server that offers resources and declares no tools has no tools/list to answer. One
+    // that declares neither is still asked, as before resources were supported: some servers
+    // answer tools/list without declaring the capability.
+    if capabilities.tools.is_some() || !offers_resources {
+        let mut cursor = None;
+        let mut cursors = HashSet::new();
+        for _ in 0..100 {
+            let page = peer
+                .list_tools(Some(
+                    rmcp::model::PaginatedRequestParams::default().with_cursor(cursor),
+                ))
+                .await
+                .map_err(|_| "MCP tools/list failed".to_string())?;
+            definitions.extend(page.tools);
+            if definitions.len() > 10_000 {
+                return Err("MCP tool inventory exceeds 10000 tools".into());
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            if !cursors.insert(cursor.clone()) {
+                return Err("MCP tools/list repeated a cursor".into());
+            }
+            if cursors.len() == 100 {
+                return Err("MCP tools/list exceeds 100 pages".into());
+            }
         }
     }
     definitions.sort_by(|a, b| a.name.cmp(&b.name));
     let mut names = HashSet::new();
     let mut tools = vec![];
     let mut skipped = vec![];
-    for definition in definitions {
-        if server.config.tools.iter().any(|(pattern, allowed)| {
+    let denied = |name: &str| {
+        server.config.tools.iter().any(|(pattern, allowed)| {
             !allowed
-                && globset::Glob::new(pattern)
-                    .is_ok_and(|g| g.compile_matcher().is_match(definition.name.as_ref()))
-        }) {
+                && globset::Glob::new(pattern).is_ok_and(|g| g.compile_matcher().is_match(name))
+        })
+    };
+    for definition in definitions {
+        if denied(definition.name.as_ref()) {
             continue;
         }
         match McpTool::new(server.clone(), definition) {
             Ok(tool) if names.insert(tool.wire.clone()) => tools.push(tool),
             Ok(tool) => skipped.push(format!("{}: wire-name collision", tool.original)),
             Err(error) => skipped.push(error),
+        }
+    }
+    // The resource tools come after the server's own: a server tool that already has the
+    // same wire name keeps it. The server's deny globs apply to them by their local name.
+    if offers_resources {
+        for tool in super::resource::tools(server) {
+            if denied(&tool.original) {
+                continue;
+            }
+            if names.insert(tool.wire.clone()) {
+                tools.push(tool);
+            } else {
+                skipped.push(format!("{}: name taken by a server tool", tool.original));
+            }
         }
     }
     let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());

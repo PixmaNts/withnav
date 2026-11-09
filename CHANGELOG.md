@@ -38,6 +38,12 @@ requests land in `develop`.
   the conversation gets a short note listing the tools added and removed. When a new tool's name is
   already held by another server's tool, the existing one is kept and the note says so. A subagent
   keeps the tools it was created with; a new subagent is created from its parent's current tools.
+- MCP resources: a server that offers resources gets two agent tools,
+  `mcp__<server>__list_resources` (resources and URI templates) and
+  `mcp__<server>__read_resource` (one resource by URI; several pieces come back as a numbered
+  list). Results are untrusted text, redacted of the server's configured secrets and limited to
+  64 KiB; both tools are decided by the ordinary permission rules, like any MCP tool. See
+  [MCP servers](book/src/mcp-servers.md#resources).
 
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,

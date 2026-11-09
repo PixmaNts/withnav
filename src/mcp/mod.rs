@@ -2,6 +2,7 @@
 pub mod config;
 mod connection;
 mod redaction;
+mod resource;
 mod tool;
 mod ui_error;
 pub use tool::McpTool;
@@ -527,10 +528,15 @@ impl McpManager {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|r| {
+                // Only the server's own tools: the resource tools WithNav adds are not
+                // `tools/call` names on the server.
                 let tool = r
                     .tools
                     .iter()
-                    .find(|t| t.original == tool_name || t.wire == tool_name)
+                    .find(|t| {
+                        t.kind == tool::Kind::Call
+                            && (t.original == tool_name || t.wire == tool_name)
+                    })
                     .map(|t| t.original.clone());
                 (r.peer.clone(), r.disconnected.clone(), tool)
             });

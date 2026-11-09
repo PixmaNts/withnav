@@ -189,7 +189,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
             );
         }
     }
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(DEADLINE, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(child, None)
@@ -311,7 +311,7 @@ async fn exhaust_child_budget(
             );
         }
     }
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(DEADLINE, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(child, None)
@@ -586,7 +586,7 @@ async fn topup_racing_the_budget_notice_never_delivers_a_stale_notice() {
         steps,
     )
     .await;
-    tokio::time::timeout(Duration::from_secs(2), barrier.reached.notified())
+    tokio::time::timeout(DEADLINE, barrier.reached.notified())
         .bounded(file!(), line!())
         .await
         .expect("budget notice reached its commit");
@@ -596,7 +596,7 @@ async fn topup_racing_the_budget_notice_never_delivers_a_stale_notice() {
         .await
         .expect("top-up while the notice is in flight");
     barrier.release.notify_one();
-    tokio::time::timeout(Duration::from_secs(2), barrier.reached.notified())
+    tokio::time::timeout(DEADLINE, barrier.reached.notified())
         .bounded(file!(), line!())
         .await
         .expect("the paused notice attempt finished");
@@ -805,7 +805,7 @@ async fn queued_captain_correction_precedes_completion_only_wake() {
         .unwrap();
     parent_stream.send(text_chunk("old turn done")).unwrap();
     drop(parent_stream);
-    let (request, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -869,7 +869,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
         ))
         .unwrap();
     drop(stream);
-    let request = tokio::time::timeout(Duration::from_secs(2), async {
+    let request = tokio::time::timeout(DEADLINE, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
@@ -1088,7 +1088,7 @@ use common::server::TestServerConfig;
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
 
 async fn notice_count(state: &AppState, parent: ulid::Ulid, count: usize) {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(DEADLINE, async {
         loop {
             if state
                 .history()
@@ -1153,7 +1153,7 @@ async fn finished_child_wakes_idle_parent_and_consumes_once() {
         .unwrap();
     stream.send(text_chunk("a useful answer")).unwrap();
     drop(stream);
-    let (request, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1302,7 +1302,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
     );
     parent_stream.send(text_chunk("parent finished")).unwrap();
     drop(parent_stream);
-    let (request, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1361,7 +1361,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let (request, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1487,7 +1487,7 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let (request, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1542,7 +1542,7 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
         ))
         .unwrap();
     drop(stream);
-    let request = tokio::time::timeout(Duration::from_secs(2), async {
+    let request = tokio::time::timeout(DEADLINE, async {
         loop {
             state
                 .history()
@@ -1682,7 +1682,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         ))
         .unwrap();
     drop(stream);
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(DEADLINE, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
@@ -1719,7 +1719,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         ))
         .unwrap();
     drop(stream);
-    let request_id = tokio::time::timeout(Duration::from_secs(2), async {
+    let request_id = tokio::time::timeout(DEADLINE, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)

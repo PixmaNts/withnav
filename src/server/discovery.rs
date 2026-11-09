@@ -26,8 +26,12 @@ const VERSION: u32 = 1;
 const MAX_ENTRY_BYTES: u64 = 4096;
 /// One request to a published server: it is on loopback, so a slower answer means it is busy.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-/// The whole lookup, so a few unresponsive entries cannot hold the terminal client's start-up.
+/// All the probes of one lookup, so a few unresponsive entries cannot hold the terminal
+/// client's start-up.
 const LOOKUP_BUDGET: Duration = Duration::from_secs(3);
+/// The newest entries of a workspace read by one lookup; older ones are left to their own
+/// lookups once the newer ones are cleaned up.
+const MAX_CANDIDATES: usize = 16;
 
 /// What `nav lsp` publishes about its session server.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,16 +178,16 @@ pub fn publish(dir: &Path, workspace: &Path, port: u16, token: &str) -> std::io:
     Ok(Published { path })
 }
 
-/// The newest live server published for `workspace` (canonical) in `dir`, if any.
+/// The newest live server published for `workspace` (canonical) in `dir`, if any. "Newest" is
+/// to the millisecond of publication; two editors started within the same millisecond are
+/// ordered arbitrarily.
 ///
 /// An entry is live when its process exists, `GET /v1/health` answers and an authenticated
 /// `GET /v1/mcp` with its token is accepted. An entry proven stale (its process is gone, nothing
 /// listens on its port, or its token is refused) is removed; one that only timed out or failed
 /// is kept, since its editor may still be busy starting.
 pub async fn find(dir: &Path, workspace: &Path) -> Option<Entry> {
-    let mut entries = candidates(dir, workspace);
-    // The instance is a ULID: the greatest one was published last.
-    entries.sort_by(|(a, _), (b, _)| b.instance.cmp(&a.instance));
+    let entries = candidates(dir, workspace);
     let client = reqwest::Client::builder()
         .timeout(PROBE_TIMEOUT)
         .no_proxy()
@@ -208,7 +212,9 @@ pub async fn find(dir: &Path, workspace: &Path) -> Option<Entry> {
         .flatten()
 }
 
-/// The well-formed entries of `workspace` in a private `dir`, with their paths.
+/// The well-formed entries of `workspace` in a private `dir`, newest first, with their paths.
+/// Only the [`MAX_CANDIDATES`] newest files are read, so a backlog of crashed editors cannot
+/// slow the terminal client's start-up.
 fn candidates(dir: &Path, workspace: &Path) -> Vec<(Entry, PathBuf)> {
     if private_dir(dir, false).is_err() {
         return Vec::new();
@@ -217,14 +223,17 @@ fn candidates(dir: &Path, workspace: &Path) -> Vec<(Entry, PathBuf)> {
         return Vec::new();
     };
     let prefix = format!("{}-", key(workspace));
-    listing
+    let mut names: Vec<String> = listing
         .filter_map(Result::ok)
-        .map(|item| item.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
-        })
+        .filter_map(|item| item.file_name().into_string().ok())
+        .filter(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        .collect();
+    // After the shared prefix the name is the instance ULID, which sorts by time.
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    names
+        .into_iter()
+        .take(MAX_CANDIDATES)
+        .map(|name| dir.join(name))
         .filter_map(|path| read_entry(&path).map(|entry| (entry, path)))
         .filter(|(entry, _)| entry.version == VERSION && entry.workspace == workspace)
         .collect()
@@ -256,12 +265,15 @@ fn read_entry(path: &Path) -> Option<Entry> {
 /// repaired: someone else may have prepared it.
 fn private_dir(dir: &Path, create: bool) -> std::io::Result<()> {
     if create {
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt as _;
+            let mut builder = std::fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         match builder.create(dir) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -304,7 +316,7 @@ async fn probe(client: &reqwest::Client, entry: &Entry) -> Probe {
     match client.get(format!("{base}/v1/health")).send().await {
         Ok(response) if response.status().is_success() => {}
         Ok(_) => return Probe::Unknown,
-        Err(err) if err.is_connect() => return Probe::Stale,
+        Err(err) if refused(&err) => return Probe::Stale,
         Err(_) => return Probe::Unknown,
     }
     match client
@@ -324,6 +336,21 @@ async fn probe(client: &reqwest::Client, entry: &Entry) -> Probe {
         }
         Ok(_) | Err(_) => Probe::Unknown,
     }
+}
+
+/// Nothing listens on the port: the only connection failure that proves the server is gone.
+/// A timeout or a local resource error says nothing about it.
+fn refused(err: &reqwest::Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(error) = source {
+        if let Some(io) = error.downcast_ref::<std::io::Error>()
+            && io.kind() == std::io::ErrorKind::ConnectionRefused
+        {
+            return true;
+        }
+        source = error.source();
+    }
+    false
 }
 
 #[cfg(unix)]
@@ -509,6 +536,20 @@ mod tests {
         assert!(find(&f.dir, &f.workspace).await.is_none());
         assert!(published.path().exists());
         task.abort();
+    }
+
+    // Given a port that accepts connections but never answers
+    // When the terminal client looks it up
+    // Then it is not used, and its file is kept: a timeout does not prove the server is gone
+    #[tokio::test]
+    async fn a_timeout_does_not_remove_an_entry() {
+        let f = fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let published = publish(&f.dir, &f.workspace, port, "t").unwrap();
+        assert!(find(&f.dir, &f.workspace).await.is_none());
+        assert!(published.path().exists());
+        drop(listener);
     }
 
     // Given a live server published for another workspace

@@ -7,36 +7,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use std::time::Duration;
 
+use common::lsp::{frame, read_message};
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 
 mod common;
 
 /// A hang guard for reads from the child process, not a performance bound.
 const HANG_GUARD: Duration = Duration::from_secs(30);
-
-async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R) -> serde_json::Value {
-    let mut len = 0usize;
-    loop {
-        let mut line = String::new();
-        assert!(r.read_line(&mut line).await.expect("header") > 0, "EOF");
-        let line = line.trim();
-        if line.is_empty() {
-            break;
-        }
-        if let Some(n) = line.strip_prefix("Content-Length:") {
-            len = n.trim().parse().expect("length");
-        }
-    }
-    let mut body = vec![0; len];
-    r.read_exact(&mut body).await.expect("body");
-    serde_json::from_slice(&body).expect("json")
-}
-
-fn frame(value: serde_json::Value) -> Vec<u8> {
-    let body = value.to_string();
-    format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
-}
 
 fn mode(path: &std::path::Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -52,11 +30,45 @@ fn published(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
 }
 
+async fn create_session((url, token): &(String, String), workspace: &str) -> String {
+    let response = reqwest::Client::new()
+        .post(format!("{url}/v1/sessions"))
+        .bearer_auth(token)
+        .json(&json!({ "workspace": workspace }))
+        .send()
+        .await
+        .expect("create");
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert!(status.is_success(), "{status}: {body}");
+    body["session_id"].as_str().expect("session_id").to_owned()
+}
+
+async fn list_sessions((url, token): &(String, String), workspace: &str) -> Vec<String> {
+    let response = reqwest::Client::new()
+        .get(format!("{url}/v1/sessions"))
+        .query(&[("workspace", workspace)])
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("list");
+    assert!(response.status().is_success(), "{}", response.status());
+    let body: serde_json::Value = response.json().await.expect("json");
+    body["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        // A live entry is open in this very server, not merely found in the shared database.
+        .filter(|entry| entry["live"] == true)
+        .filter_map(|entry| entry["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 // Given an editor that starts `nav lsp` in a workspace, with a private runtime directory
 // When the LSP announces its chat server
 // Then an owner-only discovery file points at that same server, the terminal client's lookup
-//      finds it and its token opens the conversation list, and the file is gone once the editor
-//      shuts the LSP down
+//      finds it, a conversation started on either side is listed on the other, and the file is
+//      gone once the editor shuts the LSP down
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_lsp_publishes_its_server_until_it_exits() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -151,14 +163,14 @@ async fn the_lsp_publishes_its_server_until_it_exits() {
     assert_eq!(u64::from(found.port), port);
     assert_eq!(found.token, token);
 
-    let sessions = reqwest::Client::new()
-        .get(format!("{}/v1/sessions", found.url()))
-        .query(&[("workspace", workspace.to_str().unwrap())])
-        .bearer_auth(&found.token)
-        .send()
-        .await
-        .expect("sessions");
-    assert!(sessions.status().is_success(), "{}", sessions.status());
+    // A conversation started by the editor is listed for the terminal client, and the reverse.
+    let editor = (format!("http://127.0.0.1:{port}"), token.clone());
+    let terminal = (found.url(), found.token.clone());
+    let ws = workspace.to_str().unwrap();
+    let from_editor = create_session(&editor, ws).await;
+    assert!(list_sessions(&terminal, ws).await.contains(&from_editor));
+    let from_terminal = create_session(&terminal, ws).await;
+    assert!(list_sessions(&editor, ws).await.contains(&from_terminal));
 
     stdin
         .write_all(&frame(

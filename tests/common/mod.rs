@@ -10,6 +10,8 @@ pub use python::python;
 
 pub mod deadline;
 
+pub mod lsp;
+
 pub mod navigator;
 pub mod server;
 pub mod sse;

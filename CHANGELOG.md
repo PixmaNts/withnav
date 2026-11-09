@@ -14,7 +14,8 @@ requests land in `develop`.
   directory) under `$XDG_RUNTIME_DIR/withnav-servers/` and removes it when it exits; the terminal
   client ignores and removes a file whose process, port or token is gone. Without an editor, with
   `--models`, without a private `$XDG_RUNTIME_DIR` or on Windows, `nav tui` starts its own server
-  as before.
+  as before. Requests from `nav tui` to a loopback server no longer go through `HTTP_PROXY` or
+  `ALL_PROXY`, which could otherwise receive its bearer token.
 
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,

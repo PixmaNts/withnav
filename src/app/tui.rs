@@ -263,6 +263,7 @@ mod tests {
         assert!(!deprecated);
     }
 
+    #[cfg(unix)]
     fn args(models: Option<PathBuf>) -> TuiArgs {
         TuiArgs {
             workspace: PathBuf::from("."),

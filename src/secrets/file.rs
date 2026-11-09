@@ -1,6 +1,8 @@
 //! `<data dir>/credentials/secrets.json`: the workspace secrets that outlive a conversation.
 //! Written whole and atomically (a private temporary file renamed over it), mode 0600 in a
-//! 0700 directory; removed when it would be empty.
+//! 0700 directory; removed when it would be empty. A save returns once the replacement is
+//! durable: the file is synced before the rename and the directory after it (on Windows the
+//! rename is a write-through move), so a power cut cannot bring the previous content back.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,12 +33,18 @@ struct FileBody {
 
 /// The saved secrets; none when there is no file.
 pub(super) fn load(path: &Path) -> std::io::Result<Vec<Saved>> {
+    // Tightened before the content is read: a permissive file is not left exposed while it is
+    // loaded, and a file that cannot be tightened is refused (nothing is loaded from it).
+    match restrict(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+        Ok(()) => {}
+    }
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    restrict(path)?;
     let body: FileBody = serde_json::from_slice(&bytes)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     if body.version != VERSION {
@@ -52,13 +60,15 @@ pub(super) fn load(path: &Path) -> std::io::Result<Vec<Saved>> {
 pub(super) fn save(path: &Path, secrets: &[Saved]) -> std::io::Result<()> {
     if secrets.is_empty() {
         return match std::fs::remove_file(path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
+            Ok(()) => sync_parent(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
         };
     }
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("secrets file has no directory"))?;
+    let dir_existed = dir.is_dir();
     create_private_dir(dir)?;
     let body = serde_json::to_vec(&FileBody {
         version: VERSION,
@@ -81,8 +91,62 @@ pub(super) fn save(path: &Path, secrets: &[Saved]) -> std::io::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(&body)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    restrict(path)
+    replace(tmp, path)?;
+    restrict(path)?;
+    if !dir_existed {
+        // A directory this call created is itself an entry of its parent.
+        sync_parent(dir)?;
+    }
+    sync_parent(path)
+}
+
+/// Renames the synced temporary file over `path`.
+#[cfg(not(windows))]
+fn replace(tmp: tempfile::NamedTempFile, path: &Path) -> std::io::Result<()> {
+    tmp.persist(path).map(drop).map_err(|e| e.error)
+}
+
+/// Renames the synced temporary file over `path`, returning once the move reached the disk.
+#[cfg(windows)]
+fn replace(tmp: tempfile::NamedTempFile, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    // Closes the handle, and removes the file again if the move fails.
+    let mut tmp = tmp.into_temp_path();
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() };
+    let (from, to) = (wide(&tmp), wide(path));
+    // SAFETY: both buffers are NUL-terminated and live across the call.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // The temporary name is gone: nothing is left for the guard to delete. `keep` would touch
+    // that name again, so cleanup is only switched off.
+    tmp.disable_cleanup(true);
+    Ok(())
+}
+
+/// Makes a rename or removal in `path`'s directory durable.
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => std::fs::File::open(dir)?.sync_all(),
+        _ => Ok(()),
+    }
+}
+
+/// Directories cannot be opened for syncing here; a removal is not written through.
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]

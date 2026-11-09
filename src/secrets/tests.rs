@@ -392,3 +392,185 @@ fn a_workspace_secret_that_cannot_be_saved_is_reported() {
         "a secret that is never saved does not care"
     );
 }
+
+fn put_workspace(
+    store: &SecretStore,
+    owner: Ulid,
+    ws: &Path,
+    name: &str,
+    value: &str,
+) -> Result<SecretView, SecretError> {
+    store.put(
+        owner,
+        ws,
+        name,
+        value,
+        SecretTtl::Day,
+        SecretScope::Workspace,
+    )
+}
+
+/// Makes the next save fail: a directory sits where the file goes, so the rename cannot
+/// replace it.
+fn break_saves(store: &SecretStore) {
+    let path = store.file().unwrap();
+    let _ = std::fs::remove_file(path);
+    std::fs::create_dir_all(path).unwrap();
+}
+
+#[test]
+fn a_failed_save_leaves_no_secret_active() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    break_saves(&store);
+    let error = put_workspace(&store, owner, ws.path(), "API_KEY", VALUE).unwrap_err();
+    assert!(matches!(error, SecretError::NotSaved(_)));
+    assert!(store.list(owner, ws.path()).is_empty());
+    assert!(store.environment(owner, ws.path()).is_empty());
+    assert_eq!(store.redact(owner, ws.path(), VALUE), VALUE);
+}
+
+#[test]
+fn a_failed_replacement_keeps_the_previous_secret() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    put_workspace(&store, owner, ws.path(), "API_KEY", VALUE).unwrap();
+    let before = store.list(owner, ws.path());
+    break_saves(&store);
+    assert!(put_workspace(&store, owner, ws.path(), "API_KEY", "replacement-value-1").is_err());
+    assert_eq!(
+        store.environment(owner, ws.path()),
+        vec![("API_KEY".to_owned(), VALUE.to_owned())]
+    );
+    let after = store.list(owner, ws.path());
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].created_at, before[0].created_at);
+    assert_eq!(after[0].expires_at, before[0].expires_at);
+}
+
+#[test]
+fn a_failed_save_does_not_bring_back_an_expired_secret() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    put_workspace(&store, owner, ws.path(), "OLD_KEY", VALUE).unwrap();
+    store.lock()[0].expires_at = Some(now() - 1);
+    break_saves(&store);
+    assert!(put_workspace(&store, owner, ws.path(), "NEW_KEY", "another-value-12").is_err());
+    assert!(store.list(owner, ws.path()).is_empty());
+}
+
+#[test]
+fn an_expiry_whose_rewrite_fails_still_applies_in_memory() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    put_workspace(&store, owner, ws.path(), "API_KEY", VALUE).unwrap();
+    store.lock()[0].expires_at = Some(now() - 1);
+    break_saves(&store);
+    assert!(store.environment(owner, ws.path()).is_empty());
+    assert_eq!(store.redact(owner, ws.path(), VALUE), VALUE);
+}
+
+#[test]
+fn invalid_saved_entries_are_dropped_from_memory_and_from_the_file() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let path = data.path().join("credentials").join("secrets.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let ttl = serde_json::to_value(SecretTtl::Day).unwrap();
+    let entry = |name: &str, value: &str, created_at: i64, expires_at: i64| {
+        serde_json::json!({
+            "name": name, "value": value, "workspace": ws.path(), "ttl": ttl,
+            "created_at": created_at, "expires_at": expires_at, "use_count": 0,
+        })
+    };
+    let future = now() + 3600;
+    let secrets = vec![
+        entry("GOOD_KEY", "good-value-0001", 1, future),
+        entry("bad_name", "bad-name-value-1", 1, future),
+        entry("EMPTY_KEY", "", 1, future),
+        entry("NUL_KEY", "nul\u{0}value-0001", 1, future),
+        entry("BIG_KEY", &"x".repeat(MAX_VALUE_BYTES + 1), 1, future),
+        entry("TIME_KEY", "far-future-value-1", 1, i64::MAX),
+        entry("PATH", "reserved-value-1", 1, future),
+    ];
+    std::fs::write(
+        &path,
+        serde_json::json!({ "version": 1, "secrets": secrets }).to_string(),
+    )
+    .unwrap();
+    let store = SecretStore::open(data.path());
+    let views = store.list(Ulid::generate(), ws.path());
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].name, "GOOD_KEY");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("good-value-0001"));
+    for dropped in ["bad-name-value-1", "far-future-value-1", "reserved-value-1"] {
+        assert!(!text.contains(dropped), "{dropped} stayed on disk");
+    }
+    assert!(!text.contains("EMPTY_KEY") && !text.contains("NUL_KEY") && !text.contains("BIG_KEY"));
+}
+
+#[test]
+fn a_use_count_reaches_the_file_with_the_next_save_only() {
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    put_workspace(&store, owner, ws.path(), "API_KEY", VALUE).unwrap();
+    assert_eq!(store.environment(owner, ws.path()).len(), 1);
+    // Lost on a restart: the count is written with the next save, not on every command.
+    let reopened = SecretStore::open(data.path());
+    assert_eq!(reopened.list(owner, ws.path())[0].use_count, 0);
+    assert_eq!(store.environment(owner, ws.path()).len(), 1);
+    put_workspace(&store, owner, ws.path(), "OTHER_KEY", "other-value-123").unwrap();
+    let reopened = SecretStore::open(data.path());
+    let counts: Vec<u64> = reopened
+        .list(owner, ws.path())
+        .iter()
+        .map(|v| v.use_count)
+        .collect();
+    assert_eq!(
+        counts,
+        vec![2, 0],
+        "API_KEY used twice, saved with the second put"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_permissive_file_is_tightened_before_it_is_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let source = SecretStore::open(data.path());
+    put_workspace(&source, Ulid::generate(), ws.path(), "API_KEY", VALUE).unwrap();
+    let path = source.file().unwrap().to_path_buf();
+    // Not readable by its owner: only a tighten-first load can read it.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let store = SecretStore::open(data.path());
+    assert_eq!(store.list(Ulid::generate(), ws.path()).len(), 1);
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_syncs_the_directory_it_writes_into() {
+    // Not observable from a test; this pins that the sync does not fail on a plain directory
+    // and that removing the last secret (a synced removal) still succeeds.
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let store = SecretStore::open(data.path());
+    put_workspace(&store, owner, ws.path(), "API_KEY", VALUE).unwrap();
+    assert!(store.revoke(owner, ws.path(), "API_KEY"));
+    assert!(!store.file().unwrap().exists());
+}

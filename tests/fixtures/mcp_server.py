@@ -19,6 +19,46 @@ def send(identifier, result):
     with lock:
         print(json.dumps({"jsonrpc": "2.0", "id": identifier, "result": result}), flush=True)
 
+def error(identifier, code, text):
+    with lock:
+        print(json.dumps({"jsonrpc": "2.0", "id": identifier, "error": {"code": code, "message": text}}), flush=True)
+
+def resources_page(identifier, params):
+    """Two pages of resources (RESOURCES=1); LOOP_CURSOR makes the server repeat its cursor."""
+    if os.environ.get("LOOP_CURSOR"):
+        send(identifier, {"resources": [{"uri": "x://loop", "name": "loop"}], "nextCursor": "again"})
+    elif not params.get("cursor"):
+        send(identifier, {"resources": [{"uri": "file:///notes/a.md", "name": "a", "mimeType": "text/markdown", "description": "First\n  note"}], "nextCursor": "second"})
+    else:
+        resources = [{"uri": "x://multi", "name": "multi", "title": "Several pieces"}]
+        if os.environ.get("SECRET"):
+            resources.append({"uri": "x://" + os.environ["SECRET"], "name": "hidden"})
+        send(identifier, {"resources": resources})
+
+def read_resource(identifier, uri):
+    if uri == "x://slow":
+        time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
+        if identifier in cancelled:
+            return
+    if uri == "x://multi":
+        contents = [
+            {"uri": "x://multi", "mimeType": "text/plain", "text": "first piece"},
+            {"uri": "x://multi#image", "mimeType": "image/png", "blob": "iVBORw0KGgo="},
+            {"uri": "x://multi#notes", "text": "second piece"},
+        ]
+    elif uri == "x://secret":
+        contents = [{"uri": uri, "text": "token " + os.environ.get("SECRET", "")}]
+    elif uri == "x://big":
+        contents = [{"uri": uri, "text": "y" * 100000}]
+    elif uri == "x://empty":
+        contents = []
+    elif uri == "x://missing":
+        error(identifier, -32002, "Resource not found: " + os.environ.get("SECRET", ""))
+        return
+    else:
+        contents = [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]
+    send(identifier, {"contents": contents})
+
 def call(identifier, params):
     name = params["name"]
     if params.get("arguments", {}).get("rpc_error"):
@@ -60,7 +100,12 @@ for line in sys.stdin:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(60)
         time.sleep(float(os.environ.get("INIT_DELAY_SECONDS", "0")))
-        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
+        capabilities = {"tools": {}}
+        if os.environ.get("RESOURCES"):
+            capabilities["resources"] = {}
+        if os.environ.get("RESOURCES_ONLY"):
+            capabilities = {"resources": {}}
+        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": capabilities, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
         if os.environ.get("COMPOSITE"):
             print(json.dumps({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":os.environ["COMPOSITE"]}}), flush=True)
             token = os.environ["COMPOSITE"].removeprefix("Bearer ")
@@ -69,6 +114,8 @@ for line in sys.stdin:
             time.sleep(0.02)
             sys.stderr.write(token[5:] + " retained tail")
             sys.stderr.flush()
+    elif method == "tools/list" and os.environ.get("RESOURCES_ONLY"):
+        error(identifier, -32601, "Method not found")
     elif method == "tools/list":
         names = ["echo", "slow", "big", "fail", "crash", "bad.name", "bad name", "reference", "cancellations"]
         if os.environ.get("COMPOSITE"):
@@ -98,9 +145,16 @@ for line in sys.stdin:
             if tool["name"] == "malformed":
                 tool["inputSchema"] = {"type":"object", "properties":{"text":{"type":"string","minLength":"bad"}}}
         send(identifier, {"tools": tools, "nextCursor": cursor})
+    elif method == "resources/list":
+        resources_page(identifier, message.get("params") or {})
+    elif method == "resources/templates/list":
+        if os.environ.get("NO_TEMPLATES"):
+            error(identifier, -32601, "Method not found")
+        else:
+            send(identifier, {"resourceTemplates": [{"uriTemplate": "x://notes/{id}", "name": "note", "description": "One note by id"}]})
     elif method == "resources/read":
         uri = message.get("params", {}).get("uri", "")
-        send(identifier, {"contents": [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]})
+        threading.Thread(target=read_resource, args=(identifier, uri), daemon=True).start()
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

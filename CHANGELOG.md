@@ -8,6 +8,13 @@ requests land in `develop`.
 
 ### Added
 
+- MCP resources: a server that offers resources gets two agent tools,
+  `mcp__<server>__list_resources` (resources and URI templates) and
+  `mcp__<server>__read_resource` (one resource by URI; several pieces come back as a numbered
+  list). Results are untrusted text, redacted of the server's configured secrets and limited to
+  64 KiB; both tools are decided by the ordinary permission rules, like any MCP tool. See
+  [MCP servers](book/src/mcp-servers.md#resources).
+
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three

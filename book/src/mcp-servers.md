@@ -65,6 +65,26 @@ cancel notifications, and results are limited to 64 KiB. Crashed servers receive
 restart attempts. Shutdown cleans up process groups, including launcher descendants. On Windows,
 each server runs in a job object, so stopping it also stops its children.
 
+## Resources
+
+A server that offers resources (documents it serves by URI) gets two more tools:
+
+- `mcp__<server>__list_resources` lists its resources (URI, name, type, description) and the URI
+  templates it accepts, page by page. A server that does not implement templates still lists its
+  resources. A listing stopped by the 64 KiB limit, 20 pages or a repeated page cursor starts with
+  a note saying it is incomplete. A resource whose URI contains a configured secret value is not
+  listed.
+- `mcp__<server>__read_resource` reads one resource by `uri` (at most 2048 characters). A
+  resource made of several pieces comes back as a numbered list, each piece headed by its URI and
+  type. Binary pieces are named with their size, not shown.
+
+Both return untrusted text, redacted of configured secret values and limited to 64 KiB, and go
+through the ordinary permission decision like any MCP tool: without a rule the read asks, and
+"Always" allows that tool for every URI. A server tool whose exposed name is already
+`list_resources` or `read_resource` keeps it, and the added tool is skipped (see `nav doctor`).
+The `tools` map hides them too, for example `{"read_resource": false}`. A server that offers
+resources and declares no tools is not asked for its tool list.
+
 MCP tools use ordinary permission rules. With no matching rule, the default is ask; the permission
 flow may still allow the call, for example when the Captain asked for it. Without a flow that
 answers, WithNav asks. Always saves a global allow rule for
@@ -73,5 +93,5 @@ Installed servers run arbitrary programs with your account's privileges: WithNav
 sandbox. Server descriptions/results are untrusted text, not authorization.
 
 This delivery supports global stdio servers only. Workspace configs, HTTP, live refresh,
-resources, prompts and sampling are not supported. `nav doctor --offline` checks declarations
+resource subscriptions, prompts and sampling are not supported. `nav doctor --offline` checks declarations
 without executing them; ordinary `nav doctor` launches enabled configured commands.

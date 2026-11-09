@@ -152,6 +152,56 @@ fn body_of(provider: &CapturingProvider, n: usize) -> String {
     provider.bodies()[n].clone()
 }
 
+// Given a server that offers resources, and no permission rule
+// When the agent reads a resource
+// Then the read waits for the Captain like any MCP tool: a rejection returns no content,
+//      an allow once runs the read and gives the pieces to the model
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_resource_read_is_decided_like_any_tool() {
+    let env = Env::new();
+    let tool = "mcp__fake__read_resource";
+    let provider = provider(vec![
+        calls(&[("read-first", tool, json!({"uri":"x://multi"}))]),
+        done("first finished"),
+        calls(&[("read-next", tool, json!({"uri":"x://multi"}))]),
+        done("next finished"),
+    ])
+    .await;
+    let cfg = config(&env, &provider).config();
+    let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
+    settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"RESOURCES":"1"}}}));
+    withnav::settings::save(&cfg.config_dir, &settings).unwrap();
+    let state = AppState::new(cfg).unwrap();
+    common::server::wait_for("MCP discovery", || {
+        state
+            .service()
+            .mcp_statuses()
+            .iter()
+            .any(|s| s.server_id == "fake" && s.state == "ready")
+    })
+    .await;
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    for (turn, decision) in [(1, "reject"), (2, "allow_once")] {
+        say(&state, id, "read it").await;
+        let requested = wait_events(&state, id, "permission.requested", turn).await;
+        assert_eq!(requested[turn - 1].payload["tool"], tool);
+        let (status, body) = answer(
+            &router,
+            id,
+            &request_id(&requested[turn - 1]),
+            json!({"decision": decision}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_events(&state, id, "task.done", turn).await;
+    }
+    assert!(!body_of(&provider, 1).contains("first piece"));
+    assert!(body_of(&provider, 3).contains("first piece"));
+    assert!(body_of(&provider, 3).contains("[3/3] x://multi#notes"));
+    state.service().close_all().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_unknown_tool_asks_always_saves_global_rule_and_yolo_runs_directly() {
     for yolo in [false, true] {

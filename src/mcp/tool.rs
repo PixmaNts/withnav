@@ -21,6 +21,69 @@ pub struct McpTool {
     schema: Value,
     pub(super) ui_resource_uri: Option<String>,
     pub(super) ui_url: Option<String>,
+    pub(super) kind: Kind,
+}
+
+/// What a registry tool of a server does: call one of the server's own tools, or reach its
+/// resources through the two tools WithNav adds for a server that offers resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Call,
+    ListResources,
+    ReadResource,
+}
+
+/// Why a request to the server produced no response the caller can use.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RequestError {
+    Interrupted,
+    Disconnected,
+    Timeout,
+    /// The server answered with a JSON-RPC error; its code, never its message (which is
+    /// server text that may carry anything).
+    Rejected(i32),
+}
+
+/// Sends one request under the call's cancellation, the connection's lifetime and an
+/// absolute deadline. When the caller gives up first, the server is told to drop the
+/// request: rmcp's `RequestHandle` does not cancel on drop.
+pub(super) async fn request(
+    peer: &rmcp::Peer<rmcp::RoleClient>,
+    disconnected: &CancellationToken,
+    request: rmcp::model::ClientRequest,
+    cancel: &CancellationToken,
+    deadline: tokio::time::Instant,
+) -> Result<rmcp::model::ServerResult, RequestError> {
+    let expired = tokio::time::sleep_until(deadline);
+    tokio::pin!(expired);
+    let mut handle = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(RequestError::Interrupted),
+        _ = disconnected.cancelled() => return Err(RequestError::Disconnected),
+        _ = &mut expired => return Err(RequestError::Timeout),
+        result = peer.send_cancellable_request(request, rmcp::service::PeerRequestOptions::no_options()) => {
+            result.map_err(|_| RequestError::Disconnected)?
+        }
+    };
+    let error = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => RequestError::Interrupted,
+        _ = disconnected.cancelled() => RequestError::Disconnected,
+        _ = &mut expired => RequestError::Timeout,
+        response = &mut handle.rx => {
+            return match response {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(rmcp::ServiceError::McpError(error))) => Err(RequestError::Rejected(error.code.0)),
+                _ => Err(RequestError::Disconnected),
+            };
+        }
+    };
+    let _ = tokio::time::timeout(
+        Duration::from_millis(100),
+        handle.cancel(Some("WithNav call cancelled".into())),
+    )
+    .await;
+    Err(error)
 }
 
 pub(super) fn wire_name(server: &str, original: &str) -> String {
@@ -570,10 +633,60 @@ impl McpTool {
             schema,
             ui_resource_uri,
             ui_url,
+            kind: Kind::Call,
         })
     }
 
-    fn error(&self, code: &str, message: &str) -> ToolResult {
+    /// A tool WithNav adds to a server (`original` is its local name, such as
+    /// `read_resource`), described for the model and bound to the server's connection.
+    pub(super) fn added(
+        server: Arc<Server>,
+        original: &str,
+        kind: Kind,
+        description: &str,
+        parameters: Value,
+    ) -> Self {
+        let schema = json!({"description": format!("[mcp:{}] {description}", server.id), "parameters": parameters});
+        Self {
+            wire: wire_name(&server.id, original),
+            original: original.to_owned(),
+            server,
+            schema,
+            ui_resource_uri: None,
+            ui_url: None,
+            kind,
+        }
+    }
+
+    pub(super) fn server(&self) -> &Arc<Server> {
+        &self.server
+    }
+
+    /// The live connection, or `None` when the server is not ready.
+    pub(super) fn connection(&self) -> Option<(rmcp::Peer<rmcp::RoleClient>, CancellationToken)> {
+        self.server
+            .ready
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|r| (r.peer.clone(), r.disconnected.clone()))
+    }
+
+    /// The tool result for a request that produced no usable response.
+    pub(super) fn failure(&self, error: RequestError) -> ToolResult {
+        match error {
+            RequestError::Interrupted => ToolResult::interrupted().with_metadata(self.metadata()),
+            RequestError::Disconnected => {
+                self.error("mcp_disconnected", "MCP server is disconnected")
+            }
+            RequestError::Timeout => self.error("mcp_timeout", "MCP tool call timed out"),
+            RequestError::Rejected(_) => {
+                self.error("mcp_tool_error", "MCP server rejected the call")
+            }
+        }
+    }
+
+    pub(super) fn error(&self, code: &str, message: &str) -> ToolResult {
         let mut result =
             ToolResult::bounded_ok(&self.server.redact(message), DEFAULT_MAX_OUTPUT_BYTES);
         result.status = ToolStatus::Error;
@@ -586,7 +699,7 @@ impl McpTool {
     }
 
     /// Published with every result; the name is redacted like any other server text.
-    fn metadata(&self) -> Value {
+    pub(super) fn metadata(&self) -> Value {
         json!({"mcp_server": self.server.id, "mcp_tool": self.server.redact(&self.original)})
     }
 
@@ -632,62 +745,36 @@ impl Tool for McpTool {
         _cx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
+            if self.kind != Kind::Call {
+                return Ok(super::resource::run(self, &args, &cancel).await);
+            }
             let Some(arguments) = args.as_object() else {
                 return Ok(self.error("invalid_args", "MCP arguments must be an object"));
             };
-            let ready = self
-                .server
-                .ready
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map(|r| (r.peer.clone(), r.disconnected.clone()));
-            let Some((peer, disconnected)) = ready else {
+            let Some((peer, disconnected)) = self.connection() else {
                 return Ok(self.error("mcp_disconnected", "MCP server is disconnected"));
             };
             let params = rmcp::model::CallToolRequestParams::new(self.original.clone())
                 .with_arguments(arguments.clone());
-            let request = rmcp::model::ClientRequest::CallToolRequest(
+            let call = rmcp::model::ClientRequest::CallToolRequest(
                 rmcp::model::CallToolRequest::new(params),
             );
-            let deadline =
-                tokio::time::sleep(Duration::from_millis(self.server.config.call_timeout_ms));
-            tokio::pin!(deadline);
-            let mut handle = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Ok(ToolResult::interrupted()),
-                _ = disconnected.cancelled() => return Ok(self.error("mcp_disconnected", "MCP server is disconnected")),
-                _ = &mut deadline => return Ok(self.error("mcp_timeout", "MCP tool call timed out")),
-                result = peer.send_cancellable_request(request, rmcp::service::PeerRequestOptions::no_options()) => match result {
-                    Ok(handle) => handle,
-                    Err(_) => return Ok(self.error("mcp_disconnected", "MCP server is disconnected")),
-                }
-            };
-            let result = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => ToolResult::interrupted(),
-                _ = disconnected.cancelled() => self.error("mcp_disconnected", "MCP server is disconnected"),
-                _ = &mut deadline => self.error("mcp_timeout", "MCP tool call timed out"),
-                response = &mut handle.rx => {
-                    return Ok(match response {
-                        Ok(Ok(response)) => match serde_json::to_value(response) {
-                            Ok(value) => self.attach_ui(
-                                convert(&value, &self.server.id, &self.original, &self.server.secrets())
-                            ),
-                            Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
-                        },
-                        Ok(Err(rmcp::ServiceError::McpError(_))) => self.error("mcp_tool_error", "MCP server rejected the call"),
-                        _ => self.error("mcp_disconnected", "MCP server is disconnected"),
-                    });
-                }
-            };
-            // rmcp 3.5 RequestHandle has no cancel-on-drop: send the notification explicitly.
-            let _ = tokio::time::timeout(
-                Duration::from_millis(100),
-                handle.cancel(Some("WithNav call cancelled".into())),
+            let deadline = tokio::time::Instant::now()
+                + Duration::from_millis(self.server.config.call_timeout_ms);
+            Ok(
+                match request(&peer, &disconnected, call, &cancel, deadline).await {
+                    Ok(response) => match serde_json::to_value(response) {
+                        Ok(value) => self.attach_ui(convert(
+                            &value,
+                            &self.server.id,
+                            &self.original,
+                            &self.server.secrets(),
+                        )),
+                        Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
+                    },
+                    Err(error) => self.failure(error),
+                },
             )
-            .await;
-            Ok(result.with_metadata(self.metadata()))
         })
     }
 }

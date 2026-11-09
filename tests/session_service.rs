@@ -382,3 +382,147 @@ async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
     let violations = hooks.0.violations.lock().expect("violations");
     assert!(violations.is_empty(), "{violations:?}");
 }
+
+/// A real 1×1 RGBA PNG: `AttachmentStore::insert` parses the header, and raster
+/// decoding is on the roadmap for the store, so a header-only fake would break.
+fn one_pixel_png() -> Vec<u8> {
+    [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60,
+        0x60, 0x60, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0xf6, 0x17, 0x38, 0x55, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]
+    .to_vec()
+}
+
+fn image_command(
+    session: withnav::session::SessionId,
+    text: &str,
+    attachment_id: &str,
+) -> withnav::bus::command::Command {
+    use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+
+    Command {
+        command_id: ulid::Ulid::generate(),
+        session_id: session,
+        source_actor_id: "user:test".to_string(),
+        target_actor_id: "agent:main".to_string(),
+        mode: DeliveryMode::NextTurn,
+        content: vec![
+            ContentBlock::Text {
+                text: text.to_string(),
+            },
+            ContentBlock::Image(withnav::provider::openai::ImageRef {
+                attachment_id: attachment_id.to_string(),
+                media_type: String::new(),
+                name: String::new(),
+                size: 0,
+                width: 0,
+                height: 0,
+            }),
+        ],
+        created_at: std::time::SystemTime::now(),
+    }
+}
+
+async fn replay_kinds(service: &Service, id: withnav::session::SessionId) -> Vec<String> {
+    let reply = service.subscribe(id, None).await.expect("subscribe");
+    let ResumeOutcome::Replay(events) = reply.replay else {
+        panic!("a fresh subscription replays: {:?}", reply.replay);
+    };
+    events.iter().map(|e| e.kind.as_str().to_string()).collect()
+}
+
+// Given two sessions sharing one attachment store
+// When a command to session A references an image stored by session B
+// Then the whole command is refused before admission: the error names the
+//      attachment, and A's replay still holds only `session.start` — no
+//      `message.received` was sequenced. A command with an image A itself
+//      holds is accepted right after, so the refusal is per-message.
+#[tokio::test]
+async fn service_send_refuses_a_foreign_session_image_before_sequencing() {
+    use withnav::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
+        .expect("service");
+
+    let a = service.create_session(&ws, None, false).await.expect("A");
+    let b = service.create_session(&ws, None, false).await.expect("B");
+    let store = service.attachments().expect("attachment store");
+    let foreign = store
+        .insert(&b.to_string(), Some("b.png"), &one_pixel_png())
+        .expect("store into B");
+
+    let refused = service
+        .send(image_command(a, "look at this", &foreign.attachment_id))
+        .await;
+    match &refused {
+        Err(ServerError::MalformedBody(message)) => {
+            assert!(message.contains("unknown attachment"), "{message}")
+        }
+        other => panic!("foreign image refused: {other:?}"),
+    }
+    assert_eq!(
+        replay_kinds(&service, a).await,
+        vec!["session.start".to_string()],
+        "nothing was sequenced for the refused message"
+    );
+
+    // A's own image is accepted, proving the refusal was per-message.
+    let own = store
+        .insert(&a.to_string(), Some("a.png"), &one_pixel_png())
+        .expect("store into A");
+    let command_id = {
+        let command = image_command(a, "now this one", &own.attachment_id);
+        let id = command.command_id;
+        service.send(command).await.expect("A's own image");
+        id
+    };
+    let kinds = replay_kinds(&service, a).await;
+    assert!(kinds.contains(&"message.received".to_string()), "{kinds:?}");
+    let reply = service.subscribe(a, None).await.expect("subscribe");
+    let ResumeOutcome::Replay(events) = reply.replay else {
+        panic!("replay: {:?}", reply.replay);
+    };
+    let received = events
+        .iter()
+        .find(|e| e.kind.as_str() == "message.received")
+        .expect("message.received sequenced");
+    assert_eq!(received.payload["command_id"], command_id.to_string());
+}
+
+// Given a session with an attachment store
+// When a command references an attachment id no session ever stored
+// Then the command is refused before admission and the replay stays at
+//      `session.start`
+#[tokio::test]
+async fn service_send_refuses_an_unknown_attachment_id_before_sequencing() {
+    use withnav::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
+        .expect("service");
+
+    let a = service.create_session(&ws, None, false).await.expect("A");
+
+    let refused = service
+        .send(image_command(a, "look at this", "01NOPE"))
+        .await;
+    match &refused {
+        Err(ServerError::MalformedBody(message)) => {
+            assert!(message.contains("unknown attachment"), "{message}")
+        }
+        other => panic!("unknown image refused: {other:?}"),
+    }
+    assert_eq!(
+        replay_kinds(&service, a).await,
+        vec!["session.start".to_string()],
+        "nothing was sequenced for the refused message"
+    );
+}

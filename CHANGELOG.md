@@ -85,6 +85,8 @@ requests land in `develop`.
     (search, current mark, favourites kept under `withnav.favoriteAgents`) and send/stop.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
+- Dependency updates: rusqlite 0.41, base64 0.23, vscode-languageclient 11, jsdom 31, the web UI's
+  minor and patch releases and the CI actions.
 
 ### Fixed
 
@@ -108,7 +110,15 @@ requests land in `develop`.
   occurrence); a missing symbol puts the cursor on the requested line, else line 1, and the result
   says which.
 - Tool images: one tool result keeps at most 4 images and 16 MiB of image bytes together. An MCP
-  image past either limit is no longer decoded; the model reads that it was not kept.
+  result also keeps at most 8 MiB beyond its text, structured content (itself at most 4 MiB),
+  previews and images together. An MCP image past a limit is no longer decoded; the model reads
+  that it was not kept, and at most 8 such notes plus a count close the output.
+- MCP previews are typed from their bytes, not from the server's declared `mimeType`, and only
+  standard base64 is accepted, so a PNG declared as JPEG no longer shows as a broken image. Text
+  counts as an SVG preview only when it is one well-formed `<svg>` document.
+- MCP Apps: a tool call whose arguments are nested deeper than 64 levels or larger than 1 MiB is
+  refused (400 `mcp_invalid_request`) before anything reaches the server, and a response larger
+  than 8 MiB, before or after redaction, is refused (502 `mcp_response_too_large`).
 - Secrets: a session whose recorded parents form a chain longer than 16, or a cycle, gets an
   explicit error instead of having its secrets filed under whichever session the lookup stopped at.
 - Subagents: a step-budget notice whose evidence lacks a valid top-up or step count is skipped and
@@ -156,14 +166,21 @@ requests land in `develop`.
   terminal (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`). A source tree unpacked inside an unrelated
   repository falls back to the plain version instead of adopting that repository's identity, and a
   branch whose name is all digits (like `001`) no longer produces an invalid prerelease.
-
 - The HTTP user-agent of nav's fetch tool reports the build version instead of the Cargo package
   version, so requests can be traced to a concrete build.
-
 - A VSIX packaged locally now carries the bundled binary's version in its manifest. The version
   appeared only in the file name before; the manifest kept whatever `package.json` said, so a dirty
   or branch build could install as a version it was not. Source manifests and the lockfile stay
   untouched.
+- Providers: keep-alive comments between two events no longer end a streamed answer once they
+  add up to 4 MiB; the 4 MiB limit now applies to each SSE block, and every blank line starts a new
+  one. Events received in the same chunk before an oversized block are still delivered. A dropped
+  connection during the stream is reported as a transport error with its cause instead of a
+  malformed SSE frame.
+- `nav tui`: the session event stream now bounds one SSE frame to 4 MiB, as the provider stream
+  does. A body that never closes a frame (a broken proxy, an endless line) ends the subscription
+  with a protocol error instead of growing the client's memory without limit; nothing of that frame
+  is delivered. Keep-alive comments reset the count, so a long-idle stream is never cut. (#156)
 
 ## [0.8.2] - 2026-11-05
 
@@ -185,39 +202,7 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 
 ### Fixed
 
-- Providers: keep-alive comments between two events no longer end a streamed answer once they
-  add up to 4 MiB; the 4 MiB limit now applies to each SSE block, and every blank line starts a new
-  one. Events received in the same chunk before an oversized block are still delivered. A dropped
-  connection during the stream is reported as a transport error with its cause instead of a
-  malformed SSE frame.
-
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
-- `nav tui`: the session event stream now bounds one SSE frame to 4 MiB, as the provider stream
-  does. A body that never closes a frame (a broken proxy, an endless line) ends the subscription
-  with a protocol error instead of growing the client's memory without limit; nothing of that frame
-  is delivered. Keep-alive comments reset the count, so a long-idle stream is never cut. (#156)
-### Added
-
-- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG
-  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
-  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
-  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
-  `images` and where it came from.
-- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
-  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
-  reduced to a size note. They are stored with the session's other images (at most four per call)
-  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
-  into a PNG first; it may not load external files or declare a DTD.
-- A conversation saved before image support was known, or while the gateway could not tell,
-  learns it from the gateway's model list when it resumes, instead of keeping images unsent.
-- Images in the browser client and the VS Code extension: paste or drop images into the message
-  (the browser also has an attach button; at most eight per message, a message may be images only).
-  The Captain's images and those returned by tools show as thumbnails in the conversation, also
-  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
-  in an editor panel beside the VS Code chat.
-- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
-  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
-  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
 
 ## [0.8.1] - 2026-10-16
 

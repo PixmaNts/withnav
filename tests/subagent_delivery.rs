@@ -548,6 +548,115 @@ async fn parent_tops_up_a_budget_parked_child_three_times_then_the_captain_conti
     state.close_all().bounded(file!(), line!()).await;
 }
 
+/// A top-up that lands after the budget notice's first park check but before
+/// its durable commit resumes the child: that notice is stale and must never
+/// reach the parent. The next park's notice is delivered as usual.
+#[tokio::test]
+async fn topup_racing_the_budget_notice_never_delivers_a_stale_notice() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .allow_everything()
+        .state();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
+    let mut pending = Vec::new();
+    let (_, first) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
+    let steps = withnav::agent::run_loop::max_steps();
+    let service = state.service();
+    let barrier = withnav::session::ChildPreparationBarrier::default();
+    service.pause_budget_notice(barrier.clone());
+
+    exhaust_child_budget(
+        &mut provider,
+        &mut pending,
+        &state,
+        child,
+        first,
+        "a",
+        steps,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(2), barrier.reached.notified())
+        .bounded(file!(), line!())
+        .await
+        .expect("budget notice reached its commit");
+    service
+        .decide_subagent(parent, child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .expect("top-up while the notice is in flight");
+    barrier.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), barrier.reached.notified())
+        .bounded(file!(), line!())
+        .await
+        .expect("the paused notice attempt finished");
+    let outbox: i64 = rusqlite::Connection::open(tmp.path().join("history.db"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM completion_outbox WHERE parent_id=?1 AND outcome='watchdog'",
+            [parent.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(outbox, 0, "the stale notice was committed for the parent");
+
+    // The renewed child runs to its next park; that notice is the first the parent sees.
+    let (_, stream) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
+    exhaust_child_budget(
+        &mut provider,
+        &mut pending,
+        &state,
+        child,
+        stream,
+        "b",
+        steps,
+    )
+    .await;
+    let (notice, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("used its 50 steps")
+    })
+    .bounded(file!(), line!())
+    .await;
+    assert!(
+        !notice.contains("top-ups used 0/3"),
+        "stale notice delivered: {notice}"
+    );
+    assert!(notice.contains("top-ups used 1/3"), "{notice}");
+    let withnav::bus::ResumeOutcome::Replay(events) = state
+        .subscribe(parent, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .replay
+    else {
+        panic!("expected parent event replay");
+    };
+    let budget_notices: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "subagent.watchdog" && e.payload["verdict"] == "budget")
+        .map(|e| e.payload["topups_used"].clone())
+        .collect();
+    assert_eq!(budget_notices, vec![json!(1)]);
+    parent_turn.send(text_chunk("noted")).unwrap();
+    drop(parent_turn);
+    state.close_all().bounded(file!(), line!()).await;
+}
+
 #[tokio::test]
 async fn owner_stop_on_a_budget_park_terminalizes_with_partial_output() {
     let mut provider = common::sse::spawn_streaming_provider()

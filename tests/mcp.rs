@@ -466,3 +466,101 @@ async fn launcher_exit_does_not_shortcut_descendant_sigterm_grace() {
     manager.shutdown().await;
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "cleanup");
 }
+
+// ---------------------------------------------------------------------------
+// The session service's MCP wrappers: unknown server, ready → disconnected,
+// and the forwarding positive controls. The manager-level tests above prove
+// what McpManager does; these prove Service::mcp_read_resource and
+// Service::mcp_call_tool surface the same outcomes to clients.
+// ---------------------------------------------------------------------------
+
+// Given a Service whose saved settings start one MCP fixture server
+// When a client reads a resource and calls a tool through the service
+//      wrappers, then names an unknown server, then the service is closed
+// Then the ready server serves both calls, the unknown server is refused by
+//      name, and after close_all the same server answers disconnected /
+//      unavailable — the ready → disconnected transition a client sees.
+#[tokio::test]
+async fn service_mcp_paths_report_unknown_disconnected_and_unknown_servers() {
+    use common::server::TestServerConfig;
+    use withnav::session::Service;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // Order matters: config() writes cfg/config.json (including permissions
+    // and agents), then the MCP settings are saved into that same file, then
+    // the config is split and the service reads it back at construction.
+    // Calling config() again would overwrite the MCP servers away.
+    let cfg = TestServerConfig::unreachable(tmp.path()).config();
+    let mut settings = withnav::settings::load(&cfg.config_dir).expect("settings");
+    settings.set_dotted(
+        "mcp",
+        json!({"fixture": {"command": [common::python(), concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py")], "call_timeout_ms": 5000}}),
+    );
+    withnav::settings::save(&cfg.config_dir, &settings).expect("save settings");
+    let (session_config, _) = cfg.split();
+    let service = Service::new(session_config).expect("service");
+
+    // The fixture must be ready before the positive controls.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if service
+                .mcp_statuses()
+                .iter()
+                .any(|s| s.server_id == "fixture" && s.state == "ready")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("fixture must initialize");
+
+    // Forwarding positive controls: the service wrapper returns what the
+    // server produced, not an error of its own.
+    let resource = service
+        .mcp_read_resource("fixture", "ui://fixture/app.html")
+        .await
+        .expect("resource read");
+    assert_eq!(resource["mime_type"], "text/html;profile=mcp-app");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("text".into(), json!("hi"));
+    let tool = service
+        .mcp_call_tool("fixture", "echo", arguments)
+        .await
+        .expect("tool call");
+    // The fixture echoes the arguments back as JSON text (its own spacing).
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(tool["content"][0]["text"].as_str().unwrap())
+            .unwrap(),
+        json!({"text": "hi"})
+    );
+
+    // Unknown servers are refused by name, before any process exists.
+    let unknown = service.mcp_read_resource("nosuch", "ui://x").await;
+    assert_eq!(unknown.unwrap_err(), "unknown MCP server: nosuch");
+    let unknown = service
+        .mcp_call_tool("nosuch", "echo", serde_json::Map::new())
+        .await;
+    assert_eq!(unknown.unwrap_err(), "unknown MCP server: nosuch");
+
+    // Ready → disconnected: close_all shuts the manager down and awaits it,
+    // so the fixture's status is failed with zero tools before we ask again.
+    service.close_all().await;
+    let statuses = service.mcp_statuses();
+    let fixture = statuses
+        .iter()
+        .find(|s| s.server_id == "fixture")
+        .expect("fixture status survives shutdown");
+    assert_eq!(fixture.state, "failed", "{statuses:?}");
+    assert_eq!(fixture.tool_count, 0);
+
+    let read = service
+        .mcp_read_resource("fixture", "ui://fixture/app.html")
+        .await;
+    assert_eq!(read.unwrap_err(), "MCP server is disconnected");
+    let call = service
+        .mcp_call_tool("fixture", "echo", serde_json::Map::new())
+        .await;
+    assert_eq!(call.unwrap_err(), "MCP tool is unavailable on this server");
+}

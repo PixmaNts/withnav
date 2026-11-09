@@ -431,3 +431,323 @@ async fn in_a_long_history_with_earlier_images_a_tool_image_reaches_the_very_nex
         "the tool image is the last thing the model reads"
     );
 }
+
+// ---------------------------------------------------------------------------
+// request_history: the projection a request carries, decided per call.
+// These tests drive `AgentActor::request_history` and
+// `AgentActor::context_breakdown_at` directly — no provider, no turn: the
+// loop tests above prove what a whole request sent over HTTP carries; these
+// prove the projection itself is request-scoped, reproducible and
+// budget-aware.
+// ---------------------------------------------------------------------------
+
+/// A transcript of Captain messages with images, independent of any actor.
+fn image_transcript() -> Vec<ChatMessage> {
+    vec![
+        user_message("first", vec![image("a1")]),
+        user_message("second", vec![image("b2")]),
+    ]
+}
+
+fn user_message(text: &str, images: Vec<ImageRef>) -> ChatMessage {
+    ChatMessage::User {
+        content: text.to_string(),
+        provenance: UserProvenance::Captain,
+        images,
+    }
+}
+fn projected_ids(history: &[ChatMessage]) -> Vec<String> {
+    history
+        .iter()
+        .filter_map(|m| match m {
+            ChatMessage::User { images, .. } => Some(images),
+            _ => None,
+        })
+        .flatten()
+        .map(|i| i.attachment_id.clone())
+        .collect()
+}
+
+async fn plain_actor() -> AgentActor {
+    let server = spawn_mock(vec![]).await;
+    let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+    actor.transcript = Vec::new();
+    actor
+}
+
+// Given a transcript with images and a model that accepts them
+// When the actor has no loader
+// Then every image becomes an `unavailable` placeholder in the projection,
+//      while the transcript keeps its references untouched
+#[tokio::test]
+async fn request_history_without_a_loader_projects_placeholders() {
+    let mut actor = plain_actor().await;
+    actor.images = Some(true);
+    actor.attachment_loader = None;
+    let transcript = image_transcript();
+
+    let projected = actor.request_history(Vec::new());
+    assert!(
+        projected.is_empty(),
+        "empty transcript in, empty projection out"
+    );
+    actor.transcript = transcript.clone();
+    let projected = actor.request_history(actor.transcript.clone());
+    assert_eq!(projected_ids(&projected), Vec::<String>::new());
+    // Both messages survive with their text: the projection replaced the
+    // images, it did not drop the messages that carried them.
+    assert_eq!(projected.len(), 2, "both messages kept: {projected:?}");
+    for (message, text) in projected.iter().zip(["first", "second"]) {
+        let ChatMessage::User {
+            content, images, ..
+        } = message
+        else {
+            panic!("only user messages expected: {message:?}");
+        };
+        assert!(content.starts_with(text), "text preserved: {content}");
+        assert!(images.is_empty(), "image references removed");
+        assert!(content.contains("unavailable"), "placeholder in: {content}");
+    }
+    // The transcript itself is untouched: projection is request-scoped.
+    assert_eq!(actor.transcript.len(), 2);
+    assert_eq!(projected_ids(&actor.transcript), vec!["a1", "b2"]);
+
+    // With a loader, the same transcript projects to the images themselves.
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    let projected = actor.request_history(actor.transcript.clone());
+    assert_eq!(projected_ids(&projected), vec!["a1", "b2"]);
+}
+
+// Given one transcript and a model whose image support flips between
+// requests (true → false → unknown → true)
+// When the projection is recomputed from the original transcript each time
+// Then it follows the current support, and the transcript is restored to its
+//      original state after every call
+#[tokio::test]
+async fn request_history_reprojects_the_same_transcript_when_support_changes() {
+    use std::matches;
+
+    let mut actor = plain_actor().await;
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    actor.transcript = image_transcript();
+
+    actor.images = Some(true);
+    assert_eq!(
+        projected_ids(&actor.request_history(actor.transcript.clone())),
+        vec!["a1", "b2"]
+    );
+
+    actor.images = Some(false);
+    let projected = actor.request_history(actor.transcript.clone());
+    assert_eq!(projected_ids(&projected), Vec::<String>::new());
+    // Both messages survive with their text and the cannot-see placeholder;
+    // a projection that dropped the messages outright would fail here.
+    assert_eq!(projected.len(), 2, "both messages kept: {projected:?}");
+    for (message, text) in projected.iter().zip(["first", "second"]) {
+        let ChatMessage::User {
+            content, images, ..
+        } = message
+        else {
+            panic!("only user messages expected: {message:?}");
+        };
+        assert!(content.starts_with(text), "text preserved: {content}");
+        assert!(images.is_empty(), "image references removed");
+        assert!(
+            content.contains("this model cannot see images"),
+            "cannot-see placeholder in: {content}"
+        );
+    }
+
+    actor.images = None;
+    let projected = actor.request_history(actor.transcript.clone());
+    // Same survival check for the unknown-support placeholder.
+    assert_eq!(projected.len(), 2, "both messages kept: {projected:?}");
+    for (message, text) in projected.iter().zip(["first", "second"]) {
+        let ChatMessage::User {
+            content, images, ..
+        } = message
+        else {
+            panic!("only user messages expected: {message:?}");
+        };
+        assert!(content.starts_with(text), "text preserved: {content}");
+        assert!(images.is_empty(), "image references removed");
+        assert!(
+            content.contains("image support is unknown"),
+            "unknown-support placeholder in: {content}"
+        );
+    }
+
+    // Back to supported: the same original transcript sends both again.
+    actor.images = Some(true);
+    let projected = actor.request_history(actor.transcript.clone());
+    assert_eq!(projected_ids(&projected), vec!["a1", "b2"]);
+
+    assert!(
+        matches!(actor.transcript.as_slice(), [m1, m2]
+            if projected_ids(std::slice::from_ref(m1)) == ["a1".to_string()]
+                && projected_ids(std::slice::from_ref(m2)) == ["b2".to_string()]),
+        "the transcript itself was never mutated: {:?}",
+        actor.transcript
+    );
+}
+
+// Given 21 image occurrences in one transcript (one attachment repeated —
+// occurrences count, not unique ids)
+// When the model accepts images and a loader exists
+// Then the newest 20 are sent and the oldest becomes a size-limit placeholder;
+//      nothing older is backfilled
+#[tokio::test]
+async fn request_history_applies_the_count_budget() {
+    let mut actor = plain_actor().await;
+    actor.images = Some(true);
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    let mut transcript: Vec<ChatMessage> = (0..20)
+        .map(|n| user_message("", vec![image(&format!("i{n}"))]))
+        .collect();
+    transcript.insert(0, user_message("oldest", vec![image("dup"), image("dup")]));
+    actor.transcript = transcript;
+
+    let projected = actor.request_history(actor.transcript.clone());
+    let sent = projected_ids(&projected);
+    assert_eq!(sent.len(), 20, "exactly MAX_REQUEST_IMAGES sent");
+
+    // The two `dup` occurrences are the oldest and are cut; the full ordered
+    // set is i0..i19 — a budget that counted unique ids instead of
+    // occurrences would keep a different set.
+    assert_eq!(
+        sent,
+        (0..20).map(|n| format!("i{n}")).collect::<Vec<_>>(),
+        "the newest 20 occurrences, in order"
+    );
+    assert!(matches!(&projected[0], ChatMessage::User { content, .. }
+        if content.contains("not included in this request (size limit)")));
+
+    // The token estimate runs on the projection, not the raw transcript:
+    // 20 sent images are charged, the two cut occurrences are not.
+    let breakdown = actor.context_breakdown();
+    let expected: u64 = projected
+        .iter()
+        .map(crate::agent::context::message_tokens)
+        .sum();
+    assert_eq!(breakdown.messages, expected);
+}
+
+// Given 21 occurrences of ONE attachment id (the same image sent 21 times)
+// When the model accepts images and a loader exists
+// Then the newest 20 occurrences are sent and the oldest becomes a size-limit
+//      placeholder — proving the budget counts occurrences, not unique ids
+//      (a unique-id budget would admit or cut all 21 at once)
+#[tokio::test]
+async fn request_history_counts_occurrences_not_unique_ids() {
+    let mut actor = plain_actor().await;
+    actor.images = Some(true);
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    actor.transcript = (0..21)
+        .map(|n| user_message(&format!("m{n}"), vec![image("same")]))
+        .collect();
+
+    let projected = actor.request_history(actor.transcript.clone());
+    let sent = projected_ids(&projected);
+    assert_eq!(
+        sent.len(),
+        20,
+        "twenty occurrences of the one id are sent: {sent:?}"
+    );
+    // The cut occurrence is the OLDEST message (m0); m1..m20 all send.
+    assert!(matches!(&projected[0], ChatMessage::User { content, .. }
+        if content.starts_with("m0")
+            && content.contains("not included in this request (size limit)")));
+    assert_eq!(
+        projected
+            .iter()
+            .filter(|m| matches!(m, ChatMessage::User { images, .. } if images.len() == 1))
+            .count(),
+        20,
+        "the other twenty messages still carry their image"
+    );
+}
+
+// Given three 7.5 MiB images (10 MiB base64 each: two fit in the 20 MiB
+// request budget, a third does not) and a tiny image older than all of them
+// When the model accepts images and a loader exists
+// Then only the two newest big images are sent; the tiny one before the cut
+//      stays cut — the sent set only moves at its oldest end
+#[tokio::test]
+async fn request_history_applies_the_byte_budget() {
+    let big = 7 * 1024 * 1024 + 512 * 1024;
+    let big_image = |id: &str| ImageRef {
+        attachment_id: id.into(),
+        media_type: "image/png".into(),
+        name: format!("{id}.png"),
+        size: big,
+        width: 10,
+        height: 10,
+    };
+    let mut actor = plain_actor().await;
+    actor.images = Some(true);
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    actor.transcript = vec![
+        user_message("old tiny", vec![image("tiny-old")]),
+        user_message("", vec![big_image("big1")]),
+        user_message("", vec![big_image("big2")]),
+        user_message("", vec![big_image("big3")]),
+    ];
+
+    let projected = actor.request_history(actor.transcript.clone());
+    assert_eq!(projected_ids(&projected), vec!["big2", "big3"]);
+
+    // Estimates run on the projection: two images charged, not four.
+    let breakdown = actor.context_breakdown();
+    let expected: u64 = projected
+        .iter()
+        .map(crate::agent::context::message_tokens)
+        .sum();
+    assert_eq!(breakdown.messages, expected);
+    // And the estimate differs from the unprojected transcript's.
+    let unprojected: u64 = actor
+        .transcript
+        .iter()
+        .map(crate::agent::context::message_tokens)
+        .sum();
+    assert!(breakdown.messages < unprojected);
+}
+
+// Given three 6 MiB images (8 MiB base64 each: the two newest fill 16 of the
+// 20 MiB request budget, leaving 4 MiB spare) with a tiny image older than
+// all of them
+// When the model accepts images and a loader exists
+// Then the tiny image still stays cut: the budget scans from the newest end
+//      and never backfills older occurrences into leftover capacity (a
+//      backfilling budget would admit the ~4 B tiny image into the 4 MiB
+//      spare — this test pins that it does not)
+#[tokio::test]
+async fn request_history_does_not_backfill_spare_byte_capacity() {
+    let six = 6 * 1024 * 1024;
+    let big_image = |id: &str| ImageRef {
+        attachment_id: id.into(),
+        media_type: "image/png".into(),
+        name: format!("{id}.png"),
+        size: six,
+        width: 10,
+        height: 10,
+    };
+    let mut actor = plain_actor().await;
+    actor.images = Some(true);
+    actor.attachment_loader = Some(Arc::new(FakeLoader { fail: vec![] }));
+    actor.transcript = vec![
+        user_message("old tiny", vec![image("tiny-old")]),
+        user_message("", vec![big_image("big1")]),
+        user_message("", vec![big_image("big2")]),
+        user_message("", vec![big_image("big3")]),
+    ];
+
+    let projected = actor.request_history(actor.transcript.clone());
+    assert_eq!(
+        projected_ids(&projected),
+        vec!["big2", "big3"],
+        "the two newest fill the budget; the tiny one is NOT backfilled"
+    );
+    assert!(matches!(&projected[0], ChatMessage::User { content, .. }
+        if content.starts_with("old tiny")
+            && content.contains("not included in this request (size limit)")));
+}

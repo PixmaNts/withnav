@@ -5810,6 +5810,7 @@ fn a_message_with_images_uploads_after_the_conversation_exists_and_keeps_the_chi
         request,
         revision,
         attachments,
+        ..
     } = fx.last().unwrap().clone()
     else {
         panic!("{fx:?}")
@@ -5994,10 +5995,12 @@ fn a_retry_names_the_images_a_failed_send_already_stored() {
     // Attached while the message is in flight: not part of it, never takes a stored id.
     checked_now(&mut s, Ok(attachment("a.png", 10)));
     // a.png reached the store, b.png failed.
+    let in_flight = s.attachments_send;
     update(
         &mut s,
         ClientEvent::AttachmentsUploaded {
             generation: generation.clone(),
+            send: in_flight,
             uploads: vec![(attachment("a.png", 10), stored("att-1"))],
         },
     )
@@ -6038,10 +6041,12 @@ fn stored_ids_survive_attach_clear_of_the_images_after_the_message_in_flight() {
     );
     checked_now(&mut s, Ok(attachment("b.png", 20)));
     handle_action(&mut s, &mut ui(), Action::ClearAttachments);
+    let in_flight = s.attachments_send;
     update(
         &mut s,
         ClientEvent::AttachmentsUploaded {
             generation: generation.clone(),
+            send: in_flight,
             uploads: vec![(
                 attachment("a.png", 10),
                 withnav_tui::state::Uploaded {
@@ -6067,6 +6072,50 @@ fn stored_ids_survive_attach_clear_of_the_images_after_the_message_in_flight() {
             .map(|u| u.attachment_id.as_str()),
         Some("att-1")
     );
+}
+
+#[test]
+fn stored_ids_reported_for_an_earlier_message_are_dropped() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    let generation = s.generation.clone();
+    let send = |s: &mut State| {
+        let fx = handle_action(
+            s,
+            &mut ui(),
+            Action::SubmitAt {
+                text: "x".into(),
+                revision: 1,
+            },
+        );
+        let [Effect::SendWithAttachments { send, .. }] = fx.as_slice() else {
+            panic!("{fx:?}")
+        };
+        *send
+    };
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    let first = send(&mut s);
+    submitted_now(&mut s, 1, Err("HTTP 500".into())).unwrap();
+    // The same file attached again (perhaps with other bytes) rides in a second message, and
+    // the first message's late report arrives meanwhile.
+    let second = send(&mut s);
+    assert_ne!(first, second);
+    update(
+        &mut s,
+        ClientEvent::AttachmentsUploaded {
+            generation: generation.clone(),
+            send: first,
+            uploads: vec![(
+                attachment("a.png", 10),
+                withnav_tui::state::Uploaded {
+                    session_id: "S1".into(),
+                    attachment_id: "att-old".into(),
+                },
+            )],
+        },
+    )
+    .unwrap();
+    assert_eq!(s.pending_attachments, vec![attachment("a.png", 10)]);
 }
 
 #[test]

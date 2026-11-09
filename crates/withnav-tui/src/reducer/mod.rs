@@ -201,7 +201,7 @@ pub(super) fn refresh_start_variant(
 
 #[cfg(test)]
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
-    send_effect_with(text, revision, vec![])
+    send_effect_with(text, revision, vec![], 0)
 }
 
 /// The send of the active tab's message: its pending images ride with it, and stay in the tab
@@ -209,13 +209,15 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
 pub(crate) fn send_for_tab(s: &mut State, text: String, revision: u64) -> Effect {
     let attachments = s.pending_attachments.clone();
     s.attachments_sending = attachments.len();
-    send_effect_with(text, revision, attachments)
+    s.attachments_send += 1;
+    send_effect_with(text, revision, attachments, s.attachments_send)
 }
 
 fn send_effect_with(
     text: String,
     revision: u64,
     attachments: Vec<crate::state::PendingAttachment>,
+    send: u64,
 ) -> Effect {
     use withnav_client_api::command::ContentBlock;
     let content = if text.trim().is_empty() && !attachments.is_empty() {
@@ -263,6 +265,7 @@ fn send_effect_with(
             request,
             revision,
             attachments,
+            send,
         }
     }
 }
@@ -986,9 +989,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             Err(why) => push_local(s, BlockKind::Notice(format!("/attach: {why}"))),
         },
+        // Reported for an earlier message: its images may be gone and a same-named file
+        // attached since must not take an id that holds other bytes.
+        ClientEvent::AttachmentsUploaded { send, .. } if send != s.attachments_send => {}
         ClientEvent::AttachmentsUploaded { uploads, .. } => {
-            // Matched by the attachment itself, not its position: only images of the message in
-            // flight take a stored id, never one attached or cleared since.
+            // Matched by the attachment itself, not its position: an image attached during the
+            // send lands after the ones in flight and never takes a stored id.
             let sending = s.attachments_sending.min(s.pending_attachments.len());
             for (attachment, uploaded) in uploads {
                 if let Some(pending) = s.pending_attachments[..sending]

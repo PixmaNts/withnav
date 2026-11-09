@@ -66,6 +66,10 @@ pub struct Tab {
     /// Bumped by `/attach clear`. A file check started before the clear reports an older value
     /// and is dropped: an image the Captain cleared must not come back into the next message.
     pub attachments_revision: u64,
+    /// Numbers each message sent with images. Stored ids reported for an earlier one are
+    /// dropped: its images may have left the tab, and a same-named file attached since must not
+    /// take an id that holds other bytes.
+    pub attachments_send: u64,
     pub pending_model_pick: bool,
     pub editor_revision: u64,
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves

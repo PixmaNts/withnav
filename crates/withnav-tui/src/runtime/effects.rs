@@ -434,7 +434,8 @@ impl Executor {
                 request,
                 revision,
                 attachments,
-            } => self.send_with_attachments(request, revision, attachments, ctx),
+                send,
+            } => self.send_with_attachments(request, revision, attachments, send, ctx),
             Effect::CheckAttachment { path, revision } => {
                 let workspace = ctx.workspace.clone();
                 let home = self.host.home_dir();
@@ -746,6 +747,7 @@ impl Executor {
         mut request: SubmitRequest,
         revision: u64,
         attachments: Vec<PendingAttachment>,
+        send: u64,
         ctx: &Context,
     ) {
         let generation = ctx.generation.clone();
@@ -807,6 +809,7 @@ impl Executor {
                 let _ = tx
                     .send(ClientEvent::AttachmentsUploaded {
                         generation: generation.clone(),
+                        send,
                         uploads,
                     })
                     .await;

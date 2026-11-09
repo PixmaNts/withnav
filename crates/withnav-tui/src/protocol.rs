@@ -123,6 +123,8 @@ pub enum ClientEvent {
     /// reported before its failed `Submitted` or `DeliveryUncertain`, so a retry reuses them.
     AttachmentsUploaded {
         generation: Generation,
+        /// The `send` of the `SendWithAttachments`.
+        send: u64,
         uploads: Vec<(crate::state::PendingAttachment, crate::state::Uploaded)>,
     },
     /// An image of the transcript was handed to the system viewer, or why it could not be.
@@ -425,12 +427,14 @@ pub enum Effect {
     /// Like `SendAt`, for a message with images: the runtime uploads each file to the session
     /// first (which only exists by now), appends the returned references to `request.content`
     /// after the text, and sends. An attachment already `uploaded` to this session is named, not
-    /// uploaded again. New uploads are reported in `ClientEvent::AttachmentsUploaded`; any
-    /// failure comes back as a failed `Submitted`.
+    /// uploaded again. A failure comes back as a failed `Submitted` (or `DeliveryUncertain`),
+    /// preceded by `ClientEvent::AttachmentsUploaded` when images were stored meanwhile.
     SendWithAttachments {
         request: SubmitRequest,
         revision: u64,
         attachments: Vec<crate::state::PendingAttachment>,
+        /// The tab's `attachments_send` for this message, echoed in `AttachmentsUploaded`.
+        send: u64,
     },
     /// Looks at the file named by `/attach` (`path` as typed: `~` and relative paths are
     /// resolved by the runtime) and reports `ClientEvent::AttachmentChecked`.

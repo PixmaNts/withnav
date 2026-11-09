@@ -4,7 +4,7 @@ import { ContextSnapshot, parseContext } from "./contextMeter";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, imageRefs, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
-import { CLIENT_COMMANDS, routeComposer } from "./commands";
+import { CLIENT_COMMANDS, SERVER_COMMAND_NAME, routeComposer } from "./commands";
 import type { CommandInfo } from "./chatProtocol";
 import type { ComposerOperation } from "./chatProtocol";
 import type { ChildInfo } from "./chatProtocol";
@@ -313,7 +313,7 @@ export class CognitionBackend implements ChatBackend {
     const body = await this.request("/v1/commands", { method: "GET" }, "endpoint");
     if (endpoint !== this.endpoint) return;
     this.commands = (Array.isArray(body?.commands) ? body.commands : []).filter((c: any) =>
-      typeof c?.name === "string" && /^[a-z][a-z0-9_-]*$/.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
+      typeof c?.name === "string" && SERVER_COMMAND_NAME.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
     this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
   }
 
@@ -336,7 +336,10 @@ export class CognitionBackend implements ChatBackend {
     if (this.state.starting && ["model", "variant", "agent", "skill"].includes(name)) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (typeof args !== "string") throw new Error("Command arguments must be text");
     if (!this.commands.length) { await this.refreshCommands(); this.checkGeneration(generation); }
-    if (![...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name)) throw new Error(`Unknown command: /${name}. Use /help.`);
+    const known = () => [...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name);
+    // An MCP prompt appears when its server is ready: read the list again before refusing it.
+    if (!known() && name.includes(":")) { await this.refreshCommands(); this.checkGeneration(generation); }
+    if (!known()) throw new Error(`Unknown command: /${name}. Use /help.`);
     if (["help", "skills", "stop"].includes(name) && args) throw new Error(`/${name} takes no arguments`);
     if (name === "help") {
       this.emit({ type: "notice", text: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))].map(c => `/${c.name} ${c.args_hint} — ${c.description}`).join("\n") });
@@ -1188,6 +1191,8 @@ export class CognitionBackend implements ChatBackend {
       }
       if (generation !== this.state.streamGeneration) return;
       void this.fetchContext();
+      // An MCP server may have become ready while no stream was open: its prompts are commands.
+      void this.refreshCommands().catch(() => undefined);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1581,6 +1586,8 @@ export class CognitionBackend implements ChatBackend {
     this.observeChildren(envelope);
     // Refresh context even when these events also project a notice.
     if (envelope.kind === "context.compacted" || envelope.kind === "model.changed") void this.fetchContext();
+    // A server that became ready brings its prompts as `/<server>:<prompt>` commands.
+    if (envelope.kind === "mcp.status") void this.refreshCommands().catch(() => undefined);
     for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
     if (envelope.kind === "message.received" && typeof payload.command_id === "string") {
       this.state.acceptedMessages.add(payload.command_id);

@@ -904,9 +904,14 @@ async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Re
     json_result(state.skills(parsed).await)
 }
 
-/// `GET /v1/commands`: the registered session commands.
+/// `GET /v1/commands`: the registered session commands, then the prompts of the ready MCP
+/// servers as `<server>:<prompt>` commands.
 async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(json!({ "commands": state.list_commands() }))
+    let mut commands = json!(state.list_commands());
+    if let Some(list) = commands.as_array_mut() {
+        list.extend(state.prompt_commands().into_iter().map(|c| json!(c)));
+    }
+    Json(json!({ "commands": commands }))
 }
 
 #[derive(Debug, Deserialize)]

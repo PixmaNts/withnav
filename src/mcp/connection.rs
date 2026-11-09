@@ -315,19 +315,27 @@ async fn serve(
     let result: Result<(), String> = async {
         let startup = async {
             let mut client = initialize.await?;
-            let discovery = discover(server, client.peer()).await;
+            let discovery = discover(server, client.peer(), startup_deadline).await;
             match discovery {
-                Ok(tools) => Ok((client, tools)),
-                Err(error) => { let _ = client.close().await; Err(error) }
+                Ok(inventory) => Ok((client, inventory)),
+                Err(error) => {
+                    let _ = client.close().await;
+                    Err(error)
+                }
             }
         };
-        let (client, tools) = tokio::select! {
+        let (client, (tools, prompts)) = tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             result = tokio::time::timeout_at(startup_deadline, startup) => result.map_err(|_| "MCP startup timed out".to_string())??,
         };
         drop(permit);
         let disconnected = CancellationToken::new();
-        *server.ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ready { peer: client.peer().clone(), disconnected: disconnected.clone(), tools });
+        *server.ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ready {
+            peer: client.peer().clone(),
+            disconnected: disconnected.clone(),
+            tools,
+            prompts,
+        });
         {
             let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
             status.state = "ready";
@@ -346,13 +354,19 @@ async fn serve(
                 _ = &mut waiting => { disconnected.cancel(); return Err("MCP transport disconnected".into()); }
                 reread = tokio::time::timeout(
                     Duration::from_millis(server.config.startup_timeout_ms),
-                    discover(server, &peer),
+                    discover(
+                        server,
+                        &peer,
+                        tokio::time::Instant::now()
+                            + Duration::from_millis(server.config.startup_timeout_ms),
+                    ),
                 ), if rereading => {
                     rereading = false;
                     match reread {
-                        Ok(Ok(tools)) => {
+                        Ok(Ok((tools, prompts))) => {
                             if let Some(ready) = server.ready.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                                 ready.tools = tools;
+                                ready.prompts = prompts;
                             }
                             server.notify();
                         }
@@ -461,17 +475,19 @@ fn http_status(status: u16) -> String {
 async fn discover(
     server: &Arc<Server>,
     peer: &rmcp::Peer<rmcp::RoleClient>,
-) -> Result<Vec<McpTool>, String> {
+    startup_deadline: tokio::time::Instant,
+) -> Result<(Vec<McpTool>, Vec<super::prompt::Prompt>), String> {
     let capabilities = peer
         .peer_info()
         .map(|info| info.capabilities.clone())
         .unwrap_or_default();
     let offers_resources = capabilities.resources.is_some();
+    let offers_prompts = capabilities.prompts.is_some();
     let mut definitions = vec![];
-    // A server that offers resources and declares no tools has no tools/list to answer. One
-    // that declares neither is still asked, as before resources were supported: some servers
-    // answer tools/list without declaring the capability.
-    if capabilities.tools.is_some() || !offers_resources {
+    // A server that offers resources or prompts and declares no tools has no tools/list to
+    // answer. One that declares none is still asked, as before resources were supported:
+    // some servers answer tools/list without declaring the capability.
+    if capabilities.tools.is_some() || !(offers_resources || offers_prompts) {
         let mut cursor = None;
         let mut cursors = HashSet::new();
         for _ in 0..100 {
@@ -531,11 +547,23 @@ async fn discover(
             }
         }
     }
+    // Prompts are optional: their listing ends a little before the startup deadline, so a
+    // server that never answers prompts/list still starts, with its tools and no prompts.
+    let prompts = if offers_prompts {
+        let deadline = startup_deadline
+            .checked_sub(Duration::from_millis(100))
+            .unwrap_or(startup_deadline);
+        let (prompts, notes) = super::prompt::discover(server, peer, deadline).await;
+        skipped.extend(notes);
+        prompts
+    } else {
+        vec![]
+    };
     let mut status = server.status.lock().unwrap_or_else(|e| e.into_inner());
     status.tool_count = tools.len();
     status.skipped_tools = skipped;
     for reason in &status.skipped_tools {
         tracing::warn!(server = %server.id, reason = %server.redact(reason), "MCP tool skipped");
     }
-    Ok(tools)
+    Ok((tools, prompts))
 }

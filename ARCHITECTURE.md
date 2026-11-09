@@ -76,7 +76,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), the `list_resources`/`read_resource` tools of a server that offers resources (`resource.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), live refresh |
+| `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), the `list_resources`/`read_resource` tools of a server that offers resources (`resource.rs`), its prompts as `/<server>:<prompt>` commands: discovery, argument checks, the bounded prompt block (`prompt.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), live refresh |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
@@ -683,7 +683,10 @@ the later 0.6 scope, not this contract.
   and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result
   conversion in `mcp/tool.rs`; a server's resources, as the two added tools `list_resources` and
   `read_resource` (`McpTool` with a `Kind` other than `Call`, after the server's own tools so a
-  server tool keeps its name), in `mcp/resource.rs`. The session service owns one manager and `session/actor.rs`
+  server tool keeps its name), in `mcp/resource.rs`; a server's prompts in `mcp/prompt.rs`, run as
+  Captain commands by `session/prompt_command.rs` (listed by `GET /v1/commands` after the
+  built-ins; the result is the Captain's message with an `<mcp_prompt>` block that
+  `agent/captain_messages.rs` never counts as the Captain's words). The session service owns one manager and `session/actor.rs`
   installs its ready snapshot before role/tool filtering. Shutdown joins supervision tasks and
   kills child process groups. MCP adds no event kind in the stdio delivery.
   A server's `tools/list_changed` makes `mcp/connection.rs` reread its list; `session/mcp.rs`

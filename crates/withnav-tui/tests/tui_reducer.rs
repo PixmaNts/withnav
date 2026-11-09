@@ -5669,6 +5669,58 @@ fn mcp_status_keeps_the_newest_revision_from_the_read_or_the_stream() {
     );
 }
 
+// Given an MCP status change, live or read back
+// Then the command list is read again (a server that became ready brings its prompts as
+//      commands), and an older read that changes nothing does not ask for it
+#[test]
+fn a_changed_mcp_status_reads_the_commands_again() {
+    let mut s = subagent_parent();
+    let incarnation = Ulid::generate();
+    let mut script = Script::new();
+    script.seq = s.last_applied_seq.unwrap_or(0) + 1;
+    script.raw(
+        "mcp.status",
+        serde_json::to_value(mcp_status(incarnation, 5, "ready")).unwrap(),
+    );
+    let fetches = |effects: &[Effect]| {
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::FetchCommands))
+            .count()
+    };
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        let effects = update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+        assert_eq!(fetches(&effects), 1);
+    }
+    let generation = s.generation.clone();
+    let older = update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation: generation.clone(),
+            result: Ok(mcp_status(incarnation, 4, "starting")),
+        },
+    )
+    .unwrap();
+    assert_eq!(fetches(&older), 0);
+    let restarted = update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation,
+            result: Ok(mcp_status(Ulid::generate(), 1, "ready")),
+        },
+    )
+    .unwrap();
+    assert_eq!(fetches(&restarted), 1);
+}
+
 #[test]
 fn a_stream_connection_reads_the_mcp_status_again_and_an_mcp_event_marks_no_tab_unread() {
     let mut s = subagent_parent();

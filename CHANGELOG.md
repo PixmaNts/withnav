@@ -45,6 +45,12 @@ requests land in `develop`.
   64 KiB; both tools are decided by the ordinary permission rules, like any MCP tool. See
   [MCP servers](book/src/mcp-servers.md#resources).
 
+- MCP prompts: each prompt of a server is a `/<server>:<prompt>` command in the terminal client,
+  the WebUI and VS Code, listed with its arguments. Running it checks the arguments, asks the
+  server for the prompt and sends its messages as your message, inside a block marked as the
+  server's untrusted text, redacted and limited to 64 KiB. See
+  [MCP servers](book/src/mcp-servers.md#prompts).
+
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three

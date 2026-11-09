@@ -102,6 +102,36 @@ through the ordinary permission decision like any MCP tool: without a rule the r
 The `tools` map hides them too, for example `{"read_resource": false}`. A server that offers
 resources and declares no tools is not asked for its tool list.
 
+## Prompts
+
+A server that offers prompts (message templates) adds one slash command per prompt, named
+`/<server>:<prompt>`, in the terminal client, the WebUI and VS Code. The command list shows the
+prompt's description and its arguments (`<required> [optional]`); a server that becomes ready
+later adds its prompts as soon as the client hears of it.
+
+Arguments follow the command name:
+
+- a prompt with one argument takes the rest of the line: `/notes:summarize the release plan`;
+- a prompt with several takes `name=value` pairs, a value with spaces in double quotes:
+  `/code:review topic="the parser" depth=2`;
+- or a JSON object of text values: `/code:review {"topic": "the parser"}`.
+
+A missing required argument, or one the prompt does not declare, is refused with the usage and
+each argument's description; nothing is asked of the server until the required ones are given.
+
+The server's answer (`prompts/get`) becomes your message: a line naming the prompt, then the
+prompt's messages as a JSON block, redacted of the server's configured secrets and of your own
+secrets, and limited to 64 KiB (a cut block says `"truncated": true`). Text is kept; pictures,
+audio and binary content are named with their type and size, not shown. The block is marked as
+the server's text: the permission flow never reads it as your words, and whatever the agent does
+with it is decided by the ordinary permission rules. A server error is never shown, only that the
+server refused, timed out or disconnected. Like other commands, a prompt is refused while the
+agent waits for your answer or a permission decision, and needs a started conversation.
+
+A prompt whose name is not a single command word (letters, digits, `_`, `-`, `.`) is skipped, as is
+the whole prompt list when the server does not answer it in time; the server keeps its tools either
+way, and `nav doctor` shows why. Prompts are read once, when the server connects.
+
 MCP tools use ordinary permission rules. With no matching rule, the default is ask; the permission
 flow may still allow the call, for example when the Captain asked for it. Without a flow that
 answers, WithNav asks. Always saves a global allow rule for

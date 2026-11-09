@@ -78,8 +78,9 @@ A revoked or expired value is no longer redacted.
   yourself with that variable exported, and prefer keys with narrow rights and short lifetimes.
 - Streamed text is redacted piece by piece: a value split across two pieces of a live stream can
   appear on screen while it streams; the stored response is redacted.
-- **MCP servers do not receive secrets.** They are started once, with WithNav, for every
-  conversation, and their `{env:NAME}` references read WithNav's own environment. To give one a
-  key, export it before starting WithNav.
+- **MCP servers do not receive secrets.** The session service starts them once at startup and
+  shares them across its conversations (not one set per conversation); their `{env:NAME}`
+  references read WithNav's own environment. To give one a key, export it before starting
+  WithNav.
 - Revoking a secret stops new commands from receiving it; a command already running keeps the
   environment it started with.

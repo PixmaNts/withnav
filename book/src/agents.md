@@ -104,9 +104,11 @@ transcript while the parent chat stays open. A subagent's permission requests ap
 **parent** conversation, and you answer them there. Its result comes back to the parent once, as
 text labelled untrusted.
 
-A session runs up to `subagents.max_concurrent` subagents at once (default 4). If a subagent runs
-out of steps (50 by default), it pauses and its parent is told, with how many steps it used and
-the last tool activity. The parent can continue it with one more step budget, up to 3 times per
-subagent (200 steps at most without you), or stop it and start a new subagent with a narrower task.
-Stopping keeps the output so far. After the third top-up, or whenever you prefer, you can continue
-it yourself (`alt+c` in the terminal, a button in VS Code); your continue does not use a top-up.
+A session runs up to `subagents.max_concurrent` subagents at once (default 4). A subagent's
+step budget defaults to 50 (`WITHNAV_MAX_STEPS` overrides it for the process, children included),
+and when it runs out it pauses and its parent is told, with how many steps it used and the last
+tool activity. The parent can continue it with one more step budget, up to 3 times per subagent
+(200 steps at most at the default budget, more if the override raises it), or stop it and start
+a new subagent with a narrower task. Stopping keeps the output so far. After the third top-up, or
+whenever you prefer, you can continue it yourself (`alt+c` in the terminal, a button in VS Code);
+your continue does not use a top-up.

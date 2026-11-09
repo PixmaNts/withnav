@@ -65,7 +65,12 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
   const [local, setLocal] = useState<{ state: "saved" | "revoked"; view?: SecretView } | null>(null);
   const [, tick] = useState(0);
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => () => setValue(""), []);
+  // Saving, declining, revoking and pasting finish after an await: the card may be gone by then.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => {
     const timer = setInterval(() => tick((n) => n + 1), 30_000);
     return () => clearInterval(timer);
@@ -98,12 +103,13 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
     setError(null);
     try {
       const view = await actions.submit(requestId, state === "pending" ? { value: sent, ttl, scope } : { name: request.name, value: sent, ttl, scope });
+      if (!mounted.current) return;
       setLocal({ state: "saved", view });
       setReopened(false);
     } catch (e) {
-      setError(`Could not save ${request.name}: ${e instanceof Error ? e.message : String(e)}`);
+      if (mounted.current) setError(`Could not save ${request.name}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setBusy(null);
+      if (mounted.current) setBusy(null);
     }
   };
   const decline = async () => {
@@ -111,18 +117,20 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
     if (!actions) return;
     setBusy("Declining…");
     setError(null);
-    try { await actions.decline(requestId); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(null); }
+    try { await actions.decline(requestId); } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); } finally { if (mounted.current) setBusy(null); }
   };
   const revoke = async () => {
     if (!actions) return;
     setBusy("Revoking…");
-    try { await actions.revoke(request.name); setLocal({ state: "revoked" }); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(null); }
+    try { await actions.revoke(request.name); if (mounted.current) setLocal({ state: "revoked" }); } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); } finally { if (mounted.current) setBusy(null); }
   };
   const paste = async () => {
     try {
       const text = await navigator.clipboard.readText();
+      if (!mounted.current) return;
       if (text) setValue(text.replace(/[\r\n]+$/, ""));
     } catch {
+      if (!mounted.current) return;
       setError("Paste with Ctrl+V (Cmd+V) in the field.");
     }
     input.current?.focus();
@@ -188,13 +196,16 @@ export function SecretCard({ question, actions, readOnly }: { question: Question
 }
 
 /** The topbar Secrets button and its list. Escape in the list closes it and puts the focus back on the button. */
-export function SecretsMenu({ list, error, onOpen, onRevoke }: { list: SecretView[] | null; error?: string | null; onOpen: () => void; onRevoke: (name: string) => void }) {
+export function SecretsMenu({ list, error, onOpen, onRevoke }: { list: SecretView[] | null; error?: string | null; onOpen: () => Promise<void>; onRevoke: (name: string) => void }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  // On opening, and when `onOpen` changes (another session) while open: the new session's list
+  // would otherwise stay "Loading…".
+  useEffect(() => { if (open) void onOpen(); }, [open, onOpen]);
   return (
     <span className="secrets-anchor">
       <button ref={trigger} type="button" className="icon-btn" aria-haspopup="dialog" aria-expanded={open} aria-label="Secrets of this session" title="Secrets"
-        onClick={() => { setOpen(!open); if (!open) onOpen(); }}>
+        onClick={() => setOpen(!open)}>
         <Key size={16} />
       </button>
       {open && <SecretsList list={list} error={error} onRevoke={onRevoke} onClose={() => { setOpen(false); trigger.current?.focus(); }} />}

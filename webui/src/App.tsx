@@ -398,7 +398,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <span aria-hidden="true">{chat.bypassPending ? "◌" : bypass ? "⚠" : "🛡"}</span> {bypass ? "Bypass active" : "Safe mode"}
           </button>
           {chat.secrets && (
-            <SecretsMenu list={chat.secrets.list} error={chat.secretError} onOpen={() => void chat.refreshSecrets()}
+            <SecretsMenu list={chat.secrets.list} error={chat.secretError} onOpen={refreshSecrets}
               onRevoke={(name) => void chat.secrets?.revoke(name).catch((e) => chat.setError(e instanceof Error ? e.message : String(e)))} />
           )}
           <button type="button" className="icon-btn st-gear" onClick={openStudio} disabled={!workspace} aria-label="InstinctFlow Studio" title={workspace ? "InstinctFlow Studio: flows" : "Choose a workspace first"}>

@@ -3758,4 +3758,49 @@ mod tests {
         assert!(!transcript.contains(VALUE), "{transcript}");
         assert!(transcript.contains("[secret API_KEY]"), "{transcript}");
     }
+
+    /// The captured `reasoning_details` of a real provider stream, sanitized before the
+    /// assistant message enters the transcript the history store snapshots.
+    #[tokio::test]
+    async fn a_captured_opaque_item_holding_a_secret_is_dropped_from_the_transcript() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let frame = serde_json::json!({"choices": [{
+            "index": 0,
+            "delta": {
+                "content": "answer",
+                "reasoning_details": [
+                    {"type": "reasoning.text", "text": format!("the key is {VALUE}")},
+                    {"type": "reasoning.text", "text": "unrelated reasoning"},
+                ],
+            },
+            "finish_reason": "stop",
+        }]})
+        .to_string();
+        let server = spawn_mock(vec![http_sse(&sse_body(&[&frame]))]).await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        assert!(matches!(
+            run_agent(&mut actor, &mut noop).await.unwrap(),
+            RunOutcome::Done(_)
+        ));
+
+        let ChatMessage::Assistant { opaque, .. } = actor.transcript.last().unwrap() else {
+            panic!("expected an assistant message last");
+        };
+        let opaque = opaque.as_ref().expect("the clean item is kept");
+        assert_eq!(
+            opaque.items.len(),
+            1,
+            "the item holding the secret was dropped"
+        );
+        assert!(opaque.items[0].data.contains("unrelated reasoning"));
+        assert!(!opaque.items[0].data.contains(VALUE));
+        let transcript = serde_json::to_string(&actor.transcript).unwrap();
+        assert!(
+            !transcript.contains(VALUE),
+            "the transcript leaks the value: {transcript}"
+        );
+    }
 }

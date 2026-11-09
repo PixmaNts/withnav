@@ -359,6 +359,324 @@ fn using_a_secret_does_not_rewrite_the_file() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
 }
 
+/// An opaque item is signed by its producer, so a secret found inside cannot be redacted in
+/// place: the whole item is dropped instead, and the rest of the message is untouched.
+mod opaque_reasoning {
+    use super::*;
+    use crate::provider::openai::{ChatMessage, OpaqueItem, OpaqueReasoning, Producer};
+
+    fn access(store: SecretStore, owner: Ulid, ws: &Path) -> SecretAccess {
+        SecretAccess::new(Arc::new(store), owner, ws)
+    }
+
+    fn assistant(items: Vec<(&str, String)>) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some("answer".into()),
+            reasoning_content: Some("readable reasoning".into()),
+            tool_calls: Vec::new(),
+            opaque: Some(OpaqueReasoning {
+                producer: Producer::chat_completions("https://gw.example/v1", "model-a"),
+                items: items
+                    .into_iter()
+                    .map(|(kind, data)| OpaqueItem {
+                        kind: kind.into(),
+                        data,
+                    })
+                    .collect(),
+            }),
+        }
+    }
+
+    fn opaque(message: &ChatMessage) -> &Option<OpaqueReasoning> {
+        match message {
+            ChatMessage::Assistant { opaque, .. } => opaque,
+            other => panic!("not an assistant message: {other:?}"),
+        }
+    }
+
+    fn kept_data(message: &ChatMessage) -> Vec<&str> {
+        opaque(message)
+            .as_ref()
+            .map(|o| o.items.iter().map(|i| i.data.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn an_item_holding_a_secret_is_dropped_and_the_others_keep_their_order() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let first = r#"{"type":"reasoning.text","text":"clean"}"#.to_owned();
+        let third = r#"{"type":"reasoning.text","text":"clean again"}"#.to_owned();
+        let mut message = assistant(vec![
+            ("reasoning_details", first.clone()),
+            (
+                "reasoning_details",
+                format!(r#"{{"text":"the key is {VALUE}"}}"#),
+            ),
+            ("reasoning_details", third.clone()),
+        ]);
+        secrets.redact_message(&mut message);
+        assert_eq!(kept_data(&message), [first, third]);
+    }
+
+    #[test]
+    fn a_secret_escaped_in_the_item_json_is_still_found() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        // A backslash in the value is stored doubled inside the item's JSON text, so a raw
+        // substring test on `data` would miss it; the parsed string holds the value exactly.
+        let value = "sk-\\tail-0123456789";
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                value,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let data = serde_json::json!({ "text": format!("key {value}") }).to_string();
+        assert!(
+            !data.contains(value),
+            "the value is escaped in the raw JSON"
+        );
+        let mut message = assistant(vec![("reasoning_details", data)]);
+        secrets.redact_message(&mut message);
+        assert!(opaque(&message).is_none(), "the item was not dropped");
+    }
+
+    #[test]
+    fn an_item_without_a_secret_keeps_its_bytes_exactly() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let data = r#"{ "b" : 1, "a": [2, 3], "s": "unrelated" }"#.to_owned();
+        let mut message = assistant(vec![("reasoning_details", data.clone())]);
+        secrets.redact_message(&mut message);
+        assert_eq!(kept_data(&message), [data]);
+    }
+
+    #[test]
+    fn another_conversations_secret_does_not_drop_the_item() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let (owner, other) = (Ulid::generate(), Ulid::generate());
+        store
+            .put(
+                other,
+                ws.path(),
+                "OTHER_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let data = format!(r#"{{"text":"{VALUE}"}}"#);
+        let mut message = assistant(vec![("reasoning_details", data.clone())]);
+        secrets.redact_message(&mut message);
+        assert_eq!(kept_data(&message), [data]);
+    }
+
+    #[test]
+    fn dropping_every_item_leaves_no_opaque_reasoning() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let mut message = assistant(vec![(
+            "reasoning_details",
+            format!(r#"{{"text":"{VALUE}"}}"#),
+        )]);
+        secrets.redact_message(&mut message);
+        assert!(opaque(&message).is_none());
+    }
+
+    #[test]
+    fn a_value_below_the_redaction_length_does_not_drop_the_item() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "PIN",
+                "1234",
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let data = r#"{"text":"pin 1234"}"#.to_owned();
+        let mut message = assistant(vec![("reasoning_details", data.clone())]);
+        secrets.redact_message(&mut message);
+        assert_eq!(kept_data(&message), [data]);
+    }
+
+    #[test]
+    fn a_message_without_opaque_reasoning_is_unchanged() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let mut message = ChatMessage::Assistant {
+            content: Some(format!("the key is {VALUE}")),
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            opaque: None,
+        };
+        secrets.redact_message(&mut message);
+        match message {
+            ChatMessage::Assistant {
+                content, opaque, ..
+            } => {
+                assert_eq!(content.as_deref(), Some("the key is [secret API_KEY]"));
+                assert!(opaque.is_none());
+            }
+            other => panic!("not an assistant message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_secret_in_a_json_key_drops_the_item() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        // A backslash in the value is doubled in the JSON, so the raw text does not hold it:
+        // only scanning the decoded key finds it.
+        let value = "sk-\\key-0123456789";
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                value,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let mut object = serde_json::Map::new();
+        object.insert(value.to_owned(), serde_json::json!("value"));
+        let data = serde_json::Value::Object(object).to_string();
+        assert!(
+            !data.contains(value),
+            "the value is escaped in the raw JSON"
+        );
+        let mut message = assistant(vec![("reasoning_details", data)]);
+        secrets.redact_message(&mut message);
+        assert!(opaque(&message).is_none(), "the key's secret was not found");
+    }
+
+    #[test]
+    fn a_secret_nested_in_arrays_and_objects_drops_the_item() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        let value = "sk-\\nested-0123456789";
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                value,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let data =
+            serde_json::json!({"a": [1, {"b": ["see", format!("key {value}")]}]}).to_string();
+        assert!(
+            !data.contains(value),
+            "the value is escaped in the raw JSON"
+        );
+        let mut message = assistant(vec![("reasoning_details", data)]);
+        secrets.redact_message(&mut message);
+        assert!(opaque(&message).is_none());
+    }
+
+    #[test]
+    fn a_secret_in_item_data_that_is_not_json_is_still_found() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                VALUE,
+                SecretTtl::Day,
+                SecretScope::Session,
+            )
+            .unwrap();
+        let secrets = access(store, owner, ws.path());
+        let mut message = assistant(vec![("reasoning_details", format!("{{not json {VALUE}}}"))]);
+        secrets.redact_message(&mut message);
+        assert!(opaque(&message).is_none());
+    }
+
+    #[test]
+    fn an_opaque_payload_without_secrets_is_never_changed() {
+        let store = SecretStore::in_memory();
+        let ws = workspace();
+        let owner = Ulid::generate();
+        let secrets = access(store, owner, ws.path());
+        let data = r#"[1, {"a": "b"}, [], "text"]"#.to_owned();
+        let mut message = assistant(vec![("reasoning_details", data.clone())]);
+        secrets.redact_message(&mut message);
+        assert_eq!(kept_data(&message), [data]);
+    }
+}
+
 #[test]
 fn a_workspace_secret_that_cannot_be_saved_is_reported() {
     let data = tempfile::tempdir().unwrap();

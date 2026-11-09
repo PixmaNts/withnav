@@ -6,10 +6,11 @@
 //! `SecretEntry` and `SecretSubmission` print no value in `Debug`.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_segmentation::UnicodeSegmentation;
 use withnav_client_api::secrets::{SecretScope, SecretTtl};
 
 use crate::protocol::Action;
-use crate::state::{BlockKind, SecretPrompt, State, UiState};
+use crate::state::{BlockKind, Focus, SecretPrompt, State, UiState};
 
 /// The prompt open on a secret request (or on a settled one, to give a value anyway).
 #[derive(Clone, PartialEq, Default)]
@@ -62,6 +63,14 @@ impl SecretEntry {
             self.value.clone()
         } else {
             "•".repeat(self.value.chars().count())
+        }
+    }
+
+    /// Removes the last user-perceived character: a base character with its combining marks, or
+    /// an emoji sequence, goes in one Backspace.
+    pub fn pop_grapheme(&mut self) {
+        if let Some((at, _)) = self.value.grapheme_indices(true).next_back() {
+            self.value.truncate(at);
         }
     }
 
@@ -173,14 +182,18 @@ pub fn key(key: KeyEvent, state: &State, ui: &mut UiState) -> Option<Action> {
             entry.clear();
             ui.secret_entry = None;
             ui.secret_put_aside = Some(call_id);
+            // The answer is typed in the editor: with the transcript focused a punctuation-first
+            // answer would be taken as a transcript shortcut.
+            ui.focus = Focus::Editor;
             None
         }
         KeyCode::Char('u') if ctrl => {
-            entry.value.clear();
+            // `clear` also hides the value, so the next one is typed masked.
+            entry.clear();
             None
         }
         KeyCode::Backspace => {
-            entry.value.pop();
+            entry.pop_grapheme();
             None
         }
         KeyCode::Char(c) if !ctrl && !alt && !sending => {
@@ -189,6 +202,15 @@ pub fn key(key: KeyEvent, state: &State, ui: &mut UiState) -> Option<Action> {
         }
         _ => None,
     }
+}
+
+/// The prompt is open on a request whose answer is being sent: edits are refused until it
+/// comes back.
+pub fn sending(state: &State, ui: &UiState) -> bool {
+    ui.secret_entry
+        .as_ref()
+        .and_then(|e| prompt(state, &e.call_id))
+        .is_some_and(|p| p.sending)
 }
 
 /// A paste while the prompt is open goes into the value, without its trailing line break.

@@ -7,7 +7,7 @@ use withnav_tui::{
     input::{Editor, route_key, route_paste},
     protocol::*,
     reducer,
-    state::{BlockKind, SecretState, State, UiState},
+    state::{BlockKind, Focus, SecretState, State, UiState},
 };
 
 const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
@@ -143,6 +143,7 @@ fn the_prompt_masks_the_value_and_hands_it_to_one_effect_only() {
             session_id,
             call_id,
             submission,
+            ..
         },
     ] = &effects[..]
     else {
@@ -287,4 +288,113 @@ fn ctrl_c_quits_while_the_prompt_is_open() {
         route_key(ctrl_c(), &s, &mut ui, &mut editor),
         Some(withnav_tui::protocol::Action::Quit)
     ));
+}
+
+fn open_prompt() -> (State, UiState, Editor) {
+    let s = asked();
+    let mut ui = UiState::default();
+    withnav_tui::secret::sync(&s, &mut ui);
+    (s, ui, Editor::new())
+}
+
+fn type_text(s: &mut State, ui: &mut UiState, editor: &mut Editor, text: &str) {
+    for c in text.chars() {
+        press(s, ui, editor, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+}
+
+#[test]
+fn a_paste_is_refused_while_the_answer_is_being_sent() {
+    let (mut s, mut ui, mut editor) = open_prompt();
+    type_text(&mut s, &mut ui, &mut editor, VALUE);
+    let effects = press(
+        &mut s,
+        &mut ui,
+        &mut editor,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    );
+    assert_eq!(effects.len(), 1);
+    assert!(route_paste("late-paste".into(), &s, &mut ui, &mut editor).is_none());
+    assert!(
+        ui.secret_entry.as_ref().unwrap().value.is_empty(),
+        "nothing lingers after a failed request"
+    );
+}
+
+#[test]
+fn backspace_removes_a_whole_grapheme() {
+    let (mut s, mut ui, mut editor) = open_prompt();
+    // "e" + combining acute accent is one character to the Captain.
+    type_text(&mut s, &mut ui, &mut editor, "ab\u{65}\u{301}");
+    press(
+        &mut s,
+        &mut ui,
+        &mut editor,
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+    );
+    assert_eq!(ui.secret_entry.as_ref().unwrap().value, "ab");
+}
+
+#[test]
+fn ctrl_u_hides_the_value_again() {
+    let (mut s, mut ui, mut editor) = open_prompt();
+    press(
+        &mut s,
+        &mut ui,
+        &mut editor,
+        KeyCode::Char('r'),
+        KeyModifiers::CONTROL,
+    );
+    type_text(&mut s, &mut ui, &mut editor, "abc");
+    press(
+        &mut s,
+        &mut ui,
+        &mut editor,
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    );
+    type_text(&mut s, &mut ui, &mut editor, "xyz");
+    let entry = ui.secret_entry.as_ref().unwrap();
+    assert!(!entry.shown);
+    assert_eq!(entry.display(), "•••");
+}
+
+#[test]
+fn putting_the_prompt_aside_focuses_the_editor() {
+    let (mut s, mut ui, mut editor) = open_prompt();
+    ui.focus = Focus::Transcript;
+    press(
+        &mut s,
+        &mut ui,
+        &mut editor,
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    );
+    assert_eq!(ui.focus, Focus::Editor);
+}
+
+#[test]
+fn the_submit_effect_carries_the_requested_name_for_the_failure_notice() {
+    let (mut s, mut ui, mut editor) = open_prompt();
+    type_text(&mut s, &mut ui, &mut editor, VALUE);
+    let effects = press(
+        &mut s,
+        &mut ui,
+        &mut editor,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    );
+    let [
+        Effect::SubmitSecret {
+            name, submission, ..
+        },
+    ] = &effects[..]
+    else {
+        panic!("{effects:?}")
+    };
+    // A reply to a pending request has no name on the wire; the notice still needs one.
+    assert_eq!(submission.name, None);
+    assert_eq!(name, "API_KEY");
 }

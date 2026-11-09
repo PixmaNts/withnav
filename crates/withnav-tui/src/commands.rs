@@ -206,6 +206,9 @@ pub const KEYS: &[(&str, &str)] = &[
     ("ctrl+end", "follow newest"),
     ("esc / ctrl+c", "stop / close"),
     ("ctrl+q", "quit"),
+    ("alt+k", "open the secret prompt, also on a settled request"),
+    ("ctrl+r", "secret prompt: show or hide the value"),
+    ("ctrl+e", "secret prompt: put aside to answer in the chat"),
 ];
 
 /// The rows of the variant list for `pick` and the row to start on.

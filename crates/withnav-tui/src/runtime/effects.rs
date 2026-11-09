@@ -519,10 +519,10 @@ impl Executor {
             Effect::SubmitSecret {
                 session_id,
                 call_id,
+                name,
                 submission,
             } => {
                 let client = self.client.clone();
-                let name = submission.name.clone().unwrap_or_default();
                 self.spawn_event(async move {
                     // The value is in `submission` until this request is built; nothing logs it.
                     let result = client

@@ -325,6 +325,9 @@ pub enum Effect {
     SubmitSecret {
         session_id: String,
         call_id: String,
+        /// The requested secret's name, for the failure notice: the submission carries one only
+        /// when the value is given later.
+        name: String,
         submission: withnav_client_api::secrets::SecretSubmission,
     },
     ListSecrets(String),

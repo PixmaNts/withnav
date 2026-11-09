@@ -38,6 +38,20 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(3);
 /// was sent and the viewer has read it.
 const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// How often a running program is checked for exit. Shorter wakes the thread more for nothing;
+/// longer adds up to this much latency to every paste and viewer launch.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// How much of a clipboard reader's stderr is kept for the error message: enough for its one-line
+/// reason, small enough that a reader looping on warnings cannot grow the message without bound.
+const STDERR_KEPT: u64 = 4096;
+
+/// The file name prefix of [`private_file`]'s files: `withnav-<process id>-<counter>.<extension>`.
+const FILE_PREFIX: &str = "withnav-";
+
+/// The extensions [`extension`] gives, the only ones [`private_file`] writes.
+const EXTENSIONS: [&str; 5] = ["png", "jpg", "gif", "webp", "img"];
+
 /// Waits for `child` until `deadline`; `None` once it is past.
 fn wait_until(child: &mut Child, deadline: Instant) -> std::io::Result<Option<ExitStatus>> {
     loop {
@@ -47,7 +61,7 @@ fn wait_until(child: &mut Child, deadline: Instant) -> std::io::Result<Option<Ex
         if Instant::now() >= deadline {
             return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
@@ -59,6 +73,40 @@ struct Output {
     stderr: Vec<u8>,
 }
 
+/// Reads the first `limit` bytes of `pipe`, then reads and drops the rest so the program is never
+/// blocked on a full pipe. A read error at either stage is returned: bytes cut short by it would
+/// otherwise pass for the whole clipboard and fail later as an invalid image.
+fn drain(pipe: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut pipe = pipe.take(limit);
+    pipe.read_to_end(&mut bytes)?;
+    std::io::copy(&mut pipe.into_inner(), &mut std::io::sink())?;
+    Ok(bytes)
+}
+
+/// What a [`drain`] thread read, or why it read nothing. A thread that panicked is an error, never
+/// an empty pipe.
+fn joined(
+    drain: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    pipe: &str,
+) -> std::io::Result<Vec<u8>> {
+    drain.join().unwrap_or_else(|_| {
+        Err(std::io::Error::other(format!(
+            "the reader of its {pipe} stopped unexpectedly"
+        )))
+    })
+}
+
+/// The error of a reader past [`CLIPBOARD_DEADLINE`], given how stopping it went. It stays a
+/// timeout either way; a reader that could not be stopped says so, since it may still be running.
+fn timed_out(stopped: std::io::Result<()>) -> std::io::Error {
+    let mut message = format!("no answer after {} s", CLIPBOARD_DEADLINE.as_secs());
+    if let Err(e) = stopped {
+        message.push_str(&format!("; could not stop it: {e}"));
+    }
+    std::io::Error::new(std::io::ErrorKind::TimedOut, message)
+}
+
 /// Runs a clipboard reader, killed past [`CLIPBOARD_DEADLINE`].
 fn read_program(program: &str, args: &[&str]) -> std::io::Result<Output> {
     let mut child = Command::new(program)
@@ -67,47 +115,42 @@ fn read_program(program: &str, args: &[&str]) -> std::io::Result<Output> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let drain = |pipe: Option<Box<dyn Read + Send>>, limit: u64| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(pipe) = pipe {
-                let mut pipe = pipe.take(limit);
-                let _ = pipe.read_to_end(&mut bytes);
-                // The rest is read and dropped, so the program is never blocked on a full pipe.
-                let _ = std::io::copy(&mut pipe.into_inner(), &mut std::io::sink());
-            }
-            bytes
+    let start = |pipe: Option<Box<dyn Read + Send>>, limit: u64| {
+        std::thread::spawn(move || match pipe {
+            Some(pipe) => drain(pipe, limit),
+            None => Ok(Vec::new()),
         })
     };
-    let stdout = drain(
+    let stdout = start(
         child
             .stdout
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
         MAX_ATTACHMENT_BYTES + 1,
     );
-    let stderr = drain(
+    let stderr = start(
         child
             .stderr
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        4096,
+        STDERR_KEPT,
     );
     let status = match wait_until(&mut child, Instant::now() + CLIPBOARD_DEADLINE)? {
         Some(status) => status,
         None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("no answer after {} s", CLIPBOARD_DEADLINE.as_secs()),
+            // Waiting after a failed kill could block for as long as the reader runs.
+            return Err(timed_out(
+                child.kill().and_then(|()| child.wait().map(drop)),
             ));
         }
     };
+    // Both threads are joined before either result is looked at, so neither is left running.
+    let stdout = joined(stdout, "output");
+    let stderr = joined(stderr, "error output");
     Ok(Output {
         status,
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: stdout?,
+        stderr: stderr?,
     })
 }
 
@@ -145,12 +188,15 @@ pub(super) fn clipboard_image() -> Result<Vec<u8>, String> {
 
 /// Writes `bytes` to a new file only this user can read, in the temporary folder. The file must
 /// outlive the call (the upload or the viewer reads it later), so it is not removed here: each
-/// call first sweeps this module's files older than [`STALE_AFTER`].
+/// call first sweeps this module's files older than [`STALE_AFTER`]. A sweep that fails is logged
+/// and never fails the call; a write that fails removes the file it started.
 pub(super) fn private_file(extension: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    remove_stale(&std::env::temp_dir(), SystemTime::now());
+    for (path, e) in remove_stale(&std::env::temp_dir(), SystemTime::now()) {
+        tracing::debug!("cannot remove the old image file {}: {e}", path.display());
+    }
     let path = std::env::temp_dir().join(format!(
-        "withnav-{}-{}.{extension}",
+        "{FILE_PREFIX}{}-{}.{extension}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -161,35 +207,80 @@ pub(super) fn private_file(extension: &str, bytes: &[u8]) -> Result<PathBuf, Str
     let mut file = options
         .open(&path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
+    let written = file.write_all(bytes);
+    drop(file);
+    finish_write(path, written)
 }
 
-/// Removes the files [`private_file`] wrote in `folder` more than [`STALE_AFTER`] before `now`.
-/// Another user's files are left alone (the temporary folder refuses), as are files of other names.
-fn remove_stale(folder: &Path, now: SystemTime) {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return;
+/// The written file, or the write error once the partial file is removed: a cut-short image left
+/// behind would only be swept a day later.
+fn finish_write(path: PathBuf, written: std::io::Result<()>) -> Result<PathBuf, String> {
+    let Err(e) = written else {
+        return Ok(path);
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let ours = name.starts_with("withnav-")
-            && ["png", "jpg", "gif", "webp", "img"]
-                .iter()
-                .any(|ext| name.ends_with(&format!(".{ext}")));
-        let stale = entry
+    let mut message = format!("{}: {e}", path.display());
+    if let Err(removal) = std::fs::remove_file(&path) {
+        message.push_str(&format!(" (the partial file is left: {removal})"));
+    }
+    Err(message)
+}
+
+/// Whether `name` is exactly a name [`private_file`] gives: `withnav-<digits>-<digits>.<extension>`.
+/// Anything looser would sweep the user's own files, such as `withnav-notes.png`.
+fn is_generated_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(FILE_PREFIX) else {
+        return false;
+    };
+    let Some((stem, extension)) = rest.rsplit_once('.') else {
+        return false;
+    };
+    let Some((process, counter)) = stem.split_once('-') else {
+        return false;
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    digits(process) && digits(counter) && EXTENSIONS.contains(&extension)
+}
+
+/// Removes the files [`private_file`] wrote in `folder` more than [`STALE_AFTER`] before `now`, and
+/// returns what could not be read or removed. Another user's files are left alone (the temporary
+/// folder refuses), as are files of other names.
+fn remove_stale(folder: &Path, now: SystemTime) -> Vec<(PathBuf, std::io::Error)> {
+    let mut failures = Vec::new();
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(e) => return vec![(folder.to_path_buf(), e)],
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                failures.push((folder.to_path_buf(), e));
+                continue;
+            }
+        };
+        if !entry.file_name().to_str().is_some_and(is_generated_name) {
+            continue;
+        }
+        let path = entry.path();
+        let modified = match entry
             .metadata()
-            .ok()
-            .filter(|m| m.is_file())
-            .and_then(|m| m.modified().ok())
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > STALE_AFTER);
-        if ours && stale {
-            let _ = std::fs::remove_file(entry.path());
+            .and_then(|m| Ok((m.is_file(), m.modified()?)))
+        {
+            Ok((true, modified)) => modified,
+            Ok((false, _)) => continue,
+            Err(e) => {
+                failures.push((path, e));
+                continue;
+            }
+        };
+        let stale = now
+            .duration_since(modified)
+            .is_ok_and(|age| age > STALE_AFTER);
+        if stale && let Err(e) = std::fs::remove_file(&path) {
+            failures.push((path, e));
         }
     }
+    failures
 }
 
 /// The file extension of a stored image type; the viewer goes by it.
@@ -268,8 +359,40 @@ mod tests {
         ] {
             std::fs::write(folder.path().join(name), b"x").unwrap();
         }
-        remove_stale(folder.path(), SystemTime::now());
+        assert!(remove_stale(folder.path(), SystemTime::now()).is_empty());
         assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 4);
+        assert!(
+            remove_stale(
+                folder.path(),
+                SystemTime::now() + STALE_AFTER + STALE_AFTER / 2,
+            )
+            .is_empty()
+        );
+        let mut left: Vec<_> = std::fs::read_dir(folder.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["notes.png", "withnav-config.toml"]);
+    }
+
+    // Given old files whose names only start like this module's
+    // When files are swept a day and a half later
+    // Then only the exact generated name is removed and the user's files are kept
+    #[test]
+    fn an_unrelated_withnav_file_survives_the_sweep() {
+        let folder = tempfile::tempdir().unwrap();
+        let kept = [
+            "withnav-notes.png",
+            "withnav-1.png",
+            "withnav-1-x.png",
+            "withnav--0.png",
+            "withnav-1-0.png.png",
+            "withnav-1-0.tiff",
+        ];
+        for name in kept.iter().chain(&["withnav-12-3.webp"]) {
+            std::fs::write(folder.path().join(name), b"x").unwrap();
+        }
         remove_stale(
             folder.path(),
             SystemTime::now() + STALE_AFTER + STALE_AFTER / 2,
@@ -279,7 +402,114 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         left.sort();
-        assert_eq!(left, ["notes.png", "withnav-config.toml"]);
+        let mut kept = kept.to_vec();
+        kept.sort();
+        assert_eq!(left, kept);
+    }
+
+    #[test]
+    fn every_viewer_extension_is_swept() {
+        for media_type in ["image/png", "image/jpeg", "image/gif", "image/webp", "x/y"] {
+            assert!(is_generated_name(&format!(
+                "withnav-1-2.{}",
+                extension(media_type)
+            )));
+        }
+    }
+
+    // Given an old generated file in a folder this user may not change
+    // When files are swept
+    // Then the file is kept and its removal error is returned
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_removal_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Restore<'a>(&'a Path);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("withnav-1-0.png");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let _restore = Restore(folder.path());
+        let failures = remove_stale(
+            folder.path(),
+            SystemTime::now() + STALE_AFTER + STALE_AFTER / 2,
+        );
+        if !file.exists() {
+            // Root ignores the folder's mode, so there is no failure to force.
+            return;
+        }
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, file);
+        assert_eq!(failures[0].1.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    // Given a write that failed after the file was created
+    // Then the error is returned and the partial file is gone
+    #[test]
+    fn a_failed_write_leaves_no_partial_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("withnav-1-0.png");
+        std::fs::write(&path, b"half").unwrap();
+        let error =
+            finish_write(path.clone(), Err(std::io::Error::other("disk full"))).unwrap_err();
+        assert!(error.contains("disk full"), "{error}");
+        assert!(!path.exists());
+    }
+
+    /// A pipe that yields `good` bytes, then fails.
+    struct Failing {
+        good: usize,
+    }
+
+    impl Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.good == 0 {
+                return Err(std::io::Error::other("pipe broke"));
+            }
+            let n = self.good.min(buf.len());
+            buf[..n].fill(1);
+            self.good -= n;
+            Ok(n)
+        }
+    }
+
+    // Given a reader whose pipe fails before, inside or past the kept part
+    // Then the drain is an error, never the bytes read so far
+    #[test]
+    fn a_failing_pipe_is_an_error() {
+        for good in [0, 10, 100] {
+            let error = drain(Failing { good }, 50).unwrap_err();
+            assert_eq!(error.to_string(), "pipe broke", "after {good} bytes");
+        }
+        assert_eq!(drain(&b"abc"[..], 2).unwrap(), b"ab");
+    }
+
+    #[test]
+    fn a_panicked_drain_is_an_error() {
+        let thread = std::thread::spawn(|| -> std::io::Result<Vec<u8>> { panic!("drain") });
+        let error = joined(thread, "output").unwrap_err();
+        assert!(error.to_string().contains("output"), "{error}");
+    }
+
+    #[test]
+    fn a_timeout_says_when_the_reader_could_not_be_stopped() {
+        let plain = timed_out(Ok(()));
+        assert_eq!(plain.kind(), std::io::ErrorKind::TimedOut);
+        assert!(!plain.to_string().contains("could not stop"));
+        let stuck = timed_out(Err(std::io::Error::other("no such process")));
+        assert_eq!(stuck.kind(), std::io::ErrorKind::TimedOut);
+        assert!(stuck.to_string().contains("no answer after"), "{stuck}");
+        assert!(
+            stuck
+                .to_string()
+                .contains("could not stop it: no such process"),
+            "{stuck}"
+        );
     }
 
     // Given a reader that prints far more than an attachment may hold
